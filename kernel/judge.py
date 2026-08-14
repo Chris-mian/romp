@@ -8935,8 +8935,15 @@ def _seg_peer(seg):
     author = trig.get("author")
     if not isinstance(author, dict):
         return None
-    m = em.POSTAL_RE.search(_atom_text(trig))
-    return (author.get("peer"), m.group(1) if m else None)
+    # The id the AUTHOR resolved, not a fresh scan: a drain concatenates every pending message into
+    # one text, so re-scanning here picked the first message's id while author_of had picked the
+    # last one's peer — pairing one peer with another's message. Older atoms (built before the
+    # author carried it) fall back to the same last-marker rule author_of uses.
+    mid = author.get("mid")
+    if not mid:
+        pairs = em.postal_pairs(_atom_text(trig))
+        mid = pairs[-1][0] if pairs else None
+    return (author.get("peer"), mid)
 
 
 def _seg_peer_kind(seg):
@@ -8949,8 +8956,18 @@ def _seg_peer_kind(seg):
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     if not trig:
         return ""
-    m = em.POSTAL_KIND_RE.search(_atom_text(trig))
-    return m.group(1) if m else ""
+    # Same pairing rule as _seg_peer: the kind must describe the message whose peer we filed under,
+    # or a coordinate from one sender could be read as a delegate from another. Keyed on MID, the
+    # same sentinel _seg_peer uses — not on the kind's truthiness. An empty kind is a legitimate
+    # resolved value (`romp mail send` leaves --kind optional, so plain CLI mail resolves with kind
+    # ""), and treating it as "no marker here" would send this back to a rescan that returns a
+    # DIFFERENT message's kind. A coordinate/question read off the wrong message files the segment
+    # fyi with no courier call at all, so a real handover in it is never tracked.
+    author = trig.get("author")
+    if isinstance(author, dict) and author.get("mid"):
+        return author.get("kind") or ""
+    pairs = em.postal_pairs(_atom_text(trig))
+    return pairs[-1][1] if pairs else ""
 
 
 def _seg_human(seg):

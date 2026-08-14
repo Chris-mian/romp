@@ -2219,7 +2219,7 @@ class DistillDoneGate(unittest.TestCase):
 class Courier(unittest.TestCase):
     def test_seg_peer_extracts_sender_and_msgid(self):
         seg = {"trigger": "u1", "atoms": [{"uuid": "u1", "type": "user", "author": {"peer": "SENDERSID"},
-               "message": {"content": [{"type": "text", "text": "ASK: do X\nromp-msg-id: abc.123"}]}}]}
+               "message": {"content": [{"type": "text", "text": "ASK: do X\n<!-- romp-msg-id: abc.123 -->"}]}}]}
         self.assertEqual(jd._seg_peer(seg), ("SENDERSID", "abc.123"))
         human = {"trigger": "u2", "atoms": [{"uuid": "u2", "type": "user", "author": "human",
                  "message": {"content": [{"type": "text", "text": "hi"}]}}]}
@@ -2283,7 +2283,7 @@ class PostalDelegation(unittest.TestCase):
         """A delivered POSTAL message line (the peer-segment trigger): the body carries the romp-msg-id
         marker, so the event model authors it {"peer": ...} and _seg_peer flags it."""
         return {"type": "user", "timestamp": iso(t), "uuid": uuid, "parentUuid": parent,
-                "message": {"role": "user", "content": "%s\nromp-msg-id: %s" % (text, mid)}}
+                "message": {"role": "user", "content": "%s\n<!-- romp-msg-id: %s -->" % (text, mid)}}
 
     def _run(self, recs, courier, work, passes=1, complete_g=False, view_cleared=False):
         """Write recs, find the peer seg, pre-seed the recipient store with `courier` (a goal label →
