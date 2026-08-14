@@ -1047,8 +1047,8 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
     tn.replaceWith(frag);
   }
   // A mentioned image/PDF renders FULL-SIZE under the message (the user 2026-07-20, who wanted not even a
-  // thumbnail but a rendered image, like the user messages; supersedes the 2026-07-08 thumbnail strip,
-  // which lives on in the feed's artifact strips). Absolute AND relative paths work — the kernel
+  // thumbnail but a rendered image, like the user messages; supersedes the 2026-07-08 thumbnail
+  // strip). Absolute AND relative paths work — the kernel
   // resolves a relative one against this session's cwd, same as click-to-open. Per surface:
   //   web       — previewFull: the kernel serves the bytes straight into an <img> at the user-image
   //               scale / a PDF's native inline viewer; a path the kernel can't serve removes itself.
