@@ -56,11 +56,13 @@ const OBJ_ID = ["tabs"]; //                       an array of objects keyed by `
 
 // Gear settings the KERNEL acts on, which each kernel stores its own copy of: they describe how romp
 // behaves towards the sessions it is running, so a machine that never hears the change goes on behaving
-// the old way. Broadcast in routeOutbound rather than routed. Deliberately NOT here: setDefaultDir (a
-// path on one machine, meaningless on another) and setColormap/setPalette (the viewer's display prefs,
-// which the local kernel persists for this browser).
+// the old way. setUpdateMode belongs here too: each kernel runs its own boot release check, so a machine
+// that misses the change keeps handling new releases under the old policy (ask/auto/off). Broadcast in
+// routeOutbound rather than routed. Deliberately NOT here: setDefaultDir (a path on one machine,
+// meaningless on another) and setColormap/setPalette (the viewer's display prefs, which the local kernel
+// persists for this browser).
 const KERNEL_SETTING = new Set(["setAutoNudge", "setJudgeModel", "setIndexModel",
-                                "setJudgeEffort", "setIndexEffort"]);
+                                "setJudgeEffort", "setIndexEffort", "setUpdateMode"]);
 
 /** Return a COPY of an inbound message with every session-id field prefixed by `host`. The local host
  *  ("") is the identity transform, so local messages are untouched. Unknown fields pass through. */
