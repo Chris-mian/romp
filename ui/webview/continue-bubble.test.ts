@@ -16,7 +16,7 @@ const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kern
 
 test("the canned Continue is a GESTURE row: ✦ + chip + the sent text's own first line", () => {
   assert.match(RENDER, /canned\?: string/, "the user event carries the kernel's lift");
-  assert.match(RENDER, /\} else if \(!romp && !injected && ev\.md && ev\.canned === "continue"\) \{/,
+  assert.match(RENDER, /\} else if \(!romp && !injected && !tagged && ev\.md && ev\.canned === "continue"\) \{/,
     "keyed on the lifted marker, never on text-matching the canned copy");
   // the slash-command dress — same family, same classes
   assert.match(RENDER, /turn\.classList\.add\("turn-cmd"\);\s*\n\s*bubble\.classList\.add\("cmd-row"\);\s*\n\s*const chip = el\("span", "slash-cmd-chip"\); chip\.textContent = "Continue";/);

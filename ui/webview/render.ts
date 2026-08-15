@@ -81,7 +81,7 @@ type TaskOutputs = Record<string, { command: string; output: string }>;
 type ChatEvent = (
   // mid/mids: postal message ids the kernel could NOT resolve into cards, carried on the raw turn so a
   // timeline arc into it still lands (see _hydrate_postal's unresolved path)
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; spacePaths?: string[]; pathLinks?: Record<string, string> }
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; spacePaths?: string[]; pathLinks?: Record<string, string> }
   | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string> }   // spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
@@ -1745,7 +1745,17 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         tag.appendChild(document.createTextNode("romp"));
         turn.appendChild(tag);
       }
-      const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md");
+      // sender-declared render hint (kernel MSG_TAG_RE lift, the user 2026-08-15): auto-generated
+      // text — a kickoff template, a scripted brief — is machine-sent on the user's behalf, so it
+      // sheds the typed-words blue for the gray injected family, labeled with the SENDER's own word
+      // (romp attaches no meaning to the label; ⚙ marks "scripted", vs romp's swirl).
+      const tagged = !romp && !injected && !!ev.tag && !!ev.md;
+      if (tagged) {
+        const tchip = el("div", "romp-tag");
+        tchip.appendChild(document.createTextNode("⚙ " + ev.tag));
+        turn.appendChild(tchip);
+      }
+      const bubble = el("div", (romp ? "romp-bubble" : tagged ? "romp-bubble tag-bubble" : injected ? "user-note" : "user-bubble") + " md");
       // A slash COMMAND you sent reads as a special keyword, not prose (the user 2026-06-29): render the leading
       // "/cmd" token as a monospace chip. Genuine human bubbles only (a romp/injected note is never a command).
       // paths this turn already renders as full in-bubble images (both the caption path and a
@@ -1753,13 +1763,13 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       const imgPaths = (ev.images || [])
         .flatMap((im) => [im.path, im.src.startsWith("path:") ? im.src.slice(5) : ""])
         .filter((p): p is string => !!p);
-      if (!romp && !injected && ev.md && renderSlashCmd(bubble, ev.md)) {
+      if (!romp && !injected && !tagged && ev.md && renderSlashCmd(bubble, ev.md)) {
         // a COMMAND is a user GESTURE, not a user message (the user 2026-08-13): it changes something
         // rather than saying something, so it sheds the blue said-thing bubble and reads in the
         // system-event family (the ✦ dividers) — a dim left-aligned row: ✦ mark, mono chip, args
         turn.classList.add("turn-cmd");
         bubble.classList.add("cmd-row");
-      } else if (!romp && !injected && ev.md && ev.canned === "continue") {
+      } else if (!romp && !injected && !tagged && ev.md && ev.canned === "continue") {
         // The card's Continue button: a user GESTURE, not typed prose. The 2026-08-13 cut kept the
         // blue bubble with a PARAPHRASED gist — which made it the one "user message" that expanded,
         // and to different words than its label (the user 2026-08-15: unclear what was actually
@@ -1788,6 +1798,29 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         if (ckey) bubble.dataset.nkey = ckey;
         applyFold(bubble, "expanded", ckey);
         bubble.title = bubble.classList.contains("expanded") ? "click to collapse" : "click to expand";
+      } else if (tagged) {
+        // long templates fold like nudges: the gist is the message's OWN first non-quote line —
+        // never a paraphrase — with the full text one click deeper, keyed to survive re-renders
+        const raw = ev.md.replace(/<!--[\s\S]*?-->/g, "").trim();
+        const lines = raw.split("\n").map((l) => l.trim());
+        const first = lines.find((l) => l && !l.startsWith(">")) || lines.find((l) => l) || raw;
+        const gist = first.length > 90 ? first.slice(0, 88).replace(/\s+\S*$/, "") + "…" : first;
+        const more = collapseWs(raw) !== collapseWs(gist);
+        const gistEl = el("div", "nudge-gist");
+        if (more) { const c = el("span", "nudge-caret"); c.textContent = "▸"; gistEl.appendChild(c); }
+        gistEl.appendChild(document.createTextNode(gist));
+        bubble.appendChild(gistEl);
+        if (more) {
+          const full = el("div", "nudge-full md");
+          full.innerHTML = md(ev.md);
+          bubble.appendChild(full);
+          bubble.classList.add("nudge-collapsible");
+          bubble.dataset.act = "nudgetoggle";   // the stable body delegate, never a per-render listener
+          const tkey = ev.uuid ? "tag:" + ev.uuid : undefined;
+          if (tkey) bubble.dataset.nkey = tkey;
+          applyFold(bubble, "expanded", tkey);
+          bubble.title = bubble.classList.contains("expanded") ? "click to collapse" : "click to expand";
+        }
       } else if (romp && ev.md) {
         // A romp-injected NUDGE (auto status-check, Nudge button, injected follow-up) is mechanical
         // bookkeeping — progressive disclosure (the user 2026-07-17): default is a ONE-LINE gist with a

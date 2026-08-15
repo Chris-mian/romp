@@ -83,6 +83,12 @@ ROMP_INJECT_RE = re.compile(r"<!--\s*romp-injected\s*-->")
 # romp-injected; an atom carrying it gets atom["rompAuto"]=True for the timeline/chat to mark.
 # Comment form only, same reason as ROMP_INJECT_RE (content mentioning the marker must not match).
 ROMP_AUTO_RE = re.compile(r"<!--\s*romp-auto\s*-->")
+# A sender-declared RENDER HINT on an injected message (the user 2026-08-15): auto-generated text — a
+# kickoff template, a scripted brief — carries `<!-- romp-tag: <label> -->` (romp send --tag, or the
+# marker appended by hand) so the chat shows it as machine-sent under that label instead of posing it
+# as the user's typed words. The label is the SENDER's own word; romp attaches no meaning to it — a
+# render hint, not a message type. Comment form only, same reason as ROMP_INJECT_RE.
+MSG_TAG_RE = re.compile(r"<!--\s*romp-tag:\s*([A-Za-z0-9][A-Za-z0-9-]{0,23})\s*-->")
 # Harness-injected SYSTEM wrappers that are NOT the user: a background-task completion (`<task-notification>`,
 # fired when a backgrounded Agent/Task finishes) and `<system-reminder>` blocks. In an SDK session these arrive
 # over the stream as promptSource "sdk", so sdk_human would author them 'human' → _is_opener opens a turn →
