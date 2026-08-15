@@ -2427,8 +2427,15 @@ def _goal_awaiting_stamp_full(nodes, top, children=None, answered_at=0):
             continue
         if nd.get("awaitingWhy") and not nd.get("rolledUp"):
             at = nd.get("awaitingAt") or 0
-            if not (at and answered_at and at < answered_at):
-                cand = (at, nd["awaitingWhy"], nd.get("awaitingKind") or "")   # "" keeps max() comparable
+            # the peer-answer supersede is PEER-SCOPED (the user 2026-08-15): a reply from a peer can
+            # only end a wait that was ON a peer. A job/agents/task/timer-kind stamp keeps standing
+            # through unrelated mail — before this, one answered postal exchange erased a slurm-job
+            # stamp from every session surface AND disarmed its 6h wake (the audit's worst compound).
+            # A KINDLESS stamp keeps the old behavior: it may well be a peer wait (the enum predates
+            # it), and a false lift there is the known, tested legacy trade.
+            kind = nd.get("awaitingKind")
+            if not (at and answered_at and at < answered_at and kind in (None, "peer")):
+                cand = (at, nd["awaitingWhy"], kind or "")   # "" keeps max() comparable
                 best = cand if best is None else max(best, cand)
         stack.extend(children.get(x, []))
     return (best[0], best[1], best[2] or None) if best else None
@@ -3080,7 +3087,10 @@ def _lift_spent_awaiting(now, tmux):
     stamp time and every one of those has come back. A stamp naming a CI run, a scheduled check-back or a
     peer handoff owns no such dispatches, so it never matches and keeps its stamp — those still rely on the
     6h awaiting wake (_wake_goal, in the nudge tick's goal walk), which is exactly the case a timer is the
-    only tool for.
+    only tool for. A kind=job stamp that DOES own dispatches (the standard shape: a watcher armed over an
+    external computation) lifts only on their REAL terminal records: a watcher dying with a restart or
+    expiring is the CARRIER going, not the job returning — before this, the watcher's silent death lifted
+    the stamp while the slurm job ran on (the user 2026-08-15; the wake stays the backstop).
 
     Dormant sessions are skipped: their tasks died with their CLI, so the death notice is the truth there,
     not a lift (same rule as _session_awaiting's source 0.75)."""
@@ -3121,6 +3131,8 @@ def _lift_spent_awaiting(now, tmux):
             # record (its CLI died mid-watch; the notification can never arrive) — see em._bg_expired
             running = {t.get("id") for t in every
                        if t.get("status") == "running" and not em._bg_expired(t, now)}
+            # kind=job: expiry is not a return (see docstring) — only a real terminal record lifts
+            running_job = {t.get("id") for t in every if t.get("status") == "running"}
             placed = _bg_placed_tops(sid, s["path"], [t.get("id") for t in every])
             def _top_of(x):
                 seen = set()
@@ -3149,7 +3161,8 @@ def _lift_spent_awaiting(now, tmux):
                         own.append(t)
                 if not own:                           # nothing dispatched → not a background wait; leave it
                     continue
-                if any(t.get("id") in running for t in own):
+                live_set = running_job if nd.get("awaitingKind") == "job" else running
+                if any(t.get("id") in live_set for t in own):
                     continue                          # at least one is genuinely still out
                 if jd.record_verdict(store, nd, "romp", "awaiting", _lift_ev_t(nd, now), lift=True):
                     changed = True
@@ -10446,21 +10459,33 @@ def _session_stamp_read(sid):
         return hit[1]
     full, tops, deleg = (None, None, None, None), set(), ()
     try:                                               # load_goals (not a raw read) so overrides replay —
-        nodes = jd.load_goals(sid).get("nodes", {})    # the same view _goal_awaiting_stamp sees on the card
+        store = jd.load_goals(sid)                     # the same view _goal_awaiting_stamp sees on the card
+        nodes = store.get("nodes", {})
+        status = store.get("status", {}) or {}
         best = None
-        answered = _peer_answered_at(sid)              # a peer's later answer supersedes older stamps
+        answered = _peer_answered_at(sid)              # a peer's later answer supersedes older PEER waits
         for nid, nd in nodes.items():
             if nd.get("awaitingWhy") and not nd.get("rolledUp"):
                 at = nd.get("awaitingAt") or 0
-                if at and answered and at < answered:
-                    continue                           # the awaited answer landed after this stamp — superseded
-                cand = (at, nid, nd["awaitingWhy"], nd.get("awaitingKind"))
-                best = cand if best is None else max(best, cand)
+                kind = nd.get("awaitingKind")
+                if at and answered and at < answered and kind in (None, "peer"):
+                    continue                           # peer-scoped (the user 2026-08-15): a reply can only
+                #                                        end a wait that was ON a peer; kindless keeps the
+                #                                        legacy trade — see _goal_awaiting_stamp_full
                 top, seen = nid, set()                 # stamped node → its TOP ancestor (cycle-guarded)
                 while top in nodes and nodes[top].get("parentId") is not None and top not in seen:
                     seen.add(top)
                     top = nodes[top]["parentId"]
                 tops.add(top)
+                # the SESSION-LEVEL pick (the chip/lane why) takes only stamps whose TOP still rolls up
+                # WORKING — the wake ladder fires for working tops only, so a stamp under a blocked/
+                # completed top would light a chip with no retirement mechanism behind it, disagreeing
+                # with the feed (status-gated since ever) — the 2026-08-08 one-fact-two-answers class.
+                # The TOPS SET above stays status-blind on purpose: it feeds _bg_split's awaited-vs-
+                # service classification, where a temporarily blocked top's live task is still awaited.
+                if status.get(top, "working") == "working":
+                    cand = (at, nid, nd["awaitingWhy"], kind)
+                    best = cand if best is None else max(best, cand)
         if best:
             full = (best[1], best[0], best[2], best[3])   # (gid, at, why, kind)
         # DELEGATION, the same pass (the user 2026-08-08, whose fully-delegated session wore the feed's
