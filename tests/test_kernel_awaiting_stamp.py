@@ -305,6 +305,71 @@ class SessionLevelDelegation(unittest.TestCase):
         self.assertEqual(chip, "awaitingBg")
 
 
+class KindScopedRules(unittest.TestCase):
+    """The kind-scoped rules (the user 2026-08-15): a peer's answer supersedes only PEER waits (kindless
+    keeps the legacy trade); the session-level stamp pick takes only stamps whose TOP still rolls up
+    working (the wake ladder's own gate), while the stamped-TOPS set stays status-blind for _bg_split."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        td = Path(self.td.name)
+        self._saved = (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions, km._states_awaiting_overlay,
+                       km._peer_answered_at)
+        km.jd.STATE = td
+        km.jd.GOALDIR = td / "goals"
+        km.jd.GOALDIR.mkdir(parents=True)
+        km._SESSION_STAMP_CACHE.clear()
+        km._states_awaiting_overlay = lambda sid: None
+        km._peer_answered_at = lambda sid: 900          # a peer exchange answered AFTER every stamp below
+        km._tmux_sessions = lambda: {SID: {"state": "", "since": None, "subagents": [], "bgTasks": []}}
+
+    def tearDown(self):
+        (km.jd.STATE, km.jd.GOALDIR, km._tmux_sessions, km._states_awaiting_overlay,
+         km._peer_answered_at) = self._saved
+        km._SESSION_STAMP_CACHE.clear()
+        self.td.cleanup()
+
+    def _seed(self, kind, status=None):
+        nodes = {"g1": _node("g1", why="the wait", at=200)}
+        if kind:
+            nodes["g1"]["awaitingKind"] = kind
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "placements": {}, "status": status or {}, "nodes": nodes}))
+        km._SESSION_STAMP_CACHE.clear()
+
+    def test_a_peer_answer_supersedes_only_peer_waits(self):
+        self._seed("job")
+        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
+                         {"kind": "job", "why": "the wait"},
+                         "unrelated mail cannot end a wait on an external job")
+        self._seed("peer")
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True),
+                          "a peer wait IS what the answer ends")
+        self._seed(None)
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True),
+                          "a kindless stamp keeps the legacy supersede — it may well be a peer wait")
+
+    def test_the_goal_level_read_scopes_the_same_way(self):
+        nodes = {"g1": dict(_node("g1", why="the wait", at=200), awaitingKind="job")}
+        self.assertEqual(km._goal_awaiting_stamp_full(nodes, "g1", answered_at=900),
+                         (200, "the wait", "job"))
+        nodes["g1"]["awaitingKind"] = "peer"
+        self.assertIsNone(km._goal_awaiting_stamp_full(nodes, "g1", answered_at=900))
+        nodes["g1"].pop("awaitingKind")
+        self.assertIsNone(km._goal_awaiting_stamp_full(nodes, "g1", answered_at=900),
+                          "kindless keeps the legacy supersede at the goal level too")
+
+    def test_the_session_pick_takes_working_tops_only(self):
+        km._peer_answered_at = lambda sid: 0
+        self._seed("job", status={"g1": "blocked"})
+        self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=True),
+                          "a stamp under a blocked top has no wake ladder behind it — the chip may not"
+                          " claim a wait the feed and the wake both disown")
+        self.assertEqual(km._session_stamped_tops(SID), frozenset({"g1"}),
+                         "the classifier's tops set stays status-blind: the top's live task is still"
+                         " awaited while the block resolves")
+
+
 class OverlayDoesNotVeto(unittest.TestCase):
     """The production regression (the user 2026-07-27): the SDK Stop hook writes awaiting:false at EVERY
     turn end, and nothing has written true since 2026-07-07 — so every real SDK session carries a trailing

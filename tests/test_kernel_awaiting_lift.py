@@ -59,6 +59,14 @@ def _notification(tid, t):
             "message": {"role": "user", "content": body}}
 
 
+def _monitor(tid, t, timeout_ms=300000):
+    """A non-persistent Monitor launch — the watcher shape; expires at t + timeout + grace with no
+    terminal record when its CLI dies mid-watch (em._bg_expired)."""
+    return {"type": "assistant", "timestamp": _iso(t), "uuid": "m" + tid, "parentUuid": None,
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": tid, "name": "Monitor", "input": {"timeout_ms": timeout_ms}}]}}
+
+
 class AwaitingLift(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
@@ -90,13 +98,15 @@ class AwaitingLift(unittest.TestCase):
         km._bgall_cache.clear(); km._bgtasks_cache.clear()
 
     def _seed(self, why="waiting on two dispatched investigations; will act when they return",
-              born=BORN, anchor=STAMP, written=None):
+              born=BORN, anchor=STAMP, written=None, kind=None):
         """`anchor` is awaitingAt (the audited turn's TRIGGER time); `written` is when the closer actually
         wrote the verdict (its `at`), which defaults to the anchor for the pre-2026-07-27 fixture shape."""
         nd = {"id": self.gid, "text": "a goal", "parentId": None, "nodeComplete": False,
               "blocked": False, "cleared": False, "trail": [], "t": born, "mt": born,
               "awaitingWhy": why, "awaitingAt": anchor,
+              **({"awaitingKind": kind} if kind else {}),
               "log": [{"ev_t": anchor, "src": "closer", "kind": "awaiting", "why": why,
+                       **({"awaitKind": kind} if kind else {}),
                        "at": anchor if written is None else written}]}
         (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps(
             {"rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": {self.gid: nd}}))
@@ -123,6 +133,31 @@ class AwaitingLift(unittest.TestCase):
         self._seed()
         self._tick()
         self.assertIsNotNone(self._stamp(), "one dispatch is still out → still genuinely awaiting")
+
+    # ---- kind=job: the watcher is the CARRIER, not the wait (the user 2026-08-15) ----
+    def test_a_job_stamps_expired_watcher_does_not_lift_it(self):
+        # the observed slurm shape: a watcher armed over an external job dies with a restart (no
+        # terminal record, expires past its deadline) — the JOB may still be running, so the stamp
+        # stands; the 6h wake is the backstop, per the lift's own design note
+        self._transcript([_monitor("t1", LAUNCH)])   # deadline LAUNCH+300s; no terminal record
+        self._seed(why="slurm 4821 regenerating the parts; verifies when done", kind="job")
+        self._tick(now=LAUNCH + 1000)                # well past deadline + grace → expired
+        self.assertIsNotNone(self._stamp(), "a dead watcher is not the external job returning")
+
+    def test_the_same_expired_watcher_lifts_a_kindless_stamp_as_before(self):
+        # the legacy trade stands for untyped stamps: expiry counts as returned (the pre-enum rule,
+        # 'the awaiting-stamp lift must not wait forever on a dead monitor')
+        self._transcript([_monitor("t1", LAUNCH)])
+        self._seed(why="watching the long sweep")
+        self._tick(now=LAUNCH + 1000)
+        self.assertIsNone(self._stamp(), "kindless keeps the pre-enum expiry behavior")
+
+    def test_a_job_stamps_real_terminal_record_still_lifts(self):
+        # the watcher genuinely returned and reported — that IS the deciding event, job kind or not
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK)])
+        self._seed(why="slurm 4821 regenerating the parts", kind="job")
+        self._tick()
+        self.assertIsNone(self._stamp(), "a real terminal record ends the wait for every kind")
 
     # ---- self-scoping: the other awaiting flavors are untouched ----
     def test_a_wait_with_no_dispatches_of_its_own_is_untouched(self):
