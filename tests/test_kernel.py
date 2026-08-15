@@ -1967,6 +1967,26 @@ class ViewBuilder(unittest.TestCase):
         self.assertFalse(cards[g1]["nudgeFailed"],
                          "a closer verdict + user reopen after the failed nudge is the story moving on")
 
+    def test_stalled_chip_retires_on_the_unblockers_ruling(self):
+        # the user 2026-08-14: the unblocker ruled a nudge's block answered in passing (a fresh request
+        # arrived and the session resumed the thread) and the card moved back to Working — but the chip,
+        # whose claim IS that block, survived for hours because "unblocker" was missing from the
+        # story-moved actor set: a red "waiting on you" on a card the judges had just un-waited.
+        g1 = SID + ":g1"
+        self._goal_store(
+            {g1: {"id": g1, "text": "audit the pipeline", "parentId": None, "nodeComplete": False,
+                  "blocked": False, "cleared": False, "trail": [], "t": T0,
+                  "log": [{"ev_t": NOW - 500, "src": "nudge", "kind": "block", "at": NOW - 500},
+                          {"ev_t": NOW - 100, "src": "unblocker", "kind": "unblock", "at": NOW - 100,
+                           "why": "answered in passing: a new request arrived and the session resumed"}]}},
+            {g1: "working"}, last=g1)
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps(
+            {"enabled": True, "nudged": {g1: {"count": 1, "lastTurnId": SID + ":1:aa", "failed": True}}}))
+        km._autonudge_cache.clear()
+        cards = {a["itemId"]: a for a in km.build_feed(NOW)["asks"]}
+        self.assertFalse(cards[g1]["nudgeFailed"],
+                         "the unblocker's ruling IS the story moving on — the chip's claim was just overruled")
+
     def test_debug_mode_joins_warn_rows_onto_the_card(self):
         # the user 2026-07-09: with `romp --debug on`, every judge failure touching a card rides it to the
         # modal's Warnings section — goal-linked rows land on that card only, other sessions' rows never.
