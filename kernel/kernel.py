@@ -20308,7 +20308,15 @@ function selfStale(){selfBar("romp lost the live connection, so what you see may
 function clearStale(){if(staleTimer){clearTimeout(staleTimer);staleTimer=0;}   // armed but never shown → nothing to see
 if(window.parent!==window){try{window.parent.postMessage({romp:"wsFresh"},"*");}catch(e){}}
 else{var b=document.getElementById("romp-stale-self");if(b&&b.dataset.kind==="conn")b.remove();}}
-function raiseStale(){if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale"},"*");}catch(e){}}else{selfStale();}}
+// A pane the user cannot SEE never interrupts them about ITS OWN staleness (the user 2026-08-15: the
+// phone shell shows one pane at a time via display:none, iOS throttles the hidden iframes' JS, and each
+// hidden pane's watchdog force-closed its own healthy socket and re-raised the banner every ~45s over a
+// dashboard that was visibly working). display:none gives the iframe a ZERO viewport — that is the test,
+// checked at RAISE time (there is no event for a CSS display flip). The hidden pane still reconnects in
+// the background; if it is shown again while genuinely stale, its watchdog re-raises within one tick,
+// now visible, and the resync retires it exactly as before.
+function paneHidden(){try{return window.parent!==window&&(window.innerWidth===0||window.innerHeight===0);}catch(e){return false;}}
+function raiseStale(){if(paneHidden())return;if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale"},"*");}catch(e){}}else{selfStale();}}
 // ARM it rather than show it (the user 2026-08-01): the resync almost always lands within a beat of the
 // reconnect, so raising immediately made the prompt FLASH up and straight back down on nearly every
 // dashboard open — visual noise for a problem that fixed itself. A short arming window lets the common
