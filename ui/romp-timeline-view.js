@@ -3053,6 +3053,33 @@ class TimelinePanel {
     this._reapWorkLabels(workSeen);        // drop overlay WORKING labels for lanes no longer working / off-screen
     this._reapMetaDots(metaSeen);          // drop switching-dots overlays for lanes whose /model pick has landed / off-screen
 
+    // ── branch connectors (the user 2026-08-14): a fork drawn like a git graph — one thick
+    // perpendicular bar, work-bar weight (BAR_H), from the parent's lane to the child's at the fork
+    // moment, in the CHILD's color: the branch is the child's beginning, and the child's own bars
+    // start here (the kernel clips its copied history while the parent's lane is in the build).
+    // Click → the child's chat at its branch divider; drawn before the message connectors so the
+    // thin lines and their dots stay on top.
+    vis.forEach((s) => {
+      const br = s.branch;
+      if (!br || vidx[br.fromId] == null || vidx[s.id] == null || !inWin(br.t)) return;
+      const bx = x(br.t), y1 = laneY(vidx[br.fromId]), y2 = laneY(vidx[s.id]);
+      if (y1 === y2) return;
+      const bTop = Math.min(y1, y2), bH = Math.abs(y2 - y1);
+      const bbar = el('rect', { x: bx - BAR_H / 2, y: bTop, width: BAR_H, height: bH, rx: BAR_H / 2, fill: s.color, opacity: 0.85 });
+      svg.appendChild(bbar);
+      const bhit = el('rect', { x: bx - 9, y: bTop - 4, width: 18, height: bH + 8, fill: 'transparent' });
+      bhit.style.cursor = 'pointer';
+      const pname = (data.sessions.find((p) => p.id === br.fromId) || {}).name || '';
+      const bHtml = () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(br.t) + '</span></div>' + this.body('branched from ' + pname + ' here');
+      const bEnter = (e) => { bbar.setAttribute('opacity', '1'); this.showTip(bHtml(), e); };
+      bhit.__tlHoverIn = bEnter;
+      bhit.addEventListener('mouseenter', bEnter);
+      bhit.addEventListener('mousemove', (e) => this.moveTip(e));
+      bhit.addEventListener('mouseleave', () => { bbar.setAttribute('opacity', '0.85'); this.hideTip(); });
+      bhit.addEventListener('click', () => { this._select(s.id); this.openChat(s.id, br.cut ? 'branch:' + br.cut : '', false, false, br.t); });
+      svg.appendChild(bhit);
+    });
+
     // obstacles for routing — at each event's process-start (a pending event rides `now` via execAt/startAt)
     const obstacles = [];
     data.messages.forEach((mm) => { if (inWin(execAt(mm)) && vidx[mm.toId] != null) obstacles.push({ x: x(execAt(mm)), lane: vidx[mm.toId] }); });
@@ -3201,6 +3228,32 @@ class TimelinePanel {
           const sz = DOT_R * 1.9;
           svg.appendChild(el('image', { x: dx - sz / 2, y: y - sz / 2, width: sz, height: sz, href: mediaUrl('romp-swirl-glyph.svg'), 'pointer-events': 'none' }));
         }
+      });
+    });
+
+    // ── comment squares (the user 2026-08-14): a comment thread never becomes a lane — a small
+    // SQUARE (against the round message/prompt dots) sits on the lane at the commented message, in
+    // the chat highlight's own yellow, dimmed once resolved. Click → the chat at that message,
+    // where the yellow highlight opens the thread.
+    const CMT_YELLOW = '#ffd54a';            // = styles.css --cmt-hl (the timeline loads no stylesheet)
+    vis.forEach((s, i) => {
+      const y = laneY(i);
+      (s.comments || []).forEach((c) => {
+        if (!c.t || !inWin(c.t)) return;
+        const side = 9, cx = x(c.t);
+        const sq = el('rect', { x: cx - side / 2, y: y - side / 2, width: side, height: side, rx: 1.5,
+          fill: CMT_YELLOW, stroke: '#e8eef5', 'stroke-width': 0.75,
+          opacity: c.status === 'resolved' ? 0.45 : 0.95 });
+        sq.style.cursor = 'pointer';
+        const qHtml = () => '<div class="r"><span class="chip" style="background:' + CMT_YELLOW + '"></span><span class="who" style="color:' + CMT_YELLOW + '">' + esc(s.name) + '</span><span class="t">' + clock(c.t) + '</span></div>' + this.body(c.status === 'resolved' ? 'a resolved comment on this message' : 'a comment on this message — click to open it there');
+        const qGrow = (g) => { sq.setAttribute('width', side + g); sq.setAttribute('height', side + g); sq.setAttribute('x', cx - (side + g) / 2); sq.setAttribute('y', y - (side + g) / 2); };
+        const qEnter = (e) => { qGrow(3); this.showTip(qHtml(), e); };
+        sq.__tlHoverIn = qEnter;
+        sq.addEventListener('mouseenter', qEnter);
+        sq.addEventListener('mousemove', (e) => this.moveTip(e));
+        sq.addEventListener('mouseleave', () => { qGrow(0); this.hideTip(); });
+        sq.addEventListener('click', () => { this._select(s.id); this.openChat(s.id, c.uuid, false, false, c.t); });
+        svg.appendChild(sq);
       });
     });
 
