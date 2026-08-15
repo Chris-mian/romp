@@ -91,7 +91,12 @@ teardown() { rm -rf "$TEST_DIR"; }
     for _ in $(seq 1 40); do [ -s "$CURL_LOG" ] && break; sleep 0.05; done
     for _ in $(seq 1 40); do [ -s "$CURL_STDIN" ] && break; sleep 0.05; done
 
-    ! grep -q "TESTTOKENDONOTUSE" "$CURL_LOG"
+    # `run` + an explicit status check, NOT `! grep …`: bats runs each test under errexit, but a
+    # `!`-prefixed pipeline is exempt from it, so a bare `! grep` anywhere except the test's LAST
+    # line reports nothing when it fails — the token could be in argv and this test would still
+    # pass. This is the one assertion in the file that has to be armed, so arm it explicitly.
+    run grep -q "TESTTOKENDONOTUSE" "$CURL_LOG"
+    [ "$status" -ne 0 ]
     grep -q -- "--config" "$CURL_LOG"
     # ...and the header really is being sent, so this is not "secure by not authenticating"
     grep -q "X-Romp-Token: TESTTOKENDONOTUSE" "$CURL_STDIN"
