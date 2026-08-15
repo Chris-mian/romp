@@ -10085,6 +10085,53 @@ def _death_stamp_due(sid):
     return int((last or {}).get("t") or 0) > int(m.get("t") or 0)
 
 
+# SELF-CLOSE, deferred to idle (the user 2026-08-15: "close yourself after you've done this thing"
+# never worked — an agent could only kill its own process, which romp read as a CRASH and kept the
+# session visible as dormant). `romp end self` records the sid here; the sweep below gives it the
+# dashboard ×'s clean death the moment its turn SETTLES — the goodbye delivered, the judges' pass
+# armed — never mid-own-turn. A state file, not memory: the request survives kernel restarts.
+def _end_on_idle_load():
+    try:
+        v = json.loads((jd.STATE / "end-on-idle.json").read_text())
+        return set(x for x in v if isinstance(x, str)) if isinstance(v, list) else set()
+    except (OSError, ValueError):
+        return set()
+
+
+def _end_on_idle_save(reqs):
+    _atomic_write(jd.STATE / "end-on-idle.json", json.dumps(sorted(reqs)))
+
+
+def _end_on_idle_sweep(now, tmux):
+    """Kill each end-on-idle sid once its turn settles — the same clean path as the dashboard × /
+    the immediate /end route (intentional death, no reviver, tab closed). A sid already dead by any
+    other path just retires its request."""
+    reqs = _end_on_idle_load()
+    if not reqs:
+        return
+    changed = False
+    for sid in sorted(reqs):
+        if tmux.get(sid) is None:                    # already dead → the request is spent
+            reqs.discard(sid); changed = True
+            continue
+        try:
+            ps = _parse(_path_of(sid) or "", sid, now)
+            if _session_working(ps.get("turns") or []):
+                continue                             # the turn it asked from is still open — its end is the event
+        except Exception:
+            continue
+        sys.stderr.write("kill: %s via end-on-idle (self-close)\n" % sid)
+        be = Sessions.backend_for(sid)
+        be.kill(sid)
+        _record_death(sid, int(now), "kill")
+        _comment_kill_all(sid, be)
+        _send_to_app("chat", {"type": "closed", "id": sid})
+        reqs.discard(sid); changed = True
+    if changed:
+        _end_on_idle_save(reqs)
+        _push_soon()
+
+
 def _record_death(sid, now, by):
     """Record a session's death: the marker (STATE/gone/<sid>.json, atomically — a re-stamp drops any
     prior endedAt, re-arming the finalize) plus ONE plain idle row via _record_idle, byte-identical to
@@ -20307,6 +20354,10 @@ def _pusher_cycle_jobs(now, tmux, any_client):
         _death_sweep_tick(now, tmux)      # corroborated with the liveness owner, then stamped (2026-08-13)
     except Exception:
         sys.stderr.write("death-sweep: %s\n" % traceback.format_exc())
+    try:                                  # a session that asked to close itself dies at its turn's settle
+        _end_on_idle_sweep(now, tmux)     # (the clean × path — the user 2026-08-15's "close yourself")
+    except Exception:
+        sys.stderr.write("end-on-idle: %s\n" % traceback.format_exc())
     try:                                  # deferral records retire on their reasons' own events — BEFORE
         _deferral_sweep_tick(now)         # the walk, independent of the nudge toggle (the stall/swirl
     except Exception:                     # surfaces read these records regardless)
@@ -24221,6 +24272,15 @@ class Handler(BaseHTTPRequestHandler):
                 if u.path == "/interrupt":
                     be.interrupt(sid)                           # Esc/stop AND settle idle (in the backend)
                     _interrupt_clicked[str(sid)] = time.time()  # chip → "interrupting" NOW, same as the WS op
+                elif isinstance(b, dict) and b.get("when") == "idle":
+                    # SELF-CLOSE deferral (the user 2026-08-15): record the wish; the pusher's sweep
+                    # kills at the turn's settle, so a session ending itself finishes its goodbye first
+                    reqs = _end_on_idle_load()
+                    if sid not in reqs:
+                        reqs.add(sid)
+                        _end_on_idle_save(reqs)
+                    _audit_restart_request("end-on-idle", tag=str(sid), addr=str(self.client_address[0]))
+                    return self._send(200, json.dumps({"ok": True, "deferred": True}), "application/json")
                 else:
                     sys.stderr.write("kill: %s via /kill route\n" % sid)   # kill attribution (the user 2026-07-16)
                     be.kill(sid)

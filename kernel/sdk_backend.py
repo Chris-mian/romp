@@ -3454,7 +3454,10 @@ class SdkBackend:
             # 2026-07-27 federation shakedown: a remote session's `romp mail send` died
             # command-not-found and re-prompted for permission on the absolute-path retry). options.env
             # merges OVER the inherited environment in the SDK's transport, so this is additive.
-            env=_bin_on_path_env(os.environ),
+            # ROMP_SID gives the CLI process (and every Bash it runs) the session's STABLE identity —
+            # what lets `romp end self` resolve itself to the kernel (the user 2026-08-15). The sid,
+            # not the name: names rename after spawn, env is spawn-frozen.
+            env={**_bin_on_path_env(os.environ), "ROMP_SID": str(sess.sid)},
             # Registering this is what makes the CLI's stderr EXIST for romp at all: the SDK transport
             # pipes the child's stderr only when options.stderr is set (otherwise it hands the child
             # our own stderr and reports SDK_STDERR_PLACEHOLDER on failure). Without it, a CLI that

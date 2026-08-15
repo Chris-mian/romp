@@ -60,6 +60,27 @@ PY
     grep -q "^/end$" <(head -1 "$TEST_DIR/req")
 }
 
+@test "romp end self resolves through ROMP_SID and defers to idle by default" {
+    # a session closing ITSELF after its work (the user 2026-08-15): self = the spawn-frozen sid,
+    # and the kernel kills at the turn's settle so the goodbye lands first
+    start_fake_kernel '{"ok": true}'
+    ROMP_SID="11111111-2222-3333-4444-555555555555" run "$ROMP_SCRIPT" end self
+    [ "$status" -eq 0 ]
+    grep -q "^/end$" <(head -1 "$TEST_DIR/req")
+    grep -q '"id": "11111111-2222-3333-4444-555555555555"' "$TEST_DIR/req"
+    grep -q '"when": "idle"' "$TEST_DIR/req"
+}
+
+@test "romp end self --now skips the deferral; self outside a session fails loudly" {
+    start_fake_kernel '{"ok": true}'
+    ROMP_SID="11111111-2222-3333-4444-555555555555" run "$ROMP_SCRIPT" end self --now
+    [ "$status" -eq 0 ]
+    ! grep -q '"when"' "$TEST_DIR/req"
+    ROMP_SID="" run "$ROMP_SCRIPT" end self
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only works from inside a romp SDK session"* ]]
+}
+
 @test "the dashed spellings are silent aliases: --send works and says nothing about it" {
     # Agent-facing text delivered before 2026-07-25 (postal reply footers, skill
     # docs in old transcripts) names the dashed forms; they must keep working
