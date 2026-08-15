@@ -9408,8 +9408,13 @@ window.addEventListener("message", (e: MessageEvent) => {
   // any payload that rebuilt transcript DOM must get its highlights re-applied (marks live IN that DOM)
   if (m && m.id && (m.type === "session" || m.type === "chatTail" || m.type === "chatHead" || m.type === "chatEpisode"))
     applyCommentMarks(String(m.id));
-  // a refused create (warn) must hand the popover back — the draft is intact, the button un-sticks
-  if (m && m.type === "warn" && pendingCommentAnchor) renderCommentPopover();
+  // a refused create (warn) must hand the popover back — the draft is intact, the button un-sticks.
+  // FULL rebuild: the in-place refresh path deliberately never touches the composer, so it would
+  // leave the disabled "Starting…" button stuck (the user 2026-08-15, screenshot of exactly that)
+  if (m && m.type === "warn" && pendingCommentAnchor) {
+    document.getElementById("cmt-pop")?.remove();
+    renderCommentPopover();
+  }
 });
 
 // Tick the working timer (the chip color-pulse is pure CSS) and keep the model/ctx
