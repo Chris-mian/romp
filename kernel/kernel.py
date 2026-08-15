@@ -22579,7 +22579,10 @@ def _update_block():
 # back to the prompt with no feedback, so a push looked like it did nothing). Dismiss suppresses only the
 # CURRENT stale set — a newly-drifted host re-prompts.
 _RDRIFT_CSS = (
-    "#rdrift{position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:99998;display:none;"
+    # top:104px stacks BELOW #rupd (top:56px), which stacks below #rstale (top:14px): the three banners
+# used to overlap at 56/60px when a self-update offer and a remote-drift ask were both live (the user
+# 2026-08-15, whose screenshot showed exactly that pileup) — three claims, three targets, one spot.
+    "#rdrift{position:fixed;top:104px;left:50%;transform:translateX(-50%);z-index:99998;display:none;"
     "align-items:center;gap:10px;max-width:92vw;background:#2b2d30;border:1px solid #4a4d51;"
     "border-radius:10px;padding:10px 14px;color:#e6e6e6;box-shadow:0 10px 30px #0000008a;"
     "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
