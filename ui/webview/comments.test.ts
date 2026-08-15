@@ -242,6 +242,35 @@ test("the highlight is highlighter-YELLOW — never the selection blue — and o
   assert.match(CSS, /code\.cmt-hl-host > mark\.cmt-hl \{ background: transparent/);
 });
 
+test("the create dialog names the thread right there: prefilled <session>-comment-<N>, validated", () => {
+  assert.match(UI, /nameBox\.value = commentDrafts\.get\(nk\)\s*\n\s*\|\| \(\(sess0\?\.name \|\| "session"\)\.replace\(\/\[\^A-Za-z0-9._-\]\/g, "-"\)\s*\n\s*\+ "-comment-" \+ \(\(commentThreads\.get\(sid\) \|\| \[\]\)\.length \+ 1\)\);/);
+  assert.match(UI, /type: "commentCreate", id: create\.sid, uuid: create\.uuid, exact: create\.exact, text, name: nm/);
+  assert.match(KERNEL, /"%s-comment-%d" % \(sess\["name"\], len\(data\.get\("threads"\) or \[\]\) \+ 1\)/);
+  assert.match(UI, /const base = thName \|\|/, "break-out prefills the thread's own name");
+});
+
+test("the landing pulse fires once per navigation, not once per history-fetch round", () => {
+  assert.match(UI, /let flashedAnchor: string \| null = null;/);
+  assert.match(UI, /if \(flashKey == null \|\| flashKey !== flashedAnchor\)/);
+  assert.match(UI, /landOn\(target, uuid\);/);
+  assert.match(UI, /if \(anchor\) flashedAnchor = null;/);
+});
+
+test("math hosts tint like code hosts — a mark can't paint KaTeX's glyph spacing", () => {
+  assert.match(UI, /closest\(".katex"\)/);
+  assert.match(CSS, /\.md \.katex\.cmt-hl-host \{ background: color-mix\(in srgb, var\(--cmt-hl\) 30%/);
+  assert.match(CSS, /\.md \.katex\.cmt-hl-host mark\.cmt-hl \{ background: transparent/);
+});
+
+test("scroll-rail ticks mark the commented spots and jump-open on click", () => {
+  assert.match(UI, /function updateCommentRail\(\)/);
+  assert.match(UI, /tick\.dataset\.act = "cmtjump"/);
+  assert.match(UI, /cmtjump: \(elx\) =>/);
+  assert.match(UI, /if \(sid === activeId\) updateCommentRail\(\);/);
+  assert.match(CSS, /\.cmt-tick \{/);
+  assert.match(CSS, /\.cmt-rail \{ position: fixed;/);
+});
+
 test("the tint ladder keeps every state distinct: base < unread < hover", () => {
   const base = CSS.match(/mark\.cmt-hl \{[^}]*var\(--cmt-hl\) (\d+)%/s)![1];
   const unread = CSS.match(/mark\.cmt-hl\.unread \{[^}]*var\(--cmt-hl\) (\d+)%/s)![1];

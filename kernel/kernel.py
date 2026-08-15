@@ -5044,6 +5044,7 @@ def _comments_frame(sid):
         seen = int(th.get("lastSeenT") or 0)
         unread = any(m["who"] == "agent" and m["t"] > seen for m in msgs)
         threads.append({"tid": th.get("tid"), "anchorUuid": th.get("anchorUuid"),
+                        "name": th.get("name") or "",
                         "exact": str(th.get("exact") or "")[:500], "status": status,
                         "createdT": th.get("createdT") or 0, "state": state, "error": err,
                         "unread": unread, "promotedName": th.get("promotedName") or "",
@@ -5070,11 +5071,15 @@ def _comment_markers(sid):
     return out
 
 
-def _comment_create(parent_sid, anchor_uuid, exact, text, now=None):
+def _comment_create(parent_sid, anchor_uuid, exact, text, name="", now=None):
     """Anchor a new comment thread: fork the parent at the highlighted message (inclusive) as a
     threadOf fork — no names/ entry, so no judge seeding is needed until promotion — and send the
     opening message. Returns (error, tid): error is the warn-toast string (tid None), success is
-    (None, the new thread's id) so the client can adopt exactly the thread it created."""
+    (None, the new thread's id) so the client can adopt exactly the thread it created.
+
+    `name` (the user 2026-08-15, who wanted to name the thread right in the dialog): the thread's
+    editable name, defaulting to <parent>-comment-<N> where N counts the threads this session has
+    had. It rides the reg (so a break-out inherits it) and the frame (the popover's title)."""
     be = Sessions.backend_for(parent_sid)
     if not (hasattr(be, "fork") and _sdk_ready()):
         return "threads need the SDK backend; this session runs on tmux, so there is nothing to fork.", None
@@ -5087,6 +5092,9 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, now=None):
     cut, cut_t, err = _comment_cut_target(sess["path"], parent_sid, str(anchor_uuid))
     if err:
         return err, None
+    nm = str(name or "").strip()
+    if nm and not NAME_RE.match(nm):
+        return "thread names use letters, digits, . _ - only.", None
     tsid = str(uuid.uuid4())
     row = {"tid": tsid, "sid": tsid, "anchorUuid": str(anchor_uuid), "cutUuid": cut,
            "anchorT": cut_t,   # the commented message's own time — the timeline square's x
@@ -5094,10 +5102,13 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, now=None):
            "createdT": int(now), "lastSeenT": int(now)}
     with _comments_lock:
         data = _load_comments(parent_sid)
+        if not nm:
+            nm = "%s-comment-%d" % (sess["name"], len(data.get("threads") or []) + 1)
+        row["name"] = nm
         data.setdefault("threads", []).append(row)
         _save_comments(parent_sid, data)
     try:
-        be.fork("thread-" + tsid[:8], parent_sid, cut, sid=tsid, thread_of=parent_sid)
+        be.fork(nm, parent_sid, cut, sid=tsid, thread_of=parent_sid)
         be.connect(tsid)
         be.send(tsid, _comment_first_message(exact, text))
     except Exception as e:
@@ -6111,7 +6122,8 @@ def _drive(msg, client):
         # Anchor a comment thread on a highlighted passage (the user 2026-08-13). LOUD on refusal; on
         # success a commentCreated ack names the new thread (the popover adopts exactly it — never a
         # guess) and the fresh {type:"comments"} frame rides straight back, ahead of the pusher cycle.
-        err, tid = _comment_create(sid, str(msg["uuid"]), str(msg["exact"]), str(msg["text"]))
+        err, tid = _comment_create(sid, str(msg["uuid"]), str(msg["exact"]), str(msg["text"]),
+                                   name=str(msg.get("name") or ""))
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
         else:

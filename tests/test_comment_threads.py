@@ -464,6 +464,21 @@ class CommentOps(CommentBase):
         self.assertEqual(row["status"], "open")
         self.assertEqual(row["anchorUuid"], "a1")
 
+    def test_threads_autoname_by_count_and_accept_an_edited_name(self):
+        _, tid1 = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        _, tid2 = km._comment_create(PARENT, "a1", "the cap", "And this?")
+        self.assertEqual(km._comment_thread(PARENT, tid1)["name"], "parent-comment-1")
+        self.assertEqual(km._comment_thread(PARENT, tid2)["name"], "parent-comment-2")
+        self.assertEqual(self.be.calls[0][1], "parent-comment-1",
+                         "the thread's reg wears the name — a break-out inherits it")
+        _, tid3 = km._comment_create(PARENT, "a1", "jitter", "Named.", name="my.question")
+        self.assertEqual(km._comment_thread(PARENT, tid3)["name"], "my.question")
+        err, _ = km._comment_create(PARENT, "a1", "jitter", "Bad.", name="no spaces!")
+        self.assertIn("letters, digits", err)
+        fr = km._comments_frame(PARENT)
+        self.assertEqual(fr["threads"][0]["name"], "parent-comment-1",
+                         "the popover titles threads by name off the frame")
+
     def test_a_refused_cut_leaves_no_thread_row_behind(self):
         err, tid = km._comment_create(PARENT, "missing-uuid", "text", "comment")
         self.assertTrue(err)

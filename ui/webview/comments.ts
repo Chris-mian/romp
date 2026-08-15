@@ -9,6 +9,7 @@ export type CommentMsg = { who: "you" | "agent"; text: string; t: number };
 
 export type CommentThread = {
   tid: string;
+  name?: string;              // the thread's editable name (<session>-comment-<N> by default)
   anchorUuid: string;
   exact: string;
   status: "open" | "resolved" | "promoting" | "promoted";
