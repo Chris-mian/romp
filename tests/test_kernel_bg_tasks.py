@@ -70,6 +70,32 @@ def _agent_launch(tid="tu_agent1", desc="Map the parser", ts=None):
     return rec
 
 
+def _agent_tool_use(tid="tu_agent1", desc="Map the parser", prompt="map the parser end to end", ts=None):
+    # the assistant-side Agent dispatch: background by default, so no run_in_background key — the ack
+    # (isAsync, _agent_launch above) is what proves the launch; this block holds the ask's full text
+    rec = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": tid, "name": "Agent",
+         "input": {"description": desc, "prompt": prompt, "subagent_type": "general-purpose"}}]}}
+    if ts:
+        rec["timestamp"] = ts
+    return rec
+
+
+def _workflow_launch(tid="tu_wf1", name="notes-api-audit",
+                     summary="Sweep the notes-api routes for slow spots",
+                     script="export const meta = {name: 'notes-api-audit'}\nphase('Scan')"):
+    # a background Workflow dispatch: the assistant tool_use carries only the script; the ack's
+    # toolUseResult names the work via `summary` + `workflowName` (there is no `description` key)
+    use = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": tid, "name": "Workflow", "input": {"script": script}}]}}
+    ack = {"type": "user",
+           "toolUseResult": {"status": "async_launched", "taskType": "local_workflow",
+                             "workflowName": name, "summary": summary},
+           "message": {"content": [{"type": "tool_result", "tool_use_id": tid,
+                                    "content": [{"type": "text", "text": "Workflow launched."}]}]}}
+    return use, ack
+
+
 def _prompt(text="next thing please"):
     return {"type": "user", "message": {"content": [{"type": "text", "text": text}]}}
 
@@ -241,6 +267,133 @@ class AsyncAgentDispatch(unittest.TestCase):
             self.assertEqual(km._bg_tasks(path)["count"], 0, "a synchronous agent result never enters the box")
         finally:
             os.unlink(path)
+
+
+class DispatchGist(unittest.TestCase):
+    """The box must say what a dispatched agent/workflow DOES (the user 2026-08-15, whose background
+    agent expanded to a generic label with nothing inside): the gist is the dispatch's description (or
+    the workflow ack's summary), and the full ask — the Agent prompt / the workflow script — rides the
+    row's command field, the detail block the box already expands."""
+
+    def test_a_workflow_ack_shows_its_summary_not_the_generic_label(self):
+        use, ack = _workflow_launch()
+        path = _write([use, ack])
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res["count"], 1)
+        self.assertEqual(res["tasks"][0]["summary"], "Sweep the notes-api routes for slow spots")
+        self.assertIn("export const meta", res["tasks"][0]["command"], "the script is the expandable detail")
+
+    def test_an_agent_ack_without_description_reads_the_launch_input(self):
+        ack = _agent_launch(tid="tu_agent1")
+        ack["toolUseResult"] = {"isAsync": True, "status": "async_launched"}   # a bare ack: no description
+        path = _write([_agent_tool_use(tid="tu_agent1", desc="Audit the sampler",
+                                       prompt="Read every sampler call site and report drift."), ack])
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res["tasks"][0]["summary"], "Audit the sampler")
+        self.assertEqual(res["tasks"][0]["command"], "Read every sampler call site and report drift.")
+
+    def test_the_ack_description_outranks_the_launch_but_the_prompt_still_rides(self):
+        path = _write([_agent_tool_use(tid="tu_agent1", desc="launch words", prompt="the full ask"),
+                       _agent_launch(tid="tu_agent1", desc="ack words")])
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res["tasks"][0]["summary"], "ack words", "the ack is the designed record")
+        self.assertEqual(res["tasks"][0]["command"], "the full ask")
+
+    def test_the_detail_is_capped(self):
+        use, ack = _workflow_launch(script="x" * 20000)
+        path = _write([use, ack])
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        cmd = res["tasks"][0]["command"]
+        self.assertLessEqual(len(cmd), 4100, "a workflow script can run to 512KB; the detail must not")
+        self.assertTrue(cmd.endswith("(truncated)"))
+
+    def test_an_explicit_run_in_background_agent_still_gets_the_ask(self):
+        # the DOMINANT real Agent shape: run_in_background rides the input, so the tool_use itself
+        # registers the row (the Bash launch branch) and the ack must enrich it in place
+        use = _agent_tool_use(tid="tu_agent1", desc="Audit the sampler", prompt="Read every call site.")
+        use["message"]["content"][0]["input"]["run_in_background"] = True
+        ack = _agent_launch(tid="tu_agent1")
+        ack["toolUseResult"] = {"isAsync": True, "status": "async_launched", "taskType": "local_agent",
+                                "outputFile": "/tmp/agent-a1.output"}
+        path = _write([use, ack])
+        saved = (km._tmux_sessions, km._sdk_spawned_at)
+        km._tmux_sessions = lambda: {"11111111-2222-3333-4444-555555555555": {"name": "web"}}
+        km._sdk_spawned_at = lambda s: None
+        try:
+            res = km._bg_tasks(path)
+            row = km._bg_live_norm("11111111-2222-3333-4444-555555555555", path)[0]
+        finally:
+            km._tmux_sessions, km._sdk_spawned_at = saved
+            os.unlink(path)
+        self.assertEqual(res["count"], 1, "the ack must not duplicate the launch row")
+        self.assertEqual(res["tasks"][0]["summary"], "Audit the sampler")
+        self.assertEqual(res["tasks"][0]["command"], "Read every call site.")
+        self.assertEqual(row["type"], "local_agent", "the scan row carries the agent fact")
+
+    def test_a_scriptpath_workflow_names_its_script(self):
+        # a workflow resumed/launched via scriptPath carries no inline script — the detail must still
+        # say where the work is defined instead of expanding to an empty block
+        use, ack = _workflow_launch()
+        use["message"]["content"][0]["input"] = {"scriptPath": "/tmp/notes-api-audit.js"}
+        path = _write([use, ack])
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res["tasks"][0]["command"], "script: /tmp/notes-api-audit.js")
+
+    def test_a_bare_ack_still_carries_its_own_prompt(self):
+        # the launch block can predate the scanned tail; the ack's own prompt is the fallback detail
+        ack = _agent_launch(tid="tu_agent9")
+        ack["toolUseResult"] = {"isAsync": True, "status": "async_launched",
+                                "description": "Map the parser", "prompt": "map the parser end to end"}
+        path = _write([ack])
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res["tasks"][0]["command"], "map the parser end to end")
+
+    def test_a_nonstring_workflow_name_never_kills_the_scan(self):
+        use, ack = _workflow_launch()
+        ack["toolUseResult"] = {"status": "async_launched", "workflowName": 7}
+        path = _write([use, ack])
+        try:
+            res = km._bg_tasks(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res["tasks"][0]["summary"], "workflow 7", "a malformed ack degrades, never raises")
+
+    def test_the_acks_task_type_rides_the_scan_row(self):
+        # the lifecycle set's type already threads through _bg_live_norm; the transcript scan carried
+        # no type at all, so a placed-unstamped agent on the scan path (tmux) read as furniture
+        sid = "11111111-2222-3333-4444-555555555555"
+        use, ack = _workflow_launch()
+        bare = _agent_launch(tid="tu_agent1")
+        bare["toolUseResult"] = {"isAsync": True, "status": "async_launched"}
+        path = _write([use, ack, _agent_tool_use(tid="tu_agent1"), bare])
+        saved = (km._tmux_sessions, km._sdk_spawned_at)
+        km._tmux_sessions = lambda: {sid: {"name": "web"}}   # live CLI, no lifecycle set → scan source
+        km._sdk_spawned_at = lambda s: None
+        try:
+            rows = {r["desc"]: r["type"] for r in km._bg_live_norm(sid, path)}
+        finally:
+            km._tmux_sessions, km._sdk_spawned_at = saved
+            os.unlink(path)
+        self.assertEqual(rows["Sweep the notes-api routes for slow spots"], "local_workflow")
+        self.assertEqual(rows["Map the parser"], "local_agent")
 
 
 class DurableAwaitingSource(unittest.TestCase):

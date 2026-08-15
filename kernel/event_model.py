@@ -212,6 +212,16 @@ def _bg_expired(task, now, grace=120.0):
     return bool(dl) and now > dl + grace
 
 
+# The detail an agent/workflow row expands to (the Agent prompt / the Workflow script) is clipped:
+# the box's detail pre scrolls, but a workflow script can run to 512KB and the payload ships whole.
+_DETAIL_CAP = 4000
+
+
+def _clip_detail(text):
+    text = str(text or "").strip()
+    return text if len(text) <= _DETAIL_CAP else text[:_DETAIL_CAP] + "\n… (truncated)"
+
+
 def _scan_bg_tasks(path, want_all=False):
     """Walk the transcript pairing async LAUNCHES with their <task-notification> results, and surface a task
     ONLY while it's still RUNNING (in flight across turns). A finished task drops out the instant its result
@@ -220,15 +230,23 @@ def _scan_bg_tasks(path, want_all=False):
     mtime caches, and the judge's settled gate reads it as the DURABLE awaited-work source — the pairing
     lives in the transcript, so unlike any live snapshot it survives a kernel restart (2026-08-08).
 
-    Launches come in TWO durable shapes: a Bash tool_use with run_in_background:true, and an async
-    Agent dispatch — its ack is a user record whose TOP-LEVEL toolUseResult says isAsync/"async_launched"
-    (the tool_result block names the launching tool_use id). Results come in THREE: the notification inside
-    a tool_result block (the older wrapper), a standalone user record whose message.content IS the
-    notification string (the current dominant shape — missing this left finished tasks reading 'running'
-    forever), and a queue-operation enqueue holding the notification while the session is busy — the task
-    itself is already finished the moment any of the three exists.
-    Returns [{id,status,summary,command,outputFile}]."""
+    Launches come in THREE durable shapes: a Bash tool_use with run_in_background:true, a non-persistent
+    Monitor tool_use (see below), and an async
+    Agent/Workflow dispatch — its ack is a user record whose TOP-LEVEL toolUseResult says
+    isAsync/"async_launched" (the tool_result block names the launching tool_use id). The ack names the
+    work at best in one line (description / the workflow meta's summary), so the LAUNCHING tool_use is
+    remembered too: its description is the gist when the ack has none, and its full ask — the Agent
+    prompt / the Workflow script — rides `command`, the detail block the box already expands (the user
+    2026-08-15, whose background agent expanded to a generic label with nothing inside). The ack's
+    taskType rides `type`, so the scan rows carry the same agent-vs-shell fact the lifecycle set does.
+    Results come in THREE shapes: the notification inside a tool_result block (the older wrapper), a
+    standalone user record whose message.content IS the notification string (the current dominant shape —
+    missing this left finished tasks reading 'running' forever), and a queue-operation enqueue holding
+    the notification while the session is busy — the task itself is already finished the moment any of
+    the three exists.
+    Returns [{id,status,summary,command,outputFile}] (+ type on agent/workflow rows)."""
     tasks, order = {}, []
+    dispatch = {}   # tool_use id -> the launching Agent/Task/Workflow block's own words (see docstring)
 
     def _mark(note):
         # a notification keyed by its INNER <tool-use-id> (the string/queue shapes have no wrapper block)
@@ -255,6 +273,16 @@ def _scan_bg_tasks(path, want_all=False):
                         if not (isinstance(b, dict) and b.get("type") == "tool_use"):
                             continue
                         inp = b.get("input") or {}
+                        if b.get("name") in ("Agent", "Task", "Workflow") and b.get("id"):
+                            # remember the dispatch's own words — consumed by its async ack below, or
+                            # right here when an explicit run_in_background rides the input (the dominant
+                            # real Agent shape, which registers via the launch branch below instead)
+                            dispatch[b["id"]] = {
+                                "desc": str(inp.get("description") or "").strip(),
+                                "detail": _clip_detail(inp.get("prompt") or inp.get("script")
+                                                       or ("script: " + str(inp["scriptPath"])
+                                                           if inp.get("scriptPath") else "")),
+                                "type": "local_workflow" if b.get("name") == "Workflow" else "local_agent"}
                         # The THIRD durable launch shape: a Monitor tool_use. A non-persistent monitor is
                         # dispatched background work exactly like a backgrounded Bash — a session idle
                         # behind one read as plain 'ready', its goal stamps could lift only by the 6h
@@ -272,6 +300,11 @@ def _scan_bg_tasks(path, want_all=False):
                                           "summary": (inp.get("description") or b.get("name") or "Background task"),
                                           "command": inp.get("command") or (inp.get("ws") or {}).get("url", ""),
                                           "outputFile": ""}
+                            d = dispatch.pop(tid, None)
+                            if d:   # an Agent/Task/Workflow with an explicit run_in_background lands
+                                    # HERE, not at its ack (tid already registered) — same enrichment
+                                tasks[tid]["command"] = tasks[tid]["command"] or d["detail"]
+                                tasks[tid]["type"] = d["type"]
                             if is_mon:
                                 tasks[tid]["monitor"] = True
                                 # its recorded lifetime ceiling → the deadline consumers expire on
@@ -289,11 +322,37 @@ def _scan_bg_tasks(path, want_all=False):
                         if isinstance(b, dict) and b.get("type") == "tool_result":
                             tid = b.get("tool_use_id")
                             if async_launch and tid and tid not in tasks:
-                                # an async Agent dispatch ack — the durable "this work is now running" record
+                                # an async Agent/Workflow dispatch ack — the durable "this work is now
+                                # running" record; the gist prefers the ack's own words, the launching
+                                # tool_use fills what the ack omits (see docstring). Acks carry the ask
+                                # too (prompt / scriptPath) — the fallback when the launch predates the
+                                # transcript tail or the block went unseen.
+                                d = dispatch.pop(tid, {})
+                                wf = tur.get("workflowName")
                                 tasks[tid] = {"id": tid, "status": "running", "t": parse_z(o.get("timestamp")),
-                                              "summary": (tur.get("description") or "Background agent"),
-                                              "command": "", "outputFile": tur.get("outputFile") or ""}
+                                              "summary": (tur.get("description") or tur.get("summary")
+                                                          or d.get("desc")
+                                                          or ("workflow " + str(wf) if wf else "Background agent")),
+                                              "command": d.get("detail")
+                                                         or _clip_detail(tur.get("prompt")
+                                                                         or ("script: " + str(tur["scriptPath"])
+                                                                             if tur.get("scriptPath") else "")),
+                                              "outputFile": tur.get("outputFile") or ""}
+                                if tur.get("taskType") or d.get("type"):
+                                    tasks[tid]["type"] = tur.get("taskType") or d["type"]
                                 order.append(tid)
+                                continue
+                            if async_launch and tid in tasks and not b.get("is_error") \
+                                    and tasks[tid]["status"] == "running":
+                                # the ack of a launch the assistant branch already registered (explicit
+                                # run_in_background): the ack still owns outputFile/taskType — fill what
+                                # the launch row lacks, never overwrite what it has
+                                tk = tasks[tid]
+                                tk["outputFile"] = tk["outputFile"] or tur.get("outputFile") or ""
+                                if tur.get("taskType"):
+                                    tk["type"] = tur["taskType"]
+                                if not tk["command"]:
+                                    tk["command"] = _clip_detail(tur.get("prompt") or "")
                                 continue
                             note = _parse_task_notification(_result_text(b.get("content")))
                             if tid in tasks and note:      # its result landed → mark it done; the keep-filter drops it
