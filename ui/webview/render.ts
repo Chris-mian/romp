@@ -21,7 +21,9 @@ import { isClearCmd, openTopTitles, clearConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
 import { writeViewOrder } from "./view-order";
-import { titleWithKey } from "./keybindings";
+import { titleWithKey, chordOf, effectiveChord, loadOverrides } from "./keybindings";
+import { DEFAULT_CHORDS } from "./commands";
+import { NavHistory } from "./nav-history";
 import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional } from "./provisional";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
@@ -4204,6 +4206,26 @@ window.addEventListener("keydown", (e) => {
   if (inRompShell()) return;   // the shell's handler on this document takes it from here
   e.preventDefault(); e.stopPropagation();
   if (pickerVisible()) closePicker(); else openPicker();
+}, true);
+// Ctrl+M / Ctrl+, — chat history back/forward, the user's own Obsidian nav keys (their vault's
+// hotkeys.json, verified 2026-08-14: Ctrl, not Option). The trail lives in THIS pane (navHist), so
+// the keys are handled here whenever focus is inside the chat — capture-phase like Cmd+O above, so
+// they work from the composer too. Registered as chat.navBack/chat.navForward in the shell's command
+// registry (palette + Customize shortcuts…); this handler reads the SAME overrides store per press,
+// so a rebind in the dialog moves both dispatch paths at once. Chat-only for now (the user's scoping).
+window.addEventListener("keydown", (e) => {
+  if (!e.ctrlKey && !e.metaKey) return;                 // both defaults carry Ctrl; a rebind may use Meta
+  const ch = chordOf(e);
+  if (!ch || !ch.includes("+")) return;
+  const mac = /Mac|iP(hone|ad|od)/.test(navigator.platform || "");
+  const ov = loadOverrides();
+  if (ch === effectiveChord("chat.navBack", DEFAULT_CHORDS["chat.navBack"], ov, mac)) {
+    e.preventDefault(); e.stopPropagation();
+    navHist.go(-1);
+  } else if (ch === effectiveChord("chat.navForward", DEFAULT_CHORDS["chat.navForward"], ov, mac)) {
+    e.preventDefault(); e.stopPropagation();
+    navHist.go(1);
+  }
 }, true);
 // Nearest tab in the row above (dir<0) or below (dir>0) the given tab, by column.
 function tabInAdjacentRow(id: string, dir: number): string | null {
@@ -8679,9 +8701,30 @@ function noteMru(id: string): void {
   if (sessionMru.length > 50) sessionMru.pop();
 }
 
+// The chat's back/forward trail (the user 2026-08-14) — the rules live in nav-history.ts, executed
+// by its test. The deps close over this pane's real state: the active tab + #content scroll for
+// "now", the sessions map for liveness, and a land that pre-seeds the per-tab scroll restore (views)
+// BEFORE setActive — so the entering tab's own restore applies the remembered spot — then re-asserts
+// it once the pane is visible (a same-tab jump returns early from setActive and needs the direct set).
+const navHist = new NavHistory({
+  now: () => {
+    const c = document.getElementById("content");
+    return activeId && c ? { sid: activeId, top: c.scrollTop } : null;
+  },
+  alive: (sid) => sessions.has(sid),
+  apply: (spot) => {
+    const v = views.get(spot.sid);
+    if (v) { v.scrollTop = spot.top; v.stick = false; }   // land on the remembered spot, never the live bottom
+    setActive(spot.sid);
+    const c = document.getElementById("content");
+    if (c) whenChatVisible(() => { if (activeId === spot.sid) c.scrollTop = spot.top; });
+  },
+});
+
 function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
   noteMru(id);
   if (activeId === id && anchor == null && anchorT == null) return; // already active, nothing to do
+  navHist.record();   // every real navigation records the spot being LEFT (the user 2026-08-14: Ctrl+M / Ctrl+, walk the trail)
   closeMetaMenu(); // an open model/effort menu targets the tab we're leaving
   // a comment popover belongs to its parent session's view — leaving that session closes it (the
   // user 2026-08-13: it lingered over the next tab's chat); the highlight reopens it any time
@@ -9099,6 +9142,8 @@ window.addEventListener("message", (e: MessageEvent) => {
     if (activeId && !isProvisionalId(activeId) && sessions.get(activeId)) showForkPrompt(activeId, "");
     return;
   }
+  // the shell's palette / shell-focus chords: the chat owns the nav trail, the shell just asks
+  if (m.romp === "chatNav") { navHist.go(m.dir === 1 ? 1 : -1); return; }
   if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
