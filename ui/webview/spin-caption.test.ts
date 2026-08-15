@@ -42,9 +42,19 @@ test("recheck/rejudging spin the same whether or not a brief exists", () => {
 // --- the rest of the ladder, in precedence order ---------------------------------------------------
 test("AWAITING outranks everything and wears the box", () => {
   const s = spinFor({ awaiting: { why: "" }, recheck: true, judging: true, column: "working" }, true, false);
-  assert.equal(s.caption, "Awaiting background agents");
+  assert.equal(s.caption, "Awaiting agents");
   assert.equal(s.awaitingBg, true, "the awaiting case gets the rounded box (.await-paused)");
   assert.match(s.tip, /Not on you|not on you/);
+});
+
+test("the kind words the box: 'Awaiting job' for an external computation, per KIND_WORD", () => {
+  // the wait's CLASS in the visible label (the user 2026-08-15) — tooltips are dead on the touch PWA
+  assert.equal(spinFor({ awaiting: { why: "", kind: "job" }, column: "working" }, false, false).caption,
+               "Awaiting job");
+  assert.equal(spinFor({ awaiting: { why: "", kind: "timer" }, column: "working" }, false, false).caption,
+               "Awaiting timer");
+  assert.equal(spinFor({ awaiting: { why: "", kind: "banana" }, column: "working" }, false, false).caption,
+               "Awaiting agents", "an unknown kind falls back to the box's historic default word");
 });
 
 test("AWAITING uses the kernel's why verbatim (capitalized) when it reads 'waiting on …'", () => {
@@ -69,7 +79,7 @@ test("a PROVISIONAL working card tells the truth about its phase", () => {
 test("a provisional AWAITING placeholder never reads a false 'Working…'", () => {
   // provisional + awaiting (a bg-task wait with no goal to floor) → the awaiting branch owns it
   const s = spinFor({ provisional: true, column: "working", awaiting: { why: "" } }, false, false);
-  assert.equal(s.caption, "Awaiting background agents");
+  assert.equal(s.caption, "Awaiting agents");
 });
 
 test("the SETTLE GAP (turn done, verdict pending) spins on a working card", () => {
@@ -132,7 +142,7 @@ test("a settled card displaced to Working loses its line but never its caption",
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
 test("feed.ts routes the card's swirl through spinFor and keeps no inline copy of the ladder", () => {
-  assert.match(FEED, /import \{ spinFor \} from "\.\/spin-caption";/);
+  assert.match(FEED, /import \{ spinFor, KIND_WORD \} from "\.\/spin-caption";/);
   assert.match(FEED, /const spin = spinFor\(it, distillPending\(/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
   // the inline ladder is gone — no second, drifting copy of the rule
@@ -174,7 +184,7 @@ test("the narration is the FLOOR — every richer story still wins", () => {
   assert.equal(spinFor({ column: "working", working: w, recheck: true }, false, false, 2000).caption,
                "Analyzing…", "re-check outranks narration");
   assert.equal(spinFor({ column: "working", working: w, awaiting: { why: null } }, false, false, 2000).caption,
-               "Awaiting background agents", "awaiting outranks narration");
+               "Awaiting agents", "awaiting outranks narration");
   assert.equal(spinFor({ column: "working", working: w }, true, false, 2000).caption,
                "Distilling…", "a pending distill outranks narration");
 });
