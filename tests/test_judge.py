@@ -7398,6 +7398,15 @@ class AwaitingVerdict(unittest.TestCase):
         with self.assertRaises(TypeError):
             nd["awaitingAt"] = 123
 
+    def test_closer_prompt_forbids_filing_a_handoff_wait_as_a_block(self):
+        # live case 2026-08-15: "Engage the new session when ready: it is launched... and will present
+        # results" was filed as a BLOCK — a peer-wait wearing needs-you clothing. The blocked rollup
+        # then suppressed the goal's awaiting entirely (blocked outranks awaiting by design), so a
+        # session genuinely watching an external job read as needing the user.
+        for phrase in ("The mirror image is NOT blocked", "will report back on its own",
+                       "never blocked; filing it blocked parks a card on the user"):
+            self.assertIn(phrase, jd.CLOSER_SYS)
+
     def test_closer_prompt_offers_awaiting_with_the_tight_rule(self):
         # the user 2026-07-21: ONLY when it plans to take action again pending something running
         # asynchronously — both halves required, user-waits stay blocked, when unsure omit
