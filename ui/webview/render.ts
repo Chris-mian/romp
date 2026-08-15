@@ -7320,9 +7320,11 @@ function isCoarsePointer(): boolean {
 // the two buttons (the user 2026-07-30), so even the "/" hint wrapped and got clipped: mobile keeps just
 // the core prompt, and slash-command discovery stays a desktop hint.
 function composerRestingPlaceholder(): string {
+  // the one canonical hint line (the user 2026-08-15): send, newline, stage, commands — and just
+  // "/ for commands", not "type / for commands". The static skeletons carry the same string.
   return isCoarsePointer()
     ? "Message this session…"
-    : "Message this session…  (⏎ send · ⇧⏎ newline · type / for commands)";
+    : "Message this session…  (⏎ send · ⇧⏎ newline · ⌘⏎ stage · / for commands)";
 }
 
 // How a message typed into the NORMAL composer should be routed while a live picker is up — the picker's
