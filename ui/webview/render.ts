@@ -8376,6 +8376,7 @@ const composerEdits = new Map<string, { uuid: string; orig: string }>();
 // drafts (a reload or tab switch never drops a stack). The pure stack rules live in staged-messages.ts,
 // executed by its test; this file owns the strip DOM and the send routing.
 const stagedMsgs = new StagedStack();
+const stagedOpen = new Set<string>();   // sid:index of staged chips expanded to their full text
 try { stagedMsgs.restore(((vscodeApi?.getState?.() || {}) as any).staged); } catch { /* ignore */ }
 
 // One routing owner for a user message (the deliver path and the staged flush both speak it): a goal
@@ -8425,16 +8426,50 @@ function renderStagedStrip(id: string | null): void {
   strip.appendChild(head);
   list.forEach((s, i) => {
     const chip = el("div", "staged-chip");
-    chip.title = s.text;
+    // each staged reply keeps the CONTEXT it was written against visible inside its own dotted box
+    // (the user 2026-08-15): one small context chip per quote, independently expandable — clicking
+    // the quote opens the quote, clicking anywhere else in the box opens the reply text. Both folds
+    // are keyed so they survive the strip re-render.
+    const quotes = (s.cites as Citation[]).filter((c) => c && c.quote);
+    for (let j = 0; j < quotes.length; j++) {
+      const ck = id + ":" + i + ":" + j;
+      const cOpen = stagedOpen.has(ck);
+      const cite = el("div", "staged-cite" + (cOpen ? " open" : ""));
+      const cm = el("span", "composer-chip-mark"); cm.textContent = "“";
+      const cl = el("span", "composer-chip-label"); cl.textContent = quotes[j].quote || "";
+      const ch = el("span", "staged-expand"); ch.textContent = cOpen ? "(collapse)" : "(expand)";
+      cite.append(cm, cl, ch);
+      cite.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (stagedOpen.has(ck)) stagedOpen.delete(ck); else stagedOpen.add(ck);
+        renderStagedStrip(id);
+      });
+      chip.appendChild(cite);
+    }
+    const row = el("div", "staged-row");
     const mark = el("span", "composer-chip-mark");
-    mark.textContent = (s.cites as Citation[]).some((c) => c && c.quote) ? "“" : "•";
+    mark.textContent = "•";
     const label = el("span", "composer-chip-label");
     label.textContent = s.text;
+    // one line, ellipsized IN BOUNDS, with a colored "(expand)" that is visibly chrome, not message
+    // text; click toggles the full text — the context-fold idiom (the user 2026-08-15, whose staged
+    // line ran off the right edge with no ellipsis and no way to read the rest)
+    const open = stagedOpen.has(id + ":" + i);
+    if (open) chip.classList.add("open");
+    const hint = el("span", "staged-expand");
+    hint.textContent = open ? "(collapse)" : "(expand)";
+    const toggle = () => {
+      const k = id + ":" + i;
+      if (stagedOpen.has(k)) stagedOpen.delete(k); else stagedOpen.add(k);
+      renderStagedStrip(id);
+    };
+    chip.addEventListener("click", toggle);
     const x = el("button", "composer-chip-x");
     x.setAttribute("aria-label", "Discard staged message");
     x.textContent = "✕";
-    x.addEventListener("click", () => { stagedMsgs.removeAt(id, i); persistDrafts(); renderStagedStrip(id); });
-    chip.append(mark, label, x);
+    x.addEventListener("click", (ev) => { ev.stopPropagation(); stagedMsgs.removeAt(id, i); persistDrafts(); renderStagedStrip(id); });
+    row.append(mark, label, hint, x);
+    chip.appendChild(row);
     strip.appendChild(chip);
   });
 }
