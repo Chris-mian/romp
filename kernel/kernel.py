@@ -15564,9 +15564,13 @@ _POSTAL_WAIT_CACHE = [None, None]   # (mtime_ns, size) , (last_any, last_ask) �
 def _postal_wait_maps():
     """(last_any, last_ask) from the postal log, cached on the file's (mtime, size): per ordered pair
     (from_id, to_id), last_any holds the latest t of ANY message, last_ask the latest (t, kind) of a
-    reply-EXPECTING ask — a QUESTION (an answer is required) or a DELEGATE (the recipient owns work whose
-    result comes back to the sender; the user 2026-07-25, whose handoff to a peer wore the generic
-    "background agents" box because only questions counted). COORDINATE/FYI rows never make last_ask.
+    reply-EXPECTING ask — a QUESTION only (an answer is definitionally required). A DELEGATE transfers
+    OWNERSHIP and sets no edge (the user 2026-08-15: a handoff whose body said "no reply needed" still
+    parked its sender as awaiting-peer, and a sender with many outstanding handoffs read as permanently
+    stalled — this REVERSES the 2026-07-25 rule that counted delegates, whose real want, handoff
+    visibility, is carried by the courier goal graph now: "delegated to X; waiting on their result"
+    rides _all_outstanding_delegated with the peer's completion as the exact ending event; a delegate
+    who genuinely needs a report-back asks with kind=question). COORDINATE/FYI rows never make last_ask.
     Rows carrying the schema `kind` use it; kindless legacy rows fall back to the QUESTION/ASK body
     prefix. Shared by _wait_for_graph (twice per push) and _peer_answered_at (the stamp readers), which
     each re-scanned the log per call before this cache."""
@@ -15603,7 +15607,7 @@ def _postal_wait_maps():
             ts = int(ts)
             last_any[(f, t_)] = max(last_any.get((f, t_), 0), ts)
             k = o.get("kind")                            # the sender's DECLARED intent (schema field) wins
-            is_ask = (k in ("question", "delegate")) if k else bool(_WAIT_Q_RE.match(o.get("body") or ""))
+            is_ask = (k == "question") if k else bool(_WAIT_Q_RE.match(o.get("body") or ""))
             if is_ask and ts >= last_ask.get((f, t_), (0, ""))[0]:
                 # the ask's HEAD rides along (the user 2026-07-26): the debt reminder quotes the asker's
                 # own first words back at the debtor, so the reminder needs no second log scan

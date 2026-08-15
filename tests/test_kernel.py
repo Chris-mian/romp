@@ -7441,15 +7441,14 @@ class WaitGraphDelegatesAndStampSupersede(unittest.TestCase):
         g = km._wait_for_graph(NOW, {self.A, self.B})
         self.assertIn(self.A, g, "no alias for the name -> the raw relay id keeps today's behavior")
 
-    def test_delegate_creates_a_wait_edge_and_any_reply_clears_it(self):
+    def test_a_delegate_transfers_ownership_and_sets_no_edge(self):
+        # the user 2026-08-15 (reversing 2026-07-25): a handoff whose body said "no reply needed" still
+        # parked its sender as awaiting-peer, and a sender with many outstanding handoffs read as
+        # permanently stalled. Ownership transferred is not a dependency — only a QUESTION edges; real
+        # handoff visibility rides the courier goal graph with the peer's completion as the exact end.
         self._log(self._msg(self.A, self.B, NOW - 300, "delegate"))
-        g = km._wait_for_graph(NOW, {self.A, self.B})
-        self.assertEqual((g[self.A]["peerSid"], g[self.A]["kind"], g[self.A]["since"]),
-                         (self.B, "delegate", NOW - 300),
-                         "a handoff is a reply-expecting ask: it creates the edge, labeled delegate")
-        # ANY later message back — even a coordinate — answers the handoff; the edge clears on that event
-        self._log(self._msg(self.B, self.A, NOW - 100, "coordinate", body="done, merged"))
-        self.assertEqual(km._wait_for_graph(NOW, {self.A, self.B}), {})
+        self.assertEqual(km._wait_for_graph(NOW, {self.A, self.B}), {},
+                         "the delegator is free the moment the handoff sends")
 
     def test_coordinate_makes_no_edge_and_question_keeps_its_kind(self):
         self._log(self._msg(self.A, self.B, NOW - 300, "coordinate"))
@@ -7459,7 +7458,7 @@ class WaitGraphDelegatesAndStampSupersede(unittest.TestCase):
 
     def test_peer_answered_at_tracks_only_answered_pairs(self):
         self.assertEqual(km._peer_answered_at(self.A), 0, "no traffic → nothing answered")
-        self._log(self._msg(self.A, self.B, NOW - 300, "delegate"))
+        self._log(self._msg(self.A, self.B, NOW - 300, "question"))
         self.assertEqual(km._peer_answered_at(self.A), 0, "outstanding ask → not answered")
         self._log(self._msg(self.B, self.A, NOW - 200, "coordinate"))
         self.assertEqual(km._peer_answered_at(self.A), NOW - 200, "the reply time, once it lands")
@@ -7489,7 +7488,7 @@ class WaitGraphDelegatesAndStampSupersede(unittest.TestCase):
                           "awaitingWhy": "sent to a peer to build the flag parser",
                           "awaitingAt": NOW - 500}},
             "placements": {}, "status": {g: "working"}}))
-        self._log(self._msg(self.A, self.B, NOW - 600, "delegate"))
+        self._log(self._msg(self.A, self.B, NOW - 600, "question"))
         full, tops, _deleg = km._session_stamp_read(self.A)   # 3rd slot = delegated-peer sids (2026-08-08)
         self.assertEqual(full[2], "sent to a peer to build the flag parser")
         self.assertEqual(tops, frozenset({g}))
