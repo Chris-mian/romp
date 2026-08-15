@@ -193,7 +193,11 @@ at call time (no restart needed) and appended to the prompt, notes winning
 over prompt defaults on conflict. Plain language, e.g. "never cite PR or
 commit numbers; say what the change does". Delete the file and the next
 call runs bare. The placement judges and the courier never see it: those
-emit verdicts and agent-directed copy, not prose for you.
+emit verdicts and agent-directed copy, not prose for you. The path is a
+plain read that follows symlinks, so the durable setup is the content in
+your dotfiles with a symlink here — one edit then reaches every machine's
+judges through your normal dotfiles sync (the user 2026-08-15), instead
+of each kernel keeping its own hand-seeded copy.
 
 **briefer.** When a top card blocks (and live for the focused picker or
 permission goal): a decision brief that leads with exactly what you must
