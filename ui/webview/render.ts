@@ -28,13 +28,14 @@ import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview, fileUrl } from "./preview";
 import { pastedFilePath } from "./paste-path";
-import { hostNameNodes, hostPrefix, hostOf, hostIsDown, hostDownNote } from "./host-prefix";
+import { hostNameNodes, hostPrefix, hostOf, bareId, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 import { apiErrorReason } from "./api-error-reason";
 import { mathBlock, mathInline } from "./math";
 import { threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, type CommentThread } from "./comments";
+import { anchorFor, buildReviewMessage, docKey, type DocComment } from "./docreview";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -933,9 +934,14 @@ function fileUriToPath(uri: string): string {
 function openPathLink(raw: string, open: string, relative = false): HTMLElement {
   const a = el("span", "file-uri-link");
   a.textContent = raw;                       // shown exactly as written, selectable/copyable in place
-  a.title = "Open " + open;
+  // A text DOCUMENT opens romp's review reader instead of the OS editor (the user 2026-08-14): reading it
+  // here is how you comment on it and hand every comment over at once. The reader's header keeps an
+  // "Open in editor ↗" button, so the old behavior stays one click away.
+  const isDoc = DOC_REVIEW_EXT.test(open);
+  a.title = (isDoc ? "Review " : "Open ") + open;
   a.addEventListener("click", (e) => {
     e.stopPropagation();
+    if (isDoc) return openDocReview(raw, open);
     if (vscodeApi) vscodeApi.postMessage(relative
       ? { type: "openFile", path: open, id: activeId }   // kernel resolves against this session's cwd
       : { type: "openFile", path: open });
@@ -3778,6 +3784,29 @@ function showSelectionMenu(e: MouseEvent) {
   const content = document.getElementById("content");
   const sel = window.getSelection();
   const text = sel ? sel.toString() : "";
+  // Inside the doc reader the same gesture means "comment on this passage" — one menu vocabulary, one
+  // chrome, one dismissal (CLAUDE.md: menus wear ONE vocabulary).
+  const inDoc = !!(docReview && sel?.anchorNode
+    && document.getElementById("doc-review")?.querySelector(".dr-doc")?.contains(sel.anchorNode));
+  if (inDoc && text.trim()) {
+    e.preventDefault();
+    dismissTabMenu();
+    const m = el("div", "ctx-menu");
+    const item = (labelText: string, fn: () => void) => {
+      const it = el("div", "ctx-item");
+      it.textContent = labelText;
+      it.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
+      m.appendChild(it);
+    };
+    item("Comment", () => beginDocComment(text));
+    item("Copy", () => copyToClipboard(text));
+    document.body.appendChild(m);
+    ctxMenuEl = m;
+    const rr = m.getBoundingClientRect();
+    m.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - rr.width - 4)) + "px";
+    m.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - rr.height - 4)) + "px";
+    return;
+  }
   if (!content || !sel || !sel.anchorNode || !content.contains(sel.anchorNode) || !text.trim()) return;
   e.preventDefault();
   dismissTabMenu();
@@ -3831,6 +3860,279 @@ function quoteSelectionIntoComposer(text: string) {
 
 function copyToClipboard(text: string) {
   navigator.clipboard?.writeText(text).catch(() => { try { document.execCommand("copy"); } catch { /* best effort */ } });
+}
+
+// ── doc review (the user 2026-08-14) ────────────────────────────────────────────────────────────────
+// Reviewing a markdown doc an agent wrote used to mean opening it in an editor and hand-copying every
+// line you wanted changed back into the chat. Now: clicking an .md path opens the doc RENDERED over the
+// chat pane; right-click a selection to comment on it; one Submit turns every comment on that file into
+// a single message drafted into this session's composer, each one carrying its quote and source line, so
+// the agent applies the lot in one pass and nothing is copy-pasted.
+//
+// Pane-local on purpose (CLAUDE.md blesses this for the feed's card modal): the composer it drafts into
+// lives in THIS pane, so there is no cross-iframe plumbing and no question about which session gets it.
+const DOC_REVIEW_EXT = /\.(?:md|markdown|txt)$/i;
+const docComments = new Map<string, DocComment[]>();   // docKey(sid, path) → this file's un-submitted comments
+// The open reader. `label` is the path as the message wrote it (what the header shows); `path` is what
+// the kernel resolved and serves.
+let docReview: { sid: string; label: string; path: string; source: string; mtime: number } | null = null;
+let docReviewErr = "";                                 // a load failure, shown in place (never a blank reader)
+let docReviewStale = false;                            // the file moved under us between open and Submit
+let docPendingQuote: { quote: string; line: number | null } | null = null;   // selection awaiting its comment text
+let docOpenComment: string | null = null;              // which saved comment's text is expanded
+
+function docList(): DocComment[] {
+  if (!docReview) return [];
+  return docComments.get(docKey(docReview.sid, docReview.path)) || [];
+}
+
+function setDocList(list: DocComment[]): void {
+  if (!docReview) return;
+  const k = docKey(docReview.sid, docReview.path);
+  if (list.length) docComments.set(k, list); else docComments.delete(k);
+  persistDrafts();
+}
+
+// Open the reader for a path clicked in the transcript. The overlay goes up IMMEDIATELY with the romp
+// loader (CLAUDE.md: the loader is the first thing a wait shows), and the fetch fills it in.
+function openDocReview(label: string, path: string): void {
+  const sid = activeId;
+  if (!sid) return;
+  docReviewErr = ""; docReviewStale = false; docPendingQuote = null; docOpenComment = null;
+  docReview = { sid, label, path, source: "", mtime: 0 };
+  renderDocReview();
+  if (hostOf(sid)) {   // a remote session's doc lives on ANOTHER machine; /doc has no relay yet — say so
+    docReviewErr = "Doc review isn’t available for sessions on another machine yet — this file lives on "
+      + hostOf(sid) + ". Open it there, or use the plain file link.";
+    return renderDocReview();
+  }
+  fetchDocSource(sid, path)
+    .then((d) => {
+      if (!docReview || docReview.sid !== sid || docReview.path !== path) return;   // reader moved on
+      docReview.source = d.text; docReview.mtime = d.mtime; docReview.path = d.path;
+      renderDocReview();
+    })
+    .catch((e: Error) => {
+      if (!docReview || docReview.sid !== sid) return;
+      docReviewErr = e.message || "could not read this file";
+      renderDocReview();
+    });
+}
+
+function fetchDocSource(sid: string, path: string): Promise<{ path: string; text: string; mtime: number }> {
+  const url = kernelUrl("/doc?path=" + encodeURIComponent(path) + "&sid=" + encodeURIComponent(bareId(sid)));
+  return fetch(url, { cache: "no-store" }).then((r) => {
+    if (r.ok) return r.json();
+    // Fail LOUDLY with the kernel's own words — a 404 here means the path is gone or not a text doc
+    return r.text().then((t) => Promise.reject(new Error(
+      r.status === 404 ? "the kernel can’t read this file (moved, or not a text document)"
+        : r.status === 413 ? "this file is too big to review"
+          : (t || "HTTP " + r.status))));
+  });
+}
+
+function closeDocReview(): void {
+  docReview = null; docReviewErr = ""; docPendingQuote = null; docOpenComment = null;
+  document.getElementById("doc-review")?.remove();
+}
+
+// A selection inside the reader → a new comment. anchorFor does the honest work of finding the source
+// line (or admitting it can't); the box below the doc takes the text.
+function beginDocComment(selected: string): void {
+  if (!docReview || !docReview.source) return;
+  const a = anchorFor(docReview.source, selected);
+  if (!a.quote) return;
+  docPendingQuote = a;
+  renderDocReview();
+  (document.getElementById("doc-comment-body") as HTMLTextAreaElement | null)?.focus();
+}
+
+function saveDocComment(body: string): void {
+  if (!docReview || !docPendingQuote || !body.trim()) return;
+  setDocList(docList().concat([{
+    id: "dc" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    quote: docPendingQuote.quote, line: docPendingQuote.line, body: body.trim(), ts: Date.now(),
+  }]));
+  docPendingQuote = null;
+  renderDocReview();
+}
+
+function removeDocComment(id: string): void {
+  setDocList(docList().filter((c) => c.id !== id));
+  if (docOpenComment === id) docOpenComment = null;
+  renderDocReview();
+}
+
+// Submit: every comment on this file becomes ONE message in the composer. Before building it, re-read the
+// file — if the agent edited it while you were reading, the line anchors may now point at the wrong place,
+// and you are told so rather than sending quietly-wrong numbers.
+function submitDocReview(): void {
+  if (!docReview) return;
+  const { sid, label, path } = docReview;
+  const list = docList();
+  if (!list.length) return;
+  fetchDocSource(sid, path)
+    .then((d) => { docReviewStale = d.mtime !== docReview?.mtime; })
+    .catch(() => { docReviewStale = false; })    // can't re-read → don't claim staleness we didn't observe
+    .then(() => {
+      const text = buildReviewMessage(label, list);
+      if (!text) return;
+      docCommentsIntoComposer(sid, text);
+      setDocList([]);
+      if (docReviewStale) {
+        warnToast("The file changed while you were reading it — check the line numbers before sending.");
+      }
+      closeDocReview();
+    });
+}
+
+// The composer insert, mirroring quoteSelectionIntoComposer: APPEND (never clobber a draft), caret at the
+// end, remembered as the draft. Nothing sends — the user reads the assembled message and hits send.
+function docCommentsIntoComposer(sid: string, text: string): void {
+  if (sid !== activeId) return;
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!ta) return;
+  const sep = !ta.value ? "" : ta.value.endsWith("\n\n") ? "" : ta.value.endsWith("\n") ? "\n" : "\n\n";
+  ta.value = ta.value + sep + text;
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  growComposer(ta);
+  ta.focus();
+  drafts.set(sid, ta.value);
+  persistDrafts();
+}
+
+function renderDocReview(): void {
+  document.getElementById("doc-review")?.remove();
+  if (!docReview) return;
+  const back = el("div", ""); back.id = "doc-review";
+  const card = el("div", "dr-card");
+  back.appendChild(card);
+
+  const head = el("div", "dr-head");
+  const name = el("div", "dr-name"); name.textContent = docReview.label; name.title = docReview.path;
+  const list = docList();
+  const count = el("div", "dr-count");
+  count.textContent = list.length === 1 ? "1 comment" : list.length + " comments";
+  const openIn = el("button", "dr-btn") as HTMLButtonElement;
+  openIn.type = "button"; openIn.dataset.act = "dropen";
+  openIn.textContent = "Open in editor ↗";
+  const submit = el("button", "dr-btn dr-submit") as HTMLButtonElement;
+  submit.type = "button"; submit.dataset.act = "drsubmit";
+  submit.textContent = "Submit " + (list.length || "") + (list.length === 1 ? " comment" : " comments");
+  submit.disabled = !list.length;
+  const x = el("button", "dr-btn dr-x") as HTMLButtonElement; x.type = "button"; x.dataset.act = "drclose";
+  x.textContent = "✕"; x.title = "Close (Esc)";
+  head.append(name, count, openIn, submit, x);
+  card.appendChild(head);
+
+  const body = el("div", "dr-body");
+  card.appendChild(body);
+  if (docReviewErr) {
+    const err = el("div", "dr-err"); err.textContent = docReviewErr;
+    body.appendChild(err);
+  } else if (!docReview.source) {
+    body.appendChild(docLoader());
+  } else {
+    const doc = el("div", "dr-doc md");
+    doc.innerHTML = md(docReview.source);
+    highlight(doc, false);
+    body.appendChild(doc);
+    markDocComments(doc, list);
+    const hint = el("div", "dr-hint");
+    hint.textContent = "Select any passage and right-click to comment on it.";
+    body.appendChild(hint);
+  }
+
+  if (docPendingQuote) card.appendChild(docCommentBox(docPendingQuote));
+  document.body.appendChild(back);
+}
+
+function docLoader(): HTMLElement {
+  const wrap = el("div", "dr-load");
+  const inner = el("div", "rl-in");
+  const word = el("div", "rl-word");
+  const r = el("span", ""); (r as HTMLElement).style.color = "#1EA1EB"; r.textContent = "R";
+  const swirl = el("img", "rl-o") as HTMLImageElement;
+  swirl.src = mediaSrc("romp-swirl-o.svg"); swirl.alt = "o"; swirl.onerror = () => swirl.remove();
+  const mm = el("span", ""); (mm as HTMLElement).style.color = "#54B204"; mm.textContent = "m";
+  const p = el("span", ""); (p as HTMLElement).style.color = "#4EA8A9"; p.textContent = "p";
+  word.append(r, swirl, mm, p);
+  const dots = el("div", "rl-dots"); dots.append(el("i", ""), el("i", ""), el("i", ""));
+  inner.append(word, dots);
+  wrap.appendChild(inner);
+  return wrap;
+}
+
+// The box that takes a new comment's text. Shows the anchor it will carry, so you can see the agent will
+// be pointed at the right place before you type.
+function docCommentBox(anchor: { quote: string; line: number | null }): HTMLElement {
+  const box = el("div", "dr-new");
+  const at = el("div", "dr-at");
+  at.textContent = (anchor.line ? "line " + anchor.line + " — " : "") + "“" + anchor.quote.slice(0, 120) + "”";
+  const ta = el("textarea", "dr-ta") as HTMLTextAreaElement;
+  ta.id = "doc-comment-body";
+  ta.placeholder = "What should change here?";
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveDocComment(ta.value); }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); docPendingQuote = null; renderDocReview(); }
+  });
+  const row = el("div", "dr-newrow");
+  const save = el("button", "dr-btn dr-submit") as HTMLButtonElement;
+  save.type = "button"; save.dataset.act = "drsave";
+  save.textContent = "Add comment";
+  const cancel = el("button", "dr-btn") as HTMLButtonElement; cancel.type = "button"; cancel.dataset.act = "drcancel";
+  cancel.textContent = "Cancel";
+  row.append(save, cancel);
+  box.append(at, ta, row);
+  return box;
+}
+
+// Mark every commented span in the rendered doc, reusing the comment-thread re-anchoring (findAnchorRange
+// tolerates the whitespace the renderer collapses; sliceRanges splits the hit over text nodes). A comment
+// whose span can no longer be found still rides the Submit — only its highlight is missing.
+function markDocComments(doc: HTMLElement, list: DocComment[]): void {
+  list.forEach((c, i) => {
+    const walker = document.createTreeWalker(doc, NodeFilter.SHOW_TEXT);
+    const nodes: Text[] = [];
+    let n: Node | null;
+    // Skip the chrome this pass already inserted — an earlier comment's mark (its number lives inside)
+    // and any expanded note — or a later comment could anchor to romp's own text.
+    while ((n = walker.nextNode())) if (!(n.parentElement?.closest("mark.dr-hl, .dr-note"))) nodes.push(n as Text);
+    const r = findAnchorRange(nodes.map((t) => t.data).join(""), c.quote);
+    if (!r) return;
+    const slices = sliceRanges(nodes.map((t) => t.data.length), r.start, r.end);
+    slices.forEach((sl, k) => {
+      const t = nodes[sl.idx];
+      const mid = sl.s > 0 ? t.splitText(sl.s) : t;
+      if (sl.e - sl.s < mid.data.length) mid.splitText(sl.e - sl.s);
+      const m = document.createElement("mark");
+      m.className = "dr-hl";
+      m.dataset.dcid = c.id;
+      m.dataset.act = "drmark";
+      m.title = c.body;
+      mid.parentNode?.insertBefore(m, mid);
+      m.appendChild(mid);
+      if (k === slices.length - 1) {                // the numbered marker rides the run's tail
+        const badge = document.createElement("sup");
+        badge.className = "dr-num";
+        badge.dataset.dcid = c.id;
+        badge.dataset.act = "drmark";
+        badge.textContent = String(i + 1);
+        m.appendChild(badge);
+      }
+    });
+    if (docOpenComment === c.id) {                  // expanded: the comment's text, inline under its span
+      const first = doc.querySelector(`mark.dr-hl[data-dcid="${cssEscape(c.id)}"]`);
+      const pop = document.createElement("span");
+      pop.className = "dr-note";
+      const txt = document.createElement("span"); txt.textContent = c.body;
+      const del = document.createElement("button");
+      del.type = "button"; del.className = "dr-note-x"; del.dataset.dcid = c.id; del.dataset.act = "drdel";
+      del.textContent = "✕"; del.title = "Remove this comment";
+      pop.append(txt, del);
+      first?.parentNode?.insertBefore(pop, first.nextSibling);
+    }
+  });
 }
 // Toggle a per-session view flag (feed mute / postal isolation) — the SAME message the timeline lane toggles
 // send, persisted + re-broadcast by the kernel. Optimistically update the local copy so reopening the menu
@@ -3994,6 +4296,11 @@ function showTabMenu(e: MouseEvent, id: string) {
 window.addEventListener("romp-hosts", () => { renderTabs(); });
 window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) dismissTabMenu(); }, true);
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") dismissTabMenu(); }, true);
+// Esc closes the doc reader — after the menus, and only when no comment box is open (that box eats its
+// own Esc first, so one press cancels the comment and a second closes the reader).
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && docReview && !docPendingQuote) { e.stopPropagation(); closeDocReview(); }
+});
 window.addEventListener("scroll", dismissTabMenu, true);
 window.addEventListener("blur", () => dismissTabMenu());
 
@@ -8157,7 +8464,10 @@ function persistDrafts(): void {
   try {
     vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), drafts: Object.fromEntries(drafts),
                             citations: Object.fromEntries(composerCitations),
-                            files: Object.fromEntries(composerFiles) });
+                            files: Object.fromEntries(composerFiles),
+                            // doc-review comments ride the draft lifecycle: a long read survives a reload
+                            // and a tab switch, and clears when its batch lands in the composer
+                            docComments: Object.fromEntries(docComments) });
   } catch { /* ignore */ }
 }
 try {
@@ -8182,6 +8492,17 @@ try {
                       src: typeof c.src === "string" ? c.src : undefined });
       }
       if (list.length) composerCitations.set(k, list);
+    }
+  const savedDocs = ((vscodeApi?.getState?.() || {}) as any).docComments;
+  if (savedDocs && typeof savedDocs === "object")
+    for (const [k, v] of Object.entries(savedDocs)) {
+      const list = (Array.isArray(v) ? v : []).filter((c: any) =>
+        c && typeof c.id === "string" && typeof c.quote === "string" && typeof c.body === "string");
+      if (list.length) docComments.set(k, list.map((c: any) => ({
+        id: c.id, quote: c.quote, body: c.body,
+        line: typeof c.line === "number" ? c.line : null,
+        ts: typeof c.ts === "number" ? c.ts : 0,
+      })));
     }
 } catch { /* ignore */ }
 
@@ -10090,6 +10411,26 @@ setupSettings();
       closeCommentPop();
       if (tid) setActive(tid);
     },
+    // Doc review (the user 2026-08-14). Delegated for the same reason as the comment marks: the reader
+    // re-renders on every saved comment, so a per-render listener would eat a mid-press click.
+    drclose: () => closeDocReview(),
+    drsubmit: () => submitDocReview(),
+    dropen: () => {
+      if (!docReview) return;
+      vscodeApi?.postMessage({ type: "openFile", path: docReview.path, id: docReview.sid });
+    },
+    drsave: () => {
+      const ta = document.getElementById("doc-comment-body") as HTMLTextAreaElement | null;
+      if (ta) saveDocComment(ta.value);
+    },
+    drcancel: () => { docPendingQuote = null; renderDocReview(); },
+    drmark: (elx) => {                       // a highlighted span or its number → show/hide its comment
+      const id = elx.dataset.dcid;
+      if (!id) return;
+      docOpenComment = docOpenComment === id ? null : id;
+      renderDocReview();
+    },
+    drdel: (elx) => { if (elx.dataset.dcid) removeDocComment(elx.dataset.dcid); },
     // a branch divider (child side) or branch chip (parent side): jump to the other end of the
     // branch, landing on the branch-point turn via the deep-link anchor machinery
     branchjump: (elx) => {

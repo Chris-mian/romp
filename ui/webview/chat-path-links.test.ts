@@ -36,7 +36,9 @@ test("membership in pathLinks gates the link, and the map's value is the OPEN ta
   // with NO pathLinks key on the event (old kernel, cached payload) the token opens as written
   assert.match(RENDER, /const open = isUri \? fileUriToPath\(tok\) : \(fixed \?\? tok\);/);
   assert.match(RENDER, /frag\.appendChild\(isUri \? fileUriLink\(tok\) : openPathLink\(tok, open, true\)\);/);
-  assert.match(RENDER, /a\.title = "Open " \+ open;/);
+  // (the title says Review for a text document, which opens romp's reader — the user 2026-08-14 — and
+  // Open for everything else; either way it names the FIXED target, so hover shows where a fix points)
+  assert.match(RENDER, /a\.title = \(isDoc \? "Review " : "Open "\) \+ open;/);
 });
 
 test("file:// URIs are explicit absolute paths — never gated on the map", () => {

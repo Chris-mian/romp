@@ -76,7 +76,7 @@ test("attachments ride the send as a trailing line of paths, quoted when they ho
 
 test("attachments live the DRAFT lifecycle: switch, reload, close", () => {
   // persisted beside drafts/citations, restored as a list of strings
-  assert.match(RENDER, /files: Object\.fromEntries\(composerFiles\) \}\);/);
+  assert.match(RENDER, /files: Object\.fromEntries\(composerFiles\),/);
   assert.match(RENDER, /const savedFiles = \(\(vscodeApi\?\.getState\?\.\(\) \|\| \{\}\) as any\)\.files;/);
   // a tab switch REPAINTS the strip (unlike citations, which the switch abandons)
   assert.match(RENDER, /renderComposerChips\(id\);   \/\/ the entering tab's own citation chip \(if any\)\s*\n\s*renderComposerFiles\(id\);/);

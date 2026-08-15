@@ -18439,6 +18439,12 @@ _img_cache = {}                                  # "path:mtime:size" → dataURL
 _PREVIEW_MIME = dict(_IMG_MIME, **{".pdf": "application/pdf"})
 _PREVIEW_MAX_BYTES = 50_000_000                  # a plot/report, not a dataset — bigger 413s (fail loudly)
 
+# ---- /doc source serving (the user 2026-08-14): the chat pane's review reader fetches a markdown doc's
+#      SOURCE so you can highlight a span, comment on it, and submit every comment at once. Text documents
+#      only, and no wider a reach than /file already has — the same resolution, the same serve-token gate.
+_DOC_EXT = {".md", ".markdown", ".txt"}
+_DOC_MAX_BYTES = 2_000_000                       # a design doc, not a log — bigger 413s rather than truncating
+
 
 def _img_data_url(p0):
     """A `path:<abs>` image → a data: URL the webview can <img src>. ~ expanded; absolute + known image
@@ -23009,6 +23015,28 @@ class Handler(BaseHTTPRequestHandler):
         with open(fp, "rb") as f:
             return self._send(200, f.read(), mime, cache="no-cache")
 
+    def _doc_source(self, q):
+        """GET /doc — the SOURCE TEXT of a markdown doc, for the chat pane's review reader (the user
+        2026-08-14). Same path resolution as click-to-open and /file (~ expanded, relative → the session's
+        cwd), and the same auth gate; the difference is what comes back: JSON with the text plus the mtime,
+        because the reader needs the source to anchor comments to line numbers and the mtime to tell you
+        the agent edited under you before you submit. Text documents only (_DOC_EXT) — anything else 404s,
+        exactly as an unrenderable extension does on /file. Oversize 413s rather than truncating: half a
+        doc would silently mis-number every anchor below the cut."""
+        fp = _resolve_open_path((q.get("path") or [""])[0], (q.get("sid") or [None])[0])
+        if os.path.splitext(fp)[1].lower() not in _DOC_EXT or not os.path.isabs(fp) or not os.path.isfile(fp):
+            return self._send(404, "not found", "text/plain")
+        if os.path.getsize(fp) > _DOC_MAX_BYTES:
+            return self._send(413, "too large to review", "text/plain")
+        try:
+            with open(fp, "rb") as f:
+                text = f.read().decode("utf-8", "replace")
+            mtime = os.path.getmtime(fp)
+        except OSError as e:
+            return self._send(500, "could not read: %s" % e, "text/plain")
+        return self._send(200, json.dumps({"path": fp, "text": text, "mtime": mtime}),
+                          "application/json", cache="no-cache")
+
     def do_OPTIONS(self):
         """CORS preflight. The strip's tunnel actions POST JSON (Content-Type:
         application/json is not a 'simple' request, so the webview's browser asks
@@ -23190,6 +23218,8 @@ class Handler(BaseHTTPRequestHandler):
                                   "application/json", cache="no-cache")
             if p == "/file":                                  # preview bytes for a chat path-thumbnail / feed artifact
                 return self._file_preview(q)
+            if p == "/doc":                                   # the SOURCE of a markdown doc, for the chat's review reader
+                return self._doc_source(q)
             if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
                                   "application/json", cache="no-cache")
