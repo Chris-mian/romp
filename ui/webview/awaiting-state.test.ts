@@ -80,7 +80,10 @@ test("the awaiting WHY lives in the background box, not the statusline (the user
   // several, and a plain-words note on what the state means. No Stop — nothing untracked is killable.
   assert.match(RENDER, /\{ renderAwaitWhy\(host, s \|\| null\); return; \}/);
   assert.match(RENDER, /"bg-fold-head bg-await"/);
-  assert.match(RENDER, /"Awaiting · " \+ why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\)/);
+  assert.match(RENDER, /"Awaiting" \+ \(kw \? " " \+ kw : ""\) \+ " · " \+ why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\)/);
+  // …the kind word rides the visible label (the user 2026-08-15) — tooltips are dead on the touch PWA
+  assert.match(RENDER, /KIND_WORD\[\(s!\.status\.awaitingKind \|\| ""\)\]/);
+  assert.match(RENDER, /chip-awaiting-" \+ \(s\.status\.awaitingKind \|\| "untyped"\)/);
   assert.match(RENDER, /if \(items\.length > 1\)/);
   assert.match(RENDER, /bg-await-note/);
   assert.doesNotMatch(RENDER.split("function renderAwaitWhy")[1].split("\n}")[0], /bg-stop/);

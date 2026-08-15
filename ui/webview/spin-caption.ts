@@ -31,7 +31,7 @@
 
 /** The card fields the ladder reads. Structural, so the test can pass plain objects. */
 export interface SpinItem {
-  awaiting?: { why?: string | null; tasks?: unknown[] | null } | null;
+  awaiting?: { why?: string | null; kind?: string | null; tasks?: unknown[] | null } | null;
   waitingOn?: unknown;
   provisional?: boolean;
   column?: string;
@@ -54,6 +54,12 @@ export interface Spin {
 
 const NONE: Spin = { caption: null, tip: "", awaitingBg: false };
 
+/** The awaiting KIND's one label word (kernel jd.AWAIT_KINDS; the user 2026-08-15). Kindless (an older
+ *  kernel, an untyped legacy stamp) falls back to "agents" — the word this box has always defaulted to. */
+export const KIND_WORD: Record<string, string> = {
+  agents: "agents", task: "task", job: "job", peer: "peer", timer: "timer",
+};
+
 /** dCompleted/dBlocked come from distillInputs(distillState, column) — the GENUINE resolution state, not
  *  the transient column. distillPending is passed in (rather than recomputed) so the two modules keep one
  *  owner for the "is the distiller still working" rule. */
@@ -70,15 +76,18 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
   // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
   const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
   if (aw && !it.waitingOn && !awTasks.length) {
-    // AWAITING — the session is held, waiting on background work it dispatched (agents). It keeps its own
-    // read: a boxed "Awaiting background agents" label. The romp swirl SPINS here too (the user 2026-07-04:
-    // a spin reads as "in flight, not stalled", which is exactly the awaiting state — the box already
-    // distinguishes it from the actively-working cases, so the glyph needn't also freeze). A subagent/overlay
-    // why keeps the classic boxed label; the caption wraps to two lines if long.
+    // AWAITING — the session is held, waiting on work it dispatched. It keeps its own read: a boxed
+    // "Awaiting <kind-word>" label, the kind carried as DATA from the kernel (the user 2026-08-15) so
+    // the box says WHAT is awaited — agents, a job on a cluster, a timer — not one word for five
+    // states. The romp swirl SPINS here too (the user 2026-07-04: a spin reads as "in flight, not
+    // stalled", which is exactly the awaiting state — the box already distinguishes it from the
+    // actively-working cases, so the glyph needn't also freeze). A why that already leads with
+    // "waiting on" is shown verbatim (capitalized); the kind word is the fallback frame.
     const why = aw.why || "";
+    const word = KIND_WORD[aw.kind || ""] || "agents";   // kindless = the box's historic default
     return {
       caption: /^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
-                                        : "Awaiting background agents",
+                                        : "Awaiting " + word,
       tip: why ? why + ". Not on you; paused until the background work lands."
                : "Paused, waiting on background work it dispatched (not on you). Clears when the result lands.",
       awaitingBg: true,

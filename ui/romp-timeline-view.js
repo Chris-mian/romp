@@ -313,7 +313,9 @@ function badgeFor(s) {
   // paler sibling: same family, visibly held rather than producing. The s.awaitingBg why-field key stays as
   // the fallback (a remote host on an older kernel still reports state 'working' + the field).
   // (The LEGACY lane state 'awaiting' above means blocked-on-you — this name dodges that.)
-  else if (s.state === 'awaitingBg' || s.awaitingBg) m = { label: 'Awaiting', kind: 'awaitbg' };
+  // The KIND rides the label ('Awaiting job', the user 2026-08-15) — the enum values ARE the words;
+  // an older kernel ships no awaitingKind and the badge reads plain 'Awaiting' as before.
+  else if (s.state === 'awaitingBg' || s.awaitingBg) m = { label: 'Awaiting' + (s.awaitingKind ? ' ' + s.awaitingKind : ''), kind: 'awaitbg' };
   else if (s.state === 'ready' || s.state === 'waiting' || s.state === 'idle') m = { label: 'Ready', kind: 'ready' };
   if (!m) return null;
   return { label: m.label, bg: BADGE[m.kind].bg, fg: BADGE[m.kind].fg };
