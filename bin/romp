@@ -756,8 +756,9 @@ fi
 #   * `waiting` is AT REST, not attention-needed. It is the ordinary state of a session sitting
 #     there having finished its turn, and it is what most of the fleet reads most of the time.
 #     Substring-matching /wait/ into an alert paints a "needs you" badge on every idle session,
-#     which is worse than the blank it replaced. The states that DO want the user are `awaiting`
-#     (a permission prompt) and `blocked`.
+#     which is worse than the blank it replaced. The states that DO want the user are `permission`
+#     and `picker` (a live prompt) and `blocked`. (These are the RAW backend states; the dashboard's
+#     chip vocabulary — needsInput, awaitingBg — never rides this command.)
 #   * `id` is the durable key, NOT `lastSid`. Every per-session store romp keeps (states/,
 #     captions/, goals/, episodes/) is filed under `id`. `lastSid` is the live Claude Code
 #     transcript's fsid, which FORKS on /clear — it is what the old tmux @romp-session-id

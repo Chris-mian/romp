@@ -40,7 +40,7 @@ var SHORTCUT_ROWS =
 
 // Auto Nudge's hover description lives in a var because fillAutoNudge() appends to it when the attached
 // machines disagree — the row then has to say WHICH ones, and this is the one level down from the label.
-var AUTONUDGE_SUB = "When a session goes idle but its goal still shows working (not blocked, not awaiting "
+var AUTONUDGE_SUB = "When a session goes idle but its goal still shows working (not blocked, not awaiting agents or a job "
   + "you), automatically nudge it once for a status update. Applies to every connected machine's kernel.";
 
 // The modal markup — ported verbatim from the kernel's _gear_html; the model/

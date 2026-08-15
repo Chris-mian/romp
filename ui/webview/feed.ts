@@ -490,7 +490,7 @@ const openBgSvc = new Set<string>();   // sids with the chip's process list expa
 // arrive collapsed too, and a card's column is not knowable when you fold the thread. Persisted across
 // reloads with the rest of the disclosure state, and deliberately NOT pruned when the cards go away.
 const collapsedThreads = new Set<string>();
-// names of sessions idle-but-AWAITING background work (the user 2026-07-13): the same dot in straw —
+// names of sessions idle-but-AWAITING background work (the user 2026-07-13): the same dot in await-green —
 // matching the chat chip's Awaiting color — so a held session reads differently from a working one.
 let awaitingSet = new Set<string>();
 // Sessions the kernel LISTS but whose live state it could not read. These draw a gray ring, which
@@ -3692,7 +3692,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       const c = a.sid ? a.sid.indexOf(":") : -1;             // remote sid → also index the bare name under its host
       if (c > 0 && !a.name.includes(":")) sessionColors.set(a.sid.slice(0, c) + ":" + a.name, a.color.bg);
     }
-    awaitingSet = new Set(Array.isArray(m.awaiting) ? m.awaiting : []);   // straw awaiting dots (the user 2026-07-13)
+    awaitingSet = new Set(Array.isArray(m.awaiting) ? m.awaiting : []);   // await-green awaiting dots (the user 2026-07-13)
     unknownSet = new Set(Array.isArray(m.stateUnknown) ? m.stateUnknown : []);   // listed-but-unreadable → gray ring, never a blank
     bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
     if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)

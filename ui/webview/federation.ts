@@ -314,7 +314,7 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
     if (Array.isArray(f.items)) merged.items.push(...f.items);
     if (Array.isArray(f.asks)) merged.asks.push(...f.asks);
     if (Array.isArray(f.working)) merged.working.push(...f.working);
-    if (Array.isArray(f.awaiting)) merged.awaiting.push(...f.awaiting);   // straw awaiting dots ride like working
+    if (Array.isArray(f.awaiting)) merged.awaiting.push(...f.awaiting);   // await-green awaiting dots ride like working
     // the unreadable-state list rides the same way; a host too old to send it contributes to
     // NEITHER list, so its sessions stay blank (= "quiet") rather than reading falsely as unknown
     if (Array.isArray(f.stateUnknown)) merged.stateUnknown.push(...f.stateUnknown);

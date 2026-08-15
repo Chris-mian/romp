@@ -18,10 +18,10 @@ const FEEDCSS = W("feed.css");
 const FED = W("federation.ts");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "bin", "romp-kernel"), "utf8");
 
-test("the chat chip knows awaitingBg: its own straw chip, label 'Awaiting', with the elapsed timer", () => {
+test("the chat chip knows awaitingBg: its own await-green chip, label 'Awaiting', with the elapsed timer", () => {
   assert.match(RENDER, /"awaiting" \| "awaitingBg" \|/);           // the ChipState union carries both meanings
   assert.match(RENDER, /awaitingBg: "Awaiting",/);                 // CHIP_LABEL
-  // its own statusline branch: straw chip + the wait's clock — but NO pulse (nothing computing here)
+  // its own statusline branch: await-green chip + the wait's clock — but NO pulse (nothing computing here)
   assert.match(RENDER, /\} else if \(s\.status\.state === "awaitingBg"\) \{[\s\S]*?chip chip-awaitingBg[\s\S]*?timer\.id = "work-timer";/);
   assert.doesNotMatch(RENDER.split('state === "awaitingBg") {')[1].split("} else if")[0], /chip-pulse/);
   // the ticking clock covers it, same as working
@@ -30,7 +30,7 @@ test("the chat chip knows awaitingBg: its own straw chip, label 'Awaiting', with
   assert.doesNotMatch(RENDER, /awaitingBg[^\n]*stopButton|stopButton[^\n]*awaitingBg/);
 });
 
-test("the chat tab dot matches the chip: straw for awaitingBg, yellow for working", () => {
+test("the chat tab dot matches the chip: await-green for awaitingBg, yellow for working", () => {
   assert.match(RENDER, /if \(st === "working"\) tab\.appendChild\(el\("span", "tab-dot"\)\);\s*\n\s*else if \(st === "awaitingBg"\) tab\.appendChild\(el\("span", "tab-dot await"\)\);/);
   assert.match(STYLES, /--st-awaitbg-bg: #54B204; --st-awaitbg-fg: #0c1a00;/);
   assert.match(STYLES, /\.chip-awaitingBg \{ background: var\(--st-awaitbg-bg\); color: var\(--st-awaitbg-fg\); \}/);
@@ -76,7 +76,7 @@ test("the awaiting WHY lives in the background box, not the statusline (the user
   assert.doesNotMatch(branch, /sl-await-why/);
   assert.doesNotMatch(STYLES, /sl-await-why/);
   // …and the #bg-tasks box renders it when no tracked tasks claim the box: the same fold treatment
-  // (straw dot, verb-stripped header), expanding to the full why, the awaited items when there are
+  // (await-green dot, verb-stripped header), expanding to the full why, the awaited items when there are
   // several, and a plain-words note on what the state means. No Stop — nothing untracked is killable.
   assert.match(RENDER, /\{ renderAwaitWhy\(host, s \|\| null\); return; \}/);
   assert.match(RENDER, /"bg-fold-head bg-await"/);

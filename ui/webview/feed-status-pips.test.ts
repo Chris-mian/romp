@@ -1,7 +1,7 @@
 // Status pips: what renders, and — just as load-bearing — what does NOT.
 //
 // The rule the three surfaces (feed, sessions pane, chat tab strip) agree on: a pip marks something
-// HAPPENING (gold working, straw awaiting background work) or something WRONG (a gray ring when the
+// HAPPENING (gold working, await-green awaiting background work) or something WRONG (a gray ring when the
 // live state could not be read). A healthy idle session gets no pip at all, so a blank means "alive
 // and quiet" and nothing else. Before the gray ring existed, an unreadable state drew the same
 // nothing as an idle one, which is how a rendering hole hid in plain sight.

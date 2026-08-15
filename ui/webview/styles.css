@@ -151,7 +151,7 @@ body { display: flex; flex-direction: column; }
 .tab.tab-awaiting, .tab.tab-blocked, .tab.tab-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
-.tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the straw chip (the user 2026-07-13) */
+.tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the await-green chip (the user 2026-07-13) */
 /* state UNKNOWN: a hollow ring in the same "can't see it" gray the network strip paints a down host
    (the `#8a8a8a` in strip.ts's status-dot colour pick) — no-information rendered as itself, so a
    bare tab never has to carry that meaning. */
@@ -457,7 +457,7 @@ body { display: flex; flex-direction: column; }
 .bg-stop:disabled { opacity: 0.55; cursor: default; }
 .bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
 .bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }
-.bg-fold-head.bg-await { --bgt: var(--st-awaitbg-bg); }   /* the Awaiting why header — straw, like its chip */
+.bg-fold-head.bg-await { --bgt: var(--st-awaitbg-bg); }   /* the Awaiting why header — await-green, like its chip */
 .bg-fold-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 /* level 2: a flat list of task LINES (no boxes) BELOW the header, fills the box and scrolls when many */
 .bg-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
@@ -728,7 +728,8 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .apierror-retry:disabled { opacity: 0.55; cursor: default; }
 .apierror-body { margin-top: 5px; font-size: 0.86em; color: var(--dim); line-height: 1.35; }
 .chip-ready { background: var(--st-ready-bg); color: var(--st-ready-fg); }
-.chip-awaiting { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
+.chip-needsInput { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
+.chip-awaiting { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }   /* legacy name — an older remote kernel */
 .chip-awaitingBg { background: var(--st-awaitbg-bg); color: var(--st-awaitbg-fg); }
 /* retrying = a SOFT 'blocked on the API' (rate-limit / overload auto-retry) — not a hang, not working. Amber/
    orange, deliberately distinct from working-yellow and blocked-red (the user via api 2026-06-23). */
