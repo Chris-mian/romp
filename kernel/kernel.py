@@ -21393,7 +21393,9 @@ var X=function(i){return (n>1?i/(n-1):0.5)*W;},Y=function(v){return H-1-Math.max
 var grid='',ylab='',xlab='';
 for(var g=step;g<=top;g+=step){var gy=Y(g);
 grid+='<line x1="0" y1="'+gy.toFixed(1)+'" x2="'+W+'" y2="'+gy.toFixed(1)+'" stroke="rgba(255,255,255,0.10)" stroke-width="1" vector-effect="non-scaling-stroke"/>';
-ylab+='<span class=ru-tip-gy style="top:'+(gy/H*56).toFixed(0)+'px">$'+g+'</span>';}
+// ONE y label, the top gridline only (the user 2026-08-15): a $100/$200/$300/$400 stack said the
+// same thing four times in a chart 64px tall — the gridlines keep the rhythm, the ceiling names it
+if(g===top)ylab+='<span class=ru-tip-gy style="top:'+(gy/H*56).toFixed(0)+'px">$'+g+'</span>';}
 for(var i=0;i<n;i++){var d=new Date((h0+i)*3600000);
 if(d.getHours()===0){var gx=X(i);
 grid+='<line x1="'+gx.toFixed(1)+'" y1="0" x2="'+gx.toFixed(1)+'" y2="'+H+'" stroke="rgba(255,255,255,0.06)" stroke-width="1" vector-effect="non-scaling-stroke"/>';
