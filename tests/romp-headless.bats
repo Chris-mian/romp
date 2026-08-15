@@ -105,6 +105,25 @@ assert json.loads(body) == {"name": "helper", "text": 'fix the "thing" \\ and th
 PY
 }
 
+@test "romp send --tag appends the render-hint marker; bad labels and missing text exit 2" {
+    start_fake_kernel '{"ok": true}'
+    run "$ROMP_SCRIPT" send helper --tag kickoff 'boot brief for the run'
+    [ "$status" -eq 0 ]
+    python3 - "$TEST_DIR/req" <<'PY'
+import json, sys
+body = open(sys.argv[1]).read().split("\n", 1)[1]
+d = json.loads(body)
+assert d["name"] == "helper", d
+assert d["text"] == "boot brief for the run\n\n<!-- romp-tag: kickoff -->", d
+PY
+    run "$ROMP_SCRIPT" send helper --tag 'two words' 'text'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"--tag must be one word"* ]]
+    run "$ROMP_SCRIPT" send helper --tag kickoff
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"usage: romp send"* ]]
+}
+
 @test "a kernel refusal is loud: non-zero exit + the kernel's answer" {
     start_fake_kernel '{"ok": false, "error": "id or name required"}'
     run "$ROMP_SCRIPT" interrupt ghost

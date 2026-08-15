@@ -14128,6 +14128,10 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                                 # romp's canned words — still blue, but the chat folds it to a gist instead
                                 # of posing the prose as typed. Comment form only, like romp-system above.
                                 ev["canned"] = "continue"
+                            if author == "human":
+                                mtag = em.MSG_TAG_RE.search(text)
+                                if mtag:                    # sender-declared render hint: auto-generated text
+                                    ev["tag"] = mtag.group(1)   # shown under the sender's label, never posed as typed
                             if author == "romp":         # a feed nudge/follow-up romp injected → gray romp bubble
                                 ev["romp"] = True
                                 if a.get("rompAuto"):    # an AUTO-nudge (not the Nudge button) → the chat draws the romp swirl
