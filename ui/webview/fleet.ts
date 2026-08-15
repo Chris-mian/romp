@@ -145,7 +145,7 @@ function paintFoldButtons() {
 function el(tag: string, cls?: string): HTMLElement { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
 // The status pip before a session name — the same language the feed's .fwork-dot speaks: gold =
-// working, straw = awaiting dispatched background work, gray ring = the live state could not be
+// working, await-green = awaiting dispatched background work, gray ring = the live state could not be
 // read. A healthy idle session gets NO pip, so a blank means "alive and quiet" and nothing else.
 // That only holds if every OTHER state renders, which is why the awaiting dot belongs here too: the
 // feed has shown it since 2026-07-13, but this pane did not, so an awaiting session was blank here

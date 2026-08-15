@@ -1,7 +1,7 @@
 // Timeline AWAITING badge (the user 2026-07-01, working-state audit; recolored 2026-07-13): the lane
 // shows a distinct AWAITING badge for "waiting on dispatched/background work". Originally the badge wore
 // working-yellow; since the kernel's shared _session_chip split awaitingBg out of "working" (the user
-// 2026-07-13: "differentiate working from awaiting") it wears its OWN straw — the working gold's paler
+// 2026-07-13: "differentiate working from awaiting") it wears its OWN await-green — the working gold's paler
 // sibling — matching the chat chip and the tab/feed dots. The s.awaitingBg why-field stays the fallback
 // key for a remote host on an older kernel (state still 'working' there).
 import { test } from "node:test";
@@ -29,8 +29,8 @@ test("precedence: blocked-on-you beats awaiting, awaiting beats Ready", () => {
   assert.ok(awaiting < ready, "awaiting is checked before the plain Ready fallback");
 });
 
-test("the legacy lane state 'awaiting' (blocked-on-you) still maps to Blocked, untouched", () => {
-  assert.match(TL, /s\.state === 'permission' \|\| s\.state === 'awaiting'\) m = \{ label: 'Blocked', kind: 'attention' \}/);
+test("needsInput maps to Blocked, and the legacy 'awaiting' name (an older remote kernel) still does too", () => {
+  assert.match(TL, /s\.state === 'permission' \|\| s\.state === 'needsInput' \|\| s\.state === 'awaiting'\) m = \{ label: 'Blocked', kind: 'attention' \}/);
 });
 
 test("an idle awaitingBg lane draws a full-thickness FADED stretch (0.4 alpha), not a thin dash (the user 2026-07-13)", () => {

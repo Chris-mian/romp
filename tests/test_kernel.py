@@ -4448,7 +4448,7 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["column"], "needs_input", "a picker-floored card files under BLOCKED directly")
         self.assertIn("input", card["blocked"]["what"], "picker wording reflects a question, not an approval")
         # the session chip (build_session payload) also reads "awaiting" on a picker, like a permission
-        self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "awaiting",
+        self.assertEqual(km.build_session(SID, NOW)["status"]["state"], "needsInput",
                          "the session chip reads awaiting on a live picker")
 
     def test_feed_permission_does_not_floor_a_completed_focus(self):
@@ -5937,7 +5937,7 @@ class ViewBuilder(unittest.TestCase):
         km._tmux_sessions = lambda: {SID: {"state": "permission", "since": NOW - 5, "model": "Opus 4.8",
                                            "effort": "max", "context": 20, "compactPct": None, "color": None}}
         st = km.build_session(SID, NOW)["status"]
-        self.assertEqual(st["state"], "awaiting", "permission -> awaiting chip")
+        self.assertEqual(st["state"], "needsInput", "permission -> the needs-input chip (renamed 2026-08-15)")
         self.assertEqual(st["model"], "Opus 4.8")
         self.assertEqual(st["ctx"], "20")
 

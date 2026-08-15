@@ -2355,7 +2355,7 @@ def _auto_resume_session_retry(now, tmux):
         if _last_human_msg_t(session["turns"]) <= floor:
             continue                                      # user hasn't re-engaged since the stop → still hands-off
         chip = _session_chip(sid, path, session, tmux.get(sid), now)
-        if chip in ("ready", "idle", "awaiting", "awaitingBg", "closed"):   # re-engaged turn settled clean → the message went through
+        if chip in ("ready", "idle", "needsInput", "awaitingBg", "closed"):   # re-engaged turn settled clean → the message went through
             if _clear_session_retry_suppress(sid):
                 changed = True
                 sys.stderr.write("retry-suppress: re-armed session %s — a successful turn landed\n" % sid)
@@ -10830,7 +10830,7 @@ def _bg_owner_tops(fsid, path, tasks):
     This is the OWNERSHIP the awaiting floor's blocked-yield needs (the user 2026-07-17, quartz):
     the 2026-07-15 event-order guard (dispatch newer than block → the block is stale) compared times
     ONLY, session-wide — so a watcher relaunched after a kernel restart (89s after an unrelated card's
-    block) re-dressed a genuine needs-you as the straw awaiting badge. Ownership makes the yield exact:
+    block) re-dressed a genuine needs-you as the await-green awaiting badge. Ownership makes the yield exact:
     only a task dispatched from the blocked card's own thread can prove that card moved on. A task whose
     launch can't be resolved to a placement (a pre-fork transcript, not yet placed) attributes to
     NOTHING — the conservative failure: an unproven dispatch never masks a block (fail loudly beats a
@@ -12685,13 +12685,13 @@ def _session_chip(sid, path, session, tm, now):
             "compacting" if compacting else
             "interrupting" if _interrupting(sid, session, now, tm) else   # stop dispatched, not yet settled
             "blocked" if aerr else
-            "awaiting" if st in _NEEDS_INPUT_STATES else               # a live permission/picker prompt
+            "needsInput" if st in _NEEDS_INPUT_STATES else             # a live permission/picker prompt
             "retrying" if st == "retrying" else
             "working" if open_now else
             # idle main thread, waiting on background work it dispatched (bg tasks / subagents / overlay):
             # its OWN state, no longer folded into "working" (the user 2026-07-13, who wanted to differentiate working
-            # from awaiting) — the chip says Awaiting in the straw color, the tab/feed dots match, and the
-            # timeline badge recolors, all off this one shared value. ("awaiting" above = awaiting INPUT.)
+            # from awaiting) — the chip says Awaiting in the await-green color, the tab/feed dots match, and the
+            # timeline badge recolors, all off this one shared value. (needsInput above = a live prompt on YOU — renamed from the legacy chip state "awaiting" 2026-08-15, which collided with this state's name.)
             "awaitingBg" if awaiting_why else "ready")
 
 
@@ -15958,7 +15958,7 @@ def build_feed(now, tmux=None):
         sess_awaiting_why = _sess_aw["why"] if _sess_aw else None
         sess_awaiting_kind = _sess_aw["kind"] if _sess_aw else None
         if sess_awaiting_why and not who_working:
-            awaiting.append(name)                    # the AWAITING dot list (straw, the user 2026-07-13) — the
+            awaiting.append(name)                    # the AWAITING dot list (await-green, the user 2026-07-13) — the
             #                                          same split _session_chip makes; feed/chat dots match the chip
         # API-error floor: a session stopped on an API error (transcript isApiErrorMessage, event-based)
         # floors its focus top-goal under BLOCKED with an apiError reason → the feed card shows a red
@@ -15995,7 +15995,7 @@ def build_feed(now, tmux=None):
                 jauth_top = f
         plain_user_t = _last_plain_user_turn_t(ps["turns"]) if ps else 0   # re-check: a plain reply after a soft block de-urgents it
         had_working = False                          # does this session show ANY working card? → drives the provisional placeholder
-        had_awaiting = False                         # …and does any of them read AWAITING? → the session's straw dot (below)
+        had_awaiting = False                         # …and does any of them read AWAITING? → the session's await-green dot (below)
         # The live background-task set, once per session: OWNERSHIP for the blocked-yield below (any live
         # task counts there — the yield keys on the dispatch event, not on classification), and the
         # judge-classified SERVICES for the neutral per-session chip (the user 2026-07-24). Idle-gated
@@ -16025,7 +16025,7 @@ def build_feed(now, tmux=None):
             # that dispatch is NEWER than the block's own evidence. Two guards, both exact:
             #  - OWNERSHIP (the user 2026-07-17, quartz): the 07-15 time-only guard compared the
             #    session-wide newest dispatch — a campaign watcher relaunched after a kernel restart
-            #    (89s after an UNRELATED card's block) re-dressed a genuine needs-you as the straw
+            #    (89s after an UNRELATED card's block) re-dressed a genuine needs-you as the await-green
             #    awaiting badge. _bg_owner_tops resolves each live task's launch to its placed top;
             #    a task owned elsewhere — or one whose launch can't be attributed (subagents, the
             #    overlay, an unplaced launch) — never flips a blocked card. Genuinely stale blocks are
@@ -16492,7 +16492,7 @@ def build_feed(now, tmux=None):
     for _a in asks:
         _a["notify"] = True if _notify_card_effective(_ncards, _a["itemId"], str(_a.get("sid") or "")) else None
     return {"type": "feed", "asks": asks, "now": now,
-            "working": working, "awaiting": awaiting,   # awaiting = idle-but-waiting-on-bg-work names → straw dot (the user 2026-07-13)
+            "working": working, "awaiting": awaiting,   # awaiting = idle-but-waiting-on-bg-work names → await-green dot (the user 2026-07-13)
             # listed-but-unreadable names → an explicit gray ring, so a BLANK pip means "alive and
             # quiet" and nothing else (see _state_unknown_names)
             "stateUnknown": _state_unknown_names(alive, tmux, working, awaiting),
@@ -18009,7 +18009,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                                           # turn that never returned a ResultMessage, then ended) must not read as
                                           # active (the user 2026-06-23); badgeFor dims a dead lane anyway.
             blocked = "blocked" in goals.get("status", {}).values() and not _session_flag(sid, "hideFromFeed")
-            state = "awaiting" if blocked else "idle"   # muted → no 'awaiting'/background-task badge on the lane
+            state = "needsInput" if blocked else "idle"   # muted → no awaiting/background-task badge on the lane
             aw_open = open_now                          # unused (awaitingBg is None for a dead lane) — kept defined
         bars, last_t, seg_ends = [], None, {}            # seg_ends: seg-start t → work-END t (for completion marks)
         for ti, turn in enumerate(st_turns):
@@ -19409,7 +19409,7 @@ def _push(targets, connect=False, tmux=None):
                                                if isinstance(m.get("ledger"), dict)
                                                else m.get("ledger"))} for m in chat_sessions]
             for c in chat_clients:                       # the working-dot list (chat reads feed["working"]);
-                #                                          awaiting rides along for the straw dots (2026-07-13)
+                #                                          awaiting rides along for the await-green dots (2026-07-13)
                 _send_client(c, ("working",), {"type": "working", "names": feed["working"],
                                                "awaiting": feed.get("awaiting") or []})
         # TIMELINE in two messages (the user 2026-06-25): the LANES SKELETON ({type:"data"}) flushes FIRST —

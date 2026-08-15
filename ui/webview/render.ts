@@ -209,7 +209,7 @@ type ChatEvent = (
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
+type ChipState = "working" | "ready" | "needsInput" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // needsInput = a live permission/picker prompt (on YOU) — renamed from the legacy "awaiting" (2026-08-15), which stays accepted for OLDER REMOTE KERNELS across federation; awaitingBg = idle main thread waiting on background work it dispatched (the user 2026-07-13)
 interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingTasks?: string[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; authBoth?: boolean; authAcct?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it when no tracked tasks claim the box (renderAwaitWhy; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
@@ -3708,12 +3708,12 @@ function renderTabs() {
     // the user 2026-07-14), or a spent model allowance (switch model, the user 2026-08-01) — is alarm-red dashed; a TRANSIENT API error is auto-retrying and needs no attention → the
     // amber retrying treatment, not red (the user 2026-06-29).
     else if (st === "blocked") tab.classList.add((s.status.apiTooLong || s.status.apiSpendLimit || s.status.apiModelLimit || s.status.apiAuthErr) ? "tab-blocked" : "tab-retrying");
-    else if (st === "awaiting") tab.classList.add("tab-awaiting");
+    else if (st === "needsInput" || st === "awaiting") tab.classList.add("tab-awaiting");   // legacy name = an older remote kernel
     else if (st === "retrying") tab.classList.add("tab-retrying");       // amber: soft-blocked on an API auto-retry
     else if (st === "compacting" || st === "clearing") tab.classList.add("tab-compacting");   // both: a context op in flight
     else if (st === "closed") tab.classList.add("tab-closed");       // dead session: read-only, struck-through label
     if (s.status.faded) tab.classList.add("at-rest");
-    // WORKING shows a yellow dot; AWAITING-BG the same dot in straw — matching the chip's color, so the
+    // WORKING shows a yellow dot; AWAITING-BG the same dot in await-green — matching the chip's color, so the
     // tab reads the split at a glance (the user 2026-07-13); BLOCKED (API error) gets NO dot — the dashed
     // red tab highlight instead (the user 2026-06-16).
     if (st === "working") tab.appendChild(el("span", "tab-dot"));
@@ -7157,7 +7157,7 @@ function renderBgTasks() {
 // The Awaiting session's WHY, in the same box when NO tracked tasks claim it (the user 2026-08-13:
 // the reason spent a few hours beside the statusline chip — PR #350 — and crowded the composer area;
 // this box between transcript and composer is where dispatched work has always surfaced). Same fold
-// treatment as the task header: one straw-dotted line, click → the full why, each awaited item when
+// treatment as the task header: one await-green-dotted line, click → the full why, each awaited item when
 // there are several, and a plain-words note on what the state means. No Stop here — an untracked wait
 // (a peer's PR, a build) has no process to kill; tracked run_in_background tasks take the list path
 // above, which carries one Stop per running row.
@@ -7893,7 +7893,7 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
   if (!s) return;
   // a pending permission/picker prompt owns the pane's keyboard — injecting a
   // slash command there would answer the prompt instead (host guards this too)
-  if (s.status.state === "awaiting") return;
+  if (s.status.state === "needsInput" || s.status.state === "awaiting") return;
   const menu = el("div", "meta-menu");
   menu.dataset.kind = kind;
   // An sdkOnly entry is dropped on tmux rather than shown-and-refused: the backend cannot apply it, and
@@ -7944,7 +7944,7 @@ function ctxBar(): HTMLElement {
     const s = activeId ? sessions.get(activeId) : null;
     if (!s || !vscodeApi) return;
     // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
-    if (s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
+    if (s.status.state === "needsInput" || s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
     vscodeApi.postMessage({ type: "compactSession", id: activeId });
     bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
   });
@@ -7989,8 +7989,9 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 }
 
 const CHIP_LABEL: Record<ChipState, string> = {
-  working: "Working", ready: "Ready", awaiting: "Blocked",
-  awaitingBg: "Awaiting",   // idle, waiting on background work it dispatched — straw, not working-yellow (the user 2026-07-13)
+  working: "Working", ready: "Ready", needsInput: "Blocked",
+  awaiting: "Blocked",   // the legacy name for needsInput — an older remote kernel still sends it
+  awaitingBg: "Awaiting",   // idle, waiting on background work it dispatched — the romp await-green, not working-yellow (the user 2026-07-13; recolored from straw 2026-07-22)
   idle: "Idle", closed: "Closed", compacting: "Compacting", clearing: "Clearing", blocked: "API error",
   retrying: "API retrying…",   // a live session stalled on an API rate-limit/overload auto-retry (api 2026-06-23)
   interrupting: "Interrupting…",   // stop sent, turn not yet settled (the user 2026-07-02) — clears to READY on its own
@@ -8070,7 +8071,7 @@ function updateStatusline() {
     timer.textContent = elapsedMs(s.status.sinceEpoch);
     sl.appendChild(timer);
   } else if (s.status.state === "awaitingBg") {
-    // idle main thread, waiting on background work it dispatched (the user 2026-07-13): its own straw
+    // idle main thread, waiting on background work it dispatched (the user 2026-07-13): its own await-green
     // chip — no pulse (nothing is computing HERE), but the elapsed timer stays so the wait has a clock
     const chip = el("span", "chip chip-awaitingBg");
     // the KIND rides the label so a glance says WHAT is awaited (the user 2026-08-15) — tooltips are

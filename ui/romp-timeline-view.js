@@ -307,10 +307,11 @@ function badgeFor(s) {
   // chip vocabulary below; the legacy raw names stay accepted for the cold-skeleton fallback.
   else if (s.state === 'blocked') m = { label: 'API error', kind: 'attention' };  // same red the chat chip shows
   else if (s.state === 'interrupting') m = { label: 'Interrupting', kind: 'working' };  // stop in flight
-  else if (s.state === 'permission' || s.state === 'awaiting') m = { label: 'Blocked', kind: 'attention' };
+  else if (s.state === 'permission' || s.state === 'needsInput' || s.state === 'awaiting') m = { label: 'Blocked', kind: 'attention' };   // 'awaiting' = the legacy name, an older remote kernel
   // AWAITING dispatched/background work: its OWN chip state now ('awaitingBg', the kernel's shared
-  // _session_chip split, the user 2026-07-13 — no longer folded into working) in STRAW, the working gold's
-  // paler sibling: same family, visibly held rather than producing. The s.awaitingBg why-field key stays as
+  // _session_chip split, the user 2026-07-13 — no longer folded into working) in the romp brand GREEN
+  // (recolored from the original straw, the user 2026-07-22): visibly held rather than producing. The
+  // s.awaitingBg why-field key stays as
   // the fallback (a remote host on an older kernel still reports state 'working' + the field).
   // (The LEGACY lane state 'awaiting' above means blocked-on-you — this name dodges that.)
   // The KIND rides the label ('Awaiting job', the user 2026-08-15) — the enum values ARE the words;
@@ -2210,7 +2211,7 @@ class TimelinePanel {
     const reopen = this._metaMenu && this._metaMenu._kind === kind && this._metaMenu._sid === s.id;
     this._closeMetaMenu();
     if (reopen) return;
-    if (s.state === 'awaiting' || s.state === 'permission') return;
+    if (s.state === 'needsInput' || s.state === 'awaiting' || s.state === 'permission') return;
     // Styled inline (NOT via a CSS class): injectStyles() guards on an existing <style> id, so a CSS
     // rule added later never lands after a plugin reload — only a full restart. Inline always applies.
     // MENU_STYLE/etc = the one shared menu vocabulary (CLAUDE.md rule, the user 2026-08-09) — the chat
@@ -2664,7 +2665,7 @@ class TimelinePanel {
         const bh = lit ? eh : BAR_H;
         const bar = el('rect', { x: bx, y: y - bh / 2, width: bw, height: bh, rx: bh / 2, fill: s.color, opacity: lit ? 1 : 0.9 });
         svg.appendChild(bar);
-        const act = s.state === 'working' || s.state === 'permission' || s.state === 'awaiting' || s.state === 'awaitingBg' || s.state === 'compacting' || s.state === 'clearing';
+        const act = s.state === 'working' || s.state === 'permission' || s.state === 'needsInput' || s.state === 'awaiting' || s.state === 'awaitingBg' || s.state === 'compacting' || s.state === 'clearing';
         const ongoing = s.live && act && t.end > t.start && (data.now - t.end) <= 5;
         const hit = el('rect', { x: bx, y: y - 7, width: bw, height: 14, fill: 'transparent' }); hit.style.cursor = 'pointer';
         const html = () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(t.start) + '–' + clock(t.end) + '</span></div>' + this.barBody(t, ongoing);
@@ -2715,7 +2716,7 @@ class TimelinePanel {
       // input (historical, from the state-transition log), plus the current open one. The
       // dashed white overlay reads as a distinct texture vs a solid "still working" bar.
       const aw = (s.awaiting && s.awaiting.length) ? s.awaiting
-                 : ((s.live && (s.state === 'permission' || s.state === 'awaiting') && s.since != null) ? [[s.since, t1]] : []);
+                 : ((s.live && (s.state === 'permission' || s.state === 'needsInput' || s.state === 'awaiting') && s.since != null) ? [[s.since, t1]] : []);
       for (const span of aw) {
         const a0 = span[0], b0 = span[1];
         const sa = Math.max(a0, t0), sb = Math.min(b0, t1); if (sb <= sa) continue;

@@ -316,8 +316,12 @@ permission/API-error floors: one interrupt at a time, the present event first.
 - **auto-nudge**: a kernel trigger, not an LLM. Detects a genuinely stalled
   session and injects one nudge prompt; the planner's nudge phase does the
   judging, and a failed nudge records the block.
-- **awaiting**: event-derived, never a verdict. Only real subagents make an
-  idle session awaiting.
+- **awaiting**: layered. The LIVE sources are event-derived — subagents,
+  the pending background-task set, the delegation graph — and the CLOSER files a
+  durable awaiting verdict (the goal store's ⏳ stamp) carrying a KIND naming
+  what the wait is on: agents, task, job (an external computation), peer, timer.
+  The kind scopes the rules: a peer's answer supersedes only peer waits, and a
+  job stamp survives its watcher dying (the wake is its backstop).
 
 ## Where responsibilities overlap
 
