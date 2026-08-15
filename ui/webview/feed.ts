@@ -9,7 +9,7 @@
 import { distillText, distillInputs, applyDistillLine, distillPending } from "./distiller-line";
 import { spinFor, KIND_WORD } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
-import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote } from "./host-prefix";
+import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
@@ -192,7 +192,11 @@ function dropDismissed(ids: string[]): void {
 // possibly know about it yet. MOVE_ACK_MS is now only a backstop for an answer that never arrives.
 const MOVE_ACK_MS = 15000;
 const pendingFollowMove = new Map<string, number>();   // card itemId → backstop timer id; KEY = still predicting
-const pendingMoveAck = new Map<string, number>();      // card itemId → the buildId the kernel acked it with
+// card itemId → the ack's buildId AND the kernel whose counter it is on. Every kernel numbers feed
+// builds independently, so an ack is only comparable against the SAME host's frame of a merged payload
+// (the user 2026-08-15: the local kernel's buildId, large after days of uptime, "outranked" a remote
+// ack's small post-restart buildId on the first merged emission — see reconcileFollowMove).
+const pendingMoveAck = new Map<string, { host: string; buildId: number }>();
 // What KIND of reply put each prediction in flight (the user 2026-07-20: EVERY context-carrying reply flips
 // its card to Working instantly, not just the feed composer's own follow-up):
 //  - "followup": a message rides along → the prediction wears the re-check styling ("Followed up" chip),
@@ -283,7 +287,7 @@ function optimisticFollowMove(itemId: string, kind: MoveKind = "followup") {
 // went out. ok=true records the buildId the prediction must outlive and re-arms the window SILENTLY: the
 // kernel has spoken, so nothing from here on is worth a toast, but a prediction must never outlive the
 // answer either, so the backstop stays armed in case a payload goes missing.
-function ackFollowMove(itemId: string, ok: boolean, buildId: number) {
+function ackFollowMove(itemId: string, ok: boolean, buildId: number, host: string) {
   if (!pendingFollowMove.has(itemId)) return;
   if (!ok) {
     clearFollowMove(itemId, "ack-fail");
@@ -291,7 +295,7 @@ function ackFollowMove(itemId: string, ok: boolean, buildId: number) {
     render();
     return;
   }
-  pendingMoveAck.set(itemId, buildId);
+  pendingMoveAck.set(itemId, { host, buildId });
   const prev = pendingFollowMove.get(itemId); if (prev) clearTimeout(prev);
   pendingFollowMove.set(itemId, window.setTimeout(() => {
     if (!pendingFollowMove.has(itemId)) return;
@@ -304,7 +308,7 @@ function ackFollowMove(itemId: string, ok: boolean, buildId: number) {
 // right after retiring the picker (answerAsk → _mark_views_dirty), so a payload that still shows the card out
 // of Working is post-answer truth — a real remaining/renewed block (e.g. the next permission prompt of a
 // burst). Holding the prediction there would MASK a genuine "needs you"; dropping it re-shows the ⏸ card.
-function reconcileFollowMove(incoming: AskItem[], buildId: number) {
+function reconcileFollowMove(incoming: AskItem[], buildId: number, buildIds?: Record<string, number>) {
   for (const id of Array.from(pendingFollowMove.keys())) {
     const a = incoming.find((x) => x.itemId === id);
     if (!a || a.column === "working" || pendingMoveKind.get(id) === "answer") {
@@ -316,8 +320,22 @@ function reconcileFollowMove(incoming: AskItem[], buildId: number) {
     // reopen, and taking it as the answer is exactly the bounce back to Completed this replaced. A NEWER one
     // is the kernel's own state, so yield to it silently — the reply landed, the card simply moved on (the
     // work finished, a fresh block arrived), which is honest to show and never a failed move.
+    //
+    // "After" only means anything on ONE counter (the user 2026-08-15, whose reply to a remote card
+    // bounced Working → Completed → Working): every kernel numbers its own feed builds, and the merged
+    // payload's top-level buildId is the LOCAL kernel's — days of uptime vs a just-restarted remote made
+    // it "outrank" every remote ack instantly, dropping the prediction while the cached remote frame
+    // still predated the reopen. So compare the ack against the CARD's own kernel: its host's entry in
+    // the per-host buildIds map (mergeHostFeeds). A single-kernel payload has no map — there the
+    // top-level buildId IS the card's kernel's counter, for local (un-acked-host "") cards. A payload
+    // that can't be placed on the ack's counter simply doesn't outrank: the prediction waits for
+    // confirmation by content, with the MOVE_ACK_MS backstop unchanged behind it.
     const acked = pendingMoveAck.get(id);
-    if (acked !== undefined && buildId > acked) clearFollowMove(id, "outranked");
+    if (acked === undefined) continue;
+    const cardHost = hostOf(a.sid);
+    if (cardHost !== acked.host) continue;   // an ack from some other kernel says nothing about this card
+    const mark = buildIds ? buildIds[cardHost] : (cardHost === "" ? buildId : undefined);
+    if (typeof mark === "number" && mark > acked.buildId) clearFollowMove(id, "outranked");
   }
 }
 // Render-time: keep each still-unconfirmed predicted card in Working, styled like the kernel's own re-checked
@@ -3672,7 +3690,11 @@ window.addEventListener("message", (e: MessageEvent) => {
     // an acked prediction early, leaving the backstop to retire it.
     lastFeedEvent = "payload";                         // tripwire: this render's inputs are the fresh payload
     lastPayloadBuildId = typeof m.buildId === "number" ? m.buildId : 0;
-    reconcileFollowMove(incomingAsks, lastPayloadBuildId);
+    // per-host counters when this is a merged multi-kernel payload (mergeHostFeeds.buildIds);
+    // absent on a single-kernel payload, where the top-level buildId is the one counter there is
+    const perHostBuildIds = m.buildIds && typeof m.buildIds === "object" && !Array.isArray(m.buildIds)
+      ? m.buildIds as Record<string, number> : undefined;
+    reconcileFollowMove(incomingAsks, lastPayloadBuildId, perHostBuildIds);
     reconcilePendingDone(incomingAsks);   // retire an optimistic tick once the real tree carries it
     // An optimistic Undo clear is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
     // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
@@ -3790,9 +3812,12 @@ window.addEventListener("message", (e: MessageEvent) => {
     // — the kernel may name a SUB-goal that a visible top card carries — and an id this view never predicted
     // is a no-op, so the ack is safe to broadcast to every feed pane.
     const bid = typeof m.buildId === "number" ? m.buildId : 0;
+    // which kernel's counter `bid` is on: federation stamps a remote ack with its host (prefixInbound);
+    // an unstamped ack came from the local kernel — host "", the same value hostOf gives local cards
+    const ackHost = typeof m.host === "string" ? m.host : "";
     for (const raw of m.ids.map(String)) {
       const top = asks.find((a) => a.itemId === raw) ?? asks.find((a) => a.tree?.some((n) => n.id === raw));
-      ackFollowMove(top ? top.itemId : raw, !!m.ok, bid);
+      ackFollowMove(top ? top.itemId : raw, !!m.ok, bid, ackHost);
     }
   }
 });
