@@ -143,8 +143,6 @@ test("the rich tip is the ONE hover surface: no native titles, per-host sections
   assert.ok(usageJS.includes("per.push({host:e.host,usd:sp.week.usd})"));
   assert.ok(usageJS.includes("by machine \\u00b7 1 week"));
   assert.ok(usageJS.includes("per.sort(function(a,b){return b.usd-a.usd;})"));
-  // and each window section carries its own utilization spark, y pinned to the honest 0-100
-  assert.ok(usageJS.includes("sparkHTML(d._winSeries[k],v.col,false,100)"));
   // numbers only: dollars · tokens · turns per window, under a plain 'API spend' heading
   assert.ok(usageJS.includes("function spendDet(u,det)"));
   assert.ok(usageJS.includes("API spend'+(hosts>1?' \\u00b7 '+hosts+' machines':'')"),
@@ -217,19 +215,22 @@ test("token counts carry 3 significant figures, and both fmtTok twins share the 
   assert.ok(!STRIP.includes('toFixed(1).replace'));
 });
 
-test("the $/h graph spans the tip, peak in the value slot, every spark on a backing plate (the user 2026-08-14)", () => {
+test("the $/h graph spans the tip, and the per-window sparks are gone and stay gone (the user 2026-08-14)", () => {
   // The graph sat 120px wide between its label and the peak with empty space either side; the peak
   // now rides the label row's right-aligned value slot and the graph gets its own full-width line.
   assert.match(KERNEL, /peak '\+fmtUsd\(mx\)\+'\/h<\/span><\/div>'\s*\n\+moneyGraph\(wk,'#9cd2ff',series\.h0\+st\);/,
     "the chart follows the closed label+peak row, full-width, x-aligned to h0");
-  assert.ok(KERNEL.includes(".ru-tip-spark{display:block;width:100%;height:28px"),
-    "sparks stretch to their container, not a fixed strip");
-  // The faint plate frames the plot area: a sparse series (a remote host with a reading or two,
-  // drawn as lone dots by design — unknown ≠ 0) reads as points on an empty graph, not stray specks.
-  assert.ok(KERNEL.includes('"background:rgba(255,255,255,0.04);border-radius:3px}"'),
-    "the backing plate makes sparse dots legible as data");
-  assert.ok(KERNEL.includes(".ru-tip-col{flex:0 1 auto;min-width:200px}"),
-    "host columns widened for the full-width sparks");
+  // The faint plate frames the plot area: sparse hours (lone dots — unknown ≠ 0) read as data.
+  assert.ok(KERNEL.includes("height:56px;background:rgba(255,255,255,0.04);"),
+    "the backing plate frames the $/h plot");
+  // The per-window utilization sparklines under each window's bars are REMOVED (the user 2026-08-14:
+  // the one fleet $/h graph is the graph; nothing per window). No payload, renderer, or style
+  // remains; usage-history.json keeps recording so a future graph starts with history.
+  assert.ok(!KERNEL.includes('out["winSeries"]'), "no per-window series rides the usage payload");
+  assert.ok(!KERNEL.includes("_winSeries"), "the client neither captures nor reads a window series");
+  assert.ok(!KERNEL.includes("sparkHTML"), "the per-window sparkline renderer is gone");
+  assert.ok(!KERNEL.includes("ru-tip-spark"), "no spark markup or styles remain");
+  assert.ok(BACKEND.includes("def _record_usage_history"), "the utilization ledger keeps recording");
 });
 
 test("the $/h chart is a real chart, and refresh is automatic with no stale hint (the user 2026-08-14)", () => {

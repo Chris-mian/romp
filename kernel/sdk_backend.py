@@ -3269,8 +3269,11 @@ class SdkBackend:
         self._poke()
 
     def _record_usage_history(self, data, now=None) -> None:
-        """Append the reading to usage-history.json — the hover graphs' time base (the user 2026-08-13:
-        the window bars kept only the CURRENT snapshot, so nothing could be graphed). Same bounded-hours
+        """Append the reading to usage-history.json — the per-window utilization ledger (the user
+        2026-08-13: the window bars kept only the CURRENT snapshot, so nothing could be graphed).
+        Nothing renders it today — the per-window hover sparks it fed were removed (the user
+        2026-08-14, who wanted only the one fleet $/h graph) — but it keeps recording so a future
+        utilization graph starts with history instead of a blank. Same bounded-hours
         shape as spend.json so both series share one x-axis: per hour keep the MAX pct seen per window
         (utilization only climbs within a window; a ROLL is a new resets_at, which takes the fresh
         reading outright), pruned to 192 hours — 8 days covers the 7-day graph. Caller holds _rl_lock;

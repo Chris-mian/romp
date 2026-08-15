@@ -16658,12 +16658,9 @@ def _usage():
             ss = _spend_series(keyed_only=True)   # the keyed split, like the windows it graphs
             if ss:
                 out["spendSeries"] = ss
-    # the window-utilization series for the hover graphs (the user 2026-08-13) — present once the
-    # usage-history ledger has readings for the CURRENT login; an older kernel simply omits it and the
-    # client draws that host's bars with no spark (the same graceful-degrade contract as day||fiveHour)
-    ws = _usage_history_series()
-    if ws:
-        out["winSeries"] = ws
+    # (the winSeries per-window utilization series is gone — the user 2026-08-14, who wanted the one
+    # fleet $/h graph and nothing per window. usage-history.json keeps recording — sdk_backend
+    # _record_usage_history — so a future graph starts with history instead of a blank.)
     return out
 
 
@@ -16725,39 +16722,6 @@ def _spend_series(keyed_only=False, now=None):
             e = e.get("key") if isinstance(e.get("key"), dict) else {}
         usd[i] = round(float((e or {}).get("usd") or 0), 4)
     return {"h0": h0, "usd": usd}
-
-
-def _usage_history_series(now=None):
-    """winSeries for the hover graphs: per window, 192 hourly pct-or-null points from
-    usage-history.json — null is an hour with no reading (the unknown-≠-0 rule, drawn as a gap).
-    Readings stamped by a DIFFERENT login than the current one are skipped, mirroring the bars'
-    own logout rule. None until the ledger exists. `now` anchors h0, injectable for the same
-    hour-boundary determinism as _spend_series."""
-    try:
-        d = json.loads((jd.STATE / "usage-history.json").read_text())
-    except Exception:
-        return None
-    hours = d.get("hours") if isinstance(d.get("hours"), dict) else {}
-    if not hours:
-        return None
-    cur = _claude_account()
-    h0 = int((time.time() if now is None else now) // 3600) - (_SERIES_HOURS - 1)
-    ser = {"h0": h0, "fiveHour": [None] * _SERIES_HOURS, "sevenDay": [None] * _SERIES_HOURS,
-           "fable": [None] * _SERIES_HOURS}
-    any_pt = False
-    for k, e in hours.items():
-        i = _series_index(k, h0)
-        if i is None or not (0 <= i < _SERIES_HOURS) or not isinstance(e, dict):
-            continue
-        stamped = e.get("acct") or ""
-        if stamped and cur and stamped != cur:
-            continue
-        for raw, out_k in (("five_hour", "fiveHour"), ("seven_day", "sevenDay"), ("fable", "fable")):
-            s = e.get(raw)
-            if isinstance(s, dict) and isinstance(s.get("pct"), (int, float)):
-                ser[out_k][i] = int(s["pct"])
-                any_pt = True
-    return ser if any_pt else None
 
 
 def _spend_budgets():
@@ -21130,7 +21094,6 @@ if(u.spendSeries&&u.spendSeries.usd)det._spendSeries=u.spendSeries;}   // $/hour
 // each host's story from this.
 function winDet(u,det){var nowS=Math.floor(Date.now()/1000);
 if(u.acctLabel)det._acct=u.acctLabel;   // WHICH login the windows belong to (the user 2026-08-09) — hover-only
-if(u.winSeries)det._winSeries=u.winSeries;   // hourly pct history per window, for the hover sparks (2026-08-13)
 WINS.forEach(function(w){var seg=u[w[0]];if(!seg)return;
 // A ROLLED window (its reset passed since the last report) is UNKNOWN, not 0 (the user 2026-07-31: a
 // remote whose kernel had no live session to ask sat on a days-old snapshot, and the rail drew a
@@ -21232,38 +21195,14 @@ function render(u){notices(u);
 var rest=ROWS.filter(function(r){return r.host;});
 renderRows([{host:'',acct:(u&&u.acct)||'',usage:u}].concat(rest),SELF);}
 // ONE shared tooltip for BOTH windows: per window, the used bar (colormap) over the elapsed bar (slate) +
-// A SPARKLINE for the hover graphs (the user 2026-08-13): one inline SVG per series, hourly points
-// oldest→newest, gaps where a point is null (an hour with no reading — the unknown-≠-0 rule; a run of
-// one draws a dot so a lone reading is not invisible). vmax pins the scale (100 for pct series, so
-// every window graph shares one honest y-axis); null auto-scales (money). fill=true adds the area
-// wash for the $/hour graph. The panel is pointer-events:none, so the graph must speak alone — no
-// <title> tooltips would ever fire.
-function sparkHTML(arr,color,fill,vmax){if(!arr||!arr.length)return '';
-var W=120,H=28,n=arr.length,mx=vmax;
-if(mx==null){mx=0;for(var i=0;i<n;i++)if(arr[i]!=null&&arr[i]>mx)mx=arr[i];}
-if(mx<=0)return '';
-var segs=[],cur=[];
-for(var i=0;i<n;i++){var v=arr[i];
-if(v==null){if(cur.length){segs.push(cur);cur=[];}continue;}
-cur.push([(n>1?i/(n-1):0.5)*W,H-2-Math.max(0,Math.min(1,v/mx))*(H-4)]);}
-if(cur.length)segs.push(cur);
-if(!segs.length)return '';
-// vector-effect keeps every stroke at true screen width: the box is stretched to its container
-// (preserveAspectRatio none), which fattened each stroke by the horizontal stretch factor (the user
-// 2026-08-14, whose full-width graph drew "way too thick"). A lone reading is a zero-length
-// round-capped stroke — a true screen-size dot at any stretch, where a circle's radius distorted too.
-var body=segs.map(function(s){
-if(s.length===1)return dotAt(s[0],color);
-var pts=s.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ');
-var out='<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>';
-if(fill)out+='<polygon points="'+s[0][0].toFixed(1)+','+(H-2)+' '+pts+' '+s[s.length-1][0].toFixed(1)+','+(H-2)+'" fill="'+color+'" opacity="0.18" stroke="none"/>';
-return out;}).join('');
-return '<svg class=ru-tip-spark viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+body+'</svg>';}
+// (the per-window utilization sparklines that sat under each window's bars are gone — the user
+// 2026-08-14, who wanted the one fleet $/h graph and nothing per window; usage-history.json keeps
+// recording so a future graph starts with history, see sdk_backend _record_usage_history)
 function dotAt(p,color){return '<polyline points="'+p[0].toFixed(1)+','+p[1].toFixed(1)+' '+(p[0]+0.1).toFixed(1)+','+p[1].toFixed(1)+'" fill="none" stroke="'+color+'" stroke-width="3" stroke-linecap="round" vector-effect="non-scaling-stroke"/>';}
 // The fleet $/h graph, grown into a real chart (the user 2026-08-14): taller, a left y-axis scaled to
 // the ceiling of the nearest $50 ($50 rules, doubled to $100/$200/… until at most four fit), and
 // midnight ticks with weekday initials for an x-axis. h0 = the epoch-hour of arr[0], which places the
-// midnights in LOCAL time. Same segment/gap/dot contract as sparkHTML.
+// midnights in LOCAL time. Gaps (null hours) split the line into segments; a lone reading draws a dot.
 function moneyGraph(arr,color,h0){if(!arr||!arr.length)return '';
 var W=168,H=64,n=arr.length,mx=0;
 for(var i=0;i<n;i++)if(arr[i]!=null&&arr[i]>mx)mx=arr[i];
@@ -21315,12 +21254,9 @@ var h=(many?'<div class=ru-tip-host>'+esc(e.host)+'</div>':'');
 // only beside actual window sections — a key-only host's spend already says whose dollars they are
 if(d._acct&&keys.length)h+='<div class=ru-tip-acct>'+esc(d._acct)+'</div>';
 h+=keys.map(function(k){var v=d[k];
-// the window's own history under its bars (the user 2026-08-13): hourly utilization over the last
-// 8 days, y pinned to 0-100 so every window graph shares one honest scale; gaps = no reading
-var spark=(d._winSeries&&d._winSeries[k])?sparkHTML(d._winSeries[k],v.col,false,100):'';
 return '<div class=ru-tip-win><div class=ru-tip-name><span>'+esc(v.name)+'</span>'
 +(v.unk?'<span class=ru-tip-reset>window reset '+esc(v.ago)+'; no reading since</span>'
-:(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+spark+'</div>';}).join('');
+:(v.reset?'<span class=ru-tip-reset>resets in '+esc(v.reset)+'</span>':''))+'</div>'+barRows(v)+'</div>';}).join('');
 // (the per-host API-spend rows moved to the ONE fleet-level section in tipHTML — the user 2026-08-13:
 // one shared key reads as one number; each host records only its own turns, so the sum IS the number)
 h+=(d._t?'<div class=ru-tip-age>updated '+fmtAgo(d._t)+'</div>':'');
@@ -22890,24 +22826,14 @@ def _landing():
             # Multi-host breakdown: one COLUMN per host, side by side (the user 2026-08-08 — not one
             # tall stack). flex-wrap lets the mobile modal (92vw cap) fold back to a stack on its own.
             ".ru-tip-cols{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}"
-            # 200px floor (was 150): the window-history sparks now span the column, and at 150px they
-            # were cramped postage stamps; there is room to spare (the user 2026-08-14)
             ".ru-tip-col{flex:0 1 auto;min-width:200px}"
             ".ru-tip-name{font-weight:700;color:#e8eef5;display:flex;justify-content:space-between;gap:14px;margin-bottom:3px}"
             ".ru-tip-reset{font-weight:400;opacity:.6;font-size:10px}"
             ".ru-tip-row{display:flex;align-items:center;gap:6px;margin-top:3px}"
             ".ru-tip-k{opacity:.55;min-width:46px}"
             ".ru-tip-track{width:64px;height:6px;border-radius:3px;background:rgba(255,255,255,0.10);overflow:hidden;display:inline-block}"
-            # full width of wherever it sits (a host column's window history, or the fleet-spend $/h
-            # graph spanning the whole tip) — the fixed 120px strip wasted the box (the user 2026-08-14).
-            # The faint backing plate frames the PLOT AREA, so a sparse series — a remote host whose
-            # hourly history has only a reading or two, drawn as lone dots by design (unknown ≠ 0) —
-            # reads as points on an empty graph, not stray specks between the sections (the user
-            # 2026-08-14, who took snape's isolated green dots for rendering dirt).
-            ".ru-tip-spark{display:block;width:100%;height:28px;margin-top:3px;opacity:.9;"
-            "background:rgba(255,255,255,0.04);border-radius:3px}"
-            # the fleet $/h chart (the user 2026-08-14): taller than the window sparks, framed by the
-            # same backing plate, with overlay y-labels (px offsets against the fixed 56px plot) and a
+            # the fleet $/h chart (the user 2026-08-14): full tip width, framed by a faint backing
+            # plate, with overlay y-labels (px offsets against the fixed 56px plot) and a
             # weekday row beneath. Labels sit just under their gridline; 8px so four rules stay quiet.
             ".ru-tip-graph{position:relative;margin-top:4px}"
             ".ru-tip-graph svg{display:block;width:100%;height:56px;background:rgba(255,255,255,0.04);"
