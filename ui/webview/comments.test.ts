@@ -159,6 +159,12 @@ test("ending the parent sweeps its threads' CLIs — no unreachable running sess
   assert.match(KERNEL, /def _comment_kill_all\(parent_sid, be\):/);
 });
 
+test("a refused create un-sticks the popover; a pre-seam anchor tip-forks instead of erroring", () => {
+  assert.match(UI, /m\.type === "warn" && pendingCommentAnchor\) \{\s*\n\s*document\.getElementById\("cmt-pop"\)\?\.remove\(\);/);
+  assert.match(KERNEL, /def _anchor_adapter\(path, sid\)/);
+  assert.match(KERNEL, /return "", cut_t, None/);
+});
+
 test("the projection never reads the parent transcript pre-fork", () => {
   assert.match(KERNEL, /if reg\.get\("forkOf"\):\s*\n\s*return \[\]/);
 });

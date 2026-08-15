@@ -115,9 +115,10 @@ class CommentBase(unittest.TestCase):
 class CutTarget(CommentBase):
     def test_an_assistant_anchor_cuts_at_itself_not_its_ancestor(self):
         p = self._write(PARENT, self._parent_records())
-        cut, err = km._comment_cut_target(str(p), PARENT, "a1")
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "a1")
         self.assertIsNone(err)
         self.assertEqual(cut, "a1", "the thread must HOLD the highlighted answer — inclusive cut")
+        self.assertGreater(cut_t, 0, "the cut record's own time rides along for the timeline square")
 
     def test_a_tool_row_anchor_falls_to_its_nearest_prose_ancestor(self):
         # a tool_use record is type "assistant" but NOT a clean cut — including it would leave the
@@ -125,7 +126,7 @@ class CutTarget(CommentBase):
         t = self.now - 300
         recs = self._parent_records() + [tline(t, "tu9", "a2")]
         p = self._write(PARENT, recs)
-        cut, err = km._comment_cut_target(str(p), PARENT, "tu9")
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "tu9")
         self.assertIsNone(err)
         self.assertEqual(cut, "a2")
 
@@ -136,15 +137,50 @@ class CutTarget(CommentBase):
                 boundary(t + 100, "b1", "a1"),
                 uline(t + 200, "fresh ask", "u2", parent="b1")]
         p = self._write(PARENT, recs)
-        cut, err = km._comment_cut_target(str(p), PARENT, "a1")
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "a1")
         self.assertIsNone(cut)
         self.assertIn("compaction", err)
 
     def test_an_unknown_anchor_is_refused(self):
         p = self._write(PARENT, self._parent_records())
-        cut, err = km._comment_cut_target(str(p), PARENT, "nope")
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "nope")
         self.assertIsNone(cut)
         self.assertTrue(err)
+
+    def _seamed_session(self):
+        """A machine-cut resume that forked fresh-headed: old records in the resumed-from file,
+        new ones in the current file, joined only by the states resumeFork lineage row — the shape
+        that read every pre-seam message as 'not in the transcript' (the user 2026-08-15)."""
+        old_fsid, new_fsid = PARENT, "cccccccc-dddd-eeee-ffff-000000000000"
+        t = self.now - 900
+        self._write(old_fsid, [uline(t, "the pre-seam ask", "u1"),
+                               aline(t + 5, "the pre-seam answer, the one worth a comment", "a1", parent="u1")])
+        p = self._write(new_fsid, [uline(t + 300, "the post-seam ask", "u9", parent=None),
+                                   aline(t + 305, "the post-seam answer", "a9", parent="u9")])
+        sdir = jd.STATE / "states"
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / (PARENT + ".jsonl")).write_text(
+            json.dumps({"resumeFork": {"from": old_fsid, "to": new_fsid}, "t": t + 250}) + "\n")
+        return p
+
+    def test_a_pre_seam_anchor_is_found_and_falls_back_to_a_tip_fork(self):
+        p = self._seamed_session()
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "a1")
+        self.assertIsNone(err, "the stitched chain must FIND the message the chat shows")
+        self.assertEqual(cut, "", "behind the seam the CLI can't address it — tip fork instead")
+        self.assertGreater(cut_t, 0, "the anchor's own time still stamps the row")
+
+    def test_a_post_seam_anchor_still_cuts_at_itself(self):
+        p = self._seamed_session()
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "a9")
+        self.assertIsNone(err)
+        self.assertEqual(cut, "a9")
+
+    def test_rewind_names_the_seam_instead_of_denying_the_message_exists(self):
+        p = self._seamed_session()
+        cut, err = km._rewind_target(str(p), PARENT, "u1")
+        self.assertIsNone(cut)
+        self.assertIn("restart seam", err)
 
 
 # ── the thread fork's invisibility contract ───────────────────────────────────────────────────────

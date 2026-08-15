@@ -4795,20 +4795,47 @@ def _comment_prose_record(r):
     return has_text and not has_call
 
 
-def _comment_cut_target(path, sid, anchor_uuid):
-    """(cut_uuid, error) — where a comment thread's fork should cut: at the anchored message itself,
-    INCLUSIVE (_rewind_target's 'just before' would drop the very passage the user highlighted).
-    Same guards as the rewind family: the record must exist, sit on the ACTIVE chain, postdate the
-    last compaction; when the anchor record isn't itself a clean prose cut (a tool row, a tool
-    result), the nearest prose ANCESTOR carries it — the opening message quotes the highlighted
-    passage verbatim, so nothing the user pointed at is lost to the thread's agent."""
+def _anchor_adapter(path, sid):
+    """A FileAdapter over the session's whole STITCHED transcript chain — the same candidate set +
+    resume-fork lineage parse_session resolves: the current leaf, the romp-sid anchor file, and
+    every resumed-from file in the states lineage closure, re-chained into one walkable graph. The
+    rewind/comment anchor resolvers used a bare two-file adapter, so any message the CHAT was
+    showing through the stitch read as 'not in the transcript' (the user 2026-08-15, commenting on
+    a session whose history crossed a machine-cut resume fork)."""
     cands = [path]
     anchor = os.path.join(os.path.dirname(path), sid + ".jsonl")
     if os.path.basename(path) != sid + ".jsonl" and os.path.exists(anchor):
         cands.append(anchor)
-    ad = em.FileAdapter(cands, path)
+    states = jd.STATE / "states" / (sid + ".jsonl")
+    links = em.resume_fork_links(em._load_states(str(states)) if states.exists() else [])
+    if links:
+        have = {os.path.splitext(os.path.basename(f))[0] for f in cands}
+        stem, hops = os.path.splitext(os.path.basename(path))[0], 0
+        while stem in links and hops < 16:
+            stem = links[stem]; hops += 1
+            fp = os.path.join(os.path.dirname(path), stem + ".jsonl")
+            if stem not in have and os.path.exists(fp):
+                cands.append(fp); have.add(stem)
+    return em.FileAdapter(cands, path, resume_links=links)
+
+
+def _comment_cut_target(path, sid, anchor_uuid):
+    """(cut_uuid, cut_t, error) — where a comment thread's fork should cut: at the anchored message
+    itself, INCLUSIVE (_rewind_target's 'just before' would drop the very passage the user
+    highlighted). cut_t is the cut record's own timestamp — stamped into the thread row (anchorT)
+    so the timeline can place the comment's square at the commented message without a parse. Same
+    guards as the rewind family: the record must exist, sit on the ACTIVE chain, postdate the last
+    compaction; when the anchor record isn't itself a clean prose cut (a tool row, a tool result),
+    the nearest prose ANCESTOR carries it — the opening message quotes the highlighted passage
+    verbatim, so nothing the user pointed at is lost to the thread's agent.
+
+    A cut BEHIND A RESTART SEAM (the record lives in a resumed-from file, not the current one)
+    returns cut_uuid "" — a TIP fork: the CLI's --resume-session-at only addresses records in the
+    current transcript, so the thread takes the whole conversation instead, a superset of the
+    context the anchor asked for; the quote still names the passage exactly."""
+    ad = _anchor_adapter(path, sid)
     if anchor_uuid not in ad.by_uuid:
-        return None, "that message isn't in the transcript yet; try again in a moment"
+        return None, 0, "that message isn't in the transcript yet; try again in a moment"
     is_boundary = lambda r: r is not None and r.get("type") == "system" and r.get("subtype") == "compact_boundary"
     u, hops, on_active = ad.leaf_uuid, 0, False
     while u is not None and hops < 500000:
@@ -4816,19 +4843,23 @@ def _comment_cut_target(path, sid, anchor_uuid):
             on_active = True
             break
         if is_boundary(ad.by_uuid.get(u)):
-            return None, "that message predates the last context compaction; only newer passages can open a thread"
+            return None, 0, "that message predates the last context compaction; only newer passages can open a thread"
         u = ad.parent_of.get(u); hops += 1
     if not on_active:
-        return None, "that message is on a branch that was rewound away"
+        return None, 0, "that message is on a branch that was rewound away"
+    cur_fsid = os.path.splitext(os.path.basename(path))[0]
     u, hops = anchor_uuid, 0
     while u is not None and hops < 500000:
         r = ad.by_uuid.get(u)
         if r is None or is_boundary(r):
             break
         if _comment_prose_record(r):
-            return u, None
+            cut_t = int(em.parse_z(r.get("timestamp")) or 0)
+            if ad.fsid_of.get(u) != cur_fsid:
+                return "", cut_t, None       # behind a restart/clear seam → tip fork (see docstring)
+            return u, cut_t, None
         u = ad.parent_of.get(u); hops += 1
-    return None, "that message can't anchor a thread; try a passage from the conversation itself"
+    return None, 0, "that message can't anchor a thread; try a passage from the conversation itself"
 
 
 _COMMENT_FRAME_HEAD = "About this part of the conversation:"
@@ -4887,7 +4918,7 @@ def _thread_transcript_path(reg, tsid):
 _THREAD_TAIL_BYTES = 262144   # the tail window that usually holds the whole side conversation
 
 
-def _thread_messages(tsid, cut_uuid):
+def _thread_messages(tsid, cut_uuid, floor_t=0):
     """The side conversation: user/assistant text AFTER the fork cut in the thread's transcript,
     oldest first, [{who, text, t}]. The fork copies parent history VERBATIM (same uuids), so
     everything above `cut_uuid` on the active chain IS the thread's own exchange. mtime-cached —
@@ -4896,7 +4927,11 @@ def _thread_messages(tsid, cut_uuid):
     and reading it here would present the parent's post-anchor conversation as the thread's own.
     The exchange sits strictly AFTER the copied history, so a streaming thread re-reads only the
     file TAIL per push (the pusher must not reparse a whole copied conversation every 0.5s); the
-    full parse is the fallback when the window misses the cut."""
+    full parse is the fallback when the window misses the cut.
+
+    A TIP-forked thread (cut_uuid "", the restart-seam fallback) has no cut record to stop at —
+    `floor_t` (the thread's createdT) bounds it instead: copied records carry their ORIGINAL
+    timestamps, strictly before the fork moment, so the time floor is the recorded boundary."""
     reg = _thread_reg(tsid)
     if reg.get("forkOf"):
         return []
@@ -4907,7 +4942,7 @@ def _thread_messages(tsid, cut_uuid):
     except OSError:
         return []
     hit = _thread_msgs_cache.get(tsid)
-    if hit and hit[0] == path and hit[1] == mt and hit[2] == cut_uuid:
+    if hit and hit[0] == path and hit[1] == mt and hit[2] == (cut_uuid, floor_t):
         return hit[3]
     by_uuid = parent_of = leaf = None
     if cut_uuid and size > _THREAD_TAIL_BYTES:
@@ -4946,6 +4981,8 @@ def _thread_messages(tsid, cut_uuid):
         if u == cut_uuid:
             break                                   # copied history starts here — the parent's, not the thread's
         r = by_uuid.get(u) or {}
+        if not cut_uuid and floor_t and int(em.parse_z(r.get("timestamp")) or 0) < floor_t:
+            break                                   # tip fork: copied history keeps its original (older) stamps
         if r.get("type") in ("user", "assistant"):
             txt = _comment_msg_text(r)
             if txt and txt != boot_nudge and not (r.get("type") == "user" and "<!-- romp-" in txt):
@@ -4966,7 +5003,7 @@ def _thread_messages(tsid, cut_uuid):
     merged = merged[-40:]
     if len(_thread_msgs_cache) > 512:
         _thread_msgs_cache.clear()
-    _thread_msgs_cache[tsid] = (path, mt, cut_uuid, merged)
+    _thread_msgs_cache[tsid] = (path, mt, (cut_uuid, floor_t), merged)
     return merged
 
 
@@ -5002,7 +5039,8 @@ def _comments_frame(sid):
                 #                                                 say so, not pulse dots forever
             except Exception:
                 err = ""
-        msgs = [] if status == "promoted" else _thread_messages(tsid, str(th.get("cutUuid") or ""))
+        msgs = [] if status == "promoted" else _thread_messages(
+            tsid, str(th.get("cutUuid") or ""), floor_t=(0 if th.get("cutUuid") else int(th.get("createdT") or 0)))
         seen = int(th.get("lastSeenT") or 0)
         unread = any(m["who"] == "agent" and m["t"] > seen for m in msgs)
         threads.append({"tid": th.get("tid"), "anchorUuid": th.get("anchorUuid"),
@@ -5027,11 +5065,12 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, now=None):
     sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
     if not sess:
         return "no transcript for this session yet, so nothing to comment on.", None
-    cut, err = _comment_cut_target(sess["path"], parent_sid, str(anchor_uuid))
+    cut, cut_t, err = _comment_cut_target(sess["path"], parent_sid, str(anchor_uuid))
     if err:
         return err, None
     tsid = str(uuid.uuid4())
     row = {"tid": tsid, "sid": tsid, "anchorUuid": str(anchor_uuid), "cutUuid": cut,
+           "anchorT": cut_t,   # the commented message's own time — the timeline square's x
            "exact": str(exact)[:2000], "status": "open",
            "createdT": int(now), "lastSeenT": int(now)}
     with _comments_lock:
@@ -12237,13 +12276,15 @@ def _rewind_target(path, sid, user_uuid):
     2026-07-16), and have a real message ancestor (the conversation's first message has nothing
     before it to rewind to). Validating HERE keeps the backend's failure path (a refused reconnect)
     for genuine races only."""
-    cands = [path]
-    anchor = os.path.join(os.path.dirname(path), sid + ".jsonl")
-    if os.path.basename(path) != sid + ".jsonl" and os.path.exists(anchor):
-        cands.append(anchor)
-    ad = em.FileAdapter(cands, path)
+    ad = _anchor_adapter(path, sid)      # the STITCHED chain — a bare two-file adapter read any
+    #                                      message shown through a restart-seam stitch as missing
     if user_uuid not in ad.by_uuid:
         return None, "that message isn't in the transcript yet; try again in a moment"
+    if ad.fsid_of.get(user_uuid) != os.path.splitext(os.path.basename(path))[0]:
+        # found, but behind a restart/clear seam: the CLI's --resume-session-at only addresses
+        # records in the CURRENT transcript, so this rewind is genuinely impossible — say why
+        # instead of the false "isn't in the transcript" (the user 2026-08-15)
+        return None, "that message is from before a restart seam; the conversation can only rewind to newer messages"
     is_boundary = lambda r: r is not None and r.get("type") == "system" and r.get("subtype") == "compact_boundary"
     # leaf → root: the edited record must appear BEFORE any compact boundary on the active chain
     u, hops, on_active = ad.leaf_uuid, 0, False
@@ -12257,12 +12298,15 @@ def _rewind_target(path, sid, user_uuid):
     if not on_active:
         return None, "that message is on a branch that was already rewound away"
     # nearest MESSAGE ancestor = the cut point
+    cur_fsid = os.path.splitext(os.path.basename(path))[0]
     u, hops = ad.parent_of.get(user_uuid), 0
     while u is not None and hops < 500000:
         r = ad.by_uuid.get(u)
         if r is None or is_boundary(r):
             break                                    # dangling parent / nothing addressable before the boundary
         if r.get("type") in ("user", "assistant"):
+            if ad.fsid_of.get(u) != cur_fsid:        # the cut itself sits behind the seam — same refusal
+                return None, "that message is from before a restart seam; the conversation can only rewind to newer messages"
             return u, None
         u = ad.parent_of.get(u); hops += 1
     return None, "that's the conversation's first message — start a new session to redo it"
