@@ -2411,9 +2411,10 @@ def _goal_awaiting_stamp(nodes, top, children=None, answered_at=0):
 
 
 def _goal_awaiting_stamp_full(nodes, top, children=None, answered_at=0):
-    """(awaitingAt, why) of the freshest live ⏳ stamp in `top`'s subtree, or None — _goal_awaiting_stamp
-    with the ANCHOR alongside the why. The awaiting wake's due-check needs the anchor (see the awaiting
-    branch of _auto_nudge_session's goal walk); every display consumer keeps the why-only twin above."""
+    """(awaitingAt, why, kind) of the freshest live ⏳ stamp in `top`'s subtree, or None —
+    _goal_awaiting_stamp with the ANCHOR and the wait's KIND (jd.AWAIT_KINDS or None) alongside the why.
+    The awaiting wake's due-check needs the anchor (see the awaiting branch of _auto_nudge_session's
+    goal walk); display consumers that only word the wait keep the why-only twin above."""
     if children is None:
         children = {}
         for nid, nd in nodes.items():
@@ -2427,10 +2428,10 @@ def _goal_awaiting_stamp_full(nodes, top, children=None, answered_at=0):
         if nd.get("awaitingWhy") and not nd.get("rolledUp"):
             at = nd.get("awaitingAt") or 0
             if not (at and answered_at and at < answered_at):
-                cand = (at, nd["awaitingWhy"])
+                cand = (at, nd["awaitingWhy"], nd.get("awaitingKind") or "")   # "" keeps max() comparable
                 best = cand if best is None else max(best, cand)
         stack.extend(children.get(x, []))
-    return best
+    return (best[0], best[1], best[2] or None) if best else None
 
 
 def _mark_nudge_failed(gid, ev_t=None, wake=False):
@@ -3178,7 +3179,7 @@ def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
       silent    no response within the same window (from the FIRE, rec["at"]) → _mark_nudge_failed(wake=True):
                 the block rides the normal ladder to Needs-you. A failed/moot record re-arms only on a
                 genuinely NEW stamp episode (anchor newer than the one that failed)."""
-    at, why = stamp
+    at, why = stamp[0], stamp[1]
     if tmux.get(sid) is None:
         return False                                 # dormant CLI → its work died with it; the death notice
         #                                              owns that story, not a wake (same rule as the lifts)
@@ -10409,11 +10410,12 @@ def _pending_queued(path):
 _api_err_cache = {}           # path -> ((mtime, size), err|None)
 
 
-_SESSION_STAMP_CACHE = {}    # sid -> ((goals mtime,size, overrides mtime,size), ((gid, at, why), stamped tops)) — see _session_stamp_read
+_SESSION_STAMP_CACHE = {}    # sid -> ((goals mtime,size, overrides mtime,size), ((gid, at, why, kind), stamped tops)) — see _session_stamp_read
 
 
 def _session_stamp_read(sid):
-    """ONE cached store read under both stamp views: the freshest live ⏳ stamp (gid, awaitingAt, why) AND
+    """ONE cached store read under both stamp views: the freshest live ⏳ stamp (gid, awaitingAt, why,
+    kind) AND
     the frozenset of TOP ancestors carrying any live stamp in their subtree. The tuple is the SESSION-level
     twin of _goal_awaiting_stamp, so the rail chip and timeline lane (which read _session_awaiting, not the
     per-goal stamp) light up the same restart-proof awaiting the feed card already shows off the stamp (the
@@ -10427,7 +10429,7 @@ def _session_stamp_read(sid):
         gs = (jd.GOALDIR / (sid + ".json")).stat()
         gkey = (gs.st_mtime, gs.st_size)
     except Exception:
-        return ((None, None, None), frozenset(), ())   # no store yet → nothing to stamp, nothing delegated
+        return ((None, None, None, None), frozenset(), ())   # no store yet → nothing to stamp, nothing delegated
     try:
         ostt = (jd._overrides_dir() / (sid + ".jsonl")).stat()
         okey = (ostt.st_mtime, ostt.st_size)
@@ -10442,7 +10444,7 @@ def _session_stamp_read(sid):
     hit = _SESSION_STAMP_CACHE.get(sid)
     if hit and hit[0] == key:
         return hit[1]
-    full, tops, deleg = (None, None, None), set(), ()
+    full, tops, deleg = (None, None, None, None), set(), ()
     try:                                               # load_goals (not a raw read) so overrides replay —
         nodes = jd.load_goals(sid).get("nodes", {})    # the same view _goal_awaiting_stamp sees on the card
         best = None
@@ -10452,7 +10454,7 @@ def _session_stamp_read(sid):
                 at = nd.get("awaitingAt") or 0
                 if at and answered and at < answered:
                     continue                           # the awaited answer landed after this stamp — superseded
-                cand = (at, nid, nd["awaitingWhy"])
+                cand = (at, nid, nd["awaitingWhy"], nd.get("awaitingKind"))
                 best = cand if best is None else max(best, cand)
                 top, seen = nid, set()                 # stamped node → its TOP ancestor (cycle-guarded)
                 while top in nodes and nodes[top].get("parentId") is not None and top not in seen:
@@ -10460,7 +10462,7 @@ def _session_stamp_read(sid):
                     top = nodes[top]["parentId"]
                 tops.add(top)
         if best:
-            full = (best[1], best[0], best[2])         # (gid, at, why)
+            full = (best[1], best[0], best[2], best[3])   # (gid, at, why, kind)
         # DELEGATION, the same pass (the user 2026-08-08, whose fully-delegated session wore the feed's
         # green awaiting dot while chat/timeline/rail read plain ready): a top whose every OPEN leaf is a
         # courier handoff node is work handed to PEERS — the exact evidence the feed's per-card flavor
@@ -10480,15 +10482,15 @@ def _session_stamp_read(sid):
                     peers.add(str(h["peer"]))
         deleg = tuple(sorted(peers))
     except Exception:
-        full, tops, deleg = (None, None, None), set(), ()
+        full, tops, deleg = (None, None, None, None), set(), ()
     val = (full, frozenset(tops), deleg)
     _SESSION_STAMP_CACHE[sid] = (key, val)
     return val
 
 
 def _session_stamp_full(sid):
-    """(gid, awaitingAt, why) of the freshest durable ⏳ awaiting stamp across ALL of a session's goals, or
-    (None, None, None). _session_stamp_cached returns just the why (the display surfaces)."""
+    """(gid, awaitingAt, why, kind) of the freshest durable ⏳ awaiting stamp across ALL of a session's
+    goals, or (None, None, None, None)."""
     return _session_stamp_read(sid)[0]
 
 
@@ -10497,11 +10499,6 @@ def _session_stamped_tops(sid):
     (_bg_split): a placed launch owned by one of these tops is AWAITED, any other placed launch is a
     SERVICE."""
     return _session_stamp_read(sid)[1]
-
-
-def _session_stamp_cached(sid):
-    """The freshest durable ⏳ stamp's WHY for a session (or None) — the display surfaces' view."""
-    return _session_stamp_full(sid)[2]
 
 
 def _session_delegated_why(sid):
@@ -10520,9 +10517,11 @@ def _session_delegated_why(sid):
 
 
 def _session_awaiting(sid, path, idle, stamp=False):
-    """A session AWAITING dispatched/delegated background work (a WORKING flavor, the user 2026-06-22) → a
-    one-line 'why' for the ⏳ awaiting badge, else None. Only when IDLE — an actively producing turn is
-    just 'working'. Three EVENT-BASED sources, in order:
+    """A session AWAITING dispatched/delegated background work (a WORKING flavor, the user 2026-06-22) →
+    {"kind", "why"}: the one-line 'why' for the ⏳ awaiting badge plus WHAT the wait is on (jd.AWAIT_KINDS,
+    the user 2026-08-15 — kind rides as DATA so surfaces can word it and rules can scope by it; None =
+    kindless, the legacy shape). Falsy (None) when not awaiting, so truthiness callers read unchanged.
+    Only when IDLE — an actively producing turn is just 'working'. The EVENT-BASED sources, in order:
       0. the backend snapshot's LIVE subagent count (SubagentStart/Stop) — genuine delegated Claude
          AGENTS in flight, held in memory, independent of any turn.
       0.5 the backend snapshot's LIVE bg-task set — the CLI's DESIGNED task lifecycle stream
@@ -10549,7 +10548,7 @@ def _session_awaiting(sid, path, idle, stamp=False):
       1. the states/<sid>.jsonl AWAITING OVERLAY — {"awaiting":bool,"why":…} the SDK/tmux Stop hooks write.
          POSITIVE rows only: an awaiting:false row contributes nothing and falls through (the Stop hook
          writes false unconditionally at every turn end, so a false row is ambient, not an answer).
-      2. the JUDGE's durable ⏳ stamp (_session_stamp_cached), OPT-IN via stamp=True — the closer's awaiting
+      2. the JUDGE's durable ⏳ stamp (_session_stamp_full), OPT-IN via stamp=True — the closer's awaiting
          verdict, materialized in the goal store, so it OUTLIVES a kernel restart (sources 0-1 die with the
          backend, which is how a genuinely-waiting session read 'stalled'). LIVE-only: a dormant session's
          dispatched work died with its CLI, so a stale stamp must not resurrect it. Only the SESSION-scoped
@@ -10583,7 +10582,7 @@ def _session_awaiting(sid, path, idle, stamp=False):
         # formatted the list itself with %d (latent TypeError since 3325771, masked because a subagent
         # normally runs inside an open turn → idle=False → this branch never ran) — count via len().
         n = len(subs)
-        return "%d background agent%s still working" % (n, "" if n == 1 else "s")
+        return {"kind": "agents", "why": "%d background agent%s still working" % (n, "" if n == 1 else "s")}
     tasks = _bg_live_norm(sid, path)
     if tasks:
         # Sources 0.5/0.75 — only the PENDING tasks (launch not yet placed) count; a placed launch's
@@ -10591,12 +10590,19 @@ def _session_awaiting(sid, path, idle, stamp=False):
         pending = _bg_pending(sid, path, tasks)
         if pending:
             d0 = pending[0]["desc"]
+            # a dispatched agent/workflow is kind agents even through the task stream; a mixed set
+            # (or plain shell work) is kind task — the generic word for in-harness background work
+            kind = ("agents" if all("agent" in (t.get("type") or "") or t.get("type") == "local_workflow"
+                                    for t in pending) else "task")
             if len(pending) == 1:
-                return "waiting on a background task%s" % ((": " + d0) if d0 else "")
-            return "waiting on %d background tasks%s" % (len(pending), (" — " + d0 + ", …") if d0 else "")
+                return {"kind": kind, "why": "waiting on a background task%s" % ((": " + d0) if d0 else "")}
+            return {"kind": kind, "why": "waiting on %d background tasks%s"
+                                         % (len(pending), (" — " + d0 + ", …") if d0 else "")}
     ov = _states_awaiting_overlay(sid)
     if ov is not None and ov.get("awaiting"):         # a producer wrote a LIVE awaiting:true → trust its why
-        return ov.get("why") or "waiting on dispatched work"
+        ovk = ov.get("kind")
+        return {"kind": ovk if ovk in jd.AWAIT_KINDS else None,
+                "why": ov.get("why") or "waiting on dispatched work"}
     # An awaiting:false overlay row is NOT a veto — it says only that THIS channel has nothing to add.
     # The SDK Stop hook has written an unconditional false at every turn end since 2026-07-07 while
     # nothing writes true, so treating "most recent row is false" as the session's answer made source 2
@@ -10620,7 +10626,15 @@ def _session_awaiting(sid, path, idle, stamp=False):
         # AFTER the judge's stamp, mirroring the feed's own precedence (its _deleg_why yields to
         # _stamp_why/_await_ok). Without this arm a fully-delegated session was the feed's green dot
         # and nobody else's (the user 2026-08-08): the three surfaces answered one question two ways.
-        return _owned_yield_why(sid, path) or _session_stamp_cached(sid) or _session_delegated_why(sid)
+        y = _owned_yield_why(sid, path)
+        if y:
+            return {"kind": "task", "why": y}          # a live owned dispatch — in-harness work
+        _gid, _at, st_why, st_kind = _session_stamp_full(sid)
+        if st_why:
+            return {"kind": st_kind, "why": st_why}    # the judge's own classification rides the stamp
+        d = _session_delegated_why(sid)
+        if d:
+            return {"kind": "peer", "why": d}          # the courier handoff graph is peer by construction
     return None
 
 
@@ -14200,7 +14214,9 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
     # user 2026-06-22), the SAME signal _nudge + build_feed use. Only meaningful when the main turn is idle
     # (_session_awaiting returns None while open_now). Session-scoped chat-view chip → the durable stamp too,
     # so the composer's awaiting chip survives a kernel restart like the feed card.
-    awaiting_why = _session_awaiting(sid, sess["path"], not open_now, stamp=True)
+    _aw = _session_awaiting(sid, sess["path"], not open_now, stamp=True)
+    awaiting_why = _aw["why"] if _aw else None
+    awaiting_kind = _aw["kind"] if _aw else None
     # API error → the session is BLOCKED until retried: a bottom card (renderApiError, a RED dot) AND the chip
     # flips to "blocked" below. Detected event-based from the transcript (isApiErrorMessage), so the exact
     # text (500 / timeout / model-not-found) doesn't matter (the user 2026-06-16). GATED on the session NOT
@@ -14425,6 +14441,7 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   # the live AWAITED task descriptions behind it (same source as the timeline lane + feed
                   # pill), so a multi-task wait can list them all on hover.
                   "awaitingWhy": awaiting_why or None,
+                  "awaitingKind": awaiting_kind,   # WHAT the wait is on (jd.AWAIT_KINDS; None = kindless)
                   "awaitingTasks": (_awaiting_task_descs(sid, sess["path"]) if awaiting_why else []),
                   "apiTooLong": bool(aerr and aerr.get("tooLong")),
                   # a spend cap is on-you like tooLong (red tab, "raise your cap") AND never auto-retried:
@@ -15287,7 +15304,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
             "provisional": True, "judging": not turn_open, "tree": []}
 
 
-def _awaiting_card(s, name, color, fsid, live, now, why):
+def _awaiting_card(s, name, color, fsid, live, now, why, kind=None):
     """A lightweight WORKING-column placeholder for a LIVE, IDLE session AWAITING a dispatched BACKGROUND
     TASK when there is NO open goal to floor to awaiting (the user 2026-07-13). The turn ended and every
     card is done/cleared/placed, so the goal loop has nothing to floor AND _provisional_card bows out (its
@@ -15321,7 +15338,7 @@ def _awaiting_card(s, name, color, fsid, live, now, why):
             # awaiting flavor with the live bg-task descriptions → the "Waiting on task" pill (the user
             # 2026-07-13). judging False: this session is idle-awaiting, not analyzing — the pill, not a
             # "Working…"/"Analyzing…" chip, carries the state (feed.ts defers the provisional chip when awaiting).
-            "awaiting": {"why": why, "tasks": _awaiting_task_descs(fsid, s["path"])},
+            "awaiting": {"why": why, "kind": kind, "tasks": _awaiting_task_descs(fsid, s["path"])},
             "provisional": True, "judging": False, "tree": []}
 
 
@@ -15912,7 +15929,9 @@ def build_feed(now, tmux=None):
         # judge's stamp or the service chip — see _session_awaiting/_bg_split), or the SDK producer's
         # states overlay; None when actively working.
         # Computed BEFORE the API-error floor, which must yield to it (the user 2026-07-05).
-        sess_awaiting_why = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
+        _sess_aw = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
+        sess_awaiting_why = _sess_aw["why"] if _sess_aw else None
+        sess_awaiting_kind = _sess_aw["kind"] if _sess_aw else None
         if sess_awaiting_why and not who_working:
             awaiting.append(name)                    # the AWAITING dot list (straw, the user 2026-07-13) — the
             #                                          same split _session_chip makes; feed/chat dots match the chip
@@ -16008,8 +16027,10 @@ def build_feed(now, tmux=None):
             # across kernel restarts — exactly where the live snapshot signals above go dark and a
             # genuinely-waiting goal used to read as plain working, then "stalled". It floors WORKING
             # only: a real needs-you (block) always outranks the annotation.
-            _stamp_why = (_goal_awaiting_stamp(nodes, nid, children, answered_at=_peer_answered_at(fsid))
-                          if col == "working" else None)
+            _sf = (_goal_awaiting_stamp_full(nodes, nid, children, answered_at=_peer_answered_at(fsid))
+                   if col == "working" else None)
+            _stamp_why = _sf[1] if _sf else None
+            _stamp_kind = _sf[2] if _sf else None
             # DELEGATION-derived awaiting (the courier's durable handoff graph, not the question-regex):
             # every OPEN leaf under this top is a handoff-tracking node → the only outstanding work lives
             # with peers, so the card reads ⏳ "delegated to <peer>" instead of plain working (which reads
@@ -16047,6 +16068,13 @@ def build_feed(now, tmux=None):
                               "peerHost": ("" if pname else o.get("peerHost") or ""),
                               "peerSid": psid, "color": _name_color(psid)}
             await_why = (sess_awaiting_why or _stamp_why or _deleg_why or _owned_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph, then the blocked-yield's owned dispatch (None for the postal-only case → the waitingOn chip names the peer)
+            await_kind = None                        # the winning why's KIND rides beside it, mirroring the
+            if col == "awaiting":                    # or-chain exactly (a kindless winner stays kindless)
+                for _w, _k in ((sess_awaiting_why, sess_awaiting_kind), (_stamp_why, _stamp_kind),
+                               (_deleg_why, "peer"), (_owned_why, "task")):
+                    if _w:
+                        await_kind = _k
+                        break
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
             # such node in its subtree — else (working/awaiting) its LAST ACTIVITY (the newest mt anywhere in
@@ -16301,7 +16329,8 @@ def build_feed(now, tmux=None):
                 # work) — the user 2026-06-22. `tasks` = the live bg-task descriptions (the user 2026-07-13):
                 # when present the card wears the compact "Waiting on task" pill (expands to this list, like
                 # Sub-goals) instead of the boxed why; empty for subagent/overlay flavors, which keep the box.
-                "awaiting": ({"why": await_why, "tasks": _awaiting_task_descs(fsid, s["path"])} if col == "awaiting" else None),
+                "awaiting": ({"why": await_why, "kind": await_kind,
+                              "tasks": _awaiting_task_descs(fsid, s["path"])} if col == "awaiting" else None),
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "distillState": distill_state,   # "completed" | "blocked" | null — the GENUINE state the distiller line keys on, so the brief/takeaway doesn't flicker off when recheck/rejudging drops `column` to working (the user 2026-07-21)
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
@@ -16395,7 +16424,8 @@ def build_feed(now, tmux=None):
                 # (the same signal the timeline's faded awaiting stretch reads). Surface a working-column
                 # awaiting card so the wait shows in the FEED, not just on the timeline — the hole the user
                 # hit ("there's no card there"). Ephemeral: gone the moment sess_awaiting_why clears.
-                asks.append(_awaiting_card(s, name, color, fsid, live, now, sess_awaiting_why))
+                asks.append(_awaiting_card(s, name, color, fsid, live, now, sess_awaiting_why,
+                                           kind=sess_awaiting_kind))
     if cold_parse:
         _warm_fleet_bg(now)                          # a living session wasn't parsed yet → warm it + re-push (dots/anchors)
     # NO caption stream. The feed's cards are TOP-LEVEL GOALS ONLY (read-side.md: Inbox = goal cards;
@@ -18022,9 +18052,12 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
         # `awaiting` intervals field below both mean blocked-on-YOU. Cheap (live subagent snapshot + states
         # overlay), so both the skeleton and the bars build carry it. Idle input = `aw_open`, the chip's
         # own event-model signal (see its derivation above), NOT the raw-snapshot `open_now`.
-        awaiting_bg = (_session_awaiting(sid, s["path"], not aw_open, stamp=True) if live else None)
+        _aw_bg = (_session_awaiting(sid, s["path"], not aw_open, stamp=True) if live else None)
+        awaiting_bg = _aw_bg["why"] if _aw_bg else None
+        awaiting_kind = _aw_bg["kind"] if _aw_bg else None
         sessions.append({
             "id": sid, "name": name, "live": live, "state": state, "awaitingBg": awaiting_bg,
+            "awaitingKind": awaiting_kind,
             # the live bg-task descriptions behind awaitingBg (the user 2026-07-13): the lane draws the
             # idle-but-waiting stretch as a thin dashed segment whose hover lists exactly what's pending
             "awaitingTasks": (_awaiting_task_descs(sid, s["path"]) if awaiting_bg else []),

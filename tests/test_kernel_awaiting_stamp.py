@@ -146,15 +146,27 @@ class SessionLevelStamp(unittest.TestCase):
         (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
             "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": nodes}))
 
+    def test_a_stamped_kind_rides_the_session_signal(self):
+        # the judge classified WHAT the wait is on (jd.AWAIT_KINDS); the kind travels as data beside
+        # the why so surfaces can word it and rules can scope by it (the user 2026-08-15)
+        nodes = {"g1": _node("g1", why="slurm 4821 regenerating the parts", at=200)}
+        nodes["g1"]["awaitingKind"] = "job"
+        (km.jd.GOALDIR / (SID + ".json")).write_text(json.dumps({
+            "rompUuid": SID, "seq": 1, "placements": {}, "status": {}, "nodes": nodes}))
+        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
+                         {"kind": "job", "why": "slurm 4821 regenerating the parts"})
+        self.assertEqual(km._session_stamp_full(SID),
+                         ("g1", 200, "slurm 4821 regenerating the parts", "job"))
+
     def test_session_stamp_takes_the_freshest_across_ALL_tops(self):
         # session-level, so it scans every goal (not one subtree like _goal_awaiting_stamp) for the newest
         self._seed(("g1", "the older wait, padded", 100), ("g2", "the newer wait", 300))
-        self.assertEqual(km._session_stamp_cached(SID), "the newer wait")
+        self.assertEqual(km._session_stamp_full(SID)[2], "the newer wait")
 
     def test_stamp_true_lifts_a_live_session_whose_live_sources_are_dark(self):
         self._seed(("g1", "the watcher it armed; files the clip when it triggers", 200))
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
-                         "the watcher it armed; files the clip when it triggers")
+                         {"kind": None, "why": "the watcher it armed; files the clip when it triggers"})
 
     def test_stamp_false_stays_none_so_the_feed_scopes_per_goal(self):
         # the crux: the feed calls stamp=False, so the session-level signal is None for a stamp-only session
@@ -187,9 +199,9 @@ class SessionLevelStamp(unittest.TestCase):
 
     def test_the_cache_invalidates_when_the_store_changes(self):
         self._seed(("g1", "first wait", 200))
-        self.assertEqual(km._session_stamp_cached(SID), "first wait")
+        self.assertEqual(km._session_stamp_full(SID)[2], "first wait")
         self._seed(("g1", "second wait, a different length so size differs", 300))
-        self.assertEqual(km._session_stamp_cached(SID), "second wait, a different length so size differs")
+        self.assertEqual(km._session_stamp_full(SID)[2], "second wait, a different length so size differs")
 
 
 class SessionLevelDelegation(unittest.TestCase):
@@ -241,7 +253,7 @@ class SessionLevelDelegation(unittest.TestCase):
     def test_a_fully_delegated_session_reads_awaiting_on_the_session_surfaces(self):
         self._seed(self._delegated_store())
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
-                         "delegated to probe; waiting on their result")
+                         {"kind": "peer", "why": "delegated to probe; waiting on their result"})
 
     def test_stamp_false_stays_none_so_the_feed_keeps_scoping_per_card(self):
         self._seed(self._delegated_store())
@@ -251,7 +263,8 @@ class SessionLevelDelegation(unittest.TestCase):
         nodes = self._delegated_store()
         nodes["g1"]["awaitingWhy"], nodes["g1"]["awaitingAt"] = "the sweep it launched", 200
         self._seed(nodes)
-        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True), "the sweep it launched")
+        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
+                         {"kind": None, "why": "the sweep it launched"})
 
     def test_a_pure_delegation_top_stays_dark_matching_its_suppressed_card(self):
         # EVERY leaf a handoff → the feed suppresses the card in every column, so its dot never lights;
@@ -330,13 +343,14 @@ class OverlayDoesNotVeto(unittest.TestCase):
         self._overlay({"t": 100, "awaiting": False})
         self._seed()
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
-                         "a dispatched release watch; tags when green",
+                         {"kind": None, "why": "a dispatched release watch; tags when green"},
                          "the Stop hook's ambient false must not hide the judge's stamp")
 
     def test_a_live_true_row_still_wins_with_its_own_why(self):
         self._overlay({"t": 100, "awaiting": True, "why": "a job the hook reported"})
         self._seed()
-        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True), "a job the hook reported",
+        self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
+                         {"kind": None, "why": "a job the hook reported"},
                          "a positive overlay row keeps its channel")
 
     def test_false_row_and_no_stamp_is_plain_none(self):
@@ -418,7 +432,8 @@ class AwaitingWake(unittest.TestCase):
 
     def test_stamp_full_exposes_gid_and_at(self):
         self._seed(at=500)
-        self.assertEqual(km._session_stamp_full(SID), (self.gid, 500, "the trace it dispatched; reports when it returns"))
+        self.assertEqual(km._session_stamp_full(SID),
+                         (self.gid, 500, "the trace it dispatched; reports when it returns", None))
 
     def test_fires_past_the_window_and_records_the_episode(self):
         now = 1_000_000

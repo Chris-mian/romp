@@ -413,6 +413,19 @@ class DurableAwaitingSource(unittest.TestCase):
     def _restore(self, saved):
         km._tmux_sessions, km._sdk_spawned_at, km._states_awaiting_overlay = saved
 
+    def test_pending_agent_dispatches_read_kind_agents_not_task(self):
+        # dispatched agents/workflows are kind agents even through the task stream; a MIXED pending
+        # set (or plain shell work) is kind task — the generic word (the user 2026-08-15)
+        rows = [{"toolUseId": "t1", "desc": "audit the sampler", "since": 5, "type": "local_agent"},
+                {"toolUseId": "t2", "desc": "notes-api sweep", "since": 6, "type": "local_workflow"}]
+        saved = self._patched({self.SID: {"bgTasks": rows}})
+        try:
+            self.assertEqual(km._session_awaiting(self.SID, None, True)["kind"], "agents")
+            rows.append({"toolUseId": "t3", "desc": "mkdocs serve", "since": 7, "type": "local_bash"})
+            self.assertEqual(km._session_awaiting(self.SID, None, True)["kind"], "task")
+        finally:
+            self._restore(saved)
+
     def test_a_live_lifecycle_less_cli_reads_awaiting_from_the_transcript(self):
         path = _write([_launch(desc="power watcher")])
         saved = self._patched({self.SID: {"name": "web"}})
@@ -421,7 +434,7 @@ class DurableAwaitingSource(unittest.TestCase):
         finally:
             self._restore(saved)
             os.unlink(path)
-        self.assertEqual(why, "waiting on a background task: power watcher")
+        self.assertEqual(why, {"kind": "task", "why": "waiting on a background task: power watcher"})
 
     def test_the_notification_landing_ends_it(self):
         path = _write([_launch(), _notif_str(tid=TUSE)])
