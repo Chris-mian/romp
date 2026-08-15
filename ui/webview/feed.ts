@@ -17,7 +17,6 @@ import { badgeNotices, clearBoundaryNotices, sdkProblemNotices, syncNotices,
   type ClearNoticeRow, type SdkNoticeRow, type SyncNoticeRow } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
-import { initFileView } from "./file-view";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState } from "./feed-view-state";
 
 // (The standalone-deliverable "FeedItem" subsystem was REMOVED 2026-07-07: the kernel had emitted
@@ -3994,7 +3993,5 @@ setInterval(() => {
     if (it && t) t.textContent = relAge(now - it.t);
   }
 }, 15000);
-
-initFileView();   // the shell relays a chat file-link click here; the viewer takes over this pane
 
 vscodeApi?.postMessage({ type: "ready" });

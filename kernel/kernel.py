@@ -21638,18 +21638,10 @@ _LANDING_SETTINGS_JS = """
 (function(){window.addEventListener('message',function(e){var m=e.data;if(!m)return;
 if(m.romp==='settings')document.body.classList.toggle('settings-open',!!m.on);
 // the /chat iframe's new-session picker asks the shell to lift it full-window (see body.picker-open CSS)
-if(m.romp==='picker')document.body.classList.toggle('picker-open',!!m.on);
-// A file link clicked in the CHAT shows the file in the FEED pane, which is a different document — so
-// the shell relays it (the user 2026-08-08, reading the dashboard from another machine, where the old
-// openFile would have opened the file on the kernel's screen). If the feed pane is toggled off we turn
-// it on for the duration and remember to put it back, so the viewer never costs the user their layout.
-if(m.romp==='viewFile'){var vf=document.getElementById('f-feed');
-  if(!document.body.classList.contains('po-feed')){window.__rompFeedWasOff=true;
-    try{window.__rompPaneToggle&&window.__rompPaneToggle('feed',true);}catch(e){}}
-  try{window.__rompMobileTab&&window.__rompMobileTab('feed');}catch(e){}   // phone: one pane at a time
-  try{vf&&vf.contentWindow&&vf.contentWindow.postMessage({romp:'viewFile',path:m.path,sid:m.sid},'*');}catch(e){}}
-if(m.romp==='viewFileClosed'&&window.__rompFeedWasOff){window.__rompFeedWasOff=false;
-  try{window.__rompPaneToggle&&window.__rompPaneToggle('feed',false);}catch(e){}}});
+if(m.romp==='picker')document.body.classList.toggle('picker-open',!!m.on);});
+// (The viewFile relay is gone: the file viewer opens as a modal over the CHAT pane itself —
+// file-view.ts lives in the chat bundle now (the user 2026-08-15) — so no cross-pane forwarding
+// and no feed-pane bring-forward/put-back.)
 // One id per dashboard (per browser tab/window), minted here so every pane in it reports the same one.
 // sessionStorage, deliberately: it survives a reload (the panes keep their identity) and a second window
 // gets its own, which is what makes "the dashboard that asked" a thing the kernel can address.
@@ -22348,7 +22340,6 @@ var B=bar.querySelectorAll('button'),KT='romp-mobile-tab';
 function show(p){if(!F[p])return;document.body.setAttribute('data-tab',p);for(var k in F)F[k].classList.toggle('m-on',k===p);
 for(var i=0;i<B.length;i++)B[i].classList.toggle('on',B[i].getAttribute('data-pane')===p);
 try{localStorage.setItem(KT,p);}catch(e){}}
-window.__rompMobileTab=show;   // the file-viewer bridge brings the feed tab forward on a phone
 // A REVEAL un-hides a desktop-toggled-off pane before the mobile tab switch (the user 2026-08-13: a feed
 // click that jumps into a CLOSED chat used to land invisibly — the hidden iframe's WS stays live, so the
 // scroll ran under display:none and nothing appeared to happen). Same __rompPaneToggle(…, true) the Log

@@ -2552,3 +2552,124 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    math (the user 2026-08-15) */
 .md .katex.cmt-hl-host { background: color-mix(in srgb, var(--cmt-hl) 30%, transparent); border-radius: 3px; }
 .md .katex.cmt-hl-host mark.cmt-hl { background: transparent; }
+
+/* ── file viewer (file-view.ts) ────────────────────────────────────────────────────────────────────
+   A file path clicked in the chat opens the file HERE, as a big modal over the chat itself (the user
+   2026-08-15: the first cut filled the FEED pane, and reading a file cost the cards). ~95% of the
+   pane, dimmed backdrop (the panels treatment: content behind stays visible, never hidden), ✕ top
+   right, Esc/backdrop closes. Under the lightbox (1300) so an image opened FROM a viewed markdown
+   file still presents above it. `body.fileview-open` stops the chat scrolling underneath. */
+#romp-fileview { position: fixed; inset: 0; z-index: 1200; background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: center; justify-content: center; }
+.fileview { width: 95%; height: 95%; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg, #1e1e1e); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px;
+  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.6); }
+body.fileview-open { overflow: hidden; }
+.fileview-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 7px 10px; border-bottom: 1px solid var(--box-border); }
+/* Only the DIRECTORY may be truncated: the filename identifies the file, so it holds its width however
+   deep the path is, and the dimmed directory in front of it gives up room first. */
+.fileview-name { flex: 1 1 auto; min-width: 0; font-size: 0.86em; color: var(--fg);
+  display: flex; align-items: baseline; white-space: nowrap; }
+.fileview-dir { flex: 0 1 auto; min-width: 0; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; }
+.fileview-base { flex: 0 0 auto; }
+.fileview-acts { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.fileview-btn { font: inherit; font-size: 0.82em; cursor: pointer; flex: 0 0 auto;
+  padding: 3px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); color: var(--fg);
+  border: 1px solid var(--box-border); }
+.fileview-btn:hover { border-color: var(--accent); }
+.fileview-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+/* gutter + code as two columns of ONE scroller: the numbers stay put horizontally against long lines,
+   and because they are a sibling element a selection of the code copies without dragging them along */
+.fileview-code { display: flex; align-items: flex-start; min-height: 100%; }
+.fileview-gutter { flex: 0 0 auto; position: sticky; left: 0; z-index: 1;
+  padding: 10px 8px 10px 10px; text-align: right; user-select: none;
+  font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
+  color: var(--dim); opacity: 0.55; background: var(--bg, #1e1e1e);
+  border-right: 1px solid var(--box-border); white-space: pre; }
+.fileview-pre { flex: 1 1 auto; margin: 0; padding: 10px 12px;
+  font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
+  white-space: pre; tab-size: 4; }
+.fileview-pre code { background: none; padding: 0; font: inherit; }
+/* a refusal explains itself in place, in the kernel's own words (too large — with the size and the
+   cap; not a text file; not found) over the path it was asked for. Never a blank pane. */
+.fileview-err { padding: 18px 14px; font-size: 0.86em; color: #e0a030; }
+.fileview-err-hint { margin-top: 6px; color: var(--dim); font-size: 0.92em;
+  font-family: var(--mono, ui-monospace, monospace); word-break: break-all; }
+/* the way out of a refusal: when the file exists but cannot render (413/415), the kernel's words are
+   followed by the Download the view could not be — same button treatment as the title bar's */
+.fileview-err-dl { display: block; margin-top: 10px; }
+/* the romp loader, per the loading-state rule: swirl + wordmark + three pulsing accent dots */
+.fileview-load { display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 30px 0; color: var(--dim); font-size: 0.86em; }
+.fileview-load img { width: 17px; height: 17px; animation: fileview-spin 1.6s linear infinite reverse; }
+.fileview-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+  animation: fileview-pulse 1.1s ease-in-out infinite; }
+.fileview-dot:nth-of-type(2) { animation-delay: 0.18s; }
+.fileview-dot:nth-of-type(3) { animation-delay: 0.36s; }
+@keyframes fileview-spin { to { transform: rotate(360deg); } }
+@keyframes fileview-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+/* A pressed viewer toggle (Rendered/Raw, Wrap) wears the app-wide selected language — accent text +
+   border + faint wash, gray = off (the .fask-secbtn.on / .feed-modetoggle.on treatment) — with the same
+   reverse-highlight hover so a selected toggle never reads as dead. */
+.fileview-btn.on { color: var(--accent); border-color: var(--accent);
+  background: rgba(156, 210, 255, 0.10); font-weight: 600; }
+.fileview-btn.on:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+
+/* Wrap mode (the Wrap toggle, persisted per browser): long lines soft-wrap instead of scrolling
+   sideways. The flat sibling gutter cannot survive that — one logical line becomes several visual lines
+   and every number below it drifts — so wrap mode restructures: each logical line is a flex row (.fv-cl)
+   numbered by a CSS counter in its ::before (the chat's .cl/.ct treatment in styles.css). The number is
+   ::before content and user-select: none, so a selection still copies clean, same as the gutter it
+   replaces. */
+.fileview-pre.fileview-wrap { white-space: pre-wrap; overflow-wrap: anywhere;
+  counter-reset: fvln; padding-left: 0; }
+.fileview-wrap .fv-cl { display: flex; align-items: baseline; }
+.fileview-wrap .fv-cl::before {
+  counter-increment: fvln; content: counter(fvln);
+  flex: 0 0 3.5em; padding-right: 10px; text-align: right;
+  color: var(--dim); opacity: 0.55; user-select: none;
+}
+.fileview-wrap .fv-ct { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Rendered markdown (the Raw ⇄ Rendered toggle; Rendered is the default — the user 2026-08-09).
+   Typography mirrors the chat's .md block in styles.css, the reference aesthetic (one treatment, two
+   sheets — the .romp-acted precedent); font sizes reuse what this surface already wears (the page base,
+   12px mono, the err-hint's 0.92em). Vars the feed sheet does not define carry the chat's literals as
+   fallbacks (feed-css-vars.test.ts holds that line). */
+.fileview-md { padding: 14px 18px; max-width: 860px; overflow-wrap: anywhere; }
+.fileview-md > :first-child { margin-top: 0; }
+.fileview-md > :last-child { margin-bottom: 0; }
+.fileview-md p { margin: 0.5em 0; }
+.fileview-md h1, .fileview-md h2, .fileview-md h3, .fileview-md h4 {
+  font-weight: 600; color: var(--fg); margin: 1em 0 0.4em; line-height: 1.3; }
+.fileview-md h1 { font-size: 1.3em; } .fileview-md h2 { font-size: 1.15em; } .fileview-md h3 { font-size: 1.05em; }
+.fileview-md ul, .fileview-md ol { margin: 0.4em 0; padding-left: 1.4em; }
+.fileview-md li { margin: 0.2em 0; }
+.fileview-md strong { color: var(--fg); font-weight: 600; }
+.fileview-md em { font-style: italic; }
+.fileview-md a { color: var(--vscode-textLink-foreground, #4daafc); text-decoration: none; }
+.fileview-md a:hover { text-decoration: underline; }
+.fileview-md blockquote { margin: 0.5em 0; padding-left: 12px;
+  border-left: 2px solid var(--box-border); color: var(--dim); }
+.fileview-md hr { border: none; border-top: 1px solid var(--box-border); margin: 1em 0; }
+.fileview-md :not(pre) > code {
+  font-family: var(--mono, ui-monospace, monospace); font-size: 0.92em;
+  color: var(--code-fg, #e1c08d); background: var(--code-bg, rgba(217, 119, 87, 0.10));
+  padding: 0.12em 0.4em; border-radius: 4px;
+}
+.fileview-md pre {
+  background: var(--box-bg, rgba(255, 255, 255, 0.03)); border: 1px solid var(--box-border);
+  border-radius: 6px; padding: 11px 14px; margin: 0.6em 0; overflow-x: auto;
+}
+.fileview-md pre code {
+  background: none; padding: 0; display: block;
+  font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
+  color: var(--code-fg, #e1c08d); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.fileview-md table { border-collapse: collapse; margin: 0.6em 0; }
+.fileview-md th, .fileview-md td { border: 1px solid var(--box-border); padding: 4px 10px; text-align: left; }
+.fileview-md th { background: rgba(255, 255, 255, 0.03); }
+.fileview-md img { max-width: 100%; }

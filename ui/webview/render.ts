@@ -31,6 +31,7 @@ import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview, fileUrl } from "./preview";
+import { openFileView } from "./file-view";
 import { pastedFilePath } from "./paste-path";
 import { hostNameNodes, hostPrefix, hostOf, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
@@ -688,29 +689,24 @@ document.addEventListener("click", (e) => {
 // Where a clicked file path should actually open, which depends entirely on which host you are in.
 //
 //   • VS Code → the host extension's openFile handler, i.e. the editor two inches away. Unbeatable.
-//   • Web dashboard → the FEED PANE's viewer, via the shell (file-view.ts). This is the case that used
-//     to be broken (the user 2026-08-08): the browser sent `openFile` to the kernel, which ran an
-//     opener on the KERNEL's machine. Reading the dashboard from another device, that opens the file on
-//     a screen you are not looking at — and on a kernel with no desktop it did nothing at all, silently,
-//     because the opener was macOS-only. The bytes have to come to the browser; nothing else can work.
+//   • Web dashboard → the viewer, as a modal over THIS pane (file-view.ts; the user 2026-08-15 — the
+//     first cut filled the feed pane, and reading a file cost the cards). The bytes come to the
+//     browser over /file, which is the fix for the original break (the user 2026-08-08): the kernel
+//     used to run an opener on ITS machine, the wrong screen entirely from another device.
 //
-// The chat lives in an iframe and the feed is a different document, so the shell relays it. Standalone
-// (no parent frame, e.g. /chat opened directly) there is nobody to relay to, so it falls back to asking
-// the kernel — which is still right when the kernel IS this machine.
+// Same document as the click, so there is no shell relay and no fallback ladder: standalone /chat
+// and the framed pane behave identically.
 function openPath(path: string, sid?: string | null): void {
   if (!vscodeApi) return;
-  const web = location.protocol === "http:" || location.protocol === "https:";
-  if (web && window.parent !== window) {
-    try {
-      window.parent.postMessage({ romp: "viewFile", path, sid: sid || activeId || null }, "*");
-      return;
-    } catch { /* no shell — fall through to the kernel-side opener */ }
+  if (location.protocol === "http:" || location.protocol === "https:") {
+    openFileView(path, sid || activeId || null);
+    return;
   }
   vscodeApi.postMessage(sid ? { type: "openFile", path, id: sid } : { type: "openFile", path });
 }
 
-// A clickable file name that opens the real file — in the editor (VS Code) or the feed pane's viewer
-// (web). Shared open/navigate surface; see extension.ts's openFile handler and file-view.ts.
+// A clickable file name that opens the real file — in the editor (VS Code) or the in-pane viewer
+// modal (web). Shared open/navigate surface; see extension.ts's openFile handler and file-view.ts.
 function fileLink(path: string): HTMLElement {
   const a = el("span", "tool-file");
   a.textContent = shortPath(path);
