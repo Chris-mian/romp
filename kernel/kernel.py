@@ -16883,6 +16883,7 @@ def _spend_windows(keyed_only=False):
     # sums its cell from them (version skew), and the strip reads day||fiveHour meanwhile. month stays
     # calendar month-to-date — it matches the bill.
     win = {"fiveHour": _rolling(5), "sevenDay": _rolling(7 * 24),
+           "hour": _rolling(1),   # the last hour, same rolling bucket math as day (the user 2026-08-15)
            "day": _rolling(24), "week": _rolling(7 * 24),
            "month": _sum(v for k, v in days.items() if isinstance(k, str) and k.startswith(month))}
     for k, v in _spend_budgets().items():
@@ -21197,9 +21198,10 @@ function fmtTok(n){if(n>=1e9)return fmtSig3(n/1e9)+'B';
 if(n>=1e6)return fmtSig3(n/1e6)+'M';
 if(n>=1e3)return fmtSig3(n/1e3)+'k';return String(n);}
 function fmtUsd(v){return '$'+String(Math.round(v));}   // whole dollars everywhere — no cents (the user 2026-08-09)
-// pay-per-token has no reset windows (the user 2026-08-13): the key's story is 1 day / 1 week / 1 month.
+// pay-per-token has no reset windows (the user 2026-08-13): the key's story is 1 hour (the user
+// 2026-08-15) / 1 day / 1 week / 1 month.
 // fiveHour/sevenDay fallbacks remain readable from older remote kernels (version skew) via day||fiveHour.
-var SPEND_WINS=[['day','1 day'],['week','1 week'],['month','1 month']];
+var SPEND_WINS=[['hour','1 hour'],['day','1 day'],['week','1 week'],['month','1 month']];
 // The per-host SPEND detail for the rich hover: plain NUMBERS per window (dollars, tokens, turns).
 // No bars anywhere for spend (the user 2026-08-08: the spend bar graphs told you nothing. The old
 // hover scaled each window's bar to the largest window, a shape with no meaning, and the budget-fill

@@ -24,6 +24,9 @@ test("the kernel serves spend windows for BOTH payload shapes, keyed-only beside
   // and keeps TOTAL sums (everything there bills the key; legacy files predate the split)
   assert.ok(KERNEL.includes('if o.get("apiKey") or (not _claude_account() and (jd.STATE / "spend.json").exists()):'));
   assert.ok(KERNEL.includes('out = {"apiKey": True, "spend": _spend_windows(),'));
+  // the hover's spend rows lead with the rolling hour (the user 2026-08-15); the collapsed cell keeps day+month
+  assert.ok(KERNEL.includes("var SPEND_WINS=[['hour','1 hour'],['day','1 day'],['week','1 week'],['month','1 month']];"));
+  assert.ok(KERNEL.includes('"hour": _rolling(1),'));
   // …and the $/hour series rides beside the windows for the hover graph (the user 2026-08-13)
   assert.ok(KERNEL.includes('out["spendSeries"] = ss'));
   // the bars payload attaches the KEYED split only — a login turn's computed cost there would be
