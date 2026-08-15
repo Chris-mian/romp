@@ -1760,13 +1760,24 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         turn.classList.add("turn-cmd");
         bubble.classList.add("cmd-row");
       } else if (!romp && !injected && ev.md && ev.canned === "continue") {
-        // The card's Continue button (the user 2026-08-13): YOUR gesture in YOUR colour — the judges
-        // file it as your reply, the bubble stays blue — but not your prose: a one-line gist says what
-        // you did, and the exact canned words sit one click deeper (the nudge fold, in the user
-        // family). The ↩ follow-up header above already names the goal it answers.
-        const gistEl = el("div", "nudge-gist");
+        // The card's Continue button: a user GESTURE, not typed prose. The 2026-08-13 cut kept the
+        // blue bubble with a PARAPHRASED gist — which made it the one "user message" that expanded,
+        // and to different words than its label (the user 2026-08-15: unclear what was actually
+        // sent). Superseded: gestures read in the slash-command family (✦ mark, mono chip) — chip
+        // "Continue", then the SENT text's own first line, the rest one click deeper, so expanding
+        // only ever reveals MORE of the same words. The judges still file it as your reply, and the
+        // ↩ follow-up header above still names the goal it answers.
+        turn.classList.add("turn-cmd");
+        bubble.classList.add("cmd-row");
+        const chip = el("span", "slash-cmd-chip"); chip.textContent = "Continue";
+        bubble.appendChild(chip);
+        const raw = ev.md.replace(/<!--[\s\S]*?-->/g, "").trim();
+        const lines = raw.split("\n").map((l) => l.trim());
+        const first = lines.find((l) => l && !l.startsWith(">")) || lines.find((l) => l) || raw;   // skip a goal-context "> …" quote
+        const clipped = first.length > 90 ? first.slice(0, 88).replace(/\s+\S*$/, "") + "…" : first;
+        const gistEl = el("span", "nudge-gist");
         const c = el("span", "nudge-caret"); c.textContent = "▸"; gistEl.appendChild(c);
-        gistEl.appendChild(document.createTextNode("Continue — keep going; open calls are yours"));
+        gistEl.appendChild(document.createTextNode(clipped));
         bubble.appendChild(gistEl);
         const full = el("div", "nudge-full md");
         full.innerHTML = md(ev.md);

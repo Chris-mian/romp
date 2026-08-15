@@ -1219,6 +1219,12 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .user-bubble.cmd-row .slash-cmd-chip { background: var(--bg); color: #2b6cef;
   border-color: #2b6cef; }
 .user-bubble.cmd-row .slash-cmd-args { color: var(--dim); }
+/* The Continue button's turn wears the same gesture dress (render.ts canned === "continue", the user
+   2026-08-15): chip "Continue", then the SENT text's own first line — dim like the command family, not
+   the white-on-blue fold — with the full words unfolding in place under the row. */
+.user-bubble.cmd-row .nudge-gist, .user-bubble.cmd-row .nudge-caret { color: var(--dim); }
+.user-bubble.cmd-row .nudge-gist { margin-left: 8px; }
+.user-bubble.cmd-row .nudge-full { color: var(--dim); margin-top: 4px; max-width: 640px; }
 /* ---------- romp-injected message (a feed nudge / follow-up) ----------
    A GRAY bubble in the SAME right-aligned spot as the blue user bubble (so it sits where "an outgoing
    message" goes), but clearly NOT you — gray, with a small "↯ romp" tag above it (the user 2026-06-19).
