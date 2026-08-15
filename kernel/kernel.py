@@ -5051,6 +5051,25 @@ def _comments_frame(sid):
     return {"type": "comments", "id": sid, "threads": threads}
 
 
+def _comment_markers(sid):
+    """The timeline lane's comment SQUARES: [{t, uuid, tid, status}] for threads anchored on this
+    session — open + resolved only (a promoted thread is a session with a branch connector; a
+    dead-promoted one is done). anchorT (stamped at create) places the square at the commented
+    message; rows from before that stamp fall back to createdT, the comment's own moment. One
+    exists() stat for every session that never had a thread."""
+    p = _comments_path(sid)
+    if not p.exists():
+        return []
+    out = []
+    for th in _load_comments(sid).get("threads") or []:
+        if (th.get("status") or "open") not in ("open", "resolved"):
+            continue
+        out.append({"t": th.get("anchorT") or th.get("createdT") or 0,
+                    "uuid": th.get("anchorUuid") or "", "tid": th.get("tid"),
+                    "status": th.get("status") or "open"})
+    return out
+
+
 def _comment_create(parent_sid, anchor_uuid, exact, text, now=None):
     """Anchor a new comment thread: fork the parent at the highlighted message (inclusive) as a
     threadOf fork — no names/ entry, so no judge seeding is needed until promotion — and send the
@@ -17981,6 +18000,21 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     id2name = {s["sid"]: s["name"] for s in alive}
     sessions, turns, semantic = [], {}, []   # `semantic`: artifact-derived marks (for gloss text); the band's marks are RUN spans, below
     ctx_stops = cm.stops_for(_colormap())    # the GLOBAL colormap (the user 2026-06-26): color the per-lane context bar server-side
+    # BRANCH LINEAGE on the timeline (the user 2026-08-14: a fork drawn like a git graph). branch_of
+    # maps a forked lane to its durable forkedFrom — only while the PARENT's lane is in this build:
+    # that presence is also the CLIP condition below (a fork's transcript carries the parent history
+    # VERBATIM; while the parent's lane shows that history, the child's must not repeat it — parent
+    # gone, and the child shows the whole story, as if it had been one session all along). Costs one
+    # stat steady-state (fork_children's sdk/ dir-mtime memo), so the skeleton path can afford it.
+    _be_fk = _sdk()
+    _kid_map = (_be_fk.fork_children() if _be_fk and hasattr(_be_fk, "fork_children") else {}) or {}
+    branch_of = {}
+    for _psid, _kids in _kid_map.items():
+        if _psid not in id2name:
+            continue
+        for _k in _kids:
+            if _k["sid"] in id2name and _k.get("t"):
+                branch_of[_k["sid"]] = {"fromId": _psid, "t": _k["t"], "cut": _k.get("cut") or ""}
     for s in alive:
         sid, name = s["sid"], s["name"]
         tm = tmux.get(sid)
@@ -18061,7 +18095,10 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                          and not any(x["type"] == "idle" for x in turn["atoms"])
                          and not _suspended_after(turn["end"]))   # dead lane (live False) or pre-sleep freeze → not an open bar
             segs = _segs_seam(turn, goals)
+            _bft = (branch_of.get(sid) or {}).get("t")
             for si, seg in enumerate(segs):
+                if _bft and (seg.get("end") or seg["t"]) <= _bft:
+                    continue                                       # copied pre-branch history — the parent's lane owns it
                 # A bar must not span a host sleep. EXCISE every suspension inside the segment → one bar per
                 # awake stretch, so work done AFTER the lid reopened isn't erased (the user 2026-06-22). The
                 # asleep gaps between pieces read as idle (and collapse under 'collapse gaps'). The segment's
@@ -18106,8 +18143,10 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
         if with_bars:
             turns[sid] = bars
             _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
+        _bft = (branch_of.get(sid) or {}).get("t")
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
-                       if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")]
+                       if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")
+                       and not (_bft and a["t"] <= _bft)]           # copied boundaries stay on the parent's lane
         # Idle fade: the SAME rule the chat tab uses (ready + idle > 1h — see the `faded` beside the chat
         # chip), keyed on the DERIVED chip `state` computed above, not the raw tmux state. The old form read
         # tmux's vocabulary and counted "waiting" as active — but "waiting" IS the post-turn idle state, so
@@ -18149,6 +18188,11 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             # a clear) — the lane marks where a conversation ended and a blank one began
             "clears": [{"t": r["t"]} for r in jd.episode_rows(sid)[1:] if r.get("t")],
             "faded": faded,
+            # branch lineage (the user 2026-08-14): the child lane's connector endpoint + clip point,
+            # present only while the parent's lane is in this build; comment squares ride every lane
+            # that has threads (anchorT-placed, open/resolved only — a promoted thread IS a session)
+            "branch": branch_of.get(sid),
+            "comments": _comment_markers(sid),
             "hideFromFeed": _session_flag(sid, "hideFromFeed"),    # lane checkbox → mute from feed (timeline-only)
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),  # lane mailbox → isolate from the Romp Postal Service (bin/romp-postal-service)
             "notify": _notify_session_effective(sid)})   # lane bell, EFFECTIVE (override, else the master default) → OS notification when this session's work blocks on you / completes (the user 2026-07-28)
