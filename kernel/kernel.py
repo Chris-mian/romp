@@ -5984,7 +5984,14 @@ def _drive(msg, client):
                                        "text": "Couldn't toggle fast mode — the session isn't connected right now."}))
         _push_soon()
     elif t == "setMode" and msg.get("value"):
-        be.set_mode(sid, str(msg["value"])); _push_soon()
+        # LOUD on refusal (fail loudly, never degrade silently): a tmux session reaches its permission
+        # mode only through the shift+tab cycle, so Bypass — which the picker offers on SDK sessions —
+        # has no keystroke there. Without this the badge just sat on the old mode with no reason given.
+        if not be.set_mode(sid, str(msg["value"])):
+            client["send"](json.dumps({"type": "warn",
+                                       "text": "A terminal session can only reach the modes in its "
+                                               "shift+tab cycle — Normal, Accept edits, Auto, Plan."}))
+        _push_soon()
     elif t == "setAuth" and msg.get("value") in ("login", "key"):
         # per-session billing (login vs the manager env's API key) — SDK-only, applied via reconnect
         # like /effort; mid-compaction → parked in the same FIFO. LOUD on refusal (fail loudly): tmux
@@ -6504,6 +6511,13 @@ class TmuxBackend(sb.SessionBackend):
         return True
 
     def set_mode(self, sid, mode):
+        # Only the CYCLE modes are reachable here: shift+tab is the only handle the TUI gives us, so a
+        # mode outside _MODE_CYCLE (bypassPermissions, dontAsk) has no keystroke that reaches it.
+        # _cycle_mode already declined those — but this returned True anyway, so the caller was told a
+        # permission mode had been set when nothing had happened. Say no instead (the user 2026-08-15,
+        # on the picker gaining Bypass: the SDK's own control channel takes it, this backend cannot).
+        if _mode_presses((_tmux_sessions().get(str(sid)) or {}).get("mode") or "default", mode) is None:
+            return False
         _cycle_mode(_name_of(sid) or sid, str(sid), mode)                     # shift+tab cycle to the target mode
         return True
 

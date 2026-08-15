@@ -5155,6 +5155,26 @@ class ViewBuilder(unittest.TestCase):
                       "after cycling, the kernel records the new mode so the chat label updates")
         self.assertIn(["__push_all__"], calls, "and re-renders so the label flips immediately")
 
+    def test_tmux_set_mode_refuses_a_mode_the_cycle_cannot_reach(self):
+        # The picker gained Bypass for SDK sessions (the user 2026-08-15). shift+tab is the only handle
+        # the TUI gives us, so a tmux session cannot reach bypassPermissions/dontAsk at all — and
+        # set_mode used to return True regardless, telling the caller a permission mode had been set
+        # when _cycle_mode had already declined it. Refuse, so the kernel can say so.
+        saved_tmux, saved_cycle = km._tmux_sessions, km._cycle_mode
+        cycled = []
+        km._tmux_sessions = lambda: {SID: {"mode": "auto"}}
+        km._cycle_mode = lambda name, sid, target: cycled.append(target)
+        try:
+            be = km.TmuxBackend()
+            self.assertFalse(be.set_mode(SID, "bypassPermissions"), "no keystroke reaches it → say no")
+            self.assertFalse(be.set_mode(SID, "dontAsk"), "same for the other flag-only mode")
+            self.assertEqual(cycled, [], "and don't pretend to cycle")
+            for m in km._MODE_CYCLE:
+                self.assertTrue(be.set_mode(SID, m), "every cycle mode still goes through: %s" % m)
+            self.assertEqual(cycled, list(km._MODE_CYCLE))
+        finally:
+            km._tmux_sessions, km._cycle_mode = saved_tmux, saved_cycle
+
     def test_recency_colormap_chooser(self):
         # the colormap chooser (the user 2026-06-16): several perceptually-uniform maps + a persisted pick.
         for name in ("hawaii", "viridis", "magma", "inferno", "plasma", "cividis"):

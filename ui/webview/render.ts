@@ -7661,6 +7661,9 @@ function elapsedMs(sinceMs: number | null): string {
 // /model or /effort slash command into the session's pane; the label then updates
 // when the TUI's statusline republishes the tmux vars (meta-pending bridges the gap).
 type MetaKind = "mode" | "model" | "effort" | "fast";
+// One dropdown entry. `sub` is the second line for a choice whose consequence is not obvious from its
+// label; `sdkOnly` drops the entry on a tmux session, whose backend cannot apply it.
+interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boolean }
 // Model + effort choices come from the kernel's /models — the ONE list shared with the timeline lanes and the
 // judge-tier settings (the user 2026-07-02, who wanted one shared code path, not hardcoded in multiple places), so
 // the client holds no model literals (mirrors paletteColors above). Populated in place on load so META_CHOICES
@@ -7671,13 +7674,22 @@ fetch(kernelUrl("/models"), { cache: "no-store" }).then((r) => r.json()).then((d
   if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; MODEL_CHOICES.push(...d.models, { label: "Default", value: "default" }); }
   if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...d.efforts); }
 }).catch(() => { /* picker stays empty until it lands */ });
-// Permission mode: the shift+tab cycle (no slash command), so the picker offers the three cycle modes;
-// the host sets them by sending shift+tab the right number of times (the user 2026-06-16).
-const MODE_CHOICES: { label: string; value: string }[] = [
+// Permission mode. A tmux session has no slash command for it — the host cycles shift+tab the right
+// number of times (the user 2026-06-16) — so the four CYCLE modes are all that backend can reach.
+// An SDK session sets it outright over the control channel (set_permission_mode), which is what makes
+// Bypass offerable there and only there: on tmux the click would land on a mode the cycle cannot
+// express, and _cycle_mode would drop it. `sdkOnly` is the filter, applied in toggleMetaMenu.
+const MODE_CHOICES: MetaChoice[] = [
   { label: "Normal", value: "default" },
   { label: "Accept edits", value: "acceptEdits" },
   { label: "Auto", value: "auto" },
   { label: "Plan", value: "plan" },
+  // The one mode that removes the gate rather than moving it, so it says what that costs right in the
+  // menu (the user 2026-08-15). Two things are worth the sub-line: every tool runs unasked, and romp's
+  // own approve/deny cards go with them — they are rendered from the SDK's can_use_tool callback, which
+  // bypass never fires, so you lose the RECORD of what ran, not just the asking.
+  { label: "Bypass permissions", value: "bypassPermissions", sdkOnly: true,
+    sub: "every tool runs unasked, and romp stops showing approvals" },
 ];
 // Fast mode (the CLI's /fast — Opus-only research preview): a two-state toggle offered as the same
 // dropdown shape as the other badges. The badge exists only when the session REPORTS a fast state
@@ -7726,7 +7738,7 @@ function prettyMode(m: string | undefined): string {
     default: return "Normal";   // default / normal / unknown
   }
 }
-const META_CHOICES: Record<MetaKind, { label: string; value: string }[]> = {
+const META_CHOICES: Record<MetaKind, MetaChoice[]> = {
   mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES, fast: FAST_CHOICES,
 };
 // the live value of a meta kind for the active session
@@ -7858,9 +7870,20 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
   if (s.status.state === "awaiting") return;
   const menu = el("div", "meta-menu");
   menu.dataset.kind = kind;
-  for (const c of META_CHOICES[kind]) {
+  // An sdkOnly entry is dropped on tmux rather than shown-and-refused: the backend cannot apply it, and
+  // a menu that lists a mode you can't have is worse than one that doesn't.
+  for (const c of META_CHOICES[kind].filter((c) => !c.sdkOnly || s.status.backend === "sdk")) {
     const item = el("div", "meta-item" + (isCurrentMeta(kind, s.status, c.value) ? " current" : ""));
-    item.textContent = c.label;
+    if (c.sub) {
+      const head = el("div");
+      head.textContent = c.label;
+      const sub = el("div", "meta-item-sub");
+      sub.textContent = c.sub;
+      item.appendChild(head);
+      item.appendChild(sub);
+    } else {
+      item.textContent = c.label;
+    }
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       if (activeId && vscodeApi) {
