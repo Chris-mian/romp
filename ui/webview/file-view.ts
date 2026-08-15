@@ -1,23 +1,25 @@
-// The file viewer that lives in the FEED pane (the user 2026-08-08).
+// The file viewer — a big modal over the CHAT pane (the user 2026-08-15: the first cut filled the
+// FEED pane, and reading a file cost the cards; the click came out of the chat, so the file presents
+// over the chat, ~95% of the pane behind a dimmed backdrop, ✕ top right — and the feed is never touched).
 //
 // Clicking a file path in the chat used to post `openFile`, which the kernel served by running an
-// opener on ITS machine. Read the dashboard from another device — a laptop across the internet, a
-// phone — and that is the wrong screen entirely; on a kernel with no desktop it did nothing at all,
-// silently, which is how the user found it. The only place a file can actually be shown is the browser
-// you are looking at, so the bytes come over the same `/file` route the image thumbnails already use
-// (federation-aware via fileUrl, so a remote session's file is relayed from the host that owns it).
+// opener on ITS machine (the user 2026-08-08). Read the dashboard from another device — a laptop
+// across the internet, a phone — and that is the wrong screen entirely; on a kernel with no desktop it
+// did nothing at all, silently, which is how the user found it. The only place a file can actually be
+// shown is the browser you are looking at, so the bytes come over the same `/file` route the image
+// previews already use (federation-aware via fileUrl, so a remote session's file is relayed from the
+// host that owns it).
 //
-// It takes over the FEED pane rather than floating a modal: the cards are the thing you are least
-// likely to be reading while you follow a path out of a transcript, and a full pane gives long source
-// somewhere to scroll. The shell brings that pane forward if it was toggled off and puts it back on
-// close, so the viewer never silently rearranges the layout you chose.
+// Living in the CHAT page also removes a whole relay: the click and the viewer are the same document
+// now, so there is no shell forwarding, no feed-pane bring-forward/put-back, and the standalone /chat
+// page views files exactly like the framed one.
 import hljs from "highlight.js/lib/core";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { fileUrl } from "./preview";
 
-// hljs is registered per-bundle; the feed had none until this viewer needed it. Same language set the
-// chat registers, so a file reads identically in either place.
+// hljs is registered per-bundle. Same language set (and grammar registrations) the chat's fence
+// highlighting uses, dup-guarded, so importing this module alongside render.ts costs nothing.
 import bash from "highlight.js/lib/languages/bash";
 import python from "highlight.js/lib/languages/python";
 import javascript from "highlight.js/lib/languages/javascript";
@@ -53,10 +55,11 @@ function langFor(path: string): string | null {
   return LANG[ext] || null;
 }
 
-// marked is a per-bundle singleton and nothing else in the FEED bundle configures it, so the viewer makes
-// the same choices the chat's render.ts made: GFM without hard breaks, and strikethrough only on DOUBLE
-// tildes — marked's stock GFM `del` tokenizer fires on a single ~, so prose between two "approximately"
-// tildes renders struck through; GitHub itself only strikes ~~double~~.
+// marked is a per-bundle singleton. render.ts makes the SAME calls with the SAME choices — GFM without
+// hard breaks, strikethrough only on DOUBLE tildes (marked's stock GFM `del` tokenizer fires on a
+// single ~, so prose between two "approximately" tildes renders struck through; GitHub itself only
+// strikes ~~double~~) — so configuring here too is an idempotent no-op in the chat bundle, and keeps
+// this module correct anywhere it's bundled without render.ts.
 marked.setOptions({ gfm: true, breaks: false });
 marked.use({
   tokenizer: {
@@ -102,26 +105,23 @@ function el(tag: string, cls?: string): HTMLElement {
   return e;
 }
 
-// The shell restores the pane's previous visibility on this, so it must fire on EVERY close path.
-function tellShellClosed(): void {
-  try {
-    if (window.parent !== window) window.parent.postMessage({ romp: "viewFileClosed" }, "*");
-  } catch { /* no shell (standalone /feed) — nothing to restore */ }
-}
-
 export function closeFileView(): void {
-  const box = document.getElementById("romp-fileview");
-  if (!box) return;
-  box.remove();
+  const wrap = document.getElementById("romp-fileview");
+  if (!wrap) return;
+  wrap.remove();
   document.body.classList.remove("fileview-open");
-  tellShellClosed();
 }
 
-/** Show `path` in the feed pane. Re-opening replaces whatever is up — never stacks. */
+/** Show `path` in a modal over this pane. Re-opening replaces whatever is up — never stacks. */
 export function openFileView(path: string, sid?: string | null): void {
   document.getElementById("romp-fileview")?.remove();
+  // backdrop (the whole overlay carries the id every open/closed check targets) + the ~95% card.
+  // The backdrop treatment matches the lightbox: dimmed, click outside the card closes, content
+  // clicks don't (the user 2026-08-15: it must be obvious the chat is still right behind it).
+  const wrap = el("div");
+  wrap.id = "romp-fileview";
+  wrap.onclick = (ev) => { if (ev.target === wrap) closeFileView(); };
   const box = el("div", "fileview");
-  box.id = "romp-fileview";
   document.body.classList.add("fileview-open");
 
   const bar = el("div", "fileview-bar");
@@ -196,7 +196,8 @@ export function openFileView(path: string, sid?: string | null): void {
   body.appendChild(load);
 
   box.appendChild(bar); box.appendChild(body);
-  document.body.appendChild(box);
+  wrap.appendChild(box);
+  document.body.appendChild(wrap);
 
   // Chooses the body for the current prefs and syncs the buttons. The pressed state flips SYNCHRONOUSLY
   // in the click handler — the immediate acknowledgement ui/CLAUDE.md requires — and so does the content
@@ -356,8 +357,8 @@ function mdBlock(text: string): HTMLElement {
   } catch {
     box.textContent = text;                            // a marked bug must never cost the content
   }
-  // Links open a NEW tab: the viewer lives inside the feed pane's iframe, and letting a README link
-  // navigate that iframe away would silently eat the feed until a reload.
+  // Links open a NEW tab: the viewer lives inside the chat pane's document, and letting a README link
+  // navigate it away would silently eat the chat until a reload.
   box.querySelectorAll("a[href]").forEach((a) => {
     (a as HTMLAnchorElement).target = "_blank";
     (a as HTMLAnchorElement).rel = "noopener";
@@ -374,14 +375,4 @@ function mdBlock(text: string): HTMLElement {
     } catch { /* leave plain */ }
   });
   return box;
-}
-
-/** Listen for the shell's relay of a chat file-link click. Called once, from the feed's boot. */
-export function initFileView(): void {
-  window.addEventListener("message", (e: MessageEvent) => {
-    const m = e.data;
-    if (m && m.romp === "viewFile" && typeof m.path === "string" && m.path) {
-      openFileView(m.path, typeof m.sid === "string" ? m.sid : null);
-    }
-  });
 }
