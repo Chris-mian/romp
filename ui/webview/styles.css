@@ -2286,6 +2286,18 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 .path-full-pdfcard { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px;
   border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(0, 0, 0, 0.25); }
 .path-full-pdfcard:hover { border-color: var(--accent); }
+/* a kernel-VERIFIED preview whose bytes failed to arrive (restart, tunnel blip) — visible, retryable,
+   never silently removed (preview.ts previewFull) */
+.path-full-retry { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.14);
+  font-size: 0.85em; opacity: 0.85; cursor: pointer; }
+.path-full-retry:hover { border-color: var(--accent); }
+/* VS Code's host-round-trip image chip while the bytes are still on their way (render.ts fillPathImg) —
+   pure-CSS pulse, the sandbox can't fetch the swirl asset */
+.user-img-path.img-pending::after { content: " ···"; letter-spacing: 2px;
+  animation: img-pending-pulse 1.2s ease-in-out infinite; }
+@keyframes img-pending-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+@media (prefers-reduced-motion: reduce) { .user-img-path.img-pending::after { animation: none; opacity: 0.6; } }
 
 /* full-view lightbox (preview.ts openLightbox): image at natural-but-capped size, or the PDF in the
    browser's native viewer. Above every overlay layer. Backdrop click / Esc / ✕ closes. */
