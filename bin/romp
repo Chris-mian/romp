@@ -713,6 +713,19 @@ _romp_token() {
     cat "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}/serve-token" 2>/dev/null || true
 }
 
+# The auth header as a curl CONFIG on stdin, for `curl --config -`. Never `-H "X-Romp-Token: $tok"`:
+# argv is world-readable through /proc/<pid>/cmdline, so every other account on the machine can read
+# the token off a running curl — and the token is full control of every session. These curls are
+# short-lived, which makes reading one a race rather than a certainty; that is not a boundary.
+# curl's config syntax is quoted, so a token carrying " or \ (only possible via ROMP_SERVE_TOKEN —
+# the minted one is base64url) is escaped rather than silently truncating the header.
+_romp_token_cfg() {
+    local _t _e
+    _t="$(_romp_token)"
+    _e="${_t//\\/\\\\}"; _e="${_e//\"/\\\"}"
+    printf 'header = "X-Romp-Token: %s"\n' "$_e"
+}
+
 # `romp url` — print the tokened dashboard URL, nothing else (scripting/piping; bare `romp` is the
 # human entry point). The first open seeds a year-long cookie; after that the bare URL works.
 # `--url` stays as a silent alias (agent-facing text names it).
@@ -762,7 +775,7 @@ if [[ "${1:-}" == "sessions" ]]; then
         *)      echo "usage: romp sessions [--json]" >&2; exit 2 ;;
     esac
     _kport="${ROMP_KERNEL_PORT:-29855}"
-    _resp="$(curl -sf -m 10 "http://127.0.0.1:$_kport/sessions" -H "X-Romp-Token: $(_romp_token)")" \
+    _resp="$(_romp_token_cfg | curl -sf -m 10 --config - "http://127.0.0.1:$_kport/sessions")" \
         || { echo "romp sessions: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if $_json; then
         printf '%s\n' "$_resp"
@@ -847,8 +860,7 @@ if [[ "${1:-}" =~ ^(checkin|checkout)$ ]]; then
     if [[ -z "$_host" ]]; then echo "usage: romp $_verb <host>" >&2; exit 2; fi
     _kport="${ROMP_KERNEL_PORT:-29855}"
     _on="false"; [[ "$_verb" == "checkin" ]] && _on="true"
-    _resp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/tunnels/checkin" \
-                  -H "X-Romp-Token: $(_romp_token)" \
+    _resp="$(_romp_token_cfg | curl -sf -m 10 --config - -X POST "http://127.0.0.1:$_kport/tunnels/checkin" \
                   -H 'Content-Type: application/json' -d "{\"host\": \"$_host\", \"on\": $_on}")" \
         || { echo "romp $_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
@@ -878,8 +890,7 @@ if [[ "${1:-}" =~ ^(--)?(send|interrupt|end)$ ]]; then
     else
         _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$_who")"
     fi
-    _resp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/$_verb" \
-                  -H "X-Romp-Token: $(_romp_token)" \
+    _resp="$(_romp_token_cfg | curl -sf -m 10 --config - -X POST "http://127.0.0.1:$_kport/$_verb" \
                   -H 'Content-Type: application/json' -d "$_payload")" \
         || { echo "romp $_verb: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
@@ -1184,8 +1195,7 @@ if [[ -n "$session_arg" ]] && ! $use_tmux && ! $resume; then
         exit 1
     fi
     _payload="$(python3 -c 'import json,sys; d={"name": sys.argv[1], "dir": sys.argv[2], "backend": "sdk"}; sys.argv[3] and d.update(model=sys.argv[3]); sys.argv[4] and d.update(effort=sys.argv[4]); print(json.dumps(d))' "$session_arg" "$_dir" "$model_arg" "$effort_arg")"
-    _resp="$(curl -sf -m 15 -X POST "http://127.0.0.1:$_kport/new" \
-                  -H "X-Romp-Token: $_tok" \
+    _resp="$(_romp_token_cfg | curl -sf -m 15 --config - -X POST "http://127.0.0.1:$_kport/new" \
                   -H 'Content-Type: application/json' -d "$_payload")" \
         || { echo "romp new: kernel not reachable on :$_kport (is romp running?). \`romp new -t $session_arg\` starts a terminal session without it." >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
@@ -1213,8 +1223,7 @@ if [[ -n "$session_arg" ]] && ! $use_tmux && ! $resume; then
         # retry command instead of pretending the spawn failed.
         if [[ -n "$msg_arg" ]]; then
             _mpayload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "text": sys.argv[2]}))' "$session_arg" "$msg_arg")"
-            _mresp="$(curl -sf -m 10 -X POST "http://127.0.0.1:$_kport/send" \
-                          -H "X-Romp-Token: $_tok" \
+            _mresp="$(_romp_token_cfg | curl -sf -m 10 --config - -X POST "http://127.0.0.1:$_kport/send" \
                           -H 'Content-Type: application/json' -d "$_mpayload")" \
                 || { echo "romp new: session is up but the message did NOT land (kernel send failed). Retry: romp send $session_arg '<text>'" >&2; exit 1; }
             if [[ "$_mresp" == *'"ok": true'* || "$_mresp" == *'"ok":true'* ]]; then
