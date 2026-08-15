@@ -883,13 +883,40 @@ if [[ "${1:-}" =~ ^(--)?(send|interrupt|end)$ ]]; then
     _who="${1:-}"
     if [[ -z "$_who" ]]; then echo "usage: romp $_verb <session> $([[ "$_verb" == send ]] && echo '<text>')" >&2; exit 2; fi
     shift
+    # `romp end self [--now]` — a session closing ITSELF after finishing its work (the user
+    # 2026-08-15: telling a session "close yourself when done" never worked; an agent could only
+    # kill its own process, which read as a crash). `self` resolves through ROMP_SID (spawn-frozen
+    # by the SDK backend, inherited by every Bash the agent runs). Default is when=idle: the kernel
+    # kills at the turn's SETTLE, so the goodbye lands and the judges file the outcome before the
+    # clean × death. --now skips the deferral (for any target).
+    _when="";
+    if [[ "$_verb" == "end" ]]; then
+        [[ "$_who" == "self" ]] && _when="idle"
+        for _a in "$@"; do
+            [[ "$_a" == "--now" ]] && _when=""
+            [[ "$_a" == "--when-idle" ]] && _when="idle"
+        done
+    fi
     _kport="${ROMP_KERNEL_PORT:-29855}"
     if [[ "$_verb" == "send" ]]; then
         _text="$*"
         if [[ -z "$_text" ]]; then echo "usage: romp send <session> <text>" >&2; exit 2; fi
         _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "text": sys.argv[2]}))' "$_who" "$_text")"
+    elif [[ "$_verb" == "end" && "$_who" == "self" ]]; then
+        if [[ -z "${ROMP_SID:-}" ]]; then
+            echo "romp end self: ROMP_SID is not set — 'self' only works from inside a romp SDK session" >&2
+            exit 2
+        fi
+        _payload="$(python3 -c 'import json,sys; d={"id": sys.argv[1]};
+import os
+w=sys.argv[2]
+if w: d["when"]=w
+print(json.dumps(d))' "$ROMP_SID" "$_when")"
     else
-        _payload="$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$_who")"
+        _payload="$(python3 -c 'import json,sys; d={"name": sys.argv[1]};
+w=sys.argv[2] if len(sys.argv)>2 else ""
+if w: d["when"]=w
+print(json.dumps(d))' "$_who" "$_when")"
     fi
     _resp="$(_romp_token_cfg | curl -sf -m 10 --config - -X POST "http://127.0.0.1:$_kport/$_verb" \
                   -H 'Content-Type: application/json' -d "$_payload")" \
