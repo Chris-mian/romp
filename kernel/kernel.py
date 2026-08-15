@@ -15654,6 +15654,11 @@ def build_feed(now, tmux=None):
         # the open turn's live narration (the user 2026-08-13) — computed once per session, ridden by
         # every working card below; cache-warm like the dot (a cold start paints plain, then snaps in)
         sess_progress = _open_turn_progress(ps["turns"]) if (ps and who_working) else None
+        # The card-floor disposition (the user 2026-08-14: NO working card is ever mute — even unknown
+        # shows as such): "open" = a turn is running (the narration above rides when parsed), "quiet" =
+        # parsed and between turns, "unknown" = no parse to read (a cold cache, or a machine that isn't
+        # reporting). The feed's spin ladder renders a floor line for each — see spin-caption.ts.
+        sess_state = "open" if who_working else ("quiet" if ps else "unknown")
         # The user's LAST action on this session was an INTERRUPT (no message from them since): its quiet
         # is user-chosen, not a stall — auto-nudge is suppressed (same predicate, _auto_nudge_tick) and
         # the working card wears an "interrupted" badge saying so (the user 2026-07-05). Cache-only,
@@ -16329,6 +16334,7 @@ def build_feed(now, tmux=None):
                 "rejudging": rejudging,              # plain thread reply after a block → STAYS in Needs-You, "Re-judging…" swirl while a turn is in flight (the user 2026-06-30)
                 "judging": bool((sess_judging or _stall_inflight) and column == "working"),
                 "working": (sess_progress if column == "working" else None),   # open-turn narration: tool count + since (the user 2026-08-13)   # turn settled, closer verdict pending → "Analyzing…" swirl covers the finished-but-still-Working beat (the user 2026-07-13); same key the provisional card wears
+                "sessState": (sess_state if column == "working" else None),   # the mute-proof floor: open | quiet | unknown (the user 2026-08-14 — a working card ALWAYS says its state)
                 "warnRows": (_card_warn_rows(dbg_rows, fsid, set(_subtree(nid)),
                                              store.get("placements") or {}) or None)
                             if dbg_rows is not None else None,   # debug mode only: the card's judge failures, modal "Warnings" section

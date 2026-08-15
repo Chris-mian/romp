@@ -1544,8 +1544,11 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
                        dCompleted, Date.now() / 1000);
   const spinCaption = spin.caption, spinTip = spin.tip, awaitingBg = spin.awaitingBg;
   a._awaitSpin.style.display = spinCaption ? "" : "none";
-  // The AWAITING case gets a rounded box (its distinct read); the swirl spins in every case now.
+  // The AWAITING case gets a rounded box (its distinct read); the swirl spins in every case now —
+  // except the at-rest floor (`still`): quiet/unknown keep the glyph as the state anchor, stilled,
+  // because spin reads as in-flight and nothing is (the user 2026-08-14).
   a._awaitSpin.classList.toggle("await-paused", awaitingBg);
+  a._awaitSpin.classList.toggle("await-still", !!spin.still);
   if (spinCaption) { a._awaitWhy.textContent = spinCaption; a._awaitSpin.title = spinTip || spinCaption; }
   // The swirl's "Analyzing…" caption + tooltip REPLACES the separate "↩ re-judging" chip (the user
   // 2026-06-29: don't show both) — drop the chip the recheck branch set above when the swirl is saying it.

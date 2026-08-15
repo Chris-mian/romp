@@ -17,7 +17,13 @@
 //   4. RE-JUDGING    — a soft-block + a PLAIN thread reply, with the reply in flight
 //   5. SETTLE GAP    — the turn finished, the closer's verdict hasn't landed
 //   6. DISTILLING    — a resolved card whose takeaway/brief hasn't been written yet
-//   … else no spin (an ordinary working card with its turn open).
+//   7. NARRATION     — the ordinary working card with its turn open: live tool count + duration
+//   8. THE FLOOR     — any OTHER working-column card, by sessState: "open" (turn running, narration
+//                      not reported — an older/disconnected kernel) spins a plain Working…; "quiet"
+//                      (between turns) and "unknown" (no signal at all) render a STILLED glyph + a
+//                      line saying exactly that. Total: a working-column card can never be mute
+//                      (the user 2026-08-14 — two cards sat in Working with nothing on them).
+//   … no spin only OUTSIDE the working column (briefs/takeaways/chips carry those cards).
 // 3 and 4 do NOT depend on whether a brief exists. That independence matters more since 2026-07-22, when
 // the brief stopped showing on a card displaced to Working at all (see ./distiller-line): these two are the
 // only branches that fire in that window, so the swirl is the sole thing saying the card is in motion and
@@ -34,6 +40,7 @@ export interface SpinItem {
   rejudging?: boolean;
   blocked?: unknown;
   working?: { since?: number | null; toolUses?: number | null } | null;   // open-turn narration (kernel _open_turn_progress; the user 2026-08-13)
+  sessState?: string | null;   // the kernel's floor disposition: "open" | "quiet" | "unknown" (the user 2026-08-14)
 }
 
 /** caption: the body line, or null for no spin. tip: the fuller hover explanation. awaitingBg: the
@@ -42,6 +49,7 @@ export interface Spin {
   caption: string | null;
   tip: string;
   awaitingBg: boolean;
+  still?: boolean;   // the at-rest floor: glyph present but NOT spinning — spin reads as in-flight, and quiet/unknown are states of rest
 }
 
 const NONE: Spin = { caption: null, tip: "", awaitingBg: false };
@@ -155,6 +163,38 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
       tip: "The open turn's live progress: tool calls made so far, and how long this stretch has been "
          + "running. If the count freezes while the timer climbs, something is worth a look.",
       awaitingBg: false,
+    };
+  }
+  if (it.column === "working") {
+    // THE FLOOR IS TOTAL (the user 2026-08-14): two cards sat in Working with nothing on them.
+    // The narration above only rides when the kernel parsed an OPEN turn, so a session quietly
+    // between turns, or a machine that isn't reporting at all (an older or briefly disconnected
+    // kernel, a cold parse cache), rendered a MUTE card. Every working-column card now says its
+    // state; when nothing is in motion the glyph STILLS (`still`) — a spinning swirl on a quiet
+    // card would claim work that isn't happening.
+    if (it.sessState === "open") {
+      return {
+        caption: "Working…",
+        tip: "The turn is running, but this machine isn't reporting live progress (an older or "
+           + "briefly disconnected kernel sends none). The card updates the moment it does.",
+        awaitingBg: false,
+      };
+    }
+    if (it.sessState === "quiet") {
+      return {
+        caption: "Paused — resumes on the session's next turn",
+        tip: "Nothing is in motion right now: the session is between turns and this goal stays open. "
+           + "It picks back up the next time the session works this thread.",
+        awaitingBg: false,
+        still: true,
+      };
+    }
+    return {
+      caption: "State unknown — this machine isn't reporting",
+      tip: "No live signal from this session's kernel (a cold cache, or a machine that is offline or "
+         + "reconnecting). The card updates the moment a signal lands.",
+      awaitingBg: false,
+      still: true,
     };
   }
   return NONE;
