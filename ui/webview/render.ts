@@ -30,7 +30,7 @@ import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional 
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
-import { previewKind, previewFull, canPreview, fileUrl } from "./preview";
+import { previewKind, previewFull, canPreview, fileUrl, retryFailedPreviews } from "./preview";
 import { openFileView } from "./file-view";
 import { pastedFilePath } from "./paste-path";
 import { hostNameNodes, hostPrefix, hostOf, hostIsDown, hostDownNote } from "./host-prefix";
@@ -9400,6 +9400,9 @@ window.addEventListener("message", (e: MessageEvent) => {
   // the shell's palette / shell-focus chords: the chat owns the nav trail, the shell just asks
   if (m.romp === "chatNav") { navHist.go(m.dir === 1 ? 1 : -1); return; }
   if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }
+  // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
+  // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed)
+  retryFailedPreviews();
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
     globalRetryPaused = !!m.value;

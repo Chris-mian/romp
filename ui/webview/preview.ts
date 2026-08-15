@@ -151,6 +151,11 @@ export function previewFull(path: string, sid?: string | null, verified = false)
     if (!verified) fetch(fileUrl(path, sid), { method: "HEAD" }).then((r) => { if (!r.ok) box.remove(); }).catch(() => box.remove());
   } else {
     const url = fileUrl(path, sid);
+    // A verified preview whose fetch died usually died because the KERNEL was away (a restart mid-
+    // deploy — the 2026-08-15 report hit exactly the converge-restart window), and delta-send never
+    // rebuilds an old turn's DOM, so the chip would otherwise sit until a human tapped it. Bounded so
+    // a genuinely-dead file settles on the tap chip instead of re-fetching on every push forever.
+    let autoRetries = 3;
     const build = (bust: boolean) => {
       box.textContent = "";
       const img = document.createElement("img");
@@ -168,6 +173,7 @@ export function previewFull(path: string, sid?: string | null, verified = false)
         chip.title = path;
         chip.onclick = (ev) => { ev.stopPropagation(); build(true); };
         box.appendChild(chip);
+        if (autoRetries > 0) { autoRetries--; failedPreviews.set(box, () => build(true)); }
       };
       withLoadCue(box, img, url);   // mini swirl holds the spot until the load event (memo on the un-busted url)
       box.appendChild(img);
@@ -175,4 +181,17 @@ export function previewFull(path: string, sid?: string | null, verified = false)
     build(false);
   }
   return box;
+}
+
+// Failed VERIFIED previews awaiting recovery. A kernel push arriving IS the kernel-is-back event —
+// no pushes arrive while it's down, so retrying on push can't spam — and render.ts calls this on
+// every incoming kernel message, healing the chips without a tap (event-based; the tap chip stays
+// as the manual path and the backstop once a box's bounded auto-retries are spent).
+const failedPreviews = new Map<HTMLElement, () => void>();
+export function retryFailedPreviews(): void {
+  if (!failedPreviews.size) return;
+  for (const [box, rebuild] of Array.from(failedPreviews.entries())) {
+    failedPreviews.delete(box);                      // one attempt per registration; re-registers on error
+    if (box.isConnected) rebuild();                  // a re-rendered turn made a fresh box — let the old go
+  }
 }

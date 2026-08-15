@@ -45,6 +45,18 @@ test("a kernel-VERIFIED preview fails LOUDLY: a retry chip holds the figure's sp
   assert.match(CSS, /\.path-full-retry \{ display: inline-flex;/, "visible chrome — the chip has chat-sheet css");
 });
 
+test("a failed preview heals on the next kernel push — the kernel-is-back event, not a tap or a timer", () => {
+  // the 2026-08-15 report: the fetch died in a converge-restart window, and delta-send never rebuilds
+  // an old turn's DOM, so the chip sat until a human tapped it. Any incoming kernel message proves the
+  // kernel is reachable again; no pushes arrive while it's down, so retry-on-push can't spam.
+  const pf = PREVIEW.slice(PREVIEW.indexOf("export function previewFull"));
+  assert.match(pf, /let autoRetries = 3;/, "bounded — a genuinely-dead file settles on the tap chip");
+  assert.match(pf, /if \(autoRetries > 0\) \{ autoRetries--; failedPreviews\.set\(box, \(\) => build\(true\)\); \}/);
+  assert.match(PREVIEW, /export function retryFailedPreviews\(\): void/);
+  assert.match(PREVIEW, /if \(box\.isConnected\) rebuild\(\);/, "a re-rendered turn's fresh box supersedes the old");
+  assert.match(RENDER, /retryFailedPreviews\(\);/, "called from the kernel message handler");
+});
+
 test("the chat uses the FULL render on web, and the host data-URL flow for images in VS Code", () => {
   assert.match(RENDER, /const full = canPreview\(\) \? previewFull\(p, activeId, kernelVerified\.has\(p\)\)\s*\n\s*: previewKind\(p\) === "img" \? buildPathImg\(p\) : null;/);
   assert.doesNotMatch(RENDER, /previewThumb/, "the chat no longer renders mention thumbnails — full renders now");
