@@ -344,6 +344,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   -webkit-line-clamp: 2; line-clamp: 2; }
 @keyframes fask-swirl-spin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .fask-awaiting-swirl { animation: none; } }
+/* The at-rest floor (the user 2026-08-14): a working-column card with nothing in motion (session quiet
+   between turns, or a machine reporting nothing) still shows the glyph as its state anchor — STILLED,
+   because spin reads as in-flight — with the line dimmed to match its at-rest weight. */
+.fask-awaiting.await-still .fask-awaiting-swirl { animation-play-state: paused; opacity: 0.5; }
+.fask-awaiting.await-still .fask-awaiting-why { opacity: 0.75; }
 /* awaiting-background-agents: a rounded outline box so the "held, waiting on dispatched work" state reads as
    distinct. The romp swirl SPINS here like everywhere else (the user 2026-07-04, for whom a spin reads as in flight,
    not stalled — which is the awaiting state; the box already sets it apart from the working cases). The box
