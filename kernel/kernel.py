@@ -523,6 +523,7 @@ def _version_info():
     except OSError:
         pass
     return {"kernel_sha": _kernel_sha(), "kernel_ver": _kernel_ver(), "pid": os.getpid(), "started": int(_STARTED),
+            "boot": _BOOT_ID,   # lets a page retire update offers from a previous kernel life (2026-08-15)
             "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles,
             "autoNudge": _auto_nudge_on(),   # server-side toggle state → the gear checkbox reflects the kernel
             "updateMode": _update_mode(),    # ask|auto|off (the boot release check) → the gear dropdown
@@ -1962,12 +1963,14 @@ def _update_check():
             _sync_notice("a newer romp (%s) is available, but the automatic update to it already ran "
                          "once without landing — update.log under ~/.local/state/romp has the story; "
                          "the banner still offers it" % latest, ok=False)
-            _send_to_app("shell", {"type": "updateAvail", "cur": _kernel_ver() or "", "tag": latest})
+            _send_to_app("shell", {"type": "updateAvail", "cur": _kernel_ver() or "", "tag": latest,
+                                   "boot": _BOOT_ID})
             return
         _atomic_write(jd.STATE / "update-attempted.json", json.dumps({"tag": latest, "t": int(time.time())}))
         _run_update(latest)
     else:
-        _send_to_app("shell", {"type": "updateAvail", "cur": _kernel_ver() or "", "tag": latest})
+        _send_to_app("shell", {"type": "updateAvail", "cur": _kernel_ver() or "", "tag": latest,
+                               "boot": _BOOT_ID})
 
 
 # Re-check cadence. This is a POLL by nature, not a heuristic standing in for an event: the repo
@@ -2046,7 +2049,7 @@ def _main_drift_check():
         _run_main_update(kind)
     else:
         _send_to_app("shell", {"type": "updateAvail", "kind": "main", "drift": kind,
-                               "cur": _kernel_sha() or "", "tag": target})
+                               "cur": _kernel_sha() or "", "tag": target, "boot": _BOOT_ID})
 
 
 def _run_main_update(kind, immediate=False):
@@ -22280,7 +22283,7 @@ try{(m.n?navigator.setAppBadge(m.n):navigator.clearAppBadge())['catch'](function
 // the master bell toggled somewhere (this tab included) — repaint ours from the kernel's word
 else if(m&&m.type==='notifyAll'&&window.__rompNotifyAllPaint)window.__rompNotifyAllPaint(!!m.on);
 // the boot check found a newer romp release — raise the update banner on every open dashboard
-else if(m&&m.type==='updateAvail'&&window.__rompUpdateOffer)window.__rompUpdateOffer(m.cur||'',m.tag||'',m.drift||'');};
+else if(m&&m.type==='updateAvail'&&window.__rompUpdateOffer)window.__rompUpdateOffer(m.cur||'',m.tag||'',m.drift||'',m.boot||'',m.state||'');};
 ws.onclose=function(){setTimeout(shellWS,2000);};}catch(e){}}
 shellWS();
 var last='chat';try{var s=localStorage.getItem(KT);if(s&&F[s])last=s;}catch(e){}show(last);
@@ -22400,6 +22403,7 @@ _STALE_JS = (
     "CONNMSG='romp lost the live connection to the dashboard, so what you see may be stale.';"
     "function show(m){msg.textContent=m;box.classList.add('show');}"
     "function check(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){"
+    "if(v&&v.boot&&window.__rompUpdBoot)window.__rompUpdBoot(v.boot);"   # retire cross-boot update offers (2026-08-15)
     "served=v.dist_ver||0;"
     "if(loaded&&served>loaded&&served!==dismissed)show(BUILDMSG);"
     "else if(served<=loaded&&!connStale&&!buildStale)box.classList.remove('show');}).catch(function(){});}"
@@ -22500,11 +22504,27 @@ _UPD_JS = (
     # drift (the user 2026-08-14): the same banner also carries new MAIN commits — origin ahead of the
     # checkout ('pull') or the checkout ahead of the running kernel ('restart'). One click converges
     # every attached machine; per-sha dismissal works exactly like per-release.
-    "function offer(cur,tag,drift){if(waiting||tag===dismissedTag)return;curTag=tag;go.hidden=false;go.disabled=false;dm.hidden=false;"
+    # An offer is only as good as the kernel life it came from (the user 2026-08-15: a stale offer
+    # survived the very restart it asked for, and its Update click hit a converged kernel → the 409
+    # error banner): offers carry the pushing kernel's boot id and are refused/retired when the boot
+    # moves on — the restarted kernel re-pushes if drift genuinely persists. A pushed state:'running'
+    # (an update started ANYWHERE — another window's click, a converge) flips this window to the
+    # in-flight wait instead of leaving a second Update click to race the first.
+    "function offer(cur,tag,drift,boot,state){"
+    "if(state==='running'){waiting=true;go.hidden=true;dm.hidden=true;"
+    "show('romp is updating \\u2014 the dashboard reloads when it restarts\\u2026');poll();return;}"
+    "if(boot&&bootNow&&boot!==bootNow)return;"
+    "if(waiting||!tag||tag===dismissedTag)return;curTag=tag;go.hidden=false;go.disabled=false;dm.hidden=false;"
     "if(drift==='pull')show('new romp commits are on main ('+tag+') \\u2014 Update pulls them and restarts every kernel.');"
     "else if(drift==='restart')show('romp '+tag+' is ready on disk \\u2014 Update restarts every kernel onto it.');"
     "else show('romp '+tag+' is available'+(cur?' \\u2014 you are on '+cur:'')+'.');}"
     "window.__rompUpdateOffer=offer;"   # the shell WS relays the kernel's boot-check push here
+    # the kernel restarted under a SHOWING offer → the offer's evidence predates the new life: retire
+    # it silently (the new kernel re-offers real drift within one check pass). Fed by #rstale's own
+    # 30s /version poll — an existing beat, not a new timer.
+    "window.__rompUpdBoot=function(b){if(!b)return;if(!bootNow){bootNow=b;return;}"
+    "if(b!==bootNow){bootNow=b;if(waiting){location.reload();return;}"
+    "if(!go.hidden){box.classList.remove('show');curTag='';}}};"
     "function poll(){fetch('/update-check',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
     "if(!waiting)return;"
     "if(d.boot&&bootNow&&d.boot!==bootNow){location.reload();return;}"
@@ -22515,14 +22535,22 @@ _UPD_JS = (
     "show('Updating romp \\u2014 this can take a minute; the dashboard reloads when it restarts\\u2026');"
     "fetch('/update',{method:'POST'}).then(function(r){"
     "if(!r.ok)return r.text().then(function(t){throw new Error(t||('HTTP '+r.status));});poll();})"
-    "['catch'](function(e){waiting=false;go.disabled=false;dm.hidden=false;"
-    "show('Could not start the update: '+((e&&e.message)||e));});};"
+    "['catch'](function(e){waiting=false;var em=String((e&&e.message)||e);"
+    # 'nothing known' is not an error — it means the update this prompt offered already ran (another
+    # window, a converge, a peer's push): retire quietly, file the fact in the Log, and let the reload
+    # banner (already raised by that very restart) carry the one action left (the user 2026-08-15).
+    "if(/no newer release or main commit/.test(em)){box.classList.remove('show');curTag='';"
+    "if(window.__rompNotify)window.__rompNotify('sync','the update this prompt offered already ran \\u2014 nothing left to do');return;}"
+    "go.disabled=false;dm.hidden=false;"
+    "show('Could not start the update: '+em);});};"
     "dm.onclick=function(){dismissedTag=curTag;box.classList.remove('show');};"
     "fetch('/update-check',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
     "bootNow=(d&&d.boot)||'';"
     "if(d&&d.state==='running'){waiting=true;go.hidden=true;dm.hidden=true;"
     "show('romp is updating \\u2014 the dashboard reloads when it restarts\\u2026');poll();return;}"
-    "if(d&&d.tag&&d.mode==='ask')offer(d.cur||'',d.tag);})"
+    # a page loaded AFTER the push re-derives the pending offer — release or main drift alike
+    "if(d&&d.mode==='ask'){if(d.tag)offer(d.cur||'',d.tag);"
+    "else if(d.drift&&d.driftSha)offer(d.cur||'',d.driftSha,d.drift);}})"
     "['catch'](function(e){});})();")
 
 
@@ -23890,6 +23918,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({
                     "cur": _kernel_ver() or "", "tag": _UPDATE_AVAIL[0], "mode": _update_mode(),
                     "state": _UPDATE_STATE[0], "failed": failed, "updated": updated,
+                    # the pending MAIN-DRIFT offer (2026-08-15): a page loaded after the push can
+                    # re-derive it, and a stale page can revalidate before acting
+                    "drift": ("pull" if _MAIN_DRIFT[0] else ("restart" if _MAIN_DRIFT[1] else "")),
+                    "driftSha": _MAIN_DRIFT[0] or _MAIN_DRIFT[1],
                     "boot": _BOOT_ID}), "application/json", cache="no-cache")
             if p == "/notify-all":
                 # the master bell's state (the user 2026-08-09): on = every task notifies when it
@@ -23993,12 +24025,14 @@ class Handler(BaseHTTPRequestHandler):
                     if _UPDATE_STATE[0] != "running":
                         _audit_restart_request("self-update", tag=tag, addr=str(self.client_address[0]))
                         _run_update(tag)
+                        _send_to_app("shell", {"type": "updateAvail", "state": "running", "boot": _BOOT_ID})
                     return self._send(200, json.dumps({"ok": True, "state": _UPDATE_STATE[0]}), "application/json")
                 kind = "pull" if _MAIN_DRIFT[0] else ("restart" if _MAIN_DRIFT[1] else "")
                 if kind:
                     _audit_restart_request("main-converge", tag=_MAIN_DRIFT[0] or _MAIN_DRIFT[1],
                                            addr=str(self.client_address[0]))
                     threading.Thread(target=_run_main_update, args=(kind, True), daemon=True).start()
+                    _send_to_app("shell", {"type": "updateAvail", "state": "running", "boot": _BOOT_ID})
                     return self._send(200, json.dumps({"ok": True, "state": "converging"}), "application/json")
                 return self._send(409, "no newer release or main commit known to this kernel", "text/plain")
             if u.path == "/notify-all":
