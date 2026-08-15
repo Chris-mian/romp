@@ -8434,7 +8434,9 @@ function renderStagedStrip(id: string | null): void {
     for (let j = 0; j < quotes.length; j++) {
       const ck = id + ":" + i + ":" + j;
       const cOpen = stagedOpen.has(ck);
-      const cite = el("div", "staged-cite" + (cOpen ? " open" : ""));
+      // the SAME blue citation pill the composer wears (the user 2026-08-15: the context must keep
+      // "its little blue background chip", not restyle inside the staged box)
+      const cite = el("div", "composer-chip staged-cite" + (cOpen ? " open" : ""));
       const cm = el("span", "composer-chip-mark"); cm.textContent = "“";
       const cl = el("span", "composer-chip-label"); cl.textContent = quotes[j].quote || "";
       const ch = el("span", "staged-expand"); ch.textContent = cOpen ? "(collapse)" : "(expand)";
