@@ -58,6 +58,19 @@ class DisconnectBanner(unittest.TestCase):
         self.assertIn('document.addEventListener("visibilitychange"', js)
         self.assertIn("Date.now()-lastRecv>STALE_MS){armStale();freshPending=true;", js)
 
+    def test_a_hidden_pane_never_raises_the_stale_banner(self):
+        # the user 2026-08-15, on the phone: the mobile shell shows ONE pane, hiding the rest with
+        # display:none; iOS throttles the hidden iframes' JS, so each hidden pane's watchdog kept
+        # force-closing its own healthy socket and re-raising the banner every ~45s over a dashboard
+        # that was visibly working. A display:none iframe has a ZERO viewport — raiseStale checks that
+        # at raise time (no event exists for a CSS display flip) and stays silent while hidden; a pane
+        # shown while genuinely stale re-raises within one watchdog tick, now visible.
+        js = km._shim("feed")
+        self.assertIn("function paneHidden(){try{return window.parent!==window"
+                      "&&(window.innerWidth===0||window.innerHeight===0);}", js)
+        self.assertIn("function raiseStale(){if(paneHidden())return;", js,
+                      "the visibility gate is at RAISE time, so hidden panes reconnect silently")
+
     def test_shim_reconnect_loop_cannot_die(self):
         # The retry chain used to hang entirely off onclose, and the watchdog only ever closed OPEN
         # sockets — so an attempt the browser held in CONNECTING (Firefox delays re-admitting a
