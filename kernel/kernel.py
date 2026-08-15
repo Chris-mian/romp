@@ -20316,7 +20316,16 @@ else{var b=document.getElementById("romp-stale-self");if(b&&b.dataset.kind==="co
 // the background; if it is shown again while genuinely stale, its watchdog re-raises within one tick,
 // now visible, and the resync retires it exactly as before.
 function paneHidden(){try{return window.parent!==window&&(window.innerWidth===0||window.innerHeight===0);}catch(e){return false;}}
-function raiseStale(){if(paneHidden())return;if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale"},"*");}catch(e){}}else{selfStale();}}
+// every raise (and every hidden-pane suppression) leaves a clientDiag breadcrumb naming the pane, the
+// PATH that raised (reconnect/foreground), the socket state and the quiet gap — so the next "the banner
+// keeps flapping" report is diagnosable from client-diag.jsonl instead of re-hypothesized (the user
+// 2026-08-15, whose repro was Chrome-on-Android after an iOS-shaped diagnosis). send() queues while the
+// socket is down and delivers on reconnect, so the breadcrumb survives the very drop it describes.
+function staleDiag(what,why){try{send({type:"clientDiag",surface:"pane-shim",what:what,
+data:{app:APP,why:why||"",ready:ws?ws.readyState:-1,quietMs:lastRecv?Date.now()-lastRecv:-1,hidden:paneHidden()}});}catch(e){}}
+function raiseStale(why){if(paneHidden()){staleDiag("stale-suppressed-hidden",why);return;}
+staleDiag("stale-raise",why);
+if(window.parent!==window){try{window.parent.postMessage({romp:"wsStale"},"*");}catch(e){}}else{selfStale();}}
 // ARM it rather than show it (the user 2026-08-01): the resync almost always lands within a beat of the
 // reconnect, so raising immediately made the prompt FLASH up and straight back down on nearly every
 // dashboard open — visual noise for a problem that fixed itself. A short arming window lets the common
@@ -20326,7 +20335,7 @@ function raiseStale(){if(paneHidden())return;if(window.parent!==window){try{wind
 // is that resync FAILING to arrive, which has no event to key on at all. So the window is exactly the
 // unavoidable minimum, and the event still wins whenever it exists.
 var staleTimer=0;
-function armStale(){if(staleTimer)return;staleTimer=setTimeout(function(){staleTimer=0;raiseStale();},1000);}
+function armStale(why){if(staleTimer)return;staleTimer=setTimeout(function(){staleTimer=0;raiseStale(why);},1000);}
 // BUILD drift (the user 2026-07-13): the keepalive carries the kernel's current dist token (dv); a page whose
 // baked LOADEDV is older is running outdated code against newer kernel state — prompt a reload (never auto).
 // In the dashboard the raise routes to the shell's #rstale banner (build:1 → its BUILDMSG); standalone pages
@@ -20346,7 +20355,7 @@ ws=new WebSocket(proto+location.host+"/ws?app=%s"+(wid?"&wid="+encodeURIComponen
 // socket dropped (the pane's romp loader) needs the socket's RETURN as its event to come back down. The
 // first connect deliberately doesn't fire it — nothing is waiting on it, and the loader must stay up until
 // real content lands.
-ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn){armStale();freshPending=true;try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}};
+ws.onopen=function(){lastRecv=Date.now();netState("up");var wasReconn=everConnected;everConnected=true;for(var i=0;i<queue.length;i++)ws.send(queue[i]);queue=[];if(wasReconn){armStale("reconnect");freshPending=true;try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}}};
 ws.onmessage=function(ev){lastRecv=Date.now();var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="ka"){if(LOADEDV&&msg.dv&&msg.dv>LOADEDV)raiseBuild();return;}   // keepalive: stamped lastRecv above; carries the build token (drift → reload banner); nothing for the bundle to render
 // the first REAL frame after a reconnect is the kernel's connect-time push — the resync itself, so the
@@ -20370,7 +20379,7 @@ setState:function(s){try{localStorage.setItem(SK,JSON.stringify(s));}catch(e){}}
 // "Disconnected — reconnecting…" banner sat until a manual refresh). CLOSED with no fresh attempt = the 1.5s
 // retry timer was lost (throttled/killed) — re-dial directly; connect()'s own guard makes this idempotent.
 setInterval(function(){if(!ws)return;
-if(ws.readyState===1){if(everConnected&&Date.now()-lastRecv>STALE_MS){try{ws.close();}catch(e){}}return;}
+if(ws.readyState===1){if(everConnected&&Date.now()-lastRecv>STALE_MS){staleDiag("watchdog-close","quiet");try{ws.close();}catch(e){}}return;}
 if(ws.readyState===0&&Date.now()-connT>15000){try{ws.close();}catch(e){}return;}
 if(ws.readyState===3&&Date.now()-connT>8000){connect();}},5000);
 // visibility fast-path (the user 2026-07-05): a BACKGROUNDED tab has its timers throttled, so the 5s watchdog
@@ -20378,7 +20387,7 @@ if(ws.readyState===3&&Date.now()-connT>8000){connect();}},5000);
 // foregrounded, if the socket isn't open or has gone quiet past the watchdog window, treat the view as stale —
 // prompt at once AND force a reconnect (which resyncs live), rather than leaving the user on a frozen frame.
 document.addEventListener("visibilitychange",function(){if(document.visibilityState!=="visible"||!everConnected)return;
-if(!ws||ws.readyState!==1||Date.now()-lastRecv>STALE_MS){armStale();freshPending=true;
+if(!ws||ws.readyState!==1||Date.now()-lastRecv>STALE_MS){armStale("foreground");freshPending=true;
 try{if(ws&&ws.readyState<=1)ws.close();}catch(e){}   // OPEN or stuck-CONNECTING both die here → onclose retries
 if(!ws||ws.readyState===3)connect();}});})();
 """ % (app, int(v), app, app)
