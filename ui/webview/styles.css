@@ -2480,3 +2480,31 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
   cursor: pointer; opacity: 0.75; white-space: nowrap;
 }
 .branch-chip:hover { opacity: 1; border-color: var(--accent); }
+
+/* the create popover's thread-name row (the user 2026-08-15): editable, prefilled
+   <session>-comment-<N>; .bad = failed the session-name charset, matching the fork modal */
+.cmt-name {
+  width: 100%; box-sizing: border-box; padding: 4px 7px;
+  border: 1px solid var(--box-border); border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05); color: inherit; font: inherit;
+}
+.cmt-name:focus { outline: none; border-color: var(--accent); }
+.cmt-name.bad { border-color: var(--st-blocked-bg, #c94f4f); }
+
+/* comment ticks on the chat's scroll rail (the user 2026-08-15): where the comments are, at the
+   anchor's proportional position in the whole conversation; click = jump + open the thread */
+.cmt-rail { position: fixed; width: 10px; z-index: 40; pointer-events: none; }
+.cmt-tick {
+  position: absolute; right: 1px; width: 8px; height: 4px;
+  border: 0; border-radius: 2px; padding: 0;
+  background: var(--cmt-hl); opacity: 0.75; pointer-events: auto; cursor: pointer;
+}
+.cmt-tick:hover { opacity: 1; }
+.cmt-tick.resolved { opacity: 0.3; }
+.cmt-tick.unread { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--cmt-hl) 60%, transparent); opacity: 1; }
+
+/* a fully-covered KaTeX block tints at the ELEMENT (cmt-hl-host, same contract as inline code):
+   a mark inside it cannot paint the glyph boxes' spacing, which punched gaps through highlighted
+   math (the user 2026-08-15) */
+.md .katex.cmt-hl-host { background: color-mix(in srgb, var(--cmt-hl) 30%, transparent); border-radius: 3px; }
+.md .katex.cmt-hl-host mark.cmt-hl { background: transparent; }

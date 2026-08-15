@@ -454,6 +454,9 @@ let anchorPendingOlder = false; // scrollToAnchor kicked off a loadOlder fetch f
 // around it), then restore it to this y instead of calling landOn. Sticks with pendingAnchor across
 // render-pass retries, like pendingAnchorIntent.
 let pendingAnchorKeepY: number | null = null;
+let flashedAnchor: string | null = null; // the anchor already flashed THIS navigation — a deep anchor
+// re-lands once per older-history fetch round, and each re-land used to pulse again (the user
+// 2026-08-15: "pulsating way too many times"). A NEW navigation (setActive with an anchor) re-arms.
 // Landing diagnostics (the user's ask, 2026-06-10): record HOW each deep-link
 // landing resolved — exact pointer / refused wrong-kind pointer / time-nearby
 // / gave up. The trail is posted to the host (→ ~/.local/state/romp/
@@ -5201,6 +5204,7 @@ function applyCommentMarks(sid: string): void {
   const v = views.get(sid);
   if (!v) return;
   applyBranchChips(sid, v);   // same driver, same hooks: branch chips re-anchor with the marks
+  if (sid === activeId) updateCommentRail();   // and the scroll-rail ticks follow the active view
   const threads = commentThreads.get(sid) || [];
   const have = new Set(threads.map((t) => t.tid));
   for (const old of Array.from(v.el.querySelectorAll("mark.cmt-hl"))) {
@@ -5248,10 +5252,48 @@ function applyBranchChips(sid: string, v: View): void {
   }
 }
 
+/** Yellow ticks on the chat's scroll rail marking commented spots (the user 2026-08-15) — one per
+ *  open/resolved thread of the ACTIVE session, placed by the anchor's position in the event list
+ *  (windowing-proof: no DOM measurement of unrendered turns), clicking jumps there and opens the
+ *  thread. A fixed strip over #content's right edge, rebuilt with the marks — a handful of ticks. */
+function updateCommentRail(): void {
+  let rail = document.getElementById("cmt-rail");
+  const content = document.getElementById("content");
+  const s = activeId ? sessions.get(activeId) : null;
+  const threads = ((activeId && commentThreads.get(activeId)) || [])
+    .filter((t) => t.status === "open" || t.status === "resolved");
+  if (!content || !s || !threads.length) { rail?.remove(); return; }
+  const r = content.getBoundingClientRect();
+  if (!r.height) { rail?.remove(); return; }              // hidden pane
+  if (!rail) { rail = el("div", "cmt-rail"); rail.id = "cmt-rail"; document.body.appendChild(rail); }
+  rail.style.left = (r.right - 10) + "px";
+  rail.style.top = r.top + "px";
+  rail.style.height = r.height + "px";
+  rail.replaceChildren();
+  const n = s.events.length || 1;
+  for (const th of threads) {
+    const idx = s.events.findIndex((e) => e.uuid === th.anchorUuid);
+    if (idx < 0) continue;
+    const tick = el("button", "cmt-tick" + (th.status === "resolved" ? " resolved" : "")
+      + (th.unread && th.status === "open" ? " unread" : "")) as HTMLButtonElement;
+    tick.type = "button";
+    tick.dataset.act = "cmtjump";
+    tick.dataset.tid = th.tid;
+    tick.dataset.uuid = th.anchorUuid;
+    tick.style.top = Math.min(96.5, (idx / n) * 100) + "%";
+    tick.title = (th.name || "comment") + ": click to jump to it";
+    rail.appendChild(tick);
+  }
+}
+window.addEventListener("resize", () => updateCommentRail());
+
 function unwrapCommentMark(markEl: HTMLElement): void {
   const p = markEl.parentNode;
   if (!p) return;
-  if (p instanceof Element) p.classList.remove("cmt-hl-host");   // an inline-code span it tinted
+  if (p instanceof Element) {
+    p.classList.remove("cmt-hl-host");                             // an inline-code span it tinted
+    (p.closest(".katex.cmt-hl-host") as HTMLElement | null)?.classList.remove("cmt-hl-host");   // or the math block
+  }
   while (markEl.firstChild) p.insertBefore(markEl.firstChild, markEl);
   markEl.remove();
   p.normalize();
@@ -5309,11 +5351,16 @@ function ensureCommentMark(turn: HTMLElement, th: CommentThread): void {
     styleCommentMark(segs[i], th);
     segs[i].classList.toggle("hl-first", i === 0);
     segs[i].classList.toggle("hl-last", i === segs.length - 1);
+    // hosts a mark can't paint from inside: an inline-code span's padding, and KaTeX's inter-glyph
+    // spacing (the user 2026-08-15, screenshot: math highlighted with gaps punched at every glyph
+    // box) — tint the ELEMENT instead; resolved threads drop the tint like the marks dim
     const host = segs[i].parentElement;
     if (host && host.tagName === "CODE" && host.parentElement?.tagName !== "PRE"
         && host.childNodes.length === 1) {
-      host.classList.toggle("cmt-hl-host", th.status !== "resolved");   // resolved dims like the marks
+      host.classList.toggle("cmt-hl-host", th.status !== "resolved");
     }
+    const kat = segs[i].parentElement?.closest(".katex") as HTMLElement | null;
+    if (kat) kat.classList.toggle("cmt-hl-host", th.status !== "resolved");
   }
 }
 
@@ -5350,6 +5397,7 @@ function openCommentPopover(sid: string, tid: string, x?: number, y?: number): v
 function adoptCommentThread(sid: string, tid: string): void {
   if (pendingCommentAnchor && pendingCommentAnchor.sid === sid) {
     commentDrafts.delete("new:" + pendingCommentAnchor.uuid);
+    commentDrafts.delete("newname:" + pendingCommentAnchor.uuid);
     pendingCommentAnchor = null;
   }
   pendingAdoptTid = null;
@@ -5408,10 +5456,11 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
 }
 
 function commentPopTitle(create: boolean, th: CommentThread | null | undefined): string {
+  const nm = th?.name || "Thread";
   return create ? "New thread"
     : th!.status === "promoted" ? "Now its own session: " + th!.promotedName
     : th!.status === "promoting" ? "Breaking out…"
-    : th!.status === "resolved" ? "Thread (resolved)" : "Thread";
+    : th!.status === "resolved" ? nm + " (resolved)" : nm;
 }
 
 /** Send the popover composer's text — the Enter key and the delegated Send button share this. The
@@ -5423,9 +5472,12 @@ function commentSendFromPop(pop: HTMLElement): void {
   if (!box || !text || !vscodeApi) return;
   const create = pendingCommentAnchor;
   if (create) {
+    const nameBox = pop.querySelector(".cmt-name") as HTMLInputElement | null;
+    const nm = (nameBox?.value || "").trim();
+    if (nm && !/^[A-Za-z0-9._-]+$/.test(nm)) { nameBox?.classList.add("bad"); nameBox?.focus(); return; }
     if (send) { send.disabled = true; send.textContent = "Starting…"; }   // ack before the round-trip;
     //                                       the draft survives until commentCreated adopts the thread
-    vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact, text });
+    vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact, text, name: nm });
     return;
   }
   const cur = openCommentThread();
@@ -5518,6 +5570,24 @@ function renderCommentPopover(): void {
     fillCommentMsgs(list, th);
     pop.appendChild(list);
   }
+  if (create) {
+    // the thread's NAME, editable right here (the user 2026-08-15): prefilled
+    // <session>-comment-<N>, N counting the threads this session has had; an edited value
+    // drafts under its own key so a refused create hands it back too
+    const nk = "newname:" + create.uuid;
+    const nameBox = document.createElement("input");
+    nameBox.type = "text";
+    nameBox.className = "cmt-name";
+    nameBox.setAttribute("autocapitalize", "off");
+    nameBox.setAttribute("autocomplete", "off");
+    nameBox.setAttribute("spellcheck", "false");
+    const sess0 = sessions.get(sid);
+    nameBox.value = commentDrafts.get(nk)
+      || ((sess0?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-")
+          + "-comment-" + ((commentThreads.get(sid) || []).length + 1));
+    nameBox.addEventListener("input", () => { nameBox.classList.remove("bad"); commentDrafts.set(nk, nameBox.value); });
+    pop.appendChild(nameBox);
+  }
   if (create || th!.status !== "promoted") {
     const dk = create ? "new:" + create.uuid : th!.tid;
     const box = document.createElement("textarea");
@@ -5590,7 +5660,8 @@ function renderCommentPopover(): void {
 // flips to "promoted" on the next comments frame.
 function showBreakoutPrompt(sid: string, tid: string): void {
   const sess = sessions.get(sid);
-  const base = (sess?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-");
+  const thName = (commentThreads.get(sid) || []).find((t) => t.tid === tid)?.name || "";
+  const base = thName || ((sess?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-") + "-thread");
   document.getElementById("fork-prompt")?.remove();
   const overlay = el("div", "picker-overlay confirm-overlay");
   overlay.id = "fork-prompt";
@@ -5602,7 +5673,7 @@ function showBreakoutPrompt(sid: string, tid: string): void {
   const input = document.createElement("input");
   input.type = "text";
   input.className = "fork-name";
-  input.value = base + "-thread";
+  input.value = base;
   input.setAttribute("autocapitalize", "off");
   input.setAttribute("autocomplete", "off");
   input.setAttribute("autocorrect", "off");
@@ -6050,7 +6121,7 @@ function scrollToAnchor(uuid: string): boolean {
     return true;
   }
   landTrail.push("pointer-exact");
-  landOn(target);
+  landOn(target, uuid);
   return true;
 }
 
@@ -6064,11 +6135,14 @@ function scrollToAnchor(uuid: string): boolean {
 // off its mark. So: re-align whenever the bar/ledger actually resizes, plus two
 // timed retries for late layout (images, markdown), for ~1.2s — canceled the
 // moment the user wheel-scrolls so we never fight a real gesture.
-function landOn(target: HTMLElement) {
+function landOn(target: HTMLElement, flashKey?: string) {
   const realign = () => target.scrollIntoView({ block: "start", behavior: "auto" });
   realign();
-  target.classList.add("anchor-flash");
-  setTimeout(() => target.classList.remove("anchor-flash"), 1700);
+  if (flashKey == null || flashKey !== flashedAnchor) {   // one flash per navigation (see flashedAnchor)
+    if (flashKey != null) flashedAnchor = flashKey;
+    target.classList.add("anchor-flash");
+    setTimeout(() => target.classList.remove("anchor-flash"), 1700);
+  }
   const until = Date.now() + 1200;
   let ro: ResizeObserver | null = null;
   const stop = () => { ro?.disconnect(); ro = null; window.removeEventListener("wheel", stop); };
@@ -8783,6 +8857,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
     persistDrafts();   // the leaving tab's draft was just stashed → keep the persisted copy in sync
   }
   pendingAnchor = anchor ?? null;
+  if (anchor) flashedAnchor = null;        // a fresh navigation re-arms the one-per-navigation flash
   pendingAnchorIntent = anchor ? (anchorKind ?? null) : null;
   activeId = id;
   try { vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), activeId: id }); } catch { /* ignore */ }
@@ -9032,6 +9107,7 @@ function chatHead(msg: any) {
   // the click somewhere the user never named.
   if (anchorUuid && !pendingAnchor) {
     pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
+    flashedAnchor = null;                  // ditto: this path is also a user navigation
     pendingAnchorKeepY = keepY ?? null;
   }
   showActive();
@@ -10190,6 +10266,16 @@ setupSettings();
       openCommentPopover(activeId, tid, Math.min(r.left, window.innerWidth - 380), r.bottom + 6);
     },
     cmtclose: () => closeCommentPop(),
+    // a scroll-rail tick: jump the chat to the commented message (fresh navigation → one flash)
+    // and open its thread beside it
+    cmtjump: (elx) => {
+      const tid = elx.dataset.tid, uuid = elx.dataset.uuid;
+      if (!tid || !uuid || !activeId) return;
+      flashedAnchor = null;
+      scrollToAnchor(uuid);
+      const r = elx.getBoundingClientRect();
+      openCommentPopover(activeId, tid, Math.max(8, r.left - 380), Math.max(60, r.top - 40));
+    },
     cmtsend: (elx) => {
       const pop = elx.closest(".cmt-pop") as HTMLElement | null;
       if (pop) commentSendFromPop(pop);
