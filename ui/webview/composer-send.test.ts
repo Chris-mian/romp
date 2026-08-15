@@ -90,7 +90,7 @@ test("a staged chip clips IN BOUNDS with an ellipsis and expands on click (the u
   const STYLES = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
   // the flex label could never shrink (no min-width:0), so long texts ran off the pane edge with no
   // ellipsis; expanded, the same label wraps to the full text — the context-fold idiom
-  assert.match(STYLES, /\.staged-chip \.composer-chip-label \{ flex: 1 1 auto; max-width: none; min-width: 0; \}/);
+  assert.match(STYLES, /\.staged-chip \.composer-chip-label \{ flex: 1 1 auto; max-width: 100%; min-width: 0; \}/);
   assert.match(STYLES, /\.staged-chip\.open \.staged-row \.composer-chip-label \{ white-space: pre-wrap; overflow: visible; \}/);
   // the affordance is visibly CHROME, not message text: dim, parenthesized, at the line's end
   assert.match(STYLES, /\.staged-expand \{ flex: 0 0 auto; color: var\(--dim\); font-size: 0\.85em; \}/);
@@ -102,6 +102,9 @@ test("a staged chip clips IN BOUNDS with an ellipsis and expands on click (the u
   // expandable (its click never toggles the reply's own fold), keyed sid:i:j
   assert.match(RENDER, /const quotes = \(s\.cites as Citation\[\]\)\.filter\(\(c\) => c && c\.quote\);/);
   assert.match(RENDER, /const ck = id \+ ":" \+ i \+ ":" \+ j;/);
+  // the context keeps the composer's blue citation-pill look inside the staged box
+  assert.match(RENDER, /el\("div", "composer-chip staged-cite"/);
+  assert.match(STYLES, /\.staged-cite \{ min-width: 0; max-width: 100%; cursor: pointer; \}/);
   assert.match(RENDER, /cite\.addEventListener\("click", \(ev\) => \{\s*\n\s*ev\.stopPropagation\(\);/);
   assert.match(STYLES, /\.staged-cite\.open \.composer-chip-label \{ white-space: pre-wrap; overflow: visible; \}/);
 });
