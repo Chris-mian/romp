@@ -1993,7 +1993,9 @@ _UPDATE_CHECK_EVERY_S = 6 * 3600
 # off = silent, ask = the one-click notice, auto = converge unattended (the pull refuses a dirty
 # tree LOUDLY — peers' uncommitted work is never discarded — and the restart rides the manager's
 # quiet window, whose chain is silent-death-proof since the same day's fix).
-_MAIN_CHECK_EVERY_S = 300              # one ls-remote — cheap enough to notice a merge within minutes
+_MAIN_CHECK_EVERY_S = 300
+_CONVERGE_COOLDOWN_S = float(os.environ.get("ROMP_CONVERGE_COOLDOWN", "1500"))   # min gap between AUTO converges (25 min → ≤2-3 restarts/hour on a hot main)
+_LAST_AUTO_CONVERGE = [0.0]   # when the last auto converge fired (module state; a restart resets it, which is fine — the restart WAS the converge)              # one ls-remote — cheap enough to notice a merge within minutes
 _MAIN_DRIFT = ["", ""]                 # [origin sha a notice fired for, checkout sha one fired for]
 
 
@@ -2046,6 +2048,16 @@ def _main_drift_check():
         return                                        # already offered/acted on this exact sha
     _MAIN_DRIFT[slot] = target
     if _update_mode() == "auto":
+        # BATCH hot merge days (the user 2026-08-15, after flipping auto: main took a merge every few
+        # minutes and auto mode faithfully converged once per commit — 4+ restarts/hour, each cutting
+        # every in-flight turn; a peer's workflow died three consecutive runs). After an auto converge,
+        # further auto converges HOLD for a cool-down; the slot is left unoffered so the first pass
+        # past the window converges to the LATEST sha — N merges, one restart. A deliberate rate
+        # policy on restart disruption, not a proxy for an event; a clicked Update never waits.
+        if time.time() - _LAST_AUTO_CONVERGE[0] < _CONVERGE_COOLDOWN_S:
+            _MAIN_DRIFT[slot] = ""
+            return
+        _LAST_AUTO_CONVERGE[0] = time.time()
         _run_main_update(kind)
     else:
         _send_to_app("shell", {"type": "updateAvail", "kind": "main", "drift": kind,
