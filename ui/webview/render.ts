@@ -18,7 +18,7 @@ import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
 import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { delegate } from "./actions";
 import { KIND_WORD } from "./spin-caption";
-import { isClearCmd, openTopTitles, clearConfirmDetail } from "./clear-confirm";
+import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
 import { writeViewOrder } from "./view-order";
@@ -10511,8 +10511,12 @@ setupSettings();
       // session — still judged and billed, but invisible — a tmux-era affordance with no SDK-era use
       // case. Close-and-reopen is End + Revive, which keeps the whole history.
       const nm = sessions.get(id)?.name || "";
+      // …and the confirm NAMES what is still open on its board (the user 2026-08-15, who ended a
+      // session holding an open task with no warning — the /clear gate has warned this way since
+      // 2026-07-27, and ending drops the cards from the working surfaces the same way)
       showConfirm(`End “${nm}”?`,
-        "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline.",
+        endConfirmDetail(openTopTitles(ledgers.get(id)?.tree),
+          "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline."),
         [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
         (v) => {
           if (v !== "end") return;   // Cancel → nothing
