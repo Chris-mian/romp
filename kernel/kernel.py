@@ -21456,11 +21456,15 @@ var top=50*Math.ceil(mx/50),step=50;
 while(top/step>4)step*=2;
 var X=function(i){return (n>1?i/(n-1):0.5)*W;},Y=function(v){return H-1-Math.max(0,Math.min(1,v/top))*(H-2);};
 var grid='',ylab='',xlab='';
-for(var g=step;g<=top;g+=step){var gy=Y(g);
-grid+='<line x1="0" y1="'+gy.toFixed(1)+'" x2="'+W+'" y2="'+gy.toFixed(1)+'" stroke="rgba(255,255,255,0.10)" stroke-width="1" vector-effect="non-scaling-stroke"/>';
-// ONE y label, the top gridline only (the user 2026-08-15): a $100/$200/$300/$400 stack said the
-// same thing four times in a chart 64px tall — the gridlines keep the rhythm, the ceiling names it
-if(g===top)ylab+='<span class=ru-tip-gy style="top:'+(gy/H*56).toFixed(0)+'px">$'+g+'</span>';}
+for(var g=step;g<top;g+=step){var gy=Y(g);
+grid+='<line x1="0" y1="'+gy.toFixed(1)+'" x2="'+W+'" y2="'+gy.toFixed(1)+'" stroke="rgba(255,255,255,0.10)" stroke-width="1" vector-effect="non-scaling-stroke"/>';}
+// ONE y label, the CEILING, always (the user 2026-08-15 twice: first the $100..$400 stack said the
+// same thing four times; then the ceiling-only label vanished whenever step-doubling made top (450)
+// miss the step loop entirely). The ceiling is already the nice number (the next $50 above the
+// peak: 423→450, 597→600) — draw its line and its one label unconditionally, off the loop.
+var ty=Y(top);
+grid+='<line x1="0" y1="'+ty.toFixed(1)+'" x2="'+W+'" y2="'+ty.toFixed(1)+'" stroke="rgba(255,255,255,0.10)" stroke-width="1" vector-effect="non-scaling-stroke"/>';
+ylab='<span class=ru-tip-gy style="top:'+(ty/H*56).toFixed(0)+'px">$'+top+'</span>';
 for(var i=0;i<n;i++){var d=new Date((h0+i)*3600000);
 if(d.getHours()===0){var gx=X(i);
 grid+='<line x1="'+gx.toFixed(1)+'" y1="0" x2="'+gx.toFixed(1)+'" y2="'+H+'" stroke="rgba(255,255,255,0.06)" stroke-width="1" vector-effect="non-scaling-stroke"/>';

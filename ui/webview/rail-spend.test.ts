@@ -240,6 +240,12 @@ test("the $/h chart is a real chart, and refresh is automatic with no stale hint
   const usageJS = KERNEL.split('_LANDING_USAGE_JS = """')[1].split('"""')[0];
   // y-axis scaled to the ceiling of the nearest $50; rules thin to $100/$200/... past four
   assert.ok(usageJS.includes("var top=50*Math.ceil(mx/50),step=50;"), "y ceiling = nearest $50");
+  // the ceiling's line + its ONE label draw unconditionally, OFF the step loop (the user 2026-08-15:
+  // step-doubling made top=450 miss the $200-step loop and the chart lost its only y label)
+  assert.ok(usageJS.includes("for(var g=step;g<top;g+=step)"), "interior gridlines stop below the ceiling");
+  assert.ok(usageJS.includes("var ty=Y(top);"), "the ceiling edge is computed once");
+  assert.ok(usageJS.includes(`ylab='<span class=ru-tip-gy style="top:'+(ty/H*56).toFixed(0)+'px">$'+top+'</span>';`),
+    "the one y label is the ceiling, always present");
   assert.ok(usageJS.includes("while(top/step>4)step*=2;"), "at most four horizontal rules");
   // x-axis: midnight ticks placed in LOCAL time off the series' epoch-hour base, weekday initials under
   assert.ok(usageJS.includes("if(d.getHours()===0)"), "midnight ticks");
