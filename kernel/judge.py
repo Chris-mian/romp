@@ -7057,7 +7057,11 @@ CLOSER_SYS = (
     "and found still running) and the stated or clear intent to take action again when its result "
     "arrives. Waiting on the user is blocked, never awaiting. Async work whose result already came "
     "back this turn is not awaiting. Unfinished work with nothing actually in flight stays working "
-    "(omit it). When unsure between awaiting and omitting, omit.\n"
+    "(omit it). When unsure between awaiting and omitting, omit. One shape is never unsure: a WATCHER "
+    "turn — the session woke on a schedule or a monitor's report, saw the external job still running, "
+    "and ended with the watch still armed — is awaiting kind \"job\": the live watcher is the work in "
+    "flight and the wake-on-events arrangement is the intent to act; file it even when the turn "
+    "reports nothing new.\n"
     "Reply with only a JSON object (no prose, no markdown fences):\n"
     '{\"done\": [ {\"goal\": <n>, \"why\": \"...\"} ], \"block\": [ {\"goal\": <n>, \"why\": \"...\"} ], '
     '\"awaiting\": [ {\"goal\": <n>, \"why\": \"...\", \"kind\": \"...\"} ]}\n'
