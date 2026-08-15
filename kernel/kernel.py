@@ -16185,8 +16185,12 @@ def build_feed(now, tmux=None):
             # neither retires on any user event at all — of the two failure modes, a false
             # "waiting on you" is the one that breaks flow.
             _nfloor = _nblk_at if _nblk_at is not None else nrec.get("failedAt")
+            # "unblocker" is a real actor here (the user 2026-08-14: its unblock ruled the nudge's
+            # block answered and moved the card back to Working, while the chip — whose claim IS that
+            # block — survived it, a red "waiting on you" on a card the judges had just un-waited)
             _story_moved = (any((e.get("at") or e.get("ev_t") or 0) > _nfloor
-                                and e.get("src") in ("planner", "closer", "courier", "user", "agent")
+                                and e.get("src") in ("planner", "closer", "courier", "user", "agent",
+                                                     "unblocker")
                                 for e in _nlog) if _nfloor is not None
                             else any(e.get("src") == "user" for e in _nlog))
             nudge_failed = (bool(nrec.get("failed")) and not _story_moved
