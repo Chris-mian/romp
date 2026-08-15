@@ -236,6 +236,34 @@ test("mergeHostFeeds: concatenates items/asks/working across hosts (local first)
   assert.equal(m.canUndoClear, true);
 });
 
+test("mergeHostFeeds: per-host buildIds ride the merge — each kernel's counter, separately addressable", () => {
+  // the user 2026-08-15: a reply to a remote card bounced Working → Completed → Working. The merged
+  // payload's top-level buildId is the LOCAL kernel's counter (large after days of uptime); the remote
+  // ack's buildId is the remote's (small after a restart). Comparing them cross-counter "outranked" the
+  // ack instantly. The map is what lets the feed pane compare same-counter only.
+  const perHost = {
+    "": { type: "feed", items: [], asks: [], working: [], buildId: 4032 },
+    TESTHOST: { type: "feed", items: [], asks: [], working: [], buildId: 7 },
+  };
+  const m = mergeHostFeeds(perHost, ["", "TESTHOST"]);
+  assert.deepEqual(m.buildIds, { "": 4032, TESTHOST: 7 });
+  assert.equal(m.buildId, 4032, "the local scalar stays for older panes — additive, never repurposed");
+  // a host too old to send buildId simply has no entry — absent, never guessed
+  const old = mergeHostFeeds({ "": { type: "feed", items: [], asks: [], working: [] } }, [""]);
+  assert.deepEqual(old.buildIds, {});
+});
+
+test("prefixInbound: a remote cardMoveAck/cardPredict is host-stamped; its goal ids stay bare", () => {
+  // goal ids are globally unique (uuid:gN) and match the pane's itemIds unprefixed; the HOST is what the
+  // ack was missing — without it a buildId can't be placed on the counter it was minted by
+  const ack = prefixInbound("TESTHOST", { type: "cardMoveAck", ids: [U + ":g6"], ok: true, buildId: 7 });
+  assert.equal(ack.host, "TESTHOST");
+  assert.deepEqual(ack.ids, [U + ":g6"], "goal ids pass through bare");
+  assert.equal(prefixInbound("TESTHOST", { type: "cardPredict", ids: [U + ":g6"], flavor: "followup" }).host, "TESTHOST");
+  const local = prefixInbound("", { type: "cardMoveAck", ids: [U + ":g6"], ok: true, buildId: 9 });
+  assert.ok(!("host" in local), "local is the identity transform — no stamp");
+});
+
 test("mergeHostFeeds: a remote-only undo lights the Undo button (clear routed to that kernel)", () => {
   const m = mergeHostFeeds({
     "": { type: "feed", items: [], asks: [], working: [], canUndoClear: false, dismissedCount: 0 },

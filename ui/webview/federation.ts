@@ -95,6 +95,10 @@ export function prefixInbound(host: string, msg: any): any {
   // the path checker's answer, stamped with the machine that gave it: the picker drops a verdict that
   // arrives for a host it is no longer on, instead of showing one machine's answer about another's disk.
   if (out.type === "dirCompletions") out.host = host;
+  // a remote kernel's answer to a card-move prediction: its ids are goal ids (globally unique, never
+  // prefixed), but its buildId only means something on THAT kernel's counter — stamp the host so the
+  // feed pane compares it against the same host's frame in the merged payload, never the local counter
+  if (out.type === "cardMoveAck" || out.type === "cardPredict") out.host = host;
   if (out.type === "sessionList" && Array.isArray(out.items)) {
     out.items = out.items.map((it: any) => (it && typeof it === "object" && typeof it.id === "string"
       ? { ...it, id: prefixId(host, it.id),
@@ -314,9 +318,17 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // floor). Remote rows are host-prefixed like every other remote surface; the SIG is host-scoped so
   // two kernels' ring sequences can never collide in the seen-set.
   const syncs: any[] = [];
+  // Every kernel counts feed builds on its OWN counter, so `merged.buildId` (the local scalar kept by
+  // the spread above) says nothing about any REMOTE host's frame. The per-host map is what lets the
+  // feed pane compare a payload against a cardMoveAck on the SAME counter (the user 2026-08-15, whose
+  // reply to a remote card bounced Working → Completed → Working: the local buildId, large after days
+  // of uptime, "outranked" the remote ack's small post-restart buildId on the first merged emission,
+  // dropping the prediction while the cached remote frame still predated the reopen).
+  const buildIds: Record<string, number> = {};
   for (const h of hostSeq) {
     const f = perHost[h];
     if (!f) continue;
+    if (typeof f.buildId === "number") buildIds[h] = f.buildId;
     if (Array.isArray(f.syncNotices)) {
       for (const r of f.syncNotices) {
         if (!r || !r.sig) continue;
@@ -345,6 +357,7 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   if ("canUndoClear" in merged || canUndo) merged.canUndoClear = canUndo;
   if (syncs.length) merged.syncNotices = syncs;
   else delete merged.syncNotices;
+  merged.buildIds = buildIds;
   return merged;
 }
 
