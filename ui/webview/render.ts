@@ -25,6 +25,7 @@ import { writeViewOrder } from "./view-order";
 import { titleWithKey, chordOf, effectiveChord, loadOverrides } from "./keybindings";
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
+import { StagedStack } from "./staged-messages";
 import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional } from "./provisional";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
@@ -8330,7 +8331,8 @@ function persistDrafts(): void {
   try {
     vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), drafts: Object.fromEntries(drafts),
                             citations: Object.fromEntries(composerCitations),
-                            files: Object.fromEntries(composerFiles) });
+                            files: Object.fromEntries(composerFiles),
+                            staged: stagedMsgs.entries() });
   } catch { /* ignore */ }
 }
 try {
@@ -8362,6 +8364,78 @@ try {
 // then sends a rewindSend (branch from just before that message) instead of a plain message. The chip
 // strip shows an "Editing message" pill whose ✕ (or Esc in the box) cancels back to normal sending.
 const composerEdits = new Map<string, { uuid: string; orig: string }>();
+
+// STAGED messages (the user 2026-08-15): compose against a highlight, ⌘/Ctrl+⏎ to HOLD it — citation
+// chips and all — clear the box and keep reading; repeat. Nothing sends until the next plain send
+// (the stack flushes first, in stage order, the typed message last) or the strip's Send now.
+// Deliberately NOT the queue and never called "queued": queued is romp's injection-side wait (sent,
+// pending injection); staged is user-side — unsent by choice, each message keeping the context it was
+// written against so the batch reads as quote → comment, quote → comment. Per-tab, persisted with the
+// drafts (a reload or tab switch never drops a stack). The pure stack rules live in staged-messages.ts,
+// executed by its test; this file owns the strip DOM and the send routing.
+const stagedMsgs = new StagedStack();
+try { stagedMsgs.restore(((vscodeApi?.getState?.() || {}) as any).staged); } catch { /* ignore */ }
+
+// One routing owner for a user message (the deliver path and the staged flush both speak it): a goal
+// chip rides askFollowUp, quote chips wrap client-side, a bare message is a plain send with the
+// optimistic bubble (chip sends have their own kernel-side echo).
+function routeUserMessage(sid: string, text: string, cites: Citation[] | undefined): void {
+  if (!vscodeApi) return;
+  const goalCite = cites?.find((c) => c.itemId);
+  const quoteCites = cites ? cites.filter((c) => c.quote) : [];
+  if (goalCite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid });
+  else if (quoteCites.length) vscodeApi.postMessage({ type: "sendMessage", id: sid, text: quoteReplyBody(quoteCites, text) });
+  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text }); registerOptimistic(sid, text); }
+}
+
+/** Release the tab's staged stack (deliver's guards — host down, provisional — run before this in the
+ *  send path; Send now re-checks reachability itself). Returns how many went. */
+function flushStaged(sid: string): number {
+  const batch = stagedMsgs.takeAll(sid);
+  for (const s of batch) routeUserMessage(sid, s.text, s.cites as Citation[]);
+  if (batch.length) { persistDrafts(); renderStagedStrip(sid); }
+  return batch.length;
+}
+
+function renderStagedStrip(id: string | null): void {
+  const strip = document.getElementById("composer-staged");
+  if (!strip) return;
+  strip.replaceChildren();
+  const list = id ? stagedMsgs.list(id) : [];
+  if (!id || !list.length) { strip.style.display = "none"; return; }
+  strip.style.display = "flex";
+  const head = el("div", "staged-head");
+  const lbl = el("span");
+  lbl.textContent = list.length + " staged — sends with your next message";
+  lbl.title = "⌘⏎ (or Ctrl+⏎) stages what you've typed, quote chips and all, without sending. "
+    + "A plain send releases them in order with your new message last — or Send now releases them alone.";
+  const go = el("button", "staged-go");
+  go.textContent = "Send now";
+  go.addEventListener("click", () => {
+    if (!id) return;
+    if (hostIsDown(id) || isProvisionalId(id)) {
+      warnToast("Can't send yet — the session isn't reachable. They stay staged.");
+      return;
+    }
+    flushStaged(id);
+  });
+  head.append(lbl, go);
+  strip.appendChild(head);
+  list.forEach((s, i) => {
+    const chip = el("div", "staged-chip");
+    chip.title = s.text;
+    const mark = el("span", "composer-chip-mark");
+    mark.textContent = (s.cites as Citation[]).some((c) => c && c.quote) ? "“" : "•";
+    const label = el("span", "composer-chip-label");
+    label.textContent = s.text;
+    const x = el("button", "composer-chip-x");
+    x.setAttribute("aria-label", "Discard staged message");
+    x.textContent = "✕";
+    x.addEventListener("click", () => { stagedMsgs.removeAt(id, i); persistDrafts(); renderStagedStrip(id); });
+    chip.append(mark, label, x);
+    strip.appendChild(chip);
+  });
+}
 
 function beginComposerEdit(sid: string, uuid: string, orig: string): void {
   composerEdits.set(sid, { uuid, orig });
@@ -8853,6 +8927,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
     ta.value = drafts.get(id) ?? "";
     growComposer(ta);
     renderComposerChips(id);   // the entering tab's own citation chip (if any)
+    renderStagedStrip(id);     // …and its staged stack (per-tab; the strip follows the switch)
     renderComposerFiles(id);   // …and its attachment thumbnails (draft lifecycle: they survive the switch)
     persistDrafts();   // the leaving tab's draft was just stashed → keep the persisted copy in sync
   }
@@ -9585,9 +9660,36 @@ function setupComposer() {
   if (!ta) return;
   // Send the composer's text to the active session — the single path shared by ⏎ and the explicit send
   // button (the user 2026-06-17). Trims, remembers for a Ctrl+C restore, clears the box.
+  // ⌘/Ctrl+⏎ — STAGE the box instead of sending (the user 2026-08-15): the text and its citation
+  // chips move to the staged strip, the box clears, focus stays for the next highlight-and-comment.
+  // The states that already own the box refuse loudly rather than staging a lie: a picker answer
+  // answers NOW or sends normally; an edit replaces a past message; attachments ride a normal send.
+  const stageComposer = () => {
+    if (!activeId) return;
+    const typed = ta.value.trim();
+    if (!typed) return;
+    if (composerAnswersAsk()) { warnToast("A picker is waiting on this box — answer it, or send normally."); return; }
+    if (composerEdits.has(activeId)) { warnToast("An edit replaces a past message — send it normally."); return; }
+    if ((composerFiles.get(activeId) || []).length) { warnToast("Attachments can't be staged — send them with a normal message."); return; }
+    stagedMsgs.push(activeId, { text: typed, cites: (composerCitations.get(activeId) || []).slice() });
+    composerCitations.delete(activeId); renderComposerChips(activeId);   // the chips now live on the staged item
+    drafts.delete(activeId); draftStartedAt.delete(activeId);
+    ta.value = ""; composerManualH = null; ta.style.height = "";
+    persistDrafts();
+    renderStagedStrip(activeId);
+  };
   const sendComposer = () => {
     const typed = ta.value.trim();
     if (!activeId) return;
+    // an empty plain send with a staged stack = "go": release what's held, nothing new to add
+    if (!typed && !(composerFiles.get(activeId) || []).length && stagedMsgs.count(activeId)) {
+      if (hostIsDown(activeId) || isProvisionalId(activeId)) {
+        warnToast("Can't send yet — the session isn't reachable. They stay staged.");
+        return;
+      }
+      flushStaged(activeId);
+      return;
+    }
     const attached = composerFiles.get(activeId) || [];
     if (!typed && !attached.length) return;
     // Attachment thumbnails ride the send as a trailing line of paths — quoted when they contain spaces,
@@ -9657,26 +9759,26 @@ function setupComposer() {
         return;
       }
       lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
+      // STAGED first (the user 2026-08-15): the held run releases in stage order, each message with the
+      // context it was written against, and the message being typed right now lands LAST — the reading
+      // the user composed: quote → comment, quote → comment, then the wrap-up. The guards above (host
+      // down, provisional) have already passed, so nothing staged can be half-lost here.
+      flushStaged(sid);
       // A pending citation chip → send as a FOLLOW-UP on that goal (the user 2026-07-01): askFollowUp wraps the
       // text with the goal's context + the romp-goal-id marker (kernel side), so the goal reopens (done→working,
       // unless cleared) and the chat renders the ↩ Follow-up header — the same path the Follow-up button uses,
       // just seeded by the click. A QUOTE chip (highlighted transcript text, the user 2026-07-13) has no goal:
-      // it wraps client-side (quoteReplyBody) into a plain message. No chip → plain sendMessage.
-      // `sid: activeId` is what ROUTES this to the owning kernel in a federated dashboard (the user 2026-07-29):
-      // federation keys routing off `id`/`sid` only, and an `itemId` ("‹sid›:‹goal›") can't be one — its own
-      // colon would read the session uuid as a host. Without the sid a follow-up on a REMOTE card went to the
-      // LOCAL kernel, which owns no such session and dropped it into tmux by uuid — nothing sent, no error,
-      // the card flashing to Working and back. The kernel keeps deriving its sid from itemId, so this is inert
-      // locally; every other card op (askClear/cardNotify/showOnTimeline) already carries the sid the same way.
+      // it wraps client-side (quoteReplyBody) into a plain message. No chip → plain sendMessage. The three
+      // branches live in routeUserMessage — ONE routing owner, shared with the staged flush above.
+      // Inside it, `sid` is what ROUTES this to the owning kernel in a federated dashboard (the user
+      // 2026-07-29): federation keys routing off `id`/`sid` only, and an `itemId` ("‹sid›:‹goal›") can't
+      // be one — its own colon would read the session uuid as a host. Without the sid a follow-up on a
+      // REMOTE card went to the LOCAL kernel, which owns no such session and dropped it into tmux by
+      // uuid — nothing sent, no error, the card flashing to Working and back. The kernel keeps deriving
+      // its sid from itemId, so this is inert locally; every other card op carries the sid the same way.
       const cites = composerCitations.get(activeId);
-      const goalCite = cites?.find((c) => c.itemId);   // a goal chip rides alone (flavors never mix)
-      const quoteCites = cites ? cites.filter((c) => c.quote) : [];
-      if (vscodeApi) {
-        if (goalCite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid: activeId });
-        else if (quoteCites.length) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(quoteCites, text) });
-        else { vscodeApi.postMessage({ type: "sendMessage", id: activeId, text }); registerOptimistic(activeId, text); }
-        // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
-      }
+      routeUserMessage(activeId, text, cites);
+      // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
       if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
       if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }   // the strip emptied into this message
       drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
@@ -9953,6 +10055,13 @@ function setupComposer() {
     // Shift+Enter, and the software return key should just return. Mobile sends with the explicit Send
     // button only (the user 2026-07-15). Desktop keeps ⏎ send / ⇧⏎ newline. The `!isCoarsePointer()` guard
     // lets Enter fall through to the textarea's native newline on touch.
+    // ⌘⏎ / Ctrl+⏎ stages (the user 2026-08-15) — and focus STAYS in the box, because the whole point
+    // is highlighting the next spot and typing again. Checked before the plain-Enter send below.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey) {
+      e.preventDefault();
+      stageComposer();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !isCoarsePointer()) {
       e.preventDefault();
       sendComposer();

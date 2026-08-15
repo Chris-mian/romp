@@ -20859,9 +20859,10 @@ def _chat_body():
             # web dashboard's skeleton — when only the extension skeleton grew the div, a file dropped on
             # the web surface attached invisibly, showing nothing at all (the user 2026-08-04)
             '<div id="composer"><div id="composer-files" style="display:none"></div>'
+            '<div id="composer-staged" style="display:none"></div>'  # staged-message strip: held until the next send (the user 2026-08-15; NOT the queue — see render.ts)
             '<div id="composer-chips" style="display:none"></div>'   # click-to-cite chip strip (the user 2026-07-01)
             '<textarea id="composer-input" rows="1" '
-            'placeholder="Message this session…"></textarea>'
+            'placeholder="Message this session…  (⏎ send · ⇧⏎ newline · ⌘⏎ stage)"></textarea>'
             '<button id="composer-attach" title="Attach a file">'
             '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" '
             'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'

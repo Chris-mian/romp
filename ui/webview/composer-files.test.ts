@@ -17,11 +17,13 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 const SKELETON = fs.readFileSync(path.resolve(process.cwd(), "src", "page-skeleton.ts"), "utf8");
 
 test("the composer has an attachment strip, its own row above the chips — on BOTH skeletons", () => {
-  assert.match(SKELETON, /<div id="composer-files" style="display:none"><\/div><div id="composer-chips"/);
+  assert.match(SKELETON, /<div id="composer-files" style="display:none"><\/div><div id="composer-staged" style="display:none"><\/div><div id="composer-chips"/);
   // the WEB dashboard's page skeleton is the kernel's own HTML, not page-skeleton.ts — when only the
   // extension skeleton grew this div, a file dropped on the web surface attached invisibly, showing
-  // nothing at all (the user 2026-08-04). The two skeletons must carry the strip in step.
+  // nothing at all (the user 2026-08-04). The two skeletons must carry the strip in step — and the
+  // staged strip (2026-08-15) sits between files and chips on both.
   assert.match(KERNEL, /<div id="composer"><div id="composer-files" style="display:none"><\/div>'/);
+  assert.match(KERNEL, /<div id="composer-staged" style="display:none"><\/div>'/);
   assert.match(KERNEL, /<div id="composer-chips" style="display:none"><\/div>'/);
   assert.match(CSS, /#composer-files \{ flex: 1 1 100%; display: flex; flex-wrap: wrap/);
   assert.match(CSS, /\.composer-file-img \{ display: block; height: 46px/);
@@ -76,11 +78,12 @@ test("attachments ride the send as a trailing line of paths, quoted when they ho
 });
 
 test("attachments live the DRAFT lifecycle: switch, reload, close", () => {
-  // persisted beside drafts/citations, restored as a list of strings
-  assert.match(RENDER, /files: Object\.fromEntries\(composerFiles\) \}\);/);
+  // persisted beside drafts/citations/staged, restored as a list of strings
+  assert.match(RENDER, /files: Object\.fromEntries\(composerFiles\),/);
   assert.match(RENDER, /const savedFiles = \(\(vscodeApi\?\.getState\?\.\(\) \|\| \{\}\) as any\)\.files;/);
-  // a tab switch REPAINTS the strip (unlike citations, which the switch abandons)
-  assert.match(RENDER, /renderComposerChips\(id\);   \/\/ the entering tab's own citation chip \(if any\)\s*\n\s*renderComposerFiles\(id\);/);
+  // a tab switch REPAINTS the strip (unlike citations, which the switch abandons); the staged
+  // strip (2026-08-15) repaints in the same breath, between the chips and the files
+  assert.match(RENDER, /renderComposerChips\(id\);   \/\/ the entering tab's own citation chip \(if any\)\s*\n\s*renderStagedStrip\(id\);[^\n]*\n\s*renderComposerFiles\(id\);/);
   // the post-reload restore paints it once the active tab is known
   assert.match(RENDER, /renderComposerFiles\(activeId\);   \/\/ attachments persisted across the reload/);
   // closing a session drops its attachments with its draft, and repaints for the new active tab
