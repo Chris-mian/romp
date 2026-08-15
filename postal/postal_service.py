@@ -2564,7 +2564,7 @@ def _mcp_call(name, args):
             if note:
                 return "Message to '%s': %s" % (to, note), False
             # Echo what the DECLARATION did, not just that bytes moved (the user 2026-07-26): a question
-            # or delegate records the SENDER as waiting on the recipient — a real hold that a mis-declared
+            # records the SENDER as waiting on the recipient — a real hold that a mis-declared
             # kind creates by accident (a "question" whose prose said no reply was needed parked its
             # sender for a day). Reading the cost back lets the sender self-correct on the spot, while
             # recall_message still works.
@@ -2573,8 +2573,10 @@ def _mcp_call(name, args):
                         "reply until they answer. If you don't actually need a reply, recall this "
                         "message and resend it as coordinate." % to, False)
             if kind == "delegate":
-                return ("Delivered to '%s' as a handoff — you are now recorded as waiting on them to "
-                        "report back; their next message to you clears it." % to, False)
+                return ("Delivered to '%s' as a handoff — they own it now; you are NOT recorded as "
+                        "waiting (the user 2026-08-15: ownership transferred is not a dependency). "
+                        "If you genuinely need their report before you can proceed, send a question "
+                        "instead." % to, False)
             return "Delivered to '%s'." % to, False
         except BusError as e:
             return str(e), True
