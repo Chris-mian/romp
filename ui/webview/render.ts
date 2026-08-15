@@ -864,7 +864,10 @@ function fillPathImg(wrap: HTMLElement, p: string): void {
     const img = document.createElement("img"); img.className = "user-img"; img.src = url; img.loading = "lazy"; img.title = p;
     wrap.appendChild(img);
   } else {
-    const chip = el("div", "user-img-path"); chip.textContent = "🖼 " + (p.split("/").pop() || p); chip.title = p;
+    // still waiting on the host round-trip → pulsing-dots loading cue (pure CSS — the sandbox can't
+    // fetch the swirl asset); a FAILED path drops the pulse and reads as the plain chip it is
+    const chip = el("div", "user-img-path" + (imgFailed.has(p) ? "" : " img-pending"));
+    chip.textContent = "🖼 " + (p.split("/").pop() || p); chip.title = p;
     wrap.appendChild(chip);
   }
 }
@@ -1032,7 +1035,9 @@ const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]|
 // file:// URIs are explicit absolute paths — never gated on the map.
 function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[],
                          pathLinks?: Record<string, string>): void {
-  const previewable: string[] = [];   // renderable paths found in this message → a thumbnail strip below it
+  const previewable: string[] = [];   // renderable paths found in this message → full renders at their mentions
+  const mentionAt = new Map<string, HTMLElement>();   // path → its FIRST mention's element (figure anchor)
+  const kernelVerified = new Set<string>();           // paths the kernel stat'd — their previews fail loudly, never silently
   if (spacePaths && spacePaths.length) {
     const verified = new Set(spacePaths);
     for (const code of Array.from(root.querySelectorAll("code"))) {
@@ -1041,7 +1046,11 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
       if (!verified.has(tok)) continue;
       const link = openPathLink(tok, tok, true);
       code.replaceChildren(link);                              // the <code> chrome stays; its content is the link
-      if (previewKind(tok) && !previewable.includes(tok) && !(skipThumbs && skipThumbs.includes(tok))) previewable.push(tok);
+      kernelVerified.add(tok);
+      if (previewKind(tok) && !previewable.includes(tok) && !(skipThumbs && skipThumbs.includes(tok))) {
+        previewable.push(tok);
+        mentionAt.set(tok, code);
+      }
     }
   }
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -1067,8 +1076,13 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
       if (!isUri && pathLinks && typeof fixed !== "string") continue;   // checked against the filesystem: no such file (or several) → prose
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
       const open = isUri ? fileUriToPath(tok) : (fixed ?? tok);
-      frag.appendChild(isUri ? fileUriLink(tok) : openPathLink(tok, open, true));
-      if (previewKind(open) && !previewable.includes(open) && !(skipThumbs && skipThumbs.includes(open))) previewable.push(open);
+      const link = isUri ? fileUriLink(tok) : openPathLink(tok, open, true);
+      frag.appendChild(link);
+      if (!isUri && typeof fixed === "string") kernelVerified.add(open);   // the kernel stat'd it this build
+      if (previewKind(open) && !previewable.includes(open) && !(skipThumbs && skipThumbs.includes(open))) {
+        previewable.push(open);
+        mentionAt.set(open, link);
+      }
       last = m.index + tok.length;
       re.lastIndex = last;
       any = true;
@@ -1077,12 +1091,16 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
     if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
     tn.replaceWith(frag);
   }
-  // A mentioned image/PDF renders FULL-SIZE under the message (the user 2026-07-20, who wanted not even a
-  // thumbnail but a rendered image, like the user messages; supersedes the 2026-07-08 thumbnail
-  // strip). Absolute AND relative paths work — the kernel
-  // resolves a relative one against this session's cwd, same as click-to-open. Per surface:
+  // A mentioned image/PDF renders FULL-SIZE at its MENTION — the figure lands right after the
+  // paragraph/list item that names it, like figures in a document (the user 2026-08-15, whose four
+  // captioned plots all collected at the message's tail, far from the prose describing each; the
+  // 2026-07-20 rule — a rendered image, not a thumbnail — stands, this moves WHERE it renders).
+  // Figures mentioned in the same block share one strip; a mention with no block anchor (bare text
+  // at the root) keeps the old below-message placement. Absolute AND relative paths work — the
+  // kernel resolves a relative one against this session's cwd, same as click-to-open. Per surface:
   //   web       — previewFull: the kernel serves the bytes straight into an <img> at the user-image
-  //               scale / a PDF's native inline viewer; a path the kernel can't serve removes itself.
+  //               scale / a PDF card. A KERNEL-VERIFIED path that fails to load shows a retry chip
+  //               (transient failure — restart, tunnel blip); only an unverified one self-removes.
   //   VS Code   — the webview sandbox can't reach the kernel origin from an <img>, so an IMAGE rides
   //               the same host data-URL flow the user-message pictures use (buildPathImg, imgRequest
   //               now carrying the session id for relative resolution); a PDF keeps its click-to-open
@@ -1090,13 +1108,24 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
   // Capped so a message that enumerates a directory of images doesn't wallpaper the chat; every path
   // stays clickable regardless.
   if (previewable.length) {
-    const strip = el("div", "path-thumbs");
+    const BLOCK_SEL = "p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th";
+    const strips = new Map<HTMLElement, HTMLElement>();   // figure anchor → its strip (same block shares one)
     for (const p of previewable.slice(0, 4)) {
-      const full = canPreview() ? previewFull(p, activeId)
+      const full = canPreview() ? previewFull(p, activeId, kernelVerified.has(p))
         : previewKind(p) === "img" ? buildPathImg(p) : null;
-      if (full) strip.appendChild(full);
+      if (!full) continue;
+      const block = mentionAt.get(p)?.closest(BLOCK_SEL) as HTMLElement | null;
+      const anchor = block && root.contains(block) && block !== root ? block : root;
+      let strip = strips.get(anchor);
+      if (!strip) {
+        strip = el("div", "path-thumbs");
+        // an li/td keeps its figure INSIDE (stays under its bullet/cell); a p/heading takes it after
+        if (anchor === root || /^(LI|TD|TH)$/.test(anchor.tagName)) anchor.appendChild(strip);
+        else anchor.insertAdjacentElement("afterend", strip);
+        strips.set(anchor, strip);
+      }
+      strip.appendChild(full);
     }
-    if (strip.childElementCount) root.appendChild(strip);
   }
 }
 

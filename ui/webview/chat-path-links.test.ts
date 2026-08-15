@@ -36,7 +36,8 @@ test("membership in pathLinks gates the link, and the map's value is the OPEN ta
   // the fixed target is what opens (and openPathLink titles it, so hover shows where a fix points);
   // with NO pathLinks key on the event (old kernel, cached payload) the token opens as written
   assert.match(RENDER, /const open = isUri \? fileUriToPath\(tok\) : \(fixed \?\? tok\);/);
-  assert.match(RENDER, /frag\.appendChild\(isUri \? fileUriLink\(tok\) : openPathLink\(tok, open, true\)\);/);
+  assert.match(RENDER, /const link = isUri \? fileUriLink\(tok\) : openPathLink\(tok, open, true\);/);
+  assert.match(RENDER, /frag\.appendChild\(link\);/);
   assert.match(RENDER, /a\.title = "Open " \+ open;/);
 });
 

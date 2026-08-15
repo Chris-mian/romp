@@ -120,7 +120,14 @@ export function openLightbox(path: string, sid?: string | null): void {
 // that declines to render inline) saved a FRESH COPY on every chat re-render — the user's Downloads
 // folder silently filled with datasheet copies (2026-07-20). A fetch must be user-initiated, once.
 // Web only — callers gate on canPreview and fall back per surface.
-export function previewFull(path: string, sid?: string | null): HTMLElement | null {
+// `verified`: the KERNEL already stat'd this path (spacePaths / a pathLinks verdict), so a load
+// error is TRANSIENT — the kernel restarting mid-fetch, a tunnel blip — not a dead path. Removing
+// the box then erases the preview silently until some later re-render (the user 2026-08-15, who sat
+// through exactly that: verified path pills, no images, no cue). A verified path's failure therefore
+// stays VISIBLE — a "preview unavailable — tap to retry" chip in the figure's spot — per the
+// fail-loudly rule. Only an UNVERIFIED path (old kernel, no pathLinks key) keeps self-removal:
+// there the error really does mean "no such file".
+export function previewFull(path: string, sid?: string | null, verified = false): HTMLElement | null {
   const kind = previewKind(path);
   if (!kind || !canPreview()) return null;
   const box = document.createElement("span");
@@ -139,19 +146,33 @@ export function previewFull(path: string, sid?: string | null): HTMLElement | nu
     box.title = "click to view " + path;
     box.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
     // a chip can't self-verify like an <img> — HEAD-probe (headers only, no body — never a download)
-    // so a missing PDF never shows a dead card
-    fetch(fileUrl(path, sid), { method: "HEAD" }).then((r) => { if (!r.ok) box.remove(); }).catch(() => box.remove());
+    // so a missing PDF never shows a dead card. A kernel-VERIFIED card skips the probe: the kernel
+    // said the file exists, and a transient probe failure must not erase the card.
+    if (!verified) fetch(fileUrl(path, sid), { method: "HEAD" }).then((r) => { if (!r.ok) box.remove(); }).catch(() => box.remove());
   } else {
-    const img = document.createElement("img");
-    img.className = "path-full-img";
     const url = fileUrl(path, sid);
-    img.src = url;
-    img.alt = path;
-    img.loading = "lazy";
-    img.onerror = () => box.remove();
-    img.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
-    withLoadCue(box, img, url);   // mini swirl holds the spot until the load event (first load only)
-    box.appendChild(img);
+    const build = (bust: boolean) => {
+      box.textContent = "";
+      const img = document.createElement("img");
+      img.className = "path-full-img";
+      img.src = bust ? url + "&r=" + Date.now() : url;   // bust: a retry must not re-read the failed cache entry
+      img.alt = path;
+      img.loading = "lazy";
+      img.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
+      img.onerror = () => {
+        if (!verified) { box.remove(); return; }
+        box.textContent = "";
+        const chip = document.createElement("span");
+        chip.className = "path-full-retry";
+        chip.textContent = "⚠ preview unavailable — tap to retry";
+        chip.title = path;
+        chip.onclick = (ev) => { ev.stopPropagation(); build(true); };
+        box.appendChild(chip);
+      };
+      withLoadCue(box, img, url);   // mini swirl holds the spot until the load event (memo on the un-busted url)
+      box.appendChild(img);
+    };
+    build(false);
   }
   return box;
 }
