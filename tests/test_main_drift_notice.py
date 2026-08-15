@@ -68,6 +68,36 @@ class DriftWiring(unittest.TestCase):
         self.assertIn('threading.Thread(target=_run_main_update, args=(kind, True), daemon=True)', route,
                       "the banner click is the user's own deliberate cut")
 
+    def test_auto_converges_batch_behind_the_cool_down(self):
+        # the user 2026-08-15, after flipping auto: main took a merge every few minutes and auto mode
+        # converged once per commit — 4+ restarts/hour, each cutting every in-flight turn. Behind the
+        # cool-down, N merges inside the window become ONE restart to the LATEST sha.
+        ran = []
+        saved = (km._update_mode, km._origin_main_sha, km._checkout_sha, km._kernel_sha,
+                 km._run_main_update, km._LAST_AUTO_CONVERGE[0], km._MAIN_DRIFT[0], km._MAIN_DRIFT[1])
+        km._update_mode = lambda: "auto"
+        km._checkout_sha = lambda: "aaa"
+        km._kernel_sha = lambda: "aaa"
+        km._run_main_update = lambda kind, immediate=False: ran.append(kind)
+        try:
+            km._MAIN_DRIFT[0] = km._MAIN_DRIFT[1] = ""
+            km._LAST_AUTO_CONVERGE[0] = 0.0
+            km._origin_main_sha = lambda: "bbb"
+            km._main_drift_check()
+            self.assertEqual(ran, ["pull"], "the first drift converges at once")
+            km._origin_main_sha = lambda: "ccc"          # a new merge lands inside the window
+            km._main_drift_check()
+            self.assertEqual(ran, ["pull"], "inside the cool-down, no second restart")
+            self.assertEqual(km._MAIN_DRIFT[0], "", "the deferred sha is NOT marked offered")
+            km._LAST_AUTO_CONVERGE[0] = 0.0              # the window passes
+            km._main_drift_check()
+            self.assertEqual(ran, ["pull", "pull"], "past the window, one converge takes the LATEST sha")
+        finally:
+            (km._update_mode, km._origin_main_sha, km._checkout_sha, km._kernel_sha,
+             km._run_main_update) = saved[:5]
+            km._LAST_AUTO_CONVERGE[0] = saved[5]
+            km._MAIN_DRIFT[0], km._MAIN_DRIFT[1] = saved[6], saved[7]
+
     def test_the_shell_banner_carries_the_drift_variants(self):
         src = inspect.getsource(km)
         self.assertIn("m.drift||''", src, "the shell relay forwards the drift kind")
