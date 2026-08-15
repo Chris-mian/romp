@@ -66,6 +66,10 @@ test("the awaiting WHY lives in the background box, not the statusline (the user
   // the kernel ships the why + the live awaited task descriptions in the chat status payload…
   assert.match(KERNEL, /"awaitingWhy": awaiting_why or None,/);
   assert.match(KERNEL, /"awaitingTasks": \(_awaiting_task_descs\(sid, sess\["path"\]\) if awaiting_why else \[\]\),/);
+  // …plus WHAT the wait is on, as data (jd.AWAIT_KINDS; the user 2026-08-15) — on the chat status,
+  // the timeline lane, and the feed card's awaiting object alike, so every surface words one fact
+  assert.match(KERNEL, /"awaitingKind": awaiting_kind,/);
+  assert.match(KERNEL, /"kind": await_kind,/);
   // …the statusline branch stays chip + clock ONLY — the reason line PR #350 put beside the chip
   // crowded the composer area, and the user moved it the same day
   const branch = RENDER.split('state === "awaitingBg") {')[1].split("} else if")[0];

@@ -7229,19 +7229,82 @@ class AwaitingVerdict(unittest.TestCase):
     def test_parse_collects_awaiting_and_resolutions_win(self):
         self.assertEqual(
             jd._parse_close('{"done": [], "block": [], "awaiting": [{"goal": 2, "why": "a test run; merges when green"}]}', 3),
-            {"done": {}, "block": {}, "awaiting": {2: "a test run; merges when green"}})
+            {"done": {}, "block": {}, "awaiting": {2: {"why": "a test run; merges when green", "kind": None}}})
         self.assertEqual(
             jd._parse_close('{"done": [{"goal": 1, "why": "shipped"}], "block": [{"goal": 2, "why": "?"}],'
                             ' "awaiting": [{"goal": 1, "why": "w"}, {"goal": 2, "why": "w"}, {"goal": 3, "why": "w"}]}', 3),
-            {"done": {1: "shipped"}, "block": {2: "?"}, "awaiting": {3: "w"}},
+            {"done": {1: "shipped"}, "block": {2: "?"}, "awaiting": {3: {"why": "w", "kind": None}}},
             "a goal resolved done/blocked never also carries the annotation")
         self.assertIsNone(jd._parse_close('{"done": [], "awaiting": [{"goal": 0, "why": "x"}]}', 3),
                           "a zero index in the awaiting list poisons the whole reply, same as the others")
 
+    def test_parse_extracts_a_valid_kind_and_drops_garbage(self):
+        # the kind enum is AWAIT_KINDS; anything else (or absent) parses to None — the kindless
+        # legacy shape every rule treats exactly as before the enum existed
+        got = jd._parse_close('{"done": [], "block": [], "awaiting": ['
+                              '{"goal": 1, "why": "slurm 4821", "kind": "job"},'
+                              '{"goal": 2, "why": "w", "kind": " PEER "},'
+                              '{"goal": 3, "why": "w", "kind": "banana"}]}', 3)
+        self.assertEqual(got["awaiting"][1], {"why": "slurm 4821", "kind": "job"})
+        self.assertEqual(got["awaiting"][2]["kind"], "peer", "kind normalizes case/whitespace")
+        self.assertIsNone(got["awaiting"][3]["kind"], "an off-enum kind degrades to kindless, never poisons")
+
+    def test_apply_files_the_kind_and_a_kind_gain_lands_at_the_original_anchor(self):
+        s = _store()
+        g = _mknode(s, "G1")
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the sweep", "kind": None}}},
+                       t=T0 + 50, touched=1)
+        self.assertNotIn("awaitingKind", g, "a kindless stamp carries no kind field at all")
+        # the closer re-files the SAME why now carrying a kind: the classification catches up, but the
+        # stamp's anchor may NOT move — the wake's patience and the supersede ordering key on it
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the sweep", "kind": "job"}}},
+                       t=T0 + 500, touched=1)
+        self.assertEqual(g["awaitingKind"], "job")
+        self.assertEqual(g["awaitingAt"], T0 + 50, "a kind gain is not a new wait — the anchor stays")
+        rows = [e for e in g["log"] if e["kind"] == "awaiting"]
+        self.assertEqual([e.get("awaitKind") for e in rows], [None, "job"])
+        # …an identical (why, kind) re-assert coalesces as before…
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the sweep", "kind": "job"}}},
+                       t=T0 + 900, touched=1)
+        self.assertEqual(len([e for e in g["log"] if e["kind"] == "awaiting"]), 2)
+        # …and a same-why RELABEL (job↔task flip-flop) is swallowed too: an LLM changing its mind about
+        # the label is not new information, and landing it would re-anchor + chew LOG_CAP every audit
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the sweep", "kind": "task"}}},
+                       t=T0 + 1300, touched=1)
+        self.assertEqual(g["awaitingKind"], "job")
+        self.assertEqual(len([e for e in g["log"] if e["kind"] == "awaiting"]), 2)
+
+    def test_a_kindful_reply_with_no_why_files_nothing_on_an_unstamped_goal(self):
+        # the old None != None skip must survive the kind clause: a malformed {kind, empty why} item
+        # on a goal with NO standing stamp appends no diary row, however often the model repeats it
+        s = _store()
+        g = _mknode(s, "G1")
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "", "kind": "job"}}},
+                       t=T0 + 50, touched=1)
+        self.assertEqual([e for e in g.get("log", []) if e["kind"] == "awaiting"], [])
+
+    def test_a_kindless_reassert_keeps_the_kind_only_while_the_why_stands(self):
+        # SAME why, kindless re-assert → the standing classification holds; a kindless assert of a
+        # DIFFERENT why is a different wait — inheriting the neighbor's label would ship an
+        # affirmatively wrong kind (review 2026-08-15)
+        s = _store()
+        g = _mknode(s, "G1")
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the sweep", "kind": "job"}}},
+                       t=T0 + 50, touched=1)
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the second pass", "kind": None}}},
+                       t=T0 + 500, touched=1)
+        self.assertEqual(g["awaitingWhy"], "the second pass")
+        self.assertNotIn("awaitingKind", g, "a new wait does not inherit the old wait's kind")
+
+    def test_awaiting_kind_is_diary_owned(self):
+        nd = jd.GuardedNode({"id": "n", "text": "G"})
+        with self.assertRaises(TypeError):
+            nd["awaitingKind"] = "job"
+
     def test_apply_stamps_the_annotation_without_resolving(self):
         s = _store()
         g = _mknode(s, "G1")
-        newly = jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "a fleet test run; merges when green"}},
+        newly = jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "a fleet test run; merges when green", "kind": None}}},
                                t=T0 + 50, touched=1)
         self.assertEqual(newly, [], "awaiting is an annotation, never a completion")
         self.assertEqual(g["awaitingWhy"], "a fleet test run; merges when green")
@@ -7254,19 +7317,19 @@ class AwaitingVerdict(unittest.TestCase):
         # a long poll loop re-asserts every audited turn; identical whys never chew through LOG_CAP
         s = _store()
         g = _mknode(s, "G1")
-        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the campaign timer"}}, t=T0 + 50, touched=1)
-        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the campaign timer"}}, t=T0 + 500, touched=1)
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the campaign timer", "kind": None}}}, t=T0 + 50, touched=1)
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the campaign timer", "kind": None}}}, t=T0 + 500, touched=1)
         rows = [e for e in g["log"] if e["kind"] == "awaiting"]
         self.assertEqual(len(rows), 1, "an identical re-assert is skipped, not re-appended")
         self.assertEqual(g["awaitingAt"], T0 + 50, "the stamp keeps its original since-time")
-        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the deploy it kicked off"}}, t=T0 + 900, touched=1)
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the deploy it kicked off", "kind": None}}}, t=T0 + 900, touched=1)
         self.assertEqual(g["awaitingWhy"], "the deploy it kicked off", "a changed why is a real event -> new row")
         self.assertEqual(g["awaitingAt"], T0 + 900)
 
     def test_the_next_audited_turn_without_reassert_lifts_the_stamp(self):
         s = _store()
         g = _mknode(s, "G1")
-        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the watcher"}}, t=T0 + 50, touched=1)
+        jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the watcher", "kind": None}}}, t=T0 + 50, touched=1)
         self.assertTrue(g.get("awaitingWhy"))
         jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {}}, t=T0 + 500, touched=1)
         self.assertNotIn("awaitingWhy", g, "the goal's own next audited turn is the exact clearing event")
@@ -7278,7 +7341,7 @@ class AwaitingVerdict(unittest.TestCase):
         # from the awaiting list says nothing about their wait -> the `touched` bound excludes them
         s = _store()
         g1, g2 = _mknode(s, "touched"), _mknode(s, "candidate")
-        jd.apply_close(s, [g1, g2], {"done": {}, "block": {}, "awaiting": {2: "its own async job"}}, t=T0 + 50, touched=2)
+        jd.apply_close(s, [g1, g2], {"done": {}, "block": {}, "awaiting": {2: {"why": "its own async job", "kind": None}}}, t=T0 + 50, touched=2)
         jd.apply_close(s, [g1, g2], {"done": {}, "block": {}, "awaiting": {}}, t=T0 + 500, touched=1)
         self.assertEqual(g2.get("awaitingWhy"), "its own async job",
                          "the candidate (index 2 > touched 1) keeps its stamp; only real turns lift")
@@ -7288,7 +7351,7 @@ class AwaitingVerdict(unittest.TestCase):
                                ("block", {"done": {}, "block": {1: "Approve?"}, "awaiting": {}})):
             s = _store()
             g = _mknode(s, "G1")
-            jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: "the test run"}}, t=T0 + 50, touched=1)
+            jd.apply_close(s, [g], {"done": {}, "block": {}, "awaiting": {1: {"why": "the test run", "kind": None}}}, t=T0 + 50, touched=1)
             jd.apply_close(s, [g], verdicts, t=T0 + 500, touched=1)
             self.assertNotIn("awaitingWhy", g, "a landed %s outranks and ends the annotation" % kind)
 

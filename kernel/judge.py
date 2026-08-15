@@ -1851,10 +1851,12 @@ def _parse_plan(raw, menu_len, allow_extend=False):
                 ops.append({"do": "mint", "why": why, "text": text})   # no valid parent → place it, never orphan
         elif do in ("done", "block", "awaiting"):
             g, r = _int(o, "goal"), _int(o, "ref")
+            ak = str(o.get("kind") or "").strip().lower() if do == "awaiting" else ""
+            ak = {"kind": ak} if ak in AWAIT_KINDS else {}             # garbage/absent → kindless (legacy)
             if g and 1 <= g <= menu_len:
-                ops.append({"do": do, "why": why, "goal": g})
+                ops.append({"do": do, "why": why, "goal": g, **ak})
             elif r and r >= 1:
-                ops.append({"do": do, "why": why, "ref": r})           # resolved against this reply's mints
+                ops.append({"do": do, "why": why, "ref": r, **ak})     # resolved against this reply's mints
         elif do == "retitle":
             g = _int(o, "goal")                         # goal-only (no "ref"): retitle targets a PRE-EXISTING
             if g and 1 <= g <= menu_len and _has_alpha(text):   # node, never a same-reply mint
@@ -1879,7 +1881,7 @@ PROTECTED = frozenset((
     "log", "logTrunc",                                 # the diary itself
     "followupPending", "followupAt",                   # user-action stamps (reopen-event-derived)
     "settledAt", "settledDone", "deltaSince",          # settle stamps (settle-event-derived)
-    "awaitingWhy", "awaitingAt",                       # ⏳ awaiting stamps (awaiting-event-derived)
+    "awaitingWhy", "awaitingAt", "awaitingKind",       # ⏳ awaiting stamps (awaiting-event-derived)
     "rolledUp",                                        # roll-down's tree-derived marker
 ))
 
@@ -2988,7 +2990,8 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             # path and _mark_nudge_failed's own escape, so recording it suppresses the false interrupt
             # through machinery that already exists. Lifted by the closer's next audit of the goal.
             t = _target(o)
-            if t and record_verdict(store, nodes[t], "planner", "awaiting", seg_t, why=o["why"], seg=seg_id):
+            if t and record_verdict(store, nodes[t], "planner", "awaiting", seg_t, why=o["why"], seg=seg_id,
+                                    await_kind=o.get("kind")):
                 touched = t                           # mt deliberately NOT bumped: an annotation, not work
         elif do == "extend":
             # A queued-fragment landing (the opener's sibling <note>, the user 2026-07-11): this message
@@ -3575,7 +3578,11 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "**resumed** real, still-unfinished work on the goal, keep it working — never force a false "
                  "done/block; and in that case say so explicitly with **awaiting** on #1, the why naming what "
                  "it is waiting on or working through (a long run, a watcher it armed, a background task, a "
-                 "step still in progress). Emit awaiting whenever the reply shows the agent is progressing "
+                 "step still in progress), plus a \"kind\" naming what the wait is on when one fits — exactly "
+                 "one of \"agents\" (agents it dispatched), \"task\" (a background command or watcher), "
+                 "\"job\" (a computation outside the session: a cluster/CI job, a build), \"peer\" (another "
+                 "session), \"timer\" (a check-back it scheduled); omit kind if none fits. "
+                 "Emit awaiting whenever the reply shows the agent is progressing "
                  "and needs **nothing** from the user — silence is not enough, because an unresolved nudge "
                  "with no verdict is read as needing the user's direction. When the nudge enumerated the goal's unfinished pieces and the reply reports on "
                  "them, also resolve each reported piece on its **own** listed item: done where it is "
@@ -5060,7 +5067,8 @@ LOG_CAP = 64                             # per-node verdict-log bound (a node ra
 #                                          is a runaway backstop — oldest drop, logTrunc marks the loss)
 
 
-def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=False, undo=False, lift=False):
+def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=False, undo=False, lift=False,
+                   await_kind=None):
     """P3.1 DUAL-WRITE (the user 2026-07-06): the gate AND the recorder, fused into the one seam every
     verdict write goes through. Asks may_apply; when allowed, appends the event to the node's
     append-only verdict LOG and returns True — the caller then writes the flags exactly as before
@@ -5086,6 +5094,9 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=Fals
                     **({"msg": True} if msg else {}),  # a user message rides this reopen (chip derivation)
                     **({"undo": True} if undo else {}),   # an undo-restore reopen: not a "not done" assertion
                     **({"lift": True} if lift else {}),   # an `awaiting` row that ENDS the wait, not asserts it
+                    # what an `awaiting` assert waits ON (AWAIT_KINDS; "kind" is taken by the verdict kind).
+                    # Absent = a kindless legacy stamp, which every rule treats exactly as before the enum.
+                    **({"awaitKind": await_kind} if await_kind else {}),
                     "at": int(time.time())})
         if len(log) > LOG_CAP:
             del log[:len(log) - LOG_CAP]
@@ -5165,7 +5176,7 @@ def _fold_node(nd):
                    audited turn's own processing, not a fresh event (see the guard in the loop)."""
     state, floor = "open", 0
     cur_settle, prev_settle = None, None
-    awaiting_why = awaiting_at = None     # the live ⏳ stamp (see docstring); None = not awaiting
+    awaiting_why = awaiting_at = awaiting_kind = None     # the live ⏳ stamp (see docstring); None = not awaiting
     done_why = block_why = None           # the landing verdicts' rationale (doneWhy/blockWhy derivation)
     held = pending = False                # held: an unanswered USER reopen pins the node open (no bottom-up
     #                                       re-completion); pending: an unanswered msg-reopen wears the chip.
@@ -5189,7 +5200,7 @@ def _fold_node(nd):
                 # peer's postal reply sat wedged-invisible in Working. Same-trigger symmetry as the
                 # assert's own `t >= floor` equality-lands rule below: within one turn the reopen is the
                 # trigger, the wait is how the turn ENDED.
-                awaiting_why = awaiting_at = None
+                awaiting_why = awaiting_at = awaiting_kind = None
             if e.get("undo") and clear_snap is not None:
                 state, cur_settle, prev_settle = clear_snap      # restore what the cross-off displaced
                 clear_snap = None
@@ -5212,13 +5223,13 @@ def _fold_node(nd):
                 state = "done"
                 done_why = e.get("why") or done_why
                 reopen_snap = None
-                awaiting_why = awaiting_at = None
+                awaiting_why = awaiting_at = awaiting_kind = None
         elif kind == "block":
             if src in ("user", "agent") or t > floor:
                 state = "blocked"
                 block_why = e.get("why") or block_why
                 reopen_snap = None
-                awaiting_why = awaiting_at = None
+                awaiting_why = awaiting_at = awaiting_kind = None
         elif kind == "unblock":
             if state == "blocked":
                 state = "open"
@@ -5226,15 +5237,22 @@ def _fold_node(nd):
             clear_snap = (state, cur_settle, prev_settle)
             state = "cleared"
             reopen_snap = None
-            awaiting_why = awaiting_at = None
+            awaiting_why = awaiting_at = awaiting_kind = None
         elif kind == "settle":            # display annotation: WHEN the card entered Completed; never state
             cur_settle = t
         elif kind == "awaiting":          # ⏳ annotation (like settle, never state): the closer audited a
             if e.get("lift"):             # turn on this goal — either the wait is (still) on, or it ended
-                awaiting_why = awaiting_at = None
+                awaiting_why = awaiting_at = awaiting_kind = None
             elif src in ("user", "agent") or t >= floor:   # done-style floor: equality LANDS — the turn that
-                awaiting_why = e.get("why") or awaiting_why  # processes the user's reply may itself dispatch
-                awaiting_at = t                              # and wait (the reply IS that turn's trigger)
+                new_why = e.get("why") or awaiting_why       # processes the user's reply may itself dispatch
+                #                                              and wait (the reply IS that turn's trigger)
+                # a kindless re-assert of the SAME why keeps the standing kind (the classification is
+                # already on record); a kindless assert of a DIFFERENT why is a different wait — carrying
+                # a neighbor's label onto it would ship an affirmatively wrong kind (review 2026-08-15)
+                awaiting_kind = (e.get("awaitKind")
+                                 or (awaiting_kind if new_why == awaiting_why else None))
+                awaiting_why = new_why
+                awaiting_at = t
         elif kind == "dismiss":           # the judge rejected the provisional msg-reopen: restore what the
             if reopen_snap is not None:   # optimistic flip displaced (a pivoted completed card returns to
                 state, cur_settle, prev_settle = reopen_snap     # Completed with its original settledAt)
@@ -5247,6 +5265,7 @@ def _fold_node(nd):
             "settledAt": cur_settle, "deltaSince": prev_settle,
             "awaitingWhy": awaiting_why if state == "open" else None,
             "awaitingAt": awaiting_at if state == "open" else None,
+            "awaitingKind": awaiting_kind if state == "open" else None,
             "doneWhy": done_why, "blockWhy": block_why}
 
 
@@ -5455,9 +5474,14 @@ def _materialize_node(nd):
         if f["awaitingWhy"]:
             nd["awaitingWhy"] = f["awaitingWhy"]       # the live ⏳ stamp (open nodes only; the fold
             nd["awaitingAt"] = f["awaitingAt"]         # already returns None for any other state)
+            if f.get("awaitingKind"):
+                nd["awaitingKind"] = f["awaitingKind"]
+            else:
+                nd.pop("awaitingKind", None)           # a kindless stamp carries no kind field at all
         else:
             nd.pop("awaitingWhy", None)
             nd.pop("awaitingAt", None)
+            nd.pop("awaitingKind", None)
     return f
 
 
@@ -7032,13 +7056,17 @@ CLOSER_SYS = (
     "(omit it). When unsure between awaiting and omitting, omit.\n"
     "Reply with only a JSON object (no prose, no markdown fences):\n"
     '{\"done\": [ {\"goal\": <n>, \"why\": \"...\"} ], \"block\": [ {\"goal\": <n>, \"why\": \"...\"} ], '
-    '\"awaiting\": [ {\"goal\": <n>, \"why\": \"...\"} ]}\n'
+    '\"awaiting\": [ {\"goal\": <n>, \"why\": \"...\", \"kind\": \"...\"} ]}\n'
     "Each goal appears in at most one list; omit the goals still working. goal is the goal's number. "
     "For done, why is one sentence on what got it done. For block, why is the question or ask itself, "
     "addressed to the user (the decision you need plus only the context to make it), not a narration, "
     "e.g. \"Approve the staged commit? Nothing is committed yet.\" For awaiting, why is one short line "
     "naming what it waits on and what happens when that lands, e.g. \"a fleet-wide test run it "
-    "launched; merges when green\". All lists may be empty: "
+    "launched; merges when green\", and kind names WHAT it waits on, exactly one of: \"agents\" (agents "
+    "or subagents it dispatched), \"task\" (a background command or watcher it started), \"job\" (a "
+    "computation outside this session — a cluster/CI job, a build, a long run on another machine), "
+    "\"peer\" (another session it handed work to or asked), \"timer\" (a check-back it scheduled). "
+    "All lists may be empty: "
     "{\"done\": [], \"block\": [], \"awaiting\": []}.\n"
     "Write each \"why\" plainly, from the user's vantage: only what they need to know, not a "
     "play-by-play. Drop self-narration (\"The assistant…\", \"The segment…\"). Lead with the real "
@@ -7049,18 +7077,27 @@ CLOSER_SYS = (
     "markdown fences.")
 
 
+# The awaiting KINDS — what a wait is on, as data (the user 2026-08-15, who wanted the surfaces to
+# say WHAT is awaited, and the rules scoped by it): agents/subagents dispatched in-harness; a
+# background task/watcher; an external job (cluster/CI/build); a peer session; a scheduled check-back.
+# The judge files one per awaiting verdict; a stamp without one (older judges, legacy stores) is
+# kindless and behaves exactly as before the enum existed.
+AWAIT_KINDS = ("agents", "task", "job", "peer", "timer")
+
+
 def _parse_close(raw, menu_len):
-    """Parse the closer's {"done":[{goal,why}], "block":[{goal,why}], "awaiting":[{goal,why}]} reply into
-    {"done": {1-based idx: doneWhy}, "block": {1-based idx: blockWhy}, "awaiting": {1-based idx: why}} —
-    the touched open tops now fully DONE / now BLOCKED (needs the user) / now AWAITING async work they set
-    in motion; omitted goals stay open (the conservative default). Empty lists → empty maps. None on
-    unparseable output or a missing/non-list "done" key (skip the turn). A goal in more than one list →
-    block wins, then done (the user 2026-07-27: a hedged both-lists reply is the diagnosed-then-"want
-    me to fix it?" shape, and a wrong done silently buries the owed decision while a wrong block is
-    visible and one click to cross off). Out-of-range and duplicate indices
+    """Parse the closer's {"done":[{goal,why}], "block":[{goal,why}], "awaiting":[{goal,why,kind}]} reply
+    into {"done": {1-based idx: doneWhy}, "block": {1-based idx: blockWhy}, "awaiting": {1-based idx:
+    {"why", "kind"}}} — the touched open tops now fully DONE / now BLOCKED (needs the user) / now AWAITING
+    async work they set in motion; omitted goals stay open (the conservative default). Empty lists →
+    empty maps. None on unparseable output or a missing/non-list "done" key (skip the turn). A goal in
+    more than one list → block wins, then done (the user 2026-07-27: a hedged both-lists reply is the
+    diagnosed-then-"want me to fix it?" shape, and a wrong done silently buries the owed decision while
+    a wrong block is visible and one click to cross off). Out-of-range and duplicate indices
     dropped (first wins) — except a 0/negative index anywhere, which rejects the whole reply (see
     _zero_based_tell: an off-base reply's other indices silently done/block the wrong goals).
-    Tolerant of an absent "block"/"awaiting" key (older replies)."""
+    Tolerant of an absent "block"/"awaiting" key (older replies) and of a missing/garbage awaiting
+    "kind" (→ None, the kindless legacy behavior)."""
     obj = _json_obj(raw)
     if obj is None:
         return None
@@ -7070,7 +7107,7 @@ def _parse_close(raw, menu_len):
             or _zero_based_tell(obj.get("awaiting")):
         return None
 
-    def _collect(items, skip=()):
+    def _collect(items, skip=(), kinds=False):
         out = {}
         for it in items if isinstance(items, list) else []:
             if not isinstance(it, dict):
@@ -7080,13 +7117,18 @@ def _parse_close(raw, menu_len):
             except (TypeError, ValueError):
                 continue
             if 1 <= n <= menu_len and n not in out and n not in skip:
-                out[n] = " ".join(str(it.get("why", "")).split())[:300]
+                why = " ".join(str(it.get("why", "")).split())[:300]
+                if kinds:
+                    k = str(it.get("kind") or "").strip().lower()
+                    out[n] = {"why": why, "kind": k if k in AWAIT_KINDS else None}
+                else:
+                    out[n] = why
         return out
 
     block = _collect(obj.get("block"))
     done = _collect(obj.get("done"), skip=block)                            # block wins for the same goal
     return {"done": done, "block": block,
-            "awaiting": _collect(obj.get("awaiting"), skip=set(done) | set(block))}
+            "awaiting": _collect(obj.get("awaiting"), skip=set(done) | set(block), kinds=True)}
 
 
 def closer_llm(turn_text, menu_text, goal_history="", lift_whys=""):
@@ -7382,7 +7424,10 @@ def apply_close(store, menu, verdicts, t=None, touched=None, t_overrides=None):
     worked on (menu indices 1..touched): the history-nominated candidates riding the menu
     (_subtree_done_candidates/_starved_candidates) got no new turn, so their omission says nothing about
     their wait. A re-assert with the SAME why is skipped, not re-appended — the stamp keeps its original
-    since-time and a long poll loop never chews through LOG_CAP."""
+    since-time and a long poll loop never chews through LOG_CAP. ONE exception rides that rule without
+    breaking it: a same-why re-assert whose kind fills a KINDLESS stamp lands once, AT the original
+    anchor (ev_t = the standing awaitingAt), so the classification catches up while the since-time, the
+    wake's patience, and the supersede ordering stay keyed to the first assertion."""
     done, block = verdicts.get("done", {}), verdicts.get("block", {})
     awaiting = verdicts.get("awaiting", {})
     newly = []
@@ -7406,8 +7451,19 @@ def apply_close(store, menu, verdicts, t=None, touched=None, t_overrides=None):
             if ev is not None:                        # (the event materialized the flags + blockWhy)
                 nd["mt"] = ev
         elif i in awaiting:
-            if nd.get("awaitingWhy") != (awaiting[i] or None):     # same why → keep the original stamp
-                record_verdict(store, nd, "closer", "awaiting", t, why=awaiting[i] or None)
+            aw_why = (awaiting[i] or {}).get("why") or None
+            aw_kind = (awaiting[i] or {}).get("kind")
+            if nd.get("awaitingWhy") != aw_why:
+                # a changed why is a real event → new row, new anchor (as ever)
+                record_verdict(store, nd, "closer", "awaiting", t, why=aw_why, await_kind=aw_kind)
+            elif aw_why and aw_kind and not nd.get("awaitingKind"):
+                # a kind GAIN on the standing why lands AT THE ORIGINAL ANCHOR: the stamp's since-time,
+                # the wake's patience, and the peer-supersede ordering all key on the first assertion —
+                # a classification catching up is not a new wait (review 2026-08-15). A kind CHANGE on
+                # an unchanged why coalesces like any same-why re-assert: an LLM relabel (task↔job) is
+                # not new information, and landing it would re-anchor + chew LOG_CAP every audit.
+                record_verdict(store, nd, "closer", "awaiting", nd.get("awaitingAt"),
+                               why=aw_why, await_kind=aw_kind)
         elif nd.get("awaitingWhy") and (touched is None or i <= touched):
             record_verdict(store, nd, "closer", "awaiting", t, lift=True)
     return newly

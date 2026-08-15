@@ -1196,7 +1196,7 @@ class ViewBuilder(unittest.TestCase):
             "nodes": {top: gn(top, "research the API", None, why="user asked for the research")},
             "placements": {}, "status": {top: "working"}}))
         saved = km._session_awaiting
-        km._session_awaiting = lambda sid, path, idle, stamp=False: "Waiting on the 3 research agents it dispatched."
+        km._session_awaiting = lambda sid, path, idle, stamp=False: {"kind": "agents", "why": "Waiting on the 3 research agents it dispatched."}
         try:
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == top)
         finally:
@@ -1443,7 +1443,8 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(km._states_awaiting_overlay(SID).get("awaiting"),
                         "awaiting:true with no later work turn stays awaiting")
         self.assertEqual(km._session_awaiting(SID, str(self.tpath), True),
-                         "Waiting on 2 background jobs it launched.", "the genuine awaiting badge still shows")
+                         {"kind": None, "why": "Waiting on 2 background jobs it launched."},
+                         "the genuine awaiting badge still shows")
 
     def test_blocked_rolls_up_the_card_tree_so_a_buried_block_is_visible(self):
         # nimbus (the user 2026-07-11): the card sat in Needs-you off a block BURIED two levels down,
@@ -1532,18 +1533,22 @@ class ViewBuilder(unittest.TestCase):
             # source 0: real subagents in flight — the snapshot carries the live LIST (a {"type","since"}
             # per agent); the why counts via len() (the pre-fix code %d-formatted the list itself)
             km._tmux_sessions = lambda: {SID: {"subagents": [{"type": "", "since": T0}, {"type": "", "since": T0}]}}
-            self.assertEqual(km._session_awaiting(SID, str(p), True), "2 background agents still working",
+            self.assertEqual(km._session_awaiting(SID, str(p), True),
+                             {"kind": "agents", "why": "2 background agents still working"},
                              "a live subagent DOES leave an idle session awaiting (a working flavor)")
             # source 0.5: the live bg-task set — one task shows its description verbatim
             km._tmux_sessions = lambda: {SID: {"bgTasks": [timer]}}
             self.assertEqual(km._session_awaiting(SID, str(p), True),
-                             "waiting on a background task: 20-minute timer for campaign-start check")
+                             {"kind": "task",
+                              "why": "waiting on a background task: 20-minute timer for campaign-start check"})
             km._tmux_sessions = lambda: {SID: {"bgTasks": [timer, dict(timer, desc="power watcher")]}}
             self.assertEqual(km._session_awaiting(SID, str(p), True),
-                             "waiting on 2 background tasks — 20-minute timer for campaign-start check, …")
+                             {"kind": "task",
+                              "why": "waiting on 2 background tasks — 20-minute timer for campaign-start check, …"})
             # subagents outrank bg tasks when both run (they're the bigger dispatch)
             km._tmux_sessions = lambda: {SID: {"subagents": [{"type": "", "since": T0}], "bgTasks": [timer]}}
-            self.assertEqual(km._session_awaiting(SID, str(p), True), "1 background agent still working")
+            self.assertEqual(km._session_awaiting(SID, str(p), True),
+                             {"kind": "agents", "why": "1 background agent still working"})
         finally:
             km._tmux_sessions = saved
 
@@ -1557,7 +1562,8 @@ class ViewBuilder(unittest.TestCase):
             {"t": T0 + 1, "awaiting": True, "why": "3 agents in flight"},
             {"t": T0 + 2, "state": "idle"},
         ]) + "\n")
-        self.assertEqual(km._session_awaiting(SID, "/nonexistent", True), "3 agents in flight",
+        self.assertEqual(km._session_awaiting(SID, "/nonexistent", True),
+                         {"kind": None, "why": "3 agents in flight"},
                          "the latest awaiting overlay (interleaved with state records) drives the badge")
         self.assertIsNone(km._session_awaiting(SID, "/nonexistent", False),
                           "a WORKING session is not 'awaiting' (idle=False short-circuits)")
@@ -1919,7 +1925,7 @@ class ViewBuilder(unittest.TestCase):
         km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None,
                                            "subagents": [{"type": "", "since": 1}, {"type": "", "since": 2}]}}
-        self.assertIn("2 background agents", km._session_awaiting(SID, str(self.tpath), True) or "",
+        self.assertIn("2 background agents", (km._session_awaiting(SID, str(self.tpath), True) or {}).get("why", ""),
                       "the live SubagentStart/Stop count restores the truth over the superseded overlay")
 
     def test_card_carries_the_auto_nudge_history(self):
@@ -2205,7 +2211,8 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(km._awaiting_task_descs("00000000-0000-0000-0000-000000000000", "/nonexistent"), [])
         # build_feed attaches the list on awaiting cards, beside the why (source pin)
         src = Path(BIN, "romp-kernel").read_text()
-        self.assertIn('"awaiting": ({"why": await_why, "tasks": _awaiting_task_descs(fsid, s["path"])}', src)
+        self.assertIn('"awaiting": ({"why": await_why, "kind": await_kind,', src)
+        self.assertIn('"tasks": _awaiting_task_descs(fsid, s["path"])} if col == "awaiting" else None)', src)
 
     def test_provisional_card_shows_the_message_caption_once_it_lands(self):
         # The user 2026-06-19: the card reads the captioner's persisted MESSAGE caption ('<segid>#p') — the
@@ -3100,7 +3107,7 @@ class ViewBuilder(unittest.TestCase):
         self._orphaned_goal(idle=True)
         km._set_auto_nudge(True)
         saved = km._session_awaiting
-        km._session_awaiting = lambda sid, path, idle, stamp=False: "Waiting on its background agents."
+        km._session_awaiting = lambda sid, path, idle, stamp=False: {"kind": "agents", "why": "Waiting on its background agents."}
         sent, restore = self._stub_nudge()
         try:
             km._auto_nudge_tick(NOW, km._tmux_sessions())
@@ -5727,7 +5734,7 @@ class ViewBuilder(unittest.TestCase):
         # background work it dispatched is no longer folded into "working" — the shared _session_chip
         # emits `awaitingBg`, so the chat chip (straw "Awaiting") and the timeline lane split together.
         saved = km._session_awaiting
-        km._session_awaiting = lambda sid, path, idle, stamp=False: "bg agents" if idle else None
+        km._session_awaiting = lambda sid, path, idle, stamp=False: {"kind": "agents", "why": "bg agents"} if idle else None
         try:
             chip = km.build_session(SID, NOW)["status"]["state"]
             lane = next(s for s in km.build_timeline(NOW)["sessions"] if s["id"] == SID)["state"]
@@ -5740,7 +5747,7 @@ class ViewBuilder(unittest.TestCase):
         # working beats the awaiting flavor: while the main thread is actually producing, the chip says
         # Working — awaitingBg only covers the idle-but-held stretch.
         saved_aw, saved_w = km._session_awaiting, km._session_working
-        km._session_awaiting = lambda sid, path, idle, stamp=False: "bg agents"
+        km._session_awaiting = lambda sid, path, idle, stamp=False: {"kind": "agents", "why": "bg agents"}
         km._session_working = lambda turns: True
         try:
             chip = km.build_session(SID, NOW)["status"]["state"]
@@ -5752,7 +5759,7 @@ class ViewBuilder(unittest.TestCase):
         # the straw dots (feed cards/headers + chat tabs) key on feed["awaiting"] exactly as the yellow
         # dots key on feed["working"] — same names, same federation prefixing (ARRAY_ID).
         saved = km._session_awaiting
-        km._session_awaiting = lambda sid, path, idle, stamp=False: "bg agents" if idle else None
+        km._session_awaiting = lambda sid, path, idle, stamp=False: {"kind": "agents", "why": "bg agents"} if idle else None
         try:
             feed = km.build_feed(NOW)
         finally:
@@ -7467,7 +7474,7 @@ class WaitGraphDelegatesAndStampSupersede(unittest.TestCase):
         # the peer's reply lands (also busts the postal-key on the stamp cache) → the stamp view lifts
         self._log(self._msg(self.B, self.A, NOW - 100, "coordinate", body="built and merged"))
         full, tops, _deleg = km._session_stamp_read(self.A)
-        self.assertEqual(full, (None, None, None), "the answered handoff supersedes the older stamp")
+        self.assertEqual(full, (None, None, None, None), "the answered handoff supersedes the older stamp")
         self.assertEqual(tops, frozenset())
 
 
