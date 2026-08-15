@@ -348,6 +348,81 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   return merged;
 }
 
+// ── cross-host clock re-basing (the user 2026-08-15) ─────────────────────────────────────────────
+// Every kernel stamps its payload times with ITS OWN clock, and the merges keep the LOCAL kernel as
+// the clock authority — so an attached machine whose clock runs ahead painted its bars and marks
+// shifted right, and a postal connector could touch a sender's lane AFTER that lane's last bar (the
+// screenshot: a send apparently fired by a stopped session — impossible, and false). Each payload
+// carries its emitting kernel's `now`; the delta against the LOCAL payload's `now` in the same merge
+// IS that host's offset — re-measured every merge, so drift self-corrects, and a sub-second delta is
+// measurement jitter, not skew: left alone, so pixels never move without new information. A host
+// whose payload carries no `now` (older kernel) is unknown and never guessed — its times pass
+// through untouched, exactly the not-reporting rule everywhere else in this file.
+// One field is DELIBERATELY cross-clock: a connector's `exec` is the RECIPIENT machine's event (the
+// read receipt carries the reader's clock into the sender's log — bin/romp-postal-service), so exec
+// re-bases by the offset of the host the toId lane lives on, knowable only after the stitch resolves
+// foreign endpoints onto lanes (rebaseExecs). A connector still pending (hasExec false) carries a
+// sender-clock COPY of sent in exec, which therefore shifts with its emitter like sent itself.
+const SKEW_FLOOR_S = 1;
+const BAR_TIMES = ["start", "end"] as const;      // turns[sid] bars
+const MARK_TIMES = ["t"] as const;                // judging / nudge marks
+const LANE_TIMES = ["since"] as const;            // session rows
+
+export function hostOffsets(perHost: Record<string, any>): Record<string, number> {
+  const local = perHost[LOCAL];
+  const ln = local && typeof local.now === "number" ? local.now : null;
+  const out: Record<string, number> = {};
+  if (ln == null) return out;
+  for (const [h, d] of Object.entries(perHost)) {
+    if (h === LOCAL || !d || typeof d.now !== "number") continue;
+    const off = ln - d.now;
+    if (Math.abs(off) >= SKEW_FLOOR_S) out[h] = off;
+  }
+  return out;
+}
+
+function shiftRow(r: any, keys: readonly string[], off: number): any {
+  if (!r || typeof r !== "object") return r;
+  const c: any = { ...r };
+  for (const k of keys) if (typeof c[k] === "number") c[k] += off;
+  return c;
+}
+
+/** Re-base ONE host's payload times onto the local clock (a copy; zero offset returns it untouched). */
+export function rebaseHostTimes(d: any, off: number): any {
+  if (!off || !d || typeof d !== "object") return d;
+  const c: any = { ...d };
+  if (Array.isArray(c.sessions)) c.sessions = c.sessions.map((s: any) => shiftRow(s, LANE_TIMES, off));
+  if (c.turns && typeof c.turns === "object") {
+    const t: any = {};
+    for (const [sid, bars] of Object.entries(c.turns))
+      t[sid] = Array.isArray(bars) ? bars.map((b: any) => shiftRow(b, BAR_TIMES, off)) : bars;
+    c.turns = t;
+  }
+  for (const k of ["judging", "nudges"] as const)
+    if (Array.isArray(c[k])) c[k] = c[k].map((m: any) => shiftRow(m, MARK_TIMES, off));
+  if (Array.isArray(c.messages))
+    c.messages = c.messages.map((m: any) => {
+      const s = shiftRow(m, ["sent"], off);
+      // pending exec is the emitter's copy of sent — it moves with the emitter; a REAL exec is the
+      // recipient's clock and waits for rebaseExecs (post-stitch, when the recipient lane is known)
+      if (s && typeof s === "object" && typeof s.exec === "number" && !s.hasExec) s.exec += off;
+      return s;
+    });
+  return c;
+}
+
+/** The exec pass, post-stitch: shift each delivered connector's exec by the RECIPIENT lane's host
+ *  offset (a local recipient, or an unmeasured host, shifts nothing). */
+export function rebaseExecs(messages: any[], offsets: Record<string, number>): any[] {
+  if (!messages.length) return messages;
+  return messages.map((m: any) => {
+    if (!m || typeof m !== "object" || typeof m.exec !== "number" || !m.hasExec) return m;
+    const off = offsets[hostOf(String(m.toId || ""))] || 0;
+    return off ? { ...m, exec: m.exec + off } : m;
+  });
+}
+
 /** Stitch CROSS-HOST postal connectors onto merged lanes. Each kernel emits a connector when at least
  *  one end is its own lane; the FOREIGN end's sid is bare in its log (a kernel knows nothing of host
  *  prefixes) and inbound prefixing blindly prefixed it with the EMITTING host — so on the merged board
@@ -391,9 +466,10 @@ export function stitchMessages(messages: any[], sessions: readonly any[]): any[]
 export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readonly string[],
                                    view: readonly string[] = []): any {
   const local = perHost[LOCAL] || {};
+  const offsets = hostOffsets(perHost);   // each host's clock vs the local authority, this merge
   const merged: any = { ...local, sessions: [], turns: {}, messages: [], judging: [] };
   for (const h of hostSeq) {
-    const d = perHost[h];
+    const d = rebaseHostTimes(perHost[h], offsets[h] || 0);
     if (!d) continue;
     if (Array.isArray(d.sessions)) merged.sessions.push(...d.sessions.map((s: any) => ({ ...s, host: h })));
     if (d.turns && typeof d.turns === "object") Object.assign(merged.turns, d.turns);
@@ -402,7 +478,7 @@ export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readon
   // lanes are the third surface reading this order (chat strip, feed groups, timeline lanes): arrange them
   // the same way, before the message stitch, which pairs postal arrows against the lane list.
   merged.sessions = applyViewOrderTo(merged.sessions, view, (x: any) => String((x && x.id) || ""));
-  merged.messages = stitchMessages(merged.messages, merged.sessions);
+  merged.messages = rebaseExecs(stitchMessages(merged.messages, merged.sessions), offsets);
   return merged;
 }
 
@@ -414,15 +490,16 @@ export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readon
 export function mergeHostBars(perHost: Record<string, any>, hostSeq: readonly string[],
                               sessions: readonly any[] = []): any {
   const local = perHost[LOCAL] || {};
+  const offsets = hostOffsets(perHost);   // each host's clock vs the local authority, this merge
   const merged: any = { ...local, type: "bars", turns: {}, messages: [], judging: [], warming: false };
   for (const h of hostSeq) {
-    const b = perHost[h];
+    const b = rebaseHostTimes(perHost[h], offsets[h] || 0);
     if (!b) continue;
     if (b.turns && typeof b.turns === "object") Object.assign(merged.turns, b.turns);
     for (const k of ["messages", "judging", "nudges"]) if (Array.isArray(b[k])) merged[k].push(...b[k]);
     if (b.warming) merged.warming = true;   // still warming if ANY host's build is the cold partial (keep the loader)
   }
-  merged.messages = stitchMessages(merged.messages, sessions);
+  merged.messages = rebaseExecs(stitchMessages(merged.messages, sessions), offsets);
   return merged;
 }
 

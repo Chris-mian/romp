@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prefixId, hostOf, bareId, prefixInbound, routeOutbound, mergeHostOrder, mergeHostFeeds,
          prefixTimelineData, mergeHostTimelines, mergeHostBars, stitchMessages,
+         hostOffsets, rebaseHostTimes, rebaseExecs,
          FederationManager, pickWid } from "./federation";
 
 const U = "11111111-2222-3333-4444-555555555555";
@@ -591,4 +592,89 @@ test("a closed session leaves the arrangement; a detached host's sessions keep t
     assert.ok(JSON.parse(store.get("romp:vieworder")!).includes("TESTHOST:" + V),
       "the remote id stays placed — its host simply wasn't the one reporting");
   });
+});
+
+// ── cross-host clock re-basing (the user 2026-08-15) ──────────────────────────────────────────────
+// A postal connector touched a sender's lane AFTER that lane's last bar — a send apparently fired by
+// a stopped session. Every kernel stamps times with its own clock; these tests pin the re-basing that
+// puts every host's bars, marks and connectors on the LOCAL clock at merge time.
+
+test("a skewed host's bars, lanes, marks and sent-times re-base onto the local clock", () => {
+  const perHost: Record<string, any> = {
+    "": { now: 1000, sessions: [{ id: "L", since: 990 }], turns: { L: [{ start: 900, end: 950 }] },
+          messages: [], judging: [] },
+    gpu1: { now: 940, sessions: [{ id: "gpu1:R", since: 930 }],   // gpu1's clock runs 60s behind
+            turns: { "gpu1:R": [{ start: 840, end: 890 }] },
+            messages: [{ id: "m1", fromId: "gpu1:R", toId: "L", sent: 900, exec: 900, hasExec: false }],
+            judging: [{ judge: "closer", sid: "gpu1:R", t: 880 }] },
+  };
+  const m = mergeHostTimelines(perHost, ["", "gpu1"]);
+  const r = m.sessions.find((s: any) => s.id === "gpu1:R");
+  assert.equal(r.since, 990, "lane since re-based (+60)");
+  assert.deepEqual(m.turns["gpu1:R"][0], { start: 900, end: 950 }, "bars re-based (+60)");
+  assert.equal(m.judging.find((j: any) => j.sid === "gpu1:R").t, 940, "marks re-based (+60)");
+  const msg = m.messages.find((x: any) => x.id === "m1");
+  assert.equal(msg.sent, 960, "sent re-based by the EMITTING host (+60)");
+  assert.equal(msg.exec, 960, "a pending exec is the emitter's copy of sent — it moves with it");
+  // the local payload is the authority: untouched
+  assert.equal(m.sessions.find((s: any) => s.id === "L").since, 990);
+  assert.deepEqual(m.turns.L[0], { start: 900, end: 950 });
+});
+
+test("a DELIVERED exec re-bases by the RECIPIENT lane's host — the receipt carried the reader's clock", () => {
+  // sender gpu1 (-60 vs local), recipient gpu2 (+30 vs local): sent moves +60 with its emitter, exec
+  // moves -30 with the machine whose clock actually stamped the read
+  const perHost: Record<string, any> = {
+    "": { now: 1000, sessions: [{ id: "L" }], turns: {}, messages: [], judging: [] },
+    gpu1: { now: 940, sessions: [{ id: "gpu1:A" }], turns: {},
+            messages: [{ id: "m2", fromId: "gpu1:A", toId: "b-b-b-b-b", sent: 900, exec: 1010, hasExec: true }],
+            judging: [] },
+    gpu2: { now: 1030, sessions: [{ id: "gpu2:b-b-b-b-b" }], turns: {}, messages: [], judging: [] },
+  };
+  const m = mergeHostTimelines(perHost, ["", "gpu1", "gpu2"]);
+  const msg = m.messages.find((x: any) => x.id === "m2");
+  assert.equal(msg.toId, "gpu2:b-b-b-b-b", "the stitch resolved the foreign endpoint first");
+  assert.equal(msg.sent, 960, "sent: emitter's offset (+60)");
+  assert.equal(msg.exec, 980, "exec: recipient host's offset (-30), applied post-stitch");
+});
+
+test("sub-second deltas and hosts reporting no clock are never re-based", () => {
+  assert.deepEqual(hostOffsets({ "": { now: 1000 }, a: { now: 999.6 }, b: {} }), {},
+    "jitter is not skew, and an unreported clock is unknown — never guessed");
+  const d = { sessions: [{ id: "a:X", since: 10 }], turns: {}, messages: [], judging: [] };
+  assert.equal(rebaseHostTimes(d, 0), d, "zero offset returns the payload untouched");
+});
+
+test("the bars merge re-bases the same way (turns + marks + exec pass)", () => {
+  const sessions = [{ id: "L" }, { id: "gpu1:R" }];
+  const perHost: Record<string, any> = {
+    "": { now: 500, turns: { L: [{ start: 400, end: 450 }] }, messages: [], judging: [] },
+    gpu1: { now: 440, turns: { "gpu1:R": [{ start: 340, end: 390 }] },
+            messages: [{ id: "m3", fromId: "gpu1:R", toId: "L", sent: 400, exec: 430, hasExec: true }],
+            judging: [] },
+  };
+  const b = mergeHostBars(perHost, ["", "gpu1"], sessions);
+  assert.deepEqual(b.turns["gpu1:R"][0], { start: 400, end: 450 });
+  const msg = b.messages.find((x: any) => x.id === "m3");
+  assert.equal(msg.sent, 460, "sent +60 with the emitter");
+  assert.equal(msg.exec, 430, "exec stamped by the LOCAL recipient — the local clock never shifts");
+});
+
+test("re-based times cannot strand a connector after its sender's last bar (the reported artifact)", () => {
+  // gpu1's clock runs 90s AHEAD of local: unre-based, its lane bars sat 90s right of local truth,
+  // and its send mark (stamped 90s ahead) rendered after the lane's real work ended
+  const perHost: Record<string, any> = {
+    "": { now: 1000, sessions: [{ id: "L", since: 995 }], turns: { L: [{ start: 900, end: 995 }] },
+          messages: [], judging: [] },
+    gpu1: { now: 1090, sessions: [{ id: "gpu1:S", since: 1085 }],
+            turns: { "gpu1:S": [{ start: 1000, end: 1085 }] },
+            messages: [{ id: "m4", fromId: "gpu1:S", toId: "L", sent: 1080, exec: 1080, hasExec: false }],
+            judging: [] },
+  };
+  const m = mergeHostTimelines(perHost, ["", "gpu1"]);
+  const lane = m.turns["gpu1:S"][0];
+  const msg = m.messages.find((x: any) => x.id === "m4");
+  assert.ok(msg.sent <= lane.end, "the send mark sits within the sender's re-based work, not after it");
+  assert.equal(msg.sent, 990);
+  assert.deepEqual(lane, { start: 910, end: 995 });
 });
