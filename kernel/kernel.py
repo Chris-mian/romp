@@ -15532,14 +15532,27 @@ def _postal_wait_maps():
         return _POSTAL_WAIT_CACHE[1]
     last_any, last_ask = {}, {}
     try:
+        rows = []
+        alias = {}   # "host:name" -> sid, learned from every row a remote sender stamped
         for line in jd.MESSAGES.read_text(errors="replace").splitlines():
             try:
                 o = json.loads(line)
             except Exception:
                 continue
+            rows.append(o)
+            if o.get("from_host") and o.get("from") and o.get("from_id"):
+                alias[str(o["from_host"]) + ":" + str(o["from"])] = str(o["from_id"])
+        for o in rows:
             f, t_, ts = o.get("from_id"), o.get("to_id"), o.get("t")
             if not (f and t_ and ts):
                 continue
+            # a CROSS-HOST row is addressed to the RELAY ("peer:<host>"), not the recipient's sid —
+            # so the (from,to) pair could never close and the asker wore "Awaiting <peer>" forever
+            # (obsidian↔lab_manager, 2026-08-15: the reply landed, the edge never cleared). The row's
+            # toName ("<host>:<name>") resolves to the real sid through the alias map above; an
+            # unresolvable relay keeps the raw id and behaves exactly as before.
+            if isinstance(t_, str) and t_.startswith("peer:") and o.get("toName"):
+                t_ = alias.get(str(o["toName"]), t_)
             ts = int(ts)
             last_any[(f, t_)] = max(last_any.get((f, t_), 0), ts)
             k = o.get("kind")                            # the sender's DECLARED intent (schema field) wins

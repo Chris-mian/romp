@@ -7419,6 +7419,28 @@ class WaitGraphDelegatesAndStampSupersede(unittest.TestCase):
         return {"ev": "sent", "id": "m%d" % ts, "from_id": f, "to_id": t, "t": ts,
                 "from": "x", "body": body, "kind": kind}
 
+    def test_a_cross_host_reply_addressed_to_the_relay_still_answers_the_ask(self):
+        # obsidian↔lab_manager (2026-08-15): a cross-host reply is logged to_id "peer:<host>" (the
+        # relay), not the recipient's sid — the (from,to) pair never closed and the asker wore
+        # "Awaiting <peer>" forever after the answer landed. The row's toName resolves through the
+        # alias map every remote sender's rows build (from_host + from -> from_id).
+        self._log(
+            # the remote asker's question, stamped with its host+name (this row TEACHES the alias)
+            dict(self._msg(self.A, self.B, NOW - 300, "question"),
+                 **{"from": "web", "from_host": "TESTHOST"}),
+            # the local session's reply, addressed to the relay — the observed cross-host shape
+            dict(self._msg(self.B, "peer:TESTHOST", NOW - 200, "coordinate"),
+                 toName="TESTHOST:web"))
+        g = km._wait_for_graph(NOW, {self.A, self.B})
+        self.assertNotIn(self.A, g, "the relay-addressed reply answers the ask once toName resolves")
+
+    def test_an_unresolvable_relay_row_behaves_as_before(self):
+        self._log(self._msg(self.A, self.B, NOW - 300, "question"),
+                  dict(self._msg(self.B, "peer:TESTHOST", NOW - 200, "coordinate"),
+                       toName="TESTHOST:never-seen"))
+        g = km._wait_for_graph(NOW, {self.A, self.B})
+        self.assertIn(self.A, g, "no alias for the name -> the raw relay id keeps today's behavior")
+
     def test_delegate_creates_a_wait_edge_and_any_reply_clears_it(self):
         self._log(self._msg(self.A, self.B, NOW - 300, "delegate"))
         g = km._wait_for_graph(NOW, {self.A, self.B})
