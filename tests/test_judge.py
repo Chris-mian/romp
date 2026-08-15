@@ -7398,6 +7398,15 @@ class AwaitingVerdict(unittest.TestCase):
         with self.assertRaises(TypeError):
             nd["awaitingAt"] = 123
 
+    def test_closer_prompt_names_the_watcher_turn_as_canonical_awaiting(self):
+        # live repro 2026-08-15 (exp session, monitor over a slurm job): with the false block lifted,
+        # the closer STILL omitted on a monitor-event turn — "job still running, nothing new" read as
+        # unsure, and unsure omits. The watcher shape is never unsure: the live watcher is the work in
+        # flight and the wake-on-events arrangement is the intent to act.
+        for phrase in ("One shape is never unsure: a WATCHER", "ended with the watch still armed",
+                       "file it even when the turn " + "reports nothing new"):
+            self.assertIn(phrase, jd.CLOSER_SYS)
+
     def test_closer_prompt_forbids_filing_a_handoff_wait_as_a_block(self):
         # live case 2026-08-15: "Engage the new session when ready: it is launched... and will present
         # results" was filed as a BLOCK — a peer-wait wearing needs-you clothing. The blocked rollup
