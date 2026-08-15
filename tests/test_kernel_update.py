@@ -154,7 +154,9 @@ class UpdateCheck(Fresh):
              mock.patch.object(km, "_send_to_app", side_effect=lambda app, m: sent.append((app, m))):
             km._update_check()
         self.assertEqual(km._UPDATE_AVAIL[0], "v0.7.0")
-        self.assertEqual(sent, [("shell", {"type": "updateAvail", "cur": "v0.6.0+", "tag": "v0.7.0"})])
+        self.assertEqual(sent, [("shell", {"type": "updateAvail", "cur": "v0.6.0+", "tag": "v0.7.0",
+                                           "boot": km._BOOT_ID})],
+                         "the offer names the kernel life it came from, so a page can retire it")
 
     def test_same_or_older_release_is_silence(self):
         sent = []
@@ -436,13 +438,29 @@ class Wiring(unittest.TestCase):
     def test_the_banner_dismissal_is_per_release(self):
         # Not-now silences THE dismissed tag; a strictly newer release found by a later pass is
         # new information and re-offers
-        self.assertIn("if(waiting||tag===dismissedTag)return;", self.src)
+        self.assertIn("if(waiting||!tag||tag===dismissedTag)return;", self.src)
         self.assertIn("dm.onclick=function(){dismissedTag=curTag;", self.src)
 
     def test_the_landing_ships_the_banner_and_the_shell_relay(self):
         self.assertIn("_stale_block(v) + _update_block() + _rdrift_block()", self.src)
         self.assertIn("window.__rompUpdateOffer=offer", self.src)
         self.assertIn("m.type==='updateAvail'&&window.__rompUpdateOffer", self.src)
+
+    def test_offers_retire_on_the_truth_not_in_an_error_banner(self):
+        # the user 2026-08-15: a stale offer survived the restart it asked for; its Update click hit a
+        # converged kernel and painted "Could not start the update" over a working dashboard. The offer
+        # now (a) carries + checks the pushing kernel's boot, (b) retires when the 30s /version poll
+        # sees a new boot, (c) treats the 409 as "already done" — retire + Log, never a dead-end error,
+        # and (d) can be re-derived on page load from /update-check's new drift fields.
+        self.assertIn("if(boot&&bootNow&&boot!==bootNow)return;", self.src)
+        self.assertIn("window.__rompUpdBoot=function(b)", self.src)
+        self.assertIn("if(v&&v.boot&&window.__rompUpdBoot)window.__rompUpdBoot(v.boot);", self.src)
+        self.assertIn("/no newer release or main commit/.test(em)", self.src)
+        self.assertIn("__rompNotify('sync','the update this prompt offered already ran", self.src)
+        self.assertIn("else if(d.drift&&d.driftSha)offer(d.cur||'',d.driftSha,d.drift);", self.src)
+        # …and an update starting ANYWHERE flips every window to the in-flight wait
+        self.assertIn("if(state==='running'){waiting=true;go.hidden=true;dm.hidden=true;", self.src)
+        self.assertIn('{"type": "updateAvail", "state": "running", "boot": _BOOT_ID}', self.src)
 
     def test_the_gear_offers_the_three_modes_and_posts_the_pick(self):
         self.assertIn("id=rs-updates", self.gear)
