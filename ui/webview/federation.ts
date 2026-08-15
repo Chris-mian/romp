@@ -308,9 +308,21 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // dismissed/undo chrome spans hosts: the count SUMS and undo is possible when ANY kernel can undo —
   // clearing a remote card must light the local Undo button (the clear routed to that kernel).
   let dismissed = 0, anyDismissed = false, canUndo = false;
+  // remote kernels' automatic-sync outcomes (self-updates, pushes, pulls) reach the local Log too
+  // (the user 2026-08-15: a devbox updating itself all day left no trace on the laptop dashboard —
+  // mergeHostFeeds kept only the local host's scalar chrome, dropping remote syncNotices on the
+  // floor). Remote rows are host-prefixed like every other remote surface; the SIG is host-scoped so
+  // two kernels' ring sequences can never collide in the seen-set.
+  const syncs: any[] = [];
   for (const h of hostSeq) {
     const f = perHost[h];
     if (!f) continue;
+    if (Array.isArray(f.syncNotices)) {
+      for (const r of f.syncNotices) {
+        if (!r || !r.sig) continue;
+        syncs.push(h === LOCAL ? r : { ...r, sig: h + "|" + r.sig, text: h + ": " + (r.text || "") });
+      }
+    }
     if (Array.isArray(f.items)) merged.items.push(...f.items);
     if (Array.isArray(f.asks)) merged.asks.push(...f.asks);
     if (Array.isArray(f.working)) merged.working.push(...f.working);
@@ -331,6 +343,8 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   else delete merged.ledgers;
   if (anyDismissed) merged.dismissedCount = dismissed;
   if ("canUndoClear" in merged || canUndo) merged.canUndoClear = canUndo;
+  if (syncs.length) merged.syncNotices = syncs;
+  else delete merged.syncNotices;
   return merged;
 }
 

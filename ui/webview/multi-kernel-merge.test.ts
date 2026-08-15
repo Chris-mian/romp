@@ -194,6 +194,24 @@ test("mergeHostOrder: never re-sorts within a host (kernel order is authoritativ
   assert.deepEqual(merged, ["gpu1:" + U, "gpu1:" + V]);
 });
 
+test("mergeHostFeeds: remote syncNotices reach the local Log, host-prefixed and sig-scoped", () => {
+  // the user 2026-08-15: a devbox updating itself all day left no trace on the laptop dashboard —
+  // the merge kept only local chrome and dropped remote kernels' sync outcomes on the floor.
+  const perHost = {
+    "": { type: "feed", items: [], asks: [], working: [],
+          syncNotices: [{ sig: "b1|3", t: 10, text: "updated to abc123", ok: true }] },
+    TESTHOST: { type: "feed", items: [], asks: [], working: [],
+             syncNotices: [{ sig: "b2|7", t: 11, text: "pulled and restarted", ok: true }] },
+  };
+  const m = mergeHostFeeds(perHost, ["", "TESTHOST"]);
+  assert.deepEqual(m.syncNotices, [
+    { sig: "b1|3", t: 10, text: "updated to abc123", ok: true },
+    { sig: "TESTHOST|b2|7", t: 11, text: "TESTHOST: pulled and restarted", ok: true },
+  ], "local rows verbatim; remote rows host-prefixed in text and sig-scoped per host");
+  const none = mergeHostFeeds({ "": { type: "feed", items: [], asks: [], working: [] } }, [""]);
+  assert.ok(!("syncNotices" in none), "no rows anywhere → the key stays absent, like the single-kernel path");
+});
+
 test("mergeHostFeeds: concatenates items/asks/working across hosts (local first), keeps local chrome", () => {
   // Regression: without a merge, the local + remote feed snapshots (each pushed ~2s) clobber each other and
   // the feed visibly flips back and forth. mergeHostFeeds combines them into one stable snapshot.
