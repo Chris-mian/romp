@@ -523,6 +523,11 @@ class TimelinePanel {
     // so draw() paints the romp swirl loader there. Set true the instant applyBars runs (or a full one-shot
     // data object arrives through update()), and the loader is gone on the next draw. CLAUDE.md loader rule.
     this._barsLoaded = false;
+    // per-LANE bars evidence (the user 2026-08-15: after a restart, a live WORKING lane vanished from
+    // the active-only view, then reappeared bar-less): every with_bars build writes a turns entry for
+    // EVERY lane it covered (empty for a quiet one), so a lane's key appearing is the exact "its
+    // evidence arrived" event — until then the active filter must not judge it.
+    this._barsSeen = new Set();
     this._loaderBackstop = null;   // timer id: force the loader done if a warming build never brings content
     this.M = { left: 130, right: 16, top: 8, bottom: 22 };   // axis labels live in the bottom margin
     this._mc = document.createElement('canvas').getContext('2d');
@@ -1376,6 +1381,7 @@ class TimelinePanel {
     // already present → no loader. The two-message path leaves turns empty here; the loader shows until
     // applyBars lands. Read the RAW turns BEFORE the prev-carry below back-fills them.
     if (data.turns && Object.keys(data.turns).length) this._barsLoaded = true;
+    if (data.turns) for (const k of Object.keys(data.turns)) this._barsSeen.add(k);
     const prev = this.data;
     if (prev && (!data.turns || !Object.keys(data.turns).length)) {
       data.turns = prev.turns || {}; data.judging = prev.judging || [];
@@ -1450,6 +1456,7 @@ class TimelinePanel {
   applyBars(m) {
     if (!m || !this.data || !this.data.sessions) return;
     this.data.turns = m.turns || {};
+    for (const k of Object.keys(this.data.turns)) this._barsSeen.add(k);
     this.data.judging = m.judging || [];
     this.data.messages = m.messages || [];
     // (nudges array retired 2026-07-07 payload audit: auto-nudges render from the bar's nudgeAuto)
@@ -2485,7 +2492,15 @@ class TimelinePanel {
     const hasWork = (s) =>
       turnsOf(s.id).some((t) => overlaps(t.start, barEndT(t, nowS, data.now))) ||
       data.messages.some((m) => (m.fromId === s.id || m.toId === s.id) && overlaps(Math.min(m.sent, m.exec), Math.max(m.sent, m.exec)));
-    const active = (s) => (s.live && !this._activeOnly) || hasWork(s);
+    // …and a LIVE lane whose bars have never arrived is PRESUMED active (the user 2026-08-15: on a
+    // cold connect — this kernel restarting, or a remote host's bars not yet merged — the filter
+    // judged a working lane by evidence that didn't exist yet and dropped it entirely). Evidence =
+    // the lane's turns key having landed in ANY bars payload (every with_bars build writes one per
+    // lane, empty for a quiet one) or being present in the current data (the one-shot/full path);
+    // that key landing is the event that hands judgment back to hasWork.
+    const barsKnown = (s) => this._barsSeen.has(s.id)
+      || !!(data.turns && Object.prototype.hasOwnProperty.call(data.turns, s.id));
+    const active = (s) => (s.live && !this._activeOnly) || hasWork(s) || (s.live && !barsKnown(s));
     let vis = data.sessions.filter(active);
     // …but never hide EVERYONE: with every lane idle in this window the filter would blank the whole
     // band — which reads as broken (the loading rule), and leaves no row space to grab-drag back out
