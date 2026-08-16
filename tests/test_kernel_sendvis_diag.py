@@ -56,6 +56,7 @@ class SendVisDiag(unittest.TestCase):
         echoes = [a for a in out["liveAtoms"] if a["echo"]]
         self.assertEqual([a["echo"] for a in echoes], ["an in-flight echo"])
         self.assertIn("compacting", out)
+        self.assertIn("tmuxEchoes", out)
 
     def test_route_is_wired_and_read_only(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()

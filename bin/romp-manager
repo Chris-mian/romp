@@ -44,7 +44,7 @@ const STATE_ROOT = process.env.ROMP_STATE_DIR ||
 const KERNELS_FILE = path.join(STATE_ROOT, 'kernels.json');
 
 // $TMUX scrub (2026-07-20): a manager launched by hand from INSIDE a tmux session leaks $TMUX to
-// its kernels and their SDK-session children — where anything reading it resolves the terminal to
+// its kernels and their SDK-session children — whose tmux-status hooks then resolve `#S` to
 // whatever session is ATTACHED and hijack ITS @romp-session-id anchor (a live session flapping
 // "dead" → bogus revive prompts). launchd spawns us clean; this makes the manual path just as
 // clean at the source. Mirrors kernel/judge.py's scrub for judge subprocesses. The hook's own
@@ -74,7 +74,7 @@ function rompServeBin() {
 // demand via /ensure ('k<port>').
 
 // kernels.json (plans/multi-kernel.md phase 3): the durable aux-kernel profiles —
-//   { "kernels": [ { "id", "port", "postalPort"?, "stateDir"?, "claudeConfigDir"? } ] }
+//   { "kernels": [ { "id", "port", "postalPort"?, "stateDir"?, "claudeConfigDir"?, "tmuxSocket"? } ] }
 // Parsed FRESH at every consult (never cached at manager start): the --refresh stale-manager
 // incident (the user 2026-07-24) was the manager baking config once at start and then respawning
 // kernels with values the disk had long since moved past. A `main` entry may override the primary's
@@ -110,7 +110,7 @@ function loadSpecs(file, mainPort, controlPort) {
       if (!Number.isInteger(pp) || pp < 1024 || pp > 65535 || ports.has(pp)) { bad('postalPort must be a free integer in [1024,65535]'); continue; }
       spec.postalPort = pp; ports.add(pp);
     }
-    for (const [field, pat] of [['stateDir', /^[/~]/], ['claudeConfigDir', /^[/~]/]]) {
+    for (const [field, pat] of [['stateDir', /^[/~]/], ['claudeConfigDir', /^[/~]/], ['tmuxSocket', /^[A-Za-z0-9_-]{1,64}$/]]) {
       if (k[field] != null) {
         const v = String(k[field]);
         if (!pat.test(v)) { spec._bad = field; break; }
@@ -124,7 +124,7 @@ function loadSpecs(file, mainPort, controlPort) {
 }
 
 // The per-spec child env (pure, exported for tests): the profile's whole isolation story rides these
-// five variables — the kernel and everything it spawns (SDK sessions, its postal
+// five variables — the kernel and everything it spawns (SDK sessions, its tmux server, its postal
 // bus) inherit them, so one env set at spawn scopes state, sessions, and mail per kernel.
 function specEnv(spec, base, ids) {
   const env = Object.assign({}, base, {
@@ -139,6 +139,7 @@ function specEnv(spec, base, ids) {
   if (spec.postalPort) env.ROMP_POSTAL_PORT = String(spec.postalPort);
   if (spec.stateDir) env.ROMP_STATE_DIR = spec.stateDir;
   if (spec.claudeConfigDir) env.CLAUDE_CONFIG_DIR = spec.claudeConfigDir;
+  if (spec.tmuxSocket) env.ROMP_TMUX_SOCKET = spec.tmuxSocket;
   return env;
 }
 
@@ -422,7 +423,21 @@ function runManager() {
   });
 }
 
+// Start the tmux server under THIS launchd-rooted manager so every romp session inherits a clean launchd
+// lineage. macOS TCC blames the GUI app at the root of the tmux SERVER's process lineage for any
+// protected access, so a server first started from a VS Code integrated terminal makes every new session
+// prompt "Visual Studio Code wants to access…" — even with VS Code closed (its helpers linger). Starting
+// the server here at login fixes it permanently. `exit-empty off` keeps the (initially empty) server alive
+// until real sessions join; it's a no-op if a server is already running (the user 2026-06-16).
+function startTmuxServer() {
+  try {
+    execFileSync('tmux', ['start-server', ';', 'set', '-g', 'exit-empty', 'off'], { stdio: 'ignore', timeout: 5000 });
+    log('tmux server ensured (launchd-rooted) — new sessions won\'t inherit a terminal\'s TCC identity');
+  } catch (e) { /* tmux not installed, or a server is already up — nothing to do */ }
+}
+
 function startManager() {
+  startTmuxServer();
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://x');
     const kid = url.searchParams.get('kernel') || 'main';

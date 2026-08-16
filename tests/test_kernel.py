@@ -231,10 +231,11 @@ class ViewBuilder(unittest.TestCase):
                 km._views_dirty[0] = 0.0
                 self.assertTrue(km._drive({"type": op, "id": SID, **extra}, {}), op + " must route as a drive op")
                 self.assertGreater(km._views_dirty[0], 0.0, op + " resolves the picker → must mark views dirty")
-            km._views_dirty[0] = 0.0
-            km._drive({"type": "toggleAsk", "id": SID, "target": 1}, {})
-            self.assertEqual(km._views_dirty[0], 0.0, "toggleAsk only moves within an OPEN picker → no rebuild")
-            self.assertEqual(seen, ["answer", "submit", "cancel", "custom", "text", "toggle"],
+            for op in ("navAsk", "toggleAsk"):
+                km._views_dirty[0] = 0.0
+                km._drive({"type": op, "id": SID, "target": 1}, {})
+                self.assertEqual(km._views_dirty[0], 0.0, op + " only moves within an OPEN picker → no rebuild")
+            self.assertEqual(seen, ["answer", "submit", "cancel", "custom", "text", "focus", "toggle"],
                              "every op still reaches the backend unchanged")
         finally:
             km.Sessions.backend_for = saved
@@ -1151,7 +1152,7 @@ class ViewBuilder(unittest.TestCase):
         # stamps the echo when it actually delivers.
         import inspect
         src = inspect.getsource(km._drive)
-        self.assertIn("_send_or_park(be, sid, body, echo=None)", src)   # the backend echoes its own sends
+        self.assertIn('echo=("romp" if msg.get("nudge") else "human") if be is _TMUX else None', src)
 
     def test_continue_button_rides_the_followup_arm_with_the_kernel_canned_body(self):
         # the Continue button (the user 2026-08-08) posts askFollowUp cont:true; the kernel substitutes
@@ -4064,35 +4065,36 @@ class ViewBuilder(unittest.TestCase):
         self.assertNotEqual(after.get("status", {}).get(g2), "blocked", "rolled-up status leaves blocked")
         self.assertFalse(km._resolve_node(SID, g2), "resolve on an already-complete node is a no-op")
 
-    def test_rename_session_live_renames_through_the_backend(self):
-        # A LIVE session renames through its backend (the registry stays the sid's truth).
-        renames = []
+    def test_rename_session_live_renames_tmux(self):
+        # A LIVE session renames via tmux; the after-rename-session hook then syncs the names file + pill.
+        saved_name, saved_run = km._tmux_name_of, km.subprocess.run
+        calls = []
 
-        class _RenBE:
-            def rename(self, sid, name): renames.append((sid, name)); return True
-        saved_bf = km.Sessions.backend_for
-        km.Sessions.backend_for = staticmethod(lambda sid: _RenBE())
+        class _R:
+            returncode = 0; stdout = ""; stderr = ""
+
+        km._tmux_name_of = lambda s: "testsess"
+        km.subprocess.run = lambda cmd, *a, **k: (calls.append(cmd), _R())[1]
         try:
             out = km._rename_session(SID, "newname")
             self.assertEqual(out, "newname")
-            self.assertEqual(renames, [(SID, "newname")], "live rename goes through backend.rename")
+            self.assertTrue(any(c[:2] == ["tmux", "rename-session"] and "newname" in c for c in calls),
+                            "live rename must call `tmux rename-session ... newname`")
         finally:
-            km.Sessions.backend_for = saved_bf
+            km._tmux_name_of, km.subprocess.run = saved_name, saved_run
 
     def test_rename_session_dead_writes_names_file_preserving_color(self):
-        # A DEAD/reg-less tab has no backend handle (rename refuses), so the rename writes the names
-        # file directly, keeping the recorded dir + identity color.
-        class _NoBE:
-            def rename(self, sid, name): return False
-        saved_bf = km.Sessions.backend_for
-        km.Sessions.backend_for = staticmethod(lambda sid: _NoBE())
+        # A DEAD (read-only) tab has no tmux session, so the rename writes the names file directly,
+        # keeping the recorded dir + identity color.
+        saved_name = km._tmux_name_of
+        km._tmux_name_of = lambda s: None
         try:
             out = km._rename_session(SID, "archived_name")
             self.assertEqual(out, "archived_name")
             self.assertEqual(km._name_of(SID), "archived_name", "dead-tab rename writes the names file")
             self.assertEqual(km._name_color(SID), {"bg": "#abcdef", "fg": "#ffffff"}, "color preserved")
         finally:
-            km.Sessions.backend_for = saved_bf
+            km._tmux_name_of = saved_name
 
     def test_rename_session_rejects_invalid_name(self):
         self.assertIsNone(km._rename_session(SID, "has spaces!"), "invalid chars → rejected, no rename")
@@ -4197,10 +4199,16 @@ class ViewBuilder(unittest.TestCase):
         self.assertTrue(all("followUp" not in t for t in q[0]["texts"]), "plain queued messages aren't follow-ups")
         self.assertEqual(m["events"][-1]["kind"], "queued", "queued sits at the bottom, by the composer")
 
-    def test_queued_card_absent_when_the_backend_queue_is_empty(self):
-        # once the backend's queue empties (the messages forwarded), nothing is still pending → no card.
+    def test_queued_card_absent_when_all_dequeued(self):
+        # once Claude Code consumes the queue (dequeue records), nothing is still pending → no card.
+        km._queued_parse_cache.clear()
+        with self.tpath.open("a") as f:
+            f.write(json.dumps(qop("enqueue", "fix the flaky test")) + "\n")
+            f.write(json.dumps(qop("enqueue", "then bump the version")) + "\n")
+            f.write(json.dumps(qop("dequeue")) + "\n")
+            f.write(json.dumps(qop("dequeue")) + "\n")
         m = km.build_session(SID, NOW)
-        self.assertFalse([e for e in m["events"] if e["kind"] == "queued"], "empty queue → no card")
+        self.assertFalse([e for e in m["events"] if e["kind"] == "queued"], "fully-drained queue → no card")
 
     def test_optimistic_compacting_until_boundary(self):
         # clicking compact marks the session 'compacting' AT ONCE on chat + timeline (no waiting for the
@@ -4282,6 +4290,14 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(card["blocked"]["state"], "apiError")
         self.assertEqual(card["blocked"]["status"], 500)
         self.assertEqual(card["column"], "needs_input", "an API-error card files under BLOCKED")
+
+    def test_injected_img_paths_for_the_send_wait(self):
+        # _tmux_send waits for these to resolve to "[Image #N]" before pressing Enter, so a text+image
+        # message doesn't race the async image read and drop the text (the user 2026-06-17).
+        self.assertEqual(km._injected_img_paths("look at /srv/a.png and ~/pics/b.jpg please"),
+                         ["/srv/a.png", "~/pics/b.jpg"])
+        self.assertEqual(km._injected_img_paths("no images here"), [])
+        self.assertEqual(km._injected_img_paths(""), [])
 
     def test_user_images_extracts_pasted_path_and_blocks(self):
         # the user 2026-06-17: path-pasted images stopped rendering after the Python rebuild dropped the
@@ -4558,13 +4574,14 @@ class ViewBuilder(unittest.TestCase):
         # clears on the unblocker's watermark (blockCheckT) instead of the turn boundary — so the two
         # stranding properties to pin are: the echo alone arms nothing, and the watermark always releases.
         g = self._blocked_store()
+        km._tmux_echo.pop(SID, None)
         saved_p, saved_w = km._last_plain_user_turn_t, km._session_working
-        restore_echo = _echo_stub(km, SID, "/jld go ahead, do option B")
         try:
             # NO plain reply since the block in the parse — only a stranded echo in the live tail (the
             # slash-command case that never prunes). It must not arm the flip, working or idle.
             km._last_plain_user_turn_t = lambda turns: NOW - 300
             km._session_working = lambda turns: False
+            km._tmux_echo_add(SID, "/jld go ahead, do option B", author="human")
             card = next(a for a in km.build_feed(NOW)["asks"] if a["itemId"] == g)
             self.assertFalse(card["rejudging"], "a stranded echo can never arm rejudging — only a parsed reply can")
             self.assertEqual(card["column"], "needs_input",
@@ -4581,7 +4598,7 @@ class ViewBuilder(unittest.TestCase):
             self.assertFalse(card3["rejudging"], "the watermark passed the reply → released")
             self.assertEqual(card3["column"], "needs_input")
         finally:
-            restore_echo()
+            km._tmux_echo.pop(SID, None)
             km._last_plain_user_turn_t, km._session_working = saved_p, saved_w
 
     def test_feed_recheck_targeted_followup_does_not_sweep_siblings(self):
@@ -5157,6 +5174,66 @@ class ViewBuilder(unittest.TestCase):
         src = Path(BIN, "romp-kernel").read_text()
         self.assertIn('_reply(client, {"type": "dropSaveFailed", "name": str(msg["name"])})', src)
 
+    def test_permission_mode_cycle_presses(self):
+        # shift+tab press count from current → target in the cycle (the user 2026-06-16): there's no
+        # slash command for permission mode, so the picker cycles like the terminal UI.
+        self.assertEqual(km._MODE_CYCLE, ["auto", "default", "acceptEdits", "plan"])
+        self.assertEqual(km._mode_presses("default", "acceptEdits"), 1)
+        self.assertEqual(km._mode_presses("default", "plan"), 2)
+        self.assertEqual(km._mode_presses("acceptEdits", "plan"), 1)
+        self.assertEqual(km._mode_presses("plan", "auto"), 1)               # wraps forward to the top of the cycle
+        self.assertEqual(km._mode_presses("plan", "default"), 2)            # plan(3) → auto(0) → default(1)
+        self.assertEqual(km._mode_presses("auto", "plan"), 3)              # auto(0) → … → plan(3)
+        self.assertEqual(km._mode_presses("plan", "plan"), 0)              # already there → no presses
+        self.assertIsNone(km._mode_presses("default", "bypassPermissions"))  # flag-only, not a cycle target
+        self.assertIn("@claude-permission-mode", km.TmuxBackend.LANE_FMT)  # kernel reads the mode var (now a TmuxBackend const)
+
+    def test_cycle_mode_records_the_new_mode(self):
+        # The user's bug (2026-06-18): a chat mode switch flipped the terminal but the chat LABEL stayed
+        # stale. Claude Code never exposes the permission mode in its statusLine JSON, so @claude-permission-
+        # mode has no event source to self-heal from — _cycle_mode must record the mode it just cycled to,
+        # or the var stays frozen (and the next press count is computed from a stale `cur`).
+        calls, saved_run, saved_sleep = [], km.subprocess.run, km.time.sleep
+        saved_tmux, saved_thread, saved_push = km._live_map, km.threading.Thread, km._push_all
+        class _SyncThread:                                  # run go() inline so the test sees the result
+            def __init__(self, target=None, daemon=None): self._t = target
+            def start(self): self._t()
+        km.subprocess.run = lambda args, **k: calls.append(list(args)) or type("R", (), {"stdout": ""})()
+        km.time.sleep = lambda *_a, **_k: None
+        km._live_map = lambda: {SID: {"mode": "auto"}}   # current mode is auto
+        km.threading.Thread = _SyncThread
+        km._push_all = lambda: calls.append(["__push_all__"])
+        try:
+            km._cycle_mode("mysess", SID, "plan")
+        finally:
+            km.subprocess.run, km.time.sleep = saved_run, saved_sleep
+            km._live_map, km.threading.Thread, km._push_all = saved_tmux, saved_thread, saved_push
+        btab = [c for c in calls if c[:2] == ["tmux", "send-keys"] and "BTab" in c]
+        self.assertEqual(len(btab), 3, "auto → plan is 3 shift+tab presses")
+        self.assertIn(["tmux", "set", "-t", "mysess", "@claude-permission-mode", "plan"], calls,
+                      "after cycling, the kernel records the new mode so the chat label updates")
+        self.assertIn(["__push_all__"], calls, "and re-renders so the label flips immediately")
+
+    def test_tmux_set_mode_refuses_a_mode_the_cycle_cannot_reach(self):
+        # The picker gained Bypass for SDK sessions (the user 2026-08-15). shift+tab is the only handle
+        # the TUI gives us, so a tmux session cannot reach bypassPermissions/dontAsk at all — and
+        # set_mode used to return True regardless, telling the caller a permission mode had been set
+        # when _cycle_mode had already declined it. Refuse, so the kernel can say so.
+        saved_tmux, saved_cycle = km._live_map, km._cycle_mode
+        cycled = []
+        km._live_map = lambda: {SID: {"mode": "auto"}}
+        km._cycle_mode = lambda name, sid, target: cycled.append(target)
+        try:
+            be = km.TmuxBackend()
+            self.assertFalse(be.set_mode(SID, "bypassPermissions"), "no keystroke reaches it → say no")
+            self.assertFalse(be.set_mode(SID, "dontAsk"), "same for the other flag-only mode")
+            self.assertEqual(cycled, [], "and don't pretend to cycle")
+            for m in km._MODE_CYCLE:
+                self.assertTrue(be.set_mode(SID, m), "every cycle mode still goes through: %s" % m)
+            self.assertEqual(cycled, list(km._MODE_CYCLE))
+        finally:
+            km._live_map, km._cycle_mode = saved_tmux, saved_cycle
+
     def test_recency_colormap_chooser(self):
         # the colormap chooser (the user 2026-06-16): several perceptually-uniform maps + a persisted pick.
         for name in ("hawaii", "viridis", "magma", "inferno", "plasma", "cividis"):
@@ -5644,9 +5721,10 @@ class ViewBuilder(unittest.TestCase):
         backend:"sdk" and a MISSING backend field, which means the SDK too (the user 2026-08-16: the
         SDK is the one backend, so an old client sending nothing must not land anywhere else)."""
         for extra in ({"backend": "sdk"}, {}):
-            saved_sdk, saved_tmux = km._sdk, km._live_map
+            saved_sdk, saved_spawn, saved_tmux = km._sdk, km._spawn_session, km._live_map
             km._sdk = lambda: None                           # the backend is unavailable (no venv / py<3.10)
             spawned = []
+            km._spawn_session = lambda nm, cwd: spawned.append(nm)
             km._live_map = lambda: {}
             sent = []
             client = {"send": lambda s: sent.append(json.loads(s)), "app": "chat"}
@@ -5654,7 +5732,7 @@ class ViewBuilder(unittest.TestCase):
                 km.Handler._dispatch_ws(None, {"type": "createSession", "name": "sdlkless", **extra}, client)
                 time.sleep(0.05)                             # were a spawn wrongly threaded, give it a beat
             finally:
-                km._sdk, km._live_map = saved_sdk, saved_tmux
+                km._sdk, km._spawn_session, km._live_map = saved_sdk, saved_spawn, saved_tmux
             warn = next((m for m in sent if m.get("type") == "warn"), None)
             self.assertIsNotNone(warn, "the client is told, not silently given a different backend (%r)" % (extra,))
             self.assertIn("romp-sdk-setup", warn["text"], "the warn names the fix")
@@ -5664,8 +5742,9 @@ class ViewBuilder(unittest.TestCase):
         """backend:"tmux" from an old client / stale stored setting → a warn NAMING the removal, and
         nothing created on any backend (the user 2026-08-16; the POST /new twin is
         NewSessionRoute.test_backend_tmux_is_a_named_refusal_not_a_spawn)."""
-        saved = km._create_sdk_session, km._live_map
+        saved = km._spawn_session, km._create_sdk_session, km._live_map
         created = []
+        km._spawn_session = lambda nm, cwd=None: created.append(("tmux", nm))
         km._create_sdk_session = lambda nm, cwd, auth="": created.append(("sdk", nm))
         km._live_map = lambda: {}
         sent = []
@@ -5675,7 +5754,7 @@ class ViewBuilder(unittest.TestCase):
                                            "dir": tempfile.gettempdir()}, client)
             time.sleep(0.05)                                 # were a spawn wrongly threaded, give it a beat
         finally:
-            km._create_sdk_session, km._live_map = saved
+            km._spawn_session, km._create_sdk_session, km._live_map = saved
         warn = next((m for m in sent if m.get("type") == "warn"), None)
         self.assertIsNotNone(warn, "the client hears the refusal")
         self.assertIn("removed", warn["text"], "the refusal names WHY: the terminal backend is gone")
@@ -6010,6 +6089,13 @@ class TestApiError(unittest.TestCase):
         self.assertIsNone(e["status"])
         self.assertEqual(e["category"], "unknown")
 
+    def test_cache_keys_on_mtime_size(self):
+        self._write(uline(T0, "do it", "u1"), apierr_line(T0 + 5, "e1", "u1"))
+        self.assertIsNotNone(km._api_error(self.p))
+        with open(self.p, "a") as f:                       # append a retry → recovered; the cache must bust
+            f.write(json.dumps(uline(T0 + 9, "retry", "u2", parent="e1")) + "\n")
+        self.assertIsNone(km._api_error(self.p), "append busts the (mtime,size) cache")
+
     def test_spend_limit_is_classified_on_you(self):
         # a monthly SPEND cap (a billing limit) is on you — raise it; distinct from a transient error AND
         # from a rate window (the user 2026-07-14). It must never auto-retry, so it carries spendLimit.
@@ -6059,8 +6145,57 @@ class ApiRetryAndTabOrderRoutes(unittest.TestCase):
 
 
 class TestPendingQueued(unittest.TestCase):
-    """km._genuine_queued — which queued texts count as the USER's typed input (postal banners,
-    harness wrappers, and romp bookkeeping are not). Synthetic records only — no real session data."""
+    """km._pending_queued / _genuine_queued — still-pending queued messages folded FIFO from the
+    transcript's queue-operation records (event-based; replaces the pane scrape that dropped a 2nd queued
+    message and lost both). Synthetic records only — no real session data."""
+
+    def setUp(self):
+        km._queued_parse_cache.clear()
+        self.td = tempfile.TemporaryDirectory()
+        self.p = os.path.join(self.td.name, "t.jsonl")
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def _write(self, *ops):
+        # each op is (operation,) or (operation, content)
+        recs = []
+        for op in ops:
+            o = {"type": "queue-operation", "operation": op[0]}
+            if len(op) > 1:
+                o["content"] = op[1]
+            recs.append(json.dumps(o))
+        with open(self.p, "w") as f:
+            f.write("\n".join(recs) + "\n")
+
+    def test_single_pending(self):
+        self._write(("enqueue", "fix the flaky test"))
+        self.assertEqual(km._pending_queued(self.p), ["fix the flaky test"])
+
+    def test_two_pending_keep_submission_order(self):
+        # the regression: TWO queued messages must BOTH show, oldest→newest (the user 2026-06-16).
+        self._write(("enqueue", "first"), ("enqueue", "second"))
+        self.assertEqual(km._pending_queued(self.p), ["first", "second"])
+
+    def test_dequeue_resolves_fifo_front(self):
+        self._write(("enqueue", "first"), ("enqueue", "second"), ("dequeue",))
+        self.assertEqual(km._pending_queued(self.p), ["second"], "the oldest enqueue is the one consumed")
+
+    def test_remove_also_resolves(self):
+        self._write(("enqueue", "first"), ("enqueue", "second"), ("remove",), ("remove",))
+        self.assertEqual(km._pending_queued(self.p), [], "remove drains like dequeue")
+
+    def test_drops_postal_and_harness_injections(self):
+        # romp delivers a peer message by ENQUEUEing it (carries romp-msg-id / 📬 / a #### banner); those
+        # must not masquerade as the user's pending input — only the genuine typed message remains.
+        self._write(("enqueue", "#################### \U0001F4EC from peer\nromp-msg-id: 11111111-2222"),
+                    ("enqueue", "my real queued ask"))
+        self.assertEqual(km._pending_queued(self.p), ["my real queued ask"])
+
+    def test_empty_when_no_records_or_missing_file(self):
+        self._write(("enqueue", ""))                       # blank content is not genuine
+        self.assertEqual(km._pending_queued(self.p), [])
+        self.assertEqual(km._pending_queued(os.path.join(self.td.name, "nope.jsonl")), [])
 
     def test_genuine_queued_filter(self):
         self.assertTrue(km._genuine_queued("fix the bug"))
@@ -6076,6 +6211,30 @@ class TestPendingQueued(unittest.TestCase):
         self.assertFalse(km._genuine_queued('<system-reminder>be concise</system-reminder>'))
         self.assertTrue(km._genuine_queued("a normal message"))
 
+    def test_drops_queued_system_wrappers(self):
+        # a backgrounded agent's <task-notification> gets QUEUED when it lands while the session is busy/
+        # compacting — a harness injection, NOT typed input, so it must not show as a "queued message" (the
+        # user 2026-06-30: it rendered as a raw "1 queued message" in the chat). Synthetic: invented ids, TESTHOST.
+        notif = ('<task-notification>\n<task-id>11111111aaaa</task-id>'
+                 '<tool-use-id>toolu_0abc</tool-use-id>'
+                 '<output-file>/tmp/TESTHOST/tasks/11111111aaaa.output</output-file>'
+                 '<status>completed</status><summary>Agent "widget audit" came to rest</summary>'
+                 '<result>done</result></task-notification>')
+        self._write(("enqueue", notif), ("enqueue", "my real queued ask"))
+        self.assertEqual(km._pending_queued(self.p), ["my real queued ask"],
+                         "the queued task-notification is filtered, only the typed message remains")
+
+    def test_cache_keys_on_mtime_size(self):
+        # build_session calls this every push; an unchanged transcript returns the cached list, a changed
+        # one (an enqueue appended) re-reads.
+        self._write(("enqueue", "first"))
+        a = km._pending_queued(self.p)
+        self.assertEqual(a, ["first"])
+        with open(self.p, "a") as f:
+            f.write(json.dumps({"type": "queue-operation", "operation": "enqueue", "content": "second"}) + "\n")
+        self.assertEqual(km._pending_queued(self.p), ["first", "second"], "append busts the (mtime,size) cache")
+
+
 class CompactSessionRoute(unittest.TestCase):
     """The chat context-battery posts {compactSession, id}; the kernel must route it to /compact for that
     session's tmux name — the SAME action as the timeline's {compact, name}. Without the handler the click
@@ -6089,6 +6248,22 @@ class CompactSessionRoute(unittest.TestCase):
                       "_drive handles both compact shapes (chat battery + timeline)")
         self.assertIn('be.send(sid, "/compact")', src,
                       "compact sends the same /compact through whichever backend owns the sid")
+
+
+class TmuxInject(unittest.TestCase):
+    def test_tmux_send_sequence(self):
+        calls = []
+        real_run, real_sleep = km.subprocess.run, km.time.sleep
+        km.subprocess.run = lambda args, **k: calls.append(list(args)) or type("R", (), {"stdout": ""})()
+        km.time.sleep = lambda s: None
+        try:
+            km._tmux_send("mysess", "hello world", _async=False)
+        finally:
+            km.subprocess.run, km.time.sleep = real_run, real_sleep
+        # set-buffer the text → bracketed paste-buffer to the session → Enter to submit
+        self.assertTrue(any(a[:2] == ["tmux", "set-buffer"] and "hello world" in a for a in calls))
+        self.assertTrue(any(a[:2] == ["tmux", "paste-buffer"] and "mysess" in a for a in calls))
+        self.assertTrue(any(a[:2] == ["tmux", "send-keys"] and "Enter" in a for a in calls))
 
 
 class ParentWatch(unittest.TestCase):
@@ -6493,7 +6668,8 @@ class NewSessionRoute(unittest.TestCase):
         what was removed, and that nothing was created — never a silent drop, and never a session on
         a backend the caller didn't ask for (the 2026-07-28 mystery-spawn class)."""
         created = []
-        saved = km._create_sdk_session, km._live_names
+        saved = km._spawn_session, km._create_sdk_session, km._live_names
+        km._spawn_session = lambda nm, cwd=None: created.append(("tmux", nm))
         km._create_sdk_session = lambda nm, cwd, auth="": created.append(("sdk", nm)) or "sid-x"
         km._live_names = lambda t: {}
         try:
@@ -6501,7 +6677,7 @@ class NewSessionRoute(unittest.TestCase):
                                      "backend": "tmux"})
             time.sleep(0.1)                      # were a spawn wrongly threaded, let it record itself
         finally:
-            km._create_sdk_session, km._live_names = saved
+            km._spawn_session, km._create_sdk_session, km._live_names = saved
         self.assertEqual(code, 200)
         self.assertFalse(body["ok"], "the session is NOT created")
         self.assertIn("not created", body["error"])

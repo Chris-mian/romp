@@ -1,7 +1,7 @@
 name: CI
 
 # Run the test suites that gate romp: the Python pipeline (kernel/, cli/,
-# postal/), the shell surfaces (hooks / postal / manager), and the VS Code
+# postal/), the shell surfaces (tmux hooks / postal / manager), and the VS Code
 # extension build.
 #
 # LINUX runs on every push and PR — it is free on a public repo, no minute cap.
@@ -9,9 +9,9 @@ name: CI
 # the bats suite alone is ~16 macOS-minutes = ~160 billable minutes per run, so
 # it does NOT run automatically. Trigger it by hand from the Actions tab ("Run
 # workflow") when you want a cross-platform check before a release or after
-# touching a platform-sensitive surface (launchd, the folder opener).
+# touching a platform-sensitive surface (tmux, launchd, the folder opener).
 # On a macOS dev box, the pre-push hook runs the same suites locally, so the
-# common macOS-only breakages (a real browser opening, a BSD-vs-GNU tool drift)
+# common macOS-only breakages (a real browser opening, a tmux-binary dependency)
 # are caught before the push rather than waiting on this manual run.
 #
 # Python spans 3.10 (the floor docs/install.md promises) through 3.13 (the dev
@@ -36,7 +36,7 @@ jobs:
   python:
     name: Python ${{ matrix.python-version }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Every job is time-boxed. Without this a test that BLOCKS (waiting on a
+    # Every job is time-boxed. Without this a test that BLOCKS (waiting on a tmux
     # server, a socket, a prompt that never comes) burns the 6h default before
     # anyone finds out, and a required check that hangs blocks merges silently.
     timeout-minutes: 15
@@ -80,12 +80,12 @@ jobs:
         os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install bats (Linux)
+      - name: Install bats + tmux (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bats
-      - name: Install bats (macOS)
+        run: sudo apt-get update && sudo apt-get install -y bats tmux
+      - name: Install bats + tmux (macOS)
         if: runner.os == 'macOS'
-        run: brew install bats-core
+        run: brew install bats-core tmux
       - name: Run bats
         run: bats --print-output-on-failure tests/*.bats
 

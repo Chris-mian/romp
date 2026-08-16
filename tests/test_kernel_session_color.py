@@ -2,7 +2,7 @@
 2026-07-12): a right-click tab menu picks a color from the ACTIVE identity palette; the kernel persists
 it to the names registry (bg + fg word, preserving name + cwd) and re-broadcasts. The gear's Session
 colors picker switches the whole SET (STATE/palette): the kernel remaps every stored color to the same
-slot in the new set and pushes. SYNTHETIC
+slot in the new set, rewrites the shell launcher's STATE/palette-colors mirror, and pushes. SYNTHETIC
 fixtures only (placeholder uuids, invented paths)."""
 import inspect
 import os
@@ -89,6 +89,9 @@ class SessionColor(unittest.TestCase):
                          "#ABCDEF", "an unowned color is not remapped")
         self.assertEqual((km.jd.STATE / "palette").read_text(), "phase", "the choice persists")
         self.assertEqual(km._palette_name(), "phase")
+        # the shell launcher's mirror carries the ACTIVE set (bg<TAB>fg per line)
+        lines = (km.jd.STATE / "palette-colors").read_text().rstrip("\n").split("\n")
+        self.assertEqual([ln.split("\t") for ln in lines], [[b, f] for b, f in zip(pb, pf)])
 
     def test_set_palette_round_trip_restores_original_colors(self):
         (self.names / SID).write_text("a\t/d\t#4EA8A9\twhite\n")   # romp slot 2
@@ -119,10 +122,12 @@ class SessionColor(unittest.TestCase):
         self.assertIn('msg.get("type") == "setPalette"', ksrc)
         self.assertIn('_set_palette(str(msg["name"]))', ksrc)
 
-    def test_set_palette_rebroadcasts(self):
+    def test_set_palette_rebroadcasts_and_boot_heals_the_mirror(self):
         src = inspect.getsource(km._set_palette)
         self.assertIn('_send_to_app("chat", {"type": "palette"', src, "open tab menus get fresh swatches")
         self.assertIn("_mark_views_dirty()", src, "tabs/cards/lanes repaint in the new colors")
+        self.assertIn("_write_palette_mirror()", inspect.getsource(km.main),
+                      "boot rewrites the shell mirror so bin/romp can never assign from a stale set")
 
     def test_gear_offers_the_session_colors_picker(self):
         html = _gear_src()

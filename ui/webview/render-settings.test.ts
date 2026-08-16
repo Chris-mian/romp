@@ -38,8 +38,10 @@ test("the chat has NO gear of its own — it only consumes the shared setting (g
   assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; renderTabs\(\); rerenderAll\(\); \}\)/);
 });
 
-test("the + New session button creates on the one backend (the terminal toggle retired 2026-08-16)", () => {
-  assert.match(RENDER, /startCreate\(\{ name, backend: "sdk",/);
-  // no picker toggle and no stored pref left to leak a stale choice into the create call
-  assert.doesNotMatch(RENDER, /loadSettings\(\)\.backend/);
+test("the + New session button sends the picker's backend toggle, defaulting to the gear's (the user 2026-06-23)", () => {
+  // the per-session toggle wins; it RESETS to the gear default (read fresh via loadSettings()) on each open
+  assert.match(RENDER, /startCreate\(\{ name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend,/);
+  // the belt-and-braces fallback is "sdk" — the one backend since the terminal one's retirement
+  // (2026-08-16); loadSettings also normalizes a stale stored "tmux" (settings.test.ts pins that)
+  assert.match(RENDER, /const def = loadSettings\(\)\.backend \|\| "sdk";/);
 });

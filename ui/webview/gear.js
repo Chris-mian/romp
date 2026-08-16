@@ -67,6 +67,12 @@ var GEAR_HTML =
   "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>" +
   '<option value=ask>Check and ask</option><option value=auto>Install automatically</option><option value=off>Off</option>' +
   '</select></span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>" +
+  '<span class=rs-sub>What the + button uses for a NEW session — tmux drives a terminal pane; SDK runs via the Agent SDK. Both kinds run side by side; this only sets the default.</span>' +
+  "<select id=rs-backend style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;" +
+  "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>" +
+  '<option value=sdk>SDK</option><option value=tmux>tmux (terminal)</option>' +
+  '</select></span></div>' +
   '<div class=rs-sec>Judges</div>' +
   "<div class='rs-row rs-jrow'><b>Triage model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model the triage judges use — planner, grouper, closer, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart. A pick here follows to every connected machine's kernel.</span><select id=rs-judgemodel></select></div>" +
   "<div class='rs-row rs-jrow'><b>Triage effort <span class=rs-mixed hidden></span></b><span class=rs-sub>Thinking effort for the triage judges. Default = no effort flag (the judges' standard behavior). Not every model accepts every level. Follows to every connected machine's kernel.</span><select id=rs-judgeeffort></select></div>" +
@@ -151,7 +157,7 @@ function initGear(post) {
   var g = document.getElementById('rgear'), p = document.getElementById('rsettings'),
     b = document.getElementById('rsver'), cc = document.getElementById('rs-compact'),
     jix = document.getElementById('rs-judges-index'), jtr = document.getElementById('rs-judges-triage'),
-    an = document.getElementById('rs-autonudge'),
+    an = document.getElementById('rs-autonudge'), bk = document.getElementById('rs-backend'),
     dd = document.getElementById('rs-defaultdir'), gb = document.getElementById('rs-branch'),
     tc = document.getElementById('rs-tabctx'),
     cg = document.getElementById('rs-collapsegaps'), ao = document.getElementById('rs-activeonly'),
@@ -160,7 +166,7 @@ function initGear(post) {
     ie = document.getElementById('rs-indexeffort'), upm = document.getElementById('rs-updates'),
     dm = document.getElementById('rs-distillmodel'), de = document.getElementById('rs-distilleffort'),
     ans = document.getElementById('rs-autonudge-split'), asub = document.getElementById('rs-autonudge-sub');
-  function load() { try { return Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, defaultDir: '', showBranch: false, tabCtx: 'over50', collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, defaultDir: '', showBranch: false, tabCtx: 'over50', collapseGaps: true, activeOnly: true }; } }
+  function load() { try { return Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, tabCtx: 'over50', collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, tabCtx: 'over50', collapseGaps: true, activeOnly: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
   function tabCtxMode(v) { return (v === 'always' || v === 'never') ? v : (v === false ? 'never' : 'over50'); }
@@ -237,6 +243,7 @@ function initGear(post) {
   if (plBtn) plBtn.addEventListener('click', function (e) { e.stopPropagation(); plBuild(); if (plList) plList.hidden = !plList.hidden; });
   document.addEventListener('click', function (e) { var w = document.getElementById('rs-pal');
     if (plList && !plList.hidden && w && !w.contains(e.target)) plList.hidden = true; });
+  if (bk) bk.addEventListener('change', function () { var s = load(); s.backend = bk.value; save(s); });   // webview-local pref read at createSession time
   if (dd) dd.addEventListener('change', function () { var v = dd.value.trim(); var s = load(); s.defaultDir = v; save(s);
     post({ type: 'setDefaultDir', value: v }); });   // persist kernel-side: _default_create_dir reads this file FIRST
   var ddb = document.getElementById('rs-defaultdir-browse');
@@ -388,7 +395,7 @@ function initGear(post) {
     // settings-open, which is what un-hides #feed-pane when the feed is toggled off — measuring first
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (tc) tc.value = tabCtxMode(s.tabCtx); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (tc) tc.value = tabCtxMode(s.tabCtx); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'sdk'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(); });
   // The shortcuts row: the web shell (same-origin parent) gets the customize link — it opens the

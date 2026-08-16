@@ -77,11 +77,10 @@ class BootWindowStub(unittest.TestCase):
         m = km.build_session(SID, int(time.time()), live_map={})
         self.assertIsNone(m, "unknown sids stay frameless — the stub is only for LIVE boot windows")
 
-    def test_the_boot_frame_rides_the_real_transcript_path(self):
-        # the synthesized entry points at the session's REAL (not-yet-written) transcript path, so the
-        # moment the CLI writes it, the same frame simply fills in — nothing to swap, nothing to shadow
+    def test_the_stub_path_can_never_shadow_a_real_transcript(self):
+        # the sentinel lives under STATE/boot-stub/, a directory nothing ever writes
         src = open(os.path.join(BIN, "romp-kernel")).read()
-        self.assertIn("sess = _sdk_sess(sid, now)", src)
+        self.assertIn('str(jd.STATE / "boot-stub" / (sid + ".jsonl"))', src)
 
 
 if __name__ == "__main__":

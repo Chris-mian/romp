@@ -250,15 +250,16 @@ EOF2
     grep -q "<key>ROMP_KERNEL_PORT</key><string>29856</string>" "$ROMP_LAUNCHD_DIR/com.romp.manager.plist"
 }
 
-@test "install bakes the rest of the profile: state root, Claude config dir" {
+@test "install bakes the rest of the profile: state root, Claude config dir, tmux socket" {
     # The same set romp-manager's specEnv hands an aux kernel — a profile that is only half
     # carried is the silent-divergence bug, not a smaller version of it.
-    export ROMP_STATE_DIR="$TEST_DIR/alt-state" CLAUDE_CONFIG_DIR="$TEST_DIR/alt-claude"
+    export ROMP_STATE_DIR="$TEST_DIR/alt-state" CLAUDE_CONFIG_DIR="$TEST_DIR/alt-claude" ROMP_TMUX_SOCKET=romp-alt
     ROMP_OS_OVERRIDE=Linux run "$SVC" install
     [ "$status" -eq 0 ]
     local unit="$ROMP_SYSTEMD_DIR/romp-manager.service"
     grep -q "^Environment=ROMP_STATE_DIR=$TEST_DIR/alt-state$"      "$unit"
     grep -q "^Environment=CLAUDE_CONFIG_DIR=$TEST_DIR/alt-claude$"  "$unit"
+    grep -q "^Environment=ROMP_TMUX_SOCKET=romp-alt$"               "$unit"
 }
 
 @test "a default install writes NO instance env — unchanged for everyone not doing this" {
