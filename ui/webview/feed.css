@@ -144,9 +144,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    sit side by side — prevents thin columns that break words mid-word ("Shippe/d") */
 /* the stacked layout's header furniture (the user 2026-08-16) exists ONLY there — hidden by default,
    revealed inside the container query below. The fold caret wears the .feed-sess-fold treatment (dim,
-   thumb-padded); the grip is quiet-until-wanted on pointer devices and faintly present on touch, where
-   hover does not exist and the stacked layout is the primary one. */
-.fcol-fold, .fcol-grip { display: none; }
+   thumb-padded); the category CHIP is itself the drag surface (no separate handle — the grab cursor
+   it wears in the stacked layout is the affordance). */
+.fcol-fold { display: none; }
 .feed-col.col-collapsed .feed-col-list { display: none; }   /* folded: the header (chip + count) stands in */
 
 @container (max-width: 540px) {
@@ -167,12 +167,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
     background: transparent; border: 0; font: inherit; font-size: 1.389em; font-weight: 400;
     line-height: 1; cursor: pointer; transition: color 0.12s ease; }
   .fcol-fold:hover, .fcol-fold:focus-visible { color: var(--fg); }
-  .fcol-grip { display: inline-block; margin-left: auto; padding: 0 4px; color: var(--dim);
-    cursor: grab; opacity: 0; transition: opacity 0.12s ease; touch-action: none; user-select: none; }
-  .feed-col-head:hover .fcol-grip, .fcol-grip:focus-visible { opacity: 1; }
-  @media (hover: none) { .fcol-grip { opacity: 0.35; } }   /* touch has no hover — keep it findable */
-  .feed-col.col-dragging { opacity: 0.75; }
-  .feed-col.col-dragging .fcol-grip { cursor: grabbing; opacity: 1; }
+  .feed-col-head .fcol-chip { cursor: grab; touch-action: none; user-select: none; }
+  .feed-col.col-dragging { position: relative; z-index: 5; opacity: 0.9; }   /* lifted over its siblings while it follows the pointer */
+  .feed-col.col-dragging .fcol-chip { cursor: grabbing; }
 }
 
 /* ---------- ask card (the inbox unit): three rows (the user 2026-06-14) ---------- */

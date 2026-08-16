@@ -3197,12 +3197,39 @@ function applyColStack(): void {
 // the grip so the drag survives leaving it). Only the stacked layout listens: in the side-by-side
 // layout the grip is display:none. The order updates live while dragging (flex `order` reflows), and
 // the drop persists it.
-function wireColDrag(grip: HTMLElement, col: HTMLElement, key: string): void {
-  grip.addEventListener("pointerdown", (down) => {
+// Drag a section by its CATEGORY CHIP (the user 2026-08-16, dropping the earlier grip handle): the
+// grab cursor on the chip is the affordance. While dragging, the grabbed section FOLLOWS the pointer
+// (a transform, so nothing reflows under the hand) and the displaced sections FLIP-animate into their
+// provisional slots — the arrangement you see mid-drag is the arrangement you get. Only the stacked
+// layout listens: side by side the chip keeps its normal cursor and this returns before capturing.
+function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
+  chip.addEventListener("pointerdown", (down) => {
+    const colsEl = document.getElementById("feed-cols");
+    if (!colsEl || getComputedStyle(colsEl).flexDirection !== "column") return;
     down.preventDefault();
     down.stopPropagation();
-    grip.setPointerCapture(down.pointerId);
+    chip.setPointerCapture(down.pointerId);
     col.classList.add("col-dragging");
+    const startY = down.clientY;
+    let slotShift = 0;   // the dragged section's own accumulated slot movement — folded into its
+    //                      follow-transform so a re-slot never yanks it out from under the pointer
+    const applyOrderFlip = (order: string[]) => {
+      const els: Array<[string, HTMLElement]> = [];
+      for (const k of ["asks", "needsInput", "completed"]) {
+        const e = document.querySelector<HTMLElement>(".feed-col.col-" + k);
+        if (e) els.push([k, e]);
+      }
+      const before = new Map(els.map(([k, e]) => [k, e.getBoundingClientRect().top]));
+      stackOrder = order;
+      applyColStack();
+      for (const [k, e] of els) {
+        const d = (before.get(k) || 0) - e.getBoundingClientRect().top;
+        if (!d) continue;
+        if (k === key) { slotShift -= d; continue; }   // both rects carry the follow-transform, so d is pure slot delta
+        e.animate([{ transform: "translateY(" + d + "px)" }, { transform: "translateY(0)" }],
+                  { duration: 150, easing: "ease" });
+      }
+    };
     const move = (ev: PointerEvent) => {
       const order = (stackOrder.length === 3 ? stackOrder : STACK_DEFAULT).slice();
       const from = order.indexOf(key);
@@ -3221,20 +3248,27 @@ function wireColDrag(grip: HTMLElement, col: HTMLElement, key: string): void {
       if (to !== from) {
         order.splice(from, 1);
         order.splice(to, 0, key);
-        stackOrder = order;
-        applyColStack();
+        applyOrderFlip(order);
       }
+      col.style.transform = "translateY(" + (ev.clientY - startY - slotShift) + "px)";
     };
     const up = () => {
-      grip.removeEventListener("pointermove", move);
-      grip.removeEventListener("pointerup", up);
-      grip.removeEventListener("pointercancel", up);
+      chip.removeEventListener("pointermove", move);
+      chip.removeEventListener("pointerup", up);
+      chip.removeEventListener("pointercancel", up);
+      // settle: animate from wherever the hand left it into its slot, then drop the transform
+      const hang = col.style.transform;
+      col.style.transform = "";
+      if (hang && hang !== "translateY(0px)") {
+        col.animate([{ transform: hang }, { transform: "translateY(0)" }],
+                    { duration: 150, easing: "ease" });
+      }
       col.classList.remove("col-dragging");
       persistViewState();
     };
-    grip.addEventListener("pointermove", move);
-    grip.addEventListener("pointerup", up);
-    grip.addEventListener("pointercancel", up);
+    chip.addEventListener("pointermove", move);
+    chip.addEventListener("pointerup", up);
+    chip.addEventListener("pointercancel", up);
   });
 }
 
@@ -3262,12 +3296,11 @@ function ensureCols(list: HTMLElement) {
         persistViewState();
       });
       const name = el("span", "feed-col-name fcol-chip fcol-chip-" + chip); name.textContent = label;
+      name.title = "drag to reorder";
+      wireColDrag(name, col, key);            // the chip ITSELF drags (the user 2026-08-16) — the grab
+      //                                         cursor it wears in the stacked layout is the affordance
       const count = el("span", "feed-col-count"); count.id = "col-" + key + "-count";
-      const grip = el("span", "fcol-grip");
-      grip.textContent = "⠿";
-      grip.title = "drag to reorder";
-      wireColDrag(grip, col, key);
-      head.append(name, fold, count, grip);   // caret RIGHT of the chip — the same side as the
+      head.append(name, fold, count);         // caret RIGHT of the chip — the same side as the
       //                                          session headers' fold (the user 2026-07-31 / 2026-08-16)
       const body = el("div", "feed-col-list"); body.id = "col-" + key + "-list";
       col.append(head, body);

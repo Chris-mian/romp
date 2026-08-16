@@ -19,22 +19,33 @@ test("the caret folds a category to its header and persists like every other dis
   assert.match(FEED, /fold\.textContent = folded \? "▸" : "▾";/);
   // consistency with the session headers' fold (the user 2026-08-16): same side — caret RIGHT of the
   // label — and the same rendered size (the header's 0.72em compensated back to the feed's base)
-  assert.match(FEED, /head\.append\(name, fold, count, grip\);/);
+  assert.match(FEED, /head\.append\(name, fold, count\);/);
   assert.match(CSS, /\.fcol-fold \{ display: inline-block; flex: none; padding: 0 5px; margin-left: -2px;[^}]*font-size: 1\.389em;/);
 });
 
-test("the grip is quiet-until-wanted, findable on touch, and drags only the stacked layout", () => {
-  assert.match(CSS, /\.fcol-fold, \.fcol-grip \{ display: none; \}/, "side-by-side shows neither control");
-  assert.match(CSS, /\.feed-col-head:hover \.fcol-grip, \.fcol-grip:focus-visible \{ opacity: 1; \}/);
-  assert.match(CSS, /@media \(hover: none\) \{ \.fcol-grip \{ opacity: 0\.35; \} \}/, "touch has no hover");
+test("the chip itself drags — grab cursor as the affordance, live provisional movement, stacked only", () => {
+  // the user 2026-08-16, dropping the earlier grip handle: grabbing the Working/Blocked/Completed
+  // chip moves the section, the grabbed section follows the pointer, and the displaced sections
+  // FLIP-animate into their provisional slots — what you see mid-drag is what you get on drop.
+  assert.match(CSS, /\.feed-col-head \.fcol-chip \{ cursor: grab; touch-action: none; user-select: none; \}/);
+  assert.match(CSS, /\.feed-col\.col-dragging \{ position: relative; z-index: 5;/, "lifted over siblings while following");
   assert.match(CSS, /\.feed-col\.col-completed\s+\{ order: var\(--stack-order, 1\); \}/,
     "the dragged order overrides the stacked default and only there");
-  assert.match(FEED, /grip\.setPointerCapture\(down\.pointerId\);/, "the drag survives leaving the grip");
-  assert.match(FEED, /grip\.addEventListener\("pointercancel", up\);/, "a cancelled drag still cleans up + persists");
+  assert.match(FEED, /wireColDrag\(name, col, key\);/, "no separate handle — the chip is the drag surface");
+  assert.doesNotMatch(FEED, /fcol-grip/, "the grip is gone");
+  assert.match(FEED, /if \(!colsEl \|\| getComputedStyle\(colsEl\)\.flexDirection !== "column"\) return;/,
+    "side by side, the chip never captures the pointer");
+  assert.match(FEED, /chip\.setPointerCapture\(down\.pointerId\);/, "the drag survives leaving the chip");
+  assert.match(FEED, /col\.style\.transform = "translateY\(" \+ \(ev\.clientY - startY - slotShift\) \+ "px\)";/,
+    "the grabbed section follows the pointer");
+  assert.match(FEED, /e\.animate\(\[\{ transform: "translateY\(" \+ d \+ "px\)" \}, \{ transform: "translateY\(0\)" \}\]/,
+    "displaced sections FLIP into their provisional slots");
+  assert.match(FEED, /\{ slotShift -= d; continue; \}/, "a re-slot never yanks the section out from under the pointer");
+  assert.match(FEED, /chip\.addEventListener\("pointercancel", up\);/, "a cancelled drag still settles + persists");
 });
 
 test("both controls live on the build-once header — click-safe across re-renders", () => {
   const build = FEED.slice(FEED.indexOf("function ensureCols"), FEED.indexOf("return {", FEED.indexOf("function ensureCols")));
-  assert.ok(build.includes('el("button", "fcol-fold")') && build.includes('el("span", "fcol-grip")'),
+  assert.ok(build.includes('el("button", "fcol-fold")') && build.includes("wireColDrag(name, col, key)"),
     "wired inside ensureCols' one-time scaffold, never in a render loop");
 });
