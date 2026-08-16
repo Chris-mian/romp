@@ -45,6 +45,25 @@ test("a kernel-VERIFIED preview fails LOUDLY: a retry chip holds the figure's sp
   assert.match(CSS, /\.path-full-retry \{ display: inline-flex;/, "visible chrome — the chip has chat-sheet css");
 });
 
+test("the failure chip narrates what happens next, escalates on repeat, and a retry's swirl is perceivable", () => {
+  // the user 2026-08-16, on a slow connection: a dead-end "unavailable" that later healed itself read
+  // as broken UI, and a tap whose instant failure re-rendered an identical chip read as ignored.
+  const pf = PREVIEW.slice(PREVIEW.indexOf("export function previewFull"));
+  // copy names the armed auto-heal while bounded retries remain; plain tap-to-retry once spent
+  assert.match(pf, /"⚠ still unavailable" : "⚠ preview unavailable"/);
+  assert.match(pf, /autoRetries > 0 \? " — retrying automatically · tap to retry now" : " — tap to retry"/);
+  // a repeat failure pulses the chip on swap-in — the acknowledge-every-click rule
+  assert.match(pf, /chip\.classList\.add\("path-retry-flash"\);/);
+  assert.match(CSS, /\.path-full-retry\.path-retry-flash \{ animation: path-retry-flash/);
+  assert.match(CSS, /prefers-reduced-motion: reduce\) \{ \.path-full-retry\.path-retry-flash \{ animation: none;/);
+  // a manual retry that dies instantly holds the swirl a perceivable beat before the chip returns
+  assert.match(PREVIEW, /const MIN_RETRY_SPIN_MS = 400;/);
+  assert.match(pf, /const left = bust \? MIN_RETRY_SPIN_MS - \(Date\.now\(\) - started\) : 0;/);
+  assert.match(pf, /if \(left > 0\) setTimeout\(showChip, left\); else showChip\(\);/);
+  // the delayed swap yields to a re-rendered turn — a fresh box owns the spot by then
+  assert.match(pf, /if \(!box\.isConnected\) return;/);
+});
+
 test("a failed preview heals on the next kernel push — the kernel-is-back event, not a tap or a timer", () => {
   // the 2026-08-15 report: the fetch died in a converge-restart window, and delta-send never rebuilds
   // an old turn's DOM, so the chip sat until a human tapped it. Any incoming kernel message proves the

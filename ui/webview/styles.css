@@ -2298,6 +2298,11 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.14);
   font-size: 0.85em; opacity: 0.85; cursor: pointer; }
 .path-full-retry:hover { border-color: var(--accent); }
+/* a repeat failure's chip pulses once on swap-in so an identical-looking outcome still reads as a
+   RESPONSE to the tap (preview.ts previewFull) */
+.path-full-retry.path-retry-flash { animation: path-retry-flash 0.45s ease; }
+@keyframes path-retry-flash { 0% { background: rgba(255, 255, 255, 0.3); } 100% { background: rgba(255, 255, 255, 0.08); } }
+@media (prefers-reduced-motion: reduce) { .path-full-retry.path-retry-flash { animation: none; } }
 /* VS Code's host-round-trip image chip while the bytes are still on their way (render.ts fillPathImg) —
    pure-CSS pulse, the sandbox can't fetch the swirl asset */
 .user-img-path.img-pending::after { content: " ···"; letter-spacing: 2px;
