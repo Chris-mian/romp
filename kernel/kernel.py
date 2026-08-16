@@ -14188,6 +14188,9 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                             pl = _path_links(prompt, sid, a.get("uuid"), _pl_memo)
                             if pl is not None:
                                 ev["pathLinks"] = pl    # path-shaped tokens, filesystem-verified/fixed → the client's link gate
+                            pp = _path_pins(sid, a.get("uuid"))
+                            if pp:
+                                ev["pathPins"] = pp     # mention-time snapshots: this message's embeds keep these bytes
                             if reminders:                # join each task-notification to its command + output tail
                                 to = _task_outputs_for(reminders, sess["path"])
                                 if to:
@@ -14277,6 +14280,9 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                         pl = _path_links(txt, sid, a.get("uuid"), _pl_memo)
                         if pl is not None:
                             ev["pathLinks"] = pl    # path-shaped tokens, filesystem-verified/fixed → the client's link gate
+                        pp = _path_pins(sid, a.get("uuid"))
+                        if pp:
+                            ev["pathPins"] = pp     # mention-time snapshots: this message's embeds keep these bytes
                         if _interrupt_settle(events, txt, a):   # the null settle-reply closing an interrupted
                             ev["interruptSettle"] = True        # turn → rendered as seam marker, not a bubble
                         events.append(ev)
@@ -19261,10 +19267,30 @@ def _space_paths(md, sid, uuid):
                 continue
             if tok not in out and os.path.isfile(_resolve_open_path(tok, sid)):
                 out.append(tok)
+        pins = {}
+        for tok in out:                      # the verify moment doubles as the mention-time snapshot
+            pin = _pin_for(tok, sid)         # (see _pin_mention) — latched with the span's verdict
+            if pin:
+                pins[tok] = pin
         if len(_SPACE_PATH_CACHE) > 50000:   # runaway backstop; one entry per rendered message
             _SPACE_PATH_CACHE.clear()
-        _SPACE_PATH_CACHE[key] = hit = tuple(out)
-    return list(hit) or None
+        _SPACE_PATH_CACHE[key] = hit = (tuple(out), pins)
+    spans = hit[0] if isinstance(hit, tuple) and len(hit) == 2 and isinstance(hit[0], tuple) else hit
+    return list(spans) or None
+
+
+def _path_pins(sid, uuid):
+    """The mention-time pins latched for this message by _path_links / _space_paths — {open target:
+    pin id}, shipped as pathPins on the chat event (a SIBLING map: pathLinks values must stay strings,
+    or an older client's string-gate would unlink every token). Empty when nothing pinned."""
+    pins = {}
+    hit = _SPACE_PATH_CACHE.get((sid, uuid))
+    if isinstance(hit, tuple) and len(hit) == 2 and isinstance(hit[1], dict):
+        pins.update(hit[1])
+    hit = _PATH_LINK_CACHE.get((sid, uuid))
+    if hit is not None and len(hit) == 3:
+        pins.update(hit[2])
+    return pins
 
 
 # ── verified path links ────────────────────────────────────────────────────────────────────────────
@@ -19386,6 +19412,77 @@ def _path_tokens(md):
     return toks
 
 
+_MENTION_PINS = None                                   # resolved lazily: jd.STATE / "mention-pins"
+_PIN_STORE_MAX_BYTES = 500 * 1024 * 1024               # bounded: evict oldest-mtime past this
+_PIN_ID_RE = re.compile(r"^[0-9a-f]{64}\.[a-z0-9]{1,8}$")   # sha256 + the original extension
+
+
+def _pin_dir():
+    global _MENTION_PINS
+    if _MENTION_PINS is None:
+        _MENTION_PINS = jd.STATE / "mention-pins"
+        try:
+            _MENTION_PINS.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+    return _MENTION_PINS
+
+
+def _pin_mention(fp):
+    """Snapshot a mentioned IMAGE's bytes as they are RIGHT NOW, content-addressed — the pin an old
+    chat message's embed keeps forever (the user 2026-08-16: an agent re-generating a plot under the
+    same filename rewrote the picture inside every older message that had embedded it; history must
+    not change, and the agent's freedom to name files must not shrink). Runs at the pathLinks resolve
+    latch — the first build after the mention, the closest observable moment to the mention itself.
+    Content-addressing dedups unchanged files for free; a changed file simply stores a new blob. The
+    store is bounded: past _PIN_STORE_MAX_BYTES the oldest-mtime blobs go, and a message whose pin was
+    evicted falls back to the live file — exactly today's behavior, a nicety lost, never data.
+    Returns the pin id (sha256 + original extension) or None (not an image, oversize, unreadable)."""
+    ext = os.path.splitext(fp)[1].lower()
+    if ext not in _IMG_MIME:
+        return None
+    try:
+        if os.path.getsize(fp) > _PREVIEW_MAX_BYTES:   # /file would 413 it anyway — nothing to pin
+            return None
+        with open(fp, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    pid = hashlib.sha256(raw).hexdigest() + ext
+    d = _pin_dir()
+    dst = d / pid
+    try:
+        if not dst.exists():
+            tmp = d / (pid + ".tmp.%d" % os.getpid())
+            tmp.write_bytes(raw)
+            os.replace(tmp, dst)
+            # bound the store on the write event, oldest first (mtime; serves don't touch it — a pin
+            # for a busy old chat can age out, and the fallback is the live file)
+            try:
+                rows = [(e.stat().st_mtime, e.stat().st_size, e.path)
+                        for e in os.scandir(d) if e.is_file() and not e.name.endswith(".tmp")]
+                total = sum(sz for _, sz, _ in rows)
+                for _, sz, path_ in sorted(rows):
+                    if total <= _PIN_STORE_MAX_BYTES:
+                        break
+                    os.unlink(path_)
+                    total -= sz
+            except OSError:
+                pass
+    except OSError:
+        return None
+    return pid
+
+
+def _pin_for(target, sid):
+    """The pin for a freshly-RESOLVED open target (token or repo-relative path) — absolute-resolved the
+    same way a click is, so the snapshot reads the same file the user would open."""
+    ap = _resolve_open_path(target, sid)
+    if os.path.isabs(ap) and os.path.isfile(ap):
+        return _pin_mention(ap)
+    return None
+
+
 def _path_links(md, sid, uuid, memo):
     """Path-shaped tokens in `md` the filesystem VERIFIES → {token: open target}, shipped as pathLinks
     on the chat event. Returns None when the message has no candidate tokens at all (the common message
@@ -19402,8 +19499,9 @@ def _path_links(md, sid, uuid, memo):
     hit = _PATH_LINK_CACHE.get(key)
     if hit is None:
         hit = ({}, tuple(t for t in _path_tokens(md)
-                         if not t.lower().startswith("file://")))   # file:// stays the client's verbatim link, ungated
-    links, misses = hit
+                         if not t.lower().startswith("file://")),   # file:// stays the client's verbatim link, ungated
+               {})
+    links, misses, pins = hit if len(hit) == 3 else (hit[0], hit[1], {})
     if misses:
         still = []
         for tok in misses:
@@ -19412,10 +19510,13 @@ def _path_links(md, sid, uuid, memo):
                 still.append(tok)
             else:
                 links[tok] = r
+                pin = _pin_for(r, sid)                    # the resolve moment IS the mention-time snapshot
+                if pin:                                   # (see _pin_mention) — latched with the link, so an
+                    pins[r] = pin                         # overwrite can never rewrite this message's embed
         misses = tuple(still)
     if len(_PATH_LINK_CACHE) > 50000:                     # runaway backstop; one entry per rendered message
         _PATH_LINK_CACHE.clear()
-    _PATH_LINK_CACHE[key] = (links, misses)
+    _PATH_LINK_CACHE[key] = (links, misses, pins)
     return dict(links) if (links or misses) else None
 
 
@@ -23799,6 +23900,15 @@ class Handler(BaseHTTPRequestHandler):
         fp = _resolve_open_path((q.get("path") or [""])[0], (q.get("sid") or [None])[0])
         if (q.get("download") or [""])[0] == "1":
             return self._file_download(fp, head=head)
+        # A mention-time PIN (see _pin_mention): serve the snapshot this message's embed latched, so a
+        # later overwrite of the same filename can never rewrite an old message's picture. The id is
+        # strictly shape-validated and joined only onto the pin dir (no traversal); a pin whose blob
+        # was evicted falls back to the LIVE file below — a nicety lost, never an error.
+        pin = (q.get("pin") or [""])[0]
+        if pin and _PIN_ID_RE.match(pin):
+            pf = _pin_dir() / pin
+            if pf.is_file():
+                fp = str(pf)
         mime = _PREVIEW_MIME.get(os.path.splitext(fp)[1].lower())
         text = not mime and _is_text_path(fp)
         if text:

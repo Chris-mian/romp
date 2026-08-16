@@ -81,8 +81,8 @@ type TaskOutputs = Record<string, { command: string; output: string }>;
 type ChatEvent = (
   // mid/mids: postal message ids the kernel could NOT resolve into cards, carried on the raw turn so a
   // timeline arc into it still lands (see _hydrate_postal's unresolved path)
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; spacePaths?: string[]; pathLinks?: Record<string, string> }
-  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string> }   // spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string> }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string> }   // spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
       kind: "tool";
@@ -1030,7 +1030,7 @@ const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]|
 // kernel, a cached payload) keeps today's shape-only linking rather than unlinking history.
 // file:// URIs are explicit absolute paths — never gated on the map.
 function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[],
-                         pathLinks?: Record<string, string>): void {
+    pathLinks?: Record<string, string>, pathPins?: Record<string, string>): void {
   const previewable: string[] = [];   // renderable paths found in this message → full renders at their mentions
   const mentionAt = new Map<string, HTMLElement>();   // path → its FIRST mention's element (figure anchor)
   const kernelVerified = new Set<string>();           // paths the kernel stat'd — their previews fail loudly, never silently
@@ -1107,7 +1107,7 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
     const BLOCK_SEL = "p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th";
     const strips = new Map<HTMLElement, HTMLElement>();   // figure anchor → its strip (same block shares one)
     for (const p of previewable.slice(0, 4)) {
-      const full = canPreview() ? previewFull(p, activeId, kernelVerified.has(p))
+      const full = canPreview() ? previewFull(p, activeId, kernelVerified.has(p), (pathPins || {})[p])
         : previewKind(p) === "img" ? buildPathImg(p) : null;
       if (!full) continue;
       const block = mentionAt.get(p)?.closest(BLOCK_SEL) as HTMLElement | null;
@@ -1842,7 +1842,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         if (more) {
           const full = el("div", "nudge-full md");
           full.innerHTML = md(raw);
-          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks);
+          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins);
           bubble.appendChild(full);
           bubble.classList.add("nudge-collapsible");
           // toggle rides the stable document.body delegate (data-act), NOT a per-render listener —
@@ -1855,7 +1855,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         }
       } else if (ev.md) {
         bubble.innerHTML = md(ev.md);
-        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks);   // bare file:// URLs in a message → clickable (open in the host's default app)
+        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins);   // bare file:// URLs in a message → clickable (open in the host's default app)
       }
       // images, IN the bubble (part of his message): thumbnail + open/copy caption;
       // a literal path in the typed text becomes the same open-link inline.
@@ -2004,7 +2004,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const body = el("div", "assistant md");
     body.innerHTML = md(ev.md);
     highlight(body);
-    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks);   // bare file:// URLs + verified spaced filenames → clickable
+    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins);   // bare file:// URLs + verified spaced filenames → clickable
     turn.appendChild(body);
     return turn;
   }

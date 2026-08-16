@@ -19,7 +19,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 
 test("previewFull renders the image itself; a PDF is a click-to-view CARD, never an auto-loading frame", () => {
-  assert.match(PREVIEW, /export function previewFull\(path: string, sid\?: string \| null, verified = false\): HTMLElement \| null/);
+  assert.match(PREVIEW, /export function previewFull\(path: string, sid\?: string \| null, verified = false, pin\?: string\): HTMLElement \| null/);
   assert.match(PREVIEW, /img\.className = "path-full-img";/);
   // NO inline <iframe> for PDFs (2026-07-20): a browser set to "Download PDFs" saved a fresh copy on
   // EVERY chat re-render — the Downloads folder silently filled. The fetch must be user-initiated.
@@ -86,7 +86,7 @@ test("a failed preview heals on the next kernel push — the kernel-is-back even
 });
 
 test("the chat uses the FULL render on web, and the host data-URL flow for images in VS Code", () => {
-  assert.match(RENDER, /const full = canPreview\(\) \? previewFull\(p, activeId, kernelVerified\.has\(p\)\)\s*\n\s*: previewKind\(p\) === "img" \? buildPathImg\(p\) : null;/);
+  assert.match(RENDER, /const full = canPreview\(\) \? previewFull\(p, activeId, kernelVerified\.has\(p\), \(pathPins \|\| \{\}\)\[p\]\)\s*\n\s*: previewKind\(p\) === "img" \? buildPathImg\(p\) : null;/);
   assert.doesNotMatch(RENDER, /previewThumb/, "the chat no longer renders mention thumbnails — full renders now");
 });
 
