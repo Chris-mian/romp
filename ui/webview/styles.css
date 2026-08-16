@@ -2301,6 +2301,10 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 .path-full-pdfcard { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px;
   border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(0, 0, 0, 0.25); }
 .path-full-pdfcard:hover { border-color: var(--accent); }
+/* a whole-backtick URL, tappable but still dressed as code (render.ts linkifyFileUris) */
+.url-code-link { text-decoration: none; cursor: pointer; }
+.url-code-link code { text-decoration: underline dotted; text-underline-offset: 2px; }
+.url-code-link:hover code { color: var(--accent); }
 /* a kernel-VERIFIED preview whose bytes failed to arrive (restart, tunnel blip) — visible, retryable,
    never silently removed (preview.ts previewFull) */
 .path-full-retry { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 8px;
