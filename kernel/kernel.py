@@ -8185,6 +8185,38 @@ def _tunnel_proc_alive(r):
     return bool(p) and p.poll() is None
 
 
+def _demand_redial(host, kind):
+    """A DATA PATH just hit this host's tunnel dead — a preview relay, a WS splice, a forwarded op,
+    a postal delivery. That demand is an EVENT (the user 2026-08-16, on flaky wifi: the backoff
+    ladder reaches 300-900s while they sit there retrying — anything they do that needs the tunnel
+    should re-send the connect signal, the way the network panel's own Try-now does): clear the
+    ladder and wake the supervisor to dial NOW. Evidence-proportional, mirroring attach_remote:
+      kind "refused"  — the local -L listener refused/reset: the ssh is dead or dying; put a still-
+                        breathing zombie down so the fresh dial owns the ports.
+      kind "timeout"  — an accepted connection starved: the half-dead shape, OR just a slow remote
+                        kernel. Counts as one silent poll (the same evidence class _poll_remote_sids
+                        files), so the woken supervisor's immediate pass decides — one more silent
+                        poll tears down and re-dials; an answered one clears the miss.
+    Self-limiting: a dial already in flight ("starting"/"authorizing" with a live proc) is left to
+    finish — each user action buys at most one fresh dial, never a storm."""
+    with _remotes_lock:
+        r = _remotes.get(host)
+        if not r or r.get("checkin_peer"):
+            return
+        alive = _tunnel_proc_alive(r)
+        if alive and r.get("status") in ("starting", "authorizing"):
+            return                                   # a dial is mid-flight — the demand is already served
+        r["fails"], r["next_try"] = 0, 0
+        if alive and kind == "refused":
+            try:
+                r["proc"].terminate()
+            except OSError:
+                pass
+        elif alive and kind == "timeout":
+            r["misses"] = max(r.get("misses", 0), STALE_MISSES - 1)
+    _tunnel_wake.set()
+
+
 def _tunnel_status(proc_alive, port_up, remote_answered):
     """The tunnel row's TRUE status. `port_up` (the local -L listener accepting) said 'up' on its own
     for a dead far end — ssh accepts the local connect, then resets when the remote side refuses — so a
@@ -8674,7 +8706,9 @@ def _remote_forward(r, path, body):
         data = resp.read()
         c.close()
         return json.loads(data.decode("utf-8") or "{}") if resp.status == 200 else None
-    except Exception:
+    except Exception as e:
+        # a forwarded op hitting a dead tunnel is USER DEMAND — re-send the connect signal
+        _demand_redial(r.get("host") or "", "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
         return None
 
 
@@ -24787,6 +24821,20 @@ class Handler(BaseHTTPRequestHandler):
                 if pub is None:
                     return self._send(404, json.dumps({"ok": False, "error": "no attached host '%s' — attach it first" % host}), "application/json")
                 return self._send(200, json.dumps({"ok": True, "tunnel": pub}), "application/json")
+            if u.path == "/redial":
+                # A CONSUMER just needed a host and found it unreachable (the postal bus parking mail,
+                # the composer refusing a send to a downed host): user demand, so re-send the connect
+                # signal now instead of waiting out the backoff ladder (the user 2026-08-16, on flaky
+                # wifi). Best-effort by design — an unknown host is a quiet no-op, never an error the
+                # caller has to handle on top of the failure it is already reporting.
+                try:
+                    body = json.loads(raw_body or b"{}")
+                except Exception:
+                    body = {}
+                h = str((body or {}).get("host") or "")
+                if h:
+                    _demand_redial(h, "timeout")
+                return self._send(200, json.dumps({"ok": True}), "application/json")
             if u.path == "/tunnels/autoupdate":
                 # The popover's "Automatically update" checkbox. Body: {"on": bool}. Fleet-wide, not per-host
                 # and not per-tab: the push must fire once per advance from the kernel's own supervisor.
@@ -25413,6 +25461,9 @@ class Handler(BaseHTTPRequestHandler):
             # requested path: that's what the client's element cache is waiting on.
             _reply(client, {"type": "imgData", "path": p,
                             "url": _img_data_url(_resolve_open_path(p, msg.get("id")))})
+        elif msg and msg.get("type") == "redial" and msg.get("host"):
+            # the composer just refused a send to a downed host — user demand, dial it now (2026-08-16)
+            _demand_redial(str(msg["host"]), "timeout")
         elif msg and msg.get("type") == "dropFile" and msg.get("name") and msg.get("b64"):
             fp = _save_dropped_file(str(msg["name"]), str(msg["b64"]))   # bytes → saved file → insert its path
             if fp:
@@ -25578,8 +25629,9 @@ class Handler(BaseHTTPRequestHandler):
             q["token"] = [rtok]      # the remote's own credential; whatever the browser sent means nothing there
         try:
             up = socket.create_connection(("127.0.0.1", int(port)), timeout=6)
-        except OSError:
-            return self._send(502, "tunnel to %s is not answering" % host, "text/plain")
+        except OSError as e:
+            _demand_redial(host, "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
+            return self._send(502, "tunnel to %s is not answering — re-dialing now" % host, "text/plain")
         up.settimeout(None)          # create_connection's timeout would otherwise cut the long-lived splice
         lines = ["GET /ws?%s HTTP/1.1" % urlencode(q, doseq=True),
                  "Host: 127.0.0.1:%d" % int(port)]
@@ -25696,8 +25748,10 @@ class Handler(BaseHTTPRequestHandler):
             status, ctype = resp.status, mime          # OUR mime, never resp.getheader("Content-Type")
             clen = resp.getheader("Content-Length")
             crange = resp.getheader("Content-Range") or ""
-        except (OSError, http.client.HTTPException):
-            return self._send(502, b"" if head else ("tunnel to %s is not answering" % host), "text/plain")
+        except (OSError, http.client.HTTPException) as e:
+            _demand_redial(host, "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
+            return self._send(502, b"" if head else ("tunnel to %s is not answering — re-dialing now" % host),
+                              "text/plain")
         finally:
             try:
                 conn.close()
@@ -25761,7 +25815,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(resp.status, body, "text/plain", cache="no-cache")
                 clen = resp.getheader("Content-Length")
             except (OSError, http.client.HTTPException):
-                return self._send(502, b"" if head else ("tunnel to %s is not answering" % host), "text/plain")
+                _demand_redial(host, "timeout")
+                return self._send(502, b"" if head else ("tunnel to %s is not answering — re-dialing now" % host),
+                                  "text/plain")
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Disposition",
