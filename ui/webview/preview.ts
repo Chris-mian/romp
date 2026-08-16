@@ -218,6 +218,7 @@ export function previewFull(path: string, sid?: string | null, verified = false,
     let got = 0;
     let total = 0;
     let fetching = false;                            // one managed attempt at a time (a tap mid-fetch no-ops)
+    let lastErr = "";                                // the newest attempt's server-side reason, shown verbatim
     const showChip = () => {
       if (!box.isConnected) return;                  // the turn re-rendered; a fresh box owns this spot now
       // ONE continuous narrative while the machinery is still going (the user 2026-08-16, third
@@ -233,7 +234,7 @@ export function previewFull(path: string, sid?: string | null, verified = false,
         const wait = mkWait(box);
         wait.title = path + " — tap to retry now";
         wait.style.cursor = "pointer";
-        wait.onclick = (ev) => { ev.stopPropagation(); build(true); };
+        wait.onclick = (ev) => { ev.stopPropagation(); autoRetries = 3; build(true); };   // a tap re-arms persistence
         const spin = document.createElement("img");
         spin.className = "path-load-spin";
         spin.src = "/media/romp-swirl-glyph.svg";
@@ -241,7 +242,7 @@ export function previewFull(path: string, sid?: string | null, verified = false,
         const note = document.createElement("span");
         note.className = "path-load-note";
         note.textContent = (got > 0 ? "connection dropped at " + fmtBytes(got, total)
-                                    : "connection dropped")
+                                    : lastErr || "connection dropped")
                            + " — retrying · tap to retry now";
         wait.append(spin, note);
         if (fails > 1) {
@@ -256,10 +257,11 @@ export function previewFull(path: string, sid?: string | null, verified = false,
       // the budget is spent: three attempts gained nothing (progress refills it), so say so plainly
       chip.textContent =
         (got > 0 ? "⚠ connection dropped at " + fmtBytes(got, total)
+                 : lastErr ? "⚠ " + lastErr
                  : (fails > 1 ? "⚠ still unavailable" : "⚠ preview unavailable"))
         + " — tap to retry";
       chip.title = path;
-      chip.onclick = (ev) => { ev.stopPropagation(); build(true); };
+      chip.onclick = (ev) => { ev.stopPropagation(); autoRetries = 3; build(true); };   // a tap re-arms persistence
       wait.appendChild(chip);
       if (fails > 1) {
         chip.classList.add("path-retry-flash");
@@ -295,7 +297,11 @@ export function previewFull(path: string, sid?: string | null, verified = false,
         parts = []; got = 0;                         // full body (no range asked, or the server restarted us)
         total = parseInt(r.headers.get("Content-Length") || "0", 10) || 0;
       } else {
-        throw new Error("http " + r.status);
+        // the error BODY is the diagnostic (the kernel's 502 says "tunnel to <host> is not
+        // answering") — a bare status code hid that the IMAGE was fine and the LINK was down
+        let why = "";
+        try { why = ((await r.text()) || "").split("\n")[0].slice(0, 120); } catch { /* body unavailable */ }
+        throw new Error(why || "http " + r.status);
       }
       const reader = r.body!.getReader();
       try {
@@ -345,13 +351,16 @@ export function previewFull(path: string, sid?: string | null, verified = false,
       wait.append(spin, note);
       resumeFetch(note).then((objUrl) => {
         fetching = false;
+        lastErr = "";
         rememberResolved(url, objUrl);
         loadedOnce.add(url);                         // re-renders skip the cue — the bytes are in hand
         if (!box.isConnected) return;
         box.textContent = "";
         box.appendChild(mkImg(objUrl));
-      }).catch(() => {
+      }).catch((e: unknown) => {
         fetching = false;
+        lastErr = String((e as Error)?.message || "");
+        if (lastErr.startsWith("cut at ")) lastErr = "";   // a mid-stream cut narrates via got/fmtBytes
         if (!verified) { box.remove(); return; }
         failAfterBeat(started);
       });
