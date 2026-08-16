@@ -1181,6 +1181,11 @@ const cardTreeExpanded = new Set<string>();
 // above are exactly the state worth carrying: what the USER chose to open. Everything else module-level here
 // is a DOM cache or an in-flight optimistic record, and restoring those would resurrect predictions made
 // against a kernel that no longer exists — see feed-view-state.ts.
+// Stacked-layout column state (the user 2026-08-16): which categories are folded to their header, and
+// the dragged top-down order. Layout state, not card state — prune-exempt, persisted with the rest.
+const collapsedCols = new Set<string>();
+let stackOrder: string[] = [];                       // [] = the CSS default (Completed, Blocked, Working)
+
 (function hydrateViewState() {
   let st;
   try { st = parseViewState(localStorage.getItem(VIEW_STATE_KEY)); } catch { return; }   // private mode / blocked storage → run without it
@@ -1190,13 +1195,16 @@ const cardTreeExpanded = new Set<string>();
   for (const k of st.logs) nodeLogOpen.add(k);
   for (const k of st.asks) expandedAsks.add(k);
   for (const k of st.threads) collapsedThreads.add(k);
+  for (const k of st.cols) collapsedCols.add(k);
+  stackOrder = st.order.slice();
 })();
 
 function currentViewState(): FeedViewState {
   const sec: Record<string, string> = {};
   secChoice.forEach((v, k) => { sec[k] = v; });
   return { v: 1, sec, tree: [...cardTreeExpanded], nodes: [...collapsedNodes], logs: [...nodeLogOpen],
-           asks: [...expandedAsks], threads: [...collapsedThreads] };
+           asks: [...expandedAsks], threads: [...collapsedThreads], cols: [...collapsedCols],
+           order: stackOrder.slice() };
 }
 
 // Written at the END of every render rather than from each toggle handler: the feed re-renders on every
@@ -3164,6 +3172,72 @@ function ensureSessionFilter(): HTMLElement {
 // rebuild if torn down (empty state). "Awaiting" (the user's ruling 2026-06-10):
 // matches the session-chip vocabulary — anything here awaits HIM (a question,
 // an action like reload, an idea), red like the awaiting chip.
+const STACK_DEFAULT = ["completed", "needsInput", "asks"];   // the CSS default top-down stacking
+
+// Paint the stacked-column state: each section's fold (list hidden, caret pointed) and its top-down
+// slot (a --stack-order var the container query applies — the side-by-side layout ignores it, so a
+// drag in the narrow view never rearranges the wide one). Idempotent; runs at build and per toggle.
+function applyColStack(): void {
+  const order = stackOrder.length === 3 ? stackOrder : STACK_DEFAULT;
+  for (const key of ["asks", "needsInput", "completed"]) {
+    const col = document.querySelector<HTMLElement>(".feed-col.col-" + key);
+    if (!col) continue;
+    const folded = collapsedCols.has(key);
+    col.classList.toggle("col-collapsed", folded);
+    col.style.setProperty("--stack-order", String(order.indexOf(key) + 1));
+    const fold = col.querySelector<HTMLElement>(".fcol-fold");
+    if (fold) {
+      fold.textContent = folded ? "▸" : "▾";
+      fold.setAttribute("aria-expanded", String(!folded));
+    }
+  }
+}
+
+// Drag a section header by its grip to re-slot the category in the STACK (pointer events, capture on
+// the grip so the drag survives leaving it). Only the stacked layout listens: in the side-by-side
+// layout the grip is display:none. The order updates live while dragging (flex `order` reflows), and
+// the drop persists it.
+function wireColDrag(grip: HTMLElement, col: HTMLElement, key: string): void {
+  grip.addEventListener("pointerdown", (down) => {
+    down.preventDefault();
+    down.stopPropagation();
+    grip.setPointerCapture(down.pointerId);
+    col.classList.add("col-dragging");
+    const move = (ev: PointerEvent) => {
+      const order = (stackOrder.length === 3 ? stackOrder : STACK_DEFAULT).slice();
+      const from = order.indexOf(key);
+      // the slot whose vertical midpoint the pointer is past — walk the OTHER two sections' rects
+      let to = from;
+      for (const other of order) {
+        if (other === key) continue;
+        const oc = document.querySelector<HTMLElement>(".feed-col.col-" + other);
+        if (!oc) continue;
+        const r = oc.getBoundingClientRect();
+        const mid = r.top + r.height / 2;
+        const oi = order.indexOf(other);
+        if (oi < from && ev.clientY < mid) { to = Math.min(to, oi); }
+        if (oi > from && ev.clientY > mid) { to = Math.max(to, oi); }
+      }
+      if (to !== from) {
+        order.splice(from, 1);
+        order.splice(to, 0, key);
+        stackOrder = order;
+        applyColStack();
+      }
+    };
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+      col.classList.remove("col-dragging");
+      persistViewState();
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
+  });
+}
+
 function ensureCols(list: HTMLElement) {
   if (!document.getElementById("feed-cols")) {
     list.innerHTML = "";
@@ -3175,14 +3249,31 @@ function ensureCols(list: HTMLElement) {
     for (const [key, label, chip] of [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]] as const) {
       const col = el("div", "feed-col col-" + key);
       const head = el("div", "feed-col-head");
+      // stacked-layout furniture (the user 2026-08-16), both hidden in the side-by-side layout by CSS:
+      // a caret LEFT of the chip folds the whole category to its header, and a grip (hover-revealed on
+      // pointer devices, faintly visible on touch) drags the section to a new spot in the stack. These
+      // live on the build-once header, so they are click-safe across the feed's constant re-renders.
+      const fold = el("button", "fcol-fold");
+      fold.setAttribute("aria-label", "Collapse " + label);
+      fold.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (collapsedCols.has(key)) collapsedCols.delete(key); else collapsedCols.add(key);
+        applyColStack();
+        persistViewState();
+      });
       const name = el("span", "feed-col-name fcol-chip fcol-chip-" + chip); name.textContent = label;
       const count = el("span", "feed-col-count"); count.id = "col-" + key + "-count";
-      head.append(name, count);
+      const grip = el("span", "fcol-grip");
+      grip.textContent = "⠿";
+      grip.title = "drag to reorder";
+      wireColDrag(grip, col, key);
+      head.append(fold, name, count, grip);
       const body = el("div", "feed-col-list"); body.id = "col-" + key + "-list";
       col.append(head, body);
       cols.appendChild(col);
     }
     list.appendChild(cols);
+    applyColStack();
   }
   return {
     asks: document.getElementById("col-asks-list")!,

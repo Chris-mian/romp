@@ -142,15 +142,34 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 
 /* responsive: stack the three columns when the panel is too narrow for them to
    sit side by side — prevents thin columns that break words mid-word ("Shippe/d") */
+/* the stacked layout's header furniture (the user 2026-08-16) exists ONLY there — hidden by default,
+   revealed inside the container query below. The fold caret wears the .feed-sess-fold treatment (dim,
+   thumb-padded); the grip is quiet-until-wanted on pointer devices and faintly present on touch, where
+   hover does not exist and the stacked layout is the primary one. */
+.fcol-fold, .fcol-grip { display: none; }
+.feed-col.col-collapsed .feed-col-list { display: none; }   /* folded: the header (chip + count) stands in */
+
 @container (max-width: 540px) {
   .feed-cols { flex-direction: column; }
-  /* stacked, the columns read TOP-DOWN as Completed → Blocked (needs you) → Working (the user 2026-07-30,
-     moving Completed up from the middle; supersedes the 2026-07-08 Blocked-first order): what finished
-     first, then what needs you, then what's still running. DOM order stays Working/Blocked/Completed
-     (unchanged for the side-by-side layout); `order` only re-sequences the stacked case. */
-  .feed-col.col-completed  { order: 1; }
-  .feed-col.col-needsInput { order: 2; }
-  .feed-col.col-asks       { order: 3; }
+  /* stacked, the columns read TOP-DOWN as Completed → Blocked (needs you) → Working by default (the
+     user 2026-07-30, moving Completed up from the middle; supersedes the 2026-07-08 Blocked-first
+     order): what finished first, then what needs you, then what's still running. DOM order stays
+     Working/Blocked/Completed (unchanged for the side-by-side layout); `order` only re-sequences the
+     stacked case — and a dragged section (feed.ts applyColStack) overrides via --stack-order, so the
+     user's arrangement wins and survives reloads with the rest of the view state. */
+  .feed-col.col-completed  { order: var(--stack-order, 1); }
+  .feed-col.col-needsInput { order: var(--stack-order, 2); }
+  .feed-col.col-asks       { order: var(--stack-order, 3); }
+  .fcol-fold { display: inline-block; flex: none; padding: 0 6px 0 2px; color: var(--dim);
+    background: transparent; border: 0; font: inherit; font-weight: 400; line-height: 1;
+    cursor: pointer; transition: color 0.12s ease; }
+  .fcol-fold:hover, .fcol-fold:focus-visible { color: var(--fg); }
+  .fcol-grip { display: inline-block; margin-left: auto; padding: 0 4px; color: var(--dim);
+    cursor: grab; opacity: 0; transition: opacity 0.12s ease; touch-action: none; user-select: none; }
+  .feed-col-head:hover .fcol-grip, .fcol-grip:focus-visible { opacity: 1; }
+  @media (hover: none) { .fcol-grip { opacity: 0.35; } }   /* touch has no hover — keep it findable */
+  .feed-col.col-dragging { opacity: 0.75; }
+  .feed-col.col-dragging .fcol-grip { cursor: grabbing; opacity: 1; }
 }
 
 /* ---------- ask card (the inbox unit): three rows (the user 2026-06-14) ---------- */
