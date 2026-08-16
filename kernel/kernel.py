@@ -4608,7 +4608,7 @@ def _apply_new_session_prefs(sid, body):
     return out
 
 
-def _create_sdk_session(nm, cwd, auth=""):
+def _create_sdk_session(nm, cwd, auth="", prefs=None):
     """Create + open a new SDK-backed session, ACK-FAST (the user 2026-07-14, who asked why it took so long
     to open a new SDK session). spawn() is file writes and connect() is threaded (~0.4s to a booting
     CLI) — the 7-10s the user waited was the handler's inline _push_all(): a new session invalidates the
@@ -4619,15 +4619,24 @@ def _create_sdk_session(nm, cwd, auth=""):
     (the push-architecture rule, 2026-07-05) — but DO push this ONE session's tab+payload directly
     (_push_session_now, one near-free transcript-less build): the dirty wake alone left the tab riding
     the next full cycle, ~5-6s on a busy fleet, all of it spent staring at the provisional dots
-    (measured live, the user 2026-08-10)."""
+    (measured live, the user 2026-08-10).
+
+    `prefs`: the /new body's per-spawn model/effort pins, applied BETWEEN spawn and connect so the FIRST
+    connect's options carry them (--effort is connect-time). Applied after connect they RACED it:
+    set_effort's request_reconnect armed a teardown of the just-connected client, and a `romp new -m`
+    kickoff fed into that dying client's stdin was cancelled mid-delivery and landed nowhere (a fresh
+    spawn's briefing sat as a dropped echo for 5.5h on a conversation that never started, 2026-08-16).
+    Pre-connect there is no session object yet, so the setters are pure reg writes the connect reads —
+    no reconnect exists to race. Returns (sid, echo) — echo is the applied-prefs ack for /new's reply."""
     bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
     _commands_for_cwd(cwd)   # pre-warm the slash-command list — a new session predicts a composer (the user 2026-08-13)
     sid = _sdk().spawn(nm, cwd, bg, fg, auth=auth)
+    extra = _apply_new_session_prefs(sid, prefs or {})
     _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
     _reveal_chat({"type": "focus", "id": sid})
     _mark_views_dirty()
     _push_session_now(sid)   # the tab the user is staring at, ahead of the woken cycle
-    return sid
+    return sid, extra
 
 
 def _fork_session(parent_sid, cut_msg_uuid, new_name, now=None):
@@ -24392,8 +24401,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send(200, json.dumps({"ok": False, "error": SDK_SETUP_HINT}),
                                           "application/json")
                     a = (b or {}).get("auth")
-                    sid = _create_sdk_session(nm, cwd, auth=(a if a in ("login", "key") else ""))
-                    extra = _apply_new_session_prefs(sid, b)
+                    sid, extra = _create_sdk_session(nm, cwd, auth=(a if a in ("login", "key") else ""),
+                                                     prefs=b)   # pins ride the FIRST connect — see the def
                     return self._send(200, json.dumps({"ok": True, "id": sid, "dir": cwd, **extra}),
                                       "application/json")
                 threading.Thread(target=_spawn_session, args=(nm, cwd), daemon=True).start()
