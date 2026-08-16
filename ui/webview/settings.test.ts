@@ -57,7 +57,7 @@ test("a stale stored backend field is STRIPPED on load (the setting retired with
   // a store written before the removal may still hold one; the setting is gone, so it must never
   // read back as a live choice
   store["romp:settings"] = JSON.stringify({ backend: "tmux" });
-  assert.equal((loadSettings() as Record<string, unknown>).backend, undefined);
+  assert.equal((loadSettings() as unknown as Record<string, unknown>).backend, undefined);
 });
 
 test("saveSettings persists a patch and merges over defaults", () => {

@@ -42,6 +42,370 @@ ROMP_CAPTIONS_DIR="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}
 
 
 # --- Subcommand dispatch ---
+# Arrow-key menu over pre-rendered "<normal>\t<highlight>" rows (each row brings
+# its own colors for the unselected and selected states). Reads keystrokes from
+# and draws to the controlling terminal directly, so it works even while this
+# function's stdout is captured. Echoes the 1-based index of the chosen row, or
+# nothing if cancelled (Esc/q). Arrow keys move; Enter selects.
+# ROMP_MENU_IN / ROMP_MENU_OUT override the terminal (used by the tests).
+# Integer `read -t` on purpose: bash 3.2 rejects fractional timeouts.
+_romp_menu() {
+    local -a items=("$@")
+    local n=${#items[@]} sel=0 top=0 key rest i normal highlight
+    local in="${ROMP_MENU_IN:-/dev/tty}" out="${ROMP_MENU_OUT:-/dev/tty}"
+    local rows vis hdr above below frame
+    (( n > 0 )) || return 0
+    exec 4<"$in" 2>/dev/null || return 0
+    # Own full-screen UI on the alternate buffer. The trap guarantees we drop
+    # back to the ORIGINAL screen (and restore the cursor) on EVERY exit path —
+    # selection, Esc/q, or Ctrl-C — so cancelling never leaves the alt screen on
+    # or a half-drawn menu behind. We redraw in place each frame (home + clear-
+    # to-EOL per line + clear-to-end) instead of a full \033[2J wipe, so frames
+    # don't flash; and only the rows that fit are drawn (the viewport below), so
+    # a list taller than the terminal scrolls within the window instead of
+    # overflowing the screen.
+    # \033[?7l turns OFF autowrap so a row wider than the terminal is hard-cut at
+    # the right margin instead of wrapping onto the next line (escape sequences
+    # still execute, so colors never get stuck); the trap restores it (\033[?7h)
+    # alongside the cursor and the original screen on every exit path.
+    trap "printf '\\033[?25h\\033[?7h\\033[?1049l' >$out 2>/dev/null" EXIT INT TERM
+    printf '\033[?1049h\033[?7l\033[?25l' >"$out"
+    while true; do
+        # Terminal height, re-read each frame so a resize is picked up. Reserve 3
+        # lines (header + the "▲ more"/"▼ more" markers above and below); the rest
+        # is the scrolling viewport. When the size is unknown (output isn't a tty,
+        # e.g. under the tests) fall back to a height that shows everything.
+        rows="$(stty size <&4 2>/dev/null)"; rows="${rows%% *}"
+        [[ "$rows" =~ ^[0-9]+$ ]] || rows=$(( n + 3 ))
+        vis=$(( rows - 3 )); (( vis < 1 )) && vis=1; (( vis > n )) && vis=$n
+        # Scroll the window so the selection stays inside [top, top+vis).
+        (( sel < top ))        && top=$sel
+        (( sel >= top + vis )) && top=$(( sel - vis + 1 ))
+        (( top > n - vis ))    && top=$(( n - vis ))
+        (( top < 0 ))          && top=0
+        # Build the whole frame as one string, then write it in a single shot so
+        # there's no tearing. Structural escapes use $'' (real ESC bytes) so the
+        # pre-rendered row strings drop in verbatim with %s.
+        if (( n > vis )); then
+            hdr="Resume which session?   (Esc / q to cancel)   [$(( sel + 1 ))/$n]"
+        else
+            hdr="Resume which session?   (Esc / q to cancel)"
+        fi
+        if (( top > 0 ));       then above=$'  \033[38;2;120;120;120m\342\226\262 more\033[0m'; else above=''; fi
+        if (( top + vis < n )); then below=$'  \033[38;2;120;120;120m\342\226\274 more\033[0m'; else below=''; fi
+        frame=$'\033[H\033[2K'"$hdr"$'\n\033[2K'"$above"$'\n'
+        for (( i = top; i < top + vis; i++ )); do
+            IFS=$'\t' read -r normal highlight <<< "${items[$i]}"
+            if (( i == sel )); then frame+=$'\033[2K'"$highlight"$'\n'
+            else                    frame+=$'\033[2K'"$normal"$'\n'; fi
+        done
+        frame+=$'\033[2K'"$below"$'\033[J'
+        printf '%s' "$frame" > "$out"
+        IFS= read -rsn1 -u 4 key || { sel=-1; break; }
+        if [[ "$key" == $'\e' ]]; then
+            IFS= read -rsn2 -t 1 -u 4 rest || rest=""
+            case "$rest" in
+                '[A'|'OA') (( sel > 0 ))     && sel=$(( sel - 1 )) ;;
+                '[B'|'OB') (( sel < n - 1 )) && sel=$(( sel + 1 )) ;;
+                *)         sel=-1; break ;;
+            esac
+        else
+            case "$key" in
+                q)              sel=-1; break ;;
+                ''|$'\n'|$'\r') break ;;
+            esac
+        fi
+    done
+    exec 4<&-
+    if (( sel >= 0 )); then printf '%s\n' "$(( sel + 1 ))"; fi
+    return 0
+}
+
+# Map a romp palette hex to the nearest Claude `/color` name (empty if none).
+# Claude's prompt-box pill supports ONLY these 8 named colors — no custom hex —
+# so this is an approximate match to the exact romp identity color.
+_romp_named_for_hex() {   # <hex>
+    case "$1" in
+        '#1EA1EB') echo blue   ;;
+        '#54B204') echo green  ;;
+        '#9088F0') echo purple ;;
+        '#4EA8A9') echo cyan   ;;
+        '#DD42FF') echo pink   ;;
+        '#E87221') echo orange ;;
+        '#98998A') echo yellow ;;
+        '#F85B5A') echo red    ;;
+        '#F9D849') echo yellow ;;
+    esac
+}
+
+# Render one picker row as "<normal>\t<highlight>". Columns, in order: NAME (in
+# its identity truecolor) · TIME (gray) · SUMMARY (the last cached Haiku phrase,
+# colored by kind: request=teal, reply=gray, error=red) · PATH (gray). The
+# highlight is a white bar with DARKENED foregrounds so everything stays readable
+# on white. Name and time are fixed-width so the summary and path align across
+# rows; the summary column is present only when requested (sum_w>0).
+# Args: <mtime> <name> <dir> <rgb-or-empty> <now-epoch> [sum_w] [sum_kind] [sum_text] [cols]
+# <cols> is the terminal width; when given (>0) the directory is clipped so the
+# row truncates instead of wrapping on a narrow terminal. 0/absent => no clip.
+_romp_render_row() {
+    local mt="$1" nm="$2" dir="$3" rgb="$4" now="$5"
+    local sum_w="${6:-0}" sum_kind="${7:-}" sum_txt="${8:-}" cols_avail="${9:-0}"
+    [[ "$cols_avail" =~ ^[0-9]+$ ]] || cols_avail=0
+    local d age np age_seg R G B dR dG dB norm high
+    local srgb seg sR sG sB dsR dsG dsB E=$'\033'
+    d=$(( now - mt ))
+    if   (( d < 60 ));    then age="${d}s"
+    elif (( d < 3600 ));  then age="$(( d / 60 ))m"
+    elif (( d < 86400 )); then age="$(( d / 3600 ))h"
+    else                       age="$(( d / 86400 ))d"
+    fi
+    dir="${dir/#$HOME/~}"
+    printf -v np '%-20.20s' "$nm"
+    printf -v age_seg '%-9s' "[${age} ago]"   # fixed width so summary/path align
+    # Clip the directory to the room left on the line so a narrow terminal
+    # truncates the row instead of wrapping it. Layout before the path is
+    # "  "+name + "  "+age + ["  "+summary], then "  "+dir; leave the last
+    # column blank so writing the row never nudges the cursor into a wrap.
+    if (( cols_avail > 0 )); then
+        local pre=$(( 2 + ${#np} + 2 + ${#age_seg} + 2 ))
+        (( sum_w > 0 )) && pre=$(( pre + 2 + sum_w ))
+        local dir_w=$(( cols_avail - pre - 1 ))
+        (( dir_w < 1 )) && dir_w=1
+        if (( ${#dir} > dir_w )); then
+            dir="${dir:0:$(( dir_w - 1 ))}"$'\342\200\246'
+        fi
+    fi
+    # Summary cell (optional). Clip with a trailing "…" when it overflows the
+    # column, else pad to it so the path column stays aligned across rows.
+    if (( sum_w > 0 )); then
+        case "$sum_kind" in
+            request) srgb="78;168;169"  ;;   # teal — mirrors the dashboard
+            error)   srgb="192;57;43"   ;;   # red
+            *)       srgb="160;160;160" ;;   # gray (reply / unknown)
+        esac
+        if (( ${#sum_txt} > sum_w )); then
+            seg="${sum_txt:0:$(( sum_w - 1 ))}"$'\342\200\246'
+        else
+            printf -v seg '%-*s' "$sum_w" "$sum_txt"
+        fi
+        sR="${srgb%%;*}"; sG="${srgb#*;}"; sG="${sG%%;*}"; sB="${srgb##*;}"
+        dsR=$(( sR * 45 / 100 )); dsG=$(( sG * 45 / 100 )); dsB=$(( sB * 45 / 100 ))
+    fi
+    # Assemble name · time · summary · path. The normal row resets (\033[0m) after
+    # each colored field; the highlight bar sets the white bg ONCE and only ever
+    # changes the FOREGROUND, so the bar persists until the closing \033[K\033[0m.
+    if [[ -n "$rgb" ]]; then
+        R="${rgb%%;*}"; G="${rgb#*;}"; G="${G%%;*}"; B="${rgb##*;}"
+        dR=$(( R * 45 / 100 )); dG=$(( G * 45 / 100 )); dB=$(( B * 45 / 100 ))
+        norm="  ${E}[38;2;${rgb}m${np}${E}[0m"
+        high="${E}[48;2;255;255;255m${E}[38;2;${dR};${dG};${dB}m"$'\342\235\257'" ${np}"
+    else
+        norm="  ${np}"
+        high="${E}[48;2;255;255;255m${E}[38;2;30;30;30m"$'\342\235\257'" ${np}"
+    fi
+    norm+="  ${E}[38;2;120;120;120m${age_seg}${E}[0m"
+    high+="${E}[38;2;90;90;90m  ${age_seg}"
+    if (( sum_w > 0 )); then
+        norm+="  ${E}[38;2;${srgb}m${seg}${E}[0m"
+        high+="${E}[38;2;${dsR};${dsG};${dsB}m  ${seg}"
+    fi
+    norm+="  ${E}[38;2;120;120;120m${dir}${E}[0m"
+    high+="${E}[38;2;90;90;90m  ${dir}${E}[K${E}[0m"
+    printf '%s\t%s\n' "$norm" "$high"
+}
+
+# Build the picker's rows in ONE python pass. Prints one FS-delimited
+# "<mtime><FS><sid><FS><name><FS><dir><FS><rgb><FS><sum_kind><FS><sum_text>" line
+# per RESUMABLE session, newest transcript first. <rgb> is "R;G;B" (or empty) from
+# the recorded identity hex; <sum_*> is the session's cached one-line gloss —
+# archive headline, else latest caption — pulled, never computed.
+# Args: <live-newline-list> (live session-ids to EXCLUDE) <fs> (field separator).
+#
+# A single python pass, NOT a shell loop, is deliberate: the old loop ran one
+# `find $HOME/.claude/projects` (a full re-walk of every transcript) AND one
+# python3 spawn PER session — O(sessions x files), ~13s for ~130 sessions. Here
+# the projects tree is walked ONCE into a sid->transcript index and summaries are
+# read in-process, so it's a single ~0.1s pass regardless of session count.
+# Also prunes name files whose transcript is gone. ROMP_PROJECTS_DIR overrides
+# the projects root (tests point it at a fixture).
+_romp_resume_rows() {   # <live-newline-list> <fs>
+    ROMP_NAMES_DIR="$ROMP_NAMES_DIR" ROMP_ARCHIVE_DIR="$ROMP_ARCHIVE_DIR" \
+    ROMP_CAPTIONS_DIR="$ROMP_CAPTIONS_DIR" \
+    ROMP_PROJECTS_DIR="${ROMP_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" \
+    ROMP_LIVE="$1" ROMP_FS="$2" python3 - <<'PY' 2>/dev/null || true
+import os, sys, json, re
+
+names_dir = os.environ["ROMP_NAMES_DIR"]
+arch_dir  = os.environ["ROMP_ARCHIVE_DIR"]
+cap_dir   = os.environ["ROMP_CAPTIONS_DIR"]
+proj_dir  = os.environ["ROMP_PROJECTS_DIR"]
+FS        = os.environ["ROMP_FS"]
+live      = set(s for s in os.environ.get("ROMP_LIVE", "").split("\n") if s)
+
+# Walk ~/.claude/projects ONCE (depth <= 2, matching the old `find -maxdepth 2`)
+# into sid -> transcript path. This replaces the per-session re-walk.
+tpath = {}
+def consider(path, name):
+    if name.endswith(".jsonl"):
+        tpath[name[:-6]] = path
+try:
+    for e in os.scandir(proj_dir):
+        try:
+            if e.is_file():
+                consider(e.path, e.name)
+            elif e.is_dir():
+                for f in os.scandir(e.path):
+                    if f.is_file():
+                        consider(f.path, f.name)
+        except OSError:
+            pass
+except OSError:
+    pass
+
+# The session's one-line gloss: archiver headline (archive/<sid>.json), else the
+# latest non-empty caption (captions/<sid>.jsonl). Pure cache read — no model call.
+def summary(sid):
+    text = ""
+    try:
+        text = " ".join(str((json.load(open(os.path.join(arch_dir, sid + ".json"))) or {}).get("headline") or "").split())
+    except Exception:
+        pass
+    if not text:
+        try:
+            for ln in open(os.path.join(cap_dir, sid + ".jsonl"), errors="replace"):
+                try:
+                    o = json.loads(ln)
+                except Exception:
+                    continue
+                c = " ".join(str(o.get("caption") or "").split())
+                if c:
+                    text = c
+        except Exception:
+            pass
+    return text
+
+try:
+    sids = [s for s in os.listdir(names_dir) if not s.startswith(".")]
+except OSError:
+    sids = []
+
+# Only treat "transcript gone" as a reason to PRUNE the name file when we have a
+# populated index to check against. An empty index means the projects tree was
+# missing/unreadable, NOT that every session vanished — pruning then would wipe
+# the whole cache (this exact mismatch once nuked all 127 entries). Be safe: never
+# delete when we couldn't see any transcripts at all.
+prune = bool(tpath)
+
+rows = []
+for sid in sids:
+    if sid in live:                       # running -> skip (attach, don't resume)
+        continue
+    f = os.path.join(names_dir, sid)
+    try:
+        with open(f) as fh:
+            parts = fh.readline().rstrip("\n").split("\t")
+    except OSError:
+        continue
+    nm = parts[0] if len(parts) > 0 else ""
+    dr = parts[1] if len(parts) > 1 else ""
+    bg = parts[2] if len(parts) > 2 else ""
+    tp = tpath.get(sid)
+    if not tp:                            # transcript gone -> prune the stale name file
+        if prune:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        continue
+    try:
+        mt = int(os.stat(tp).st_mtime)
+    except OSError:
+        mt = 0
+    rgb = ""
+    if re.match(r"^#[0-9A-Fa-f]{6}$", bg):
+        rgb = "%d;%d;%d" % (int(bg[1:3], 16), int(bg[3:5], 16), int(bg[5:7], 16))
+    st = summary(sid)
+    skind = "reply" if st else ""         # new model has no request/reply/error split
+    rows.append((mt, FS.join([str(mt), sid, nm, dr, rgb, skind, st])))
+
+rows.sort(key=lambda r: r[0], reverse=True)   # newest transcript first
+sys.stdout.write("\n".join(r[1] for r in rows))
+PY
+}
+
+# Interactive picker. Prints "<sid>\t<name>\t<dir>" for the chosen session on
+# stdout; _romp_menu draws the arrow-key UI straight to the terminal. Prints
+# nothing if cancelled. Sessions whose transcript no longer exists are pruned.
+_romp_pick() {
+    [[ -d "$ROMP_NAMES_DIR" ]] || return 0
+    local rows live now n choice line
+    local _mt _sid _nm _dir _rgb _skind _stext sum_w SUM_CAP cols
+    # Field separator for the assembled rows. Deliberately a NON-whitespace byte
+    # (Unit Separator) rather than a tab: `IFS=$'\t' read` collapses runs of tabs
+    # and drops EMPTY fields, which silently mis-shifts a row whose rgb is empty
+    # (a colorless session) now that summary fields follow it. \x1f never appears
+    # in names/dirs/phrases, so empty fields round-trip intact.
+    local FS=$'\x1f'
+
+    # session-ids of currently-LIVE romp sessions. A running session is
+    # attachable, not resumable (resuming it would fork a second Claude on the
+    # same conversation), so we exclude these from the picker.
+    # LIVE sids from the kernel (id + lastSid — a live session's current transcript must not be
+    # resumable into a second CLI on the same conversation). A dead kernel answers nothing: every
+    # recorded session then shows, which is honest — nothing can be live while the kernel is down.
+    live="$(_romp_token_cfg | curl -sf -m 5 --config - "http://127.0.0.1:${ROMP_KERNEL_PORT:-29855}/sessions" 2>/dev/null \
+            | python3 -c 'import json,sys
+try: rows = json.load(sys.stdin)
+except Exception: rows = []
+for r in rows:
+    print(r.get("id") or "")
+    print(r.get("lastSid") or "")' | grep -v '^$' || true)"
+
+    # The resumable-session rows: one FS-delimited
+    # "<mtime><FS><sid><FS><name><FS><dir><FS><rgb><FS><sum_kind><FS><sum_text>"
+    # line per session, newest transcript first. Built by _romp_resume_rows in a
+    # single python pass (which also prunes name files whose transcript is gone).
+    rows="$(_romp_resume_rows "$live" "$FS")"
+    if [[ -z "$rows" ]]; then echo "[romp] no resumable sessions." >&2; return 0; fi
+    now="$(date +%s)"
+    n="$(printf '%s\n' "$rows" | grep -c . || true)"
+
+    # Summary-column width = longest cached phrase, capped (and trimmed to the
+    # terminal so rows don't wrap). sum_w=0 → no session has a cached summary, so
+    # the column is omitted entirely: it shows up only when there's something to
+    # show ("if available").
+    SUM_CAP=56
+    # Columns from the controlling terminal (our stdin is still the tty even
+    # though stdout is captured). Non-tty (tests) → stty fails → keep the default.
+    cols="$(stty size 2>/dev/null || true)"; cols="${cols##* }"
+    if [[ "$cols" =~ ^[0-9]+$ ]]; then
+        SUM_CAP=$(( cols - 52 ))
+        if (( SUM_CAP < 20 )); then SUM_CAP=20; fi
+        if (( SUM_CAP > 56 )); then SUM_CAP=56; fi
+    fi
+    sum_w=0
+    while IFS="$FS" read -r _mt _sid _nm _dir _rgb _skind _stext; do
+        if [[ -n "$_stext" ]] && (( ${#_stext} > sum_w )); then sum_w=${#_stext}; fi
+    done <<< "$rows"
+    if (( sum_w > SUM_CAP )); then sum_w=$SUM_CAP; fi
+
+    # Render each row to "<normal>\t<highlight>" (colored name; the selected row
+    # is a white bar with a darkened name) and feed them to the arrow-key menu.
+    local -a items=()
+    while IFS= read -r line; do items+=("$line"); done <<< "$(
+        printf '%s\n' "$rows" | while IFS="$FS" read -r _mt _sid _nm _dir _rgb _skind _stext; do
+            [[ -n "$_sid" ]] && _romp_render_row "$_mt" "$_nm" "$_dir" "$_rgb" "$now" "$sum_w" "$_skind" "$_stext" "$cols"
+        done )"
+    choice="$(_romp_menu "${items[@]}")"
+
+    [[ "$choice" =~ ^[0-9]+$ ]] || return 0
+    (( choice >= 1 && choice <= n )) || return 0
+
+    # Emit "<sid>\t<name>\t<dir>" for the chosen row (fields 2-4), converting the
+    # internal \x1f back to tabs — the caller splits the result on tab.
+    printf '%s\n' "$rows" | sed -n "${choice}p" | cut -d"$FS" -f2,3,4 | tr "$FS" '\t'
+}
+
 # Retired hook entry points (_renamed/_color): a terminal server from before the backend removal
 # holds these hook strings until it restarts, so the words stay tolerated as SILENT no-ops for one
 # release rather than printing errors into that shell.

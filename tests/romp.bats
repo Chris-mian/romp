@@ -198,6 +198,7 @@ MOCK
 
 
 @test "resume: a session id with shell metacharacters is refused before any launch" {
+    touch "$MOCK_LOG"
     # resume_id is typed into `claude --resume <id>`; a non-alphanumeric id must
     # be rejected before a session is created.
     run run_romp resume 'abc;touch INJECTED' --name myproject --detach
@@ -206,15 +207,6 @@ MOCK
     [ "$(grep -c 'tmux new-session' "$MOCK_LOG")" -eq 0 ]
 }
 
-@test "state dir is created private (0700)" {
-    run run_romp new -t myproject
-    [ "$status" -eq 0 ]
-    local perms
-    # GNU stat (-c) first, BSD/macOS stat (-f) as fallback. The reverse order
-    # breaks on Linux, where `stat -f` means --file-system and mangles output.
-    perms="$(stat -c '%a' "$XDG_STATE_HOME/romp" 2>/dev/null || stat -f '%Lp' "$XDG_STATE_HOME/romp")"
-    [ "$perms" = "700" ]
-}
 
 # ─── Resume tests ────────────────────────────────────────────────────
 

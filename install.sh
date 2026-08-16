@@ -46,22 +46,10 @@ fi
 # (a mid-install warning scrolls away under the hook/symlink chatter). Set by the
 # SDK/extension steps below when they fail: ROMP_SDK_MISSING.
 
-# Claude Code's version, same optional-notice pattern. romp runs on any recent
-# Claude Code, but agent mail delivers instantly (through the CLI's per-session
-# inbox socket) only from 2.1.224 on — older CLIs fall back to slower pane
-# injection. The floor constant mirrors bin/romp's ROMP_CLAUDE_FLOOR; a test
-# asserts the two never drift. Missing entirely is its own notice: romp drives
-# Claude Code, so sessions need it on PATH.
-ROMP_CLAUDE_FLOOR="2.1.224"
-ROMP_CLAUDE_OLD=""
+# Claude Code present? Missing is its own notice: romp drives Claude Code, so
+# sessions need it on PATH.
 ROMP_CLAUDE_MISSING=""
-_claude_ver="$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-if [[ -z "$_claude_ver" ]]; then
-    command -v claude >/dev/null 2>&1 || ROMP_CLAUDE_MISSING=1
-elif [[ "$(printf '%s\n%s\n' "$ROMP_CLAUDE_FLOOR" "$_claude_ver" \
-           | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" != "$ROMP_CLAUDE_FLOOR" ]]; then
-    ROMP_CLAUDE_OLD="$_claude_ver"
-fi
+command -v claude >/dev/null 2>&1 || ROMP_CLAUDE_MISSING=1
 
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/skills"
 
@@ -282,7 +270,7 @@ if [[ -n "$ROMP_SDK_MISSING" ]]; then
     echo "            (see its message above if it needs a package installed first)"
     echo "  ══════════════════════════════════════════════════════════════════"
 fi
-if [[ -n "$ROMP_EXT_FAILED$ROMP_CLAUDE_OLD$ROMP_CLAUDE_MISSING" ]]; then
+if [[ -n "$ROMP_EXT_FAILED$ROMP_CLAUDE_MISSING" ]]; then
     echo
     echo "  Some optional pieces aren't set up:"
     if [[ -n "$ROMP_EXT_FAILED" ]]; then
@@ -292,10 +280,6 @@ if [[ -n "$ROMP_EXT_FAILED$ROMP_CLAUDE_OLD$ROMP_CLAUDE_MISSING" ]]; then
     if [[ -n "$ROMP_CLAUDE_MISSING" ]]; then
         echo "   ! Claude Code isn't on PATH — romp drives Claude Code, so sessions need it."
         echo "     Install:  https://claude.com/claude-code   (then just run romp again)"
-    fi
-    if [[ -n "$ROMP_CLAUDE_OLD" ]]; then
-        echo "   - Claude Code $ROMP_CLAUDE_OLD is older than $ROMP_CLAUDE_FLOOR, so agent mail arrives the"
-        echo "     slow way (typed into the pane instead of instantly). Upgrade:  claude update"
     fi
 fi
 
