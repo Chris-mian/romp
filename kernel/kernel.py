@@ -16147,8 +16147,20 @@ def build_feed(now, tmux=None):
             # The node's deep-link target SEGMENT: its NEWEST trail seg — the resolve turn for
             # done/blocked nodes, the latest activity for open ones (where it stands, not where born).
             _pa, _wa = _node_anchor_uuids(nd, seg_trig, seg_uuid)
-            out.append({"id": nid, "kind": "ask", "text": nd["text"], "who": name, "whoSid": fsid,
-                        "whoColor": color, "whoWorking": who_working, "status": st, "derived": derived,
+            # A HANDOFF tracking node ("↪ delegated to <peer>") finally ships as its designed kind: the
+            # feed's delegations section (fask-delegations, built to the 2026-06-10 handoff spec) keys on
+            # kind "handoff" and had sat dormant because flatten hardcoded "ask" — the sender's card
+            # showed a bare text row with no recipient identity and no visible cross-card LINK (the user
+            # 2026-08-16, who watched a clear take the linked card with it and had no way to see why).
+            # who/whoSid/whoColor become the RECIPIENT's identity for these rows — exact, from the
+            # courier-recorded handoff.peer, never inferred.
+            _ho = nd.get("handoff") if isinstance(nd.get("handoff"), dict) else None
+            _ho_sid = str(_ho.get("peer") or "") if _ho else ""
+            out.append({"id": nid, "kind": "handoff" if _ho_sid else "ask", "text": nd["text"],
+                        "who": (_name_of(_ho_sid) or _ho_sid[:8]) if _ho_sid else name,
+                        "whoSid": _ho_sid or fsid,
+                        "whoColor": _name_color(_ho_sid) if _ho_sid else color,
+                        "whoWorking": who_working, "status": st, "derived": derived,
                         # user-cleared sub (nodeOverride op:clear) → renders struck-through + faded with a
                         # "cleared" chip; `status` above stays honest (box = done, the user 2026-07-26)
                         "cleared": bool(nd.get("cleared")),
@@ -16329,21 +16341,27 @@ def build_feed(now, tmux=None):
             o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
             origin = None
             if isinstance(o, dict) and o.get("peer"):
-                # Show the "↪ from <peer>" badge only while the handoff is LIVE — the sender still has an
-                # OPEN linked goal. Once the sender's piece is done/cleared/gone (or there was no link),
-                # the work is fully absorbed → render as the recipient's native goal. (the user 2026-06-16.)
+                # The "↪ from <peer>" badge is PROVENANCE and stays for the card's life (the user
+                # 2026-08-16: the badge used to vanish at the exact moment the recipient finished —
+                # run_propagate completes the sender's tracking node instantly — so a COMPLETED card
+                # never showed where its work came from, and a propagated clear read as one card
+                # mysteriously taking another with it). `live` says whether the sender's linked goal
+                # is still OPEN: live → the affordance of an active handoff; absorbed → the same badge,
+                # dimmed, purely historical. This is the completed-column MERGE, heuristic-free: the
+                # one surviving card wears both identities, keyed on the courier's recorded link.
                 psid, gid = o["peer"], o.get("goalId")
                 sgoal = jd.load_goals(psid).get("nodes", {}).get(gid) if gid else None
-                if sgoal and not sgoal.get("nodeComplete") and not sgoal.get("cleared") and gid not in cleared:
-                    # Name resolution: the live names registry first (a local sender may have been
-                    # renamed), then the courier's plant-time snapshot (the only source for a
-                    # FEDERATED sender, whose sid this kernel can't resolve), then the sid stub.
-                    # peerHost renders as the same quiet "host:" prefix remote sessions wear on the
-                    # timeline (host-prefix.ts) — a local resolve means a local sender, no host.
-                    pname = _name_of(psid)
-                    origin = {"peer": pname or o.get("peerName") or psid[:8],
-                              "peerHost": ("" if pname else o.get("peerHost") or ""),
-                              "peerSid": psid, "color": _name_color(psid)}
+                live = bool(sgoal and not sgoal.get("nodeComplete") and not sgoal.get("cleared")
+                            and gid not in cleared)
+                # Name resolution: the live names registry first (a local sender may have been
+                # renamed), then the courier's plant-time snapshot (the only source for a
+                # FEDERATED sender, whose sid this kernel can't resolve), then the sid stub.
+                # peerHost renders as the same quiet "host:" prefix remote sessions wear on the
+                # timeline (host-prefix.ts) — a local resolve means a local sender, no host.
+                pname = _name_of(psid)
+                origin = {"peer": pname or o.get("peerName") or psid[:8],
+                          "peerHost": ("" if pname else o.get("peerHost") or ""),
+                          "peerSid": psid, "color": _name_color(psid), "live": live}
             await_why = (sess_awaiting_why or _stamp_why or _deleg_why or _owned_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph, then the blocked-yield's owned dispatch (None for the postal-only case → the waitingOn chip names the peer)
             await_kind = None                        # the winning why's KIND rides beside it, mirroring the
             if col == "awaiting":                    # or-chain exactly (a kindless winner stays kindless)

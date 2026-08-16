@@ -280,6 +280,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fask-origin { flex: 0 0 auto; font-size: 0.8em; cursor: pointer; white-space: nowrap; }
 .fask-origin-pre { color: var(--dim); }
 .fask-origin-peer { font-weight: 600; }
+.fask-origin-absorbed { opacity: 0.55; }   /* provenance of a finished handoff — history, not an active link */
 /* the DISTILLER's one line on a card (restored 2026-06-29): completed → takeaway, blocked → decision brief.
    No why-rationale line; hidden until the distiller produces. pre-wrap keeps a copy-pasteable artifact intact. */
 .fask-distill { font-size: 0.86em; line-height: 1.4; margin: 1px 0 2px; color: var(--fg); opacity: 0.82; white-space: pre-wrap; overflow-wrap: anywhere; }
