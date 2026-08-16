@@ -93,7 +93,7 @@ interface AskItem {
   warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies (judge _node_warn → kernel build_feed): yellow "warning" chip; click opens the detail modal (the user 2026-07-02)
   nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
-  origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders)
+  origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null; live?: boolean } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders). live = the sender's linked entry is still OPEN; false → the badge is PROVENANCE, dimmed (the completed-column merge, the user 2026-08-16)
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25)
   awaiting?: { why?: string | null; kind?: string | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Awaiting task" pill (expands the list, like Sub-goals) replaces the boxed why.
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
@@ -1461,6 +1461,15 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     peer.replaceChildren(...hostPartsNodes(it.origin.peerHost, it.origin.peer));
     if (it.origin.color) peer.style.color = it.origin.color.bg;
     og.append(pre, peer);
+    // absorbed (the sender's linked entry closed — usually because THIS card completed and the
+    // link-back checked it off): same badge, dimmed — provenance, not an active handoff. The title
+    // also warns that a clear takes the linked entry with it (the user 2026-08-16, who watched that
+    // happen with no visible cause).
+    og.classList.toggle("fask-origin-absorbed", it.origin.live === false);
+    og.title = (it.origin.live === false
+      ? "delegated by " + it.origin.peer + "; their linked entry closed with this card"
+      : "delegated by " + it.origin.peer + " — clearing this card also clears their linked entry")
+      + " · click opens the session";
     og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.origin!.peerSid }); };
   } else {
     og.style.display = "none";
