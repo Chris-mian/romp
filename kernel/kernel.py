@@ -2406,6 +2406,19 @@ def _mark_auto_nudged(gid, turn_id, count, arm_atoms=None, at=None):
     _write_auto_nudge(d)
 
 
+def _drop_auto_nudge_rec(gid):
+    """Erase `gid`'s ledger record outright — called when NEW INFORMATION voids the episode the record
+    tracks (today: an awaiting-stamp LIFT in _lift_spent_awaiting — the wait the episode ended on has
+    returned). The record's arm-key dedup and its failed/moot latches all assume the world the episode
+    saw; once a later event supersedes that world, keeping them latched leaves an IDLE session (which
+    never produces the genuine turn a re-arm needs) in Working forever with no reviver (2026-08-16)."""
+    d = dict(_auto_nudge_data())
+    nudged = dict(d.get("nudged", {}))
+    if nudged.pop(gid, None) is not None:
+        d["nudged"] = nudged
+        _write_auto_nudge(d)
+
+
 def _goal_awaiting_stamp(nodes, top, children=None, answered_at=0):
     """The freshest live ⏳ stamp in `top`'s subtree — the JUDGE's durable awaiting verdict (the closer's
     `awaiting` annotation, kernel/judge.py: the goal's latest audited turn ended waiting on async work it
@@ -3099,7 +3112,9 @@ def _lift_spent_awaiting(now, tmux):
     The retraction is the EVENT, never a timer: the <task-notification> that answered each dispatch is in
     the transcript, and _scan_bg_tasks already pairs launches to results. SELF-SCOPING, so the broader
     awaiting flavors are untouched: we lift only when this goal DID dispatch background work of its own by
-    stamp time and every one of those has come back. A stamp naming a CI run, a scheduled check-back or a
+    stamp time, every one of those has come back, and at least one came back AFTER the stamp's anchor —
+    a return already sitting in a turn the stamping judge had audited can't be what the stamp waits on
+    (see the loop's _returned_after note, 2026-08-16). A stamp naming a CI run, a scheduled check-back or a
     peer handoff owns no such dispatches, so it never matches and keeps its stamp — those still rely on the
     6h awaiting wake (_wake_goal, in the nudge tick's goal walk), which is exactly the case a timer is the
     only tool for. A kind=job stamp that DOES own dispatches (the standard shape: a watcher armed over an
@@ -3179,8 +3194,34 @@ def _lift_spent_awaiting(now, tmux):
                 live_set = running_job if nd.get("awaitingKind") == "job" else running
                 if any(t.get("id") in live_set for t in own):
                     continue                          # at least one is genuinely still out
+                # The lift's event is a return the stamp was WAITING ON — one that landed after the
+                # stamp's ANCHOR (endT past the audited turn's trigger; a launch past it necessarily
+                # returned past it too; a kindless expiry "returns" at its recorded deadline). A
+                # dispatch already terminal in a turn the stamping judge had ALREADY AUDITED can't
+                # evidence the wait's end: the judge stamped knowing that completion, so the wait is
+                # about something else, and the goal keeps its stamp + 6h wake like any dispatch-less
+                # wait. The boundary is the anchor, NOT the write time (`horizon`): the write postdates
+                # the whole audited turn, so testing against it would also disown mid-turn and
+                # audit-lag returns the judge never saw (the suite pins those as lifting). Without
+                # this, a stamp about external cluster work lifted the same minute it was written off
+                # a workflow hours dead — and the lift row then MOOTED the nudge-failure evaluation,
+                # parking the card in Working with no reviver left (an idle experiment session,
+                # 2026-08-16).
+                _anchor = nd.get("awaitingAt") or 0
+                def _returned_after(t):
+                    return ((t.get("endT") or 0) > _anchor or (t.get("t") or 0) > _anchor
+                            or (t.get("status") == "running" and (t.get("deadline") or 0) > _anchor))
+                if not any(_returned_after(t) for t in own):
+                    continue
                 if jd.record_verdict(store, nd, "romp", "awaiting", _lift_ev_t(nd, now), lift=True):
                     changed = True
+                    # The lift is NEW INFORMATION for the escalation ladder: the wait this goal's last
+                    # nudge/wake episode ended on has returned. Drop the goal's spent ledger record
+                    # (failed/moot/answered alike) so the next tick can re-engage — an idle session
+                    # never produces the genuine turn the arm-key dedup otherwise waits for, and a
+                    # latched record left its cards in Working forever (2026-08-16). Event-keyed and
+                    # bounded: record_verdict lifts a given stamp exactly once.
+                    _drop_auto_nudge_rec(top)
             if changed:
                 jd.rollup_status(store, False)
                 jd.save_goals(sid, store)

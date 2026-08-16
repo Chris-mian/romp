@@ -359,6 +359,46 @@ class AwaitingLift(unittest.TestCase):
         self.assertEqual(sorted(t["id"] for t in every), ["t1", "t2"])
         self.assertEqual({t["id"]: t["status"] for t in every}["t1"], "completed")
 
+    # ---- a return the stamping judge already saw cannot end the wait (2026-08-16) ----
+    def test_scan_records_when_the_result_landed(self):
+        # the substrate: endT is the notification record's transcript time, the lift's evidence
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK)])
+        every = km._scan_bg_tasks(self.path, want_all=True)
+        self.assertEqual(int(every[0].get("endT") or 0), BACK)
+
+    def test_returns_the_stamp_already_knew_do_not_lift_it(self):
+        # the incident: a stamp about EXTERNAL work (cluster captures due hours later) was written
+        # while the goal's only local dispatch had returned HOURS earlier, in a turn the stamping
+        # judge had long since audited — the all-returned test was instantly true and the stamp
+        # lifted the same minute it was written, whereupon the lift row mooted the nudge-failure
+        # evaluation and the card idled in Working with no reviver left. A return that predates the
+        # stamp's ANCHOR (the audited turn's trigger) is evidence the judge stamped WITH; only a
+        # return past the anchor can be the event the stamp waited on. (Mid-turn and audit-lag
+        # returns — after the anchor, before the write — keep lifting, per the tests above.)
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK)])
+        self._seed(why="waiting on the four cluster captures landing overnight",
+                   anchor=BACK + 80, written=BACK + 100)   # stamped well after the return landed
+        self._tick(now=BACK + 500)
+        self.assertIsNotNone(self._stamp(),
+                             "a pre-anchor return can't end the wait — the 6h wake owns this one")
+
+    def test_a_lift_drops_the_goals_spent_nudge_record(self):
+        # the lift is NEW INFORMATION for the escalation ladder: an idle session never produces the
+        # genuine turn the ledger's arm-key dedup waits for, so a latched (failed/moot) record would
+        # otherwise silence nudges on this goal forever — erase it with the stamp (2026-08-16)
+        self._transcript([_launch("t1", LAUNCH), _notification("t1", BACK)])
+        self._seed()
+        km._mark_auto_nudged(self.gid, "SOME-ARM-TURN", 3, at=BACK - 50)
+        d = dict(km._auto_nudge_data())
+        n = dict(d.get("nudged", {}))
+        n[self.gid] = dict(n[self.gid], moot=True)      # the latch the incident carried
+        d["nudged"] = n
+        km._write_auto_nudge(d)
+        self._tick()
+        self.assertIsNone(self._stamp(), "precondition: this lift lands")
+        self.assertNotIn(self.gid, km._auto_nudge_data().get("nudged", {}),
+                         "the lift erases the spent record so the ladder can re-engage")
+
 
 if __name__ == "__main__":
     unittest.main()

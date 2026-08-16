@@ -250,11 +250,13 @@ def _scan_bg_tasks(path, want_all=False):
     missing this left finished tasks reading 'running' forever), and a queue-operation enqueue holding
     the notification while the session is busy — the task itself is already finished the moment any of
     the three exists.
-    Returns [{id,status,summary,command,outputFile}] (+ type on agent/workflow rows)."""
+    Returns [{id,status,summary,command,outputFile}] (+ type on agent/workflow rows; + endT — the
+    transcript time its result LANDED — on rows a notification has terminal-marked, so the awaiting-stamp
+    lift can tell a return that ENDED a stamped wait from one the stamping judge had already seen)."""
     tasks, order = {}, []
     dispatch = {}   # tool_use id -> the launching Agent/Task/Workflow block's own words (see docstring)
 
-    def _mark(note):
+    def _mark(note, end_t=None):
         # a notification keyed by its INNER <tool-use-id> (the string/queue shapes have no wrapper block)
         tid = (note or {}).get("tool_use_id")
         if tid and tid in tasks:
@@ -262,6 +264,8 @@ def _scan_bg_tasks(path, want_all=False):
                 return                     # a monitor EVENT (no <status> tag) — the watch is still live
             tasks[tid].update(status=note["status"], outputFile=note["output_file"],
                               summary=note["summary"] or tasks[tid]["summary"])
+            if end_t:                      # WHEN the result landed — the awaiting-stamp lift keys the
+                tasks[tid]["endT"] = end_t  # "returned after the stamp was written" test on it (2026-08-16)
 
     try:
         with open(path, errors="replace") as f:
@@ -366,16 +370,22 @@ def _scan_bg_tasks(path, want_all=False):
                                     continue               # a wrapped monitor EVENT — not a terminal (see _mark)
                                 tasks[tid].update(status=note["status"], outputFile=note["output_file"],
                                                   summary=note["summary"] or tasks[tid]["summary"])
+                                et = parse_z(o.get("timestamp"))
+                                if et:                     # the return's moment (see _mark)
+                                    tasks[tid]["endT"] = et
                             elif tid in tasks and note is None and b.get("is_error") \
                                     and tasks[tid]["status"] == "running":
                                 # the LAUNCH's own ack errored (refused permission, bad input) → nothing ever
                                 # started, and no notification will ever come. Without this, the phantom
                                 # reads "running" forever and holds awaiting/nudge gates open on nothing.
                                 tasks[tid]["status"] = "failed"
+                                et = parse_z(o.get("timestamp"))
+                                if et:
+                                    tasks[tid]["endT"] = et
                 elif t == "user" and isinstance(c, str):
-                    _mark(_parse_task_notification(c))
+                    _mark(_parse_task_notification(c), parse_z(o.get("timestamp")))
                 elif t == "queue-operation" and o.get("operation") == "enqueue":
-                    _mark(_parse_task_notification(o.get("content") or ""))
+                    _mark(_parse_task_notification(o.get("content") or ""), parse_z(o.get("timestamp")))
     except OSError:
         return []
     if want_all:
