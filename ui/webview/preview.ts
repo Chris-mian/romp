@@ -36,6 +36,13 @@ export function canPreview(): boolean {
 // per URL for this page life: chat re-renders rebuild these elements constantly, and re-flashing a
 // spinner over bytes the browser just painted would itself be flicker — only a URL's FIRST load spins.
 const loadedOnce = new Set<string>();
+
+// A manual retry's swirl stays up at least this long before a failure may swap the chip back in —
+// an instant connection reset otherwise flashes it for one frame and the tap looks ignored (the
+// user 2026-08-16). Presentation smoothing only: the failed state is already decided, this paces
+// nothing but the paint.
+const MIN_RETRY_SPIN_MS = 400;
+
 function withLoadCue(box: HTMLElement, img: HTMLImageElement, url: string): void {
   if (loadedOnce.has(url)) return;
   const spin = document.createElement("img");
@@ -156,8 +163,10 @@ export function previewFull(path: string, sid?: string | null, verified = false)
     // rebuilds an old turn's DOM, so the chip would otherwise sit until a human tapped it. Bounded so
     // a genuinely-dead file settles on the tap chip instead of re-fetching on every push forever.
     let autoRetries = 3;
+    let fails = 0;                                   // total failed attempts — the chip's copy escalates
     const build = (bust: boolean) => {
       box.textContent = "";
+      const started = Date.now();                    // the retry's min-visible spinner measures from here
       const img = document.createElement("img");
       img.className = "path-full-img";
       img.src = bust ? url + "&r=" + Date.now() : url;   // bust: a retry must not re-read the failed cache entry
@@ -166,14 +175,35 @@ export function previewFull(path: string, sid?: string | null, verified = false)
       img.onclick = (ev) => { ev.stopPropagation(); openLightbox(path, sid); };
       img.onerror = () => {
         if (!verified) { box.remove(); return; }
-        box.textContent = "";
-        const chip = document.createElement("span");
-        chip.className = "path-full-retry";
-        chip.textContent = "⚠ preview unavailable — tap to retry";
-        chip.title = path;
-        chip.onclick = (ev) => { ev.stopPropagation(); build(true); };
-        box.appendChild(chip);
-        if (autoRetries > 0) { autoRetries--; failedPreviews.set(box, () => build(true)); }
+        fails++;
+        const showChip = () => {
+          if (!box.isConnected) return;              // the turn re-rendered; a fresh box owns this spot now
+          box.textContent = "";
+          const chip = document.createElement("span");
+          chip.className = "path-full-retry";
+          // The chip names what happens NEXT, not just the failure (the user 2026-08-16, on a slow
+          // link: a dead-end "unavailable" that then quietly healed itself read as broken UI). While
+          // bounded auto-retries remain, the next kernel push re-fetches on its own — say so. And a
+          // repeat failure must READ as a response to the tap, not the same chip standing still:
+          // the copy shifts to "still unavailable" and the swap-in pulses once.
+          chip.textContent =
+            (fails > 1 ? "⚠ still unavailable" : "⚠ preview unavailable")
+            + (autoRetries > 0 ? " — retrying automatically · tap to retry now" : " — tap to retry");
+          chip.title = path;
+          chip.onclick = (ev) => { ev.stopPropagation(); build(true); };
+          box.appendChild(chip);
+          if (fails > 1) {
+            chip.classList.add("path-retry-flash");
+            chip.addEventListener("animationend", () => chip.classList.remove("path-retry-flash"), { once: true });
+          }
+          if (autoRetries > 0) { autoRetries--; failedPreviews.set(box, () => build(true)); }
+        };
+        // A retry that dies instantly (a dead tunnel resets the connection in milliseconds) would
+        // flash the swirl for one frame and put back an identical chip — an ignored-looking tap.
+        // Hold the swirl to a perceivable beat before swapping. Presentation smoothing only: the
+        // attempt has already failed, and the auto-heal registration rides the same swap.
+        const left = bust ? MIN_RETRY_SPIN_MS - (Date.now() - started) : 0;
+        if (left > 0) setTimeout(showChip, left); else showChip();
       };
       withLoadCue(box, img, url);   // mini swirl holds the spot until the load event (memo on the un-busted url)
       box.appendChild(img);
