@@ -8541,7 +8541,7 @@ function renderStagedStrip(id: string | null): void {
     const open = stagedOpen.has(id + ":" + i);
     if (open) chip.classList.add("open");
     const hint = el("span", "staged-expand");
-    hint.textContent = open ? "(collapse)" : "(expand)";
+    hint.textContent = open ? "(collapse)" : "(click to expand)";
     const toggle = () => {
       const k = id + ":" + i;
       if (stagedOpen.has(k)) stagedOpen.delete(k); else stagedOpen.add(k);
