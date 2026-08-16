@@ -77,6 +77,40 @@ class FilePreviewEndpoint(unittest.TestCase):
         self.assertEqual(hdrs.get("Content-Type"), "image/png")
         self.assertEqual(body, PNG)
 
+    def _req_range(self, path, rng):
+        url = "http://127.0.0.1:%d%s&token=%s" % (self.port, path, TOKEN)
+        req = urllib.request.Request(url, headers={"Range": rng})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read()
+
+    def test_a_suffix_range_resumes_mid_file(self):
+        # the resumable preview retry (the user 2026-08-16, flaky wifi): bytes already received are
+        # never re-sent — the client asks for the rest and stitches the picture across attempts
+        code, hdrs, body = self._req_range("/file?path=" + urllib.parse.quote(self.png), "bytes=10-")
+        self.assertEqual(code, 206)
+        self.assertEqual(body, PNG[10:])
+        self.assertEqual(hdrs.get("Content-Range"), "bytes 10-%d/%d" % (len(PNG) - 1, len(PNG)))
+        self.assertEqual(hdrs.get("Content-Type"), "image/png")
+
+    def test_a_range_past_the_end_416s_so_the_client_restarts(self):
+        code, _, _ = self._req_range("/file?path=" + urllib.parse.quote(self.png), "bytes=%d-" % (len(PNG) + 5))
+        self.assertEqual(code, 416)
+
+    def test_a_non_suffix_range_is_served_whole(self):
+        # only the one suffix form is honored; anything else means a plain 200 the client treats as a restart
+        code, _, body = self._req_range("/file?path=" + urllib.parse.quote(self.png), "bytes=0-5")
+        self.assertEqual(code, 200)
+        self.assertEqual(body, PNG)
+
+    def test_text_ignores_range(self):
+        # the viewer slurps text; a range on it is served whole
+        code, _, body = self._req_range("/file?path=" + urllib.parse.quote(self.txt), "bytes=3-")
+        self.assertEqual(code, 200)
+        self.assertEqual(body, b"not renderable")
+
     def test_missing_file_404s(self):
         code, _, _ = self._req("/file?path=" + urllib.parse.quote(os.path.join(self.tmp.name, "gone.png")))
         self.assertEqual(code, 404)

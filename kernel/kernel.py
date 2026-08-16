@@ -23751,6 +23751,36 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Vary", "Origin")
             self.end_headers()
             return
+        # RESUME (the user 2026-08-16, on flaky wifi): a preview fetch that dies mid-transfer used to
+        # restart from byte 0 on every retry, so a large figure never finished arriving over a link
+        # that keeps dropping. The chat's resumable retry asks for the REST with `Range: bytes=N-`
+        # (the one suffix form; anything else is served whole as a plain 200, which the client treats
+        # as a restart). MEDIA only — the text viewer slurps. Past-the-end asks get 416 so a client
+        # holding a stale offset restarts cleanly instead of appending garbage.
+        rng = None
+        if not text:
+            m = re.match(r"^bytes=(\d+)-$", (getattr(self, "headers", None) or {}).get("Range") or "")
+            if m:
+                rng = int(m.group(1))
+        if rng:
+            if rng >= size:
+                return self._send(416, "range starts past the end: %d >= %d" % (rng, size), "text/plain")
+            with open(fp, "rb") as f:
+                f.seek(rng)
+                raw = f.read()
+            self.send_response(206)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (rng, size - 1, size))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-cache")
+            if getattr(self, "_cors_origin", None):
+                self.send_header("Access-Control-Allow-Origin", self._cors_origin)
+                self.send_header("Access-Control-Expose-Headers", "Content-Range")
+                self.send_header("Vary", "Origin")
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         with open(fp, "rb") as f:
             raw = f.read()
         if text:
@@ -25446,11 +25476,18 @@ class Handler(BaseHTTPRequestHandler):
             q["token"] = [rtok]      # the remote's own credential; whatever the browser sent means nothing there
         conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=15)
         try:
-            conn.request("HEAD" if head else "GET", "/file?" + urlencode(q, doseq=True))
+            # The resumable retry's Range rides through (the user 2026-08-16): the SAME suffix form the
+            # local route honors, validated here so the relay forwards byte arithmetic and nothing else.
+            hdrs = {}
+            _rng = (getattr(self, "headers", None) or {}).get("Range") or ""
+            if not head and re.match(r"^bytes=\d+-$", _rng):
+                hdrs["Range"] = _rng
+            conn.request("HEAD" if head else "GET", "/file?" + urlencode(q, doseq=True), headers=hdrs)
             resp = conn.getresponse()
             body = b"" if head else resp.read(_PREVIEW_MAX_BYTES + 1)
             status, ctype = resp.status, mime          # OUR mime, never resp.getheader("Content-Type")
             clen = resp.getheader("Content-Length")
+            crange = resp.getheader("Content-Range") or ""
         except (OSError, http.client.HTTPException):
             return self._send(502, b"" if head else ("tunnel to %s is not answering" % host), "text/plain")
         finally:
@@ -25472,6 +25509,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", self._cors_origin)
                 self.send_header("Vary", "Origin")
             self.end_headers()
+            return
+        if status == 206:
+            # A partial reply needs its Content-Range mirrored — but only the exact byte-arithmetic
+            # shape (same lying-remote reasoning as the Content-Type above: mirror math, never prose).
+            if not re.match(r"^bytes \d+-\d+/\d+$", crange):
+                return self._send(502, "malformed partial reply from %s" % host, "text/plain")
+            self.send_response(206)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Range", crange)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-cache")
+            if getattr(self, "_cors_origin", None):
+                self.send_header("Access-Control-Allow-Origin", self._cors_origin)
+                self.send_header("Access-Control-Expose-Headers", "Content-Range")
+                self.send_header("Vary", "Origin")
+            self.end_headers()
+            self.wfile.write(body)
             return
         return self._send(status, body, ctype, cache="no-cache")
 
