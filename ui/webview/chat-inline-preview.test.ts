@@ -52,11 +52,19 @@ test("the failure chip narrates what happens next, escalates on repeat, and a re
   const pf = PREVIEW.slice(PREVIEW.indexOf("export function previewFull"));
   // copy names the armed auto-heal while bounded retries remain; plain tap-to-retry once spent
   assert.match(pf, /"⚠ still unavailable" : "⚠ preview unavailable"/);
-  assert.match(pf, /autoRetries > 0 \? " — retrying automatically · tap to retry now" : " — tap to retry"/);
+  // while auto-retries remain the box KEEPS its loading persona (swirl + note, whole box tappable);
+  // the ⚠ chip is the GIVE-UP state only (the user 2026-08-16, third report: state bouncing between
+  // "trying" and "unavailable" on every retry cycle read as impatient even when it eventually loaded)
+  assert.match(pf, /if \(autoRetries > 0\) \{\s*\n\s*autoRetries--;\s*\n\s*failedPreviews\.set\(box, \(\) => build\(true\)\);/);
+  assert.match(pf, /\+ " — retrying · tap to retry now";/);
+  assert.match(pf, /wait\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); build\(true\); \};/,
+    "the whole retrying box is the tap target");
+  assert.match(pf, /"⚠ preview unavailable"\)\)\s*\n\s*\+ " — tap to retry";/,
+    "the chip exists only once the budget is spent, so it carries no retrying-automatically claim");
   // a repeat failure pulses the chip on swap-in — the acknowledge-every-click rule
   assert.match(pf, /chip\.classList\.add\("path-retry-flash"\);/);
-  assert.match(CSS, /\.path-full-retry\.path-retry-flash \{ animation: path-retry-flash/);
-  assert.match(CSS, /prefers-reduced-motion: reduce\) \{ \.path-full-retry\.path-retry-flash \{ animation: none;/);
+  assert.match(CSS, /\.path-full-retry\.path-retry-flash, \.path-load-note\.path-retry-flash \{ animation: path-retry-flash/);
+  assert.match(CSS, /prefers-reduced-motion: reduce\) \{ \.path-full-retry\.path-retry-flash, \.path-load-note\.path-retry-flash \{ animation: none;/);
   // a manual retry that dies instantly holds the swirl a perceivable beat before the chip returns
   assert.match(PREVIEW, /const MIN_RETRY_SPIN_MS = 400;/);
   assert.match(pf, /const left = MIN_RETRY_SPIN_MS - \(Date\.now\(\) - started\);/);
@@ -71,7 +79,7 @@ test("a failed preview heals on the next kernel push — the kernel-is-back even
   // kernel is reachable again; no pushes arrive while it's down, so retry-on-push can't spam.
   const pf = PREVIEW.slice(PREVIEW.indexOf("export function previewFull"));
   assert.match(pf, /let autoRetries = 3;/, "bounded — a genuinely-dead file settles on the tap chip");
-  assert.match(pf, /if \(autoRetries > 0\) \{ autoRetries--; failedPreviews\.set\(box, \(\) => build\(true\)\); \}/);
+  assert.match(pf, /if \(autoRetries > 0\) \{\s*\n\s*autoRetries--;\s*\n\s*failedPreviews\.set\(box, \(\) => build\(true\)\);/);
   assert.match(PREVIEW, /export function retryFailedPreviews\(\): void/);
   assert.match(PREVIEW, /if \(box\.isConnected\) rebuild\(\);/, "a re-rendered turn's fresh box supersedes the old");
   assert.match(RENDER, /retryFailedPreviews\(\);/, "called from the kernel message handler");
