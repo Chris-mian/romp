@@ -63,6 +63,14 @@ test("the backend pref roundtrips through storage (the gear writes it; createSes
   assert.equal(loadSettings().backend, "sdk");
 });
 
+test('a stale stored backend:"tmux" normalizes to "sdk" on load (the terminal backend is retired, 2026-08-16)', () => {
+  // createSession reads this field verbatim, so a store written before the removal must never leak
+  // a "tmux" pick into a create call — the kernel would refuse it loudly, but the right default is
+  // simply the one backend that exists.
+  store["romp:settings"] = JSON.stringify({ backend: "tmux" });
+  assert.equal(loadSettings().backend, "sdk");
+});
+
 test("saveSettings persists a patch and merges over defaults", () => {
   delete store["romp:settings"];
   const next = saveSettings({ compact: true });

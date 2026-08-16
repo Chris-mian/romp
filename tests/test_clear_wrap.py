@@ -165,7 +165,7 @@ class ClearWrapNotify(unittest.TestCase):
         self.td = tempfile.TemporaryDirectory()
         self.saved_state = jd.STATE
         jd.STATE = Path(self.td.name)
-        self._orig = {n: getattr(km, n) for n in ("_tmux_sessions", "_sessions", "_mark_nodes_cleared")}
+        self._orig = {n: getattr(km, n) for n in ("_live_map", "_sessions", "_mark_nodes_cleared")}
         self._orig_load = jd.load_goals
         self._orig_backend = km.Sessions.backend_for
         km._sessions = lambda now: []
@@ -179,7 +179,7 @@ class ClearWrapNotify(unittest.TestCase):
             def send(self, sid, body):
                 test.sent.append((sid, body))
         km.Sessions.backend_for = staticmethod(lambda sid: FakeBackend())
-        km._tmux_sessions = lambda: {SID: {"state": "waiting"}}
+        km._live_map = lambda: {SID: {"state": "waiting"}}
 
     def tearDown(self):
         for n, v in self._orig.items():
@@ -213,7 +213,7 @@ class ClearWrapNotify(unittest.TestCase):
         self.assertEqual(self.sent, [], "one round only — the confirm card's clear is final")
 
     def test_a_dead_session_gets_nothing(self):
-        km._tmux_sessions = lambda: {}
+        km._live_map = lambda: {}
         km._clear_all([G_OPEN])
         self.assertEqual(self.sent, [], "no live CLI → no agent holding WIP to ask")
 

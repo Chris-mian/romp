@@ -20,7 +20,7 @@ const V = "99999999-8888-7777-6666-555555555555";
 
 test("the kernel's feed payload carries the chat tab strip's sessions, tab_meta-shaped", () => {
   assert.ok(KERNEL.includes('"sessions": [{"sid": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])}'));
-  assert.ok(KERNEL.includes("for s in _chat_tab_sessions(now, tmux)]"), "the SAME list the tabs render, in ITS order");
+  assert.ok(KERNEL.includes("for s in _chat_tab_sessions(now, live_map)]"), "the SAME list the tabs render, in ITS order");
 });
 
 test("federation prefixes each sessions[] entry's sid AND name, and the merge concatenates local-first", () => {

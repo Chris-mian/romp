@@ -77,7 +77,7 @@ class AwaitingLift(unittest.TestCase):
         km.jd.GOALDIR = td / "goals"
         km.jd.GOALDIR.mkdir(parents=True)
         self.path = str(td / (SID + ".jsonl"))
-        km._alive_sessions = lambda now, tmux: [{"sid": SID, "path": self.path}]
+        km._alive_sessions = lambda now, live_map: [{"sid": SID, "path": self.path}]
         km._mark_views_dirty = lambda *a, **k: None
         km._SESSION_STAMP_CACHE.clear()
         km._bgall_cache.clear()

@@ -5038,7 +5038,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   const beWrapEl = overlay.querySelector(".picker-backend:not(.picker-host):not(.picker-auth)") as HTMLElement | null;
   if (beWrapEl) {   // reset the backend toggle to the gear default each open (overridable for this session)
     beWrapEl.style.display = pick ? "none" : "";
-    const def = loadSettings().backend || "tmux";
+    const def = loadSettings().backend || "sdk";
     beWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", (x as HTMLElement).dataset.be === def));
   }
   const auWrapEl = overlay.querySelector(".picker-auth") as HTMLElement | null;
