@@ -57,7 +57,7 @@ class OpeningChipDecidingEvent(unittest.TestCase):
         # real ~/.claude/projects, and the fixture transcript is never found (chip stuck "opening").
         self.saved = [(m, k, getattr(m, k)) for m in (jd, km.jd)
                       for k in ("NAMES", "PROJECTS", "CAPDIR", "ARCHDIR", "GOALDIR", "STATE")]
-        self.saved += [(km, "NAMES", km.NAMES), (km, "_tmux_sessions", km._tmux_sessions),
+        self.saved += [(km, "NAMES", km.NAMES), (km, "_live_map", km._live_map),
                        (km, "_GLOBAL_CLAUDE_MD", km._GLOBAL_CLAUDE_MD)]
         for m in (jd, km.jd):
             m.NAMES, m.PROJECTS = names, proj
@@ -67,7 +67,7 @@ class OpeningChipDecidingEvent(unittest.TestCase):
         km._GLOBAL_CLAUDE_MD = td / "no-global-claude.md"
         self.tm = {"state": "waiting", "since": NOW - 5, "model": "Opus 5", "effort": "xhigh",
                    "context": None, "compactPct": None, "color": None, "backend": "sdk"}
-        km._tmux_sessions = lambda: {SID: dict(self.tm)}
+        km._live_map = lambda: {SID: dict(self.tm)}
 
     def tearDown(self):
         for m, k, v in self.saved:

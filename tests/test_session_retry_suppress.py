@@ -63,7 +63,7 @@ class SessionRetrySuppress(unittest.TestCase):
     def test_reengaged_and_settled_clean_rearms(self):
         km._suppress_session_retry("s1")
         floor = json.loads((self.dir / "retry-suppressed.json").read_text())["s1"]
-        km._alive_sessions = lambda now, tmux: [{"sid": "s1", "path": "x"}]
+        km._alive_sessions = lambda now, live_map: [{"sid": "s1", "path": "x"}]
         km._parse_cached = lambda p: {"turns": [_human_turn(floor + 5)]}   # user spoke AFTER the stop
         km._session_chip = lambda *a, **k: "ready"                          # and it settled clean → success
         km._auto_resume_session_retry(int(time.time()), {})
@@ -75,7 +75,7 @@ class SessionRetrySuppress(unittest.TestCase):
     def test_reengaged_but_still_blocked_stays_suppressed(self):
         km._suppress_session_retry("s1")
         floor = json.loads((self.dir / "retry-suppressed.json").read_text())["s1"]
-        km._alive_sessions = lambda now, tmux: [{"sid": "s1", "path": "x"}]
+        km._alive_sessions = lambda now, live_map: [{"sid": "s1", "path": "x"}]
         km._parse_cached = lambda p: {"turns": [_human_turn(floor + 5)]}   # user spoke...
         km._session_chip = lambda *a, **k: "blocked"                        # ...but the turn errored again
         km._auto_resume_session_retry(int(time.time()), {})
@@ -87,7 +87,7 @@ class SessionRetrySuppress(unittest.TestCase):
     def test_no_reengagement_stays_suppressed(self):
         km._suppress_session_retry("s1")
         floor = json.loads((self.dir / "retry-suppressed.json").read_text())["s1"]
-        km._alive_sessions = lambda now, tmux: [{"sid": "s1", "path": "x"}]
+        km._alive_sessions = lambda now, live_map: [{"sid": "s1", "path": "x"}]
         km._parse_cached = lambda p: {"turns": [_human_turn(floor - 60)]}  # last human message was BEFORE the stop
         km._session_chip = lambda *a, **k: "ready"
         km._auto_resume_session_retry(int(time.time()), {})
@@ -97,7 +97,7 @@ class SessionRetrySuppress(unittest.TestCase):
 
     def test_noop_when_nothing_suppressed(self):
         called = []
-        km._alive_sessions = lambda now, tmux: called.append(1) or []
+        km._alive_sessions = lambda now, live_map: called.append(1) or []
         km._auto_resume_session_retry(int(time.time()), {})
         self.assertEqual(called, [], "no suppressed sessions → the sweep does no work")
 
@@ -121,8 +121,8 @@ class SessionRetrySuppressWiring(unittest.TestCase):
                       "the chat status exposes retrySuppressed so the client retry loop + card can read it")
 
     def test_pusher_runs_the_per_session_resume_sweep(self):
-        # (now, tmux) — the cycle's ONE liveness snapshot, not a per-job fresh read (2026-08-10 CPU fix)
-        self.assertIn("_auto_resume_session_retry(now, tmux)", SRC,
+        # (now, live_map) — the cycle's ONE liveness snapshot, not a per-job fresh read (2026-08-10 CPU fix)
+        self.assertIn("_auto_resume_session_retry(now, live_map)", SRC,
                       "the pusher tick re-arms suppressed threads that land a clean turn")
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The pusher cycle takes ONE liveness snapshot (the 2026-08-10 CPU fix).
 
-Every _tmux_sessions() read forks `tmux list-sessions` and sweeps the whole SDK reg registry.
+Every _live_map() read forks `tmux list-sessions` and sweeps the whole SDK reg registry.
 The pusher's cycle used to take NINE of them — one inside _push plus one per tick job — at its
 0.5s cadence, which profiling attributed as the kernel's single hottest thread (~50-90% of one
 core sustained, three quarters of total process CPU). The jobs all take the map as a parameter
@@ -75,15 +75,15 @@ class OneSnapshotPerCycle(unittest.TestCase):
 
     def test_one_cycle_reads_liveness_once_however_deep_the_call(self):
         # count REAL liveness reads (Sessions.live — the tmux fork + reg sweep), not the delegator:
-        # inside the cycle's scope every _tmux_sessions() call, at any depth of the build stack,
+        # inside the cycle's scope every _live_map() call, at any depth of the build stack,
         # must be served the cycle's one snapshot instead of taking a fresh read
         reads = []
         row = self.row
         km.Sessions.live = lambda: (reads.append(1), dict(row))[1]
         got = {}
         # bracket the job list: the FIRST and the LAST tick job must both receive the cycle's one map
-        km._auto_nudge_tick = lambda now, tmux: got.setdefault("first", tmux)
-        km._clear_done_working_notes = lambda now, tmux: got.setdefault("last", tmux)
+        km._auto_nudge_tick = lambda now, live_map: got.setdefault("first", live_map)
+        km._clear_done_working_notes = lambda now, live_map: got.setdefault("last", live_map)
         sent = []
         with km._clients_lock:   # a connected chat client, so the _push leg builds for real
             km._clients[:] = [{"app": "chat", "alive": True, "wid": "", "qbytes": 0,
@@ -97,7 +97,7 @@ class OneSnapshotPerCycle(unittest.TestCase):
         self.assertIsNone(km._live_scope.snapshot, "the scope ends with the cycle")
         # OUTSIDE a cycle the delegator reads fresh — a WS handler must never see a stale snapshot
         n = len(reads)
-        km._tmux_sessions()
+        km._live_map()
         self.assertEqual(len(reads), n + 1)
 
     def test_build_session_reuses_the_callers_snapshot(self):
