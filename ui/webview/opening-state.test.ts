@@ -29,15 +29,13 @@ test("the kernel reports OPENING while the transcript doesn't exist and the spaw
 // kill idle CLIs; boot reconcile leaves them lazy) also reports no `connected`, and reading that as
 // "still opening" kept the dots up for hours on a session one message from answering (the user
 // 2026-08-13). A dormant row carries no spawning key, so it reads ready.
-test("OPENING covers exactly each backend's spawn window — a dormant created session reads ready", () => {
+test("OPENING covers exactly the spawn window — a dormant created session reads ready", () => {
   const SDK = fs.readFileSync(path.join(ROOT, "kernel", "sdk_backend.py"), "utf8");
   assert.ok(SDK.includes('"connected": bool(self.client)'), "the snapshot carries the handshake event");
   assert.ok(SDK.includes('"spawning": not self.client'), "the snapshot carries the in-flight window");
   assert.ok(KERNEL.includes('"connected": bool(st.get("connected"))'), "the live merge threads connected through");
   assert.ok(KERNEL.includes('"spawning": bool(st.get("spawning"))'), "the live merge threads spawning through");
-  assert.ok(KERNEL.includes('spawn_inflight = bool(tm.get("spawning")) or \\'), "SDK: the live spawn window");
-  assert.ok(KERNEL.includes('(tm.get("backend") == "tmux" and not (tm.get("state") or "").strip())'),
-    "tmux: no @claude-state published yet");
+  assert.ok(KERNEL.includes('spawn_inflight = bool(tm.get("spawning"))'), "the live spawn window is the one opening cue");
 });
 
 // A per-session chip event must not ride the periodic full push cycle, which runs SECONDS on a busy

@@ -66,7 +66,9 @@ PY
 @test "romp-uninstall: removes the hook symlinks, skills and MCP config that install.sh created" {
     run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
-    [ -L "$HOME/.claude/hooks/tmux-status.sh" ]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
+    # a pre-removal install's retired hook links must be cleaned too — plant one to prove it
+    ln -sfn "$ROMP_DIR/hooks/romp-wake.sh" "$HOME/.claude/hooks/tmux-status.sh"
     [ -L "$HOME/.claude/romp-postal.mcp.json" ]
     [ "$(hook_count)" -gt 0 ]
 

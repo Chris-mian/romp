@@ -14,21 +14,7 @@ test("an option can carry its own preview (the SDK backend sends one per option)
   assert.match(TYPES, /preview\?: string;/);
 });
 
-test("single-select ↑/↓ steps the preview to the focused option (instant for per-option, cursor-driven for tmux)", () => {
-  // paint moves the highlight AND re-renders the preview for the new focus
-  assert.match(RENDER, /function paintLiveAskFocus\(\) \{[\s\S]*?renderAskPreview\(\);/);
-  // when the focused option has NO preview of its own but the ask has a scraped one (tmux), nudge the TUI
-  // cursor so the next scrape captures THIS option's preview — without selecting
-  assert.match(RENDER, /if \(o && !o\.preview && ask\.preview\) navLiveAsk\(o\.n\);/);
-  // Enter still confirms; ↑/↓ never select
-  assert.match(RENDER, /e\.key === "Enter"[^}]*answerLiveAsk\(opts\[liveAskFocus\]\.n\)/);
-});
 
-test("navLiveAsk posts a navAsk (move cursor, no select) and is debounced", () => {
-  assert.match(RENDER, /function navLiveAsk\(target: number\)/);
-  assert.match(RENDER, /if \(navTimer\) clearTimeout\(navTimer\);/);
-  assert.match(RENDER, /vscodeApi\?\.postMessage\(\{ type: "navAsk", id, target \}\)/);
-});
 
 test("multi-select keyboard: ↑/↓ walk checkboxes + Submit/Cancel; Enter TOGGLES (the user 2026-06-27)", () => {
   // the card grabs keyboard focus + a keydown handler, like the single card

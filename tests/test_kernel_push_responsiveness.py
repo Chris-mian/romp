@@ -68,18 +68,17 @@ class DriveOpsAckFast(unittest.TestCase):
         self.be = _FakeBackend()
         self.pushes = []
         self._saved_name_of = km._name_of
-        self._saved = (km._push_all, km._ops_gate, km.Sessions.backend_for, km._optimistic_echo)
+        self._saved = (km._push_all, km._ops_gate, km.Sessions.backend_for)
         km._push_all = lambda: self.pushes.append(1)
         km._name_of = lambda sid: "web"   # these tests drive ops on a session this kernel HAS; _drive refuses one it doesn't (2026-07-29)
         km._ops_gate = lambda sid: False
         km.Sessions.backend_for = lambda sid: self.be
-        km._optimistic_echo = lambda *a, **k: None
         km._pusher_wake.clear()
         km._pending_ops.clear()
         km._interrupt_clicked.clear()
 
     def tearDown(self):
-        (km._push_all, km._ops_gate, km.Sessions.backend_for, km._optimistic_echo) = self._saved
+        (km._push_all, km._ops_gate, km.Sessions.backend_for) = self._saved
         km._name_of = self._saved_name_of
         km._pusher_wake.clear()
         km._pending_ops.clear()
@@ -163,36 +162,3 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class ModelPickerFlashSuppression(unittest.TestCase):
-    """A kernel-driven /model switch pops the CLI's TUI picker for a beat before the confirm Enter lands
-    (tmux; the user 2026-07-06, FRO: 'something popped up and then disappeared') — romp's own action, not
-    a decision the human owes. _ask_poll suppresses a MODEL-titled ask while the switch is pending; the
-    20s pending cap means a genuinely-stuck picker still surfaces for rescue."""
-
-    def tearDown(self):
-        km._model_switch_pending.clear()
-
-    def test_model_picker_suppressed_while_the_switch_is_pending(self):
-        km._model_switch_pending[SID] = {"target": "fable", "until": 1000 + 20}
-        ask = {"title": "Switch model?", "options": ["Fable 5", "Opus 4.8"]}
-        self.assertTrue(km._suppress_kernel_driven_ask(SID, ask, now=1005))
-
-    def test_a_real_permission_ask_still_surfaces_mid_switch(self):
-        km._model_switch_pending[SID] = {"target": "fable", "until": 1000 + 20}
-        ask = {"title": "Bash command", "options": ["Yes", "No"]}
-        self.assertFalse(km._suppress_kernel_driven_ask(SID, ask, now=1005),
-                         "only the switch's own picker is romp's — a racing permission prompt is the human's")
-
-    def test_expired_pending_surfaces_the_stuck_picker(self):
-        km._model_switch_pending[SID] = {"target": "fable", "until": 1000 + 20}
-        ask = {"title": "Switch model?"}
-        self.assertFalse(km._suppress_kernel_driven_ask(SID, ask, now=1030),
-                         "past the cap the confirm evidently failed → the human must see the picker")
-
-    def test_no_pending_never_suppresses(self):
-        self.assertFalse(km._suppress_kernel_driven_ask(SID, {"title": "Switch model?"}, now=1005))
-
-    def test_ask_poll_wires_the_suppression(self):
-        import inspect
-        src = inspect.getsource(km._ask_poll)
-        self.assertIn("_suppress_kernel_driven_ask(sid, ask)", src)

@@ -25,10 +25,6 @@ test("both judge-set toggles default OFF (the user 2026-06-29): the timeline's j
   assert.equal(DEFAULT_SETTINGS.showTriageJudges, false);
 });
 
-test("Default backend defaults to sdk (the user 2026-07-13, superseding the 06-22 tmux default); both backends coexist", () => {
-  assert.equal(DEFAULT_SETTINGS.backend, "sdk");
-});
-
 test("Compact transcript defaults ON (the user 2026-07-14): fresh installs read the tidy transcript", () => {
   assert.equal(DEFAULT_SETTINGS.compact, true);
 });
@@ -57,18 +53,11 @@ test("settings changes propagate same-document and cross-webview, not just cross
   assert.equal(intercepts.length, 2, "chat AND feed handlers intercept settingsSync (the two gear hosts)");
 });
 
-test("the backend pref roundtrips through storage (the gear writes it; createSession reads it fresh)", () => {
-  delete store["romp:settings"];
-  saveSettings({ backend: "sdk" });
-  assert.equal(loadSettings().backend, "sdk");
-});
-
-test('a stale stored backend:"tmux" normalizes to "sdk" on load (the terminal backend is retired, 2026-08-16)', () => {
-  // createSession reads this field verbatim, so a store written before the removal must never leak
-  // a "tmux" pick into a create call — the kernel would refuse it loudly, but the right default is
-  // simply the one backend that exists.
+test("a stale stored backend field is STRIPPED on load (the setting retired with the terminal backend)", () => {
+  // a store written before the removal may still hold one; the setting is gone, so it must never
+  // read back as a live choice
   store["romp:settings"] = JSON.stringify({ backend: "tmux" });
-  assert.equal(loadSettings().backend, "sdk");
+  assert.equal((loadSettings() as unknown as Record<string, unknown>).backend, undefined);
 });
 
 test("saveSettings persists a patch and merges over defaults", () => {

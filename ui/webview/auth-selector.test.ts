@@ -24,12 +24,10 @@ const INTENT = fs.readFileSync(path.join(ROOT, "vscode-extension", "src", "pipe-
 
 test("the picker's Billing row shows for SDK whenever availability is known", () => {
   // one known choice is enough to SHOW the row (the user 2026-08-09) — the both-test only decides
-  // buttons vs written-out text; the backend toggle still re-decides the row (tmux CLIs live in the
-  // tmux server's env, which the kernel doesn't control)
-  assert.match(RENDER, /const show = !pickMode && !!\(a && \(a\.login \|\| a\.key\)\) && \(beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend\) === "sdk";/);
+  // buttons vs written-out text (every session is an SDK session now, so no backend gate)
+  assert.match(RENDER, /const show = !pickMode && !!\(a && \(a\.login \|\| a\.key\)\);/);
   assert.match(RENDER, /const both = !!\(a!\.login && a!\.key\);/);
   assert.match(RENDER, /auWrap\.style\.display = "none";\s*\/\/ hidden until a sessionList reply carries authAvail/);
-  assert.match(RENDER, /beWrap\.addEventListener\("click", \(\) => syncPickerAuth\(\)\);/);
   // a host switch clears the availability — the choices on screen belong to the OLD host
   assert.match(RENDER, /pickerAuthAvail = null;\s*\n\s*syncPickerAuth\(\);/);
   // …and the reply that re-arms it is dropped-if-stale by the same host check the list itself uses

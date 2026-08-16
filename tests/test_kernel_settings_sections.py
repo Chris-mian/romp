@@ -38,7 +38,6 @@ class SettingsSectionsTest(unittest.TestCase):
         # Sessions (top): default dir + auto nudge + backend before the Judges header
         self.assertTrue(h.index(">Sessions<") < h.index("id=rs-defaultdir") < h.index(">Judges<"))
         self.assertTrue(h.index(">Sessions<") < h.index("id=rs-autonudge") < h.index(">Judges<"))
-        self.assertTrue(h.index(">Sessions<") < h.index("id=rs-backend") < h.index(">Judges<"))
         # Judges (top): the four model/effort dropdowns — the SHOW toggles are NOT here anymore
         self.assertTrue(h.index(">Judges<") < h.index("id=rs-judgemodel") < h.index(">Keyboard shortcuts<"))
         self.assertTrue(h.index(">Judges<") < h.index("id=rs-indexeffort") < h.index(">Keyboard shortcuts<"))
@@ -63,11 +62,11 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("<b>Show triage judges</b>", h)
         self.assertIn("does NOT turn the judges on or off", h)
 
-    def test_the_sdk_backend_is_labelled_plain_sdk(self):
-        # "SDK", not "SDK (headless)" (the user 2026-07-12): it drives the same full chat UI
+    def test_the_backend_setting_is_gone_with_the_terminal_backend(self):
+        # one backend → no Default-backend row; a stale stored pick is stripped on load (settings.ts)
         h = _gear_src()
-        self.assertIn("<option value=sdk>SDK</option>", h)
-        self.assertNotIn("headless", h)
+        self.assertNotIn("rs-backend", h)
+        self.assertNotIn("Default backend", h)
 
     def test_judge_rows_are_one_line_label_plus_picker(self):
         # label + picker share the line (the user 2026-07-12): six .rs-jrow rows since the distilling

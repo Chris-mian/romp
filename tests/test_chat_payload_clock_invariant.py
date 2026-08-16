@@ -72,14 +72,22 @@ class ChatPayloadIsClockInvariant(unittest.TestCase):
         names = td / "names"; names.mkdir()
         (names / SID).write_text("web\t%s\t#abcdef\n" % str(cdir))
 
-        self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-                      km.NAMES, km._live_map, km._GLOBAL_CLAUDE_MD)
-        jd.NAMES, jd.PROJECTS = names, proj
-        jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR = td / "captions", td / "archive", td / "goals"
-        jd.STATE = td
+        # BOTH module objects (the test's jd and km.jd are distinct SourceFileLoader loads):
+        # discovery reads km.jd, and patching only the test's copy leaves it scanning the real
+        # ~/.claude/projects — the opening-chip fixture's own trap
+        self.saved = [(m, k, getattr(m, k)) for m in (jd, km.jd)
+                      for k in ("NAMES", "PROJECTS", "CAPDIR", "ARCHDIR", "GOALDIR", "STATE")]
+        self.saved += [(km, "NAMES", km.NAMES), (km, "_live_map", km._live_map),
+                       (km, "_GLOBAL_CLAUDE_MD", km._GLOBAL_CLAUDE_MD)]
+        for m in (jd, km.jd):
+            m.NAMES, m.PROJECTS = names, proj
+            m.CAPDIR, m.ARCHDIR, m.GOALDIR = td / "captions", td / "archive", td / "goals"
+            m.STATE = td
+            m._discover_cache.clear()                 # a pre-patch walk must not serve the OLD projects dir
         km.NAMES = names
         # A dev machine's real ~/.claude/CLAUDE.md would otherwise leak a system-context card in.
         km._GLOBAL_CLAUDE_MD = td / "no-global-claude.md"
+        km._parse_cache.clear()
         # Alive + idle, and FIXED: a `since` derived from the real clock would itself vary between the
         # two builds and mask the very thing under test.
         km._live_map = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
@@ -87,8 +95,10 @@ class ChatPayloadIsClockInvariant(unittest.TestCase):
                                            "color": None}}
 
     def tearDown(self):
-        (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-         km.NAMES, km._live_map, km._GLOBAL_CLAUDE_MD) = self.saved
+        for m, k, v in self.saved:
+            setattr(m, k, v)
+        for m in (jd, km.jd):
+            m._discover_cache.clear()                 # drop walks of the fixture dirs before they vanish
         self.td.cleanup()
 
     def _write_turns(self):
@@ -105,6 +115,10 @@ class ChatPayloadIsClockInvariant(unittest.TestCase):
     def _build_twice(self):
         """Same session, two clocks ten minutes apart. Real pushes are ~1s apart; ten minutes makes any
         clock-derived field differ unmistakably rather than by a rounding hair."""
+        # the fixture clock is FIXED, so pin the transcript's mtime to it — discovery windows on
+        # mtime, and a real-now mtime against a June NOW left the session undiscoverable (the old
+        # live-but-unowned frame synth used to paper over exactly this)
+        os.utime(self.tpath, (NOW, NOW))
         a = km.build_session(SID, NOW)
         b = km.build_session(SID, NOW + 600)
         self.assertIsNotNone(a, "fixture session must build")

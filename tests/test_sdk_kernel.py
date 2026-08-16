@@ -305,11 +305,9 @@ class LiveTailAndOpen(unittest.TestCase):
         km._sdk = lambda: self.be
         km._push_all = lambda *a, **k: None
         km._send_to_app = lambda *a, **k: None
-        km._tmux_echo.clear()                         # isolate the shared tmux-echo store across tests
 
     def tearDown(self):
         km._sdk, km._sessions, km._push_all, km._send_to_app = self.saved
-        km._tmux_echo.clear()
 
     def test_merge_appends_fresh_live_atom_non_mutating(self):
         self.be._live = {"sid-sdk": [{"type": "assistant", "uuid": "new1", "t": 50,
@@ -423,7 +421,6 @@ class SdkQueuedIndicator(unittest.TestCase):
         self.assertIn("be = Sessions.backend_for(sid)", src)
         # (the path_override arm is the read-only episode render — a closed episode has no live queue)
         self.assertIn("queued = [] if path_override else be.pending_queued(sid)", src)
-        self.assertIn("return _pending_queued(p) if p else []", src)   # tmux pending_queued reads the transcript
 
 
 class SdkMetadataParity(unittest.TestCase):

@@ -56,15 +56,14 @@ class OpQueueParkOrDeliver(unittest.TestCase):
     def setUp(self):
         self.be = _FakeBackend()
         self.echoes = []
-        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all,
                        km._working_now)
         km._push_all = lambda: None
-        km._optimistic_echo = lambda sid, text, author="human": self.echoes.append((text, author))
         km._working_now = lambda sid: False            # explicit: each test picks the busy state
         km._pending_ops.clear()
 
     def tearDown(self):
-        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+        (km._compacting_now, km.Sessions.backend_for, km._push_all,
          km._working_now) = self._saved
         km._pending_ops.clear()
 
@@ -74,7 +73,6 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         km._set_model_or_park(self.be, SID, "opus")
         km._set_effort_or_park(self.be, SID, "high")
         self.assertEqual(self.be.calls, [("send", "hello there"), ("model", "opus"), ("effort", "high")])
-        self.assertEqual(self.echoes, [("hello there", "human")], "the instant echo still fires")
         self.assertNotIn(SID, km._pending_ops)
 
     def test_compacting_parks_everything_in_order(self):
@@ -140,7 +138,6 @@ class OpQueueParkOrDeliver(unittest.TestCase):
         self.assertEqual(km._pending_ops.get(SID), [("effort", "high")], "the effort waits for that turn")
         km._apply_pending_ops()                        # the send's turn ended (still quiet in this fixture)
         self.assertEqual(self.be.calls, [("model", "opus"), ("send", "go"), ("effort", "high")])
-        self.assertEqual(self.echoes, [("go", "human")], "echo only where the send path echoed")
         self.assertNotIn(SID, km._pending_ops, "consumed — never re-delivered")
 
     def test_compact_clicked_mid_turn_parks_and_fires_at_turn_end(self):
@@ -247,16 +244,15 @@ class SdkForwardsAndBatch(unittest.TestCase):
         self.be = _FakeBackend()                       # tmux-like (no forwards_sends)
         self.fbe = _FakeForwardBackend()               # SDK-like
         self.echoes = []
-        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all,
                        km._working_now)
         km._push_all = lambda: None
-        km._optimistic_echo = lambda sid, text, author="human": self.echoes.append((text, author))
         km._compacting_now = lambda sid: False
         km._working_now = lambda sid: False
         km._pending_ops.clear()
 
     def tearDown(self):
-        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+        (km._compacting_now, km.Sessions.backend_for, km._push_all,
          km._working_now) = self._saved
         km._pending_ops.clear()
 
@@ -538,16 +534,15 @@ class SlashCommandParksWhileTurnOpen(unittest.TestCase):
         self.be = _FakeBackend()
         self.be.forwards_sends = lambda: True          # an SDK-like backend: takes sends mid-turn
         self.echoes = []
-        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+        self._saved = (km._compacting_now, km.Sessions.backend_for, km._push_all,
                        km._working_now)
         km._push_all = lambda: None
-        km._optimistic_echo = lambda sid, text, author="human": self.echoes.append((text, author))
         km._compacting_now = lambda sid: False
         km._working_now = lambda sid: True             # a turn is OPEN throughout, unless a test says otherwise
         km._pending_ops.clear()
 
     def tearDown(self):
-        (km._compacting_now, km.Sessions.backend_for, km._push_all, km._optimistic_echo,
+        (km._compacting_now, km.Sessions.backend_for, km._push_all,
          km._working_now) = self._saved
         km._pending_ops.clear()
 
@@ -564,8 +559,6 @@ class SlashCommandParksWhileTurnOpen(unittest.TestCase):
         km._send_or_park(self.be, SID, "/autocompact auto", echo="human")
         self.assertEqual(self.be.calls[1:], [], "the command did NOT go into the running turn")
         self.assertEqual(km._pending_ops.get(SID), [("command", "/autocompact auto", "human")])
-        self.assertEqual(self.echoes, [("keep going, and also check the logs", "human")],
-                         "the parked command has not echoed yet — it renders as a queued bubble instead")
 
     def test_parked_command_fires_alone_at_turn_end_with_its_echo_and_ends_the_pass(self):
         km._pending_ops[SID] = [("command", "/autocompact auto", "human"), ("send", "then this", None)]
@@ -576,7 +569,6 @@ class SlashCommandParksWhileTurnOpen(unittest.TestCase):
         km._apply_pending_ops()
         self.assertEqual(self.be.calls, [("send", "/autocompact auto")],
                          "the command fires ALONE — never folded into a send batch")
-        self.assertEqual(self.echoes, [("/autocompact auto", "human")], "echo stamps at fire time")
         self.assertEqual(km._pending_ops.get(SID), [("send", "then this", None)],
                          "the pass ends at the command — its turn must finish first")
 
@@ -602,7 +594,6 @@ class SlashCommandParksWhileTurnOpen(unittest.TestCase):
         km._send_or_park(self.be, SID, "/autocompact auto", echo="human")
         self.assertEqual(self.be.calls, [("send", "/autocompact auto")],
                          "idle → a fresh top-level prompt already, nothing to park")
-        self.assertEqual(self.echoes, [("/autocompact auto", "human")])
         self.assertNotIn(SID, km._pending_ops)
 
 
