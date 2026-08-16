@@ -217,18 +217,44 @@ export function previewFull(path: string, sid?: string | null, verified = false)
     let fetching = false;                            // one managed attempt at a time (a tap mid-fetch no-ops)
     const showChip = () => {
       if (!box.isConnected) return;                  // the turn re-rendered; a fresh box owns this spot now
+      // ONE continuous narrative while the machinery is still going (the user 2026-08-16, third
+      // report: the box flipped between "trying" and "unavailable" on every auto-retry cycle even
+      // though it eventually loaded — the state bounced, so the UI read as impatient). While bounded
+      // auto-retries remain, the wait box KEEPS its loading persona — swirl + a note carrying the
+      // failure and the plan ("dropped at 1.2 MB of 3.4 MB — retrying · tap to retry now"), the
+      // whole box tappable — and the ⚠ chip appears only when the budget is genuinely spent. A
+      // repeat failure must still READ as a response to a tap: the note re-pulses on swap-in.
+      if (autoRetries > 0) {
+        autoRetries--;
+        failedPreviews.set(box, () => build(true));
+        const wait = mkWait(box);
+        wait.title = path + " — tap to retry now";
+        wait.style.cursor = "pointer";
+        wait.onclick = (ev) => { ev.stopPropagation(); build(true); };
+        const spin = document.createElement("img");
+        spin.className = "path-load-spin";
+        spin.src = "/media/romp-swirl-glyph.svg";
+        spin.alt = "loading preview…";
+        const note = document.createElement("span");
+        note.className = "path-load-note";
+        note.textContent = (got > 0 ? "connection dropped at " + fmtBytes(got, total)
+                                    : "connection dropped")
+                           + " — retrying · tap to retry now";
+        wait.append(spin, note);
+        if (fails > 1) {
+          note.classList.add("path-retry-flash");
+          note.addEventListener("animationend", () => note.classList.remove("path-retry-flash"), { once: true });
+        }
+        return;
+      }
       const wait = mkWait(box);
       const chip = document.createElement("span");
       chip.className = "path-full-retry";
-      // The chip names what happens NEXT, not just the failure (the user 2026-08-16, on a slow
-      // link: a dead-end "unavailable" that then quietly healed itself read as broken UI). While
-      // bounded auto-retries remain, the next kernel push re-fetches on its own — say so. And a
-      // repeat failure must READ as a response to the tap, not the same chip standing still:
-      // the copy shifts to "still unavailable" (or the byte it died at) and the swap-in pulses once.
+      // the budget is spent: three attempts gained nothing (progress refills it), so say so plainly
       chip.textContent =
         (got > 0 ? "⚠ connection dropped at " + fmtBytes(got, total)
                  : (fails > 1 ? "⚠ still unavailable" : "⚠ preview unavailable"))
-        + (autoRetries > 0 ? " — retrying automatically · tap to retry now" : " — tap to retry");
+        + " — tap to retry";
       chip.title = path;
       chip.onclick = (ev) => { ev.stopPropagation(); build(true); };
       wait.appendChild(chip);
@@ -236,7 +262,6 @@ export function previewFull(path: string, sid?: string | null, verified = false)
         chip.classList.add("path-retry-flash");
         chip.addEventListener("animationend", () => chip.classList.remove("path-retry-flash"), { once: true });
       }
-      if (autoRetries > 0) { autoRetries--; failedPreviews.set(box, () => build(true)); }
     };
     const failAfterBeat = (started: number) => {
       fails++;
