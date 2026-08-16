@@ -90,7 +90,10 @@ class NewRoutePrefs(unittest.TestCase):
     def test_fresh_sdk_create_applies_both_and_echoes_them(self):
         km._live_names = lambda *_: {}
         km._sdk_ready = lambda: True
-        km._create_sdk_session = lambda nm, cwd, auth="": SID2
+        # the create path owns the prefs now — applied between spawn and connect, so the FIRST
+        # connect carries them (the 2026-08-16 -m drop); the stub mirrors that seam
+        km._create_sdk_session = (lambda nm, cwd, auth="", prefs=None:
+                                  (SID2, km._apply_new_session_prefs(SID2, prefs or {})))
         r = self._post({"name": "opt", "dir": self.dir,
                         "model": "claude-fable-5", "effort": "ultracode"})
         self.assertTrue(r["ok"])

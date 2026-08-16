@@ -1276,6 +1276,12 @@ class SdkSession:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client = None
         self.inflight = 0
+        # The TEXTS of turns fed to the current client whose ResultMessage hasn't landed — the fed-turn
+        # twin of `inflight` (append at feed, cleared at the authoritative settle), all on the loop
+        # thread. Exists for the reconnect teardown: a turn fed into a client being torn down is in NO
+        # store (inputs() already removed it from the persisted queue), and without its text the
+        # loop-top reconcile could only settle counters while the turn itself vanished (2026-08-16).
+        self._inflight_texts: list[str] = []
         # The CLI's own stderr, last few lines (see _on_cli_stderr). The SDK only PIPES the child's
         # stderr when this callback is registered, so without it a launch failure's real cause — the
         # line the CLI printed before exiting — is discarded by the transport and never reaches the
@@ -1589,6 +1595,49 @@ class SdkSession:
             self._wake_set()
         else:
             self._reconnect_when_idle = True   # the ResultMessage handler fires it when the turn ends
+
+    def _reconcile_stranded(self):
+        """RECONCILE ACROSS A RECONNECT, at the loop's top where no client is connected so nothing can
+        legitimately be in flight (the user 2026-07-01, who switched the model on a new session and it
+        said working indefinitely). A reconnect abandons the previous client; a turn it left in flight
+        can NEVER get its ResultMessage on the new connection — so inflight, and the "working" signal it
+        drives, would be stranded elevated FOREVER. request_reconnect defers while inflight>0, but a race
+        (it fired at inflight==0, then the input generator fed a turn before the teardown ran) can still
+        strand a turn here: settle the counters to idle. A not-yet-STARTED _pending turn survives as
+        before (never fed to the dead client; the new inputs() re-feeds it). No-op on the first connect
+        and on a clean reconnect. Event-based on the reconnect itself, not a time/age heuristic.
+
+        And the FED turn itself must not vanish with the client it was fed to (2026-08-16: a spawn's -m
+        kickoff, fed just as an effort-pin's teardown fired, landed nowhere — not in _pending, not in the
+        persisted queue, not in any transcript — and its echo read "sent" for 5.5h until the next thread
+        spawn finally flagged it dropped). `_inflight_texts` carries the fed-but-unresulted texts across
+        the teardown:
+        - NO conversation ever materialized (no init streamed → resume_sid never set): RE-HEAD the queue —
+          the next client starts the conversation fresh, so re-feeding cannot duplicate anything the user
+          can see. (The one theoretical overlap — the dead CLI landed the atom in the same sid-keyed file
+          after our receive loop was cancelled — repeats a kickoff message, which beats silently losing
+          it.)
+        - A RESUMABLE conversation: the atom may genuinely have landed, so re-feeding risks a real
+          duplicate. Surface the loss instead: the drop-mark flips the echo to "never delivered" NOW,
+          rather than hours later at the next thread spawn."""
+        if not self.inflight:
+            return
+        stranded = list(self._inflight_texts)      # fed to the abandoned client, never resulted
+        self._inflight_texts.clear()
+        self.inflight = 0
+        self._interrupted = False
+        self._intr_level = 0
+        self._compacting = False   # an abandoned /compact turn can't emit its boundary/result on the dead client
+        self._clearing = False     # same: an abandoned /clear turn can't emit its init/result either
+        self._mark("waiting")
+        self.backend.retire_live_work(self.sid)    # the abandoned turn's stream is gone with its client
+        if stranded and not self.resume_sid:
+            with self._lock:
+                self._pending[0:0] = stranded
+            self._persist_queue()                  # the fresh inputs() drains _pending on its first pass
+        elif stranded:
+            self.backend._mark_dropped_echoes(self.sid, self.pending())
+        self.backend._poke()
 
     # ---- async internals (run inside the quarantined loop) ----
 
@@ -1915,6 +1964,7 @@ class SdkSession:
                     self._interrupted = False        # a fresh turn → clear any stale interrupt flag
                     self._intr_level = 0             #   ...and its escalation episode (a new stop starts polite)
                 self.inflight += 1
+                self._inflight_texts.append(item)   # the fed-turn twin — see its init comment
                 self._mark("working")
                 self.backend._poke()
                 yield {"type": "user",
@@ -1938,25 +1988,8 @@ class SdkSession:
         while not self.ended:
             self._wake.clear()
             self._reconnect = False
-            # RECONCILE INFLIGHT ACROSS A RECONNECT (the user 2026-07-01, who switched the model on a new session
-            # and it said working indefinitely). A reconnect abandons the previous client; a turn it left in
-            # flight can NEVER get its ResultMessage on the new connection (that client, and its receive loop,
-            # are gone) — so inflight, and the "working" signal it drives, would be stranded elevated FOREVER.
-            # request_reconnect defers while inflight>0, but a race (it fired at inflight==0, then the input
-            # generator started a turn before the teardown ran) can still leave a turn stranded here. At the
-            # TOP of the loop no client is connected, so nothing can legitimately be in flight: settle it to
-            # idle. A not-yet-STARTED _pending turn survives (it was never fed to the dead client) and the new
-            # inputs() re-feeds it, re-stamping "working". No-op on the first connect and on a clean reconnect
-            # (inflight already 0). Event-based on the reconnect itself, not a time/age heuristic.
-            if self.inflight:
-                self.inflight = 0
-                self._interrupted = False
-                self._intr_level = 0
-                self._compacting = False   # an abandoned /compact turn can't emit its boundary/result on the dead client
-                self._clearing = False     # same: an abandoned /clear turn can't emit its init/result either
-                self._mark("waiting")
-                self.backend.retire_live_work(self.sid)   # the abandoned turn's stream is gone with its client
-                self.backend._poke()
+            # settle + recover anything the abandoned client stranded — see _reconcile_stranded
+            self._reconcile_stranded()
             opts = self.backend._options(self, ClaudeAgentOptions)
             # Whether THIS connection carries the fastMode opt-in — snapshotted at the same moment
             # _options composes the flag-settings file, so the two can never disagree. The CLI only
@@ -2367,6 +2400,7 @@ class SdkSession:
             # phantom-working bug, the user 2026-07-09.) If a genuinely separate turn is still queued in
             # the CLI, its next streamed atom re-asserts 'working' via _forward — the stream is the truth.
             self.inflight = 0
+            self._inflight_texts.clear()           # the CLI processed everything fed — same settle semantics
             # A /compact that found NOTHING to compact emits no boundary — the turn just settles here. Clear
             # the authoritative flag so parked ops proceed immediately, instead of waiting out a 180s cap.
             self._compacting = False
