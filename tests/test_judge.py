@@ -2296,7 +2296,19 @@ class PostalDelegation(unittest.TestCase):
             tpath.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
             saved = (jd.GOALDIR, jd.PCACHE, jd.MESSAGES, jd.plan_llm, jd.opener_llm, jd._group_store, jd._view_cleared)
             jd.GOALDIR, jd.PCACHE = td / "goals", td / "pcache"
-            jd.MESSAGES = td / "messages.jsonl"           # hermetic: empty postal index (no live data, peer=None)
+            jd.MESSAGES = td / "messages.jsonl"           # hermetic postal index in which every delivered mid
+            #                                               RESOLVES to a sender — the courier only plants for a
+            #                                               known sender, and a sender-less delivery yields no
+            #                                               '#d' at all (test_judge_senderless_delegation)
+            mids = set()
+            for r in recs:
+                c = (r.get("message") or {}).get("content")
+                if isinstance(c, str):
+                    for part in c.split("<!-- romp-msg-id:")[1:]:
+                        mids.add(part.split("-->")[0].strip())
+            jd.MESSAGES.write_text("".join(
+                json.dumps({"ev": "sent", "id": m, "from_id": "11111111-2222-3333-4444-00000000cccc"}) + "\n"
+                for m in sorted(mids)))
             jd.plan_llm, jd.opener_llm = work, (lambda *a, **k: "")
             jd._group_store = lambda *a, **k: None
             try:

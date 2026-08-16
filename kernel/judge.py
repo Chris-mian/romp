@@ -4364,9 +4364,11 @@ def plan_units(session, store=None):
     prompt-run always FOLLOWS the earlier work-runs (close-before-open, for free, no time sort). A tagged
     FOLLOW-UP gets only its work unit (its card already reopens optimistically, and the work-run reopens +
     files under the target); `followup` = that goal-node id, or None.
-    A PEER/postal segment yields a 'delegation' work unit (the user 2026-06-22, via link_audit): its work
-    is filed UNDER the goal the COURIER planted for it, so a handed-off goal gets the same sub/done/block
-    expressivity as a human-minted top. A romp NUDGE segment (auto-nudge / Nudge button, on a goal) yields a
+    A PEER/postal segment with a KNOWN sender yields a 'delegation' work unit (the user 2026-06-22, via
+    link_audit): its work is filed UNDER the goal the COURIER planted for it, so a handed-off goal gets the
+    same sub/done/block expressivity as a human-minted top. A sender-LESS postal segment (author.peer None)
+    yields a plain work unit instead — the courier can never place a '#d' for it, and an unplaceable unit
+    wedges auto-nudge's placement gate (see the branch comment, 2026-08-16). A romp NUDGE segment (auto-nudge / Nudge button, on a goal) yields a
     'nudge' unit instead of a plain work unit: the planner must RESOLVE the goal to done/block, not file a
     step (the user 2026-06-22, via track_change). Empty segments drop.
     Each unit's LAST field is `quote` (_mint_quote): the trigger's verbatim head, cached on every node the
@@ -4434,10 +4436,21 @@ def plan_units(session, store=None):
                     out.append((seg["id"], "work", seg["t"], work_text, _seg_human(seg),
                                 _seg_followup(seg), trig, vq))
                 continue
-            if _seg_peer(seg):                            # POSTAL segment → DELEGATION work-run (files under the courier's goal)
+            _pm = _seg_peer(seg)
+            if _pm and _pm[0]:                            # POSTAL segment with a KNOWN sender → DELEGATION work-run
                 if not is_open_final:                     # ended → the recipient's work is known; place it under G
                     out.append((seg["id"], "delegation", seg["t"], work_text, False, None, trig, vq))
                 continue                                  # peer segs never get a prompt-run or a normal work-run
+            # A SENDER-LESS postal delivery (author.peer None: mail whose id the postal index can't
+            # resolve — an external tool posting through the kernel's send route with no session
+            # identity) falls THROUGH to the normal work-run. It must NOT yield a '#d' unit: the
+            # courier is the only placer of those and it requires the sender (it files under the
+            # SENDER's goal and plants the sender-side tracking node), so a sender-less '#d' stays
+            # unplaced forever — and auto-nudge's placement gate (kernel `_auto_nudge_session`,
+            # `_unplanned`) reads any unplaced unit as "judges still pending" and silences the WHOLE
+            # session's escalation ladder (2026-08-16: two such units from an anonymous dashboard
+            # poller wedged an idle session's Working cards for two days, nudge-, wake- and
+            # reminder-proof). The planner files the segment like any non-human work stretch.
             human, followup = _seg_human(seg), _seg_followup(seg)
             if is_open_final:                             # the IN-PROGRESS segment → PROMPT-run only (place the ask now)
                 if human and not followup and not _seg_slash_shaped(seg):
@@ -9586,7 +9599,13 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
                     # fired before). Defense in depth beside the fork's sealed-placements seed.
                     continue
                 pm = _seg_peer(seg)
-                if not pm or not pm[0]:                # peer-triggered with a known sender only
+                if not pm or not pm[0]:                # peer-triggered with a KNOWN sender only. This filter
+                    #                                    is one half of a partition contract with plan_units:
+                    #                                    the courier places exactly the peer segments it can
+                    #                                    file under a sender's goal, and plan_units yields a
+                    #                                    '#d' unit for exactly those (a sender-less one gets a
+                    #                                    plain work unit there instead — a '#d' nothing places
+                    #                                    wedges auto-nudge's placement gate, 2026-08-16).
                     continue
                 pending.append((seg["t"], fsid, seg["id"], _unit_text(seg["atoms"]), pm[1], pm[0],
                                 _seg_peer_kind(seg), _seg_anchor(seg)))
