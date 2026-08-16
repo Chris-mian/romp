@@ -219,6 +219,7 @@ MOCK
     # last command's status fails a test) — assert with simple commands
     # (grep, [ ]) so failures actually fire.
     mkdir -p "$XDG_STATE_HOME/romp/names"
+    touch "$MOCK_LOG"    # this path makes no tmux calls at all
     run run_romp resume
     [ "$status" -eq 0 ]
     grep -q "no resumable sessions" <<<"$output"

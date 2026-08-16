@@ -379,16 +379,9 @@ STUB
     export PATH="$TEST_DIR/mock:$PATH"
 }
 
-@test "install.sh: an old Claude Code gets the upgrade notice at the end" {
-    _stub_claude "2.1.220"
-    run "$ROMP_DIR/install.sh"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"2.1.220"* ]]
-    [[ "$output" == *"claude update"* ]]
-}
 
-@test "install.sh: a current Claude Code gets no upgrade notice" {
-    _stub_claude "2.1.226"
+@test "install.sh: a present Claude Code gets no notice (the old-version nudge retired with its pane rationale)" {
+    _stub_claude "2.1.220"
     run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
     [[ "$output" != *"claude update"* ]]
