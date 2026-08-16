@@ -544,6 +544,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .composer-file-pending { gap: 6px; padding: 4px 8px; border-radius: 6px; cursor: default;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   border: 1px dashed color-mix(in srgb, var(--accent) 35%, transparent); }
+/* a held send (waiting for an upload to finish — render.ts sendOnShip): dimmed, not disabled;
+   clicking re-opens the same confirm, so the state is always inspectable */
+#composer-send.send-held { opacity: 0.45; }
 .composer-ship-dots { display: inline-flex; gap: 3px; }
 .composer-ship-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
   animation: ship-bnc 1.1s ease-in-out infinite; }

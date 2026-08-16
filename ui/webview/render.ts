@@ -8377,9 +8377,12 @@ function addPendingShip(id: string | null, name: string): void {
 // An ack (or nack) retires ONE pending chip: the entry whose sanitized name `key` ends with — `key`
 // is the saved path on ack (basename <ms>-<safe name>) or the raw name on nack, and both end with
 // the sanitized original — else the oldest (the kernel answers a connection's dropFiles in order).
-// Searched active-tab-first across all sessions because the ack carries no session id — like the
-// attachment itself, it lands wherever the user now is.
-function retirePendingShip(key: string): void {
+// Searched active-tab-first across all sessions because the ack carries no session id. Returns the
+// sid whose chip it retired (null if none matched), so the ack can attach the file to the composer
+// that SHIPPED it — attaching to whatever tab was active at ack time put a slow upload's file on the
+// wrong session's strip after a mid-flight tab switch (the user 2026-08-16, the send-while-uploading
+// report's second face).
+function retirePendingShip(key: string): string | null {
   const k = "-" + shipSafeName(key.split("/").pop() || key);
   const ids = activeId ? [activeId, ...pendingShips.keys()] : [...pendingShips.keys()];
   for (const id of ids) {
@@ -8389,9 +8392,19 @@ function retirePendingShip(key: string): void {
     list.splice(i >= 0 ? i : 0, 1);
     if (!list.length) pendingShips.delete(id);
     if (id === activeId) renderComposerFiles(id);
-    return;
+    return id;
   }
+  return null;
 }
+
+// Sids whose SEND is HELD until every pending ship acks (the user 2026-08-16: sending mid-upload
+// silently dropped the attachment — the send read only the acked list). Armed by the confirm's
+// "wait" pick in sendComposer's gate; fired by the LAST droppedPath ack (event-based), cancelled by
+// a dropSaveFailed nack or by any successful send for the sid.
+const sendOnShip = new Set<string>();
+// Assigned by setupComposer (sendComposer lives in its closure); the WS ack handler fires a held
+// send through it when the last pending ship lands.
+let fireHeldSend: () => void = () => {};
 
 // Persist drafts across a full RELOAD (the user 2026-06-25: a half-typed message must survive a refresh, not
 // only a tab switch). The Map is in-memory, so mirror it into the webview's persisted state — the same store
@@ -8629,6 +8642,16 @@ function renderComposerChips(id: string | null): void {
 function renderComposerFiles(id: string | null): void {
   const strip = document.getElementById("composer-files");
   if (!strip) return;
+  // the held-send state rides the send button (see sendOnShip): dimmed + titled while a "wait for
+  // the upload" pick is armed, restored the moment the hold fires or cancels — this renderer runs
+  // on every strip change AND every tab switch, so the button always reflects the ACTIVE tab
+  const sendBtn = document.getElementById("composer-send");
+  if (sendBtn) {
+    const held = !!id && sendOnShip.has(id);
+    sendBtn.classList.toggle("send-held", held);
+    if (held) sendBtn.setAttribute("title", "sends when the upload finishes");
+    else if (sendBtn.getAttribute("title") === "sends when the upload finishes") sendBtn.removeAttribute("title");
+  }
   strip.replaceChildren();
   const paths = (id ? composerFiles.get(id) : undefined) || [];
   const pending = (id ? pendingShips.get(id) : undefined) || [];
@@ -9649,13 +9672,22 @@ window.addEventListener("message", (e: MessageEvent) => {
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
   }
   else if (m.type === "droppedPath" && typeof m.path === "string") {   // host-saved drop/paste/pick → a thumbnail, not path text (the user 2026-08-04)
-    retirePendingShip(m.path);                                         // the in-flight chip this ack answers (no-op for pickFile, which never ships)
-    addComposerFile(activeId, m.path);
+    const owner = retirePendingShip(m.path) || activeId;               // the chip this ack answers names the OWNING composer (no-op for pickFile, which never ships)
+    addComposerFile(owner, m.path);
+    if (owner && sendOnShip.has(owner) && !(pendingShips.get(owner) || []).length) {
+      // the LAST ship landed — the event the held send was waiting for (the user 2026-08-16)
+      sendOnShip.delete(owner);
+      if (owner === activeId) fireHeldSend();
+      else warnToast("attachments finished uploading on another tab — the held message was not sent; review it there.");
+    }
   } else if (m.type === "dropSaveFailed" && typeof m.name === "string") {
     // the kernel could not SAVE the shipped bytes — clear the pending chip and say so loudly,
     // never leave dots pulsing over a file that is not coming (fail loudly, don't degrade silently)
-    retirePendingShip(m.name);
-    warnToast(m.name + " couldn't be saved on the kernel, so it was not attached — try again.");
+    const owner = retirePendingShip(m.name) || activeId;
+    const held = !!owner && sendOnShip.delete(owner);    // a held send must not fire without the file it waited for
+    warnToast(m.name + " couldn't be saved on the kernel, so it was not attached — try again."
+              + (held ? " Your message was NOT sent." : ""));
+    if (owner && owner === activeId) renderComposerFiles(owner);   // the held-send button state clears with the hold
   }
   // an EDITOR highlight (VS Code host, onDidChangeTextEditorSelection — the user 2026-07-13) seeds the
   // same quote chip a transcript highlight does, labeled + wrapped with its file:lines origin (m.src)
@@ -9789,7 +9821,7 @@ function setupComposer() {
     persistDrafts();
     renderStagedStrip(activeId);
   };
-  const sendComposer = () => {
+  const sendComposer = (opts?: { pastShipGate?: boolean }) => {
     const typed = ta.value.trim();
     if (!activeId) return;
     // an empty plain send with a staged stack = "go": release what's held, nothing new to add
@@ -9802,6 +9834,26 @@ function setupComposer() {
       return;
     }
     const attached = composerFiles.get(activeId) || [];
+    // SHIP GATE (the user 2026-08-16): an upload still in flight is NOT in `attached` (the send reads
+    // only acked paths), so sending now silently drops it — the exact report. Intercept with the same
+    // pane-local confirm the /clear guard uses: send WITHOUT it explicitly, or hold the send and let
+    // the last droppedPath ack fire it (event-based; a save nack cancels the hold loudly instead).
+    const shipping = (pendingShips.get(activeId) || []).length;
+    if (shipping && !opts?.pastShipGate) {
+      const sid = activeId;
+      const what = shipping === 1 ? "An attachment is" : shipping + " attachments are";
+      const them = shipping === 1 ? "it" : "them";
+      showConfirm(what + " still uploading",
+                  "Send now and your message goes without " + them + ". Wait, and it sends itself "
+                  + "the moment the upload finishes.",
+                  [{ label: "Wait for the upload", value: "wait" },
+                   { label: "Send without " + them, value: "now", danger: true }],
+                  (v) => {
+                    if (v === "now") sendComposer({ pastShipGate: true });
+                    else if (v === "wait") { sendOnShip.add(sid); renderComposerFiles(sid); }
+                  });
+      return;
+    }
     if (!typed && !attached.length) return;
     // Attachment thumbnails ride the send as a trailing line of paths — quoted when they contain spaces,
     // the way a person would type them (the user 2026-08-04). Not for a picker answer or an edit: a
@@ -9864,6 +9916,7 @@ function setupComposer() {
         }
         provisionalQueue.push(text);
         registerOptimistic(sid, text);
+        sendOnShip.delete(sid);                       // a send happened — any held one is superseded
         if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }
         drafts.delete(sid); draftStartedAt.delete(sid); persistDrafts();
         ta.value = ""; composerManualH = null; ta.style.height = "";
@@ -9891,6 +9944,7 @@ function setupComposer() {
       routeUserMessage(activeId, text, cites);
       // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
       if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
+      sendOnShip.delete(sid);                       // a send happened — any held one is superseded
       if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }   // the strip emptied into this message
       drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
       ta.value = "";
@@ -9929,6 +9983,7 @@ function setupComposer() {
   // blur instead so the keyboard collapses and the box drops back to the bottom (the user 2026-07-22).
   const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
   sendBtn?.addEventListener("mousedown", (e) => { e.preventDefault(); sendComposer(); if (isCoarsePointer()) ta.blur(); else ta.focus(); });
+  fireHeldSend = () => sendComposer();   // the ack handler's door into this closure (see sendOnShip)
 
   // ── drag-to-resize the message box (the user 2026-07-07) ── the #composer-resize handle straddles the
   // top-edge divider; dragging it UP grows the composer (to see a long message in full), DOWN shrinks it.
