@@ -98,34 +98,23 @@ class KernelWiring(unittest.TestCase):
         self.assertTrue(self._route({"type": "sendMessage", "id": "sid-sdk", "text": "hi"}))
         self.assertIn(("send", "sid-sdk", "hi"), self.be.calls)
 
-    def test_a_reg_less_sid_routes_to_the_null_backend_and_the_sdk_stays_untouched(self):
-        # backend_for is registry-gated (owns()): a sid with no SDK reg — the retired terminal
-        # backend's era, revived only through _revive_session's adoption — routes to the NullBackend,
-        # whose every op is the documented refusal. Routing it to the SDK backend instead would let a
-        # dep-less backend invent state for sids it has no record of (its launch_error answers for
-        # EVERY sid, which painted every dead session's chat red). _drive still refuses ids this
-        # kernel has never heard of (test_drive_foreign_sid.py owns that).
-        saved_name = km._name_of
+    def test_non_sdk_sid_routes_to_the_tmux_backend(self):
+        # a non-SDK sid no longer "falls through" — _drive routes it to the tmux backend via
+        # Sessions.backend_for (the fallback). The unified dispatch handles BOTH kinds.
+        # It must be a session this kernel HAS, though: since 2026-07-29 _drive refuses an id it has never
+        # heard of rather than letting backend_for's tmux fallback type at a pane that isn't there. The
+        # names entry is what a real tmux session would carry; test_drive_foreign_sid.py owns the refusal.
+        tm = FakeBackend(); tm._owned = set()
+        saved, saved_name = km._TMUX, km._name_of
+        km._TMUX = tm
         km._name_of = lambda sid: "web"
         try:
-            self.assertTrue(self._route({"type": "sendMessage", "id": "sid-unowned", "text": "hi"}))
-            self.assertEqual(self.be.calls, [], "the SDK backend is never asked about a reg-less sid")
+            self.assertTrue(self._route({"type": "sendMessage", "id": "sid-tmux", "text": "hi"}))
+            self.assertIn(("send", "sid-tmux", "hi"), tm.calls)   # routed to the tmux backend
+            self.assertEqual(self.be.calls, [])                   # the SDK backend was untouched
         finally:
-            km._name_of = saved_name
-
-    def test_backend_for_without_the_sdk_is_the_null_backend_never_none(self):
-        # SDK deps absent → every be.* call still lands on an object whose ops are the documented
-        # can't-do-it defaults (False/[]/None), never a crash (the ~35 bare be.* call sites)
-        saved = km._sdk
-        km._sdk = lambda: None
-        try:
-            be = km.Sessions.backend_for("11111111-2222-3333-4444-555555555555")
-            self.assertFalse(be.send("11111111-2222-3333-4444-555555555555", "hi"))
-            self.assertEqual(be.pending_queued("11111111-2222-3333-4444-555555555555"), [])
-            self.assertIsNone(be.current_ask("11111111-2222-3333-4444-555555555555"))
-            self.assertFalse(be.kill("11111111-2222-3333-4444-555555555555"))
-        finally:
-            km._sdk = saved
+            km._TMUX, km._name_of = saved, saved_name
+            km._tmux_echo.pop("sid-tmux", None)                   # the optimistic echo wrote here — don't leak it
 
     def test_ui_op_falls_through_even_for_sdk_sid(self):
         # closeTab/openSession are backend-agnostic UI ops → never intercepted
@@ -284,8 +273,8 @@ class KernelWiring(unittest.TestCase):
         self.assertIn(("send", "sid-sdk", "hi"), self.be.calls)
         self.assertEqual(self.fu_calls, [], "no itemId → nothing to reopen")
 
-    def test_live_map_merges_sdk_rows(self):
-        sess = km._live_map()                     # merges tmux (real/empty) + the fake SDK row
+    def test_tmux_sessions_merges_sdk_rows(self):
+        sess = km._tmux_sessions()                     # merges tmux (real/empty) + the fake SDK row
         self.assertIn("sid-sdk", sess)
         row = sess["sid-sdk"]
         self.assertEqual(row["state"], "working")

@@ -55,8 +55,8 @@ class CancelCreateTest(unittest.TestCase):
         patch("_send_to_app", lambda app, m: self.sent.append((app, m)))
         patch("_push_soon", lambda: None)
         patch("_push_all", lambda: None)
-        patch("_live_map", lambda: self._live)
-        patch("_live_names", lambda live_map: {NAME: SID} if SID in (live_map or {}) else {})
+        patch("_tmux_sessions", lambda: self._live)
+        patch("_live_names", lambda tmux: {NAME: SID} if SID in (tmux or {}) else {})
         self._saved_bf = km.Sessions.backend_for
         km.Sessions.backend_for = staticmethod(lambda sid: self.be)
         km._cancel_pending.clear()

@@ -401,20 +401,20 @@ class RevealAiming(unittest.TestCase):
 
     def test_connected_pane_gets_it_now_dead_session_gets_revive(self):
         c, got = self._register("chat", "W1")
-        with mock.patch.object(km, "_live_map", return_value={"SID-live": {}}):
+        with mock.patch.object(km, "_tmux_sessions", return_value={"SID-live": {}}):
             self.assertTrue(km._reveal_request("SID-live", "W1"))
         self.assertEqual(got, [{"type": "focus", "id": "SID-live", "live": True}])
         self.assertIsNone(km._PENDING_REVEAL[0], "delivered → nothing parked")
         # a DEAD session never silently reveals — the revive prompt instead (_reveal_or_confirm's split)
         got.clear()
-        with mock.patch.object(km, "_live_map", return_value={}), \
+        with mock.patch.object(km, "_tmux_sessions", return_value={}), \
              mock.patch.object(km, "_name_of", return_value="web"):
             km._reveal_request("SID-gone", "W1")
         self.assertEqual(got[0]["type"], "confirmRevive")
 
     def test_boot_race_parks_then_ready_consumes_aimed_by_wid(self):
         # the norm: the shell's fetch beats its chat iframe's WS, so nothing is connected yet
-        with mock.patch.object(km, "_live_map", return_value={"SID-live": {}}):
+        with mock.patch.object(km, "_tmux_sessions", return_value={"SID-live": {}}):
             self.assertFalse(km._reveal_request("SID-live", "W-phone"))
             self.assertEqual(km._PENDING_REVEAL[0], {"sid": "SID-live", "wid": "W-phone"})
             # another dashboard's pane saying ready must NOT steal it (the 2026-07-29 rule)
@@ -436,7 +436,7 @@ class RevealAiming(unittest.TestCase):
 
     def test_a_widless_park_matches_the_first_chat_pane(self):
         # sessionStorage blocked → the shell has no wid; better the first chat pane than a dropped tap
-        with mock.patch.object(km, "_live_map", return_value={"S": {}}):
+        with mock.patch.object(km, "_tmux_sessions", return_value={"S": {}}):
             km._reveal_request("S", "")
             c, got = _fake_ws_client("chat", "W-any")
             km._consume_pending_reveal(c)

@@ -188,13 +188,6 @@ class SessionBackend(ABC):
         tmux pressed Enter in the pane; the SDK enqueues a drain. True if a wake was issued."""
         return False
 
-    def pending_cut(self, sid: str) -> str:
-        """The uuid of an ARMED, unconsumed bare-rollback cut for `sid`, or "" when none. The auto-nudge
-        tick reads it bare on whatever backend it holds: while a cut is armed the transcript still shows
-        the deleted turn, and a nudge fired in that window quotes rolled-back content back into the
-        thread (the 2026-07-20 resurrection). Default: no such signal."""
-        return ""
-
     def deliver(self, sid: str, text: str) -> bool:
         """Live-deliver a postal banner to `sid` as the deliver-time WAKE — put it into the session's input so
         an idle recipient surfaces the mail NOW instead of on its next turn. tmux pastes it into the pane
@@ -225,29 +218,3 @@ class SessionBackend(ABC):
     @abstractmethod
     def current_ask(self, sid: str):
         """The session's live AskUserQuestion state for the webview, or None."""
-
-
-class NullBackend(SessionBackend):
-    """The backend of last resort: what backend_for returns when the SDK backend could not be built
-    (its deps absent) or a sid belongs to no backend (a dead, reg-less session — e.g. one archived
-    before the SDK era). Every method IS the documented can't-do-it default above — False / {} / [] /
-    None / the loud MCP refusal — so call sites never crash on a be.* call and never silently
-    pretend an op landed. It exists so backend_for can hold its contract ("never returns None")
-    without a live fallback backend behind it."""
-    def owns(self, sid): return False
-    def live_sessions(self): return {}
-    def send(self, sid, text): return False
-    def interrupt(self, sid): return False
-    def set_model(self, sid, value): return False
-    def set_mode(self, sid, mode): return False
-    def set_effort(self, sid, value): return False
-    def set_fast(self, sid, value): return False
-    def spawn(self, name, cwd, bg="", fg="", sid=None, auth=""): return None
-    def resume(self, name, sid, cwd=None): return False
-    def kill(self, sid): return False
-    def rename(self, sid, new_name): return False
-    def pending_queued(self, sid): return []
-    def live_atoms(self, sid): return []
-    def prune_live(self, sid, tx_uuids, tx_user_texts=()): return None
-    def on_ask(self, sid, kind, payload=None): return False
-    def current_ask(self, sid): return None

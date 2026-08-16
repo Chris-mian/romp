@@ -154,7 +154,7 @@ class BuildSessionLineage(unittest.TestCase):
         shutil.rmtree(self._td, ignore_errors=True)
 
     def test_the_child_gets_its_divider_right_after_the_branch_point(self):
-        m = km.build_session(CHILD, self.now, live_map={})
+        m = km.build_session(CHILD, self.now, tmux={})
         self.assertEqual(m["branch"]["fromSid"], PARENT)
         self.assertEqual(m["branch"]["fromName"], "parent")
         evs = m["events"]
@@ -165,7 +165,7 @@ class BuildSessionLineage(unittest.TestCase):
         self.assertEqual(evs[at + 1]["fromName"], "parent")
 
     def test_the_parent_gets_its_children_list(self):
-        m = km.build_session(PARENT, self.now, live_map={})
+        m = km.build_session(PARENT, self.now, tmux={})
         self.assertIsNone(m["branch"], "the parent is not itself a fork")
         self.assertEqual([k["sid"] for k in m["branches"]], [CHILD])
         self.assertEqual(m["branches"][0]["cut"], "a1")
@@ -174,7 +174,7 @@ class BuildSessionLineage(unittest.TestCase):
         (jd.SDKDIR / (CHILD + ".json")).write_text(json.dumps(
             {"sid": CHILD, "name": "child", "cwd": self.cdir, "lastSid": CHILD, "alive": True}))
         km._sdk = lambda: None
-        m = km.build_session(CHILD, self.now, live_map={})
+        m = km.build_session(CHILD, self.now, tmux={})
         self.assertIsNone(m["branch"])
         self.assertIsNone(m["branches"])
         self.assertFalse(any(e.get("kind") == "branch" for e in m["events"]))

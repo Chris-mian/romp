@@ -399,7 +399,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         km._parse_cache.clear()
         km._autonudge_cache.clear()
         km._pending_ops.clear()
-        self.live_map = {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
+        self.tmux = {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
                            "context": None, "compactPct": None, "color": None}}
         km._set_auto_nudge(True)
 
@@ -439,15 +439,12 @@ class AutoNudgeInterruptGate(unittest.TestCase):
 
     def _stub(self):
         sent = []
-        class _SendBE:
-            def send(self, sid, body): sent.append((sid, body)); return True
-        _be = _SendBE()
-        saved = km.Sessions.backend_for, jd.optimistic_followup
-        km.Sessions.backend_for = staticmethod(lambda sid: _be)
+        saved = km._tmux_send, jd.optimistic_followup
+        km._tmux_send = lambda name, body, **kw: sent.append((name, body))
         jd.optimistic_followup = lambda sid, gid: True
 
         def restore():
-            km.Sessions.backend_for, jd.optimistic_followup = saved
+            km._tmux_send, jd.optimistic_followup = saved
         return sent, restore
 
     def test_control_a_normally_ended_stall_still_nudges(self):
@@ -457,7 +454,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         g = self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.live_map)
+            km._auto_nudge_tick(NOW, self.tmux)
             self.assertEqual(len(sent), 1, "the orphaned working goal is nudged")
             self.assertIn("romp-goal-id: " + g, sent[0][1])
         finally:
@@ -468,7 +465,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.live_map)
+            km._auto_nudge_tick(NOW, self.tmux)
             self.assertEqual(sent, [], "the user stopped this turn themselves — they're driving, not stalled")
         finally:
             restore()
@@ -479,7 +476,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         km._pending_ops[SID] = [("model", "fable")]
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.live_map)
+            km._auto_nudge_tick(NOW, self.tmux)
             self.assertEqual(sent, [], "queued user intent outranks a nudge — never jump the user's queue")
         finally:
             restore()
@@ -498,7 +495,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.live_map)
+            km._auto_nudge_tick(NOW, self.tmux)
             self.assertEqual(sent, [], "a peer spoke, the user didn't — still their pause, still suppressed")
         finally:
             restore()
@@ -510,7 +507,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.live_map)
+            km._auto_nudge_tick(NOW, self.tmux)
             self.assertEqual(len(sent), 1, "the user re-engaged and the goal re-stalled → nudging resumes")
         finally:
             restore()
@@ -521,7 +518,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._transcript(interrupted=True)
         self._goal()
         km._parse(str(self.tpath), SID, NOW)                       # warm the cache (stands in for _warm_fleet_bg)
-        card = next(a for a in km.build_feed(NOW, self.live_map)["asks"] if a["itemId"] == SID + ":gw")
+        card = next(a for a in km.build_feed(NOW, self.tmux)["asks"] if a["itemId"] == SID + ":gw")
         self.assertTrue(card.get("interrupted"), "user-stopped + no message since → interrupted badge")
 
     def test_feed_badge_clears_once_the_user_re_engages(self):
@@ -529,7 +526,7 @@ class AutoNudgeInterruptGate(unittest.TestCase):
         self._append([uline(T0 + 200, "keep going with plan B", "u4", "u3")])   # user spoke; turn back open
         self._goal()
         km._parse(str(self.tpath), SID, NOW)
-        card = next(a for a in km.build_feed(NOW, self.live_map)["asks"] if a["itemId"] == SID + ":gw")
+        card = next(a for a in km.build_feed(NOW, self.tmux)["asks"] if a["itemId"] == SID + ":gw")
         self.assertFalse(card.get("interrupted"), "the user's next message retires the badge")
 
 
@@ -556,7 +553,7 @@ class AutoNudgeArming(AutoNudgeInterruptGate):
         g = self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.live_map)
+            km._auto_nudge_tick(NOW, self.tmux)
             self.assertEqual(len(sent), 1, "the working goal takes its FIRST nudge even though the "
                                            "latest turn is romp-injected (the restart banner)")
             self.assertIn("romp-goal-id: " + g, sent[0][1])
@@ -570,7 +567,7 @@ class AutoNudgeArming(AutoNudgeInterruptGate):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.live_map)
+            km._auto_nudge_tick(NOW, self.tmux)
             self.assertEqual(len(sent), 1)
             self._write([
                 uline(T0, "please wire the thing", "u1"),
@@ -578,7 +575,7 @@ class AutoNudgeArming(AutoNudgeInterruptGate):
                 uline(T0 + 100, "<!-- romp-injected -->[romp] status check follow-up", "u2", "a1"),
                 aline(T0 + 120, "still where I left it.", "a2", "u2", "end_turn")])
             km._parse_cache.clear()
-            km._auto_nudge_tick(NOW + 10, self.live_map)
+            km._auto_nudge_tick(NOW + 10, self.tmux)
             self.assertEqual(len(sent), 1, "a romp-triggered response turn does not move arm_id → no re-fire")
         finally:
             restore()
@@ -590,7 +587,7 @@ class AutoNudgeArming(AutoNudgeInterruptGate):
         self._goal()
         sent, restore = self._stub()
         try:
-            km._auto_nudge_tick(NOW, self.live_map)
+            km._auto_nudge_tick(NOW, self.tmux)
             self.assertEqual(sent, [], "no genuine ended turn to arm off → never fires")
         finally:
             restore()

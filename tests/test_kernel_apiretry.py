@@ -150,7 +150,7 @@ class KernelAutoRetryTick(unittest.TestCase):
                        km._api_error, km._path_of, km._alive_sessions)
         km._retry_paused_on = lambda: False
         km._session_retry_suppressed = lambda sid: False
-        km._alive_sessions = lambda now, live_map: [{"sid": self.SID, "path": "/TESTDIR/x.jsonl"}]
+        km._alive_sessions = lambda now, tmux: [{"sid": self.SID, "path": "/TESTDIR/x.jsonl"}]
         km._path_of = lambda sid, now=None: "/TESTDIR/x.jsonl"
         self.aerr = {"text": "Unable to connect to API (ENOTFOUND)", "status": None,
                      "category": "network", "uuid": "ep-1",
@@ -167,8 +167,8 @@ class KernelAutoRetryTick(unittest.TestCase):
         km._auto_retried.clear()
         km._auto_retry_state.clear()
 
-    def _tick(self, live_map=None):
-        km._auto_retry_tick(1_000_000, {self.SID: {"state": ""}} if live_map is None else live_map)
+    def _tick(self, tmux=None):
+        km._auto_retry_tick(1_000_000, {self.SID: {"state": ""}} if tmux is None else tmux)
 
     def test_fires_unattended_with_no_client(self):
         # THE live wedge: a transient-errored idle session, zero clients. The kernel now asks for itself.
@@ -205,7 +205,7 @@ class KernelAutoRetryTick(unittest.TestCase):
         self.assertEqual(self.be.sent, [RETRY])
 
     def test_dormant_sessions_are_skipped(self):
-        self._tick(live_map={})                          # SID not in the live set → no live CLI
+        self._tick(tmux={})                          # SID not in the live set → no live CLI
         self.assertEqual(self.be.sent, [], "a dead CLI's api-error is settled history, not retried into")
 
     def test_global_pause_stands(self):
@@ -219,7 +219,7 @@ class KernelAutoRetryTick(unittest.TestCase):
         self.assertEqual(self.be.sent, [], "no api error → nothing to retry")
 
     def test_the_pusher_cycle_runs_the_tick(self):
-        self.assertIn("_auto_retry_tick(now, live_map)", SRC,
+        self.assertIn("_auto_retry_tick(now, tmux)", SRC,
                       "the pusher cycle drives retries server-side — unattended recovery")
 
 

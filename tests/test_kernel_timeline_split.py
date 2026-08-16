@@ -44,7 +44,7 @@ class BuildGating(unittest.TestCase):
         # mtime. Only the {type:"bars"} build (with_bars=True) does the real parse.
         calls = {"parse": 0}
         o_ts, o_parse = km._timeline_sessions, km._parse
-        km._timeline_sessions = lambda now, live_map, live_only=False: [{"sid": "S", "name": "n", "path": "/no/such/transcript"}]
+        km._timeline_sessions = lambda now, tmux, live_only=False: [{"sid": "S", "name": "n", "path": "/no/such/transcript"}]
         km._parse = lambda path, sid, now: (calls.__setitem__("parse", calls["parse"] + 1), {"turns": []})[1]
         try:
             km.build_timeline(0, {}, with_bars=False)
@@ -80,16 +80,16 @@ class PushSplit(unittest.TestCase):
         FULL = {"type": "timeline", "sessions": [{"id": "S"}], "turns": {"S": [{"id": "b1"}]},
                 "judging": [{"k": "planner"}], "messages": [{"m": 1}], "now": 1}
         o_bt, o_ct, o_tmux, o_sig = (km.build_timeline, km._cached_timeline,
-                                     km._live_map, km._fleet_view_sig)
-        km.build_timeline = lambda now, live_map, with_bars=True, live_only=False: (FULL if with_bars else SKEL)
-        km._cached_timeline = lambda now, live_map, sig, connect=False: FULL
-        km._live_map = lambda: {}
-        km._fleet_view_sig = lambda now, live_map: ("sig",)
+                                     km._tmux_sessions, km._fleet_view_sig)
+        km.build_timeline = lambda now, tmux, with_bars=True, live_only=False: (FULL if with_bars else SKEL)
+        km._cached_timeline = lambda now, tmux, sig, connect=False: FULL
+        km._tmux_sessions = lambda: {}
+        km._fleet_view_sig = lambda now, tmux: ("sig",)
         try:
             km._push([client])
         finally:
             (km.build_timeline, km._cached_timeline,
-             km._live_map, km._fleet_view_sig) = o_bt, o_ct, o_tmux, o_sig
+             km._tmux_sessions, km._fleet_view_sig) = o_bt, o_ct, o_tmux, o_sig
         msgs = [json.loads(s) for s in sent]
         types = [m["type"] for m in msgs]
         self.assertIn("data", types)
@@ -110,7 +110,7 @@ class DeadLaneWindow(unittest.TestCase):
     def test_dead_lanes_limited_to_12h_live_only_drops_them_all(self):
         now = 1_000_000
         o_alive, o_sessions, o_ordered = km._alive_sessions, km._sessions, km._ordered
-        km._alive_sessions = lambda now, live_map: [{"sid": "LIVE", "name": "l", "path": "/l", "mtime": now}]
+        km._alive_sessions = lambda now, tmux: [{"sid": "LIVE", "name": "l", "path": "/l", "mtime": now}]
         km._sessions = lambda now: [
             {"sid": "LIVE", "name": "l", "path": "/l", "mtime": now},
             {"sid": "RECENT", "name": "r", "path": "/r", "mtime": now - 6 * 3600},    # dead, within 12h
@@ -132,18 +132,18 @@ class DeadLaneWindow(unittest.TestCase):
               "now": 1, "usage": {}}
         FB = {"type": "timeline", "sessions": [], "turns": {"S": []}, "judging": [],
               "messages": [], "now": 1}
-        o_bt, o_tmux, o_sig = km.build_timeline, km._live_map, km._fleet_view_sig
+        o_bt, o_tmux, o_sig = km.build_timeline, km._tmux_sessions, km._fleet_view_sig
         o_built = list(km._built_timeline)
-        km.build_timeline = lambda now, live_map, with_bars=True, live_only=False: (
+        km.build_timeline = lambda now, tmux, with_bars=True, live_only=False: (
             calls.append(("bars" if with_bars else "skel", live_only)) or (FB if with_bars else SK))
-        km._live_map = lambda: {}
-        km._fleet_view_sig = lambda now, live_map: ("sig",)
+        km._tmux_sessions = lambda: {}
+        km._fleet_view_sig = lambda now, tmux: ("sig",)
         km._built_timeline[0], km._built_timeline[1], km._built_timeline[2] = None, None, 0.0   # cold cache
         km._producer_wake.clear()
         try:
             km._push([client], connect=True)
         finally:
-            km.build_timeline, km._live_map, km._fleet_view_sig = o_bt, o_tmux, o_sig
+            km.build_timeline, km._tmux_sessions, km._fleet_view_sig = o_bt, o_tmux, o_sig
             km._built_timeline[:] = o_built
         self.assertIn(("skel", True), calls, "cold connect: the lanes skeleton is built LIVE-ONLY")
         self.assertIn(("bars", True), calls, "cold connect: the bars are built LIVE-ONLY (no dead reads)")

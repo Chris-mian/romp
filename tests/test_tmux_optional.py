@@ -64,7 +64,7 @@ class TmuxOptional(unittest.TestCase):
     def _no_tmux(self):
         km.shutil.which = lambda name, *a, **k: None
 
-    def _live_source_present(self):
+    def _has_tmux(self):
         km.shutil.which = lambda name, *a, **k: "/usr/bin/tmux" if name == "tmux" else None
 
     # ── availability tracks PATH ──────────────────────────────────────────────
@@ -73,7 +73,7 @@ class TmuxOptional(unittest.TestCase):
         self.assertFalse(self.tb.available())
 
     def test_available_true_with_tmux(self):
-        self._live_source_present()
+        self._has_tmux()
         self.assertTrue(self.tb.available())
 
     # ── disabled means inert, not "failing quietly" ───────────────────────────
@@ -109,7 +109,7 @@ class TmuxOptional(unittest.TestCase):
         os.environ["ROMP_TMUX_AVAILABLE"] = "1"
         self.assertTrue(self.tb.available())
 
-        self._live_source_present()
+        self._has_tmux()
         for off in ("0", ""):
             os.environ["ROMP_TMUX_AVAILABLE"] = off
             self.assertFalse(self.tb.available(), "%r should force the backend off" % off)
@@ -121,7 +121,7 @@ class TmuxOptional(unittest.TestCase):
         self._no_tmux()
         self.assertFalse(self.tb.available())
 
-        self._live_source_present()
+        self._has_tmux()
         self.assertTrue(self.tb.available())        # same instance, no restart, no expiry wait
 
         seen = []

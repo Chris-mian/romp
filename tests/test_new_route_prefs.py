@@ -46,17 +46,17 @@ class NewRoutePrefs(unittest.TestCase):
 
     def setUp(self):
         self.calls = []
-        self._saved = (km._live_names, km._live_map, km._set_model_or_park,
+        self._saved = (km._live_names, km._tmux_sessions, km._set_model_or_park,
                        km._set_effort_or_park, km.Sessions.backend_for,
                        km._sdk_ready, km._create_sdk_session, km._push_soon)
-        km._live_map = lambda: []
+        km._tmux_sessions = lambda: []
         km._set_model_or_park = lambda be, sid, v: self.calls.append(("model", sid, v))
         km._set_effort_or_park = lambda be, sid, v: self.calls.append(("effort", sid, v))
         km.Sessions.backend_for = staticmethod(lambda sid: object())
         km._push_soon = lambda: None
 
     def tearDown(self):
-        (km._live_names, km._live_map, km._set_model_or_park,
+        (km._live_names, km._tmux_sessions, km._set_model_or_park,
          km._set_effort_or_park, km.Sessions.backend_for,
          km._sdk_ready, km._create_sdk_session, km._push_soon) = self._saved
 

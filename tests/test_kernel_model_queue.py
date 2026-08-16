@@ -105,16 +105,16 @@ class CompactingNowGate(unittest.TestCase):
     """_compacting_now composes the REAL _compacting corroboration from cheap parts (cached parse only)."""
 
     def setUp(self):
-        self._saved = (km._live_map, km._path_of, km._parse_cached)
+        self._saved = (km._tmux_sessions, km._path_of, km._parse_cached)
         km._path_of = lambda sid: "/tmp/x.jsonl"
         km._compact_clicked.clear()
 
     def tearDown(self):
-        (km._live_map, km._path_of, km._parse_cached) = self._saved
+        (km._tmux_sessions, km._path_of, km._parse_cached) = self._saved
         km._compact_clicked.clear()
 
     def test_optimistic_click_reads_compacting_until_the_boundary_lands(self):
-        km._live_map = lambda: {SID: {"state": "waiting", "since": None}}
+        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": None}}
         km._parse_cached = lambda p: {"turns": []}
         km._compact_clicked[SID] = time.time()          # the kernel itself just sent /compact
         self.assertTrue(km._compacting_now(SID), "the optimistic click reads compacting at once")
@@ -124,7 +124,7 @@ class CompactingNowGate(unittest.TestCase):
         self.assertFalse(km._compacting_now(SID), "the compact_boundary event ends it — the parked switch can fire")
 
     def test_no_signal_reads_not_compacting(self):
-        km._live_map = lambda: {SID: {"state": "waiting", "since": None}}
+        km._tmux_sessions = lambda: {SID: {"state": "waiting", "since": None}}
         km._parse_cached = lambda p: {"turns": []}
         self.assertFalse(km._compacting_now(SID))
 

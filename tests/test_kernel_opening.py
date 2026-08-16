@@ -51,7 +51,7 @@ class _Base(unittest.TestCase):
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
         self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-                      km.NAMES, km._live_map, km._sdk)
+                      km.NAMES, km._tmux_sessions, km._sdk)
         names = td / "names"; names.mkdir()
         proj = td / "projects"; proj.mkdir()
         jd.NAMES, jd.PROJECTS = names, proj
@@ -65,7 +65,7 @@ class _Base(unittest.TestCase):
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-         km.NAMES, km._live_map, km._sdk) = self.saved
+         km.NAMES, km._tmux_sessions, km._sdk) = self.saved
         self.td.cleanup()
 
 
@@ -75,9 +75,9 @@ class OpeningChipStandsDownOnTheBackendEvent(_Base):
     never until the first transcript record (that lands only with the first message)."""
 
     def _chip(self, row):
-        live_map = {SID: row}
-        km._live_map = lambda: live_map
-        m = km.build_session(SID, NOW, live_map)
+        tmux = {SID: row}
+        km._tmux_sessions = lambda: tmux
+        m = km.build_session(SID, NOW, tmux)
         self.assertIsNotNone(m, "a live transcript-less session still gets a frame")
         return m["status"]["state"]
 
@@ -125,8 +125,8 @@ class PushSessionNow(_Base):
                "message": {"role": "user", "content": "hello there"}}
         (pdir / (SID + ".jsonl")).write_text(json.dumps(rec) + "\n")
         (jd.NAMES / SID).write_text("web\t%s\t#abcdef\n" % str(cdir))
-        self.live_map = {SID: _row(state="waiting", since=NOW - 5)}
-        km._live_map = lambda: self.live_map
+        self.tmux = {SID: _row(state="waiting", since=NOW - 5)}
+        km._tmux_sessions = lambda: self.tmux
         self.sent = []
         self.client = {"app": "chat", "alive": True, "wid": "", "qbytes": 0,
                        "send": lambda s: self.sent.append(json.loads(s))}

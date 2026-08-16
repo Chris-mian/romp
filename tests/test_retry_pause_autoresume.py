@@ -63,7 +63,7 @@ class RetryPauseAutoResume(unittest.TestCase):
         km._set_retry_paused(True)
         floor = km._retry_pause_ts()
         path = self._transcript("healthy.jsonl", floor + 5)   # wrote output AFTER the pause
-        km._alive_sessions = lambda now, live_map: [{"sid": "s1", "path": path}]
+        km._alive_sessions = lambda now, tmux: [{"sid": "s1", "path": path}]
         km._api_error = lambda p: None                        # not blocked on an API error
         km._auto_resume_retry(int(time.time()), {})
         self.assertFalse(km._retry_paused_on(), "a served request after the pause proves recovery → resume")
@@ -73,7 +73,7 @@ class RetryPauseAutoResume(unittest.TestCase):
         km._set_retry_paused(True)
         floor = km._retry_pause_ts()
         path = self._transcript("errored.jsonl", floor + 5)   # fresh mtime, but the last record is an API error
-        km._alive_sessions = lambda now, live_map: [{"sid": "s1", "path": path}]
+        km._alive_sessions = lambda now, tmux: [{"sid": "s1", "path": path}]
         km._api_error = lambda p: {"text": "overloaded", "status": 529}
         km._auto_resume_retry(int(time.time()), {})
         self.assertTrue(km._retry_paused_on(), "a session still blocked on an API error must not clear the pause")
@@ -83,7 +83,7 @@ class RetryPauseAutoResume(unittest.TestCase):
         km._set_retry_paused(True)
         floor = km._retry_pause_ts()
         path = self._transcript("stale.jsonl", floor - 60)    # last wrote BEFORE the pause
-        km._alive_sessions = lambda now, live_map: [{"sid": "s1", "path": path}]
+        km._alive_sessions = lambda now, tmux: [{"sid": "s1", "path": path}]
         km._api_error = lambda p: None
         km._auto_resume_retry(int(time.time()), {})
         self.assertTrue(km._retry_paused_on(), "no fresh output since the pause → no evidence the API recovered")
@@ -92,7 +92,7 @@ class RetryPauseAutoResume(unittest.TestCase):
     def test_noop_when_not_paused(self):
         km._set_retry_paused(False)
         called = []
-        km._alive_sessions = lambda now, live_map: called.append(1) or []
+        km._alive_sessions = lambda now, tmux: called.append(1) or []
         km._auto_resume_retry(int(time.time()), {})
         self.assertEqual(called, [], "not paused → the resume check does no work")
 
