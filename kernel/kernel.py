@@ -8772,7 +8772,10 @@ def _sha_base(s):
     return (str(s or "").split("-", 1)[0]) or None
 
 
-_HEAD_CACHE = {"ts": 0.0, "full": None, "short": None}   # ~2s TTL: HEAD is read per-remote on every /tunnels poll
+_HEAD_CACHE = {"ts": 0.0, "full": None, "short": None}   # HEAD is read per-remote on every /tunnels poll; the
+#   TTL must OUTLAST the dashboard's 4s poll or every poll re-forks two `git rev-parse` per open page
+#   (one of the fork multipliers behind the Mac 66% CPU burn, 2026-08-16). HEAD only moves on a converge
+#   (which restarts the kernel anyway) or a manual checkout, so 15s costs at most one stale-badge beat.
 
 
 def _local_head(short=False):
@@ -8783,7 +8786,7 @@ def _local_head(short=False):
     banner never cleared — the user 2026-07-04.) Cached ~2s since it's read on every /tunnels poll but HEAD
     rarely moves."""
     now = time.time()
-    if now - _HEAD_CACHE["ts"] > 2:
+    if now - _HEAD_CACHE["ts"] > 15:
         full = short_s = None
         try:
             r = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
@@ -13385,19 +13388,54 @@ def _tree_of(d):
 
 
 _branch_cache = {}   # cwd -> (branch, head_mtime) — git branch derived straight from the FOLDER
+_head_path_cache = {}   # cwd -> the resolved HEAD file path (worktrees indirect through a .git FILE)
+
+
+def _git_head_file(cwd):
+    """The path of the HEAD file that moves when this directory's branch changes. A plain repo keeps it
+    at .git/HEAD; a WORKTREE's .git is a one-line FILE ('gitdir: <private-dir>') and its HEAD lives in
+    that private dir. Resolved once per cwd (the pointer never moves for a live worktree) — treating the
+    worktree shape as uncacheable made _git_branch fork 2-3 `git rev-parse` per session per rebuild
+    forever, ~10-40 forks/s on a busy kernel whose convention is one worktree per session (the Mac 66%
+    CPU burn, 2026-08-16, sampled as __fork at 68/2s). '' when there is no resolvable HEAD."""
+    hp = _head_path_cache.get(cwd)
+    if hp is not None:
+        return hp
+    hp = ""
+    dotgit = os.path.join(cwd, ".git")
+    try:
+        if os.path.isdir(dotgit):
+            hp = os.path.join(dotgit, "HEAD")
+        elif os.path.isfile(dotgit):
+            with open(dotgit) as f:
+                line = f.readline().strip()
+            if line.startswith("gitdir:"):
+                gd = line[len("gitdir:"):].strip()
+                if not os.path.isabs(gd):
+                    gd = os.path.normpath(os.path.join(cwd, gd))
+                hp = os.path.join(gd, "HEAD")
+    except OSError:
+        hp = ""
+    if len(_head_path_cache) > 512:                  # bounded, like _tree_cache
+        _head_path_cache.clear()
+    _head_path_cache[cwd] = hp
+    return hp
 
 
 def _git_branch(cwd):
     """The git branch for a directory, derived DIRECTLY from the folder — so it shows the instant a session
     is opened, before any turn writes gitBranch into the transcript (the user 2026-06-24: branch should be a
-    property of the dir, known in advance). Cached per cwd, refreshed when .git/HEAD changes. '' when not a
-    repo / detached / unavailable. Applies to BOTH backends (a never-run tmux session shows it now too)."""
+    property of the dir, known in advance). Cached per cwd, refreshed when the resolved HEAD file changes
+    (worktrees included — see _git_head_file). '' when not a repo / detached / unavailable. Applies to BOTH
+    backends (a never-run tmux session shows it now too)."""
     if not cwd:
         return ""
     cwd = os.path.expanduser(cwd)
     mt = None
     try:
-        mt = os.path.getmtime(os.path.join(cwd, ".git", "HEAD"))   # plain repo; worktrees use a .git FILE → mt stays None (uncached)
+        hp = _git_head_file(cwd)
+        if hp:
+            mt = os.path.getmtime(hp)
     except OSError:
         pass
     hit = _branch_cache.get(cwd)
@@ -19253,10 +19291,39 @@ _REPO_LIST_MAX = 200_000              # a runaway listing skips tiers 2/3 rather
 _PATH_LINK_CACHE = {}                 # (sid, uuid) -> (links dict, misses tuple) — see _path_links
 
 
+_repo_index_cache = {}   # cwd -> (key, index) — key = (git-index mtime, toplevel-dir mtime), see below
+
+
 def _repo_file_index(cwd):
     """basename -> [repo-relative paths] for every tracked or untracked-unignored file under `cwd`,
     or None when there is no list to be had (not a git repo, git absent/failing, or a listing past
-    _REPO_LIST_MAX). None means tiers 2/3 stand down for this build; tier 1 needs no list."""
+    _REPO_LIST_MAX). None means tiers 2/3 stand down for this build; tier 1 needs no list.
+
+    Cached per cwd on the events that change the answer: the git INDEX file's mtime (every
+    add/rm/commit/checkout touches it), the repo top dir's mtime (a new untracked file at the top,
+    the common drop shape), and the mtimes of the top's immediate SUBDIRS (a file created in one —
+    the agent-writes-the-file-it-just-mentioned flow — moves its parent's mtime; one scandir of
+    stats, no fork). Without this, one unresolved path-shaped token in a transcript — the
+    near-universal case — re-forked `git ls-files` on EVERY chat rebuild of that session, one of the
+    fork multipliers behind the Mac 66% CPU burn (2026-08-16). A creation the key can't see (depth
+    two or deeper, untracked) only delays that file's tier-2/3 path LINK until the next observable
+    touch — a rendering nicety, never data; a click's own resolution is unaffected."""
+    tree = _tree_of(cwd)[0] or cwd                   # _tree_of returns (toplevel, branch)
+    key = None
+    try:
+        gi = _git_head_file(tree)                    # <gitdir>/HEAD — the index sits beside it
+        subs = []
+        with os.scandir(tree) as it:
+            for e in it:
+                if e.name != ".git" and e.is_dir(follow_symlinks=False):
+                    subs.append((e.name, e.stat().st_mtime))
+        key = ((os.path.getmtime(os.path.join(os.path.dirname(gi), "index")) if gi else None),
+               os.path.getmtime(tree), tuple(sorted(subs)))
+    except OSError:
+        key = None
+    hit = _repo_index_cache.get(cwd)
+    if hit is not None and key is not None and hit[0] == key:
+        return hit[1]
     try:
         out = subprocess.run(["git", "ls-files", "-co", "--exclude-standard"],
                              cwd=cwd, capture_output=True, text=True, timeout=10)
@@ -19270,6 +19337,10 @@ def _repo_file_index(cwd):
     idx = {}
     for p in names:
         idx.setdefault(p.rsplit("/", 1)[-1], []).append(p)
+    if key is not None:
+        if len(_repo_index_cache) > 64:              # bounded; an index is sizable
+            _repo_index_cache.clear()
+        _repo_index_cache[cwd] = (key, idx)
     return idx
 
 
