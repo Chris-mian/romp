@@ -419,8 +419,15 @@ def _read_jsonl(path):
 # (FileAdapter builds fresh atom dicts; nothing writes into a record), matching the kernel's existing
 # whole-parse cache contract. The cached list itself is never extended in place — a grown file stores a
 # NEW list — so a concurrent reader holding the old list is never surprised mid-iteration.
-_JSONL_CACHE = {}                 # path -> (mtime, size, offset, tail_bytes, records)
-_JSONL_CACHE_MAX = 64             # bounded by fleet size; wholesale clear is fine (one cold re-read each)
+_JSONL_CACHE = {}                 # path -> (mtime, size, offset, tail_bytes, records); dict order = LRU, hits reinsert
+_JSONL_CACHE_MAX = 256            # bounds MEMORY only — past the cap, evict the least-recently-USED entry, one per
+                                  # insert, never clear(). The old clear-at-cap was sized to the session count, but
+                                  # the working set is FILES, not sessions (every subagent writes its own transcript):
+                                  # once more distinct files than slots passed through one push cycle, the clear
+                                  # nuked the HOT entries too and every push re-parsed every active transcript from
+                                  # byte zero — the exact stall this cache exists to prevent, back as a permanent
+                                  # background burn (recurred 2026-08-15, kernel pinned at ~30-60% CPU; the survival
+                                  # guarantee is pinned by tests/test_kernel_jsonl_cache.py).
 _JSONL_TAIL_GUARD = 64            # bytes of pre-offset content re-verified before an incremental read
 
 
@@ -453,6 +460,8 @@ def _read_jsonl_incremental(path):
         return []
     hit = _JSONL_CACHE.get(path)
     if hit is not None and hit[0] == st.st_mtime and hit[1] == st.st_size:
+        _JSONL_CACHE.pop(path)            # reinsert at the LRU tail: a served entry is a USED entry
+        _JSONL_CACHE[path] = hit
         return hit[4]
     try:
         with open(path, "rb") as fh:
@@ -473,8 +482,9 @@ def _read_jsonl_incremental(path):
     except OSError:
         _JSONL_CACHE.pop(path, None)
         return []
-    if len(_JSONL_CACHE) > _JSONL_CACHE_MAX:
-        _JSONL_CACHE.clear()
+    _JSONL_CACHE.pop(path, None)
+    while len(_JSONL_CACHE) >= _JSONL_CACHE_MAX:
+        _JSONL_CACHE.pop(next(iter(_JSONL_CACHE)))   # oldest-used first; hot entries survive any cold flood
     _JSONL_CACHE[path] = (st.st_mtime, st.st_size, offset, tail, records)
     return records
 
