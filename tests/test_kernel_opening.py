@@ -41,9 +41,24 @@ SID = "11111111-2222-3333-4444-555555555555"
 def _row(**over):
     """A Sessions.live()-shaped lane row with every key build_session touches."""
     r = {"state": "", "since": None, "model": "", "effort": "", "context": None,
-         "compactPct": None, "color": None, "mode": "", "backend": "tmux"}
+         "compactPct": None, "color": None, "mode": "", "backend": "sdk"}
     r.update(over)
     return r
+
+
+class _OwnBE:
+    """A minimal owning backend: live sids are SDK-owned by construction now, and build_session
+    resolves the transcript-less frame through _sdk_sess + the backend's (empty) live tail."""
+    def owns(self, s): return True
+    def live_atoms(self, s): return []
+    def prune_live(self, s, u, t=(), human_floor=0): return None
+    def pending_queued(self, s): return []
+    def current_ask(self, s): return None
+    def busy(self, s): return None
+    def compacting(self, s): return None
+    def clearing(self, s): return None
+    def launch_error(self, s): return None
+    def pending_cut(self, s): return ""
 
 
 class _Base(unittest.TestCase):
@@ -60,7 +75,7 @@ class _Base(unittest.TestCase):
             d.mkdir()
         jd.STATE = td
         km.NAMES = names
-        km._sdk = lambda: None            # no SDK backend: the synthesized tmux path is under test
+        km._sdk = lambda: _OwnBE()        # live sids are SDK-owned; the frame synth rides _sdk_sess
         km._parse_cache.clear()
 
     def tearDown(self):
@@ -80,16 +95,6 @@ class OpeningChipStandsDownOnTheBackendEvent(_Base):
         m = km.build_session(SID, NOW, live_map)
         self.assertIsNotNone(m, "a live transcript-less session still gets a frame")
         return m["status"]["state"]
-
-    def test_tmux_booting_cli_reads_opening(self):
-        # spawned (the lane row exists — the launcher sets @romp-session-id at creation) but the
-        # CLI's statusline hook hasn't published a @claude-state yet → still opening
-        self.assertEqual(self._chip(_row(state="")), "opening")
-
-    def test_tmux_first_claude_state_ends_opening(self):
-        # the hook published "waiting": the CLI is up at its prompt — no transcript exists yet
-        # (the first record only lands with the first message), and the chip must NOT wait for it
-        self.assertEqual(self._chip(_row(state="waiting", since=NOW - 5)), "ready")
 
     def test_sdk_pre_handshake_reads_opening(self):
         # SDK snapshots carry a non-empty state from birth ("waiting"), so the state leg must not

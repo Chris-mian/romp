@@ -15,7 +15,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("the create controls precede the list, and the list sits last under its heading", () => {
   const seq = [
     "box.appendChild(search);", "box.appendChild(errLine);", "box.appendChild(dirWrap);",
-    "box.appendChild(beWrap);", "box.appendChild(auWrap);", "box.appendChild(hostWrap);",
+    "box.appendChild(auWrap);", "box.appendChild(hostWrap);",
     "box.appendChild(actions);", "box.appendChild(altHead);", "box.appendChild(list);",
   ];
   let at = -1;

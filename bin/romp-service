@@ -71,7 +71,7 @@ SERVICE_ENV_FILE="${ROMP_SERVICE_ENV_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/rom
 # up on the default, romp-serve stamped that default back over the inherited ROMP_KERNEL_PORT,
 # and a second OS user's kernel bound the primary's port while their CLI kept printing the
 # renumbered one. Exactly the failure the paragraph above describes, one variable further along.
-_INSTANCE_VARS=(ROMP_SERVE_PORT ROMP_KERNEL_PORT ROMP_POSTAL_PORT ROMP_MANAGER_PORT ROMP_STATE_DIR CLAUDE_CONFIG_DIR ROMP_TMUX_SOCKET)
+_INSTANCE_VARS=(ROMP_SERVE_PORT ROMP_KERNEL_PORT ROMP_POSTAL_PORT ROMP_MANAGER_PORT ROMP_STATE_DIR CLAUDE_CONFIG_DIR)
 
 # The SET ones, formatted for the platform: $1 = plist (EnvironmentVariables dict pairs) or
 # unit (systemd Environment= lines). Each line is newline-TERMINATED; the callers decide what

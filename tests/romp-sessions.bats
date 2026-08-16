@@ -2,11 +2,8 @@
 
 # `romp sessions [--json]` — the fleet's live state for scripts, read from the kernel.
 #
-# It exists because the only machine-readable source of per-session state and identity colour
-# used to be the tmux table (@claude-state, @identity-bg/@identity-fg). SDK sessions never enter
-# tmux, so once they became the default `tmux list-sessions` returned nothing and every external
-# consumer silently degraded to empty output. The kernel owns this state for BOTH backends, so
-# that is what this reads — and a dead kernel must fail loudly rather than print an empty list,
+# The kernel owns per-session state and identity colour (the registry-backed live map), so that
+# is what this reads — and a dead kernel must fail loudly rather than print an empty list,
 # which would read as "no sessions" and hide exactly the breakage this command ends.
 
 ROMP_SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp"
@@ -28,7 +25,7 @@ setup() {
   {"id": "11111111-2222-3333-4444-555555555555", "name": "web", "state": "working",
    "dir": "/tmp/notes-api", "bg": "#1EA1EB", "fg": "black", "backend": "sdk", "working": ""},
   {"id": "66666666-7777-8888-9999-000000000000", "name": "api", "state": "waiting",
-   "dir": "/tmp/notes-api", "bg": "#54B204", "fg": "black", "backend": "tmux", "working": ""}
+   "dir": "/tmp/notes-api", "bg": "#54B204", "fg": "black", "backend": "sdk", "working": ""}
 ]}
 JSON
     export CURL_STDIN="$TEST_DIR/curl.stdin"
@@ -57,11 +54,10 @@ teardown() { rm -rf "$TEST_DIR"; }
     [[ "$output" == *"waiting"* ]]
 }
 
-@test "romp sessions: covers BOTH backends, which is the point of not reading tmux" {
+@test "romp sessions: the rows come from the kernel's registry-backed list" {
     run "$ROMP_SCRIPT" sessions
     [ "$status" -eq 0 ]
     [[ "$output" == *"sdk"* ]]
-    [[ "$output" == *"tmux"* ]]
 }
 
 @test "romp sessions --json: emits the kernel's rows verbatim, colours included" {

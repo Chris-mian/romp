@@ -13,7 +13,6 @@ export interface RompSettings {
   showIndexJudges: boolean;
   showTriageJudges: boolean;
   debug?: boolean;    // LEGACY (the user 2026-06-17): the old single judging-band toggle; read as the migration fallback for the two judge-set toggles when those are unset. The ↻ restart button is always-visible (decoupled).
-  backend: "tmux" | "sdk";   // which backend a NEWLY-created session uses (the user 2026-06-22). The terminal (tmux) backend is retired (2026-08-16): "tmux" survives in the type only because old stores may still hold it — loadSettings normalizes it to "sdk", so a stale pick can never reach a create call (the kernel refuses backend:"tmux" loudly anyway). Read at createSession time (render.ts). Default sdk (the user 2026-07-13).
   defaultDir: string;        // default working directory PREFILLED in the new-session field (the user 2026-06-22). A session's dir is fixed at creation. Empty → the kernel's serve dir. ~ / $VAR expanded server-side.
   showBranch: boolean;       // chat bottom-bar: show the session's git branch (if any) beside the dir (the user 2026-06-23). OFF by default (the user 2026-08-10, trimming the statusline for narrow panes; an explicit stored true keeps showing it).
   tabCtx: TabCtxMode;        // chat tabs: WHEN the context gauge shows beside each session name (the user 2026-08-08) — "over50" (default: only once half full, so quiet tabs stay clean), "always", or "never".
@@ -32,7 +31,7 @@ export function tabCtxMode(v: unknown): TabCtxMode {
 // hand-written "why" as their line; they show the distiller's summary instead (the why demotes to a hover).
 // compact defaults ON (the user 2026-07-14): a fresh install reads the tidy transcript
 // (thinking hidden, tool runs folded); the gear opts back into the full stream.
-export const DEFAULT_SETTINGS: RompSettings = { compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, backend: "sdk", defaultDir: "", showBranch: false, tabCtx: "over50" };
+export const DEFAULT_SETTINGS: RompSettings = { compact: true, colormap: "aurora", subgoals: true, showIndexJudges: false, showTriageJudges: false, defaultDir: "", showBranch: false, tabCtx: "over50" };
 const KEY = "romp:settings";
 
 export function loadSettings(): RompSettings {
@@ -41,11 +40,10 @@ export function loadSettings(): RompSettings {
     if (raw) {
       const s = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
       s.tabCtx = tabCtxMode(s.tabCtx);   // a store written by the boolean-era gear holds true/false
-      // A store written before the terminal backend's retirement (2026-08-16) can still hold
-      // backend:"tmux", and createSession reads this field verbatim — normalize on load so a
-      // stale pick never reaches a create call (the kernel refuses it loudly; the default here
-      // should simply be the one backend that exists).
-      if (s.backend === "tmux") s.backend = "sdk";
+      // A store written before the terminal backend's retirement (2026-08-16) can still hold a
+      // backend field — the setting is gone (the SDK is the one backend), so strip it on load
+      // rather than letting a stale key masquerade as a live choice.
+      delete (s as Record<string, unknown>).backend;
       return s;
     }
   } catch { /* corrupt / unavailable → defaults */ }

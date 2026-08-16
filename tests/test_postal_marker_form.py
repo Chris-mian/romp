@@ -42,7 +42,7 @@ EXPECTED_BARE = {
     # deliberately over-broad: there a false positive only refuses a delivery (safe), while a false
     # negative is the postal-isolation bypass they were written for on 2026-07-10. Their fixtures
     # test the substring, so the bare form is the right input.
-    "test_kernel.py": 2,
+    "test_kernel.py": 1,
     # The mention-is-not-a-delivery case: writing the bare form IS the case.
     "test_teammate_message.py": 3,
 }

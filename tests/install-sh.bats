@@ -36,13 +36,11 @@ PY
 @test "install.sh: wires hooks, settings.json, and the MCP config on a fresh machine" {
     run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
-    [ -L "$HOME/.claude/hooks/tmux-status.sh" ]
-    [[ "$(readlink "$HOME/.claude/hooks/tmux-status.sh")" == *"/hooks/tmux-status.sh" ]]
-    [ "$(count_cmd Stop tmux-status.sh)" = "1" ]
-    [ "$(count_cmd Stop romp-summarize.sh)" = "1" ]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
+    [[ "$(readlink "$HOME/.claude/hooks/romp-wake.sh")" == *"/hooks/romp-wake.sh" ]]
     [ "$(count_cmd Stop romp-postal-drain.sh)" = "1" ]
-    [ "$(count_cmd SessionStart romp-postal-ensure.sh)" = "1" ]
-    [ "$(count_cmd PostToolUse tmux-status.sh)" = "1" ]
+    [ "$(count_cmd Stop romp-wake.sh)" = "1" ]
+    [ "$(count_cmd UserPromptSubmit romp-wake.sh)" = "1" ]
     [ -L "$HOME/.claude/romp-postal.mcp.json" ]
 }
 
@@ -52,8 +50,8 @@ PY
     run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
     [[ "$output" == *"already registered"* ]]
-    [ "$(count_cmd Stop tmux-status.sh)" = "1" ]
-    [ "$(count_cmd UserPromptSubmit romp-summarize.sh)" = "1" ]
+    [ "$(count_cmd Stop romp-postal-drain.sh)" = "1" ]
+    [ "$(count_cmd UserPromptSubmit romp-wake.sh)" = "1" ]
     # regression: a re-run used to FOLLOW the existing skill dir-symlink and drop a new link INSIDE
     # the repo (claude/skills/romp-postal/romp-postal → an absolute personal path). ln -sfn replaces
     # the link.
@@ -94,7 +92,7 @@ PY
     [[ "$output" == *"Node.js not found"* ]]
     [[ "$output" == *"brew install node"* ]]
     # nothing was installed: the preflight runs before any mutation
-    [ ! -e "$HOME/.claude/hooks/tmux-status.sh" ]
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]
 }
 
 @test "install.sh: ROMP_SKIP_PREFLIGHT bypasses the checks" {
@@ -401,4 +399,31 @@ STUB
     b="$(sed -n 's/^ROMP_CLAUDE_FLOOR="\(.*\)"$/\1/p' "$ROMP_DIR/bin/romp" | head -1)"
     [ -n "$a" ]
     [ "$a" = "$b" ]
+}
+
+@test "install.sh: upgrading scrubs the retired terminal-era hooks (symlinks + settings rows)" {
+    # An install from before the terminal backend's retirement (2026-08-16) holds five hook
+    # symlinks and their settings rows. Upgrading must remove BOTH — a dangling hook symlink
+    # fires "not found" on every event.
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    mkdir -p "$HOME/.claude/hooks"
+    for h in tmux-status.sh romp-summarize.sh romp-postal-ensure.sh romp-postal-revive.sh romp-postal-context.sh; do
+        ln -sfn "$ROMP_DIR/hooks/romp-wake.sh" "$HOME/.claude/hooks/$h"   # stand-in target; the link name is what matters
+    done
+    python3 - "$HOME/.claude/settings.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+rows = s.setdefault("hooks", {}).setdefault("Stop", [])
+rows.append({"hooks": [{"type": "command", "command": "~/.claude/hooks/tmux-status.sh", "timeout": 5}]})
+json.dump(s, open(sys.argv[1], "w"), indent=2)
+PY
+    run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"De-registered retired hooks"* ]]
+    for h in tmux-status.sh romp-summarize.sh romp-postal-ensure.sh romp-postal-revive.sh romp-postal-context.sh; do
+        [ ! -e "$HOME/.claude/hooks/$h" ]
+    done
+    [ "$(count_cmd Stop tmux-status.sh)" = "0" ]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]     # the live hooks are untouched
 }

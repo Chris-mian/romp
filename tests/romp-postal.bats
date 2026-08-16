@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 # Exercises the romp-postal-service program end to end: a real bus (own port per test),
-# CLI client ops, the loop guard, the stdio MCP server, and autostop. tmux is
+# CLI client ops, the loop guard, the stdio MCP server, and autostop. A transport is
 # mocked so no real sessions are needed.
 
 POSTAL="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp-postal-service"
@@ -16,11 +16,11 @@ setup() {
     export HOME="$TEST_DIR/home"; mkdir -p "$HOME"   # sandbox the client-only marker
     unset SSH_CONNECTION SSH_TTY                      # default: not a remote machine
 
-    # The bus no longer shells tmux for session ops. Identity is the CLAUDE_CODE_SESSION_ID env (the harness
+    # The bus never touches a session's transport. Identity is the CLAUDE_CODE_SESSION_ID env (the harness
     # sets it for every session) resolved to a name via the names registry; the session list comes from the
     # kernel's GET /sessions (ROMP_SESSIONS_FILE seam, from a "name|uuid" fixture via mksessions). Delivery +
     # status-bar chrome go through the kernel too — absent here, they no-op (the maildir-drain backstop covers
-    # delivery). A hermetic stub tmux (always-empty) keeps any residual tmux() call from touching real tmux.
+    # delivery). A hermetic stub tmux (always-empty) keeps any regression from touching a real terminal.
     MOCK="$TEST_DIR/mock"; mkdir -p "$MOCK"
     export SESS="$TEST_DIR/sessions.txt"
     printf 'alpha|uuid-a\nbeta|uuid-b\n' > "$SESS"
@@ -69,7 +69,7 @@ mksessions() {
           [ -n "$n" ] || continue
           [ "$first" = 1 ] || printf ','
           first=0
-          printf '{"id":"%s","name":"%s","state":"working","dir":"","bg":"","fg":"","working":"","backend":"tmux"}' "$u" "$n"
+          printf '{"id":"%s","name":"%s","state":"working","dir":"","bg":"","fg":"","working":"","backend":"sdk"}' "$u" "$n"
       done < "$SESS"
       printf ']'
     } > "$ROMP_SESSIONS_FILE"

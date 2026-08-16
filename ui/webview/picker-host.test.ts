@@ -37,7 +37,7 @@ test("the this-machine option wears the machine's REAL name, not 'local' (the us
 
 test("createSession carries the picked host (empty = local) so the manager routes it to that kernel", () => {
   assert.match(RENDER, /const hostSel = \(hostWrap\.querySelector\("\.picker-be-opt\.sel"\) as HTMLElement \| null\)\?\.dataset\.host \|\| ""/);
-  assert.match(RENDER, /startCreate\(\{ name, backend: beSel\?\.dataset\.be \|\| loadSettings\(\)\.backend,\s*\n\s*dir: dirInput\.value\.trim\(\), host: hostSel, \.\.\.\(auth \? \{ auth \} : \{\}\) \}\)/);
+  assert.match(RENDER, /startCreate\(\{ name, backend: "sdk",\s*\n\s*dir: dirInput\.value\.trim\(\), host: hostSel, \.\.\.\(auth \? \{ auth \} : \{\}\) \}\)/);
   // the PROVISIONAL tab (2026-07-30, which replaced the "Opening…" cue) must be matched against the
   // PREFIXED tab name a remote create produces — provisionalName() is where that join is spelled
   assert.match(RENDER, /openProvisional\(req\);/);

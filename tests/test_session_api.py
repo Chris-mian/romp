@@ -81,33 +81,26 @@ def _scan_tmux(text, skip_span=None):
     return out
 
 
-class NoRawTmuxOutsideTmuxBackend(unittest.TestCase):
-    """The leak guard (the user 2026-06-26): raw tmux lives ONLY in bin/romp-kernel's TmuxBackend class; the
-    higher layers (build_*, the _drive dispatch, GET /sessions, the postal bus) speak the SessionBackend API.
-    A future tmux call shelled outside the class fails CI instead of silently re-coupling the kernel to tmux."""
+class NoRawTmuxInTheKernel(unittest.TestCase):
+    """The leak guard, widened on the terminal backend's retirement (the user 2026-08-15): raw tmux
+    lives NOWHERE under kernel/ — the backend that owned it is gone, and a future tmux call anywhere in
+    the kernel fails CI instead of quietly re-coupling romp to a transport it no longer has."""
 
-    KERNEL = os.path.join(BIN, "romp-kernel")
-
-    def _span(self, lines):
-        start = next(i for i, l in enumerate(lines) if l.startswith("class TmuxBackend("))
-        end = next((i for i in range(start + 1, len(lines))
-                    if lines[i] and lines[i][0] not in " \t#)"), len(lines))
-        return start, end
-
-    def test_no_raw_tmux_outside_the_class(self):
-        lines = open(self.KERNEL, encoding="utf-8").read().split("\n")
-        leaks = _scan_tmux("\n".join(lines), skip_span=self._span(lines))
-        self.assertEqual(leaks, [], "raw tmux leaked outside TmuxBackend:\n"
-                         + "\n".join("  L%d [%s]: %s" % x for x in leaks))
-
-    def test_the_class_actually_owns_the_raw_tmux(self):
-        # so the span exclusion above isn't vacuously passing — the raw tmux really IS in the class
-        lines = open(self.KERNEL, encoding="utf-8").read().split("\n")
-        start, end = self._span(lines)
-        body = "\n".join(lines[start:end])
-        self.assertIn('["tmux"]', body, "TmuxBackend holds the raw tmux subprocess primitives")
-        self.assertIn('"send-keys"', body)
-        self.assertIn('"list-sessions"', body)
+    def test_no_raw_tmux_anywhere_in_the_kernel(self):
+        here = os.path.dirname(BIN)
+        for fname in ("romp-kernel",):
+            src = open(os.path.join(BIN, fname), encoding="utf-8").read()
+            leaks = _scan_tmux(src)
+            self.assertEqual(leaks, [], fname + " shells tmux:\n"
+                             + "\n".join("  L%d [%s]: %s" % x for x in leaks))
+        kdir = os.path.join(here, "kernel")
+        for fname in sorted(os.listdir(kdir)):
+            if not fname.endswith(".py"):
+                continue
+            src = open(os.path.join(kdir, fname), encoding="utf-8").read()
+            leaks = _scan_tmux(src)
+            self.assertEqual(leaks, [], fname + " shells tmux:\n"
+                             + "\n".join("  L%d [%s]: %s" % x for x in leaks))
 
 
 class PostalIsFullyTmuxFree(unittest.TestCase):
@@ -131,9 +124,11 @@ class PostalIsFullyTmuxFree(unittest.TestCase):
 
     def test_the_bus_reaches_the_kernel_for_every_session_op(self):
         src = open(self.POSTAL, encoding="utf-8").read()
-        for ep in ('"/sessions"', '"/working"', '"/deliver"', '"/picker-check"',
-                   '"/mail-badge"', '"/deliver-chrome"', '"/reconcile-peers"'):
+        for ep in ('"/sessions"', '"/working"', '"/deliver"'):
             self.assertIn(ep, src, "the bus reaches the kernel endpoint %s" % ep)
+        # …and never the status-chrome/picker endpoints the terminal backend took with it
+        for gone in ('"/picker-check"', '"/mail-badge"', '"/deliver-chrome"', '"/reconcile-peers"', '"/wake"'):
+            self.assertNotIn(gone, src, "%s retired with the terminal backend" % gone)
 
 
 if __name__ == "__main__":
