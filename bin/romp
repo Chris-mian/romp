@@ -1433,6 +1433,14 @@ else
     claude_cmd="claude --name \"$display\" --session-id $sid"
 fi
 
+# The session's romp identity rides its ENVIRONMENT on both backends (the user 2026-08-16):
+# ROMP_SID (the stable id — what `romp end self` resolves through) and ROMP_SESSION_NAME (the
+# human name at spawn — env-first author attribution for external tools, which talk to romp only
+# through the API and this var, never tmux). Mirrors the SDK backend's spawn env (sdk_backend
+# _options); both values are already sanitized above (sid: hex+hyphens, name: [A-Za-z0-9_-]),
+# so the interpolation into the respawn-pane exec line is injection-safe.
+claude_cmd="ROMP_SID=$sid ROMP_SESSION_NAME=\"$display\" $claude_cmd"
+
 # Load the Romp Postal Service MCP server (tool-native messaging) into romp
 # sessions only (scoped via --mcp-config), when installed.
 [[ -f "$HOME/.claude/romp-postal.mcp.json" ]] && \

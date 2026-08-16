@@ -191,7 +191,9 @@ MOCK
     # The pill carries the session name, and a self-assigned --session-id lets
     # romp record name<->id up front (names map → resume picker). The command is
     # handed to the pane with respawn-pane (atomic), not typed with send-keys.
-    grep -qE 'tmux respawn-pane -k -t myproject exec claude --name "myproject" --session-id [0-9a-f-]{36}' "$MOCK_LOG"
+    # The romp identity rides the CLI's environment on this backend too (the user 2026-08-16):
+    # external tools attribute authors env-first (ROMP_SESSION_NAME) instead of asking tmux.
+    grep -qE 'tmux respawn-pane -k -t myproject exec ROMP_SID=[0-9a-f-]{36} ROMP_SESSION_NAME="myproject" claude --name "myproject" --session-id [0-9a-f-]{36}' "$MOCK_LOG"
     grep -q 'tmux attach-session -t myproject' "$MOCK_LOG"
 }
 
@@ -403,7 +405,7 @@ MOCK
 @test "resume: explicit session id resumes that conversation" {
     run run_romp resume abc123-uuid
     [ "$status" -eq 0 ]
-    grep -q 'tmux respawn-pane -k -t myproject exec claude --resume abc123-uuid --name "myproject"' "$MOCK_LOG"
+    grep -q 'tmux respawn-pane -k -t myproject exec ROMP_SID=abc123-uuid ROMP_SESSION_NAME="myproject" claude --resume abc123-uuid --name "myproject"' "$MOCK_LOG"
 }
 
 @test "resume: name collision uniquifies instead of hijacking the session" {
