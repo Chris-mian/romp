@@ -3267,7 +3267,8 @@ function ensureCols(list: HTMLElement) {
       grip.textContent = "⠿";
       grip.title = "drag to reorder";
       wireColDrag(grip, col, key);
-      head.append(fold, name, count, grip);
+      head.append(name, fold, count, grip);   // caret RIGHT of the chip — the same side as the
+      //                                          session headers' fold (the user 2026-07-31 / 2026-08-16)
       const body = el("div", "feed-col-list"); body.id = "col-" + key + "-list";
       col.append(head, body);
       cols.appendChild(col);

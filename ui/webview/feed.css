@@ -160,9 +160,12 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   .feed-col.col-completed  { order: var(--stack-order, 1); }
   .feed-col.col-needsInput { order: var(--stack-order, 2); }
   .feed-col.col-asks       { order: var(--stack-order, 3); }
-  .fcol-fold { display: inline-block; flex: none; padding: 0 6px 0 2px; color: var(--dim);
-    background: transparent; border: 0; font: inherit; font-weight: 400; line-height: 1;
-    cursor: pointer; transition: color 0.12s ease; }
+  /* the SAME caret the session headers wear (.feed-sess-fold): same glyphs, same side (right of
+     the label), same rendered size — the header's 0.72em is compensated explicitly so the glyph
+     paints at the feed's base size instead of shrinking with the label (the user 2026-08-16) */
+  .fcol-fold { display: inline-block; flex: none; padding: 0 5px; margin-left: -2px; color: var(--dim);
+    background: transparent; border: 0; font: inherit; font-size: 1.389em; font-weight: 400;
+    line-height: 1; cursor: pointer; transition: color 0.12s ease; }
   .fcol-fold:hover, .fcol-fold:focus-visible { color: var(--fg); }
   .fcol-grip { display: inline-block; margin-left: auto; padding: 0 4px; color: var(--dim);
     cursor: grab; opacity: 0; transition: opacity 0.12s ease; touch-action: none; user-select: none; }

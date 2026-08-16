@@ -17,6 +17,10 @@ test("the caret folds a category to its header and persists like every other dis
   assert.match(FEED, /cols: \[\.\.\.collapsedCols\],\s*\n\s*order: stackOrder\.slice\(\)/, "rides the persisted view state");
   assert.match(CSS, /\.feed-col\.col-collapsed \.feed-col-list \{ display: none; \}/);
   assert.match(FEED, /fold\.textContent = folded \? "▸" : "▾";/);
+  // consistency with the session headers' fold (the user 2026-08-16): same side — caret RIGHT of the
+  // label — and the same rendered size (the header's 0.72em compensated back to the feed's base)
+  assert.match(FEED, /head\.append\(name, fold, count, grip\);/);
+  assert.match(CSS, /\.fcol-fold \{ display: inline-block; flex: none; padding: 0 5px; margin-left: -2px;[^}]*font-size: 1\.389em;/);
 });
 
 test("the grip is quiet-until-wanted, findable on touch, and drags only the stacked layout", () => {
