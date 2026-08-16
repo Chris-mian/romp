@@ -9902,8 +9902,11 @@ function setupComposer() {
       // it (the user 2026-07-30) — silently accepting it would clear the composer and deliver nothing.
       if (hostIsDown(sid)) {
         const host = String(sid).slice(0, String(sid).indexOf(":"));
+        // the refusal itself is DEMAND: ask the kernel to re-dial that host's tunnel right now,
+        // so "romp is re-dialing" below is literally true at the moment it is read (2026-08-16)
+        vscodeApi?.postMessage({ type: "redial", host });
         warnToast(host + " is disconnected, so this wasn't sent. It's still in the box — romp is "
-          + "reconnecting, and you can send it then.");
+          + "re-dialing the link now; send again when it's back.");
         return;
       }
       if (isProvisionalId(sid)) {
