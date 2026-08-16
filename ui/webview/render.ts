@@ -1031,6 +1031,23 @@ const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]|
 // file:// URIs are explicit absolute paths — never gated on the map.
 function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[],
     pathLinks?: Record<string, string>, pathPins?: Record<string, string>): void {
+  // A whole-backtick http(s) URL becomes a TAPPABLE link that still looks like code (the user
+  // 2026-08-16, on mobile, wanting to tap through to a dashboard link a session sent). Bare URLs
+  // and [text](url) already link via marked's gfm autolink + the global anchor click delegate;
+  // the code-span form was the one dead shape. Inline spans only (never inside <pre> blocks or an
+  // existing anchor), and only when the span's ENTIRE text is one URL — a URL quoted inside prose
+  // code stays code. The scheme is validated here, so the anchor is as safe as md()'s sanitized ones.
+  for (const code of Array.from(root.querySelectorAll("code"))) {
+    const t = (code.textContent || "").trim();
+    if (!/^https?:\/\/\S+$/.test(t)) continue;
+    if (code.closest("pre") || code.closest("a")) continue;
+    const a = document.createElement("a");
+    a.href = t;
+    a.className = "url-code-link";
+    a.title = t + " — opens in a new tab";
+    code.replaceWith(a);
+    a.appendChild(code);
+  }
   const previewable: string[] = [];   // renderable paths found in this message → full renders at their mentions
   const mentionAt = new Map<string, HTMLElement>();   // path → its FIRST mention's element (figure anchor)
   const kernelVerified = new Set<string>();           // paths the kernel stat'd — their previews fail loudly, never silently
