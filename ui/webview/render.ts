@@ -9937,6 +9937,7 @@ function setupComposer() {
         provisionalQueue.push(text);
         registerOptimistic(sid, text);
         sendOnShip.delete(sid);                       // a send happened — any held one is superseded
+        histWalk.delete(sid);                         // …and the history walk starts fresh
         if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }
         drafts.delete(sid); draftStartedAt.delete(sid); persistDrafts();
         ta.value = ""; composerManualH = null; ta.style.height = "";
@@ -9965,6 +9966,7 @@ function setupComposer() {
       // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
       if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
       sendOnShip.delete(sid);                       // a send happened — any held one is superseded
+      histWalk.delete(sid);                         // …and the history walk starts fresh
       if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }   // the strip emptied into this message
       drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
       ta.value = "";
@@ -10204,8 +10206,55 @@ function setupComposer() {
   ta.addEventListener("blur", () => window.setTimeout(closeSlash, 120));   // close when leaving (a row's mousedown keeps focus, so it fires only on a real leave)
   window.addEventListener("resize", positionSlash);
 
+  // ── PROMPT HISTORY (the user 2026-08-16): ↑ with the caret on the box's FIRST line recalls the
+  // session's previously SENT prompts, shell-style; ↓ on the last line walks forward again, and
+  // walking past the newest restores the draft you were typing (stashed on the first ↑). History is
+  // the session payload's own human-sent messages — authoritative, survives reloads — with romp's
+  // injected turns excluded and adjacent repeats collapsed. The walk drops on send.
+  const histWalk = new Map<string, { idx: number; stash: string }>();   // sid → walk position + stashed draft
+  const composerHistory = (sid: string): string[] => {
+    const out: string[] = [];
+    for (const ev of sessions.get(sid)?.events || []) {
+      if (ev.kind !== "user" || !ev.human || ev.romp || ev.rompAuto) continue;
+      const t = (ev.md || "").trim();
+      if (t && out[out.length - 1] !== t) out.push(t);
+    }
+    return out;                                        // oldest → newest
+  };
   ta.addEventListener("keydown", (e) => {
     if (slashKey(e)) return;   // the slash menu owns ↑/↓/⏎/Tab/Esc while it's open
+    // ↑/↓ recall history ONLY from the boundary lines with a collapsed caret and no modifiers —
+    // mid-text arrows keep their native caret movement, so multi-line editing is never hijacked.
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && activeId
+        && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+        && ta.selectionStart === ta.selectionEnd) {
+      const onFirst = !ta.value.slice(0, ta.selectionStart).includes("\n");
+      const onLast = !ta.value.slice(ta.selectionStart).includes("\n");
+      const w = histWalk.get(activeId);
+      if (e.key === "ArrowUp" ? onFirst : (onLast && w)) {
+        const hist = composerHistory(activeId);
+        if (e.key === "ArrowUp") {
+          const idx = w ? w.idx - 1 : hist.length - 1;
+          if (idx >= 0 && hist.length) {
+            e.preventDefault();
+            histWalk.set(activeId, { idx, stash: w ? w.stash : ta.value });
+            ta.value = hist[idx];
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+            growComposer(ta);
+            ta.dispatchEvent(new Event("input"));      // draft/slash/ask-mode bookkeeping stays true
+          }
+          return;                                      // nothing older → native caret-to-start is fine
+        }
+        e.preventDefault();
+        const idx = w!.idx + 1;
+        if (idx >= hist.length) { ta.value = w!.stash; histWalk.delete(activeId); }
+        else { w!.idx = idx; ta.value = hist[idx]; }
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+        growComposer(ta);
+        ta.dispatchEvent(new Event("input"));
+        return;
+      }
+    }
     // Backspace at the very START of the box deletes the citation chip "like a character" (the user
     // 2026-07-01) — the chip sits just before the caret, so this is the natural way to remove it by keyboard.
     if (e.key === "Backspace" && !e.metaKey && !e.ctrlKey && ta.selectionStart === 0 && ta.selectionEnd === 0
