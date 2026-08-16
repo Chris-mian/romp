@@ -2908,6 +2908,17 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
       setTimeout(() => { if (retry.isConnected) { retry.disabled = false; retry.textContent = "Retry now"; } }, 2500);
     });
     head.appendChild(retry);
+  } else if (st?.backend === "tmux") {
+    const dismiss = el("button", "apierror-retry") as HTMLButtonElement;   // same button chrome, different verb
+    dismiss.textContent = "Dismiss dialog";
+    dismiss.title = "the terminal is showing the spend-limit menu — send Esc to close it (cancels; changes no billing setting)";
+    dismiss.addEventListener("click", () => {
+      if (vscodeApi) vscodeApi.postMessage({ type: "dismissDialog", id: activeId });
+      dismiss.disabled = true;
+      dismiss.textContent = "Dismissing…";
+      setTimeout(() => { if (dismiss.isConnected) { dismiss.disabled = false; dismiss.textContent = "Dismiss dialog"; } }, 2500);
+    });
+    head.appendChild(dismiss);
   }
   // Global auto-retry pause (the user 2026-06-30) — no per-session off-switch. "Retry now" + sending a message still work.
   const paused = globalRetryPaused;
@@ -4618,15 +4629,17 @@ function requestSessionList(host: string): void {
 // manager environment carries. The row is ALWAYS there for an SDK session (the user 2026-08-09):
 // segmented BUTTONS when the selected host offers both, and when it offers ONE, the same spot just
 // writes out which it is — informative, never a one-option selector (what the earlier disappearing
-// rule was really against). The row stays away until the host's sessionList reply carries authAvail
-// (an older kernel never answers with one).
+// rule was really against). The row still disappears when the backend toggle says tmux (that CLI
+// lives in the tmux server's environment, which the kernel does not control) and until the host's
+// sessionList reply carries authAvail (an older kernel never answers with one).
 let pickerAuthAvail: { login?: boolean; key?: boolean; acct?: string; default?: string } | null = null;
 
 function syncPickerAuth(): void {
   const wrap = document.querySelector("#picker .picker-auth") as HTMLElement | null;
   if (!wrap) return;
+  const beSel = document.querySelector("#picker .picker-backend:not(.picker-host):not(.picker-auth) .picker-be-opt.sel") as HTMLElement | null;
   const a = pickerAuthAvail;
-  const show = !pickMode && !!(a && (a.login || a.key));
+  const show = !pickMode && !!(a && (a.login || a.key)) && (beSel?.dataset.be || loadSettings().backend) === "sdk";
   wrap.style.display = show ? "" : "none";
   if (!show) return;
   const both = !!(a!.login && a!.key);
@@ -4903,6 +4916,20 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     dirField.appendChild(dirInput); dirField.appendChild(dirHint);
     dirWrap.appendChild(dirField); dirWrap.appendChild(browseBtn);
     dirWrap.appendChild(dirMenu);
+    // per-session BACKEND picker (the user 2026-06-23): a tmux | SDK segmented toggle, defaulting to the
+    // gear's Default backend but overridable for THIS new session. Hidden in pick-mode (like dirWrap).
+    const beWrap = el("div", "picker-backend");
+    const beLabel = el("span", "picker-backend-label"); beLabel.textContent = "Backend";
+    const mkBe = (val: string, txt: string, tip: string) => {
+      const b = el("button", "picker-be-opt") as HTMLButtonElement;
+      b.type = "button"; b.textContent = txt; b.title = tip; b.dataset.be = val;
+      b.addEventListener("click", () => beWrap.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", x === b)));
+      return b;
+    };
+    beWrap.append(beLabel, mkBe("sdk", "SDK", "Runs via the Claude Agent SDK."),   // not "headless" — same full chat UI (the user 2026-07-12)
+                  mkBe("tmux", "tmux", "Drives a real terminal pane (tmux)."));   // SDK first — the de-facto default (the user 2026-07-02)
+    // the billing row exists only for SDK sessions — re-decide on every backend toggle
+    beWrap.addEventListener("click", () => syncPickerAuth());
     // per-session BILLING row (the user 2026-08-08): Login | API key buttons when the selected host
     // offers both; with ONE real choice the same spot writes it out as plain text (the user
     // 2026-08-09) — see syncPickerAuth. Same segmented-toggle grammar as Backend above.
@@ -4950,12 +4977,14 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
         dirInput.focus(); dirInput.select();
         return;
       }
+      // backend: this picker's toggle (defaults to the gear's "Default backend", overridable per session)
+      const beSel = beWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null;
       // host: local ("") or an attached SSH host — the federation manager routes createSession there.
       const hostSel = (hostWrap.querySelector(".picker-be-opt.sel") as HTMLElement | null)?.dataset.host || "";
       // billing: the picker's Billing row when it is showing (both choices real on that host); ""
       // omits the field and the kernel's own default stands (the user 2026-08-08)
       const auth = pickerAuthChoice();
-      startCreate({ name, backend: "sdk",
+      startCreate({ name, backend: beSel?.dataset.be || loadSettings().backend,
                     dir: dirInput.value.trim(), host: hostSel, ...(auth ? { auth } : {}) });
     });
     actions.appendChild(newSess);
@@ -4974,6 +5003,7 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
     box.appendChild(search);
     box.appendChild(errLine);
     box.appendChild(dirWrap);
+    box.appendChild(beWrap);
     box.appendChild(auWrap);
     box.appendChild(hostWrap);
     box.appendChild(actions);
@@ -5005,6 +5035,12 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   if (altHeadEl) altHeadEl.style.display = pick ? "none" : "";   // pick-mode: the list IS the dialog, not an alternative
   const dirWrap = overlay.querySelector(".picker-dir") as HTMLElement | null;
   if (dirWrap) dirWrap.style.display = pick ? "none" : "";   // dir only matters when creating, not picking
+  const beWrapEl = overlay.querySelector(".picker-backend:not(.picker-host):not(.picker-auth)") as HTMLElement | null;
+  if (beWrapEl) {   // reset the backend toggle to the gear default each open (overridable for this session)
+    beWrapEl.style.display = pick ? "none" : "";
+    const def = loadSettings().backend || "tmux";
+    beWrapEl.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", (x as HTMLElement).dataset.be === def));
+  }
   const auWrapEl = overlay.querySelector(".picker-auth") as HTMLElement | null;
   if (auWrapEl) {   // fresh open: forget last time's pick + availability; the local sessionList reply re-arms it
     auWrapEl.style.display = "none";
@@ -7723,7 +7759,27 @@ function renderUnknownCard() {
 function paintLiveAskFocus() {
   const rows = document.querySelectorAll("#live-ask .ask-live-opt");
   rows.forEach((r, i) => r.classList.toggle("focus", i === liveAskFocus));
-  renderAskPreview();   // step the preview to the newly-focused option (instant — options carry their own previews)
+  renderAskPreview();   // step the preview to the newly-focused option (instant for per-option SDK previews)
+  // tmux scrape path: the focused option has no preview of its own, but the ask carries the one scraped for
+  // the cursor row — so nudge the TERMINAL cursor onto this option, and the next scrape captures ITS preview.
+  // That's the only way to "see the other ones" without selecting (the user 2026-06-22). Debounced in
+  // navLiveAsk so a fast ↑↑↑ only drives the final option. SDK options carry their own preview → no nudge.
+  const ask = activeId ? liveAsks.get(activeId) : null;
+  if (ask && ask.kind === "single") {
+    const opts = singleOptions(ask);
+    const o = opts[Math.max(0, Math.min(liveAskFocus, opts.length - 1))];
+    if (o && !o.preview && ask.preview) navLiveAsk(o.n);
+  }
+}
+
+// Move the TUI cursor to `target` WITHOUT selecting, so the tmux-scraped preview follows ↑/↓. Debounced so
+// a fast keyboard sweep drives only the final option; NOT sendingGuard'd (it's navigation, not a commit).
+let navTimer: ReturnType<typeof setTimeout> | undefined;
+function navLiveAsk(target: number) {
+  if (!activeId || !vscodeApi) return;
+  const id = activeId;
+  if (navTimer) clearTimeout(navTimer);
+  navTimer = setTimeout(() => { navTimer = undefined; vscodeApi?.postMessage({ type: "navAsk", id, target }); }, 110);
 }
 
 // Single-select keyboard: ↑/↓ highlight (preview follows), Enter confirms, number jumps to + confirms.

@@ -41,24 +41,9 @@ SID = "11111111-2222-3333-4444-555555555555"
 def _row(**over):
     """A Sessions.live()-shaped lane row with every key build_session touches."""
     r = {"state": "", "since": None, "model": "", "effort": "", "context": None,
-         "compactPct": None, "color": None, "mode": "", "backend": "sdk"}
+         "compactPct": None, "color": None, "mode": "", "backend": "tmux"}
     r.update(over)
     return r
-
-
-class _OwnBE:
-    """A minimal owning backend: live sids are SDK-owned by construction now, and build_session
-    resolves the transcript-less frame through _sdk_sess + the backend's (empty) live tail."""
-    def owns(self, s): return True
-    def live_atoms(self, s): return []
-    def prune_live(self, s, u, t=(), human_floor=0): return None
-    def pending_queued(self, s): return []
-    def current_ask(self, s): return None
-    def busy(self, s): return None
-    def compacting(self, s): return None
-    def clearing(self, s): return None
-    def launch_error(self, s): return None
-    def pending_cut(self, s): return ""
 
 
 class _Base(unittest.TestCase):
@@ -66,7 +51,7 @@ class _Base(unittest.TestCase):
         self.td = tempfile.TemporaryDirectory()
         td = Path(self.td.name)
         self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-                      km.NAMES, km._live_map, km._sdk)
+                      km.NAMES, km._tmux_sessions, km._sdk)
         names = td / "names"; names.mkdir()
         proj = td / "projects"; proj.mkdir()
         jd.NAMES, jd.PROJECTS = names, proj
@@ -75,12 +60,12 @@ class _Base(unittest.TestCase):
             d.mkdir()
         jd.STATE = td
         km.NAMES = names
-        km._sdk = lambda: _OwnBE()        # live sids are SDK-owned; the frame synth rides _sdk_sess
+        km._sdk = lambda: None            # no SDK backend: the synthesized tmux path is under test
         km._parse_cache.clear()
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-         km.NAMES, km._live_map, km._sdk) = self.saved
+         km.NAMES, km._tmux_sessions, km._sdk) = self.saved
         self.td.cleanup()
 
 
@@ -90,11 +75,21 @@ class OpeningChipStandsDownOnTheBackendEvent(_Base):
     never until the first transcript record (that lands only with the first message)."""
 
     def _chip(self, row):
-        live_map = {SID: row}
-        km._live_map = lambda: live_map
-        m = km.build_session(SID, NOW, live_map)
+        tmux = {SID: row}
+        km._tmux_sessions = lambda: tmux
+        m = km.build_session(SID, NOW, tmux)
         self.assertIsNotNone(m, "a live transcript-less session still gets a frame")
         return m["status"]["state"]
+
+    def test_tmux_booting_cli_reads_opening(self):
+        # spawned (the lane row exists — the launcher sets @romp-session-id at creation) but the
+        # CLI's statusline hook hasn't published a @claude-state yet → still opening
+        self.assertEqual(self._chip(_row(state="")), "opening")
+
+    def test_tmux_first_claude_state_ends_opening(self):
+        # the hook published "waiting": the CLI is up at its prompt — no transcript exists yet
+        # (the first record only lands with the first message), and the chip must NOT wait for it
+        self.assertEqual(self._chip(_row(state="waiting", since=NOW - 5)), "ready")
 
     def test_sdk_pre_handshake_reads_opening(self):
         # SDK snapshots carry a non-empty state from birth ("waiting"), so the state leg must not
@@ -130,8 +125,8 @@ class PushSessionNow(_Base):
                "message": {"role": "user", "content": "hello there"}}
         (pdir / (SID + ".jsonl")).write_text(json.dumps(rec) + "\n")
         (jd.NAMES / SID).write_text("web\t%s\t#abcdef\n" % str(cdir))
-        self.live_map = {SID: _row(state="waiting", since=NOW - 5)}
-        km._live_map = lambda: self.live_map
+        self.tmux = {SID: _row(state="waiting", since=NOW - 5)}
+        km._tmux_sessions = lambda: self.tmux
         self.sent = []
         self.client = {"app": "chat", "alive": True, "wid": "", "qbytes": 0,
                        "send": lambda s: self.sent.append(json.loads(s))}

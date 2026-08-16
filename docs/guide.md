@@ -152,11 +152,21 @@ did, so searching for the work finds the session that did it, months later.
 
 ### Session backends
 
-Every session runs on one backend: the kernel manages the Claude Code session
-through the Claude Agent SDK, and you drive it from the dashboard. (An earlier
-terminal backend, which scraped a tmux pane, was retired 2026-08-16; sessions
-recorded under it still revive — the kernel adopts them onto the SDK with their
-history.)
+Sessions run on one of two backends, chosen per session:
+
+- **SDK (the default, strongly recommended).** The kernel manages the Claude
+  Code session through the Claude Agent SDK.
+- **tmux.** A Claude Code session running in a terminal inside tmux. Run
+  `romp new -t <name>` and that terminal session joins the interface like any other, so
+  you can work in the terminal directly and still see it in Romp. The cost is
+  that Romp has no direct connection to it: it reads what appears in the
+  terminal and on disk, and sends messages and nudges by injecting keystrokes.
+  That makes it less reliable and less responsive than the SDK, since scraping a
+  terminal has edge cases a real API does not, and updates wait on the
+  transcript reaching disk.
+
+The two backends interleave freely, so terminal sessions and SDK sessions sit
+side by side in the interface and message each other like any other pair.
 
 ## The Romp kernel (the back end)
 

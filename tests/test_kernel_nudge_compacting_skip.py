@@ -53,7 +53,7 @@ class NudgeCompactingSkip(unittest.TestCase):
         # got PAST the compacting guard. The spy returns an empty session so the tick continues harmlessly
         # (a raise would be swallowed by the tick's own `except Exception: continue`, hiding a guard failure).
         km._auto_nudge_on = lambda: True
-        km._alive_sessions = lambda now, live_map: [{"sid": SID, "path": "/nonexistent.jsonl"}]
+        km._alive_sessions = lambda now, tmux: [{"sid": SID, "path": "/nonexistent.jsonl"}]
         km._wait_for_graph = lambda now, sids: {}
         km._session_flag = lambda sid, flag: False
         km._api_error = lambda path: None

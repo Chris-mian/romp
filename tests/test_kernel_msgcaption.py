@@ -58,12 +58,12 @@ class MsgCaption(unittest.TestCase):
         names = td / "names"; names.mkdir()
         (names / SID).write_text("testsess\t%s\t#abcdef\n" % str(cdir))
         self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-                      km.NAMES, km._live_map)
+                      km.NAMES, km._tmux_sessions)
         jd.NAMES, jd.PROJECTS = names, proj
         jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR = td / "captions", td / "archive", td / "goals"
         jd.STATE = td
         km.NAMES = names
-        km._live_map = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
+        km._tmux_sessions = lambda: {SID: {"state": "idle", "since": NOW - 100, "model": "",
                                            "effort": "", "context": None, "compactPct": None, "color": None}}
         jd.CAPDIR.mkdir(parents=True)
         jd.GOALDIR.mkdir(parents=True)
@@ -72,7 +72,7 @@ class MsgCaption(unittest.TestCase):
 
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
-         km.NAMES, km._live_map) = self.saved
+         km.NAMES, km._tmux_sessions) = self.saved
         self.td.cleanup()
 
     def _cap(self, uid, grain, caption):

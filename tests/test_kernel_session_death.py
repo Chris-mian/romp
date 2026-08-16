@@ -108,20 +108,96 @@ class RecordDeath(unittest.TestCase):
         self.assertIsNone(_marker(SID))
 
 
+class AliveSids(unittest.TestCase):
+    def _probe(self, rc, out="", err=""):
+        saved = km._TMUX._run
+        km._TMUX._run = lambda args, t=3: types.SimpleNamespace(returncode=rc, stdout=out, stderr=err)
+        try:
+            return km._TMUX.alive_sids()
+        finally:
+            km._TMUX._run = saved
+
+    def test_a_healthy_scan_returns_the_sid_set(self):
+        self.assertEqual(self._probe(0, out=SID + "\n\n" + SID2 + "\n"), {SID, SID2})
+
+    def test_no_server_is_the_authoritative_zero_answer(self):
+        # verified live: `list-sessions` with no server exits 1 with 'error connecting … No such
+        # file or directory' — the mass-death/reboot shape, and the boot backfill's normal world
+        self.assertEqual(self._probe(1, err="error connecting to /tmp/tmux-1000/default (No such file or directory)"),
+                         set())
+        self.assertEqual(self._probe(1, err="no server running on /tmp/tmux-1000/default"), set())
+
+    def test_a_real_probe_failure_is_none_so_writers_stand_down(self):
+        self.assertIsNone(self._probe(1, err="some other tmux error"))
+        saved = km._TMUX._run
+        km._TMUX._run = lambda args, t=3: None
+        try:
+            self.assertIsNone(km._TMUX.alive_sids())
+        finally:
+            km._TMUX._run = saved
+
+
+class DeathSweepTick(unittest.TestCase):
+    def setUp(self):
+        self._saved_avail, self._saved_run = km._TMUX.available, km._TMUX._run
+        km._TMUX.available = lambda: True
+        km._prev_live_sids[0] = None
+
+    def tearDown(self):
+        km._TMUX.available, km._TMUX._run = self._saved_avail, self._saved_run
+        km._prev_live_sids[0] = None
+        _wipe(SID)
+        _wipe(SID2)
+
+    def _scan(self, sids):
+        km._TMUX._run = lambda args, t=3: types.SimpleNamespace(
+            returncode=0, stdout="\n".join(sids), stderr="")
+
+    def test_a_departed_sid_confirmed_gone_is_stamped(self):
+        self._scan([])
+        km._death_sweep_tick(NOW, {SID: {}})
+        km._death_sweep_tick(NOW + 5, {})
+        self.assertIsNotNone(_marker(SID), "left the map + the owner confirms absence → stamped")
+
+    def test_the_owner_saying_alive_blocks_the_stamp(self):
+        self._scan([SID])
+        km._death_sweep_tick(NOW, {SID: {}})
+        km._death_sweep_tick(NOW + 5, {})
+        self.assertIsNone(_marker(SID), "our snapshot blinked; the session is alive")
+
+    def test_an_sdk_owned_sid_is_never_stamped_here(self):
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True)
+        (jd.SDKDIR / (SID + ".json")).write_text(json.dumps({"sid": SID, "alive": True}))
+        self._scan([])
+        km._death_sweep_tick(NOW, {SID: {}})
+        km._death_sweep_tick(NOW + 5, {})
+        self.assertIsNone(_marker(SID),
+                          "SDK deaths are the kill gesture's to stamp — alive:True is revivable/"
+                          "crash-looped and the boot-resume contract rides on never stamping it")
+
+    def test_a_failed_probe_stamps_nothing(self):
+        km._TMUX._run = lambda args, t=3: None
+        km._death_sweep_tick(NOW, {SID: {}})
+        km._death_sweep_tick(NOW + 5, {})
+        self.assertIsNone(_marker(SID))
+
+
 class DeathBootPass(unittest.TestCase):
     def tearDown(self):
         _wipe(SID)
         _wipe(SID2)
+        km._TMUX.available, km._TMUX._run = self._saved_avail, self._saved_run
 
     def setUp(self):
+        self._saved_avail, self._saved_run = km._TMUX.available, km._TMUX._run
+        km._TMUX.available = lambda: True
+        km._TMUX._run = lambda args, t=3: types.SimpleNamespace(returncode=0, stdout="", stderr="")
         jd.NAMES.mkdir(parents=True, exist_ok=True)
 
-    def test_a_regless_sid_is_dead_by_construction_and_stamped(self):
-        # a names/ entry with no SDK reg is the retired terminal backend's era — no live source can
-        # still hold it, so the boot pass back-stamps it (revive adopts it if the user wants it back)
+    def test_a_regless_tmux_sid_dead_before_boot_is_stamped(self):
         (jd.NAMES / SID).write_text("web\t/tmp\t#123456\t#fff\n")
         km._death_boot_pass(NOW)
-        self.assertIsNotNone(_marker(SID), "a death no kernel was up to see gets its stamp at boot")
+        self.assertIsNotNone(_marker(SID), "the RC7 case: a tmux death no kernel was up to see")
 
     def test_an_alive_true_reg_is_left_for_the_resume_contract(self):
         (jd.NAMES / SID).write_text("api\t/tmp\t#123456\t#fff\n")

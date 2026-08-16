@@ -27,6 +27,12 @@ class SessionIdentityEnv(unittest.TestCase):
         # env, so nothing may treat the name as an address — the comment must keep saying so
         self.assertIn("a rename after spawn is NOT reflected", SDK)
 
+    def test_the_terminal_launcher_exports_the_same_identity(self):
+        # both backends: the tmux launch line carries ROMP_SID + ROMP_SESSION_NAME into the CLI's
+        # environment (the user 2026-08-16 — external tools attribute env-first, never via tmux)
+        launcher = Path(os.path.join(os.path.dirname(HERE), "bin", "romp")).read_text()
+        self.assertIn('claude_cmd="ROMP_SID=$sid ROMP_SESSION_NAME=\\"$display\\" $claude_cmd"', launcher)
+
     def test_one_env_overlay_only(self):
         # both vars ride _options' single env= overlay (additive over os.environ via
         # _bin_on_path_env) — a second env assembly would fork the truth

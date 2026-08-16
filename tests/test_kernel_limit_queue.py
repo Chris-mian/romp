@@ -72,12 +72,13 @@ class _Base(unittest.TestCase):
         jd.STATE = Path(self.td.name)
         self.be = _FakeBackend()
         self._saved = {n: getattr(km, n) for n in
-                       ("_compacting_now", "_working_now", "_push_all",
+                       ("_compacting_now", "_working_now", "_push_all", "_optimistic_echo",
                         "_mark_views_dirty", "_mark_compacting", "_mark_model_pending", "_path_of")}
         self._saved_backend = km.Sessions.backend_for
         km._compacting_now = lambda sid: False
         km._working_now = lambda sid: False
         km._push_all = lambda: None
+        km._optimistic_echo = lambda sid, text, author="human": None
         km._mark_views_dirty = lambda *a, **k: None
         km._mark_compacting = lambda sid: None
         km._mark_model_pending = lambda sid, v: None

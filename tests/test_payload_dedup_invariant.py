@@ -141,7 +141,7 @@ class BuiltFeedIsClockInvariantApartFromTheClockItself(unittest.TestCase):
         km.NAMES = names
         km._GLOBAL_CLAUDE_MD = td / "no-global-claude.md"
         # Fixed so the stub itself contributes nothing clock-derived (mirrors the chat invariant test).
-        self.live_map = {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
+        self.tmux = {SID: {"state": "idle", "since": NOW - 100, "model": "", "effort": "",
                            "context": None, "compactPct": None, "color": None}}
 
     def tearDown(self):
@@ -150,8 +150,8 @@ class BuiltFeedIsClockInvariantApartFromTheClockItself(unittest.TestCase):
         self.td.cleanup()
 
     def test_only_the_declared_volatile_fields_move_with_the_clock(self):
-        a = km.build_feed(NOW, self.live_map)
-        b = km.build_feed(NOW + 600, self.live_map)
+        a = km.build_feed(NOW, self.tmux)
+        b = km.build_feed(NOW + 600, self.tmux)
         varying = sorted(k for k in set(list(a) + list(b))
                          if json.dumps(a.get(k), sort_keys=True, default=str)
                          != json.dumps(b.get(k), sort_keys=True, default=str))
@@ -164,8 +164,8 @@ class BuiltFeedIsClockInvariantApartFromTheClockItself(unittest.TestCase):
         """End to end: the builder's output, run through the real sender, must send once."""
         sent = []
         client = {"send": sent.append, "alive": True}
-        km._send_client(client, ("feed",), km.build_feed(NOW, self.live_map))
-        km._send_client(client, ("feed",), km.build_feed(NOW + 600, self.live_map))
+        km._send_client(client, ("feed",), km.build_feed(NOW, self.tmux))
+        km._send_client(client, ("feed",), km.build_feed(NOW + 600, self.tmux))
         self.assertEqual(len(sent), 1,
                          "an unchanging fleet must not re-send the feed just because time passed")
 

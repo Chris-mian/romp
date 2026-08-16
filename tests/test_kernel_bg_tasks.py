@@ -328,14 +328,14 @@ class DispatchGist(unittest.TestCase):
         ack["toolUseResult"] = {"isAsync": True, "status": "async_launched", "taskType": "local_agent",
                                 "outputFile": "/tmp/agent-a1.output"}
         path = _write([use, ack])
-        saved = (km._live_map, km._sdk_spawned_at)
-        km._live_map = lambda: {"11111111-2222-3333-4444-555555555555": {"name": "web"}}
+        saved = (km._tmux_sessions, km._sdk_spawned_at)
+        km._tmux_sessions = lambda: {"11111111-2222-3333-4444-555555555555": {"name": "web"}}
         km._sdk_spawned_at = lambda s: None
         try:
             res = km._bg_tasks(path)
             row = km._bg_live_norm("11111111-2222-3333-4444-555555555555", path)[0]
         finally:
-            km._live_map, km._sdk_spawned_at = saved
+            km._tmux_sessions, km._sdk_spawned_at = saved
             os.unlink(path)
         self.assertEqual(res["count"], 1, "the ack must not duplicate the launch row")
         self.assertEqual(res["tasks"][0]["summary"], "Audit the sampler")
@@ -384,13 +384,13 @@ class DispatchGist(unittest.TestCase):
         bare = _agent_launch(tid="tu_agent1")
         bare["toolUseResult"] = {"isAsync": True, "status": "async_launched"}
         path = _write([use, ack, _agent_tool_use(tid="tu_agent1"), bare])
-        saved = (km._live_map, km._sdk_spawned_at)
-        km._live_map = lambda: {sid: {"name": "web"}}   # live CLI, no lifecycle set → scan source
+        saved = (km._tmux_sessions, km._sdk_spawned_at)
+        km._tmux_sessions = lambda: {sid: {"name": "web"}}   # live CLI, no lifecycle set → scan source
         km._sdk_spawned_at = lambda s: None
         try:
             rows = {r["desc"]: r["type"] for r in km._bg_live_norm(sid, path)}
         finally:
-            km._live_map, km._sdk_spawned_at = saved
+            km._tmux_sessions, km._sdk_spawned_at = saved
             os.unlink(path)
         self.assertEqual(rows["Sweep the notes-api routes for slow spots"], "local_workflow")
         self.assertEqual(rows["Map the parser"], "local_agent")
@@ -404,14 +404,14 @@ class DurableAwaitingSource(unittest.TestCase):
     SID = "11111111-2222-3333-4444-555555555555"
 
     def _patched(self, live_map, spawned=None):
-        saved = (km._live_map, km._sdk_spawned_at, km._states_awaiting_overlay)
-        km._live_map = lambda: live_map
+        saved = (km._tmux_sessions, km._sdk_spawned_at, km._states_awaiting_overlay)
+        km._tmux_sessions = lambda: live_map
         km._sdk_spawned_at = lambda sid: spawned
         km._states_awaiting_overlay = lambda sid: None
         return saved
 
     def _restore(self, saved):
-        km._live_map, km._sdk_spawned_at, km._states_awaiting_overlay = saved
+        km._tmux_sessions, km._sdk_spawned_at, km._states_awaiting_overlay = saved
 
     def test_pending_agent_dispatches_read_kind_agents_not_task(self):
         # dispatched agents/workflows are kind agents even through the task stream; a MIXED pending
@@ -510,13 +510,13 @@ class AgentTasksAreNeverServices(unittest.TestCase):
         self.assertEqual(awaited, [t], "the closer affirmed this thread's wait")
 
     def test_norm_threads_the_type_through_both_sources(self):
-        saved = km._live_map
-        km._live_map = lambda: {self.SID: {"bgTasks": [
+        saved = km._tmux_sessions
+        km._tmux_sessions = lambda: {self.SID: {"bgTasks": [
             {"toolUseId": "t4", "desc": "an agent", "since": 5, "type": "local_agent"}]}}
         try:
             rows = km._bg_live_norm(self.SID, None)
         finally:
-            km._live_map = saved
+            km._tmux_sessions = saved
         self.assertEqual(rows[0]["type"], "local_agent", "the lifecycle set's type survives normalization")
 
 

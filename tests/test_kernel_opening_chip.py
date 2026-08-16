@@ -41,21 +41,6 @@ SID = "11111111-2222-3333-4444-555555555555"
 NOW = 1781100000
 
 
-class _OwnBE:
-    """A minimal owning backend: live sids are SDK-owned by construction now, and the
-    transcript-less frame resolves through _sdk_sess + the backend's (empty) live tail."""
-    def owns(self, s): return True
-    def live_atoms(self, s): return []
-    def prune_live(self, s, u, t=(), human_floor=0): return None
-    def pending_queued(self, s): return []
-    def current_ask(self, s): return None
-    def busy(self, s): return None
-    def compacting(self, s): return None
-    def clearing(self, s): return None
-    def launch_error(self, s): return None
-    def pending_cut(self, s): return ""
-
-
 class OpeningChipDecidingEvent(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
@@ -72,8 +57,7 @@ class OpeningChipDecidingEvent(unittest.TestCase):
         # real ~/.claude/projects, and the fixture transcript is never found (chip stuck "opening").
         self.saved = [(m, k, getattr(m, k)) for m in (jd, km.jd)
                       for k in ("NAMES", "PROJECTS", "CAPDIR", "ARCHDIR", "GOALDIR", "STATE")]
-        self.saved += [(km, "NAMES", km.NAMES), (km, "_live_map", km._live_map),
-                       (km, "_sdk", km._sdk),
+        self.saved += [(km, "NAMES", km.NAMES), (km, "_tmux_sessions", km._tmux_sessions),
                        (km, "_GLOBAL_CLAUDE_MD", km._GLOBAL_CLAUDE_MD)]
         for m in (jd, km.jd):
             m.NAMES, m.PROJECTS = names, proj
@@ -83,8 +67,7 @@ class OpeningChipDecidingEvent(unittest.TestCase):
         km._GLOBAL_CLAUDE_MD = td / "no-global-claude.md"
         self.tm = {"state": "waiting", "since": NOW - 5, "model": "Opus 5", "effort": "xhigh",
                    "context": None, "compactPct": None, "color": None, "backend": "sdk"}
-        km._live_map = lambda: {SID: dict(self.tm)}
-        km._sdk = lambda: _OwnBE()
+        km._tmux_sessions = lambda: {SID: dict(self.tm)}
 
     def tearDown(self):
         for m, k, v in self.saved:
