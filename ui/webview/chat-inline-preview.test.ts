@@ -38,7 +38,8 @@ test("a kernel-VERIFIED preview fails LOUDLY: a retry chip holds the figure's sp
   assert.match(pf, /if \(!verified\) \{ box\.remove\(\); return; \}/);
   assert.match(pf, /chip\.className = "path-full-retry";/);
   assert.match(pf, /chip\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); build\(true\); \};/, "tap to retry rebuilds the img");
-  assert.match(pf, /img\.src = bust \? url \+ "&r=" \+ Date\.now\(\) : url;/, "a retry cache-busts the failed entry");
+  assert.match(pf, /headers: got > 0 \? \{ Range: "bytes=" \+ got \+ "-" \} : \{\}/,
+    "a retry RESUMES from the bytes already received (kernel /file honors the suffix range)");
   // the render layer feeds the verdict: spacePaths and pathLinks hits are kernel-stat'd paths
   assert.match(RENDER, /const kernelVerified = new Set<string>\(\);/);
   assert.match(RENDER, /if \(!isUri && typeof fixed === "string"\) kernelVerified\.add\(open\);/);
@@ -58,7 +59,7 @@ test("the failure chip narrates what happens next, escalates on repeat, and a re
   assert.match(CSS, /prefers-reduced-motion: reduce\) \{ \.path-full-retry\.path-retry-flash \{ animation: none;/);
   // a manual retry that dies instantly holds the swirl a perceivable beat before the chip returns
   assert.match(PREVIEW, /const MIN_RETRY_SPIN_MS = 400;/);
-  assert.match(pf, /const left = bust \? MIN_RETRY_SPIN_MS - \(Date\.now\(\) - started\) : 0;/);
+  assert.match(pf, /const left = MIN_RETRY_SPIN_MS - \(Date\.now\(\) - started\);/);
   assert.match(pf, /if \(left > 0\) setTimeout\(showChip, left\); else showChip\(\);/);
   // the delayed swap yields to a re-rendered turn — a fresh box owns the spot by then
   assert.match(pf, /if \(!box\.isConnected\) return;/);
@@ -111,4 +112,38 @@ test("full-size images wear the user-image scale — one size per information ty
 
 test("previewThumb is gone with the feed's artifact strips (2026-08-14) — the full render is the one preview", () => {
   assert.doesNotMatch(PREVIEW, /previewThumb/, "no orphaned thumbnail builder");
+});
+
+test("a flaky link finishes the picture ACROSS retries: resume, narrate progress, hold the layout", () => {
+  // the user 2026-08-16, on flaky wifi: every retry restarted the transfer from byte 0 (the pictures
+  // never arrived), the swirl said nothing about progress, and the chip/swirl height swaps thrashed
+  // the chat scroll by about a line.
+  const pf = PREVIEW.slice(PREVIEW.indexOf("export function previewFull"));
+  // the managed retry reads the stream and narrates real progress under the swirl
+  assert.match(pf, /note\.textContent = "fetching… " \+ fmtBytes\(got, total\);/);
+  assert.match(PREVIEW, /function fmtBytes\(got: number, total: number\): string/);
+  // a 206 continues the partial; a plain 200 restarts it cleanly
+  assert.match(pf, /if \(r\.status === 206\)/);
+  assert.match(pf, /parts = \[\]; got = 0;/, "a full-body reply resets the partial, never appends");
+  // an attempt that made progress refills the retry budget — forward motion proves the link works
+  assert.match(pf, /if \(got > gotBefore\) autoRetries = 3;/);
+  // a cut stream is an error that resumes next attempt, never a truncated picture
+  assert.match(pf, /if \(total && got < total\) throw new Error\("cut at " \+ got\);/);
+  // the finished bytes are remembered for the page life — re-renders must not re-pull them over
+  // the very link that struggled to deliver them once
+  assert.match(PREVIEW, /const resolvedUrls = new Map<string, string>\(\);/);
+  assert.match(pf, /rememberResolved\(url, objUrl\);/);
+  // the chip names the byte it died at, so the wait visibly advances across attempts
+  assert.match(pf, /"⚠ connection dropped at " \+ fmtBytes\(got, total\)/);
+  // swirl and chip share one fixed-footprint wait box — retry churn cannot shift the scroll
+  assert.match(PREVIEW, /function mkWait\(box: HTMLElement\): HTMLElement/);
+  assert.match(CSS, /\.path-full-wait \{ display: inline-flex; flex-direction: column;/);
+  assert.match(CSS, /\.path-load-note \{ font-size: 0\.85em;/);
+  // no artificial deadline anywhere: patience is the point — only a real error ends an attempt
+  assert.doesNotMatch(pf, /AbortController|setTimeout\([^,]*abort/i, "no client-side fetch deadline");
+  // the kernel side: /file honors the one suffix form and the federation relay passes 206 through
+  assert.match(KERNEL, /re\.match\(r"\^bytes=\(\\d\+\)-\$", \(getattr\(self, "headers", None\) or \{\}\)\.get\("Range"\) or ""\)/);
+  assert.match(KERNEL, /self\.send_header\("Content-Range", "bytes %d-%d\/%d" % \(rng, size - 1, size\)\)/);
+  assert.match(KERNEL, /hdrs\["Range"\] = _rng/, "the relay forwards the browser's range to the remote");
+  assert.match(KERNEL, /re\.match\(r"\^bytes \\d\+-\\d\+\/\\d\+\$", crange\)/, "and mirrors only byte arithmetic back");
 });

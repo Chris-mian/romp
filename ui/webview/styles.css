@@ -2298,6 +2298,11 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.14);
   font-size: 0.85em; opacity: 0.85; cursor: pointer; }
 .path-full-retry:hover { border-color: var(--accent); }
+/* the fixed-footprint wait box shared by the retrying swirl AND the failure chip, so retry churn
+   never shifts the chat's scroll (preview.ts mkWait; the user 2026-08-16 watched it thrash ~a line) */
+.path-full-wait { display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; min-width: 200px; min-height: 56px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); }
+.path-load-note { font-size: 0.85em; opacity: 0.65; }
 /* a repeat failure's chip pulses once on swap-in so an identical-looking outcome still reads as a
    RESPONSE to the tap (preview.ts previewFull) */
 .path-full-retry.path-retry-flash { animation: path-retry-flash 0.45s ease; }
