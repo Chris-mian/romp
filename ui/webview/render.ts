@@ -1649,6 +1649,12 @@ function ensureRailDay(): HTMLElement {
 // blue — the color that already means "yours" — never the romp accent.
 let scrollMarks: HTMLElement | null = null;
 let scrollMarksSig = "";
+// Measured unit heights, remembered once rendered (the user 2026-08-17, whose video showed notches
+// wiggling non-uniformly while scrolling: a message crossing the render-window boundary corrected
+// from the uniform average-height estimate to its true pixels). One number per event, per session —
+// trivial memory — and spacer-slot positions built from these cumulative heights (normalized to the
+// spacer's actual height) match truth so closely that boundary crossings correct by ~nothing.
+const unitHeights = new Map<string, Map<number, number>>();
 function ensureScrollMarks(): HTMLElement {
   if (scrollMarks && scrollMarks.isConnected) return scrollMarks;
   scrollMarks = el("div", "scroll-marks");
@@ -1681,6 +1687,33 @@ function paintScrollMarks(): void {
   const topH = topSp ? topSp.offsetHeight : 0;
   const botH = botSp ? botSp.offsetHeight : 0;
   const scrollTop = content.scrollTop;
+  // remember every rendered unit's measured height — the spacer estimates below feed on them
+  let uh = unitHeights.get(activeId!);
+  if (!uh) { uh = new Map(); unitHeights.set(activeId!, uh); }
+  for (const node of Array.from(v.el.querySelectorAll<HTMLElement>(".turn[data-unit]"))) {
+    const u = Number(node.dataset.unit);
+    const h = node.offsetHeight;
+    if (Number.isFinite(u) && h > 0) uh.set(u, h);
+  }
+  const avg = v.avgTurnH ?? 60;
+  // Cumulative-height slots within each spacer run, NORMALIZED to the spacer's actual rendered
+  // height (the frame the scrollbar itself stands on) — cached truth where a unit was ever
+  // rendered, the renderer's average for the rest. One prefix-sum pass per spacer per paint (O(n)
+  // total), then O(1) per notch. Normalizing keeps notch and thumb in one frame even when the
+  // cache disagrees with the spacer's uniform sizing.
+  const prefixOver = (from: number, to: number): number[] => {
+    const pre: number[] = [0];
+    let t = 0;
+    for (let u = from; u < to; u++) { t += uh!.get(u) ?? avg; pre.push(t); }
+    return pre;
+  };
+  const topPre = winStart > 0 ? prefixOver(0, winStart) : null;
+  const botPre = unitTotal > winEnd ? prefixOver(winEnd, unitTotal) : null;
+  const slotIn = (pre: number[], k: number, spanH: number): number => {
+    const total = pre[pre.length - 1];
+    if (!(total > 0)) return spanH / 2;
+    return spanH * ((pre[k] + (pre[k + 1] - pre[k]) / 2) / total);
+  };
   const offs: number[] = [];
   for (let i = 0; i < s.events.length; i++) {
     const ev = s.events[i] as ChatEvent & { human?: boolean; romp?: boolean; rompAuto?: boolean; canned?: string; md?: string };
@@ -1694,8 +1727,8 @@ function paintScrollMarks(): void {
       if (node) off = node.getBoundingClientRect().top - cRect.top + scrollTop;
     }
     if (off == null) {
-      if (i < winStart && winStart > 0) off = topH * ((i + 0.5) / winStart);              // inside the top spacer
-      else if (i >= winEnd && unitTotal > winEnd) off = (sh - botH) + botH * ((i - winEnd + 0.5) / (unitTotal - winEnd));
+      if (i < winStart && topPre) off = slotIn(topPre, i, topH);                        // inside the top spacer
+      else if (i >= winEnd && botPre) off = (sh - botH) + slotIn(botPre, i - winEnd, botH);
       else continue;                                   // window bookkeeping mid-update — skip this one, next paint has it
     }
     offs.push(off);

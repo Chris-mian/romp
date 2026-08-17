@@ -21,9 +21,15 @@ test("one notch per real user message across the WHOLE loaded conversation", () 
   assert.match(RENDER, /ev\.canned === "continue" \|\| SLASH_CMD_RE\.test\(md\)/,
     "a /command or Continue gesture is a doing, not words — no notch");
   assert.match(RENDER, /'\.turn\[data-unit="' \+ i \+ '"\]'/, "rendered events use their true pixel offset");
-  assert.match(RENDER, /off = topH \* \(\(i \+ 0\.5\) \/ winStart\);/, "top-spacer events slot proportionally");
-  assert.match(RENDER, /\(sh - botH\) \+ botH \* \(\(i - winEnd \+ 0\.5\) \/ \(unitTotal - winEnd\)\)/,
-    "bottom-spacer events too — aligned with the scrollbar's own spacer estimate");
+  // spacer slots feed on CACHED measured heights (the user 2026-08-17, video: uniform-average
+  // slots made notches wiggle as messages crossed the render-window boundary and corrected to
+  // truth) — cumulative cached heights, normalized to the spacer's actual height, one prefix-sum
+  // pass per spacer, O(1) per notch
+  assert.match(RENDER, /const unitHeights = new Map<string, Map<number, number>>\(\);/);
+  assert.match(RENDER, /if \(Number\.isFinite\(u\) && h > 0\) uh\.set\(u, h\);/, "every rendered unit's height is remembered");
+  assert.match(RENDER, /off = slotIn\(topPre, i, topH\);/, "top-spacer events slot by cumulative cached heights");
+  assert.match(RENDER, /off = \(sh - botH\) \+ slotIn\(botPre, i - winEnd, botH\);/,
+    "bottom-spacer events too — normalized to the spacer the scrollbar stands on");
 });
 
 test("a history load rescales the map smoothly — moved notches are carried, never teleported", () => {
