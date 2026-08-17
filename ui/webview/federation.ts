@@ -785,6 +785,14 @@ export class FederationManager {
     // "last seen" a pane shows survives a page reload and doesn't restart with the browser.
     for (const [host, t] of want) if (typeof t.lastOk === "number" && t.lastOk) this.lastSeen[host] = t.lastOk;
     const changed = down.size !== this.downHosts.size || [...down].some((h) => !this.downHosts.has(h));
+    // A host coming BACK is the recovery event failed previews wait for. The message-driven heal
+    // (render.ts's listener re-runs retryFailedPreviews on any kernel message) never ticks on an
+    // idle session — no traffic flows — so a relay-failed figure sat as a chip until the user's
+    // next send generated pushes (the user 2026-08-17). This poll is the authority on tunnel
+    // state; the down→up transition is the exact moment the relay works again, so it dispatches
+    // through the same message path and the heal fires with zero chat traffic.
+    const recovered = [...this.downHosts].filter((h) => want.has(h) && !down.has(h));
+    if (recovered.length) window.dispatchEvent(new MessageEvent("message", { data: { type: "hostUp", hosts: recovered } }));
     this.downHosts = down;
     if (changed) window.dispatchEvent(new Event("romp-hosts"));   // panes repaint their disconnected marks
   }

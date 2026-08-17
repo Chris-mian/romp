@@ -9793,7 +9793,10 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (m.romp === "chatNav") { navHist.go(m.dir === 1 ? 1 : -1); return; }
   if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }
   // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
-  // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed)
+  // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's
+  // tunnel poll rides this same path: it dispatches {type:"hostUp"} on a host's down→up transition,
+  // so relay-failed figures heal the moment the tunnel returns even when no chat traffic flows
+  // (idle sessions generated no messages, so figures sat until the user's next send — 2026-08-17)
   retryFailedPreviews();
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
