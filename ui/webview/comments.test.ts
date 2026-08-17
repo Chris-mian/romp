@@ -137,7 +137,7 @@ test("a comments frame refreshes the open popover IN PLACE — composer and care
 });
 
 test("the popover send acknowledges before any round-trip", () => {
-  assert.match(UI, /send\.disabled = true; send\.textContent = "Commenting…"; \}\s+\/\/ ack before the round-trip/);
+  assert.match(UI, /send\.disabled = true; send\.classList\.add\("busy"\); \}\s+\/\/ ack before the round-trip/);
   assert.match(UI, /the pending bubble IS the acknowledgement/);
 });
 
@@ -216,12 +216,15 @@ test("a thread fork withholds the names/ entry; promote seeds first, then regist
   assert.match(KERNEL, /err = _seed_fork_stores\(parent_sid, tsid, parent_path, str\(th\.get\("cutUuid"\) or ""\)\)/);
 });
 
-test("the popover drags by its header and closes when you leave the session", () => {
-  assert.match(UI, /head\.addEventListener\("pointerdown"/);
-  assert.match(UI, /head\.setPointerCapture\(ev\.pointerId\)/);
+test("the WHOLE popover drags — grip anywhere that isn't a control — and closes on tab switch", () => {
+  assert.match(UI, /pop\.addEventListener\("pointerdown"/);
+  assert.match(UI, /pop\.setPointerCapture\(ev\.pointerId\)/);
+  assert.match(UI, /ev\.clientX > pr\.right - 18 && ev\.clientY > pr\.bottom - 18\) return;/);
+  assert.match(CSS, /\.cmt-pop \{[^}]*resize: both/s);
+  assert.match(CSS, /\.cmt-pop\.sized \.cmt-quote \{/, "a user resize hands the room to the quoted context");
   assert.match(UI, /commentPopPos = \{ x, y \};/);
   assert.match(UI, /if \(openCommentKey && openCommentKey\.sid !== id\) closeCommentPop\(\);/);
-  assert.match(CSS, /\.cmt-head \{[^}]*cursor: grab/s);
+  assert.match(CSS, /\.cmt-pop \{[^}]*cursor: grab/s, "the grab hand covers the whole box now");
 });
 
 test("marks use the prefix-tolerant anchor matcher", () => {
@@ -248,8 +251,8 @@ test("the create dialog names the thread right there: prefilled <session>-commen
   // the name lives IN the header ("New comment: <name>"), the button says Comment, and the picks ride along
   assert.match(UI, /"New comment:"/);
   assert.match(UI, /if \(nameBox\) head\.append\(title, nameBox, closeBtn\);/);
-  assert.match(UI, /send\.textContent = create \? "Comment" : "Send";/);
-  assert.match(UI, /text, name: nm, model: create\.model \|\| "", effort: create\.effort \|\| ""/);
+  assert.match(UI, /send\.setAttribute\("aria-label", create \? "Comment" : "Send"\);/);   // the ➤ carries the word
+  assert.match(UI, /text, name: nm, model: create\.model \|\| "", effort: create\.effort \|\| "",\s*\n\s*color: create\.color \|\| ""/);
   // the comment's own model/effort selectors reuse the statusline's /models-fed choices + menu skin
   assert.match(UI, /const metaRow = el\("div", "cmt-meta-row"\);/);
   assert.match(UI, /META_CHOICES\[kind\]/);

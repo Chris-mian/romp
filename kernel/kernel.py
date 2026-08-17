@@ -5050,6 +5050,9 @@ def _thread_messages(tsid, cut_uuid, floor_t=0):
             break                                   # tip fork: copied history keeps its original (older) stamps
         if r.get("type") in ("user", "assistant"):
             txt = _comment_msg_text(r)
+            if r.get("type") == "user" and txt.lstrip().startswith("<task-notification>"):
+                txt = ""                            # harness bookkeeping for the AGENT (a parent bg task died
+                #                                     with the fork) — never the user's own words (2026-08-17)
             if txt and txt != boot_nudge and not (r.get("type") == "user" and "<!-- romp-" in txt):
                 rows.append({"who": "you" if r.get("type") == "user" else "agent",
                              "text": txt[:4000],
@@ -5109,7 +5112,7 @@ def _comments_frame(sid):
         seen = int(th.get("lastSeenT") or 0)
         unread = any(m["who"] == "agent" and m["t"] > seen for m in msgs)
         threads.append({"tid": th.get("tid"), "anchorUuid": th.get("anchorUuid"),
-                        "name": th.get("name") or "",
+                        "name": th.get("name") or "", "color": th.get("color") or "",
                         "exact": str(th.get("exact") or "")[:500], "status": status,
                         "createdT": th.get("createdT") or 0, "state": state, "error": err,
                         "unread": unread, "promotedName": th.get("promotedName") or "",
@@ -5136,7 +5139,7 @@ def _comment_markers(sid):
     return out
 
 
-def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", now=None):
+def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", color="", now=None):
     """Anchor a new comment thread: fork the parent at the highlighted message (inclusive) as a
     threadOf fork — no names/ entry, so no judge seeding is needed until promotion — and send the
     opening message. Returns (error, tid): error is the warn-toast string (tid None), success is
@@ -5163,6 +5166,9 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
     nm = str(name or "").strip()
     if nm and not NAME_RE.match(nm):
         return "thread names use letters, digits, . _ - only.", None
+    col = str(color or "").strip()
+    if col and not re.fullmatch(r"#[0-9a-fA-F]{6}", col):
+        col = ""                                   # not a palette hex → let the backend hash one
     tsid = str(uuid.uuid4())
     row = {"tid": tsid, "sid": tsid, "anchorUuid": str(anchor_uuid), "cutUuid": cut,
            "anchorT": cut_t,   # the commented message's own time — the timeline square's x
@@ -5173,10 +5179,12 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
         if not nm:
             nm = "%s-comment-%d" % (sess["name"], len(data.get("threads") or []) + 1)
         row["name"] = nm
+        if col:
+            row["color"] = col                     # the comment's identity color (the dialog's name tint)
         data.setdefault("threads", []).append(row)
         _save_comments(parent_sid, data)
     try:
-        be.fork(nm, parent_sid, cut, sid=tsid, thread_of=parent_sid,
+        be.fork(nm, parent_sid, cut, bg=col, fg=("#ffffff" if col else ""), sid=tsid, thread_of=parent_sid,
                 model=str(model or ""), effort=str(effort or ""))
         be.connect(tsid)
         be.send(tsid, _comment_first_message(exact, text))
@@ -6193,7 +6201,8 @@ def _drive(msg, client):
         # guess) and the fresh {type:"comments"} frame rides straight back, ahead of the pusher cycle.
         err, tid = _comment_create(sid, str(msg["uuid"]), str(msg["exact"]), str(msg["text"]),
                                    name=str(msg.get("name") or ""),
-                                   model=str(msg.get("model") or ""), effort=str(msg.get("effort") or ""))
+                                   model=str(msg.get("model") or ""), effort=str(msg.get("effort") or ""),
+                                   color=str(msg.get("color") or ""))
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
         else:
@@ -24207,7 +24216,14 @@ class Handler(BaseHTTPRequestHandler):
                     "palettes": [{"name": k, "label": v["label"], "colors": v["bg"]}
                                  for k, v in pal.PALETTES.items()]}), "application/json", cache="no-cache")
             if p == "/models":                                # the ONE model + effort choice list — chat statusline, timeline lanes, AND judge settings all read it (the user 2026-07-02: no hardcoding in multiple places)
-                return self._send(200, json.dumps({"models": MODEL_CHOICES, "efforts": EFFORT_CHOICES}), "application/json", cache="no-cache")
+                # each choice carries its colormap tint (the user 2026-08-17: the new-comment dialog's
+                # selectors wear the same colors the statusline badges do, for ANY pick — the badge
+                # colors only cover the current value, so the list is where the shared tint belongs)
+                _stops = cm.stops_for(_colormap())
+                return self._send(200, json.dumps(
+                    {"models": [dict(c, color=_model_color(c["value"], _stops)) for c in MODEL_CHOICES],
+                     "efforts": [dict(c, color=_effort_color(c["value"], _stops)) for c in EFFORT_CHOICES]}),
+                    "application/json", cache="no-cache")
             if p == "/usage":                                 # the /usage rate-limit bars, re-read on demand: the rail's
                 # usage widget is click-to-refresh (the user 2026-06-30). Returns the freshest on-disk snapshot
                 # NOW, and (2026-07-02) also pokes one live SDK session for an exact get_usage snapshot — the
