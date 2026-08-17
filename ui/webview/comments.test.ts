@@ -139,6 +139,19 @@ test("a comments frame refreshes the open popover IN PLACE — composer and care
   assert.match(UI, /function fillCommentMsgs\(list: HTMLElement, th: CommentThread\)/);
 });
 
+test("the ants start on the gesture, and delete is optimistic and cuts the work", () => {
+  // create: a synthetic working thread marks the passage before any round-trip; the frame's
+  // wholesale list replacement retires it, and a refusal drops it with the warn
+  assert.match(UI, /tid: "pending:" \+ create\.uuid, anchorUuid: create\.uuid/);
+  assert.match(UI, /state: "working",\s*\n\s*unread: false/);
+  assert.match(UI, /t\.tid !== "pending:" \+ pa\.uuid/);
+  // reply: the local state flips on send; the kernel's next frame confirms
+  assert.match(UI, /cur\.th\.state = "working";\s+\/\/ optimistic/);
+  // delete: the highlight goes NOW, and the kernel interrupts the in-flight reply before the kill
+  assert.match(UI, /filter\(\(t\) => t\.tid !== cur\.th\.tid\)\);\s*\n\s*applyCommentMarks\(cur\.sid\);\s*\n\s*closeCommentPop\(\);/);
+  assert.match(KERNEL, /be\.interrupt\(th\["sid"\]\)[\s\S]{0,200}be\.kill\(th\["sid"\]\)/);
+});
+
 test("the popover send acknowledges before any round-trip", () => {
   assert.match(UI, /send\.disabled = true; send\.classList\.add\("busy"\); \}\s+\/\/ ack before the round-trip/);
   assert.match(UI, /the pending bubble IS the acknowledgement/);
@@ -164,7 +177,7 @@ test("ending the parent sweeps its threads' CLIs — no unreachable running sess
 });
 
 test("a refused create un-sticks the popover; a pre-seam anchor tip-forks instead of erroring", () => {
-  assert.match(UI, /m\.type === "warn" && pendingCommentAnchor\) \{\s*\n\s*document\.getElementById\("cmt-pop"\)\?\.remove\(\);/);
+  assert.match(UI, /m\.type === "warn" && pendingCommentAnchor\) \{[\s\S]{0,400}document\.getElementById\("cmt-pop"\)\?\.remove\(\);/);
   assert.match(KERNEL, /def _anchor_adapter\(path, sid\)/);
   assert.match(KERNEL, /return "", cut_t, None/);
 });

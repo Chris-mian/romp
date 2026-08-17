@@ -419,6 +419,10 @@ class FakeBackend:
         self.calls.append(("resume", sid))
         return True
 
+    def interrupt(self, sid):
+        self.calls.append(("interrupt", sid))
+        return True
+
     def kill(self, sid):
         self.calls.append(("kill", sid))
         return True
@@ -530,6 +534,13 @@ class CommentOps(CommentBase):
         self.assertIn(("resume", tid), self.be.calls, "replying IS the reopen gesture")
         self.assertEqual(km._comment_thread(PARENT, tid)["status"], "open")
         self.assertEqual(self.be.sent[-1], (tid, "one more question"))
+
+    def test_delete_interrupts_the_inflight_reply_before_the_kill(self):
+        # deleting a thread mid-generation must STOP the work, not just its cue (the user 2026-08-17)
+        _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        km._comment_delete(PARENT, tid)
+        kinds = [c[0] for c in self.be.calls if c[0] in ("interrupt", "kill")]
+        self.assertEqual(kinds, ["interrupt", "kill"], "cut the turn first, then shut the CLI down")
 
     def test_delete_removes_the_row(self):
         _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")

@@ -5305,6 +5305,13 @@ def _comment_delete(parent_sid, tid):
         _save_comments(parent_sid, data)
     be = Sessions.backend_for(parent_sid)
     if hasattr(be, "kill") and status != "promoted":
+        # CUT the in-flight reply first, then shut the CLI down: deleting a thread mid-generation
+        # must stop the work it represents, not just its cue (the user 2026-08-17, who deleted a
+        # marching highlight and watched the reply keep coming)
+        try:
+            be.interrupt(th["sid"])
+        except Exception:
+            pass
         try:
             be.kill(th["sid"])
         except Exception:
