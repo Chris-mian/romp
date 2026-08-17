@@ -1661,19 +1661,46 @@ function paintScrollMarks(): void {
   const box = ensureScrollMarks();
   const content = document.getElementById("content");
   const v = activeId ? views.get(activeId) : null;
-  if (!content || !v || v.el.style.display === "none") { box.style.display = "none"; scrollMarksSig = ""; return; }
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!content || !v || !s || v.el.style.display === "none") { box.style.display = "none"; scrollMarksSig = ""; return; }
   const cRect = content.getBoundingClientRect();
   const sh = content.scrollHeight;
   if (!sh || cRect.height <= 40) { box.style.display = "none"; scrollMarksSig = ""; return; }
-  const turns: HTMLElement[] = [];
-  for (const t of Array.from(v.el.querySelectorAll<HTMLElement>(".turn-user:not(.romp):not(.injected)"))) {
-    // gestures (a /command row, the Continue row) are the user's DOINGS, not their words — no notch
-    if (t.querySelector(".user-bubble:not(.cmd-row):not(.cont-row)")) turns.push(t);
+  // The WHOLE loaded conversation gets notches, not just the rendered DOM window (the user
+  // 2026-08-17, who scrolled back and watched the newer messages' marks vanish): the chat
+  // virtualizes — a window of real turns between two spacers sized by the renderer's avg-height
+  // estimate, and the scrollbar spans that estimated whole. Notches use the SAME frame: a rendered
+  // event's true pixel offset (its data-unit node), and for events inside a spacer, a proportional
+  // slot within that spacer's MEASURED height — exactly as accurate as the scrollbar the user is
+  // reading them against, with no extra caching (the events array + the spacer model already exist).
+  const winStart = v.winStart ?? 0;
+  const winEnd = v.winEnd ?? s.events.length;
+  const unitTotal = v.unitTotal ?? s.events.length;
+  const topSp = v.el.querySelector<HTMLElement>(".tx-spacer-top");
+  const botSp = v.el.querySelector<HTMLElement>(".tx-spacer-bot");
+  const topH = topSp ? topSp.offsetHeight : 0;
+  const botH = botSp ? botSp.offsetHeight : 0;
+  const scrollTop = content.scrollTop;
+  const offs: number[] = [];
+  for (let i = 0; i < s.events.length; i++) {
+    const ev = s.events[i] as ChatEvent & { human?: boolean; romp?: boolean; rompAuto?: boolean; canned?: string; md?: string };
+    if (ev.kind !== "user" || !ev.human || ev.romp || ev.rompAuto) continue;
+    const md = (ev.md || "").trim();
+    // gestures are the user's DOINGS, not their words — no notch (the Continue row, a /command)
+    if (!md || ev.canned === "continue" || SLASH_CMD_RE.test(md)) continue;
+    let off: number | null = null;
+    if (i >= winStart && i < winEnd) {
+      const node = v.el.querySelector<HTMLElement>('.turn[data-unit="' + i + '"]');
+      if (node) off = node.getBoundingClientRect().top - cRect.top + scrollTop;
+    }
+    if (off == null) {
+      if (i < winStart && winStart > 0) off = topH * ((i + 0.5) / winStart);              // inside the top spacer
+      else if (i >= winEnd && unitTotal > winEnd) off = (sh - botH) + botH * ((i - winEnd + 0.5) / (unitTotal - winEnd));
+      else continue;                                   // window bookkeeping mid-update — skip this one, next paint has it
+    }
+    offs.push(off);
   }
-  const ys = turns.map((t) => {
-    const top = t.getBoundingClientRect().top - cRect.top + content.scrollTop;
-    return Math.round(((top / sh) * (cRect.height - 4)));
-  });
+  const ys = offs.map((top) => Math.round((top / sh) * (cRect.height - 4)));
   const sig = activeId + "|" + Math.round(cRect.top) + "," + Math.round(cRect.right) + ","
     + Math.round(cRect.height) + "|" + ys.join(",");
   if (sig !== scrollMarksSig) {

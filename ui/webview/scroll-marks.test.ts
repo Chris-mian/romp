@@ -11,10 +11,19 @@ import * as path from "node:path";
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 
-test("one notch per real user message, none for gestures or romp turns", () => {
-  assert.match(RENDER, /querySelectorAll<HTMLElement>\(".turn-user:not\(\.romp\):not\(\.injected\)"\)/);
-  assert.match(RENDER, /t\.querySelector\("\.user-bubble:not\(\.cmd-row\):not\(\.cont-row\)"\)/,
+test("one notch per real user message across the WHOLE loaded conversation", () => {
+  // the user 2026-08-17: the chat virtualizes (a rendered window between two estimated-height
+  // spacers), and window-only notches "forgot" the newer messages when scrolled back. Notches now
+  // come from the full resident events array: true pixels for rendered turns, a proportional slot
+  // inside the MEASURED spacer for the rest — the same estimate the scrollbar itself stands on.
+  assert.match(RENDER, /for \(let i = 0; i < s\.events\.length; i\+\+\) \{/);
+  assert.match(RENDER, /if \(ev\.kind !== "user" \|\| !ev\.human \|\| ev\.romp \|\| ev\.rompAuto\) continue;/);
+  assert.match(RENDER, /ev\.canned === "continue" \|\| SLASH_CMD_RE\.test\(md\)/,
     "a /command or Continue gesture is a doing, not words — no notch");
+  assert.match(RENDER, /'\.turn\[data-unit="' \+ i \+ '"\]'/, "rendered events use their true pixel offset");
+  assert.match(RENDER, /off = topH \* \(\(i \+ 0\.5\) \/ winStart\);/, "top-spacer events slot proportionally");
+  assert.match(RENDER, /\(sh - botH\) \+ botH \* \(\(i - winEnd \+ 0\.5\) \/ \(unitTotal - winEnd\)\)/,
+    "bottom-spacer events too — aligned with the scrollbar's own spacer estimate");
 });
 
 test("a history load rescales the map smoothly — moved notches are carried, never teleported", () => {
@@ -27,7 +36,7 @@ test("a history load rescales the map smoothly — moved notches are carried, ne
 });
 
 test("positions are proportional and pure scrolls do no DOM work", () => {
-  assert.match(RENDER, /t\.getBoundingClientRect\(\)\.top - cRect\.top \+ content\.scrollTop/);
+  assert.match(RENDER, /node\.getBoundingClientRect\(\)\.top - cRect\.top \+ scrollTop/);
   assert.match(RENDER, /if \(sig !== scrollMarksSig\) \{/, "signature skip: rebuild only on real change");
   assert.match(RENDER, /paintRailSticky\(\); paintScrollMarks\(\);/, "rides the existing rAF scheduler");
 });
