@@ -13,7 +13,7 @@ import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { quoteReply } from "../quote";
-import { markerLabel } from "./time-marker";
+import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
 import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { delegate } from "./actions";
@@ -1572,6 +1572,7 @@ function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
   const { text, day, hm } = markerLabel(epoch, prevEpoch, Date.now());
   const m = el("div", "time-marker");
   m.dataset.hm = hm;
+  m.dataset.epoch = String(epoch);   // the top-of-view day-context label reads this (paintRailSticky)
   // The gutter shows the TIME and nothing else. The date rides a full-width day divider
   // instead (dayDividerFor below) — no date word has to fit 47px of rail any more.
   if (text) m.textContent = day ? hm : text;
@@ -1624,11 +1625,30 @@ function ensureRailSticky(): HTMLElement {
   return railSticky;
 }
 
+// The DAY CONTEXT label (the user 2026-08-17): "Yesterday" / "3 days ago" / "Last week" riding just
+// above the rail's TOP stamp whenever that stamp is not from today — so mid-scroll through history
+// the day is always in view even with the day divider scrolled away. One fixed element, painted by
+// the same pass that owns the sticky stamp; its text swaps only at day boundaries, and its position
+// tracks whichever stamp owns the top slot (the sticky at the line, or the leading real stamp as it
+// scrolls toward the line) — the handoff lands at the same pixel, so there is no jump.
+let railDay: HTMLElement | null = null;
+function ensureRailDay(): HTMLElement {
+  if (railDay && railDay.isConnected) return railDay;
+  railDay = el("div", "rail-day");
+  railDay.style.display = "none";
+  document.body.appendChild(railDay);
+  return railDay;
+}
+
 function paintRailSticky(): void {
   const stamp = ensureRailSticky();
   const content = document.getElementById("content");
   const v = activeId ? views.get(activeId) : null;
-  if (!content || !v || v.el.style.display === "none") { stamp.style.display = "none"; return; }
+  if (!content || !v || v.el.style.display === "none") {
+    stamp.style.display = "none";
+    if (railDay) railDay.style.display = "none";
+    return;
+  }
   const cRect = content.getBoundingClientRect();
   const cTop = cRect.top, cBottom = cRect.bottom;
   const BUFFER = 6;                             // the gap kept above the sticky; ALSO the hand-off line
@@ -1651,6 +1671,26 @@ function paintRailSticky(): void {
     }
   }
   const hm = marker ? (marker.dataset.hm || "") : "";
+  // DAY CONTEXT (the user 2026-08-17): whichever stamp owns the top slot also names its DAY, in a
+  // small label riding just above it, whenever that day is not today — so scrolling through history
+  // always says where you are even with the day divider off-screen. The anchor is the tracked turn's
+  // marker when there is one, else the first stamp below the line ("the next one"); its position is
+  // wherever that stamp sits (the line itself once the sticky leads), so the label moves WITH the
+  // leading stamp and the sticky handoff lands at the same pixel — no jump at the transition. The
+  // text swaps only at day boundaries.
+  const day = ensureRailDay();
+  const firstBelow = all.find(([, top]) => top >= line);
+  const anchorM = marker || (firstBelow ? firstBelow[0] : null);
+  const paintDay = (right: number, yTop: number) => {
+    const ep = anchorM ? Number(anchorM.dataset.epoch || 0) : 0;
+    const label = ep ? dayContext(ep, Date.now()) : "";
+    if (!label || yTop > cBottom) { day.style.display = "none"; return; }
+    if (day.textContent !== label) day.textContent = label;
+    day.style.left = right + "px";
+    day.style.top = yTop + "px";
+    day.style.display = "";
+  };
+  const gutterRight = anyMarker ? anyMarker.getBoundingClientRect().right : 0;
   // The tracked turn's OWN stamp leads the top slot while it is at or below the line — it scrolls up freely
   // until it reaches the line, and the instant it crosses ABOVE (markerTop < line) the sticky takes the same
   // slot showing the same time, so the swap is invisible: no gap, no clipped sliver (the user 2026-07-23).
@@ -1661,6 +1701,8 @@ function paintRailSticky(): void {
   if (!hm || realLeads) {
     stamp.style.display = "none";
     for (const [m] of all) m.style.visibility = "";   // real stamp leads → nothing suppressed
+    if (anyMarker) paintDay(gutterRight, realLeads ? markerTop : (firstBelow ? firstBelow[1] : cBottom + 1));
+    else day.style.display = "none";
     return;
   }
   // The sticky leads: pin it at the line and hide every marker that has crossed ABOVE it, so the real stamp
@@ -1673,6 +1715,7 @@ function paintRailSticky(): void {
   stamp.style.width = g.width + "px";
   stamp.style.top = line + "px";
   stamp.style.display = "";
+  paintDay(g.right, line);
 }
 
 // Scroll is the sticky stamp's primary driver, and a re-render moves the geometry under it — both funnel
