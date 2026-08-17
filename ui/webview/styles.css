@@ -2462,32 +2462,46 @@ mark.cmt-hl {
 mark.cmt-hl.unread { background: color-mix(in srgb, var(--cmt-hl) 45%, transparent); }
 mark.cmt-hl:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, transparent); }
 mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.08); }
-/* WRITING (the user 2026-08-17): while the thread is mid-reply the region shows as a pulsing
-   OUTLINE of the highlight — the shape traced, no fill — and turns into the solid highlight the
-   moment the reply lands (the busy class drops with the thread's working state). Inset box-shadow,
-   not border: an inline border would shift the text it wraps. */
+/* WRITING (the user 2026-08-17): while the thread is mid-reply the region wears MARCHING ANTS —
+   a dashed outline whose dashes crawl slowly around the box — and turns into the solid highlight
+   the moment the reply lands (the busy class drops with the thread's working state). Four gradient
+   strips with an animated offset, never a border: an inline border would shift the text it wraps.
+   This rule must stay AFTER :hover — its shorthand would otherwise wipe the strips mid-hover. */
 mark.cmt-hl.busy {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--cmt-hl) 80%, transparent);
-  animation: cmt-busy-pulse 1.2s ease-in-out infinite;
+  background-color: transparent;
+  background-image:
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px);
+  background-size: 100% 1.5px, 100% 1.5px, 1.5px 100%, 1.5px 100%;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  background-repeat: no-repeat;
+  animation: cmt-ants 1.2s linear infinite;
 }
 mark.cmt-hl.hl-first { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
 mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
-@keyframes cmt-busy-pulse {
-  50% { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--cmt-hl) 25%, transparent); }
+/* the ants march clockwise: top strip right, bottom left, left edge up, right edge down — one
+   12px dash cycle per period, slow and steady */
+@keyframes cmt-ants {
+  to { background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px; }
 }
-/* a code/math HOST whose mark is mid-reply outlines too — its element tint would otherwise stay
-   solid and defeat the outline-then-fill cue */
-.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy) {
-  background: var(--code-bg);
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--cmt-hl) 80%, transparent);
-  animation: cmt-busy-pulse 1.2s ease-in-out infinite;
-}
+/* a code/math HOST whose mark is mid-reply wears the ants too — its element tint would otherwise
+   stay solid and defeat the outline-then-fill cue */
+.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy),
 .md .katex.cmt-hl-host:has(mark.cmt-hl.busy) {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--cmt-hl) 80%, transparent);
-  animation: cmt-busy-pulse 1.2s ease-in-out infinite;
+  background-color: transparent;
+  background-image:
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px);
+  background-size: 100% 1.5px, 100% 1.5px, 1.5px 100%, 1.5px 100%;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  background-repeat: no-repeat;
+  animation: cmt-ants 1.2s linear infinite;
 }
+.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy) { background-color: var(--code-bg); }
 .md :not(pre) > code.cmt-hl-host { background: color-mix(in srgb, var(--cmt-hl) 30%, var(--code-bg)); }
 .md :not(pre) > code.cmt-hl-host > mark.cmt-hl { background: transparent; }
 .md :not(pre) > code.cmt-hl-host:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, var(--code-bg)); }
