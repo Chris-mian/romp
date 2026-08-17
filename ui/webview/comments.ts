@@ -19,7 +19,10 @@ export type CommentThread = {
   error?: string;             // the thread CLI's launch error, when it could not start
   unread: boolean;            // an agent reply newer than the read watermark
   promotedName: string;       // the board session it became, when status === "promoted"
+  model?: string;             // the thread's live/chosen model (the popover's switchable chip)
+  effort?: string;            // the thread's effort level (ditto)
   msgs: CommentMsg[];
+  events?: unknown[];         // the CHAT's own ChatEvents from the branch point on (render parity)
 };
 
 export type CommentsFrame = { type: "comments"; id: string; threads: CommentThread[] };

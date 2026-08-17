@@ -117,10 +117,13 @@ test("marks, badges AND every popover button ride the stable document.body deleg
   assert.match(UI, /m\.dataset\.act = "cmtopen"/);
   // the count badge is GONE (the user 2026-08-17): the highlight + the rail tick do the speaking
   assert.doesNotMatch(UI, /cmt-badge/);
-  for (const act of ["cmtclose", "cmtsend", "cmtbreak", "cmtresolve", "cmtdelete", "cmtopensession"]) {
+  for (const act of ["cmtclose", "cmtsend", "cmtbreak", "cmtdelete", "cmtopensession"]) {
     assert.ok(UI.includes(`${act}:`), `${act} handler missing from the body delegate`);
     assert.ok(UI.includes(`dataset.act = "${act}"`), `${act} button missing its data-act`);
   }
+  // Resolve is GONE (the user 2026-08-17): Delete is the only closer — the handler survives for
+  // legacy resolved rows, but no button mints new ones
+  assert.ok(!UI.includes('rs.dataset.act = "cmtresolve"'), "no Resolve button remains");
 });
 
 test("highlights re-apply after every render path", () => {
@@ -190,8 +193,10 @@ test("a thread that couldn't start says so instead of pulsing dots forever", () 
   assert.match(UI, /!th\.error && \(threadBusy\(th\.state\) \|\| pend\.length\)/);
 });
 
-test("Delete is offered only on resolved threads, never mid-promote", () => {
-  assert.match(UI, /\} else if \(th\.status === "resolved"\) \{\s+\/\/ never for 'promoting'/);
+test("Delete is offered on open and resolved threads, never mid-promote", () => {
+  // Resolve is gone (the user 2026-08-17) — Delete is the closer for BOTH, still gated off
+  // 'promoting'/'promoted' (the kernel refuses those anyway; the button never dangles one)
+  assert.match(UI, /if \(th\.status === "open" \|\| th\.status === "resolved"\) \{/);
 });
 
 test("break out posts commentPromote and acks with a provisional tab", () => {
@@ -287,6 +292,15 @@ test("the highlight pulses while its thread is writing — the badge's old job",
   assert.match(UI, /m\.classList\.toggle\("busy", threadBusy\(th\.state\) && th\.status === "open"\)/);
   assert.match(CSS, /mark\.cmt-hl\.busy \{ animation: cmt-busy-pulse/);
   assert.match(KERNEL, /state = be\.session_state\(tsid\)/);
+});
+
+test("the popover renders the thread with the CHAT's own renderer from the branch point", () => {
+  assert.match(UI, /renderingSid = th\.tid;/);
+  assert.match(UI, /list\.appendChild\(renderEvent\(ev, prev, null\)\);/);
+  assert.match(KERNEL, /def _thread_events\(tsid, cut_uuid, now, tmux\):/);
+  assert.match(KERNEL, /evs = evs\[at \+ 1:\]/, "sliced to AFTER the branch point — the head system card never rides");
+  // the thread's own live model/effort chips post the chat's own ops, keyed to the thread sid
+  assert.match(UI, /type: kind === "model" \? "setModel" : "setEffort", id: th\.tid, value: c\.value/);
 });
 
 test("the tint ladder keeps every state distinct: base < unread < hover", () => {

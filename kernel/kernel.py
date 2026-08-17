@@ -5075,7 +5075,40 @@ def _thread_messages(tsid, cut_uuid, floor_t=0):
     return merged
 
 
-def _comments_frame(sid):
+def _thread_events(tsid, cut_uuid, now, tmux):
+    """The thread rendered with the CHAT's own builder (the user 2026-08-17: the popover shows the
+    same thing the chat shows), sliced to AFTER the branch point: build_session on the thread sid
+    (reachable via _sdk_sess's reg fallback — no names/ entry), events after the cut record's, the
+    head system card never included (it sits before the cut by construction). [] pre-fork, same
+    guard as the plain projection."""
+    reg = _thread_reg(tsid)
+    if reg.get("forkOf"):
+        return []
+    try:
+        m = build_session(tsid, now, tmux if tmux is not None else {})
+    except Exception:
+        return []
+    evs = (m or {}).get("events") or []
+    if cut_uuid:
+        at = next((i for i, e in enumerate(evs)
+                   if e.get("uuid") == cut_uuid or e.get("resultUuid") == cut_uuid), None)
+        if at is None:
+            return []                              # the cut isn't in this transcript — never the copy
+        evs = evs[at + 1:]
+    else:
+        floor = int((_comment_thread_row_created(tsid) or 0))
+        evs = [e for e in evs if not e.get("ts") or int(em.parse_z(e.get("ts")) or 0) >= floor]
+    return evs[-80:]
+
+
+_comment_created_memo = {}                          # tsid -> createdT, for the tip-fork event floor
+
+
+def _comment_thread_row_created(tsid):
+    return _comment_created_memo.get(tsid)
+
+
+def _comments_frame(sid, tmux=None):
     """The chat pane's {type:"comments"} frame for parent session `sid`, or None when it has never
     had a thread. Built per push for sessions WITH a store (few) — _send_client's dedup keeps an
     unchanged frame off the wire."""
@@ -5083,10 +5116,14 @@ def _comments_frame(sid):
     if not p.exists():
         return None
     be = _sdk()
+    now = int(time.time())
     threads = []
     for th in _load_comments(sid).get("threads") or []:
         tsid = str(th.get("sid") or "")
         status = th.get("status") or "open"
+        _comment_created_memo[tsid] = int(th.get("createdT") or 0)
+        if len(_comment_created_memo) > 512:
+            _comment_created_memo.clear()
         # A promoted thread whose session was later ENDED is done, full stop (the user 2026-08-13,
         # who found the highlight still claiming "now its own session" after closing that session):
         # drop it from the frame entirely rather than point at a session that no longer runs. The
@@ -5107,16 +5144,23 @@ def _comments_frame(sid):
                 #                                                 say so, not pulse dots forever
             except Exception:
                 err = ""
+        # the plain projection still computes UNREAD (cheap, mtime-cached); the DISPLAY is the
+        # chat's own events from the branch point on (the user 2026-08-17: same component, rail
+        # dots and all — tool folds, notice cards, markdown, exactly as the chat renders them)
         msgs = [] if status == "promoted" else _thread_messages(
             tsid, str(th.get("cutUuid") or ""), floor_t=(0 if th.get("cutUuid") else int(th.get("createdT") or 0)))
         seen = int(th.get("lastSeenT") or 0)
         unread = any(m["who"] == "agent" and m["t"] > seen for m in msgs)
+        events = [] if status == "promoted" else _thread_events(tsid, str(th.get("cutUuid") or ""), now, tmux)
+        reg = _thread_reg(tsid)
         threads.append({"tid": th.get("tid"), "anchorUuid": th.get("anchorUuid"),
                         "name": th.get("name") or "", "color": th.get("color") or "",
                         "exact": str(th.get("exact") or "")[:500], "status": status,
                         "createdT": th.get("createdT") or 0, "state": state, "error": err,
                         "unread": unread, "promotedName": th.get("promotedName") or "",
-                        "msgs": msgs})
+                        "model": (reg.get("liveModel") or reg.get("model") or "") if reg else "",
+                        "effort": (reg.get("effort") or "") if reg else "",
+                        "msgs": msgs, "events": events})
     return {"type": "comments", "id": sid, "threads": threads}
 
 
@@ -13795,13 +13839,23 @@ def _sdk_transcript_path(sid):
 
 def _sdk_sess(sid, now):
     """A _sessions()-shaped entry for a live SDK session that discover() can't see yet (no transcript
-    on disk). Lets its tab open + chat build immediately; once it runs, discover() takes over."""
+    on disk). Lets its tab open + chat build immediately; once it runs, discover() takes over.
+
+    A comment THREAD never gets a names/ entry, so _sdk_transcript_path (names-fed cwd, sid-named
+    file) points nowhere for it — its reg is the authority: cwd + lastSid name the real transcript
+    (the user 2026-08-17: the popover renders the thread with the chat's own builder)."""
     p = _sdk_transcript_path(sid)
+    name = _name_of(sid)
+    if not name and not os.path.exists(str(p)):
+        reg = _thread_reg(sid)
+        if reg:
+            p = jd._proj_dir(reg.get("cwd") or os.path.expanduser("~")) / ((reg.get("lastSid") or sid) + ".jsonl")
+            name = reg.get("name") or ""
     try:
         mtime = p.stat().st_mtime
     except OSError:
         mtime = now
-    return {"sid": sid, "name": _name_of(sid) or sid[:8], "path": str(p), "mtime": mtime}
+    return {"sid": sid, "name": name or sid[:8], "path": str(p), "mtime": mtime}
 
 
 _arch_tops_cache = {}    # archive path -> (mtime, [projected top nodes]); the fleet's archived-completed tops
@@ -19855,7 +19909,7 @@ def _push(targets, connect=False, tmux=None):
             # an unchanged frame costs nothing on the wire and the chatTail stream stays untouched.
             for s in (chat_list if chat_clients else []):
                 try:
-                    fr = _comments_frame(s["sid"])
+                    fr = _comments_frame(s["sid"], tmux)
                 except Exception:
                     sys.stderr.write("comments frame failed for %s: %s\n" % (s["sid"], traceback.format_exc()))
                     continue
