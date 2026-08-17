@@ -288,9 +288,12 @@ test("scroll-rail ticks mark the commented spots and jump-open on click", () => 
   assert.match(CSS, /\.cmt-rail \{ position: fixed;/);
 });
 
-test("the highlight pulses while its thread is writing — the badge's old job", () => {
+test("while the thread is WRITING the region is a pulsing outline; the fill lands with the reply", () => {
   assert.match(UI, /m\.classList\.toggle\("busy", threadBusy\(th\.state\) && th\.status === "open"\)/);
-  assert.match(CSS, /mark\.cmt-hl\.busy \{ animation: cmt-busy-pulse/);
+  // outline, not fill: transparent background + an inset ring, pulsing — solid returns when busy drops
+  assert.match(CSS, /mark\.cmt-hl\.busy \{\s*\n\s*background: transparent;\s*\n\s*box-shadow: inset 0 0 0 1\.5px/);
+  assert.match(CSS, /@keyframes cmt-busy-pulse \{\s*\n\s*50% \{ box-shadow: inset/);
+  assert.match(CSS, /code\.cmt-hl-host:has\(mark\.cmt-hl\.busy\)/, "hosts outline too, or their tint defeats the cue");
   assert.match(KERNEL, /state = be\.session_state\(tsid\)/);
 });
 
