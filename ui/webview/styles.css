@@ -1228,12 +1228,20 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .user-bubble.cmd-row .slash-cmd-chip { background: var(--bg); color: #2b6cef;
   border-color: #2b6cef; }
 .user-bubble.cmd-row .slash-cmd-args { color: var(--dim); }
-/* The Continue button's turn wears the same gesture dress (render.ts canned === "continue", the user
-   2026-08-15): chip "Continue", then the SENT text's own first line — dim like the command family, not
-   the white-on-blue fold — with the full words unfolding in place under the row. */
 .user-bubble.cmd-row .nudge-gist, .user-bubble.cmd-row .nudge-caret { color: var(--dim); }
 .user-bubble.cmd-row .nudge-gist { margin-left: 8px; }
 .user-bubble.cmd-row .nudge-full { color: var(--dim); margin-top: 4px; max-width: 640px; }
+/* The Continue button's turn wears the FOLLOW-UP grammar (render.ts canned === "continue", the user
+   2026-08-17, superseding the 2026-08-15 ✦ + boxed-chip dress — one gesture grammar, fewer elements):
+   caret, "→ Continue" in the accent (the same dress "↩ Follow-up" wears), the sent text's own first
+   line dimmed beside it, the full words unfolding in place under the row. The caret glyph lives in CSS
+   so the same .expanded class the fold delegate flips also turns it. */
+.user-bubble.cont-row { max-width: none; background: none; border: none; border-radius: 0; padding: 2px 0; }
+.user-bubble.cont-row .followup-tag { max-width: none; }
+.user-bubble.cont-row .cont-tri::before { content: "▸"; }
+.user-bubble.cont-row.expanded .cont-tri::before { content: "▾"; }
+.user-bubble.cont-row .nudge-full { display: none; color: var(--dim); margin-top: 4px; max-width: 640px; }
+.user-bubble.cont-row.expanded .nudge-full { display: block; }
 /* ---------- romp-injected message (a feed nudge / follow-up) ----------
    A GRAY bubble in the SAME right-aligned spot as the blue user bubble (so it sits where "an outgoing
    message" goes), but clearly NOT you — gray, with a small "↯ romp" tag above it (the user 2026-06-19).

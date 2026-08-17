@@ -1787,25 +1787,25 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         turn.classList.add("turn-cmd");
         bubble.classList.add("cmd-row");
       } else if (!romp && !injected && !tagged && ev.md && ev.canned === "continue") {
-        // The card's Continue button: a user GESTURE, not typed prose. The 2026-08-13 cut kept the
-        // blue bubble with a PARAPHRASED gist — which made it the one "user message" that expanded,
-        // and to different words than its label (the user 2026-08-15: unclear what was actually
-        // sent). Superseded: gestures read in the slash-command family (✦ mark, mono chip) — chip
-        // "Continue", then the SENT text's own first line, the rest one click deeper, so expanding
-        // only ever reveals MORE of the same words. The judges still file it as your reply, and the
-        // ↩ follow-up header above still names the goal it answers.
-        turn.classList.add("turn-cmd");
-        bubble.classList.add("cmd-row");
-        const chip = el("span", "slash-cmd-chip"); chip.textContent = "Continue";
-        bubble.appendChild(chip);
+        // The card's Continue button: a user GESTURE, not typed prose. Third cut (the user
+        // 2026-08-17, superseding the 2026-08-15 slash-command dress — its ✦ mark said nothing, and
+        // the boxed chip + trailing caret made a second gesture grammar next to ↩ Follow-up's):
+        // Continue now wears the SAME grammar as the Follow-up header — caret, "→ Continue" in the
+        // accent, the SENT text's own first line dimmed beside it, the rest one click deeper, so
+        // expanding only ever reveals MORE of the same words. Uniqueness rides the word + the →
+        // glyph exactly as Follow-up's rides ↩. The judges still file it as your reply, and the ↩
+        // follow-up header above still names the goal it answers.
+        bubble.classList.add("cont-row");
         const raw = ev.md.replace(/<!--[\s\S]*?-->/g, "").trim();
         const lines = raw.split("\n").map((l) => l.trim());
         const first = lines.find((l) => l && !l.startsWith(">")) || lines.find((l) => l) || raw;   // skip a goal-context "> …" quote
         const clipped = first.length > 90 ? first.slice(0, 88).replace(/\s+\S*$/, "") + "…" : first;
-        const gistEl = el("span", "nudge-gist");
-        const c = el("span", "nudge-caret"); c.textContent = "▸"; gistEl.appendChild(c);
-        gistEl.appendChild(document.createTextNode(clipped));
-        bubble.appendChild(gistEl);
+        const head = el("div", "followup-tag cont-tag");
+        const tri = el("span", "followup-tri cont-tri");         // glyph via CSS, so expansion flips it
+        const lbl = el("span", "followup-lbl"); lbl.textContent = "→ Continue";
+        const g = el("span", "followup-goal"); g.textContent = clipped;
+        head.append(tri, lbl, g);
+        bubble.appendChild(head);
         const full = el("div", "nudge-full md");
         full.innerHTML = md(ev.md);
         bubble.appendChild(full);
