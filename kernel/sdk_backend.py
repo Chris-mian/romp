@@ -281,6 +281,20 @@ def msg_to_atom(msg, sid, fsid, t, skill_tool_ids=()):
     still shows the confirmation line."""
     n = type(msg).__name__
     u = getattr(msg, "uuid", None)
+    # SIDECHAIN traffic is not the parent's conversation (the user 2026-08-17, screenshot of a
+    # subagent's full kickoff prompt painted as a huge expanded box below the collapsed tool group):
+    # the CLI streams a Task/Agent subagent's OWN turns tagged with parent_tool_use_id — its kickoff
+    # prompt as a UserMessage, its replies and tool calls as AssistantMessages. Untagged, the prompt
+    # fell through to the generic user atom below and, being a live-tail atom whose uuid never
+    # appears in the parent's transcript (the subagent writes its own file), the leak persisted
+    # instead of being superseded. The subagent's designed surfaces are the Task/Agent head's
+    # prompt+report folds and the background-task rows — the parent stream carries only the parent's
+    # turns. The ONE tagged shape that IS the parent's own is a Skill payload (parent_tool_use_id
+    # naming a Skill tool_use from this session's set — skills run inline, not as subagents); it
+    # passes through to the skillMd classification in the UserMessage branch.
+    ptid = getattr(msg, "parent_tool_use_id", None)
+    if ptid and ptid not in (skill_tool_ids or ()):
+        return None
     if n == "AssistantMessage":
         content = [d for b in (getattr(msg, "content", []) or []) if (d := _block_to_dict(b))]
         if not content:
