@@ -115,7 +115,8 @@ test("the selection menu offers Comment, gated on a real transcript turn", () =>
 test("marks, badges AND every popover button ride the stable document.body delegate", () => {
   assert.match(UI, /cmtopen: \(elx\) =>/, "delegated — marks are re-created on every rebuild");
   assert.match(UI, /m\.dataset\.act = "cmtopen"/);
-  assert.match(UI, /b\.dataset\.act = "cmtopen"/);
+  // the count badge is GONE (the user 2026-08-17): the highlight + the rail tick do the speaking
+  assert.doesNotMatch(UI, /cmt-badge/);
   for (const act of ["cmtclose", "cmtsend", "cmtbreak", "cmtresolve", "cmtdelete", "cmtopensession"]) {
     assert.ok(UI.includes(`${act}:`), `${act} handler missing from the body delegate`);
     assert.ok(UI.includes(`dataset.act = "${act}"`), `${act} button missing its data-act`);
@@ -136,7 +137,7 @@ test("a comments frame refreshes the open popover IN PLACE — composer and care
 });
 
 test("the popover send acknowledges before any round-trip", () => {
-  assert.match(UI, /send\.disabled = true; send\.textContent = "Starting…"; \}\s+\/\/ ack before the round-trip/);
+  assert.match(UI, /send\.disabled = true; send\.textContent = "Commenting…"; \}\s+\/\/ ack before the round-trip/);
   assert.match(UI, /the pending bubble IS the acknowledgement/);
 });
 
@@ -244,7 +245,15 @@ test("the highlight is highlighter-YELLOW — never the selection blue — and o
 
 test("the create dialog names the thread right there: prefilled <session>-comment-<N>, validated", () => {
   assert.match(UI, /nameBox\.value = commentDrafts\.get\(nk\)\s*\n\s*\|\| \(\(sess0\?\.name \|\| "session"\)\.replace\(\/\[\^A-Za-z0-9._-\]\/g, "-"\)\s*\n\s*\+ "-comment-" \+ \(\(commentThreads\.get\(sid\) \|\| \[\]\)\.length \+ 1\)\);/);
-  assert.match(UI, /type: "commentCreate", id: create\.sid, uuid: create\.uuid, exact: create\.exact, text, name: nm/);
+  // the name lives IN the header ("New comment: <name>"), the button says Comment, and the picks ride along
+  assert.match(UI, /"New comment:"/);
+  assert.match(UI, /if \(nameBox\) head\.append\(title, nameBox, closeBtn\);/);
+  assert.match(UI, /send\.textContent = create \? "Comment" : "Send";/);
+  assert.match(UI, /text, name: nm, model: create\.model \|\| "", effort: create\.effort \|\| ""/);
+  // the comment's own model/effort selectors reuse the statusline's /models-fed choices + menu skin
+  assert.match(UI, /const metaRow = el\("div", "cmt-meta-row"\);/);
+  assert.match(UI, /META_CHOICES\[kind\]/);
+  assert.match(KERNEL, /model=str\(msg\.get\("model"\) or ""\), effort=str\(msg\.get\("effort"\) or ""\)/);
   assert.match(KERNEL, /"%s-comment-%d" % \(sess\["name"\], len\(data\.get\("threads"\) or \[\]\) \+ 1\)/);
   assert.match(UI, /const base = thName \|\|/, "break-out prefills the thread's own name");
 });
@@ -269,6 +278,12 @@ test("scroll-rail ticks mark the commented spots and jump-open on click", () => 
   assert.match(UI, /if \(sid === activeId\) updateCommentRail\(\);/);
   assert.match(CSS, /\.cmt-tick \{/);
   assert.match(CSS, /\.cmt-rail \{ position: fixed;/);
+});
+
+test("the highlight pulses while its thread is writing — the badge's old job", () => {
+  assert.match(UI, /m\.classList\.toggle\("busy", threadBusy\(th\.state\) && th\.status === "open"\)/);
+  assert.match(CSS, /mark\.cmt-hl\.busy \{ animation: cmt-busy-pulse/);
+  assert.match(KERNEL, /state = be\.session_state\(tsid\)/);
 });
 
 test("the tint ladder keeps every state distinct: base < unread < hover", () => {
