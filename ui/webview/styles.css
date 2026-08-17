@@ -1085,6 +1085,18 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   position: fixed; z-index: 3; pointer-events: none;
   color: var(--dim); opacity: 0.92;
 }
+/* The day-context label above the top rail stamp (render.ts paintDay, the user 2026-08-17):
+   "Yesterday" / "3 days ago" / "Last week" whenever the top stamp's day is not today. Fixed like
+   the sticky, passive like the sticky; right-aligned to the gutter's right edge via the translate
+   (left is set to that edge, no width math), sitting just above the stamp it names. Smaller than
+   the stamp on purpose — context, not the time itself — and nowrap: fixed positioning escapes the
+   pane's overflow clip, and the longest form ("2 weeks ago") clears the gutter into the turn
+   padding, never over prose. */
+.rail-day {
+  position: fixed; z-index: 3; pointer-events: none; white-space: nowrap;
+  transform: translate(-100%, calc(-100% - 2px));
+  font-size: 0.68em; letter-spacing: 0.03em; color: var(--dim); opacity: 0.85;
+}
 /* match the dot's vertical position per turn type (default dot top:15, tool/thinking top:10) */
 .turn-tool .time-marker, .turn-thinking .time-marker { top: 10px; }
 /* DAY DIVIDER (the user 2026-08-01) — the date on a hairline rule across the prose column,
