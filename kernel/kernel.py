@@ -18441,9 +18441,10 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     if with_bars:
         messages = _postal_messages(now, set(id2name), id2name)
         _bind_message_execs(messages, turns)             # connector exec → the recipient's process-start (real transit)
-        for _bs in turns.values():                       # mids/fromOrig are the binder's INPUTS, not payload
-            for _b in _bs:                               # (2026-07-07 payload audit: no client ever read them)
-                _b.pop("mids", None)
+        # mids STAY on the wire (2026-08-17): the merged-view dmid join (romp-timeline-view.js) re-binds
+        # a relayed connector's exec to the recipient turn by bar mids — the 2026-07-07 payload-audit pop
+        # ("no client ever read them") predated that 2026-08-06 feature and had silently starved it: the
+        # join's key set was always empty on live payloads, so relayed execs never re-bound client-side.
         for _m in messages:
             _m.pop("fromOrig", None)
         # The band's marks are the per-call RUN SPANS (g70): each judge call plotted at its real [sent, recv],
