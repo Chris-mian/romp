@@ -5760,6 +5760,15 @@ function commentSendFromPop(pop: HTMLElement): void {
     if (nm && !/^[A-Za-z0-9._-]+$/.test(nm)) { nameBox?.classList.add("bad"); nameBox?.focus(); return; }
     if (send) { send.disabled = true; send.classList.add("busy"); }   // ack before the round-trip (the ➤
     //                                       dims); the draft survives until commentCreated adopts the thread
+    // the ants start on the GESTURE (the user 2026-08-17: the cue lagged the kernel round-trip):
+    // a synthetic working thread marks the passage NOW; the kernel's frame replaces the whole list,
+    // so its never-listed tid unwraps through the standard sweep the moment the real thread lands
+    const synth: CommentThread = { tid: "pending:" + create.uuid, anchorUuid: create.uuid,
+      exact: create.exact, status: "open", createdT: Date.now() / 1000, state: "working",
+      unread: false, promotedName: "", msgs: [], name: nm || "comment", color: create.color || "" };
+    const cur0 = commentThreads.get(create.sid) || [];
+    commentThreads.set(create.sid, [...cur0.filter((t) => t.tid !== synth.tid), synth]);
+    applyCommentMarks(create.sid);
     vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact,
       text, name: nm, model: create.model || "", effort: create.effort || "",
       color: create.color || "" });
@@ -5768,6 +5777,8 @@ function commentSendFromPop(pop: HTMLElement): void {
   const cur = openCommentThread();
   if (!cur) return;
   vscodeApi.postMessage({ type: "commentReply", id: cur.sid, tid: cur.th.tid, text });
+  cur.th.state = "working";                     // optimistic: the ants march on the SEND, not the
+  applyCommentMarks(cur.sid);                   // round-trip (the kernel's next frame confirms)
   const pl = commentPending.get(cur.th.tid) || [];
   pl.push({ text, t: Date.now() / 1000 });
   commentPending.set(cur.th.tid, pl);
@@ -10099,6 +10110,10 @@ window.addEventListener("message", (e: MessageEvent) => {
   // FULL rebuild: the in-place refresh path deliberately never touches the composer, so it would
   // leave the disabled "Starting…" button stuck (the user 2026-08-15, screenshot of exactly that)
   if (m && m.type === "warn" && pendingCommentAnchor) {
+    // the synthetic working mark must die with the refusal, or it marches forever
+    const pa = pendingCommentAnchor;
+    commentThreads.set(pa.sid, (commentThreads.get(pa.sid) || []).filter((t) => t.tid !== "pending:" + pa.uuid));
+    applyCommentMarks(pa.sid);
     document.getElementById("cmt-pop")?.remove();
     renderCommentPopover();
   }
@@ -10982,6 +10997,11 @@ setupSettings();
       if (!cur) return;
       if (!elx.classList.contains("armed")) { elx.classList.add("armed"); elx.textContent = "Really delete?"; return; }
       vscodeApi?.postMessage({ type: "commentDelete", id: cur.sid, tid: cur.th.tid });
+      // optimistic removal (the user 2026-08-17: the highlight must go NOW, mid-animation included);
+      // the kernel's next frame confirms, and kernel-side the delete also interrupts the in-flight
+      // reply so the work stops with its cue
+      commentThreads.set(cur.sid, (commentThreads.get(cur.sid) || []).filter((t) => t.tid !== cur.th.tid));
+      applyCommentMarks(cur.sid);
       closeCommentPop();
     },
     cmtopensession: (elx) => {
