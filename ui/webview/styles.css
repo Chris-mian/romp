@@ -1097,7 +1097,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    The blue is the OUTGOING-BUBBLE blue (#2b6cef, "yours"), deliberately not the romp accent. */
 .scroll-marks { position: fixed; z-index: 3; pointer-events: none; width: 12px; }
 .scroll-marks .scroll-mark { position: absolute; right: 1px; width: 8px; height: 2px;
-  border-radius: 1px; background: #2b6cef; opacity: 0.65; }
+  border-radius: 1px; background: #2b6cef; opacity: 0.65;
+  transition: top 180ms ease; }   /* history streaming in rescales the map — carried, not teleported */
+@media (prefers-reduced-motion: reduce) { .scroll-marks .scroll-mark { transition: none; } }
 .rail-day {
   position: fixed; z-index: 3; pointer-events: none; white-space: nowrap;
   transform: translate(-100%, calc(-100% - 2px));

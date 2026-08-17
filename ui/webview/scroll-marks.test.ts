@@ -17,6 +17,15 @@ test("one notch per real user message, none for gestures or romp turns", () => {
     "a /command or Continue gesture is a doing, not words — no notch");
 });
 
+test("a history load rescales the map smoothly — moved notches are carried, never teleported", () => {
+  // the user 2026-08-17: scrolling back streams older history in; the scroller's world grows and
+  // every proportional position compresses (the native thumb does the same). Rebuilt nodes can't
+  // transition, so same-count updates move the EXISTING nodes and CSS carries them.
+  assert.match(RENDER, /if \(kids\.length === ys\.length\) \{\s*\n\s*ys\.forEach\(\(y, i\) => \{ kids\[i\]\.style\.top = y \+ "px"; \}\);/);
+  assert.match(CSS, /transition: top 180ms ease;/);
+  assert.match(CSS, /prefers-reduced-motion: reduce\) \{ \.scroll-marks \.scroll-mark \{ transition: none; \} \}/);
+});
+
 test("positions are proportional and pure scrolls do no DOM work", () => {
   assert.match(RENDER, /t\.getBoundingClientRect\(\)\.top - cRect\.top \+ content\.scrollTop/);
   assert.match(RENDER, /if \(sig !== scrollMarksSig\) \{/, "signature skip: rebuild only on real change");
