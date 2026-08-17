@@ -10212,6 +10212,7 @@ function setupComposer() {
   // the session payload's own human-sent messages — authoritative, survives reloads — with romp's
   // injected turns excluded and adjacent repeats collapsed. The walk drops on send.
   const histWalk = new Map<string, { idx: number; stash: string }>();   // sid → walk position + stashed draft
+  let recalling = false;                               // fences the recall's own synthetic input event
   const composerHistory = (sid: string): string[] => {
     const out: string[] = [];
     for (const ev of sessions.get(sid)?.events || []) {
@@ -10223,35 +10224,42 @@ function setupComposer() {
   };
   ta.addEventListener("keydown", (e) => {
     if (slashKey(e)) return;   // the slash menu owns ↑/↓/⏎/Tab/Esc while it's open
-    // ↑/↓ recall history ONLY from the boundary lines with a collapsed caret and no modifiers —
-    // mid-text arrows keep their native caret movement, so multi-line editing is never hijacked.
+    // ↑/↓ recall history ONLY from an EMPTY box (the user 2026-08-17, tightening the first cut's
+    // first-line rule: any text already in the box — even one character — means a draft in progress,
+    // and arrows must never hijack it). Once a walk is ACTIVE the recalled text is the walk's own, so
+    // ↑/↓ keep navigating from its boundary lines; the first manual edit ends the walk (see the input
+    // listener) and the text becomes an ordinary draft that recall won't touch.
     if ((e.key === "ArrowUp" || e.key === "ArrowDown") && activeId
         && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
         && ta.selectionStart === ta.selectionEnd) {
       const onFirst = !ta.value.slice(0, ta.selectionStart).includes("\n");
       const onLast = !ta.value.slice(ta.selectionStart).includes("\n");
       const w = histWalk.get(activeId);
-      if (e.key === "ArrowUp" ? onFirst : (onLast && w)) {
+      if (e.key === "ArrowUp" ? (w ? onFirst : ta.value === "") : (onLast && w)) {
         const hist = composerHistory(activeId);
         if (e.key === "ArrowUp") {
           const idx = w ? w.idx - 1 : hist.length - 1;
           if (idx >= 0 && hist.length) {
             e.preventDefault();
             histWalk.set(activeId, { idx, stash: w ? w.stash : ta.value });
+            recalling = true;
             ta.value = hist[idx];
             ta.setSelectionRange(ta.value.length, ta.value.length);
             growComposer(ta);
             ta.dispatchEvent(new Event("input"));      // draft/slash/ask-mode bookkeeping stays true
+            recalling = false;
           }
           return;                                      // nothing older → native caret-to-start is fine
         }
         e.preventDefault();
         const idx = w!.idx + 1;
+        recalling = true;
         if (idx >= hist.length) { ta.value = w!.stash; histWalk.delete(activeId); }
         else { w!.idx = idx; ta.value = hist[idx]; }
         ta.setSelectionRange(ta.value.length, ta.value.length);
         growComposer(ta);
         ta.dispatchEvent(new Event("input"));
+        recalling = false;
         return;
       }
     }
@@ -10306,6 +10314,9 @@ function setupComposer() {
     }
   });
   ta.addEventListener("input", () => {
+    // a MANUAL edit ends any history walk (the user 2026-08-17): the text becomes an ordinary
+    // draft, and recall stays away from drafts. The recall's own synthetic dispatch is fenced.
+    if (!recalling && activeId) histWalk.delete(activeId);
     growComposer(ta);
     updateSlash();   // open/refresh/close the slash-command menu as the leading "/token" changes
     // keep the per-tab draft (and its persisted copy) current as you type, so a reload restores it

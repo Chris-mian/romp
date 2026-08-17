@@ -17,13 +17,19 @@ test("history is the session's own sent prompts: human-only, romp-free, deduped"
   assert.match(RENDER, /if \(t && out\[out\.length - 1\] !== t\) out\.push\(t\);/, "adjacent repeats collapse");
 });
 
-test("the gate never hijacks editing: boundary line, collapsed caret, no modifiers, slash menu first", () => {
+test("the gate never hijacks a draft: EMPTY box only, no modifiers, slash menu first", () => {
+  // the user 2026-08-17, tightening the first cut: any text in the box means a draft in progress —
+  // ↑ starts a walk only from an empty prompt. Inside an active walk the recalled text is the
+  // walk's own, so the boundary-line rules still navigate it.
   const at = RENDER.indexOf("const composerHistory");
   assert.ok(RENDER.indexOf("if (slashKey(e)) return;") > at, "the slash menu keeps first claim on the arrows");
   assert.match(RENDER, /&& !e\.metaKey && !e\.ctrlKey && !e\.altKey && !e\.shiftKey\s*\n\s*&& ta\.selectionStart === ta\.selectionEnd/);
-  assert.match(RENDER, /const onFirst = !ta\.value\.slice\(0, ta\.selectionStart\)\.includes\("\\n"\);/);
-  assert.match(RENDER, /e\.key === "ArrowUp" \? onFirst : \(onLast && w\)/,
-    "↓ only walks forward inside an active walk — plain ↓ in a draft stays native");
+  assert.match(RENDER, /e\.key === "ArrowUp" \? \(w \? onFirst : ta\.value === ""\) : \(onLast && w\)/,
+    "↑ starts only from empty; ↓ only walks forward inside an active walk");
+  // a manual edit ends the walk — the recalled text becomes an ordinary draft recall won't touch;
+  // the recall's own synthetic input dispatch is fenced so it never ends its own walk
+  assert.match(RENDER, /if \(!recalling && activeId\) histWalk\.delete\(activeId\);/);
+  assert.match(RENDER, /let recalling = false;/);
 });
 
 test("the draft stashes on the first ↑ and restores past the newest; a send drops the walk", () => {
