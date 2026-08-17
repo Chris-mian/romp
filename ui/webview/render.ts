@@ -1640,6 +1640,56 @@ function ensureRailDay(): HTMLElement {
   return railDay;
 }
 
+// SCROLL MARKS (the user 2026-08-17): a thin blue notch on the chat's right scroll edge for every
+// USER message — the conversation's shape at a glance, VS Code overview-ruler style. Positions are
+// proportional (turn offset over scroll height), so they are scroll-INVARIANT: the paint rides the
+// rail-sticky scheduler for free, but a signature check skips the DOM work on pure scrolls and only
+// rebuilds when the geometry or the set of user turns actually changed. Passive fixed chrome, like
+// the sticky: it never intercepts the native scrollbar underneath. The blue is the outgoing-bubble
+// blue — the color that already means "yours" — never the romp accent.
+let scrollMarks: HTMLElement | null = null;
+let scrollMarksSig = "";
+function ensureScrollMarks(): HTMLElement {
+  if (scrollMarks && scrollMarks.isConnected) return scrollMarks;
+  scrollMarks = el("div", "scroll-marks");
+  scrollMarks.style.display = "none";
+  document.body.appendChild(scrollMarks);
+  return scrollMarks;
+}
+
+function paintScrollMarks(): void {
+  const box = ensureScrollMarks();
+  const content = document.getElementById("content");
+  const v = activeId ? views.get(activeId) : null;
+  if (!content || !v || v.el.style.display === "none") { box.style.display = "none"; scrollMarksSig = ""; return; }
+  const cRect = content.getBoundingClientRect();
+  const sh = content.scrollHeight;
+  if (!sh || cRect.height <= 40) { box.style.display = "none"; scrollMarksSig = ""; return; }
+  const turns: HTMLElement[] = [];
+  for (const t of Array.from(v.el.querySelectorAll<HTMLElement>(".turn-user:not(.romp):not(.injected)"))) {
+    // gestures (a /command row, the Continue row) are the user's DOINGS, not their words — no notch
+    if (t.querySelector(".user-bubble:not(.cmd-row):not(.cont-row)")) turns.push(t);
+  }
+  const ys = turns.map((t) => {
+    const top = t.getBoundingClientRect().top - cRect.top + content.scrollTop;
+    return Math.round(((top / sh) * (cRect.height - 4)));
+  });
+  const sig = activeId + "|" + Math.round(cRect.top) + "," + Math.round(cRect.right) + ","
+    + Math.round(cRect.height) + "|" + ys.join(",");
+  if (sig !== scrollMarksSig) {
+    scrollMarksSig = sig;
+    box.replaceChildren(...ys.map((y) => {
+      const m = el("div", "scroll-mark");
+      m.style.top = y + "px";
+      return m;
+    }));
+    box.style.left = (cRect.right - 12) + "px";
+    box.style.top = cRect.top + "px";
+    box.style.height = cRect.height + "px";
+  }
+  box.style.display = ys.length ? "" : "none";
+}
+
 function paintRailSticky(): void {
   const stamp = ensureRailSticky();
   const content = document.getElementById("content");
@@ -1726,7 +1776,7 @@ let railStickyPending = false;
 function scheduleRailSticky(): void {
   if (railStickyPending) return;
   railStickyPending = true;
-  requestAnimationFrame(() => { railStickyPending = false; paintRailSticky(); });
+  requestAnimationFrame(() => { railStickyPending = false; paintRailSticky(); paintScrollMarks(); });
 }
 
 function renderEventInner(ev: ChatEvent): HTMLElement {
