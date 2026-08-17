@@ -1769,16 +1769,25 @@ function paintRailSticky(): void {
   const day = ensureRailDay();
   const firstBelow = all.find(([, top]) => top >= line);
   const anchorM = marker || (firstBelow ? firstBelow[0] : null);
-  const paintDay = (right: number, yTop: number) => {
+  // The label sits BELOW the top stamp, in the STAMP'S OWN BOX (same left/width, right-aligned like
+  // the time itself, so the two right edges line up by construction — the user 2026-08-17, whose
+  // first cut floated the label ABOVE the slot: at the top of the view that bled into the tab bar,
+  // and its transform-based alignment didn't match the stamp's). Below-stamp keeps it inside the
+  // pane at every scroll position, and the handoff stays seamless: a leading stamp carries its
+  // label at markerBottom, and the sticky shows it at the very same y when it takes over.
+  const gRect = anyMarker ? anyMarker.getBoundingClientRect() : null;
+  const stampH = anchorM ? anchorM.getBoundingClientRect().height || 11 : 11;
+  const paintDay = (slotTop: number) => {
     const ep = anchorM ? Number(anchorM.dataset.epoch || 0) : 0;
-    const label = ep ? dayContext(ep, Date.now()) : "";
+    const label = ep && gRect ? dayContext(ep, Date.now()) : "";
+    const yTop = slotTop + stampH + 1;
     if (!label || yTop > cBottom) { day.style.display = "none"; return; }
     if (day.textContent !== label) day.textContent = label;
-    day.style.left = right + "px";
+    day.style.left = gRect!.left + "px";
+    day.style.width = gRect!.width + "px";
     day.style.top = yTop + "px";
     day.style.display = "";
   };
-  const gutterRight = anyMarker ? anyMarker.getBoundingClientRect().right : 0;
   // The tracked turn's OWN stamp leads the top slot while it is at or below the line — it scrolls up freely
   // until it reaches the line, and the instant it crosses ABOVE (markerTop < line) the sticky takes the same
   // slot showing the same time, so the swap is invisible: no gap, no clipped sliver (the user 2026-07-23).
@@ -1789,7 +1798,7 @@ function paintRailSticky(): void {
   if (!hm || realLeads) {
     stamp.style.display = "none";
     for (const [m] of all) m.style.visibility = "";   // real stamp leads → nothing suppressed
-    if (anyMarker) paintDay(gutterRight, realLeads ? markerTop : (firstBelow ? firstBelow[1] : cBottom + 1));
+    if (anyMarker) paintDay(realLeads ? markerTop : (firstBelow ? firstBelow[1] : cBottom + 1));
     else day.style.display = "none";
     return;
   }
@@ -1803,7 +1812,7 @@ function paintRailSticky(): void {
   stamp.style.width = g.width + "px";
   stamp.style.top = line + "px";
   stamp.style.display = "";
-  paintDay(g.right, line);
+  paintDay(line);
 }
 
 // Scroll is the sticky stamp's primary driver, and a re-render moves the geometry under it — both funnel
