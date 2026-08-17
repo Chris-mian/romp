@@ -40,3 +40,17 @@ test("the draft stashes on the first ↑ and restores past the newest; a send dr
   assert.match(RENDER, /ta\.dispatchEvent\(new Event\("input"\)\);/,
     "a recall runs the input bookkeeping (draft persist, slash menu, ask-mode) like typing would");
 });
+
+test("the resting placeholder advertises the recall, in every copy of the hint row", () => {
+  // the user 2026-08-17: now that ↑ recalls history, the empty-composer placeholder must say so.
+  // The placeholder shows exactly when the box is empty — exactly when the gate lets ↑ fire. The
+  // hint row lives in THREE places (render.ts's canonical function, the extension's static
+  // skeleton, the kernel-served skeleton); all three must carry the identical string or the hint
+  // a user sees depends on which surface painted first.
+  const ROW = "Message this session…  (⏎ send · ⇧⏎ newline · ⌘⏎ stage · ↑ history · / for commands)";
+  const SKEL = fs.readFileSync(path.resolve(process.cwd(), "..", "vscode-extension", "src", "page-skeleton.ts"), "utf8");
+  const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.ok(RENDER.includes(JSON.stringify(ROW)), "canonical composerRestingPlaceholder carries the ↑ hint");
+  assert.ok(SKEL.includes(ROW), "extension skeleton matches");
+  assert.ok(KERNEL.includes(ROW), "kernel skeleton matches");
+});

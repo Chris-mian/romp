@@ -7729,7 +7729,7 @@ function composerRestingPlaceholder(): string {
   // "/ for commands", not "type / for commands". The static skeletons carry the same string.
   return isCoarsePointer()
     ? "Message this session…"
-    : "Message this session…  (⏎ send · ⇧⏎ newline · ⌘⏎ stage · / for commands)";
+    : "Message this session…  (⏎ send · ⇧⏎ newline · ⌘⏎ stage · ↑ history · / for commands)";
 }
 
 // How a message typed into the NORMAL composer should be routed while a live picker is up — the picker's
