@@ -1678,11 +1678,22 @@ function paintScrollMarks(): void {
     + Math.round(cRect.height) + "|" + ys.join(",");
   if (sig !== scrollMarksSig) {
     scrollMarksSig = sig;
-    box.replaceChildren(...ys.map((y) => {
-      const m = el("div", "scroll-mark");
-      m.style.top = y + "px";
-      return m;
-    }));
+    // UPDATE IN PLACE when the notch count is unchanged (the user 2026-08-17: scrolling back streams
+    // older history in, the scroller's world grows, and every proportional position legitimately
+    // compresses — the native thumb does the same — but rebuilt nodes TELEPORTED there). Moving the
+    // existing nodes lets the CSS transition carry them, so a history load reads as the map
+    // rescaling rather than notches jumping to wrong places. Count changes (new messages, a fresh
+    // tab) still rebuild outright — those are new marks, not moved ones.
+    const kids = Array.from(box.children) as HTMLElement[];
+    if (kids.length === ys.length) {
+      ys.forEach((y, i) => { kids[i].style.top = y + "px"; });
+    } else {
+      box.replaceChildren(...ys.map((y) => {
+        const m = el("div", "scroll-mark");
+        m.style.top = y + "px";
+        return m;
+      }));
+    }
     box.style.left = (cRect.right - 12) + "px";
     box.style.top = cRect.top + "px";
     box.style.height = cRect.height + "px";
