@@ -3721,10 +3721,24 @@ class SdkBackend:
         registry (spread) and especially its lastSid when set — lastSid tracks the NEWEST transcript
         fsid (a /clear or relaunch mints new fsids under the same romp sid) and SdkSession resumes from
         it; stamping the original sid here would silently resume an OLD conversation state (the
-        picker-revive fix, the user 2026-07-05)."""
+        picker-revive fix, the user 2026-07-05).
+
+        A REVIVAL PRESERVES IDENTITY (2026-08-17): when the reg already carries a name, that name WINS
+        over the caller's — the caller's copy came from the names/ registry or a discovery row, both of
+        which other paths rewrite (the tmux launcher's dead-name freeing, fork-lane rows whose "sid" is
+        a transcript stem), and trusting it let a machine-panic relaunch respawn a session under a name
+        nobody chose while it carried its whole history (the local session incident, 2026-08-17: reg
+        name X, caller name Y → revived as Y with X's past, and the spawn-frozen env made Y permanent).
+        The caller's name is only ever ADOPTED when the reg has none — the create-from-nothing revive
+        of a session this backend has never seen, which is also logged, because a sid with no reg is
+        usually a transcript fsid that leaked out of a discovery row rather than a real romp sid."""
         reg = read_reg(self.state_dir, sid) or {}
+        kept = str(reg.get("name") or "").strip()
+        if not reg:
+            self._log("resume minting a reg for unknown sid %s as %r — a sid with no reg is usually "
+                      "a transcript fsid, not a romp session" % (sid[:13], name))
         cwd = cwd or reg.get("cwd") or os.path.expanduser("~")
-        write_reg(self.state_dir, sid, {**reg, "sid": sid, "name": name, "cwd": cwd,
+        write_reg(self.state_dir, sid, {**reg, "sid": sid, "name": kept or name, "cwd": cwd,
                                         "mode": reg.get("mode", "acceptEdits"),
                                         "effort": reg.get("effort", DEFAULT_EFFORT),
                                         "lastSid": reg.get("lastSid") or sid, "alive": True})
