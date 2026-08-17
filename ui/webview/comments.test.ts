@@ -288,6 +288,21 @@ test("scroll-rail ticks mark the commented spots and jump-open on click", () => 
   assert.match(CSS, /\.cmt-rail \{ position: fixed;/);
 });
 
+test("ticks and message notches share ONE scrollbar frame, so they can never disagree about order", () => {
+  // the user 2026-08-17: scrolling through a history load moved the comment highlights relative to
+  // the blue message notches — the ticks were placed by uniform index fraction, a second frame that
+  // drifts from the notches' measured-height pixel offsets. Both painters now consume
+  // contentOffsetFrame, the one event-index → content-pixel mapping.
+  assert.match(UI, /function contentOffsetFrame\(/);
+  assert.match(UI, /const off = frame\.offsetOf\(idx\);/, "ticks place by the shared frame");
+  assert.doesNotMatch(UI, /\(idx \/ n\) \* 100/, "the uniform index-fraction percent frame is gone");
+  // the rail repaints with the notches (same rAF), so both always draw from one world
+  assert.match(UI, /paintRailSticky\(\); paintScrollMarks\(\); updateCommentRail\(\);/);
+  // an unchanged tick set moves IN PLACE — ticks are buttons, and a mid-press rebuild eats the click
+  assert.match(UI, /kids\.every\(\(k, i\) => k\.dataset\.tid === ticks\[i\]\.th\.tid\)/);
+  assert.match(UI, /kids\[i\]\.style\.top = t\.y \+ "px";/);
+});
+
 test("while the thread is WRITING the region wears marching ants; the fill lands with the reply", () => {
   assert.match(UI, /m\.classList\.toggle\("busy", threadBusy\(th\.state\) && th\.status === "open"\)/);
   // a dashed outline whose dashes crawl around the box — four gradient strips, animated offsets,

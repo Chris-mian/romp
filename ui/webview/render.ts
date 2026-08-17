@@ -1655,30 +1655,19 @@ let scrollMarksSig = "";
 // trivial memory — and spacer-slot positions built from these cumulative heights (normalized to the
 // spacer's actual height) match truth so closely that boundary crossings correct by ~nothing.
 const unitHeights = new Map<string, Map<number, number>>();
-function ensureScrollMarks(): HTMLElement {
-  if (scrollMarks && scrollMarks.isConnected) return scrollMarks;
-  scrollMarks = el("div", "scroll-marks");
-  scrollMarks.style.display = "none";
-  document.body.appendChild(scrollMarks);
-  return scrollMarks;
-}
 
-function paintScrollMarks(): void {
-  const box = ensureScrollMarks();
-  const content = document.getElementById("content");
-  const v = activeId ? views.get(activeId) : null;
-  const s = activeId ? sessions.get(activeId) : null;
-  if (!content || !v || !s || v.el.style.display === "none") { box.style.display = "none"; scrollMarksSig = ""; return; }
+// ONE content-space frame for every scrollbar overlay (the user 2026-08-17, watching comment ticks
+// drift past message notches as history loaded): marks anchored to transcript positions share an
+// inherent monotonic order, so every overlay must place them with the SAME event-index → pixel
+// mapping — rendered turns by their true offset, spacer-covered turns by cumulative cached heights
+// normalized to the spacer's real height. The comment rail's old uniform index-fraction percents
+// were a second, disagreeing frame. Returns null while the pane is hidden or degenerate; offsetOf
+// returns null for an event mid-window-update — callers skip that mark, the next paint lands it.
+function contentOffsetFrame(content: HTMLElement, v: View, s: Session):
+    { sh: number; offsetOf: (i: number) => number | null } | null {
   const cRect = content.getBoundingClientRect();
   const sh = content.scrollHeight;
-  if (!sh || cRect.height <= 40) { box.style.display = "none"; scrollMarksSig = ""; return; }
-  // The WHOLE loaded conversation gets notches, not just the rendered DOM window (the user
-  // 2026-08-17, who scrolled back and watched the newer messages' marks vanish): the chat
-  // virtualizes — a window of real turns between two spacers sized by the renderer's avg-height
-  // estimate, and the scrollbar spans that estimated whole. Notches use the SAME frame: a rendered
-  // event's true pixel offset (its data-unit node), and for events inside a spacer, a proportional
-  // slot within that spacer's MEASURED height — exactly as accurate as the scrollbar the user is
-  // reading them against, with no extra caching (the events array + the spacer model already exist).
+  if (!sh || cRect.height <= 40) return null;
   const winStart = v.winStart ?? 0;
   const winEnd = v.winEnd ?? s.events.length;
   const unitTotal = v.unitTotal ?? s.events.length;
@@ -1699,7 +1688,7 @@ function paintScrollMarks(): void {
   // Cumulative-height slots within each spacer run, NORMALIZED to the spacer's actual rendered
   // height (the frame the scrollbar itself stands on) — cached truth where a unit was ever
   // rendered, the renderer's average for the rest. One prefix-sum pass per spacer per paint (O(n)
-  // total), then O(1) per notch. Normalizing keeps notch and thumb in one frame even when the
+  // total), then O(1) per mark. Normalizing keeps mark and thumb in one frame even when the
   // cache disagrees with the spacer's uniform sizing.
   const prefixOver = (from: number, to: number): number[] => {
     const pre: number[] = [0];
@@ -1714,13 +1703,7 @@ function paintScrollMarks(): void {
     if (!(total > 0)) return spanH / 2;
     return spanH * ((pre[k] + (pre[k + 1] - pre[k]) / 2) / total);
   };
-  const offs: number[] = [];
-  for (let i = 0; i < s.events.length; i++) {
-    const ev = s.events[i] as ChatEvent & { human?: boolean; romp?: boolean; rompAuto?: boolean; canned?: string; md?: string };
-    if (ev.kind !== "user" || !ev.human || ev.romp || ev.rompAuto) continue;
-    const md = (ev.md || "").trim();
-    // gestures are the user's DOINGS, not their words — no notch (the Continue row, a /command)
-    if (!md || ev.canned === "continue" || SLASH_CMD_RE.test(md)) continue;
+  const offsetOf = (i: number): number | null => {
     let off: number | null = null;
     if (i >= winStart && i < winEnd) {
       const node = v.el.querySelector<HTMLElement>('.turn[data-unit="' + i + '"]');
@@ -1729,8 +1712,45 @@ function paintScrollMarks(): void {
     if (off == null) {
       if (i < winStart && topPre) off = slotIn(topPre, i, topH);                        // inside the top spacer
       else if (i >= winEnd && botPre) off = (sh - botH) + slotIn(botPre, i - winEnd, botH);
-      else continue;                                   // window bookkeeping mid-update — skip this one, next paint has it
     }
+    return off;                                      // null → window bookkeeping mid-update — skip this one, next paint has it
+  };
+  return { sh, offsetOf };
+}
+
+function ensureScrollMarks(): HTMLElement {
+  if (scrollMarks && scrollMarks.isConnected) return scrollMarks;
+  scrollMarks = el("div", "scroll-marks");
+  scrollMarks.style.display = "none";
+  document.body.appendChild(scrollMarks);
+  return scrollMarks;
+}
+
+function paintScrollMarks(): void {
+  const box = ensureScrollMarks();
+  const content = document.getElementById("content");
+  const v = activeId ? views.get(activeId) : null;
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!content || !v || !s || v.el.style.display === "none") { box.style.display = "none"; scrollMarksSig = ""; return; }
+  const cRect = content.getBoundingClientRect();
+  // The WHOLE loaded conversation gets notches, not just the rendered DOM window (the user
+  // 2026-08-17, who scrolled back and watched the newer messages' marks vanish): the chat
+  // virtualizes — a window of real turns between two spacers sized by the renderer's avg-height
+  // estimate, and the scrollbar spans that estimated whole. contentOffsetFrame owns that mapping —
+  // exactly as accurate as the scrollbar the user is reading the notches against, and shared with
+  // the comment rail so the two mark kinds can never disagree about order.
+  const frame = contentOffsetFrame(content, v, s);
+  if (!frame) { box.style.display = "none"; scrollMarksSig = ""; return; }
+  const sh = frame.sh;
+  const offs: number[] = [];
+  for (let i = 0; i < s.events.length; i++) {
+    const ev = s.events[i] as ChatEvent & { human?: boolean; romp?: boolean; rompAuto?: boolean; canned?: string; md?: string };
+    if (ev.kind !== "user" || !ev.human || ev.romp || ev.rompAuto) continue;
+    const md = (ev.md || "").trim();
+    // gestures are the user's DOINGS, not their words — no notch (the Continue row, a /command)
+    if (!md || ev.canned === "continue" || SLASH_CMD_RE.test(md)) continue;
+    const off = frame.offsetOf(i);
+    if (off == null) continue;
     offs.push(off);
   }
   const ys = offs.map((top) => Math.round((top / sh) * (cRect.height - 4)));
@@ -1856,7 +1876,7 @@ let railStickyPending = false;
 function scheduleRailSticky(): void {
   if (railStickyPending) return;
   railStickyPending = true;
-  requestAnimationFrame(() => { railStickyPending = false; paintRailSticky(); paintScrollMarks(); });
+  requestAnimationFrame(() => { railStickyPending = false; paintRailSticky(); paintScrollMarks(); updateCommentRail(); });
 }
 
 function renderEventInner(ev: ChatEvent): HTMLElement {
@@ -5522,37 +5542,60 @@ function applyBranchChips(sid: string, v: View): void {
 }
 
 /** Yellow ticks on the chat's scroll rail marking commented spots (the user 2026-08-15) — one per
- *  open/resolved thread of the ACTIVE session, placed by the anchor's position in the event list
- *  (windowing-proof: no DOM measurement of unrendered turns), clicking jumps there and opens the
- *  thread. A fixed strip over #content's right edge, rebuilt with the marks — a handful of ticks. */
+ *  open/resolved thread of the ACTIVE session, clicking jumps there and opens the thread. Placed in
+ *  the SAME content-space frame as the message notches (contentOffsetFrame): the old uniform
+ *  index-fraction percents were a second frame that drifted past the notches as history loaded and
+ *  real turn heights diverged from uniform (the user 2026-08-17) — two marks on one scrollbar may
+ *  never disagree about order. Rides the notches' rAF scheduler so both repaint from one world; a
+ *  signature skips untouched paints, and an unchanged tick set moves IN PLACE (same tids, same
+ *  order) so a mid-press rebuild can't eat the click (these ticks are buttons). */
+let cmtRailSig = "";
 function updateCommentRail(): void {
   let rail = document.getElementById("cmt-rail");
   const content = document.getElementById("content");
+  const v = activeId ? views.get(activeId) : null;
   const s = activeId ? sessions.get(activeId) : null;
   const threads = ((activeId && commentThreads.get(activeId)) || [])
     .filter((t) => t.status === "open" || t.status === "resolved");
-  if (!content || !s || !threads.length) { rail?.remove(); return; }
+  if (!content || !v || !s || !threads.length || v.el.style.display === "none") { rail?.remove(); cmtRailSig = ""; return; }
   const r = content.getBoundingClientRect();
-  if (!r.height) { rail?.remove(); return; }              // hidden pane
+  if (!r.height) { rail?.remove(); cmtRailSig = ""; return; }              // hidden pane
+  const frame = contentOffsetFrame(content, v, s);
+  if (!frame) { rail?.remove(); cmtRailSig = ""; return; }
+  const ticks: Array<{ th: CommentThread; y: number }> = [];
+  for (const th of threads) {
+    const idx = s.events.findIndex((e) => e.uuid === th.anchorUuid);
+    if (idx < 0) continue;
+    const off = frame.offsetOf(idx);
+    if (off == null) continue;
+    // the same proportional map the notches use, clamped so the last tick stays on the strip
+    ticks.push({ th, y: Math.min(r.height - 6, Math.round((off / frame.sh) * (r.height - 4))) });
+  }
+  const sig = activeId + "|" + Math.round(r.top) + "," + Math.round(r.right) + "," + Math.round(r.height)
+    + "|" + ticks.map((t) => t.th.tid + ":" + t.y + ":" + t.th.status + ":" + (t.th.unread ? 1 : 0)).join(",");
+  if (sig === cmtRailSig && rail) return;
+  cmtRailSig = sig;
   if (!rail) { rail = el("div", "cmt-rail"); rail.id = "cmt-rail"; document.body.appendChild(rail); }
   rail.style.left = (r.right - 10) + "px";
   rail.style.top = r.top + "px";
   rail.style.height = r.height + "px";
-  rail.replaceChildren();
-  const n = s.events.length || 1;
-  for (const th of threads) {
-    const idx = s.events.findIndex((e) => e.uuid === th.anchorUuid);
-    if (idx < 0) continue;
-    const tick = el("button", "cmt-tick" + (th.status === "resolved" ? " resolved" : "")
-      + (th.unread && th.status === "open" ? " unread" : "")) as HTMLButtonElement;
+  const cls = (th: CommentThread) => "cmt-tick" + (th.status === "resolved" ? " resolved" : "")
+    + (th.unread && th.status === "open" ? " unread" : "");
+  const kids = Array.from(rail.children) as HTMLElement[];
+  if (kids.length === ticks.length && kids.every((k, i) => k.dataset.tid === ticks[i].th.tid)) {
+    ticks.forEach((t, i) => { kids[i].style.top = t.y + "px"; kids[i].className = cls(t.th); });
+    return;
+  }
+  rail.replaceChildren(...ticks.map((t) => {
+    const tick = el("button", cls(t.th)) as HTMLButtonElement;
     tick.type = "button";
     tick.dataset.act = "cmtjump";
-    tick.dataset.tid = th.tid;
-    tick.dataset.uuid = th.anchorUuid;
-    tick.style.top = Math.min(96.5, (idx / n) * 100) + "%";
-    tick.title = (th.name || "comment") + ": click to jump to it";
-    rail.appendChild(tick);
-  }
+    tick.dataset.tid = t.th.tid;
+    tick.dataset.uuid = t.th.anchorUuid;
+    tick.style.top = t.y + "px";
+    tick.title = (t.th.name || "comment") + ": click to jump to it";
+    return tick;
+  }));
 }
 window.addEventListener("resize", () => updateCommentRail());
 
