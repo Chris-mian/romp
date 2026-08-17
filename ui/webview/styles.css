@@ -2463,17 +2463,8 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 .md :not(pre) > code.cmt-hl-host:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, var(--code-bg)); }
 
 .turn.has-cmt { position: relative; }
-.cmt-badge {
-  position: absolute; top: 2px; right: 4px; z-index: 5;
-  min-width: 16px; height: 16px; padding: 0 4px;
-  border: 1px solid var(--box-border); border-radius: 8px;
-  background: var(--vscode-menu-background, #252526);
-  color: var(--accent); font-size: 10px; line-height: 14px;
-  cursor: pointer; opacity: 0.75;
-}
-.cmt-badge:hover { opacity: 1; }
-.cmt-badge.unread { border-color: var(--accent); opacity: 1; }
-.cmt-badge.busy { animation: cmt-busy-pulse 1.2s ease-in-out infinite; }
+/* (the count badge is gone — the user 2026-08-17: the highlight does the speaking; the busy pulse
+   below and the scroll-rail tick carry the states it used to) */
 
 .cmt-pop {
   position: fixed; z-index: 120; width: 360px; max-width: 94vw;
@@ -2559,7 +2550,6 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
   position: absolute; top: 2px; right: 24px; z-index: 5;
   display: flex; gap: 4px;
 }
-.cmt-badge ~ .branch-chips, .turn:has(> .cmt-badge) .branch-chips { right: 28px; }
 .branch-chip {
   height: 16px; padding: 0 6px; border: 1px solid var(--box-border); border-radius: 8px;
   background: var(--vscode-menu-background, #252526);
@@ -2568,15 +2558,26 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 }
 .branch-chip:hover { opacity: 1; border-color: var(--accent); }
 
-/* the create popover's thread-name row (the user 2026-08-15): editable, prefilled
-   <session>-comment-<N>; .bad = failed the session-name charset, matching the fork modal */
+/* the comment's NAME, inline in the header — "New comment: <name>" (the user 2026-08-17): bold and
+   accent-tinted so it reads as a name, editable in place; a dashed underline hints at that. .bad =
+   failed the session-name charset, matching the fork modal. */
 .cmt-name {
-  width: 100%; box-sizing: border-box; padding: 4px 7px;
-  border: 1px solid var(--box-border); border-radius: 4px;
-  background: rgba(255, 255, 255, 0.05); color: inherit; font: inherit;
+  flex: 1; min-width: 60px; margin: 0 6px; padding: 0 2px;
+  border: 0; border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 0; background: transparent;
+  color: var(--accent); font: inherit; font-weight: 600;
 }
-.cmt-name:focus { outline: none; border-color: var(--accent); }
-.cmt-name.bad { border-color: var(--st-blocked-bg, #c94f4f); }
+.cmt-name:focus { outline: none; border-bottom-color: var(--accent); }
+.cmt-name.bad { border-bottom: 1px solid var(--st-blocked-bg, #c94f4f); color: var(--st-blocked-bg, #c94f4f); }
+
+/* the comment's own model/effort selectors (the user 2026-08-17) — chip-shaped buttons opening the
+   same .meta-menu the statusline uses; the picks ride the create call and touch only the thread */
+.cmt-meta-row { display: flex; gap: 6px; }
+.cmt-meta {
+  padding: 2px 8px; border: 1px solid var(--box-border); border-radius: 4px; cursor: pointer;
+  background: none; color: inherit; font: inherit; opacity: 0.85;
+}
+.cmt-meta:hover { opacity: 1; border-color: var(--accent); }
 
 /* comment ticks on the chat's scroll rail (the user 2026-08-15): where the comments are, at the
    anchor's proportional position in the whole conversation; click = jump + open the thread */

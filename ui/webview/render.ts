@@ -5311,7 +5311,8 @@ const commentThreads = new Map<string, CommentThread[]>();          // parent si
 const commentPending = new Map<string, { text: string; t: number }[]>(); // tid → optimistic sends
 const commentDrafts = new Map<string, string>();                    // draft key → unsent popover text
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
-let pendingCommentAnchor: { sid: string; uuid: string; exact: string } | null = null; // create mode
+let pendingCommentAnchor: { sid: string; uuid: string; exact: string;
+  model?: string; effort?: string } | null = null; // create mode (+ the thread's own model/effort picks)
 let pendingAdoptTid: string | null = null;                          // commentCreated ack that beat its frame
 let commentPopPos: { x: number; y: number } | null = null;
 
@@ -5340,15 +5341,10 @@ function applyCommentMarks(sid: string): void {
   for (const old of Array.from(v.el.querySelectorAll("mark.cmt-hl"))) {
     if (!have.has((old as HTMLElement).dataset.tid || "")) unwrapCommentMark(old as HTMLElement);
   }
-  for (const b of Array.from(v.el.querySelectorAll(".cmt-badge"))) {
-    const uuid = (b.closest(".turn") as HTMLElement | null)?.dataset.uuid || "";
-    if (!threads.some((t) => t.anchorUuid === uuid)) b.remove();
-  }
   if (!threads.length) return;
   for (const [uuid, list] of threadsByAnchor(threads)) {
     const turn = v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`) as HTMLElement | null;
     if (!turn) continue;                       // windowed out — the mark returns when the turn does
-    ensureCommentBadge(turn, list);
     for (const th of list) ensureCommentMark(turn, th);
   }
 }
@@ -5417,6 +5413,9 @@ function updateCommentRail(): void {
 }
 window.addEventListener("resize", () => updateCommentRail());
 
+// (The per-turn count badge is GONE — the user 2026-08-17: the highlight does the speaking, and
+// the scroll-rail tick already covers a thread whose rendered text drifted beyond re-matching.)
+
 function unwrapCommentMark(markEl: HTMLElement): void {
   const p = markEl.parentNode;
   if (!p) return;
@@ -5427,22 +5426,6 @@ function unwrapCommentMark(markEl: HTMLElement): void {
   while (markEl.firstChild) p.insertBefore(markEl.firstChild, markEl);
   markEl.remove();
   p.normalize();
-}
-
-function ensureCommentBadge(turn: HTMLElement, list: CommentThread[]): void {
-  turn.classList.add("has-cmt");               // positions the badge (styles.css .turn.has-cmt)
-  let b = turn.querySelector(":scope > .cmt-badge") as HTMLButtonElement | null;
-  if (!b) {
-    b = el("button", "cmt-badge") as HTMLButtonElement;
-    b.type = "button";
-    b.dataset.act = "cmtopen";                 // delegated on document.body — click-safe across rebuilds
-    turn.appendChild(b);
-  }
-  b.textContent = String(list.length);
-  b.dataset.tid = (list.find((t) => t.unread && t.status === "open") || list[list.length - 1]).tid;
-  b.classList.toggle("unread", list.some((t) => t.unread && t.status === "open"));
-  b.classList.toggle("busy", list.some((t) => threadBusy(t.state) && t.status === "open"));
-  b.title = (list.length === 1 ? "1 thread" : list.length + " threads") + " on this message. Click to open";
 }
 
 function ensureCommentMark(turn: HTMLElement, th: CommentThread): void {
@@ -5587,7 +5570,7 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
 
 function commentPopTitle(create: boolean, th: CommentThread | null | undefined): string {
   const nm = th?.name || "Thread";
-  return create ? "New thread"
+  return create ? "New comment:"
     : th!.status === "promoted" ? "Now its own session: " + th!.promotedName
     : th!.status === "promoting" ? "Breaking out…"
     : th!.status === "resolved" ? nm + " (resolved)" : nm;
@@ -5605,9 +5588,10 @@ function commentSendFromPop(pop: HTMLElement): void {
     const nameBox = pop.querySelector(".cmt-name") as HTMLInputElement | null;
     const nm = (nameBox?.value || "").trim();
     if (nm && !/^[A-Za-z0-9._-]+$/.test(nm)) { nameBox?.classList.add("bad"); nameBox?.focus(); return; }
-    if (send) { send.disabled = true; send.textContent = "Starting…"; }   // ack before the round-trip;
+    if (send) { send.disabled = true; send.textContent = "Commenting…"; }   // ack before the round-trip;
     //                                       the draft survives until commentCreated adopts the thread
-    vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact, text, name: nm });
+    vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact,
+      text, name: nm, model: create.model || "", effort: create.effort || "" });
     return;
   }
   const cur = openCommentThread();
@@ -5656,19 +5640,40 @@ function renderCommentPopover(): void {
   const head = el("div", "cmt-head");
   const title = el("span", "cmt-title");
   title.textContent = commentPopTitle(!!create, th);
+  let nameBox: HTMLInputElement | null = null;
+  if (create) {
+    // the name lives IN the header — "New comment: <name>" — bold and editable right there (the
+    // user 2026-08-17); prefilled <session>-comment-<N>, drafted under its own key so a refused
+    // create hands an edited name back too
+    const nk = "newname:" + create.uuid;
+    nameBox = document.createElement("input");
+    nameBox.type = "text";
+    nameBox.className = "cmt-name";
+    nameBox.setAttribute("autocapitalize", "off");
+    nameBox.setAttribute("autocomplete", "off");
+    nameBox.setAttribute("spellcheck", "false");
+    const sess0 = sessions.get(sid);
+    nameBox.value = commentDrafts.get(nk)
+      || ((sess0?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-")
+          + "-comment-" + ((commentThreads.get(sid) || []).length + 1));
+    nameBox.title = "The comment's name — edit it right here";
+    const nb = nameBox;
+    nb.addEventListener("input", () => { nb.classList.remove("bad"); commentDrafts.set(nk, nb.value); });
+  }
   const closeBtn = el("button", "cmt-x") as HTMLButtonElement;
   closeBtn.type = "button";
   closeBtn.textContent = "×";
   closeBtn.title = "Close (the thread stays on its highlight)";
   closeBtn.dataset.act = "cmtclose";
-  head.append(title, closeBtn);
+  if (nameBox) head.append(title, nameBox, closeBtn);
+  else head.append(title, closeBtn);
   // DRAG by the header (the user 2026-08-13, who found the popover's spot inconvenient): pointer
   // capture, viewport-clamped, and the position writes through to commentPopPos so a later full
   // rebuild (a status flip) reopens where the user parked it. The header survives in-place
   // refreshes, so a drag is never cut by a comments frame; a full rebuild mid-drag just ends it.
   head.title = "Drag to move";
   head.addEventListener("pointerdown", (ev: PointerEvent) => {
-    if ((ev.target as HTMLElement).closest(".cmt-x")) return;
+    if ((ev.target as HTMLElement).closest(".cmt-x, .cmt-name")) return;   // editing the name is not a drag
     ev.preventDefault();
     const dx = ev.clientX - pop.offsetLeft, dy = ev.clientY - pop.offsetTop;
     head.setPointerCapture(ev.pointerId);
@@ -5701,22 +5706,49 @@ function renderCommentPopover(): void {
     pop.appendChild(list);
   }
   if (create) {
-    // the thread's NAME, editable right here (the user 2026-08-15): prefilled
-    // <session>-comment-<N>, N counting the threads this session has had; an edited value
-    // drafts under its own key so a refused create hands it back too
-    const nk = "newname:" + create.uuid;
-    const nameBox = document.createElement("input");
-    nameBox.type = "text";
-    nameBox.className = "cmt-name";
-    nameBox.setAttribute("autocapitalize", "off");
-    nameBox.setAttribute("autocomplete", "off");
-    nameBox.setAttribute("spellcheck", "false");
-    const sess0 = sessions.get(sid);
-    nameBox.value = commentDrafts.get(nk)
-      || ((sess0?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-")
-          + "-comment-" + ((commentThreads.get(sid) || []).length + 1));
-    nameBox.addEventListener("input", () => { nameBox.classList.remove("bad"); commentDrafts.set(nk, nameBox.value); });
-    pop.appendChild(nameBox);
+    // the thread's OWN model + effort (the user 2026-08-17): the same /models-fed choices the
+    // chat's statusline selectors use, defaulting to what this session runs now — picking one
+    // affects only the thread; the conversation it branches from is never touched
+    const st = sessions.get(sid)?.status;
+    const metaRow = el("div", "cmt-meta-row");
+    const mkSel = (kind: "model" | "effort") => {
+      const btn = el("button", "cmt-meta") as HTMLButtonElement;
+      btn.type = "button";
+      const chosen = kind === "model" ? create.model : create.effort;
+      const inherit = kind === "model" ? (st?.model || "Default") : (st?.effort || "default");
+      const label = chosen
+        ? (META_CHOICES[kind].find((c) => c.value === chosen)?.label || chosen)
+        : inherit;
+      btn.textContent = (kind === "model" ? "Model: " : "Effort: ") + label;
+      btn.title = chosen ? "the comment runs on its own " + kind + "; this session keeps its"
+        : "inherits this session's " + kind + " — click to pick another for the comment only";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeMetaMenu();
+        const menu = el("div", "meta-menu");
+        for (const c of META_CHOICES[kind]) {
+          const cur = chosen ? c.value === chosen : (st ? isCurrentMeta(kind, st, c.value) : false);
+          const item = el("div", "meta-item" + (cur ? " current" : ""));
+          item.textContent = c.label;
+          item.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            if (pendingCommentAnchor) pendingCommentAnchor[kind] = c.value;
+            closeMetaMenu();
+            document.getElementById("cmt-pop")?.remove();   // full rebuild shows the pick
+            renderCommentPopover();
+          });
+          menu.appendChild(item);
+        }
+        document.body.appendChild(menu);
+        const r2 = btn.getBoundingClientRect();
+        menu.style.left = r2.left + "px";
+        menu.style.top = (r2.bottom + 4) + "px";
+        metaMenuEl = menu;
+      });
+      return btn;
+    };
+    metaRow.append(mkSel("model"), mkSel("effort"));
+    pop.appendChild(metaRow);
   }
   if (create || th!.status !== "promoted") {
     const dk = create ? "new:" + create.uuid : th!.tid;
@@ -5735,7 +5767,7 @@ function renderCommentPopover(): void {
     const row = el("div", "cmt-actions");
     const send = el("button", "cmt-send") as HTMLButtonElement;
     send.type = "button";
-    send.textContent = create ? "Start thread" : "Send";
+    send.textContent = create ? "Comment" : "Send";
     send.dataset.act = "cmtsend";
     row.appendChild(send);
     if (th) {

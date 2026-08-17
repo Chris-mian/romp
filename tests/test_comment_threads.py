@@ -399,8 +399,10 @@ class FakeBackend:
         self.calls = []
         self.sent = []
 
-    def fork(self, name, parent_sid, cut_uuid="", bg="", fg="", sid=None, thread_of=""):
+    def fork(self, name, parent_sid, cut_uuid="", bg="", fg="", sid=None, thread_of="",
+             model="", effort=""):
         self.calls.append(("fork", name, parent_sid, cut_uuid, sid, thread_of))
+        self.forked_meta = (model, effort)
         return sid
 
     def connect(self, sid):
@@ -478,6 +480,12 @@ class CommentOps(CommentBase):
         fr = km._comments_frame(PARENT)
         self.assertEqual(fr["threads"][0]["name"], "parent-comment-1",
                          "the popover titles threads by name off the frame")
+
+    def test_model_and_effort_picks_ride_the_fork_untouched_by_default(self):
+        km._comment_create(PARENT, "a1", "exponential backoff", "Why?", model="haiku", effort="low")
+        self.assertEqual(self.be.forked_meta, ("haiku", "low"))
+        km._comment_create(PARENT, "a1", "the cap", "Plain.")
+        self.assertEqual(self.be.forked_meta, ("", ""), "no pick = inherit; the parent is never touched")
 
     def test_a_refused_cut_leaves_no_thread_row_behind(self):
         err, tid = km._comment_create(PARENT, "missing-uuid", "text", "comment")

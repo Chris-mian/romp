@@ -5136,7 +5136,7 @@ def _comment_markers(sid):
     return out
 
 
-def _comment_create(parent_sid, anchor_uuid, exact, text, name="", now=None):
+def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", now=None):
     """Anchor a new comment thread: fork the parent at the highlighted message (inclusive) as a
     threadOf fork — no names/ entry, so no judge seeding is needed until promotion — and send the
     opening message. Returns (error, tid): error is the warn-toast string (tid None), success is
@@ -5144,7 +5144,10 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", now=None):
 
     `name` (the user 2026-08-15, who wanted to name the thread right in the dialog): the thread's
     editable name, defaulting to <parent>-comment-<N> where N counts the threads this session has
-    had. It rides the reg (so a break-out inherits it) and the frame (the popover's title)."""
+    had. It rides the reg (so a break-out inherits it) and the frame (the popover's title).
+
+    `model`/`effort` (the user 2026-08-17): per-thread overrides picked in the same dialog — the
+    thread runs on them, the parent is untouched (fork() writes them into the thread's reg only)."""
     be = Sessions.backend_for(parent_sid)
     if not (hasattr(be, "fork") and _sdk_ready()):
         return "threads need the SDK backend; this session runs on tmux, so there is nothing to fork.", None
@@ -5173,7 +5176,8 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", now=None):
         data.setdefault("threads", []).append(row)
         _save_comments(parent_sid, data)
     try:
-        be.fork(nm, parent_sid, cut, sid=tsid, thread_of=parent_sid)
+        be.fork(nm, parent_sid, cut, sid=tsid, thread_of=parent_sid,
+                model=str(model or ""), effort=str(effort or ""))
         be.connect(tsid)
         be.send(tsid, _comment_first_message(exact, text))
     except Exception as e:
@@ -6188,7 +6192,8 @@ def _drive(msg, client):
         # success a commentCreated ack names the new thread (the popover adopts exactly it — never a
         # guess) and the fresh {type:"comments"} frame rides straight back, ahead of the pusher cycle.
         err, tid = _comment_create(sid, str(msg["uuid"]), str(msg["exact"]), str(msg["text"]),
-                                   name=str(msg.get("name") or ""))
+                                   name=str(msg.get("name") or ""),
+                                   model=str(msg.get("model") or ""), effort=str(msg.get("effort") or ""))
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
         else:

@@ -3623,7 +3623,7 @@ class SdkBackend:
         return sid
 
     def fork(self, name: str, parent_sid: str, cut_uuid: str = "", bg: str = "", fg: str = "",
-             sid: str | None = None, thread_of: str = "") -> str:
+             sid: str | None = None, thread_of: str = "", model: str = "", effort: str = "") -> str:
         """Mint a NEW session that is a FORK of `parent_sid`'s conversation — up to `cut_uuid` when given
         (a transcript record uuid; empty = the whole conversation), the parent untouched either way (the
         user 2026-08-13). The new session gets its OWN sid, registry, name and identity colour — a fork
@@ -3667,6 +3667,17 @@ class SdkBackend:
             reg["threadOf"] = thread_of
         if parent.get("model") and parent["model"] != "default":
             reg["model"] = parent["model"]
+        # Per-fork model/effort OVERRIDES (the user 2026-08-17: a comment thread on a different model
+        # or effort, without touching the parent). Applied HERE, in the reg the first connect reads —
+        # never via set_model, whose write_sdk_default side effect would make a thread's pick the seed
+        # for every future session. 'default' clears the inherited model back to the account default.
+        if model:
+            if model == "default":
+                reg.pop("model", None)
+            else:
+                reg["model"] = model
+        if effort in EFFORT_LEVELS:
+            reg["effort"] = effort
         if parent.get("auth") in ("login", "key"):
             reg["auth"] = parent["auth"]
         write_reg(self.state_dir, sid, reg)
