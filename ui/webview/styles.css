@@ -1092,6 +1092,12 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    the stamp on purpose — context, not the time itself — and nowrap: fixed positioning escapes the
    pane's overflow clip, and the longest form ("2 weeks ago") clears the gutter into the turn
    padding, never over prose. */
+/* the user-message scroll notches (render.ts paintScrollMarks, the user 2026-08-17): passive fixed
+   chrome over the scroller's right edge, one 2px tick per user message at its proportional position.
+   The blue is the OUTGOING-BUBBLE blue (#2b6cef, "yours"), deliberately not the romp accent. */
+.scroll-marks { position: fixed; z-index: 3; pointer-events: none; width: 12px; }
+.scroll-marks .scroll-mark { position: absolute; right: 1px; width: 8px; height: 2px;
+  border-radius: 1px; background: #2b6cef; opacity: 0.65; }
 .rail-day {
   position: fixed; z-index: 3; pointer-events: none; white-space: nowrap;
   transform: translate(-100%, calc(-100% - 2px));
