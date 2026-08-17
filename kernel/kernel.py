@@ -4608,7 +4608,7 @@ def _apply_new_session_prefs(sid, body):
     return out
 
 
-def _create_sdk_session(nm, cwd, auth="", prefs=None):
+def _create_sdk_session(nm, cwd, auth="", prefs=None, client=None):
     """Create + open a new SDK-backed session, ACK-FAST (the user 2026-07-14, who asked why it took so long
     to open a new SDK session). spawn() is file writes and connect() is threaded (~0.4s to a booting
     CLI) — the 7-10s the user waited was the handler's inline _push_all(): a new session invalidates the
@@ -4627,19 +4627,27 @@ def _create_sdk_session(nm, cwd, auth="", prefs=None):
     kickoff fed into that dying client's stdin was cancelled mid-delivery and landed nowhere (a fresh
     spawn's briefing sat as a dropped echo for 5.5h on a conversation that never started, 2026-08-16).
     Pre-connect there is no session object yet, so the setters are pure reg writes the connect reads —
-    no reconnect exists to race. Returns (sid, echo) — echo is the applied-prefs ack for /new's reply."""
+    no reconnect exists to race. Returns (sid, echo) — echo is the applied-prefs ack for /new's reply.
+
+    The focus is aimed at `client` — the dashboard whose picker asked — per the per-viewer rule
+    (which tab you are looking at is yours, 2026-07-29). No client means NOBODY moves: the CLI's
+    POST /new has no dashboard in hand, and broadcasting its focus switched every open window's chat
+    to whatever session a terminal or a script just created (the user 2026-08-16, whose chats kept
+    jumping to sessions they had not touched). The tab itself still reaches every window via the
+    push."""
     bg, fg = _pick_identity_color()   # fleet-aware: only the kernel sees BOTH backends' live sessions
     _commands_for_cwd(cwd)   # pre-warm the slash-command list — a new session predicts a composer (the user 2026-08-13)
     sid = _sdk().spawn(nm, cwd, bg, fg, auth=auth)
     extra = _apply_new_session_prefs(sid, prefs or {})
     _sdk().connect(sid)    # eager-connect so the model lists immediately, not only after the 1st message
-    _reveal_chat({"type": "focus", "id": sid})
+    if client is not None:
+        _reveal_chat_for(client, {"type": "focus", "id": sid})
     _mark_views_dirty()
     _push_session_now(sid)   # the tab the user is staring at, ahead of the woken cycle
     return sid, extra
 
 
-def _fork_session(parent_sid, cut_msg_uuid, new_name, now=None):
+def _fork_session(parent_sid, cut_msg_uuid, new_name, now=None, client=None):
     """Fork `parent_sid`'s conversation into a NEW parallel session named `new_name` — from just BEFORE
     user message `cut_msg_uuid` when given (the chat's fork button; same _rewind_target resolution and
     guards as the edit/delete rewind, so "before this message" means the same thing everywhere), the
@@ -4675,7 +4683,8 @@ def _fork_session(parent_sid, cut_msg_uuid, new_name, now=None):
     bg, fg = _pick_identity_color()
     be.fork(nm, parent_sid, cut_uuid, bg, fg, sid=sid)
     be.connect(sid)          # eager-connect: the CLI copies the conversation and the tab fills in
-    _reveal_chat({"type": "focus", "id": sid})
+    if client is not None:   # the asker's window follows its fork; nobody else's chat moves
+        _reveal_chat_for(client, {"type": "focus", "id": sid})
     _mark_views_dirty()
     _push_session_now(sid)
     return None
@@ -5277,7 +5286,7 @@ def _comment_kill_all(parent_sid, be):
                 pass
 
 
-def _comment_promote(parent_sid, tid, new_name, now=None):
+def _comment_promote(parent_sid, tid, new_name, now=None, client=None):
     """Break a thread out into a FULL board session. Ordering contract (same as _fork_session):
     judge stores are seeded BEFORE promote_thread writes the names/ entry. The seeds run against
     the PARENT transcript at the ORIGINAL cut (the history the two transcripts share, verbatim),
@@ -5327,7 +5336,8 @@ def _comment_promote(parent_sid, tid, new_name, now=None):
         return _revert("couldn't promote this thread.")
     _comment_update(parent_sid, tid, status="promoted", promotedName=nm)
     started = be.connect(tsid)
-    _reveal_chat({"type": "focus", "id": tsid})
+    if client is not None:   # the promoter's window follows the new session; nobody else's chat moves
+        _reveal_chat_for(client, {"type": "focus", "id": tsid})
     _mark_views_dirty()
     _push_session_now(tsid)
     if not started:
@@ -6180,7 +6190,7 @@ def _drive(msg, client):
         # Fork this conversation into a NEW parallel session (the user 2026-08-13). uuid (optional) is the
         # user message the fork cuts just BEFORE — absent means the whole conversation. LOUD on refusal;
         # on success the new tab arrives focused via _fork_session's own push.
-        err = _fork_session(sid, str(msg.get("uuid") or ""), str(msg["name"]))
+        err = _fork_session(sid, str(msg.get("uuid") or ""), str(msg["name"]), client=client)
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
     elif t == "commentCreate" and msg.get("uuid") and msg.get("exact") and msg.get("text"):
@@ -6220,7 +6230,7 @@ def _drive(msg, client):
     elif t == "commentPromote" and msg.get("tid") and msg.get("name"):
         # Break the thread out into its own board session. LOUD on refusal; on success the new tab
         # arrives focused via _comment_promote's own push (the forkSession acknowledgement shape).
-        err = _comment_promote(sid, str(msg["tid"]), str(msg["name"]))
+        err = _comment_promote(sid, str(msg["tid"]), str(msg["name"]), client=client)
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
     elif t == "endSession":
@@ -6242,7 +6252,7 @@ def _drive(msg, client):
 def _reveal_or_confirm(sid, focus_msg, client=None):
     """Bring the chat to `sid`. LIVE → the focus message. DEAD → never silently reveal; pop the chat's
     confirmRevive modal (Revive / View read-only), bringing the chat forward (the user 2026-06-17: dead
-    = timeline-only, reopen on demand). Routing the prompt through _reveal_chat means a feed/timeline tap
+    = timeline-only, reopen on demand). Routing the prompt through _reveal_chat_for means a feed/timeline tap
     lands the modal in the chat, which owns it — even though the tap came from another pane.
 
     Where a CLIENT is in scope (every WS op that calls this), the reveal is aimed at that dashboard
@@ -6402,11 +6412,16 @@ def _split_host_id(sid):
     return (s[:i], s[i + 1:]) if i > 0 else ("", s)
 
 
-def _open_or_revive(sid, live=False):
+def _open_or_revive(sid, live=False, client=None):
     """openSession routing: a LIVE session → focus the chat (its tab is always shown); a DEAD one → the
     confirmRevive modal (no silent reopen, no auto read-only tab — the user 2026-06-17). `live` (the user
     2026-07-08): land the chat on its LIVE TAIL, not the last scroll — a blocked card's picker/permission
-    prompt is the live bottom, so its feed chip drops you right on it."""
+    prompt is the live bottom, so its feed chip drops you right on it.
+
+    `client` rides through to _reveal_or_confirm so the jump moves the ASKING dashboard alone. This was
+    the one click-op the per-viewer fix (2026-07-29) missed — its guard test counted _reveal_chat_for
+    call sites and the other branches satisfied the count — so every feed/fleet/picker tap kept
+    switching the chat in EVERY open window (the user 2026-08-16)."""
     if sid in _tmux_sessions():
         be = _sdk()
         if be:
@@ -6418,11 +6433,13 @@ def _open_or_revive(sid, live=False):
     focus = {"type": "focus", "id": sid}
     if live:
         focus["live"] = True
-    _reveal_or_confirm(sid, focus)
+    _reveal_or_confirm(sid, focus, client)
 
 
-def _revive_session(sid):
-    """Bring a DEAD session back, per backend, then un-hide its tab and focus the chat on it. SDK-owned
+def _revive_session(sid, client=None):
+    """Bring a DEAD session back, per backend, then un-hide its tab and focus the chat on it — the chat
+    of the dashboard that clicked Revive (`client`), not every open window's (the per-viewer rule; the
+    reviveFailed notice is aimed the same way, since only the asker has a revive loader up). SDK-owned
     (registry entry exists) → SdkBackend.resume + connect: alive again, resuming its newest transcript
     (lastSid) with history intact. Otherwise tmux → `romp <name> --resume <sid> --detach` in the session's
     recorded dir (dir resolution, picker-grace via bin/romp's own picker-check). Runs in a thread off the
@@ -6454,12 +6471,13 @@ def _revive_session(sid):
         ok, detail = False, str(e)[:200]
     if not ok:
         sys.stderr.write("revive '%s' (%s): %s\n" % (name, sid, detail))
-        _send_to_app("chat", {"type": "reviveFailed", "id": sid, "name": name,
-                              "text": detail or "unknown error"})
+        _send_to_view("chat", {"type": "reviveFailed", "id": sid, "name": name,
+                               "text": detail or "unknown error"}, (client or {}).get("wid") or "")
         return
     _kept_open.discard(sid)       # it's live again → no longer a read-only kept tab
     _push_all()                   # surface it promptly (the 4s pusher would catch it anyway)
-    _reveal_chat({"type": "focus", "id": sid})
+    if client is not None:        # the asker's revive loader clears on this focus; other windows stay put
+        _reveal_chat_for(client, {"type": "focus", "id": sid})
 
 
 # ─────────────────────────── TmuxBackend: the ONE place that shells tmux ───────────────────────────
@@ -18689,20 +18707,6 @@ def _heartbeat():
             sys.stderr.write("heartbeat: %s\n" % traceback.format_exc())
 
 
-def _reveal_chat(focus_msg):
-    """A cross-pane action that brings the chat forward (a feed/timeline session tap): focus the chat
-    clients AND tell the mobile shell (app=shell) to switch to its Chat tab. On desktop the shell
-    ignores the reveal (all three panes are visible at once), so this is a no-op there.
-
-    The shell half only ever reaches THIS kernel's own dashboards: a federated dashboard opens a socket
-    per host for each PANE, never for the shell, so a click on a remote host's session routes to that
-    host's kernel and its reveal lands nowhere. The chat pane therefore asks for the switch itself when
-    it takes a focus (render.ts revealSelfPane) — which covers every kernel, local included, and makes
-    this line a harmless duplicate rather than the only mover."""
-    _send_to_app("chat", focus_msg)
-    _send_to_app("shell", {"type": "reveal", "pane": "chat"})
-
-
 def _send_to_view(app, msg, wid):
     """Push to the clients of `app` belonging to ONE dashboard — the one whose `wid` this is. Which tab a
     viewer is looking at, and where in a transcript they jumped, is theirs alone: broadcasting it made two
@@ -18722,8 +18726,20 @@ def _send_to_view(app, msg, wid):
 
 
 def _reveal_chat_for(client, focus_msg):
-    """_reveal_chat, aimed at the dashboard that asked. Use this wherever a WS op is being handled: the
-    client IS the asker, so its wid names the one window that should follow the click."""
+    """Bring the chat forward for the dashboard that asked — and ONLY that one: the client IS the asker,
+    so its wid names the one window that should follow the click (which tab you are looking at is yours,
+    2026-07-29). This is the sole reveal path since 2026-08-16, when the last broadcast reveals
+    (create/fork/open/revive) were retired for switching every open window's chat; a caller with no
+    dashboard in hand (the CLI's POST /new) reveals to nobody instead of calling this with None —
+    None's empty wid would fall through to _send_to_view's legacy broadcast.
+
+    Focus the chat clients AND tell the mobile shell (app=shell) to switch to its Chat tab; on desktop
+    the shell ignores the reveal (all three panes are visible at once). The shell half only ever reaches
+    THIS kernel's own dashboards: a federated dashboard opens a socket per host for each PANE, never for
+    the shell, so a click on a remote host's session routes to that host's kernel and its shell reveal
+    lands nowhere. The chat pane therefore asks for the switch itself when it takes a focus (render.ts
+    revealSelfPane) — which covers every kernel, local included, and makes the shell line a harmless
+    duplicate rather than the only mover."""
     wid = (client or {}).get("wid") or ""
     _send_to_view("chat", focus_msg, wid)
     _send_to_view("shell", {"type": "reveal", "pane": "chat"}, wid)
@@ -22582,7 +22598,7 @@ refresh();   // self-schedules (fast while attaching, slow keep-alive otherwise)
 # Mobile shell behavior, layered on top of the desktop splitter above. The bottom tab bar (#mtabs,
 # shown only by the media query below) swaps which single iframe is full-screen by toggling `m-on`.
 # A cross-pane "reveal" auto-switches the visible tab: the kernel pushes {type:"reveal",pane} over an
-# app=shell WebSocket when a feed/timeline tap brings the chat forward (see _reveal_chat), and the
+# app=shell WebSocket when a feed/timeline tap brings the chat forward (see _reveal_chat_for), and the
 # timeline deep-link posts the same shape as a window message. The active tab persists in localStorage.
 # Entirely inert on desktop, where #mtabs is hidden and all three panes are shown at once.
 _LANDING_MOBILE_JS = """
@@ -25307,7 +25323,7 @@ class Handler(BaseHTTPRequestHandler):
                         # auth ('login'|'key') is the picker's per-session billing pick; anything else
                         # (older clients, no pick) means the remembered/ambient default (spawn's seed).
                         a = msg.get("auth")
-                        _create_sdk_session(nm, cwd, auth=(a if a in ("login", "key") else ""))
+                        _create_sdk_session(nm, cwd, auth=(a if a in ("login", "key") else ""), client=client)
                     else:
                         # NEVER silently fall back to tmux (the user asked for SDK and got a mystery tmux
                         # session on a remote host without the venv, 2026-07-02). Say what's missing.
@@ -25363,7 +25379,7 @@ class Handler(BaseHTTPRequestHandler):
         elif msg and msg.get("type") == "openSession" and msg.get("id"):
             # live → focus its (always-shown) tab; dead → the chat's confirmRevive modal. `live` lands on
             # the chat's LIVE TAIL (a blocked card's picker chip → right on the prompt, the user 2026-07-08).
-            _open_or_revive(msg["id"], live=bool(msg.get("live")))
+            _open_or_revive(msg["id"], live=bool(msg.get("live")), client=client)
         elif msg and msg.get("type") == "openFolder" and msg.get("cwd"):
             # A REMOTE session's folder icon must SSH out, not open a local path that doesn't exist here
             # (the user 2026-07-03) — federation.ts routes this message type to stay LOCAL with the id's
@@ -25377,7 +25393,7 @@ class Handler(BaseHTTPRequestHandler):
         elif msg and msg.get("type") == "reviveSession" and msg.get("id"):
             # confirmRevive → "Revive": resume the dead session in the background (the kernel had
             # no handler, so the modal's Revive silently did nothing — the user 2026-06-16)
-            threading.Thread(target=_revive_session, args=(msg["id"],), daemon=True).start()
+            threading.Thread(target=_revive_session, args=(msg["id"], client), daemon=True).start()
         elif msg and msg.get("type") == "viewReadOnly" and msg.get("id"):
             _kept_open.add(msg["id"])            # confirmRevive → "View read-only": this dead session
             #                                      gets a (struck) read-only tab now, without resuming it
