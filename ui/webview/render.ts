@@ -5373,9 +5373,22 @@ const commentPending = new Map<string, { text: string; t: number }[]>(); // tid 
 const commentDrafts = new Map<string, string>();                    // draft key → unsent popover text
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
 let pendingCommentAnchor: { sid: string; uuid: string; exact: string;
-  model?: string; effort?: string } | null = null; // create mode (+ the thread's own model/effort picks)
+  model?: string; effort?: string; color?: string } | null = null; // create mode (+ the thread's own picks)
 let pendingAdoptTid: string | null = null;                          // commentCreated ack that beat its frame
 let commentPopPos: { x: number; y: number } | null = null;
+
+// the popover's own file picker (the user 2026-08-17: the attach clip, like the chat's) — files
+// ship through the SAME dropFile flow; the droppedPath ack sees the open popover and lands there
+const cmtFilePicker = document.createElement("input");
+cmtFilePicker.type = "file";
+cmtFilePicker.multiple = true;
+cmtFilePicker.style.display = "none";
+cmtFilePicker.addEventListener("change", () => {
+  const sid = pendingCommentAnchor?.sid || openCommentKey?.sid || activeId;
+  Array.from(cmtFilePicker.files || []).forEach((f) => shipFileToHost(f, sid));
+  cmtFilePicker.value = "";
+});
+document.body.appendChild(cmtFilePicker);
 
 function closeCommentPop(): void {
   document.getElementById("cmt-pop")?.remove();
@@ -5547,8 +5560,21 @@ function styleCommentMark(m: HTMLElement, th: CommentThread): void {
     : "thread: click to open";
 }
 
+/** The comment's identity color (the user 2026-08-17): one of the session palette's colors,
+ *  DISTINCT from the parent session's and, where the palette allows, from every open tab's —
+ *  the same standing-out rule _pick_identity_color applies to new sessions, decided client-side
+ *  so the dialog can wear it before the thread exists. */
+function pickThreadColor(sid: string): string {
+  const parent = (sessions.get(sid)?.color?.bg || "").toLowerCase();
+  const worn = new Set<string>();
+  sessions.forEach((se) => { const c = (se.color?.bg || "").toLowerCase(); if (c) worn.add(c); });
+  (commentThreads.get(sid) || []).forEach((t) => { if (t.color) worn.add(t.color.toLowerCase()); });
+  const free = paletteColors.find((c) => !worn.has(c.toLowerCase()) && c.toLowerCase() !== parent);
+  return free || paletteColors.find((c) => c.toLowerCase() !== parent) || "#e8b220";
+}
+
 function openCommentComposer(sid: string, uuid: string, exact: string, x: number, y: number): void {
-  pendingCommentAnchor = { sid, uuid, exact };
+  pendingCommentAnchor = { sid, uuid, exact, color: pickThreadColor(sid) };
   openCommentKey = null;
   commentPopPos = { x, y };
   renderCommentPopover();
@@ -5649,10 +5675,11 @@ function commentSendFromPop(pop: HTMLElement): void {
     const nameBox = pop.querySelector(".cmt-name") as HTMLInputElement | null;
     const nm = (nameBox?.value || "").trim();
     if (nm && !/^[A-Za-z0-9._-]+$/.test(nm)) { nameBox?.classList.add("bad"); nameBox?.focus(); return; }
-    if (send) { send.disabled = true; send.textContent = "Commenting…"; }   // ack before the round-trip;
-    //                                       the draft survives until commentCreated adopts the thread
+    if (send) { send.disabled = true; send.classList.add("busy"); }   // ack before the round-trip (the ➤
+    //                                       dims); the draft survives until commentCreated adopts the thread
     vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact,
-      text, name: nm, model: create.model || "", effort: create.effort || "" });
+      text, name: nm, model: create.model || "", effort: create.effort || "",
+      color: create.color || "" });
     return;
   }
   const cur = openCommentThread();
@@ -5701,6 +5728,7 @@ function renderCommentPopover(): void {
   const head = el("div", "cmt-head");
   const title = el("span", "cmt-title");
   title.textContent = commentPopTitle(!!create, th);
+  if (th?.color) title.style.color = th.color;   // an existing thread's title wears its identity color
   let nameBox: HTMLInputElement | null = null;
   if (create) {
     // the name lives IN the header — "New comment: <name>" — bold and editable right there (the
@@ -5718,6 +5746,7 @@ function renderCommentPopover(): void {
       || ((sess0?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-")
           + "-comment-" + ((commentThreads.get(sid) || []).length + 1));
     nameBox.title = "The comment's name — edit it right here";
+    if (create.color) nameBox.style.color = create.color;   // its identity color, distinct from the parent's
     const nb = nameBox;
     nb.addEventListener("input", () => { nb.classList.remove("bad"); commentDrafts.set(nk, nb.value); });
   }
@@ -5733,12 +5762,17 @@ function renderCommentPopover(): void {
   // rebuild (a status flip) reopens where the user parked it. The header survives in-place
   // refreshes, so a drag is never cut by a comments frame; a full rebuild mid-drag just ends it.
   head.title = "Drag to move";
-  head.addEventListener("pointerdown", (ev: PointerEvent) => {
-    if ((ev.target as HTMLElement).closest(".cmt-x, .cmt-name")) return;   // editing the name is not a drag
+  // the WHOLE box drags (the user 2026-08-17), not just the header — any grip that isn't an
+  // interactive control or selectable text, and never the bottom-right resize corner
+  pop.addEventListener("pointerdown", (ev: PointerEvent) => {
+    const t = ev.target as HTMLElement;
+    if (t.closest(".cmt-x, .cmt-name, .cmt-input, .cmt-msgs, .cmt-quote, button, input, textarea, .meta-btn, .meta-menu")) return;
+    const pr = pop.getBoundingClientRect();
+    if (ev.clientX > pr.right - 18 && ev.clientY > pr.bottom - 18) return;   // the resize handle's corner
     ev.preventDefault();
     const dx = ev.clientX - pop.offsetLeft, dy = ev.clientY - pop.offsetTop;
-    head.setPointerCapture(ev.pointerId);
-    head.classList.add("dragging");
+    pop.setPointerCapture(ev.pointerId);
+    pop.classList.add("dragging");
     const move = (mv: PointerEvent) => {
       const x = Math.max(4, Math.min(mv.clientX - dx, window.innerWidth - pop.offsetWidth - 4));
       const y = Math.max(4, Math.min(mv.clientY - dy, window.innerHeight - 40));
@@ -5747,14 +5781,14 @@ function renderCommentPopover(): void {
       commentPopPos = { x, y };
     };
     const up = () => {
-      head.classList.remove("dragging");
-      head.removeEventListener("pointermove", move);
-      head.removeEventListener("pointerup", up);
-      head.removeEventListener("pointercancel", up);
+      pop.classList.remove("dragging");
+      pop.removeEventListener("pointermove", move);
+      pop.removeEventListener("pointerup", up);
+      pop.removeEventListener("pointercancel", up);
     };
-    head.addEventListener("pointermove", move);
-    head.addEventListener("pointerup", up);
-    head.addEventListener("pointercancel", up);
+    pop.addEventListener("pointermove", move);
+    pop.addEventListener("pointerup", up);
+    pop.addEventListener("pointercancel", up);
   });
   pop.appendChild(head);
   const quote = el("div", "cmt-quote");
@@ -5766,6 +5800,7 @@ function renderCommentPopover(): void {
     fillCommentMsgs(list, th);
     pop.appendChild(list);
   }
+  let metaRowPending: HTMLElement | null = null;   // appended under the composer row — the statusline position
   if (create) {
     // the thread's OWN model + effort (the user 2026-08-17): the same /models-fed choices the
     // chat's statusline selectors use, defaulting to what this session runs now — picking one
@@ -5773,14 +5808,18 @@ function renderCommentPopover(): void {
     const st = sessions.get(sid)?.status;
     const metaRow = el("div", "cmt-meta-row");
     const mkSel = (kind: "model" | "effort") => {
-      const btn = el("button", "cmt-meta") as HTMLButtonElement;
-      btn.type = "button";
+      // the statusline's own badge chrome (.meta-btn/.meta-label/.meta-caret) so the two stay in
+      // sync by construction (the user 2026-08-17), tinted from the /models list's shared colors
+      const btn = el("span", "meta-btn cmt-meta") as HTMLElement;
       const chosen = kind === "model" ? create.model : create.effort;
-      const inherit = kind === "model" ? (st?.model || "Default") : (st?.effort || "default");
-      const label = chosen
-        ? (META_CHOICES[kind].find((c) => c.value === chosen)?.label || chosen)
-        : inherit;
-      btn.textContent = (kind === "model" ? "Model: " : "Effort: ") + label;
+      const choice = chosen ? META_CHOICES[kind].find((c) => c.value === chosen) : null;
+      const label = el("span", "meta-label");
+      label.textContent = choice ? choice.label : (kind === "model" ? (st?.model || "Default") : (st?.effort || "default"));
+      const tint = choice?.color || (kind === "model" ? st?.modelColor : st?.effortColor);
+      if (tint && tint.length === 3) label.style.color = `rgb(${tint[0]},${tint[1]},${tint[2]})`;
+      const caret = el("span", "meta-caret");
+      caret.textContent = "▾";
+      btn.append(label, caret);
       btn.title = chosen ? "the comment runs on its own " + kind + "; this session keeps its"
         : "inherits this session's " + kind + " — click to pick another for the comment only";
       btn.addEventListener("click", (e) => {
@@ -5809,7 +5848,7 @@ function renderCommentPopover(): void {
       return btn;
     };
     metaRow.append(mkSel("model"), mkSel("effort"));
-    pop.appendChild(metaRow);
+    metaRowPending = metaRow;
   }
   if (create || th!.status !== "promoted") {
     const dk = create ? "new:" + create.uuid : th!.tid;
@@ -5824,13 +5863,25 @@ function renderCommentPopover(): void {
       if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); commentSendFromPop(pop); }
       else if (ev.key === "Escape") { ev.stopPropagation(); closeCommentPop(); }
     });
-    pop.appendChild(box);
-    const row = el("div", "cmt-actions");
+    const crow = el("div", "cmt-composer");   // the chat composer's shape: clip left, ➤ right
+    const attach = el("button", "cmt-attach") as HTMLButtonElement;
+    attach.type = "button";
+    attach.title = "Attach a file";
+    attach.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" '
+      + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+      + '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66'
+      + 'l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+    attach.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); cmtFilePicker.click(); });
     const send = el("button", "cmt-send") as HTMLButtonElement;
     send.type = "button";
-    send.textContent = create ? "Comment" : "Send";
+    send.textContent = "➤";
+    send.title = create ? "Comment (Enter)" : "Send (Enter)";
+    send.setAttribute("aria-label", create ? "Comment" : "Send");
     send.dataset.act = "cmtsend";
-    row.appendChild(send);
+    crow.append(attach, box, send);
+    pop.appendChild(crow);
+    if (metaRowPending) pop.appendChild(metaRowPending);   // model/effort under the box, like the chat
+    const row = el("div", "cmt-actions");
     if (th) {
       const br = el("button", "cmt-act") as HTMLButtonElement;
       br.type = "button";
@@ -5867,6 +5918,15 @@ function renderCommentPopover(): void {
     pop.appendChild(row);
   }
   document.body.appendChild(pop);
+  if (typeof ResizeObserver === "function") {
+    // resizing the BOX (resize: both) hands the extra room to the quoted context: the .sized class
+    // unlocks the quote's clamp; armed only after a real user resize, so the natural size stays tight
+    const w0 = pop.offsetWidth, h0 = pop.offsetHeight;
+    const ro = new ResizeObserver(() => {
+      if (Math.abs(pop.offsetWidth - w0) > 6 || Math.abs(pop.offsetHeight - h0) > 6) pop.classList.add("sized");
+    });
+    ro.observe(pop);
+  }
   const r = pop.getBoundingClientRect();
   const px = Math.max(8, Math.min(commentPopPos?.x ?? (window.innerWidth - r.width) / 2, window.innerWidth - r.width - 8));
   const py = Math.max(8, Math.min(commentPopPos?.y ?? 120, window.innerHeight - r.height - 8));
@@ -8010,13 +8070,13 @@ function elapsedMs(sinceMs: number | null): string {
 type MetaKind = "mode" | "model" | "effort" | "fast";
 // One dropdown entry. `sub` is the second line for a choice whose consequence is not obvious from its
 // label; `sdkOnly` drops the entry on a tmux session, whose backend cannot apply it.
-interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boolean }
+interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boolean; color?: number[] | null }
 // Model + effort choices come from the kernel's /models — the ONE list shared with the timeline lanes and the
 // judge-tier settings (the user 2026-07-02, who wanted one shared code path, not hardcoded in multiple places), so
 // the client holds no model literals (mirrors paletteColors above). Populated in place on load so META_CHOICES
 // keeps its reference; the session picker appends its own "Default" (use-the-CLI-default) sentinel — not a model.
-const MODEL_CHOICES: { label: string; value: string }[] = [];
-const EFFORT_CHOICES: { label: string; value: string }[] = [];
+const MODEL_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
+const EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
 fetch(kernelUrl("/models"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
   if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; MODEL_CHOICES.push(...d.models, { label: "Default", value: "default" }); }
   if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...d.efforts); }
@@ -9825,6 +9885,15 @@ window.addEventListener("message", (e: MessageEvent) => {
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
   }
   else if (m.type === "droppedPath" && typeof m.path === "string") {   // host-saved drop/paste/pick → a thumbnail, not path text (the user 2026-08-04)
+    const cbox = document.getElementById("cmt-pop")?.querySelector(".cmt-input") as HTMLTextAreaElement | null;
+    if (cbox) {
+      // a comment popover is open — its own clip shipped this file, so the path lands in ITS box
+      retirePendingShip(m.path);
+      cbox.value = (cbox.value ? cbox.value.trimEnd() + " " : "") + m.path + " ";
+      cbox.dispatchEvent(new Event("input"));   // the draft listener persists it
+      cbox.focus();
+      return;
+    }
     const owner = retirePendingShip(m.path) || activeId;               // the chip this ack answers names the OWNING composer (no-op for pickFile, which never ships)
     addComposerFile(owner, m.path);
     if (owner && sendOnShip.has(owner) && !(pendingShips.get(owner) || []).length) {

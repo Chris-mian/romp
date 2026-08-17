@@ -403,6 +403,7 @@ class FakeBackend:
              model="", effort=""):
         self.calls.append(("fork", name, parent_sid, cut_uuid, sid, thread_of))
         self.forked_meta = (model, effort)
+        self.forked_bg = bg
         return sid
 
     def connect(self, sid):
@@ -486,6 +487,31 @@ class CommentOps(CommentBase):
         self.assertEqual(self.be.forked_meta, ("haiku", "low"))
         km._comment_create(PARENT, "a1", "the cap", "Plain.")
         self.assertEqual(self.be.forked_meta, ("", ""), "no pick = inherit; the parent is never touched")
+
+    def test_the_comments_identity_color_rides_create_fork_row_and_frame(self):
+        _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?", color="#a3be8c")
+        self.assertEqual(self.be.forked_bg, "#a3be8c")
+        self.assertEqual(km._comment_thread(PARENT, tid)["color"], "#a3be8c")
+        self.assertEqual(km._comments_frame(PARENT)["threads"][0]["color"], "#a3be8c")
+        _, tid2 = km._comment_create(PARENT, "a1", "the cap", "Junk color.", color="not-a-hex")
+        self.assertEqual(self.be.forked_bg, "", "a non-hex color falls to the backend's own pick")
+        self.assertNotIn("color", km._comment_thread(PARENT, tid2))
+
+    def test_a_harness_task_notification_never_renders_as_the_users_words(self):
+        recs = self._parent_records()
+        t = self.now - 200
+        recs += [uline(t, km._comment_first_message("exponential backoff", "Why?"), "cu1", parent="a2"),
+                 uline(t + 5, "<task-notification>\n<task-id>b1</task-id>\n<status>stopped</status>"
+                       "\n</task-notification>", "tn1", parent="cu1"),
+                 aline(t + 10, "Because herds.", "ca1", parent="tn1")]
+        self._write(THREAD, recs)
+        (jd.SDKDIR / (THREAD + ".json")).write_text(json.dumps(
+            {"sid": THREAD, "name": "t", "cwd": self.cdir, "lastSid": THREAD,
+             "alive": True, "threadOf": PARENT}))
+        msgs = km._thread_messages(THREAD, "a2")
+        self.assertEqual([m["who"] for m in msgs], ["you", "agent"],
+                         "the harness notice is for the AGENT, not a popover bubble")
+        self.assertNotIn("task-notification", json.dumps(msgs))
 
     def test_a_refused_cut_leaves_no_thread_row_behind(self):
         err, tid = km._comment_create(PARENT, "missing-uuid", "text", "comment")
