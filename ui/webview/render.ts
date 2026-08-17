@@ -5699,7 +5699,21 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
   list.replaceChildren();
   const pend = prunePending(commentPending.get(th.tid) || [], th.msgs);
   commentPending.set(th.tid, pend);
-  for (const m of th.msgs) list.appendChild(commentMsgEl(m.who, m.text));
+  const evs = (th.events || []) as ChatEvent[];
+  if (evs.length) {
+    // the CHAT's own renderer, from the branch point on (the user 2026-08-17: the same component —
+    // rail dots, markdown, tool folds, notice cards — never a simplified twin). renderingSid keys
+    // the folds per thread, exactly as a chat tab would.
+    const saved = renderingSid;
+    renderingSid = th.tid;
+    let prev: number | null = null;
+    for (const ev of evs) {
+      list.appendChild(renderEvent(ev, prev, null));
+      const ep = eventEpoch(ev);
+      if (ep != null) prev = ep;
+    }
+    renderingSid = saved;
+  } else for (const m of th.msgs) list.appendChild(commentMsgEl(m.who, m.text));
   for (const p of pend) {
     const n = commentMsgEl("you", p.text);
     n.classList.add("pending");
@@ -5860,10 +5874,13 @@ function renderCommentPopover(): void {
     pop.addEventListener("pointercancel", up);
   });
   pop.appendChild(head);
-  const quote = el("div", "cmt-quote");
-  quote.textContent = create ? create.exact : th!.exact;
-  quote.title = "the highlighted passage this thread is about";
-  pop.appendChild(quote);
+  if (create || !(th!.events || []).length) {
+    // the chat-parity view opens ON the quoting message, so a second quote block would say it twice
+    const quote = el("div", "cmt-quote");
+    quote.textContent = create ? create.exact : th!.exact;
+    quote.title = "the highlighted passage this thread is about";
+    pop.appendChild(quote);
+  }
   if (th) {
     const list = el("div", "cmt-msgs");
     fillCommentMsgs(list, th);
@@ -5950,6 +5967,46 @@ function renderCommentPopover(): void {
     crow.append(attach, box, send);
     pop.appendChild(crow);
     if (metaRowPending) pop.appendChild(metaRowPending);   // model/effort under the box, like the chat
+    if (th && th.status === "open") {
+      // the thread is a real session under the hood — its model/effort switch LIVE through the
+      // chat's own ops (setModel/setEffort route by sid; be.owns makes the thread reachable)
+      const mrow = el("div", "cmt-meta-row");
+      const mkLive = (kind: "model" | "effort") => {
+        const btn = el("span", "meta-btn cmt-meta") as HTMLElement;
+        const label = el("span", "meta-label");
+        label.textContent = (kind === "model" ? (th.model || "Default") : (th.effort || "default"));
+        const choice = META_CHOICES[kind].find((c) => (label.textContent || "").toLowerCase().startsWith(c.value));
+        if (choice?.color && choice.color.length === 3)
+          label.style.color = `rgb(${choice.color[0]},${choice.color[1]},${choice.color[2]})`;
+        const caret = el("span", "meta-caret");
+        caret.textContent = "▾";
+        btn.append(label, caret);
+        btn.title = "the thread's own " + kind + " — switching it never touches the session it branched from";
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          closeMetaMenu();
+          const menu = el("div", "meta-menu");
+          for (const c of META_CHOICES[kind]) {
+            const item = el("div", "meta-item");
+            item.textContent = c.label;
+            item.addEventListener("click", (ev) => {
+              ev.stopPropagation();
+              vscodeApi?.postMessage({ type: kind === "model" ? "setModel" : "setEffort", id: th.tid, value: c.value });
+              closeMetaMenu();
+            });
+            menu.appendChild(item);
+          }
+          document.body.appendChild(menu);
+          const r2 = btn.getBoundingClientRect();
+          menu.style.left = r2.left + "px";
+          menu.style.top = (r2.bottom + 4) + "px";
+          metaMenuEl = menu;
+        });
+        return btn;
+      };
+      mrow.append(mkLive("model"), mkLive("effort"));
+      pop.appendChild(mrow);
+    }
     const row = el("div", "cmt-actions");
     if (th) {
       const br = el("button", "cmt-act") as HTMLButtonElement;
@@ -5958,18 +6015,15 @@ function renderCommentPopover(): void {
       br.title = "Continue this thread as its own session; it keeps everything it knows";
       br.dataset.act = "cmtbreak";
       row.appendChild(br);
-      if (th.status === "open") {
-        const rs = el("button", "cmt-act") as HTMLButtonElement;
-        rs.type = "button";
-        rs.textContent = "Resolve";
-        rs.title = "Settle this thread: the highlight dims, and replying reopens it";
-        rs.dataset.act = "cmtresolve";
-        row.appendChild(rs);
-      } else if (th.status === "resolved") {   // never for 'promoting' — the kernel would refuse anyway
+      // Resolve is GONE (the user 2026-08-17): an idle thread draws no usage and its transcript
+      // is on disk either way, so the real verbs are Break out and Delete. Legacy resolved rows
+      // still render dimmed and reopen on reply; they just can't be minted anymore. Never for
+      // 'promoting' — the kernel would refuse anyway.
+      if (th.status === "open" || th.status === "resolved") {
         const dl = el("button", "cmt-act cmt-del") as HTMLButtonElement;
         dl.type = "button";
         dl.textContent = "Delete";
-        dl.title = "Remove this thread and its highlight";
+        dl.title = "Remove this thread and its highlight (the conversation file stays on disk)";
         dl.dataset.act = "cmtdelete";
         dl.addEventListener("pointerleave", () => { dl.classList.remove("armed"); dl.textContent = "Delete"; });
         row.appendChild(dl);

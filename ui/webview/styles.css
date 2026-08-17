@@ -2475,7 +2475,7 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    below and the scroll-rail tick carry the states it used to) */
 
 .cmt-pop {
-  position: fixed; z-index: 120; width: 360px; max-width: 94vw;
+  position: fixed; z-index: 120; width: 440px; max-width: 94vw;
   resize: both; overflow: auto; min-width: 300px; min-height: 120px; max-height: 90vh;
   cursor: grab;                       /* the whole box drags (interactive children override below) */
   display: flex; flex-direction: column; gap: 6px; padding: 8px;
@@ -2508,6 +2508,9 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 }
 .cmt-pop.sized .cmt-msgs { flex: 2 1 auto; max-height: none; }
 .cmt-msgs { max-height: 45vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+/* chat-parity turns inside the popover (the user 2026-08-17): the chat's own .turn nodes, given a
+   little rail room; the popover's card is the backdrop, so no extra chrome */
+.cmt-msgs .turn { max-width: 100%; box-sizing: border-box; }
 .cmt-msg { padding: 5px 8px; border-radius: 6px; line-height: 1.35; overflow-wrap: anywhere; }
 .cmt-msg.you { background: color-mix(in srgb, var(--accent) 14%, transparent); align-self: flex-end; max-width: 92%; white-space: pre-wrap; }
 .cmt-msg.agent { background: rgba(255, 255, 255, 0.05); align-self: flex-start; max-width: 96%; }
