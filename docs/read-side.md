@@ -205,6 +205,61 @@ Completed card. No read-time DAG rebuild, no status derivation, no handoff repai
   once (batch `cleared`); an **undo** restores that batch if invoked right after.
   For sweeping away a stale backlog you know you don't care about.
 
+### Outline = the goal trees, with each goal's PR
+
+The Outline pane rides the feed payload's `ledgers` slice — one per-session
+`build_session` ledger, the same tree the ledger box draws. Alongside the tree, each
+session carries its **PR slice**, so a goal row can show the PR that goal shipped and
+that PR's live state:
+
+| key | on | what |
+|---|---|---|
+| `prNums` | each ledger node | the PRs this goal opened, filtered to the session's own repo |
+| `branch` | each session | the checkout's current branch (`""` when detached) |
+| `prNum` | each session | that branch's PR — the header chip, "what is this shipping right now" |
+| `prs` | each session | `{number: PR}` for the PRs this session references, each with a `live` flag |
+| `prError` | each session | why `gh` could not answer; **rendered**, never swallowed |
+
+How the two sides split the work, and why:
+
+- **The judge mines, the kernel filters.** `judge.goal_pr_refs` scans a goal's own
+  recorded segments for full PR urls. It runs every pass (not only at distill), because
+  a draft PR opened mid-goal has to show on a goal that is still open. It records refs
+  **unfiltered**: that side has the atoms but not the checkout. `kernel._node_pr_nums`
+  keeps only the session's own repo, since it is the side that knows the remote — and
+  treats an **empty owner** as "this repo", which is how a bare number read out of a
+  `gh pr …` command is stored (the command acted on the checkout it ran in).
+- **A goal owns the PRs it ACTED ON, not the ones it mentioned.** A segment contributes
+  refs only when it also holds the receipt: `gh pr create` / `edit` / `merge` / `ready` /
+  `close` / `reopen` / `comment` / `review`, or a `git push`. Read-only subcommands
+  (`view`, `list`, `checks`) are deliberately absent — looking at a PR is not acting on
+  it — and the pattern is anchored to command position so `grep -rn 'git push' docs/`
+  does not read as a push. Without this gate, live sessions attributed a stranger's PR
+  to a goal that had merely re-authenticated a cloud CLI, and two PRs to one that had
+  only read a design note.
+- **That trade is deliberate, and the header chip is its counterweight** (the user
+  2026-08-18). Strict receipts cost recall: a session whose PR was opened in an earlier
+  episode, or by an outside agent, shows no chip on its goals. Rather than loosen
+  attribution, the SESSION header carries its current branch's PR — so "what am I
+  shipping here" is always answerable even when no individual goal can claim it.
+- **Bare `#NNNN` is never mined.** It is ambiguous by construction — an internal
+  ticket or audit id wears exactly that shape — and a silently-wrong PR link is worse
+  than no link, the same call the path linkifier makes for shortened file mentions.
+- **`live` comes from the ahead count**, an event (a commit, a completed push), never
+  from an open-turn bit, which toggles at every turn boundary and would flap the chip
+  with no new information.
+- **`kernel/gitpr.py` owns every git and `gh` call** for this surface, so the
+  view-builder stays a pure assembler. One `gh` call per **repo**, cached and
+  invalidated by event: a moved HEAD sha, a branch change, or a rise in the
+  transcript's push / `gh pr` count — that last one because a push moves *remote*
+  state while HEAD and branch stay put, so nothing else in a build pass would notice
+  the checks restarting. The single interval in the module is a 30s poll that runs
+  **only** while some check is non-terminal and stops the moment they finish; CI
+  completing is genuinely external and has no local event to key on.
+- **A failed `gh` read serves nothing plus the reason**, never the previous answer:
+  yesterday's state presented as today's is the failure mode the authoritative-sources
+  rule exists to prevent.
+
 ### Timeline = segments as bars, with connectors and overlays
 
 - **Lanes**: one per session; each **segment** is a bar `[t, end]` (segments are
