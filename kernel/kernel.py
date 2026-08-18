@@ -5503,6 +5503,10 @@ def _sdk_locked():
                 append_prompt_path=(str(_SDK_PROMPT) if _SDK_PROMPT.exists() else None),
                 log=lambda m: sys.stderr.write("sdk-backend: %s\n" % m),
                 reconcile=True)   # boot reconcile: reap orphaned CLIs, resume cut turns, deliver persisted queues
+            # a limit-shaped judge error envelope pokes ONE exact usage poll (get_usage rides turn
+            # ends, so an idle fleet's usage.json goes stale — measured ~15h — and the rate gate is
+            # only as good as that file); the backend picks any live login session to ask
+            jd._USAGE_REFRESH_FN = getattr(_sdk_backend, "refresh_usage", None)   # best-effort hook (judge guards None)
         except Exception:
             sys.stderr.write("sdk-backend unavailable: %s\n" % traceback.format_exc())
             _sdk_problem("the SDK backend could not be built: %s" % traceback.format_exc())
@@ -16905,6 +16909,10 @@ def build_feed(now, tmux=None):
     for _a in asks:
         _a["notify"] = True if _notify_card_effective(_ncards, _a["itemId"], str(_a.get("sid") or "")) else None
     return {"type": "feed", "asks": asks, "now": now,
+            # usage-limit-down latch (judge-limit.json): analysis is paused because the account
+            # cannot bill judge calls — the dashboard must SAY so, never fail quietly into retries
+            # (the user 2026-08-18); self-expires at the window reset, cleared by the next success
+            "judgeLimit": jd._limit_down(),
             "working": working, "awaiting": awaiting,   # awaiting = idle-but-waiting-on-bg-work names → await-green dot (the user 2026-07-13)
             # listed-but-unreadable names → an explicit gray ring, so a BLANK pip means "alive and
             # quiet" and nothing else (see _state_unknown_names)
