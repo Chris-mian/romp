@@ -1750,6 +1750,14 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    it from the content above (the turn's own padding no longer wraps it). A standalone romp notice keeps its
    .turn dot. */
 .notice-nested { margin-top: 8px; }
+/* A standalone ROMP notice right-justifies like every other message FROM romp (the user 2026-08-18):
+   in the transcript, direction says who is speaking — the session from the left, romp and the user
+   from the right — and the kernel-restart/Retry notices wore the session's side, reading as session
+   output. Same card otherwise, with the bubbles' 72% width cap so it sits beside the nudges it
+   travels with. Other notice variants (an agent's report, folded reminders) ARE session-side
+   output and stay left. The dot and time marker are absolute, so the flex moves only the card. */
+.turn-notice.notice-romp { display: flex; flex-direction: column; align-items: flex-end; }
+.turn-notice.notice-romp > .notice-card { max-width: 72%; }
 .notice-head { display: flex; align-items: baseline; gap: 7px; font-size: 0.9em; }
 .notice-collapsible .notice-head { cursor: pointer; }
 .notice-caret { flex: 0 0 auto; font-size: 0.74em; opacity: 0.7; }
