@@ -65,6 +65,7 @@ def _drain_health():
         pass
     with jd._health_lock:
         jd._CALL_HEALTH["degraded"] = set()
+        jd._CALL_HEALTH["stats"] = {}
 
 
 class JudgeCallHealthEdge(unittest.TestCase):
@@ -208,10 +209,7 @@ class GiveUpWarnNamesTheError(unittest.TestCase):
         (jd.STATE / "usage.json").write_text(json.dumps(
             {"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
         jd._judge_ctx.last_call_fail = None
-        while jd.consume_judge_recovery():
-            pass
-        with jd._health_lock:
-            jd._CALL_HEALTH["degraded"] = set()
+        _drain_health()
 
     def _run_fake(self, envelope, model="opus"):
         def fake_run(cmd, input=None, capture_output=None, text=None, cwd=None, env=None, timeout=None):
@@ -266,6 +264,88 @@ class GiveUpWarnNamesTheError(unittest.TestCase):
         nd = {}
         jd._warn_summary_failed(nd, "distiller", T0)
         self.assertNotIn("last attempt failed", nd["warns"][0]["detail"])
+
+
+class ModelHealthDiagnosis(unittest.TestCase):
+    """_giveup_cause names the failing MODEL once its consecutive call failures reach the give-up cap —
+    a deterministic count, reset by that model's next served reply — and suggests the settings switch
+    when the sick model is the distill tier's (the user 2026-08-18: the banner and the chips must say
+    WHICH model is down and what to do about it)."""
+
+    def setUp(self):
+        jd.STATE.mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "usage.json").write_text(json.dumps(
+            {"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
+        _drain_health()
+
+    def tearDown(self):
+        _drain_health()
+        (jd.STATE / "distill-model").unlink(missing_ok=True)
+
+    def test_a_sick_model_is_named_with_its_last_error(self):
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd._mark_call_failed("opus", "API Error: Repeated 529 Overloaded errors.")
+        cause, ratelimited = jd._giveup_cause()
+        self.assertFalse(ratelimited)
+        self.assertIn("opus", cause, "the failing model is named")
+        self.assertIn("529 Overloaded", cause, "with its literal last error")
+
+    def test_the_distill_tiers_own_model_earns_the_switch_suggestion(self):
+        (jd.STATE / "distill-model").write_text("opus")
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd._mark_call_failed("opus", "API Error: Repeated 529 Overloaded errors.")
+        cause, _ = jd._giveup_cause()
+        self.assertIn("Switching the distill model", cause,
+                      "the give-ups ARE this model's — the fix is one settings click, so say so")
+
+    def test_below_the_cap_stays_generic(self):
+        jd._mark_call_failed("opus", "API Error: Repeated 529 Overloaded errors.")
+        cause, _ = jd._giveup_cause()
+        self.assertIn("errors or timeouts", cause, "one blip is not a diagnosis")
+
+    def test_a_served_reply_resets_the_diagnosis(self):
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd._mark_call_failed("opus", "API Error: Repeated 529 Overloaded errors.")
+        jd._mark_call_served("opus")
+        cause, _ = jd._giveup_cause()
+        self.assertIn("errors or timeouts", cause, "the model recovered — no stale blame")
+
+
+class AttemptLog(unittest.TestCase):
+    """The card's per-line attempt log (judge _fail_log): each failed summarizer try as when + model +
+    literal error, capped, cleared by that line's next success — the chip's hover history and the
+    modal's "What was tried" (the user 2026-08-18)."""
+
+    def tearDown(self):
+        jd._judge_ctx.last_call_fail = None
+
+    def test_appends_from_the_stash_and_caps(self):
+        nd = {}
+        jd._judge_ctx.last_call_fail = {"note": "API Error: Repeated 529 Overloaded errors.",
+                                        "model": "opus"}
+        for i in range(10):
+            jd._fail_log(nd, "summary", T0 + i)
+        self.assertEqual(len(nd["failLog"]), 8, "capped so a store never grows unbounded")
+        self.assertEqual(nd["failLog"][-1]["model"], "opus")
+        self.assertEqual(nd["failLog"][-1]["t"], T0 + 9)
+        self.assertIn("529 Overloaded", nd["failLog"][-1]["note"])
+
+    def test_clear_is_per_line(self):
+        nd = {}
+        jd._judge_ctx.last_call_fail = {"note": "boom", "model": "opus"}
+        jd._fail_log(nd, "summary", T0)
+        jd._fail_log(nd, "brief", T0 + 1)
+        jd._fail_log_clear(nd, "summary")
+        self.assertEqual([e["line"] for e in nd["failLog"]], ["brief"],
+                         "the landed line's rows drop; the other line's history stays")
+        jd._fail_log_clear(nd, "brief")
+        self.assertNotIn("failLog", nd)
+
+    def test_no_stashed_evidence_no_row(self):
+        nd = {}
+        jd._judge_ctx.last_call_fail = None
+        jd._fail_log(nd, "summary", T0)
+        self.assertNotIn("failLog", nd)
 
 
 class KernelRearmWiring(unittest.TestCase):
