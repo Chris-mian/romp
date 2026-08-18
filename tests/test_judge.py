@@ -3760,6 +3760,64 @@ class SweepSession(unittest.TestCase):
         jd.closer_llm = lambda tt, mt, *_a: (_ for _ in ()).throw(AssertionError("a stable closed turn must not be re-judged"))
         self.assertEqual(jd.run_close(now=self.now), 0, "unchanged closed turns are skipped (closedSig matches)")
 
+    def _refusing_closer(self, calls):
+        # a safeguards refusal exactly as _judge_run leaves it: "" back to the caller, the literal
+        # error stashed per-thread (the filter ruling on content, not model health)
+        return lambda tt, mt, *_a: (calls.append(1), setattr(
+            jd._judge_ctx, "last_call_fail",
+            {"note": "API Error: the model's safeguards flagged this message.", "model": "fable"}), "")[2]
+
+    def test_safeguards_refusals_tombstone_the_turn_at_the_cap(self):
+        # the 2026-08-18 storm: 2,955 refusals, all the closer re-asking the filter about the same
+        # transcript content every pass, unbounded — a content refusal is deterministic, so the cap
+        # sweeps the turn without verdicts (loud give-up row) instead of burning a call per pass forever
+        jd.run_plan(now=self.now)
+        calls = []
+        jd.closer_llm = self._refusing_closer(calls)
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd.run_close(now=self.now)
+        capped = len(calls)
+        self.assertEqual(capped, 2 * jd.DISTILL_FAIL_CAP, "two turns × cap attempts, then no more")
+        jd.run_close(now=self.now)
+        jd.run_close(now=self.now)
+        self.assertEqual(len(calls), capped, "tombstoned turns cost ZERO further calls")
+        store = jd.load_goals(SID)
+        tops = [nd for nd in store["nodes"].values() if nd["parentId"] is None]
+        self.assertTrue(all(not nd.get("nodeComplete") for nd in tops),
+                        "swept WITHOUT verdicts — no goal state was invented")
+        self.assertFalse(store.get("closeFails"), "strike records retire at the cap")
+
+    def test_a_grown_turn_re_judges_past_its_tombstone(self):
+        # the re-arm event is NEW EVIDENCE: growth re-enters through the same closedSig check that
+        # re-judges any closed turn — no clock, no manual step
+        path = next(p for f, p, a, n in jd.discover(self.now) if f == SID)
+        recs = [uline(T0, "fix the thing", "u1", ps="typed"),
+                aline(T0 + 30, "worked on it", "a1", "u1", stop="end_turn")]
+        Path(path).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        jd.run_plan(now=self.now)
+        calls = []
+        jd.closer_llm = self._refusing_closer(calls)
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd.run_close(now=self.now)
+        recs.append(aline(T0 + 200, "finished it end to end", "a2", "a1", stop="end_turn"))
+        Path(path).write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        jd.closer_llm = lambda tt, mt, *_a: '{"done": [{"goal": 1, "why": "finished"}]}'
+        n = jd.run_close(now=self.now)
+        self.assertGreaterEqual(n, 1, "the grown turn re-judged and completed the goal")
+
+    def test_transient_failures_never_tombstone(self):
+        # a 529/timeout recovers when the storm ends — those keep the plain retry-next-pass contract
+        jd.run_plan(now=self.now)
+        calls = []
+        jd.closer_llm = lambda tt, mt, *_a: (calls.append(1), setattr(
+            jd._judge_ctx, "last_call_fail",
+            {"note": "API Error: Repeated 529 Overloaded errors.", "model": "fable"}), "")[2]
+        for _ in range(jd.DISTILL_FAIL_CAP + 2):
+            jd.run_close(now=self.now)
+        self.assertEqual(len(calls), 2 * (jd.DISTILL_FAIL_CAP + 2),
+                         "still retrying every pass — transient failures never adopt the turn")
+        self.assertFalse(jd.load_goals(SID).get("closedTurns"), "nothing swept while the calls fail")
+
 
 class CloserKeyMigration(unittest.TestCase):
     """The closer's per-session 'already processed' set survives the sweep->close rename: it reads the
