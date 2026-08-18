@@ -5523,10 +5523,16 @@ function closeCommentPop(): void {
   pendingCommentAnchor = null;
 }
 
-// close on any press outside the popover (drafts persist in commentDrafts; reopening restores them)
+// close on any press outside the popover (drafts persist in commentDrafts; reopening restores them).
+// The model/effort dropdowns and the break-out dialog ride document.body, so popover containment
+// can't see them: without the exemption, pressing a menu item closed the box on mousedown and nulled
+// pendingCommentAnchor before the item's click could land the pick (the user 2026-08-18), and a
+// press inside the break-out dialog stranded its Cancel the same way (Escape-cancel kept the box).
 document.addEventListener("mousedown", (ev) => {
   const pop = document.getElementById("cmt-pop");
-  if (pop && !pop.contains(ev.target as Node)) closeCommentPop();
+  if (!pop || pop.contains(ev.target as Node)) return;
+  if ((ev.target as HTMLElement).closest?.(".meta-menu, #fork-prompt")) return;
+  closeCommentPop();
 }, true);
 
 /** Re-anchor every thread of `sid` onto its rendered turn: the exact-text <mark> plus the turn badge.
@@ -5870,6 +5876,16 @@ function commentSendFromPop(pop: HTMLElement): void {
   if (list) fillCommentMsgs(list, cur.th);      // the pending bubble IS the acknowledgement
 }
 
+/** A live thread's model/effort chip label: the frame's value, tinted from the shared /models
+ *  colors. Shared by the chip's build and the in-place refresh — the popover survives the pick
+ *  now, so the frame's fresh value must reach the label it left behind. */
+function liveMetaLabel(label: HTMLElement, kind: "model" | "effort", th: CommentThread): void {
+  label.textContent = kind === "model" ? (th.model || "Default") : (th.effort || "default");
+  const choice = META_CHOICES[kind].find((c) => (label.textContent || "").toLowerCase().startsWith(c.value));
+  label.style.color = choice?.color && choice.color.length === 3
+    ? `rgb(${choice.color[0]},${choice.color[1]},${choice.color[2]})` : "";
+}
+
 /** The popover — ONE pane-local card (no backdrop: the conversation stays readable beside it).
  *  Same thread still open → the conversation refreshes IN PLACE: the composer, its caret and the
  *  action row survive every comments frame (a full rebuild per push ate mid-press clicks and
@@ -5887,11 +5903,15 @@ function renderCommentPopover(): void {
   const status = th ? th.status : "";
   if (prev && prev.dataset.mode === mode && prev.dataset.tid === (th ? th.tid : create!.uuid)
       && prev.dataset.status === status) {
-    // in-place refresh: conversation + title only
+    // in-place refresh: conversation, title, and the live model/effort labels
     const t = prev.querySelector(".cmt-title") as HTMLElement | null;
     if (t) t.textContent = commentPopTitle(!!create, th);
     const list = prev.querySelector(".cmt-msgs") as HTMLElement | null;
     if (th && list) fillCommentMsgs(list, th);
+    if (th) for (const b of Array.from(prev.querySelectorAll(".meta-btn[data-kind]")) as HTMLElement[]) {
+      const lbl = b.querySelector(".meta-label") as HTMLElement | null;
+      if (lbl) liveMetaLabel(lbl, b.dataset.kind === "model" ? "model" : "effort", th);
+    }
     return;
   }
   const hadFocus = !!prev?.querySelector(".cmt-input:focus-within, .cmt-input:focus");
@@ -6066,11 +6086,9 @@ function renderCommentPopover(): void {
       const mrow = el("div", "cmt-meta-row");
       const mkLive = (kind: "model" | "effort") => {
         const btn = el("span", "meta-btn cmt-meta") as HTMLElement;
+        btn.dataset.kind = kind;
         const label = el("span", "meta-label");
-        label.textContent = (kind === "model" ? (th.model || "Default") : (th.effort || "default"));
-        const choice = META_CHOICES[kind].find((c) => (label.textContent || "").toLowerCase().startsWith(c.value));
-        if (choice?.color && choice.color.length === 3)
-          label.style.color = `rgb(${choice.color[0]},${choice.color[1]},${choice.color[2]})`;
+        liveMetaLabel(label, kind, th);
         const caret = el("span", "meta-caret");
         caret.textContent = "▾";
         btn.append(label, caret);
@@ -6085,6 +6103,8 @@ function renderCommentPopover(): void {
             item.addEventListener("click", (ev) => {
               ev.stopPropagation();
               vscodeApi?.postMessage({ type: kind === "model" ? "setModel" : "setEffort", id: th.tid, value: c.value });
+              label.textContent = c.label;   // acknowledge the pick now; the next comments frame is authoritative
+              if (c.color && c.color.length === 3) label.style.color = `rgb(${c.color[0]},${c.color[1]},${c.color[2]})`;
               closeMetaMenu();
             });
             menu.appendChild(item);
