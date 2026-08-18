@@ -21003,6 +21003,7 @@ _CHAT_MOBILE_CSS = (
     "@media (pointer:coarse) and (max-width:1024px){"
     "#tabbar{max-height:none;overflow:visible;position:relative;padding:6px 8px}"
     "#tabbar #tabs{display:none}"                       # the wrapping multi-row tab strip
+    "#tabbar-resize{display:none}"                      # nothing to resize under the mobile header
     "#mhdr{display:flex;align-items:stretch;gap:6px;width:100%}"
     "#mcur{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer;"
     "background:#2a2a2a;color:#dddddd;border:1px solid #3a3a3a;border-radius:6px;padding:7px 10px;"
@@ -21337,6 +21338,7 @@ def _timeline_page():
 def _chat_body():
     # ported from vscode-extension/src/page-skeleton.chatBody
     return ('<div id="winframe"></div><div id="tabbar"><span id="tabs"></span></div>'
+            '<div id="tabbar-resize" title="Drag to resize the tab strip"></div>'
             '<div id="ledger" style="display:none"></div>'
             # the live-ask picker lives INSIDE #content (the user 2026-06-27) so it flows at the bottom of the
             # transcript and scrolls WITH the chat history, instead of a fixed mini-window below it.
