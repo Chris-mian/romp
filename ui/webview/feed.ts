@@ -91,6 +91,7 @@ interface AskItem {
   background?: string | null;                      // distiller's BACKGROUND section: re-orientation for a reader who forgot the thread → the card's collapsed-by-default section above the takeaway (the user 2026-07-02)
   summaryAnchorUuid?: string | null;               // click the summary line → the completion turn's wrap-up block (kernel build_feed completed pin; cited/latest-prose fallbacks — the user 2026-07-14)
   warns?: { kind: string; t: number; msg: string; detail: string }[] | null;   // judge-stamped anomalies (judge _node_warn → kernel build_feed): yellow "warning" chip; click opens the detail modal (the user 2026-07-02)
+  failLog?: { t: number; line: string; model: string; note: string }[] | null;   // the summarizer's failed ATTEMPTS on this card (judge _fail_log): when, which line, which MODEL, the literal error — the chip's hover history + the modal's "What was tried" (the user 2026-08-18, who needed to SEE "tried opus — 529" ×3 to know switching the model would fix it)
   nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null; live?: boolean } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders). live = the sender's linked entry is still OPEN; false → the badge is PROVENANCE, dimmed (the completed-column merge, the user 2026-08-16)
@@ -609,7 +610,8 @@ function armRedistillWatch(itemId: string): void {
 }
 
 function feedWarnModal(cardTitle: string, warns: { kind: string; t: number; msg: string; detail: string }[],
-                       ctx?: { itemId: string; sid: string }): void {
+                       ctx?: { itemId: string; sid: string },
+                       failLog?: { t: number; line: string; model: string; note: string }[] | null): void {
   const back = el("div", "fconfirm-back fwarn-back");
   const box = el("div", "fconfirm-box fwarn-box");
   const head = el("div", "fwarn-head"); head.textContent = "Unexpected behavior";
@@ -621,6 +623,20 @@ function feedWarnModal(cardTitle: string, warns: { kind: string; t: number; msg:
     meta.textContent = w.kind + " · " + relAge(Math.max(0, Date.now() / 1000 - w.t));
     const body = el("div", "fwarn-detail"); body.textContent = w.detail || w.msg;
     entry.append(meta, body);
+    box.append(entry);
+  }
+  // The attempt log (the user 2026-08-18): each failed try as its own line — when, which model, the
+  // literal error — so a one-model outage reads as "tried opus — 529, tried opus — 529, …" at a glance
+  // instead of hiding inside prose. Chronological, capped at the kernel (judge _fail_log).
+  if (failLog && failLog.length) {
+    const entry = el("div", "fwarn-entry");
+    const meta = el("div", "fwarn-meta"); meta.textContent = "What was tried";
+    entry.append(meta);
+    for (const f of failLog) {
+      const row = el("div", "fwarn-detail");
+      row.textContent = `${clockHM(f.t)} · tried ${f.model} for the ${f.line} — ${f.note}`;
+      entry.append(row);
+    }
     box.append(entry);
   }
   const btns = el("div", "fconfirm-btns");
@@ -859,7 +875,8 @@ function makeAskCard(it: AskItem): HTMLElement {
     const ws = (card as any)._warnsData as AskItem["warns"];
     const wit = (card as any)._it as AskItem | undefined;   // freshest payload → the ids Try again posts with
     if (ws && ws.length) feedWarnModal((card as any)._title?.textContent || "", ws,
-                                       wit ? { itemId: wit.itemId, sid: wit.sid } : undefined);
+                                       wit ? { itemId: wit.itemId, sid: wit.sid } : undefined,
+                                       (card as any)._failLog as AskItem["failLog"]);
   };
   const waitOnBadge = el("span", "fask-waiton"); waitOnBadge.style.display = "none";   // "Awaiting <peer>" / "Deadlock <peer>", peer name in native colour (the user 2026-06-22)
   const blkBadge = el("a", "fask-blocked"); blkBadge.style.display = "none";   // ⏸ live permission/picker block → click opens the session
@@ -1530,12 +1547,17 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // When the warns are all GIVEN-UP summarizer lines, the chip SAYS so — "distill failed" (the user
   // 2026-08-13, who read the generic label as a mystery) — and its modal carries the Try again.
   a._warnsData = it.warns || null;
+  a._failLog = it.failLog || null;
   if (it.warns && it.warns.length) {
     const allDistill = it.warns.every((w) => DISTILL_FAIL_RE.test(w.kind));
     const lbl = allDistill ? "distill failed" : "warning";
     a._warnChip.style.display = "";
     a._warnChip.textContent = it.warns.length > 1 ? `${lbl} ×${it.warns.length}` : lbl;
-    a._warnChip.title = it.warns[it.warns.length - 1].msg + " — click for what happened and why";
+    // hover = the attempt history when one exists (the user 2026-08-18: "tried opus — 529" ×3 says
+    // what the prose can't — that ONE model keeps failing and switching it would fix this)
+    a._warnChip.title = (it.failLog && it.failLog.length
+      ? it.failLog.map((f) => `${clockHM(f.t)} tried ${f.model} — ${f.note}`).join("\n")
+      : it.warns[it.warns.length - 1].msg) + "\n— click for what happened and why";
   } else {
     a._warnChip.style.display = "none";
   }

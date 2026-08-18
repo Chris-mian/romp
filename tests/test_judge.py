@@ -5519,6 +5519,24 @@ class Distiller(unittest.TestCase):
         self.assertFalse(any(w.get("kind") == "brief-failed" for w in nd.get("warns") or []),
                          "a landed brief drops the give-up warn")
 
+    def test_failed_attempts_reach_the_cards_attempt_log(self):
+        # the chip's hover/modal history (the user 2026-08-18): every failed try lands as when + model +
+        # literal error, and the line's eventual success clears its rows
+        gid, now = self._blocked_goal()
+        jd.brief_llm = lambda g, w, ow="": (setattr(jd._judge_ctx, "last_call_fail",
+            {"note": "API Error: Repeated 529 Overloaded errors.", "model": "opus"}), "")[1]
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd.run_distill(now=now)
+        log = jd.load_goals(SID)["nodes"][gid].get("failLog") or []
+        self.assertEqual(len(log), jd.DISTILL_FAIL_CAP, "one row per failed attempt")
+        self.assertTrue(all(e["model"] == "opus" and "529" in e["note"] and e["line"] == "brief"
+                            for e in log), "each row carries the model and the literal error")
+        st = jd.load_goals(SID); st["nodes"][gid]["blockSummary"] = None; jd.save_goals(SID, st)
+        jd.brief_llm = lambda g, w, ow="": (setattr(jd._judge_ctx, "last_call_fail", None), "Decide A or B.")[1]
+        jd.run_distill(now=now)
+        self.assertNotIn("failLog", jd.load_goals(SID)["nodes"][gid],
+                         "the landed brief clears its line's attempt history")
+
     def test_a_landed_brief_ends_its_lines_giveup_era(self):
         # the mutation-test gap from the review (2026-08-18): with the success-path era pops deleted,
         # the whole suite still passed — so pin them through the REAL path: an auto-re-armed line whose

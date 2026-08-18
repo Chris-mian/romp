@@ -571,23 +571,39 @@ def _mid_elide(s, cap=6200):
 # and records the edge (_mark_call_served); the kernel consumes the edge between passes — its
 # single-writer window — and re-arms the give-up cards once per era (rearm_failed_summaries auto=True).
 # Process-global on purpose: every judge thread shares one API.
-_CALL_HEALTH = {"degraded": set(), "recovered": False}
+_CALL_HEALTH = {"degraded": set(), "recovered": False, "stats": {}}
 _health_lock = threading.Lock()
 
 
-def _mark_call_failed(model):
+def _mark_call_failed(model, note=""):
     """A judge call failed at the call level (subprocess error, timeout, error envelope, dead CLI) —
-    latch this model degraded; its next served reply is the recovery edge."""
+    latch this model degraded and bump its consecutive-fail count; its next served reply is the
+    recovery edge. The count + last error feed _giveup_cause's model-scoped diagnosis (the user
+    2026-08-18: when one model is down while the others serve, the banner and the chips must SAY so
+    and suggest the fix)."""
     with _health_lock:
         _CALL_HEALTH["degraded"].add(model)
+        s = _CALL_HEALTH["stats"].setdefault(model, {"fails": 0, "last": ""})
+        s["fails"] += 1
+        if note:
+            s["last"] = str(note)[:160]
 
 
 def _mark_call_served(model):
     """A judge call came back with a real reply — if THIS model had been failing, record the edge."""
     with _health_lock:
+        _CALL_HEALTH["stats"].pop(model, None)
         if model in _CALL_HEALTH["degraded"]:
             _CALL_HEALTH["degraded"].discard(model)
             _CALL_HEALTH["recovered"] = True
+
+
+def _sick_models():
+    """{model: {fails, last}} for every model whose CONSECUTIVE call-failure count has reached the
+    give-up cap — a deterministic count, reset by that model's next served reply, never a clock."""
+    with _health_lock:
+        return {m: dict(s) for m, s in _CALL_HEALTH["stats"].items()
+                if (s.get("fails") or 0) >= DISTILL_FAIL_CAP}
 
 
 def consume_judge_recovery():
@@ -984,7 +1000,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
             # so callers never double-log: to a caller every failed call is just "", and "call" rows always
             # carry the judge's own name + fsid (pre-07-09 rows said "index"/"triage" with no session).
             _judge_ctx.last_call_fail = {"note": type(e).__name__, "model": model}
-            _mark_call_failed(model)
+            _mark_call_failed(model, type(e).__name__)
             _log_judge_error(judge or tier, fsid, "call", note=type(e).__name__)
             return ""
         recv = time.time()                            # literal wall-clock: the response is back
@@ -1006,7 +1022,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
                     # per prompt, not model health (the 2026-08-18 closer storm: 2,955 flags on research
                     # transcripts while the same model served every other call). Latching it would flap
                     # the degraded→serving edge on every flag/success interleave.
-                    _mark_call_failed(model)
+                    _mark_call_failed(model, msg[:160])
                 _log_judge_error(judge or tier, fsid, "call",
                                  note="error envelope: %r" % msg[:160])
                 if _is_auth_error(msg):
@@ -1033,7 +1049,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
             _judge_ctx.last_call_fail = {
                 "note": "the model CLI died with no output (exit %s)" % getattr(p, "returncode", "?"),
                 "model": model}
-            _mark_call_failed(model)
+            _mark_call_failed(model, _judge_ctx.last_call_fail["note"])
             _log_judge_error(judge or tier, fsid, "call",
                              note="empty stdout (exit %s): %s"
                                   % (getattr(p, "returncode", "?"),
@@ -2693,6 +2709,30 @@ def _node_warn_clear(nd, kind):
         nd.pop("warns", None)
 
 
+def _fail_log(nd, line, now):
+    """Append this failed summarizer attempt — WHEN, which LINE, which MODEL, the literal ERROR — to the
+    card's attempt log (the user 2026-08-18: "tried opus — 529 Overloaded, tried opus — 529 …" on the
+    chip beats prose; seeing the same model fail thrice is what tells them to switch it). The evidence is
+    _judge_run's per-thread stash, read here in the same thread right after the failed call. Capped so a
+    store never grows unbounded; that line's next SUCCESS clears its rows (_fail_log_clear)."""
+    last = getattr(_judge_ctx, "last_call_fail", None)
+    if not isinstance(last, dict) or not last.get("note"):
+        return
+    log = [e for e in nd.get("failLog") or [] if isinstance(e, dict)]
+    log.append({"t": int(now), "line": line, "model": last.get("model") or "?",
+                "note": str(last["note"])[:160]})
+    nd["failLog"] = log[-8:]
+
+
+def _fail_log_clear(nd, line):
+    """A summarizer line landed — its attempt history is over; other lines' rows stay."""
+    log = [e for e in nd.get("failLog") or [] if isinstance(e, dict) and e.get("line") != line]
+    if log:
+        nd["failLog"] = log
+    else:
+        nd.pop("failLog", None)
+
+
 def _warn_surface(w):
     """Which card surface a warn annotates: "brief" (the blocked card's decision brief), "summary"
     (the completed card's takeaway), "stall" (the stalled card's stall note), or None (not
@@ -2739,6 +2779,18 @@ def _giveup_cause():
         pass
     if names:
         return ("the account's %s usage limit is maxed out" % " and ".join(names), True)
+    sick = _sick_models()
+    if sick:
+        # MODEL-SCOPED diagnosis (the user 2026-08-18): during the Opus-only 529 storm every give-up
+        # said "errors or timeouts" while every other tier served — the one fact that mattered (WHICH
+        # model, and that switching it would fix everything) was invisible. The count is deterministic:
+        # consecutive call failures per model, reset by that model's next served reply.
+        m = max(sick, key=lambda k: sick[k].get("fails") or 0)
+        cause = "calls on the %s model keep failing — %d in a row, most recently: %s" % (
+            m, sick[m].get("fails") or 0, (sick[m].get("last") or "an error with no message")[:120])
+        if m == _distill_model():
+            cause += ". Switching the distill model in settings retries everything that failed, immediately"
+        return (cause, False)
     return ("the summarizer kept hitting errors or timeouts", False)
 
 
@@ -9049,6 +9101,7 @@ def _distill_session(fsid, path, now):
                 if getattr(_judge_ctx, "paused", False):   # pause-skip, not a real failure (see the briefer)
                     continue
                 fails = nodes[top].get("stallFails", 0) + 1
+                _fail_log(nodes[top], "stall", now)    # the chip's attempt history: model + literal error
                 if fails >= DISTILL_FAIL_CAP:
                     if nodes[top].get("stallSummary") is None:
                         nodes[top]["stallSummary"] = ""
@@ -9073,6 +9126,7 @@ def _distill_session(fsid, path, now):
             nodes[top]["stalledMt"] = due
             nodes[top]["stallFails"] = 0
             _era_clear(nodes[top], "stall-failed")     # a landed note ends its line's give-up era (see rearm)
+            _fail_log_clear(nodes[top], "stall")
             _node_warn_clear(nodes[top], "stall-failed")
             _node_warn_clear(nodes[top], "stall-unreadable")
             n += 1; changed = True
@@ -9171,6 +9225,7 @@ def _distill_session(fsid, path, now):
                     # the "" sentinel though the API was never actually asked (the user 2026-07-03). Leave
                     # blockSummary null → re-enters next pass; retry once the pause clears.
                 fails = nodes[top].get("briefFails", 0) + 1   # the failed call itself was logged by _judge_run
+                _fail_log(nodes[top], "brief", now)    # the chip's attempt history: model + literal error
                 if fails >= DISTILL_FAIL_CAP:          # gave up after K tries → SELF-HEAL: settle to the ""
                     if nodes[top].get("blockSummary") is None:   # sentinel so the card stops showing
                         nodes[top]["blockSummary"] = ""          # "(generating…)" forever (the user 2026-06-24)
@@ -9207,6 +9262,7 @@ def _distill_session(fsid, path, now):
             nodes[top]["briefedMt"] = due
             nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
             _era_clear(nodes[top], "brief-failed")      # a landed brief ends its line's give-up era (see rearm)
+            _fail_log_clear(nodes[top], "brief")
             _node_warn_clear(nodes[top], "brief-failed")   # a brief landed → drop any earlier give-up warn
             _node_warn_clear(nodes[top], "brief-unreadable")   # …and any earlier orphaned-history warn
             n += 1; changed = True
@@ -9240,6 +9296,7 @@ def _distill_session(fsid, path, now):
             if getattr(_judge_ctx, "paused", False):   # pause-skip, not a real failure — don't count it toward
                 continue                               # give-up (leave summary null → re-enters once unpaused)
             fails = nodes[top].get("distillFails", 0) + 1   # the failed call itself was logged by _judge_run
+            _fail_log(nodes[top], "summary", now)      # the chip's attempt history: model + literal error
             if fails >= DISTILL_FAIL_CAP:              # gave up after K tries → SELF-HEAL to the "" sentinel
                 if nodes[top].get("summary") is None:  # so the card stops showing "(generating…)" forever
                     nodes[top]["summary"] = ""
@@ -9270,6 +9327,7 @@ def _distill_session(fsid, path, now):
         nodes[top]["distilledMt"] = due
         nodes[top]["distillFails"] = 0                 # success → reset the counter
         _era_clear(nodes[top], "summary-failed")       # a landed summary ends its line's give-up era (see rearm)
+        _fail_log_clear(nodes[top], "summary")
         _node_warn_clear(nodes[top], "summary-failed") # a summary landed → drop any earlier give-up warn
         _node_warn_clear(nodes[top], "summary-unreadable")   # …and any earlier orphaned-history warn
         n += 1; changed = True
