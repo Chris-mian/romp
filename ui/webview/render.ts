@@ -1813,41 +1813,51 @@ function paintRailSticky(): void {
   }
   const hm = marker ? (marker.dataset.hm || "") : "";
   // DAY CONTEXT (the user 2026-08-17): whichever stamp owns the top slot also names its DAY, in a
-  // small label riding just above it, whenever that day is not today — so scrolling through history
+  // small label riding just ABOVE it, whenever that day is not today — so scrolling through history
   // always says where you are even with the day divider off-screen. The anchor is the tracked turn's
-  // marker when there is one, else the first stamp below the line ("the next one"); its position is
-  // wherever that stamp sits (the line itself once the sticky leads), so the label moves WITH the
-  // leading stamp and the sticky handoff lands at the same pixel — no jump at the transition. The
-  // text swaps only at day boundaries.
+  // marker when there is one, else the first stamp below the line ("the next one"); the label moves
+  // WITH the leading stamp, and at handoff the sticky takes the very pixels the stamp and label held,
+  // so there is no jump at the transition. The text swaps only at day boundaries.
   const day = ensureRailDay();
   const firstBelow = all.find(([, top]) => top >= line);
   const anchorM = marker || (firstBelow ? firstBelow[0] : null);
-  // The label sits BELOW the top stamp, in the STAMP'S OWN BOX (same left/width, right-aligned like
-  // the time itself, so the two right edges line up by construction — the user 2026-08-17, whose
-  // first cut floated the label ABOVE the slot: at the top of the view that bled into the tab bar,
-  // and its transform-based alignment didn't match the stamp's). Below-stamp keeps it inside the
-  // pane at every scroll position, and the handoff stays seamless: a leading stamp carries its
-  // label at markerBottom, and the sticky shows it at the very same y when it takes over.
   const gRect = anyMarker ? anyMarker.getBoundingClientRect() : null;
-  const stampH = anchorM ? anchorM.getBoundingClientRect().height || 11 : 11;
-  const paintDay = (slotTop: number) => {
-    const ep = anchorM ? Number(anchorM.dataset.epoch || 0) : 0;
-    const label = ep && gRect ? dayContext(ep, Date.now()) : "";
-    const yTop = slotTop + stampH + 1;
-    if (!label || yTop > cBottom) { day.style.display = "none"; return; }
+  // ABOVE the stamp, not below (the user 2026-08-18, with a video): below it, the next incoming
+  // stamp scrolled straight through the label's spot and the label had to leap over it — a visible
+  // collision and jump at every handoff. Above it, nothing ever crosses the label's path. A leading
+  // real stamp always has room for its label inside the pane: markers sit 10–20px below their
+  // turn's top, and the label band (dayH + 1 ≈ 9.8px at the default 13px chat font) fits even the
+  // smallest 10px offset — barely, so the tab-bar clamp below backstops it. The sticky alone rests
+  // AT the line, so when a
+  // label shows, the slot line drops by the label's height to make that room (the 2026-08-17 first
+  // cut floated the label above the sticky without shifting it, and bled into the tab bar).
+  const ep = anchorM ? Number(anchorM.dataset.epoch || 0) : 0;
+  const label = ep && gRect ? dayContext(ep, Date.now()) : "";
+  let dayW = 0, dayH = 0;
+  if (label) {
     if (day.textContent !== label) day.textContent = label;
-    day.style.left = gRect!.left + "px";
-    day.style.width = gRect!.width + "px";
-    day.style.top = yTop + "px";
+    day.style.display = "";                        // must be visible to measure
+    const r = day.getBoundingClientRect(); dayW = r.width; dayH = r.height;
+  } else day.style.display = "none";
+  const slotLine = line + (label ? dayH + 1 : 0);
+  const paintDay = (slotTop: number) => {
+    if (!label) return;
+    if (slotTop > cBottom) { day.style.display = "none"; return; }   // anchor is off the bottom
+    // Natural width, right edge on the gutter's right edge (the stamp's own) — but never past the
+    // pane's left edge: "2 days ago" at 0.68em is wider than the 47px gutter, and a box pinned to
+    // the gutter clipped its leading digit at the pane edge (the user 2026-08-18, with a
+    // screenshot). When it doesn't fit, the label slides right just enough to stay whole.
+    day.style.left = Math.max(2, gRect!.right - dayW) + "px";
+    day.style.top = Math.max(cTop + 1, slotTop - dayH - 1) + "px";
     day.style.display = "";
   };
-  // The tracked turn's OWN stamp leads the top slot while it is at or below the line — it scrolls up freely
-  // until it reaches the line, and the instant it crosses ABOVE (markerTop < line) the sticky takes the same
-  // slot showing the same time, so the swap is invisible: no gap, no clipped sliver (the user 2026-07-23).
+  // The tracked turn's OWN stamp leads the top slot while it is at or below the slot line — it scrolls up
+  // freely until it reaches it, and the instant it crosses ABOVE (markerTop < slotLine) the sticky takes the
+  // same slot showing the same time, so the swap is invisible: no gap, no clipped sliver (the user 2026-07-23).
   // Deliberately keyed on the TRACKED turn's marker, not on any stamp anywhere: a LATER time change further
   // down the view is a different time, so it must not blank the top — that would leave the slot empty, which
   // is the whole thing the sticky exists to prevent.
-  const realLeads = markerShown && markerTop >= line;
+  const realLeads = markerShown && markerTop >= slotLine;
   if (!hm || realLeads) {
     stamp.style.display = "none";
     for (const [m] of all) m.style.visibility = "";   // real stamp leads → nothing suppressed
@@ -1855,17 +1865,22 @@ function paintRailSticky(): void {
     else day.style.display = "none";
     return;
   }
-  // The sticky leads: pin it at the line and hide every marker that has crossed ABOVE it, so the real stamp
-  // handing off never shows a clipped duplicate beside the sticky. Markers at or below the line stay visible —
-  // they are the genuine lower stamps, not doubles.
-  for (const [m, top] of all) m.style.visibility = top < line ? "hidden" : "";
+  // The sticky leads: pin it at the slot line and hide every marker that has crossed ABOVE it — or INTO
+  // its box: with the slot dropped for the day label, a not-yet-tracked turn's stamp (marker 10–20px below
+  // a turn top that has not reached the line) can enter the sticky's own band while still "below the slot
+  // line", and two HH:MM texts superimpose. The threshold is therefore the sticky's BOTTOM edge, so an
+  // incoming stamp slides under the sticky hidden and re-emerges only when it leads. With no label this
+  // changes nothing: slotLine === line, and a stamp inside [line, line+stampH) forces its own turn tracked
+  // (offsets ≥ stamp height), which is realLeads — this branch never runs. Markers at or below the sticky's
+  // bottom stay visible — they are the genuine lower stamps, not doubles.
   const g = (anyMarker || marker!).getBoundingClientRect();
+  for (const [m, top] of all) m.style.visibility = top < slotLine + g.height ? "hidden" : "";
   stamp.textContent = hm;
   stamp.style.left = g.left + "px";
   stamp.style.width = g.width + "px";
-  stamp.style.top = line + "px";
+  stamp.style.top = slotLine + "px";
   stamp.style.display = "";
-  paintDay(line);
+  paintDay(slotLine);
 }
 
 // Scroll is the sticky stamp's primary driver, and a re-render moves the geometry under it — both funnel
