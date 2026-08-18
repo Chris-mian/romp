@@ -51,7 +51,28 @@ class RedistillOverrideReplay(unittest.TestCase):
         nd = jd.load_goals(SID).get("nodes", {}).get(NID)
         self.assertIsNone(nd.get("summary"), '"" (gave up) → None (owed): the next pass re-runs the distiller')
         self.assertIsNone(nd.get("blockSummary"), "the blocked line re-arms the same way")
-        self.assertEqual(nd.get("distillFails"), 0, "the consecutive-fail counter starts over")
+        self.assertEqual(nd.get("distillFails"), 2,
+                         "the fail counter SURVIVES replay (2026-08-18): the journal replays on every "
+                         "load, so a per-load reset made DISTILL_FAIL_CAP unreachable — fails ping-ponged "
+                         "0↔1 forever, one doomed model call per pass from a single click; a real click "
+                         "only exists post-give-up anyway, where the give-up write already zeroed it")
+
+    def test_a_later_giveup_supersedes_the_click(self):
+        # the stand-down rule at the replay: the retry the click asked for ran and GAVE UP again — the
+        # re-stamped warn (newer than the click) is the judges ruling on a newer world, so the historical
+        # click must stop re-arming the card on every load (the eternal-click review finding)
+        _seed_store(summary="", fails=0)
+        jd.append_override(SID, NID, "redistill", 1781100100)
+        nd = jd.load_goals(SID)["nodes"][NID]            # the click answers THIS give-up: applies
+        self.assertIsNone(nd.get("summary"))
+        st = jd.load_goals(SID)                          # the retry re-gives-up: sentinel + NEWER warn
+        st["nodes"][NID]["summary"] = ""
+        st["nodes"][NID]["warns"] = [{"kind": "summary-failed", "t": 1781100200,
+                                      "msg": "synthetic msg", "detail": "synthetic detail"}]
+        jd.save_goals(SID, st)
+        nd = jd.load_goals(SID)["nodes"][NID]            # journal replays again on this load
+        self.assertEqual(nd.get("summary"), "",
+                         "a give-up stamped AFTER the click supersedes it — the click stands down")
 
     def test_replay_never_clobbers_a_line_that_succeeded_since(self):
         _seed_store(summary="", fails=0)
@@ -76,8 +97,10 @@ class RedistillOverrideReplay(unittest.TestCase):
 class RedistillReplayRecoveryExtensions(unittest.TestCase):
     """Try again reaches the give-ups the "" flip can't (2026-08-18): a give-up that KEPT an older real
     summary (a re-completion never blanks prior text) re-arms by clearing its event stamp — gated on the
-    live "*-failed" warn, so replays past a success stay no-ops; the stall line joins the family; and a
-    manual retry drops the era mark so the health-edge auto-rearm starts fresh."""
+    live "*-failed" warn, so replays past a success stay no-ops; and the stall line joins the family.
+    The replay deliberately leaves nd["autoRearmed"] ALONE: the journal replays on every load forever,
+    so a historical click erasing the era mark would defeat the one-auto-retry bound for good — the mark
+    clears only on that line's landed summary or a discrete recovery event."""
 
     def tearDown(self):
         for d in (jd.GOALDIR, jd._overrides_dir()):
@@ -116,7 +139,7 @@ class RedistillReplayRecoveryExtensions(unittest.TestCase):
         jd.append_override(SID, NID, "redistill", 1781100100)
         nd = jd.load_goals(SID)["nodes"][NID]
         self.assertIsNone(nd.get("stallSummary"), "the stall line re-arms like summary/blockSummary")
-        self.assertEqual(nd.get("stallFails"), 0, "the consecutive-fail counter starts over")
+        self.assertEqual(nd.get("stallFails"), 2, "the fail counter survives replay (see the flip test)")
         self.assertTrue(nd.get("autoRearmed"),
                         "the era mark SURVIVES replay: the journal replays on every load forever, so a "
                         "historical click erasing it would defeat the one-auto-retry bound for good — "

@@ -19208,9 +19208,27 @@ def _apply_judge_settings(body):
     the ack shows what actually landed, since an invalid value is deliberately ignored. The
     distill pair answers RAW ("triage" = following the triage pick), matching /version: the
     gear shows the user's choice, not its resolution."""
+    _dm_before = jd._distill_model()
     for key, setter in _JUDGE_SETTING_FIELDS:
         if isinstance(body, dict) and key in body:
             setter(str(body.get(key) or ""))
+    if jd._distill_model() != _dm_before:
+        # Switching the distill tier's EFFECTIVE model is a discrete recovery event (the user
+        # 2026-08-18, who pointed the tier away from an outage-scoped model and expected the failed
+        # cards to retry): re-arm every given-up summary/brief/stall line so the next pass retries on
+        # the new model, wake the producer so that pass starts now, and push so the cards trade their
+        # "distill failed" chip for the live "Distilling…" swirl immediately. The effective compare
+        # (jd._distill_model, not the raw field) also catches a triage-model change while the distill
+        # pick is "triage" (follow). Propagated picks land here too on each receiving kernel, so a
+        # switch made on one machine re-arms the whole mesh.
+        try:
+            _n = jd.rearm_failed_summaries(int(time.time()))
+            if _n:
+                sys.stderr.write("distiller: re-armed %d given-up card(s) — distill model changed\n" % _n)
+        except Exception:
+            sys.stderr.write("rearm-on-model-change: %s\n" % traceback.format_exc())
+        _producer_wake.set()
+        _push_all()
     return {"ok": True, "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),
             "judgeEffort": jd._triage_effort(), "indexEffort": jd._index_effort(),
             "distillModel": jd._state_str("distill-model", "triage"),

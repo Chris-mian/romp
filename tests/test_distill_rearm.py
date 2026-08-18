@@ -3,13 +3,19 @@
 failures (a 529 overload storm, an auth blip) that never engage the usage-limit retry-pause — so the one
 wired recovery edge never fired and the "distill failed" chip outlived the outage until a manual Try
 again. Under test here:
-  - the judge-call health latch: a "call" failure latches degraded; the first SERVED reply after it is
-    the degraded→serving edge, consumable exactly once (consume_judge_recovery);
-  - rearm_failed_summaries(auto=True), the edge's consumer: one automatic retry per give-up era
-    (nd["autoRearmed"]), while discrete events (startup, retry-pause clear, Try again) open a fresh era;
+  - the judge-call health latch, PER MODEL: a call-level failure latches that model degraded; the first
+    SERVED reply on the SAME model is the degraded→serving edge, consumable exactly once — a healthy
+    model's success is never the failing model's recovery (the Opus-scoped storm, where a Sonnet
+    captioner success fired the old model-blind edge mid-storm);
+  - rearm_failed_summaries(auto=True), the edge's consumer: one automatic retry per give-up era PER
+    LINE (nd["autoRearmed"] keyed by warn kind), gate-aware (a line whose summarizer gate cannot reopen
+    is skipped, not burned), while discrete events (startup, retry-pause clear, a distill-model switch)
+    open a fresh era;
   - a give-up that KEPT an older real summary (a re-completion never blanks prior text) re-arms by
     clearing its event stamp, since the "" flip cannot apply;
-  - "stall-failed" joins the scan/re-arm family (the staller's give-ups were invisible to both).
+  - "stall-failed" joins the scan/re-arm family, and an ENDED stall's warn retires on rollup instead of
+    inflating the fleet failure count forever;
+  - a safeguards refusal (the filter ruling on content) never latches the health edge.
 SYNTHETIC fixtures only (placeholder UUIDs, invented text)."""
 import json
 import os
@@ -33,15 +39,20 @@ NID = SID + ":g1"
 T0 = 1781100000
 
 
-def _warn(kind):
-    return [{"kind": kind, "t": T0, "msg": "synthetic msg", "detail": "synthetic detail"}]
+def _warn(kind, t=T0):
+    return {"kind": kind, "t": t, "msg": "synthetic msg", "detail": "synthetic detail"}
 
 
-def _seed(**nd_extra):
+def _seed(status="completed", warns=None, **nd_extra):
     store = jd.load_goals(SID)
+    store["rompUuid"] = SID
     nd = {"text": "ship the api", "parentId": None, "mt": T0}
+    if warns is not None:
+        nd["warns"] = warns
     nd.update(nd_extra)
     store["nodes"][NID] = jd.GuardedNode(nd)
+    if status:
+        store.setdefault("status", {})[NID] = status
     jd.save_goals(SID, store)
 
 
@@ -49,36 +60,37 @@ def _node():
     return jd.load_goals(SID)["nodes"][NID]
 
 
-def _drain_edge():
+def _drain_health():
     while jd.consume_judge_recovery():
         pass
+    with jd._health_lock:
+        jd._CALL_HEALTH["degraded"] = set()
 
 
 class JudgeCallHealthEdge(unittest.TestCase):
     def setUp(self):
         jd.STATE.mkdir(parents=True, exist_ok=True)
-        _drain_edge()
-        with jd._health_lock:
-            jd._CALL_HEALTH["degraded"] = False
+        _drain_health()
 
-    def test_first_served_reply_after_a_call_failure_is_one_edge(self):
-        jd._log_judge_error("captioner", None, "call", note="error envelope: 'Overloaded'")
+    def test_first_served_reply_on_the_failing_model_is_one_edge(self):
+        jd._mark_call_failed("opus")
         self.assertFalse(jd.consume_judge_recovery(), "a failure alone is not a recovery")
-        jd._mark_call_served()
-        self.assertTrue(jd.consume_judge_recovery(), "first served reply after a failure = the edge")
+        jd._mark_call_served("opus")
+        self.assertTrue(jd.consume_judge_recovery(), "the failing model serving again = the edge")
         self.assertFalse(jd.consume_judge_recovery(), "the edge is consumed exactly once")
 
-    def test_serving_while_healthy_is_not_an_edge(self):
-        jd._mark_call_served()
-        self.assertFalse(jd.consume_judge_recovery(), "no prior failure → nothing recovered")
+    def test_a_healthy_models_success_is_not_the_failing_models_edge(self):
+        # the 2026-08-18 storm: Opus-scoped 529s while Sonnet served — the old model-blind edge fired
+        # on every Sonnet success and spent each card's one automatic retry on a doomed Opus call
+        jd._mark_call_failed("opus")
+        jd._mark_call_served("sonnet")
+        self.assertFalse(jd.consume_judge_recovery(), "another model serving proves nothing about opus")
+        jd._mark_call_served("opus")
+        self.assertTrue(jd.consume_judge_recovery(), "opus itself serving is the real recovery")
 
-    def test_non_call_errors_do_not_latch_degraded(self):
-        # a parse reject / cite-miss is the MODEL's verdict on one prompt, not API sickness — the next
-        # served call must not read as a recovery and re-arm every give-up card in the deployment
-        jd._log_judge_error("planner", None, "parse", note="reply rejected")
-        jd._log_judge_error("distiller", None, "cite-miss", note="no SOURCE line")
-        jd._mark_call_served()
-        self.assertFalse(jd.consume_judge_recovery(), "only call-level failures arm the edge")
+    def test_serving_while_healthy_is_not_an_edge(self):
+        jd._mark_call_served("sonnet")
+        self.assertFalse(jd.consume_judge_recovery(), "no prior failure → nothing recovered")
 
 
 class RearmRecoveryEvents(unittest.TestCase):
@@ -86,13 +98,14 @@ class RearmRecoveryEvents(unittest.TestCase):
         for d in (jd.GOALDIR, jd._overrides_dir()):
             for f in d.glob("*"):
                 f.unlink()
+        (jd.STATE / "auto-nudge.json").unlink(missing_ok=True)
 
     def test_auto_rearm_retries_a_give_up_era_exactly_once(self):
-        _seed(summary="", distillFails=0, warns=_warn("summary-failed"))
+        _seed(summary="", distillFails=0, warns=[_warn("summary-failed")])
         self.assertEqual(jd.rearm_failed_summaries(T0 + 100, auto=True), 1)
         nd = _node()
         self.assertIsNone(nd.get("summary"), '"" (gave up) → None (owed): the next pass retries')
-        self.assertTrue(nd.get("autoRearmed"), "the era's one automatic retry is marked spent")
+        self.assertTrue(jd._era_spent(nd, "summary-failed"), "the line's one automatic retry is spent")
         # the retry re-gives-up (sentinel + warn re-stamped; the mark survives the give-up write)
         st = jd.load_goals(SID)
         st["nodes"][NID]["summary"] = ""
@@ -102,9 +115,9 @@ class RearmRecoveryEvents(unittest.TestCase):
                          "card whose own call is broken — one automatic retry per era")
 
     def test_a_discrete_event_rearms_and_opens_a_fresh_era(self):
-        _seed(summary="", warns=_warn("summary-failed"), autoRearmed=True)
+        _seed(summary="", warns=[_warn("summary-failed")], autoRearmed=True)   # legacy bool mark
         self.assertEqual(jd.rearm_failed_summaries(T0 + 300), 1,
-                         "startup / retry-pause clear re-arm regardless of the era mark")
+                         "startup / retry-pause clear / model switch re-arm regardless of the era mark")
         nd = _node()
         self.assertIsNone(nd.get("summary"))
         self.assertNotIn("autoRearmed", nd, "a discrete event opens a fresh era for the health edge")
@@ -112,23 +125,77 @@ class RearmRecoveryEvents(unittest.TestCase):
     def test_rearm_reenters_a_giveup_that_kept_an_older_summary(self):
         # a re-completion's give-up never blanks prior text — so there is no "" to flip; the stamp
         # clears instead and the gate re-enters with the prior summary intact
-        _seed(summary="Old takeaway.", distilledMt=T0, warns=_warn("summary-failed"))
+        _seed(summary="Old takeaway.", distilledMt=T0, warns=[_warn("summary-failed")])
         self.assertEqual(jd.rearm_failed_summaries(T0 + 100), 1)
         nd = _node()
         self.assertEqual(nd.get("summary"), "Old takeaway.", "the prior text is never clobbered")
         self.assertIsNone(nd.get("distilledMt"), "the cleared stamp is what re-enters the distiller")
 
     def test_an_already_owed_line_is_not_recounted(self):
-        _seed(summary=None, warns=_warn("summary-failed"))
+        _seed(summary=None, warns=[_warn("summary-failed")])
         self.assertEqual(jd.rearm_failed_summaries(T0 + 100), 0,
                          "None is already owed — nothing to flip, nothing to count")
 
-    def test_stall_failed_joins_the_scan_and_the_rearm(self):
-        _seed(stallSummary="", warns=_warn("stall-failed"))
+    def test_a_line_whose_gate_is_closed_is_skipped_not_burned(self):
+        # summary gate needs a completed/confirming top: re-arming a working card's summary line would
+        # flip a field nothing regenerates AND spend its era (the review's dead-surface finding)
+        _seed(status="working", summary="", warns=[_warn("summary-failed")])
+        self.assertEqual(jd.rearm_failed_summaries(T0 + 100, auto=True), 0)
+        nd = _node()
+        self.assertEqual(nd.get("summary"), "", "no flip on a closed gate")
+        self.assertFalse(jd._era_spent(nd, "summary-failed"), "and no era spent on it either")
+
+    def test_two_warn_card_retries_the_live_line_not_the_dead_one(self):
+        # the review's two-warn finding: an old stall's warn (no live stall → gate closed) must not
+        # consume the retry that the completed card's summary line — the one the user sees — needs
+        _seed(status="completed", summary="", stallSummary="",
+              warns=[_warn("stall-failed", T0), _warn("summary-failed", T0 + 50)])
+        self.assertEqual(jd.rearm_failed_summaries(T0 + 100, auto=True), 1)
+        nd = _node()
+        self.assertEqual(nd.get("stallSummary"), "", "the dead stall line is left alone")
+        self.assertIsNone(nd.get("summary"), "the live summary line gets the retry")
+        self.assertTrue(jd._era_spent(nd, "summary-failed"))
+        self.assertFalse(jd._era_spent(nd, "stall-failed"), "eras are per line, not per node")
+
+    def test_stall_failed_rearms_only_while_the_stall_is_live(self):
+        _seed(status="working", stallSummary="", warns=[_warn("stall-failed")])
         scan = jd.judge_failure_scan()
         self.assertEqual(scan["count"], 1, "a given-up stall note counts toward the banner")
-        self.assertEqual(jd.rearm_failed_summaries(T0 + 100), 1)
-        self.assertIsNone(_node().get("stallSummary"), "the stall note re-arms like the other lines")
+        self.assertEqual(jd.rearm_failed_summaries(T0 + 100), 0, "no live stall → nothing to retry")
+        jd.STATE.mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps(
+            {"deferred": {NID: {"why": "reviver-hold", "at": T0}}}))
+        self.assertEqual(jd.rearm_failed_summaries(T0 + 200), 1)
+        self.assertIsNone(_node().get("stallSummary"), "a live stall's note re-arms like the other lines")
+
+
+class StallWarnRetires(unittest.TestCase):
+    """An ENDED stall's give-up warn retires on rollup (the review finding: once stall-failed joined the
+    fleet scan, an un-stalled card's warn had no clear path and inflated the top banner forever)."""
+
+    def tearDown(self):
+        for f in jd.GOALDIR.glob("*"):
+            f.unlink()
+        (jd.STATE / "auto-nudge.json").unlink(missing_ok=True)
+
+    def test_an_ended_stalls_warn_retires_on_rollup(self):
+        _seed(status="working", stallSummary="", warns=[_warn("stall-failed")])
+        store = jd.load_goals(SID)
+        jd.rollup_status(store, False)                 # no live stall record → the stall is over
+        self.assertFalse(any(w.get("kind") == "stall-failed"
+                             for w in (store["nodes"][NID].get("warns") or [])),
+                         "the warn retires with the surface — the banner count can reach zero again")
+
+    def test_a_live_stalls_warn_survives_rollup(self):
+        jd.STATE.mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps(
+            {"deferred": {NID: {"why": "reviver-hold", "at": T0}}}))
+        _seed(status="working", stallSummary="", warns=[_warn("stall-failed")])
+        store = jd.load_goals(SID)
+        jd.rollup_status(store, False)
+        self.assertTrue(any(w.get("kind") == "stall-failed"
+                            for w in (store["nodes"][NID].get("warns") or [])),
+                        "a live stall keeps its warn — the failure is still current")
 
 
 class GiveUpWarnNamesTheError(unittest.TestCase):
@@ -141,6 +208,10 @@ class GiveUpWarnNamesTheError(unittest.TestCase):
         (jd.STATE / "usage.json").write_text(json.dumps(
             {"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
         jd._judge_ctx.last_call_fail = None
+        while jd.consume_judge_recovery():
+            pass
+        with jd._health_lock:
+            jd._CALL_HEALTH["degraded"] = set()
 
     def _run_fake(self, envelope, model="opus"):
         def fake_run(cmd, input=None, capture_output=None, text=None, cwd=None, env=None, timeout=None):
@@ -158,6 +229,22 @@ class GiveUpWarnNamesTheError(unittest.TestCase):
         st = jd._judge_ctx.last_call_fail
         self.assertIn("529 Overloaded", st["note"])
         self.assertEqual(st["model"], "opus")
+
+    def test_an_error_envelope_latches_the_models_health(self):
+        self._run_fake({"is_error": True, "result": "API Error: Repeated 529 Overloaded errors."})
+        jd._mark_call_served("opus")
+        self.assertTrue(jd.consume_judge_recovery(), "the envelope failure latched opus degraded")
+
+    def test_a_safeguards_refusal_never_latches_the_health_edge(self):
+        # the filter ruling on one call's CONTENT — deterministic per prompt, not model health; latching
+        # it would flap the edge on every flag/success interleave (the closer storm, 2,955 flags)
+        self._run_fake({"is_error": True,
+                        "result": "API Error: the model's safeguards flagged this message."},
+                       model="fable")
+        st = jd._judge_ctx.last_call_fail
+        self.assertIn("safeguards", st["note"], "the evidence still reaches the warn")
+        jd._mark_call_served("fable")
+        self.assertFalse(jd.consume_judge_recovery(), "a content refusal is not API degradation")
 
     def test_a_served_reply_retires_the_stash(self):
         self._run_fake({"is_error": True, "result": "API Error: Repeated 529 Overloaded errors."})
@@ -182,8 +269,8 @@ class GiveUpWarnNamesTheError(unittest.TestCase):
 
 
 class KernelRearmWiring(unittest.TestCase):
-    """Source pins on the kernel's two recovery-event call sites (the RedistillOpWiring precedent —
-    the wiring is a few lines inside 400-line functions no unit test can enter cheaply)."""
+    """Source pins on the kernel's recovery-event call sites (the RedistillOpWiring precedent —
+    the wiring is a few lines inside functions no unit test can enter cheaply)."""
 
     @classmethod
     def setUpClass(cls):
@@ -207,6 +294,17 @@ class KernelRearmWiring(unittest.TestCase):
         seg = src[i_edge:]
         self.assertIn("rearm_failed_summaries", seg[:400], "the consumed edge drives the auto re-arm")
         self.assertIn("auto=True", seg[:400], "the health edge is the era-bounded auto path")
+
+    def test_a_distill_model_switch_rearms_wakes_and_pushes(self):
+        # the user 2026-08-18: switching the distill model away from an outage-scoped one must itself
+        # retry everything that failed — and show it on the board immediately
+        import inspect
+        src = inspect.getsource(self.km._apply_judge_settings)
+        self.assertIn("jd._distill_model()", src,
+                      "the EFFECTIVE model is compared — a triage change while following counts too")
+        self.assertIn("rearm_failed_summaries", src, "the switch is a discrete recovery event")
+        self.assertIn("_producer_wake.set()", src, "the retry pass starts now, not at the next tick")
+        self.assertIn("_push_all()", src, "the swirl replaces the chip immediately")
 
 
 if __name__ == "__main__":
