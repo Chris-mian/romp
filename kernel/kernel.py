@@ -18721,7 +18721,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     cmap_grad = [list(cm.ramp(v, ctx_stops)) for v in (0.12, 0.34, 0.56, 0.78, 1.0)]
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "views": _timeline_views(),
-            "palette": pal.colors(),   # group color choices — the same set sessions draw identity colors from
+            "palette": pal.colors(_palette_name()),   # group color choices — the same set sessions draw identity colors from
             "messages": messages, "judging": judging,
             "cmapGrad": cmap_grad,
             "activeChat": None, "focus": None, "hover": None, "usage": _usage_for_client()}
