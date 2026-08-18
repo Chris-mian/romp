@@ -79,13 +79,18 @@ class SpawnedSessionPath(unittest.TestCase):
 
     def test_options_pass_the_overlay(self):
         src = Path(os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py")).read_text()
-        self.assertIn("env=_bin_on_path_env(os.environ)", src,
+        self.assertIn('env={**_bin_on_path_env(os.environ), "ROMP_SID": str(sess.sid),', src,
                       "_options wires the overlay through the SDK's designed env field")
 
 
 class CliSendEchoesRouting(unittest.TestCase):
     def _send(self, resp):
         saved_http, saved_ensure = ps._http, ps.ensure
+        saved_name, saved_id = ps.my_name, ps.my_id
+        # the sender must be IDENTIFIED (2026-08-18: an anonymous send is refused before _http —
+        # the guard these routing tests would otherwise trip in CI, where no session env exists);
+        # this class tests echo ROUTING, and its scenario always implied an identified sender
+        ps.my_name, ps.my_id = (lambda: "alpha"), (lambda: "uuid-a")
         ps.ensure = lambda: True
         ps._http = lambda method, path, payload=None: resp
         out = io.StringIO()
@@ -96,6 +101,7 @@ class CliSendEchoesRouting(unittest.TestCase):
         finally:
             ps.sys.stdout = saved_out
             ps._http, ps.ensure = saved_http, saved_ensure
+            ps.my_name, ps.my_id = saved_name, saved_id
         return rc, out.getvalue()
 
     def test_local_delivery_still_reads_delivered(self):

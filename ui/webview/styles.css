@@ -66,7 +66,8 @@ html, body {
   background: var(--bg); color: var(--fg);
   font-family: var(--sans); font-size: var(--fs); line-height: 1.6;
 }
-body { display: flex; flex-direction: column; }
+body { display: flex; flex-direction: column; overflow-x: hidden; }   /* the chat pane NEVER scrolls
+   sideways (the user 2026-08-16) — a wide child is a layout bug to fix, not a scroll to offer */
 /* a 2px NEUTRAL frame around the WHOLE pane — drawn as a fixed overlay ON TOP so the tab bar /
    composer backgrounds can't paint over it. pointer-events:none so it never blocks clicks. The
    session's identity color now lives on the conversation RAIL instead (the user 2026-06-15). */
@@ -80,8 +81,10 @@ body { display: flex; flex-direction: column; }
   display: flex; align-items: flex-start; gap: 4px;
   padding: 5px 8px 0;
   flex: 0 0 auto;
-  /* wrap tabs onto extra rows; only scroll once they'd eat ~4+ rows */
-  max-height: 150px; overflow-y: auto; overflow-x: hidden;
+  /* wrap tabs onto extra rows; only scroll once they'd eat ~4+ rows. The cap rides a VAR so the
+     #tabbar-resize drag can move it while the mobile page's max-height:none still wins over it
+     (an inline max-height would override that media rule and clip the mobile header) */
+  max-height: var(--tabbar-cap, 150px); overflow-y: auto; overflow-x: hidden;
   border-bottom: 1px solid var(--box-border);
   background: var(--vscode-sideBar-background, var(--bg));
 }
@@ -89,6 +92,23 @@ body { display: flex; flex-direction: column; }
    2026-08-08): the strip trades its empty inter-tab space for room for the per-tab context gauge —
    the active/hover fills and per-tab padding still separate neighbours visually. */
 #tabs { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 0; }
+/* Drag handle straddling the tab strip's bottom border (the user 2026-08-18): the strip scrolls past
+   its max-height cap, which clipped the fifth row of a many-session strip with no way to see more.
+   Drag DOWN for more rows, UP for fewer; double-click resets; the strip stays a scroll pane at every
+   size. A SIBLING below #tabbar (a child would scroll away with the rows) whose negative margins
+   cancel its 7px grab zone, so it costs zero layout height — the #composer-resize affordance, worn
+   the same way. */
+#tabbar-resize {
+  position: relative; z-index: 6; flex: 0 0 auto;
+  height: 7px; margin: -3px 0 -4px;   /* 2px over the last tab row (net of the border), 4px over the transcript's top padding — tabs are interactive, the padding isn't */
+  cursor: ns-resize; touch-action: none;
+}
+#tabbar-resize::after {
+  content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 36px; height: 3px; border-radius: 2px; background: var(--box-border); transition: background 0.12s, width 0.12s;
+}
+#tabbar-resize:hover::after, #tabbar-resize.dragging::after { background: var(--accent); width: 52px; }
+body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 /* (the settings gear + modal live on the TIMELINE now — see ui/romp-timeline-view.js) */
 
 .tab {
@@ -151,7 +171,7 @@ body { display: flex; flex-direction: column; }
 .tab.tab-awaiting, .tab.tab-blocked, .tab.tab-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
-.tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the straw chip (the user 2026-07-13) */
+.tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the await-green chip (the user 2026-07-13) */
 /* state UNKNOWN: a hollow ring in the same "can't see it" gray the network strip paints a down host
    (the `#8a8a8a` in strip.ts's status-dot colour pick) — no-information rendered as itself, so a
    bare tab never has to carry that meaning. */
@@ -457,7 +477,7 @@ body { display: flex; flex-direction: column; }
 .bg-stop:disabled { opacity: 0.55; cursor: default; }
 .bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
 .bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }
-.bg-fold-head.bg-await { --bgt: var(--st-awaitbg-bg); }   /* the Awaiting why header — straw, like its chip */
+.bg-fold-head.bg-await { --bgt: var(--st-awaitbg-bg); }   /* the Awaiting why header — await-green, like its chip */
 .bg-fold-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 /* level 2: a flat list of task LINES (no boxes) BELOW the header, fills the box and scrolls when many */
 .bg-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
@@ -544,6 +564,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .composer-file-pending { gap: 6px; padding: 4px 8px; border-radius: 6px; cursor: default;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   border: 1px dashed color-mix(in srgb, var(--accent) 35%, transparent); }
+/* a held send (waiting for an upload to finish — render.ts sendOnShip): dimmed, not disabled;
+   clicking re-opens the same confirm, so the state is always inspectable */
+#composer-send.send-held { opacity: 0.45; }
 .composer-ship-dots { display: inline-flex; gap: 3px; }
 .composer-ship-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
   animation: ship-bnc 1.1s ease-in-out infinite; }
@@ -558,6 +581,37 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 }
 .composer-chip-mark { color: var(--accent); font-weight: 600; }
 .composer-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42ch; }
+/* STAGED messages (the user 2026-08-15): held in the composer until the next send — deliberately NOT
+   the queued idiom (queued = sent, awaiting injection; these are unsent by choice). Same chip anatomy
+   as citations, its own read: a dashed accent edge instead of the pill, no hourglass; the head wears
+   the queued-head size (labels match labels). */
+/* the three composer strips are wrapped flex ITEMS of #composer: without flex-basis 100% +
+   min-width 0 their min-content width is a nowrap child's full intrinsic width, so one long staged
+   line refused to shrink, blew the strip past the pane and dragged a horizontal scroll with it (the
+   user 2026-08-16, screenshot) — the ellipsis never got the chance to engage */
+#composer-files, #composer-staged, #composer-chips { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+#composer-staged { flex-direction: column; gap: 3px; padding: 5px 8px 0; }
+.staged-head { display: flex; align-items: center; gap: 8px; font-size: 0.78em; color: var(--dim); letter-spacing: 0.02em; }
+.staged-head .staged-go { margin-left: auto; background: none; border: 1px solid var(--accent); color: var(--accent);
+  border-radius: 5px; font: inherit; padding: 1px 8px; cursor: pointer; }
+.staged-head .staged-go:hover { background: var(--accent); color: var(--accent-fg); }
+.staged-chip { display: flex; flex-direction: column; gap: 2px; border: 1px dashed rgba(156, 210, 255, 0.45);
+  border-left: 2px solid var(--accent); border-radius: 6px; padding: 2px 6px; font-size: 12px; color: var(--fg);
+  cursor: pointer; }
+.staged-row, .staged-cite { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* the context the reply was written against, INSIDE the box (the user 2026-08-15): it keeps the
+   composer's own blue citation-pill look (the class rides along), its own fold — same
+   one-line-ellipsis-then-expand read as everything else here. min-width:0 + max-width guard the
+   pane against sideways growth at every level. */
+.staged-cite { min-width: 0; max-width: 100%; cursor: pointer; }
+.staged-cite.open .composer-chip-label { white-space: pre-wrap; overflow: visible; }
+.staged-cite.open { align-items: flex-start; }
+/* min-width:0 lets the flex label actually SHRINK — without it the line ran off the pane edge with no
+   ellipsis (the user 2026-08-15); expanded, the same label wraps to the full text */
+.staged-chip .composer-chip-label { flex: 1 1 auto; max-width: 100%; min-width: 0; }
+.staged-chip.open .staged-row .composer-chip-label { white-space: pre-wrap; overflow: visible; }
+.staged-chip.open .staged-row { align-items: flex-start; }
+.staged-expand { flex: 0 0 auto; color: var(--dim); font-size: 0.85em; }   /* chrome, not message text */
 .composer-chip-x {
   flex: 0 0 auto; border: none; background: none; cursor: pointer; color: var(--dim);
   font-size: 11px; line-height: 1; padding: 2px 4px; border-radius: 8px;
@@ -631,7 +685,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    against var(--fs) — em here would key on the BUTTON's larger font and drift — so the pair tracks the
    resting box height by construction. In-flow flex items, not corner overlays: no offset arithmetic
    couples them to the composer's padding, and a peer's padding change can't strand them outside the box. */
-#composer-attach, #composer-send {
+#composer-attach, #composer-send, .cmt-attach, .cmt-send {
   flex: 0 0 auto; width: calc(1.4 * var(--fs) + 18px); height: calc(1.4 * var(--fs) + 18px); border-radius: 10px;
   padding: 0; line-height: 1;
   display: flex; align-items: center; justify-content: center;
@@ -640,11 +694,11 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 }
 /* the paperclip + send glyphs wear the romp accent blue (the user 2026-07-15) — action affordances, not
    status, so var(--accent) is the intended use; resting a touch dim, full on hover */
-#composer-attach { color: var(--accent); opacity: 0.8; order: 1; }   /* clip sits LEFT of the input */
-#composer-attach:hover, #composer-send:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); }
-#composer-send { order: 3; }                                         /* send on the input's right */
-#composer-send:not(:disabled) { color: var(--accent); opacity: 0.85; }   /* romp-blue send affordance */
-#composer-send:disabled { opacity: 0.3; cursor: not-allowed; }
+#composer-attach, .cmt-attach { color: var(--accent); opacity: 0.8; order: 1; }   /* clip sits LEFT of the input */
+#composer-attach:hover, #composer-send:hover, .cmt-attach:hover, .cmt-send:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); }
+#composer-send, .cmt-send { order: 3; }                              /* send on the input's right */
+#composer-send:not(:disabled), .cmt-send:not(:disabled) { color: var(--accent); opacity: 0.85; }   /* romp-blue send affordance */
+#composer-send:disabled, .cmt-send:disabled, .cmt-send.busy { opacity: 0.3; cursor: not-allowed; }
 #composer-input {
   order: 2; flex: 1 1 auto; min-width: 0;
   resize: none; box-sizing: border-box;
@@ -670,7 +724,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
    messenger's send, the paperclip on a faint chip fill so both read as buttons. The resting box stays
    ONE line, like Signal's; the mobile placeholder is shortened to fit it (composerRestingPlaceholder). */
 @media (pointer: coarse) {
-  #composer-attach, #composer-send { width: 40px; height: 40px; border-radius: 12px; }
+  #composer-attach, #composer-send, .cmt-attach, .cmt-send { width: 40px; height: 40px; border-radius: 12px; }
   #composer-attach { font-size: 19px; background: rgba(255, 255, 255, 0.07); }
   #composer-send { font-size: 21px; }
   /* hover is included on purpose: a touch device can leave a sticky :hover that would otherwise
@@ -728,7 +782,8 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .apierror-retry:disabled { opacity: 0.55; cursor: default; }
 .apierror-body { margin-top: 5px; font-size: 0.86em; color: var(--dim); line-height: 1.35; }
 .chip-ready { background: var(--st-ready-bg); color: var(--st-ready-fg); }
-.chip-awaiting { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
+.chip-needsInput { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
+.chip-awaiting { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }   /* legacy name — an older remote kernel */
 .chip-awaitingBg { background: var(--st-awaitbg-bg); color: var(--st-awaitbg-fg); }
 /* retrying = a SOFT 'blocked on the API' (rate-limit / overload auto-retry) — not a hang, not working. Amber/
    orange, deliberately distinct from working-yellow and blocked-red (the user via api 2026-06-23). */
@@ -832,6 +887,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   color: var(--fg); position: relative; white-space: nowrap;
 }
 .meta-item:hover { background: rgba(255, 255, 255, 0.09); }
+/* second line for a choice whose consequence its label doesn't carry (Bypass permissions). Same
+   0.82em / 0.6 opacity as .ctx-item-sub — one sub-line size across every romp menu. */
+.meta-item-sub { font-size: 0.82em; opacity: 0.6; }
 .meta-item.current::after {
   content: "✓"; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
   background: var(--check-bg); color: #fff; border-radius: 50%;
@@ -1046,6 +1104,30 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   position: fixed; z-index: 3; pointer-events: none;
   color: var(--dim); opacity: 0.92;
 }
+/* The day-context label ABOVE the top rail stamp (render.ts paintDay, the user 2026-08-17):
+   "Yesterday" / "3 days ago" / "Last week" whenever the top stamp's day is not today. Fixed like
+   the sticky, passive like the sticky. It sat BELOW the stamp until 2026-08-18 (the user, with a
+   video): there, the next incoming stamp scrolled straight through it and the label leapt over —
+   above the stamp nothing crosses its path. No width pin: the box shrinkwraps its nowrap text, and
+   paintDay puts its right edge on the gutter's right edge while never letting its left edge past
+   the pane's — "2 days ago" is wider than the 47px gutter, and the old gutter-pinned box clipped
+   the leading digit at the pane edge (the user 2026-08-18, with a screenshot). Smaller than the
+   stamp on purpose — context, not the time itself. */
+/* the user-message scroll notches (render.ts paintScrollMarks, the user 2026-08-17): passive fixed
+   chrome over the scroller's right edge, one 2px tick per user message at its proportional position.
+   The blue is the OUTGOING-BUBBLE blue (#2b6cef, "yours"), deliberately not the romp accent. */
+.scroll-marks { position: fixed; z-index: 3; pointer-events: none; width: 12px; }
+.scroll-marks .scroll-mark { position: absolute; right: 1px; width: 8px; height: 2px;
+  border-radius: 1px; background: #2b6cef; opacity: 0.65;
+  transition: top 180ms ease; }   /* history streaming in rescales the map — carried, not teleported */
+@media (prefers-reduced-motion: reduce) { .scroll-marks .scroll-mark { transition: none; } }
+.rail-day {
+  position: fixed; z-index: 3; pointer-events: none; white-space: nowrap; line-height: 1;
+  font-size: 0.68em; letter-spacing: 0.03em; color: var(--dim); opacity: 0.85;
+  background: var(--bg);   /* the widest labels ("2 weeks ago") poke a few px past the gutter into the
+                              session rail line; a pane-bg plate interrupts the line cleanly instead of
+                              striking text through it */
+}
 /* match the dot's vertical position per turn type (default dot top:15, tool/thinking top:10) */
 .turn-tool .time-marker, .turn-thinking .time-marker { top: 10px; }
 /* DAY DIVIDER (the user 2026-08-01) — the date on a hairline rule across the prose column,
@@ -1081,6 +1163,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* your prompt — the SAME royal/indigo blue as your message bubble (#2b6cef), so the dot matches your
    chat box (the user 2026-06-15). Distinct from the cyan ✓ success disc (--check-bg #1EA1EB). */
 .dot.user { background: #2b6cef; border: none; }
+/* a TAGGED (machine-sent under a label) prompt: the gray of its tag-bubble family, so the rail agrees
+   with the bubble — it used to wear the blue "you typed this" dot (the identity-channel gap, 2026-08-18) */
+.dot.tag { background: #8a8f98; border: none; }
 /* A romp-injected message (a nudge, a status note) wears the SWIRL in a dark disc — the same mark the
    timeline already puts on a romp event (romp-timeline-view.js draws a black dot with the glyph inside),
    so one kind of event looks like itself on both surfaces (the user 2026-07-23). It used to be an
@@ -1183,9 +1268,26 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .user-bubble.cmd-row { max-width: none; background: none; border: none; border-radius: 0;
   padding: 2px 0; color: var(--dim); }
 .user-bubble.cmd-row::before { content: "✦"; margin-right: 8px; color: var(--dim); }
-.user-bubble.cmd-row .slash-cmd-chip { background: var(--code-bg); color: var(--fg);
-  border-color: var(--box-border); }
+/* The chip's ink is the OUTGOING-BUBBLE blue on the chat's own ground (the user 2026-08-14: the --code-bg
+   terracotta tint read as a stray red here) — the same #2b6cef as .user-bubble, so the gesture still reads
+   as "yours" without the said-thing bubble. */
+.user-bubble.cmd-row .slash-cmd-chip { background: var(--bg); color: #2b6cef;
+  border-color: #2b6cef; }
 .user-bubble.cmd-row .slash-cmd-args { color: var(--dim); }
+.user-bubble.cmd-row .nudge-gist, .user-bubble.cmd-row .nudge-caret { color: var(--dim); }
+.user-bubble.cmd-row .nudge-gist { margin-left: 8px; }
+.user-bubble.cmd-row .nudge-full { color: var(--dim); margin-top: 4px; max-width: 640px; }
+/* The Continue button's turn wears the FOLLOW-UP grammar (render.ts canned === "continue", the user
+   2026-08-17, superseding the 2026-08-15 ✦ + boxed-chip dress — one gesture grammar, fewer elements):
+   caret, "→ Continue" in the accent (the same dress "↩ Follow-up" wears), the sent text's own first
+   line dimmed beside it, the full words unfolding in place under the row. The caret glyph lives in CSS
+   so the same .expanded class the fold delegate flips also turns it. */
+.user-bubble.cont-row { max-width: none; background: none; border: none; border-radius: 0; padding: 2px 0; }
+.user-bubble.cont-row .followup-tag { max-width: none; }
+.user-bubble.cont-row .cont-tri::before { content: "▸"; }
+.user-bubble.cont-row.expanded .cont-tri::before { content: "▾"; }
+.user-bubble.cont-row .nudge-full { display: none; color: var(--dim); margin-top: 4px; max-width: 640px; }
+.user-bubble.cont-row.expanded .nudge-full { display: block; }
 /* ---------- romp-injected message (a feed nudge / follow-up) ----------
    A GRAY bubble in the SAME right-aligned spot as the blue user bubble (so it sits where "an outgoing
    message" goes), but clearly NOT you — gray, with a small "↯ romp" tag above it (the user 2026-06-19).
@@ -2224,33 +2326,28 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   padding: 4px 14px; border-radius: 6px; background: var(--vscode-input-background, #3c3c3c);
   color: var(--vscode-foreground, #ccc); border: 1px solid var(--vscode-widget-border, #303031); }
 
-/* ── path previews in the chat (the user 2026-07-08): a mentioned image/PDF renders as a click-to-expand
-   thumbnail strip under the message (render.ts linkifyFileUris → preview.ts previewThumb). .path-thumb /
-   the lightbox are SHARED with the feed and defined in BOTH sheets — each page loads only its own css
-   (the .romp-acted precedent). ── */
+/* ── path previews in the chat (the user 2026-07-08): a mentioned image/PDF renders under the message
+   (render.ts linkifyFileUris → preview.ts previewFull). Chat-only since the feed's artifact strips
+   were removed (2026-08-14). ── */
 .path-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
-.path-thumb { display: inline-flex; align-items: center; gap: 6px; cursor: zoom-in; border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.14); overflow: hidden; background: rgba(0, 0, 0, 0.25); }
-.path-thumb:hover { border-color: var(--accent); }
-.path-thumb-img { display: block; max-width: 220px; max-height: 140px; object-fit: contain; }
 
 /* the preview's LOADING cue (the user 2026-07-31): the mini romp swirl holds a mentioned image's spot
    until its load event lands (preview.ts withLoadCue) — a remote file rides the ssh tunnel, and the
    picture used to pop in with nothing saying it was on the way. First load of a URL only, so re-renders
-   never re-flash it. Both sheets carry it (each page loads only its own — the .romp-acted precedent). */
+   never re-flash it. */
 .path-load-spin { display: block; width: 20px; height: 20px; margin: 8px 10px;
   animation: path-load-spin 2.4s linear infinite; }   /* the calm mini-swirl spin, same as the awaiting glyphs */
 @keyframes path-load-spin { to { transform: rotate(-360deg); } }
 .path-img-loading { display: none; }   /* the <img> takes the spot the instant it has pixels */
 @media (prefers-reduced-motion: reduce) { .path-load-spin { animation: none; } }
-.path-thumb.pdf { padding: 5px 9px; cursor: pointer; }
+/* the PDF card's label + filename (preview.ts previewFull's pdf branch) */
 .path-thumb-tag { font-size: 0.74em; font-weight: 700; letter-spacing: 0.04em; color: var(--accent); flex: 0 0 auto; }
 .path-thumb-name { font-size: 0.74em; color: var(--fg); overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; max-width: 200px; }
 
 /* FULL-SIZE inline render (the user 2026-07-20): a mentioned image shows AS the image, at the same
    scale as a user-message picture (.user-img's 320px cap — one size per information type); a PDF gets
-   its native inline viewer. preview.ts previewFull; the feed's artifact strips keep the thumbnails. */
+   its native inline viewer (preview.ts previewFull). */
 .path-full { display: block; }
 .path-full-img { display: block; max-width: 100%; max-height: 320px; border-radius: 8px; cursor: zoom-in;
   border: 1px solid rgba(255, 255, 255, 0.14); object-fit: contain; background: rgba(0, 0, 0, 0.25); }
@@ -2258,6 +2355,32 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 .path-full-pdfcard { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px;
   border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(0, 0, 0, 0.25); }
 .path-full-pdfcard:hover { border-color: var(--accent); }
+/* a whole-backtick URL, tappable but still dressed as code (render.ts linkifyFileUris) */
+.url-code-link { text-decoration: none; cursor: pointer; }
+.url-code-link code { text-decoration: underline dotted; text-underline-offset: 2px; }
+.url-code-link:hover code { color: var(--accent); }
+/* a kernel-VERIFIED preview whose bytes failed to arrive (restart, tunnel blip) — visible, retryable,
+   never silently removed (preview.ts previewFull) */
+.path-full-retry { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.14);
+  font-size: 0.85em; opacity: 0.85; cursor: pointer; }
+.path-full-retry:hover { border-color: var(--accent); }
+/* the fixed-footprint wait box shared by the retrying swirl AND the failure chip, so retry churn
+   never shifts the chat's scroll (preview.ts mkWait; the user 2026-08-16 watched it thrash ~a line) */
+.path-full-wait { display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; min-width: 200px; min-height: 56px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); }
+.path-load-note { font-size: 0.85em; opacity: 0.65; }
+/* a repeat failure pulses once on swap-in so an identical-looking outcome still reads as a
+   RESPONSE to the tap (preview.ts previewFull) — on the give-up chip and the retrying note alike */
+.path-full-retry.path-retry-flash, .path-load-note.path-retry-flash { animation: path-retry-flash 0.45s ease; }
+@keyframes path-retry-flash { 0% { background: rgba(255, 255, 255, 0.3); } 100% { background: rgba(255, 255, 255, 0.08); } }
+@media (prefers-reduced-motion: reduce) { .path-full-retry.path-retry-flash, .path-load-note.path-retry-flash { animation: none; } }
+/* VS Code's host-round-trip image chip while the bytes are still on their way (render.ts fillPathImg) —
+   pure-CSS pulse, the sandbox can't fetch the swirl asset */
+.user-img-path.img-pending::after { content: " ···"; letter-spacing: 2px;
+  animation: img-pending-pulse 1.2s ease-in-out infinite; }
+@keyframes img-pending-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+@media (prefers-reduced-motion: reduce) { .user-img-path.img-pending::after { animation: none; opacity: 0.6; } }
 
 /* full-view lightbox (preview.ts openLightbox): image at natural-but-capped size, or the PDF in the
    browser's native viewer. Above every overlay layer. Backdrop click / Esc / ✕ closes. */
@@ -2365,29 +2488,58 @@ mark.cmt-hl {
 mark.cmt-hl.unread { background: color-mix(in srgb, var(--cmt-hl) 45%, transparent); }
 mark.cmt-hl:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, transparent); }
 mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.08); }
-mark.cmt-hl.busy { animation: cmt-busy-pulse 1.2s ease-in-out infinite; }
+/* WRITING (the user 2026-08-17): while the thread is mid-reply the region wears MARCHING ANTS —
+   a dashed outline whose dashes crawl slowly around the box — and turns into the solid highlight
+   the moment the reply lands (the busy class drops with the thread's working state). Four gradient
+   strips with an animated offset, never a border: an inline border would shift the text it wraps.
+   This rule must stay AFTER :hover — its shorthand would otherwise wipe the strips mid-hover. */
+mark.cmt-hl.busy {
+  background-color: transparent;
+  background-image:
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px);
+  background-size: 100% 1.5px, 100% 1.5px, 1.5px 100%, 1.5px 100%;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  background-repeat: no-repeat;
+  animation: cmt-ants 1.2s linear infinite;
+}
 mark.cmt-hl.hl-first { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
 mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
-@keyframes cmt-busy-pulse { 50% { background: color-mix(in srgb, var(--cmt-hl) 50%, transparent); } }
+/* the ants march clockwise: top strip right, bottom left, left edge up, right edge down — one
+   12px dash cycle per period, slow and steady */
+@keyframes cmt-ants {
+  to { background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px; }
+}
+/* a code/math HOST whose mark is mid-reply wears the ants too — its element tint would otherwise
+   stay solid and defeat the outline-then-fill cue */
+.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy),
+.md .katex.cmt-hl-host:has(mark.cmt-hl.busy) {
+  background-color: transparent;
+  background-image:
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px);
+  background-size: 100% 1.5px, 100% 1.5px, 1.5px 100%, 1.5px 100%;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  background-repeat: no-repeat;
+  animation: cmt-ants 1.2s linear infinite;
+}
+.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy) { background-color: var(--code-bg); }
 .md :not(pre) > code.cmt-hl-host { background: color-mix(in srgb, var(--cmt-hl) 30%, var(--code-bg)); }
 .md :not(pre) > code.cmt-hl-host > mark.cmt-hl { background: transparent; }
 .md :not(pre) > code.cmt-hl-host:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, var(--code-bg)); }
 
 .turn.has-cmt { position: relative; }
-.cmt-badge {
-  position: absolute; top: 2px; right: 4px; z-index: 5;
-  min-width: 16px; height: 16px; padding: 0 4px;
-  border: 1px solid var(--box-border); border-radius: 8px;
-  background: var(--vscode-menu-background, #252526);
-  color: var(--accent); font-size: 10px; line-height: 14px;
-  cursor: pointer; opacity: 0.75;
-}
-.cmt-badge:hover { opacity: 1; }
-.cmt-badge.unread { border-color: var(--accent); opacity: 1; }
-.cmt-badge.busy { animation: cmt-busy-pulse 1.2s ease-in-out infinite; }
+/* (the count badge is gone — the user 2026-08-17: the highlight does the speaking; the busy pulse
+   below and the scroll-rail tick carry the states it used to) */
 
 .cmt-pop {
-  position: fixed; z-index: 120; width: 360px; max-width: 94vw;
+  position: fixed; z-index: 120; width: 440px; max-width: 94vw;
+  resize: both; overflow: auto; min-width: 300px; min-height: 120px; max-height: 90vh;
+  cursor: grab;                       /* the whole box drags (interactive children override below) */
   display: flex; flex-direction: column; gap: 6px; padding: 8px;
   background: var(--vscode-menu-background, #252526);
   color: var(--vscode-menu-foreground, var(--fg));
@@ -2395,8 +2547,7 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
   font-size: 12px;
 }
-.cmt-head { display: flex; align-items: center; cursor: grab; user-select: none; }
-.cmt-head.dragging { cursor: grabbing; }
+.cmt-head { display: flex; align-items: center; user-select: none; }
 .cmt-head .cmt-x { cursor: pointer; }
 .cmt-title { font-weight: 600; }
 .cmt-x {
@@ -2410,7 +2561,18 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
   font-size: 0.92em; opacity: 0.75;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
+.cmt-pop.dragging { cursor: grabbing; }
+.cmt-pop .cmt-quote, .cmt-pop .cmt-msgs, .cmt-pop .cmt-input, .cmt-pop .cmt-name { cursor: auto; }
+.cmt-pop button, .cmt-pop .meta-btn { cursor: pointer; }
+/* user-resized (.sized): the quoted context takes the extra room — its clamp unlocks and it flexes */
+.cmt-pop.sized .cmt-quote {
+  display: block; -webkit-line-clamp: unset; flex: 1 1 auto; min-height: 3em; overflow-y: auto;
+}
+.cmt-pop.sized .cmt-msgs { flex: 2 1 auto; max-height: none; }
 .cmt-msgs { max-height: 45vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+/* chat-parity turns inside the popover (the user 2026-08-17): the chat's own .turn nodes, given a
+   little rail room; the popover's card is the backdrop, so no extra chrome */
+.cmt-msgs .turn { max-width: 100%; box-sizing: border-box; }
 .cmt-msg { padding: 5px 8px; border-radius: 6px; line-height: 1.35; overflow-wrap: anywhere; }
 .cmt-msg.you { background: color-mix(in srgb, var(--accent) 14%, transparent); align-self: flex-end; max-width: 92%; white-space: pre-wrap; }
 .cmt-msg.agent { background: rgba(255, 255, 255, 0.05); align-self: flex-start; max-width: 96%; }
@@ -2426,19 +2588,19 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 .cmt-dots span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes cmt-dot-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 .cmt-note { font-size: 0.92em; opacity: 0.7; padding: 2px 6px; }
+/* the popover's message row mirrors the CHAT composer (the user 2026-08-17): clip left, ➤ right,
+   pill input — the attach/send buttons share the chat's own selectors above, so they stay in sync */
+.cmt-composer { display: flex; align-items: flex-end; gap: 4px; }
 .cmt-input {
-  width: 100%; box-sizing: border-box; resize: vertical; min-height: 34px;
-  padding: 5px 7px; border: 1px solid var(--box-border); border-radius: 4px;
-  background: rgba(255, 255, 255, 0.05); color: inherit;
+  order: 2; flex: 1 1 auto; min-width: 0; box-sizing: border-box; resize: vertical; min-height: 34px;
+  padding: 6px 12px; border: 1px solid var(--vscode-input-border, var(--box-border));
+  border-radius: 16px;
+  background: var(--vscode-input-background, rgba(255, 255, 255, 0.05)); color: inherit;
   font: inherit;
 }
 .cmt-input:focus { outline: none; border-color: var(--accent); }
 .cmt-actions { display: flex; gap: 6px; align-items: center; }
-.cmt-send {
-  padding: 3px 10px; border: 0; border-radius: 4px; cursor: pointer;
-  background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 600;
-}
-.cmt-send:disabled { opacity: 0.55; cursor: default; }
+.cmt-actions:empty { display: none; }
 .cmt-act {
   padding: 3px 8px; border: 1px solid var(--box-border); border-radius: 4px; cursor: pointer;
   background: none; color: inherit; font: inherit; opacity: 0.85;
@@ -2470,7 +2632,6 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
   position: absolute; top: 2px; right: 24px; z-index: 5;
   display: flex; gap: 4px;
 }
-.cmt-badge ~ .branch-chips, .turn:has(> .cmt-badge) .branch-chips { right: 28px; }
 .branch-chip {
   height: 16px; padding: 0 6px; border: 1px solid var(--box-border); border-radius: 8px;
   background: var(--vscode-menu-background, #252526);
@@ -2479,75 +2640,192 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 }
 .branch-chip:hover { opacity: 1; border-color: var(--accent); }
 
-/* ── doc review (the user 2026-08-14) ──────────────────────────────────────────────────────────
-   Clicking an .md path opens the doc RENDERED over the chat pane; a right-click on a selection
-   comments on it; Submit hands every comment to the composer as one message. Pane-local (the
-   feed card modal's precedent) — the composer it drafts into lives in this pane. The backdrop
-   dims the chat behind it rather than replacing it, the same read as every other romp panel. */
-/* The selection menu inside the reader must clear the reader's own backdrop (z 130). */
-.ctx-menu.ctx-over-doc { z-index: 140; }
-#doc-review {
-  position: fixed; inset: 0; z-index: 130;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
+/* the comment's NAME, inline in the header — "New comment: <name>" (the user 2026-08-17): bold and
+   accent-tinted so it reads as a name, editable in place; a dashed underline hints at that. .bad =
+   failed the session-name charset, matching the fork modal. */
+.cmt-name {
+  flex: 1; min-width: 60px; margin: 0 6px; padding: 0 2px;
+  border: 0; border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 0; background: transparent;
+  color: var(--accent); font: inherit; font-weight: 600;
 }
-.dr-card {
-  display: flex; flex-direction: column;
-  width: min(860px, 94vw); max-height: 88vh;
-  background: var(--vscode-editor-background, var(--bg));
-  border: 1px solid var(--box-border); border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+.cmt-name:focus { outline: none; border-bottom-color: var(--accent); }
+.cmt-name.bad { border-bottom: 1px solid var(--st-blocked-bg, #c94f4f); color: var(--st-blocked-bg, #c94f4f); }
+
+/* the comment's own model/effort selectors (the user 2026-08-17) — chip-shaped buttons opening the
+   same .meta-menu the statusline uses; the picks ride the create call and touch only the thread */
+.cmt-meta-row { display: flex; gap: 6px; }
+.cmt-meta {
+  padding: 2px 8px; border: 1px solid var(--box-border); border-radius: 4px; cursor: pointer;
+  background: none; color: inherit; font: inherit; opacity: 0.85;
 }
-.dr-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; border-bottom: 1px solid var(--box-border);
+.cmt-meta:hover { opacity: 1; border-color: var(--accent); }
+
+/* comment ticks on the chat's scroll rail (the user 2026-08-15): where the comments are, at the
+   anchor's proportional position in the whole conversation; click = jump + open the thread */
+.cmt-rail { position: fixed; width: 10px; z-index: 40; pointer-events: none; }
+.cmt-tick {
+  position: absolute; right: 1px; width: 8px; height: 4px;
+  border: 0; border-radius: 2px; padding: 0;
+  background: var(--cmt-hl); opacity: 0.75; pointer-events: auto; cursor: pointer;
 }
-.dr-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dr-count { opacity: 0.6; font-size: 0.86em; margin-right: auto; }
-.dr-btn {
-  padding: 3px 8px; border: 1px solid var(--box-border); border-radius: 4px;
-  background: none; color: inherit; font: inherit; font-size: 0.86em; cursor: pointer;
+.cmt-tick:hover { opacity: 1; }
+.cmt-tick.resolved { opacity: 0.3; }
+.cmt-tick.unread { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--cmt-hl) 60%, transparent); opacity: 1; }
+
+/* a fully-covered KaTeX block tints at the ELEMENT (cmt-hl-host, same contract as inline code):
+   a mark inside it cannot paint the glyph boxes' spacing, which punched gaps through highlighted
+   math (the user 2026-08-15) */
+.md .katex.cmt-hl-host { background: color-mix(in srgb, var(--cmt-hl) 30%, transparent); border-radius: 3px; }
+.md .katex.cmt-hl-host mark.cmt-hl { background: transparent; }
+
+/* ── file viewer (file-view.ts) ────────────────────────────────────────────────────────────────────
+   A file path clicked in the chat opens the file HERE, as a big modal over the chat itself (the user
+   2026-08-15: the first cut filled the FEED pane, and reading a file cost the cards). ~95% of the
+   pane, dimmed backdrop (the panels treatment: content behind stays visible, never hidden), ✕ top
+   right, Esc/backdrop closes. Under the lightbox (1300) so an image opened FROM a viewed markdown
+   file still presents above it. `body.fileview-open` stops the chat scrolling underneath. */
+#romp-fileview { position: fixed; inset: 0; z-index: 1200; background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: center; justify-content: center; }
+.fileview { width: 95%; height: 95%; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg, #1e1e1e); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px;
+  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.6); }
+body.fileview-open { overflow: hidden; }
+.fileview-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 7px 10px; border-bottom: 1px solid var(--box-border); }
+/* Only the DIRECTORY may be truncated: the filename identifies the file, so it holds its width however
+   deep the path is, and the dimmed directory in front of it gives up room first. */
+.fileview-name { flex: 1 1 auto; min-width: 0; font-size: 0.86em; color: var(--fg);
+  display: flex; align-items: baseline; white-space: nowrap; }
+.fileview-dir { flex: 0 1 auto; min-width: 0; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; }
+.fileview-base { flex: 0 0 auto; }
+.fileview-acts { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.fileview-btn { font: inherit; font-size: 0.82em; cursor: pointer; flex: 0 0 auto;
+  padding: 3px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); color: var(--fg);
+  border: 1px solid var(--box-border); }
+.fileview-btn:hover { border-color: var(--accent); }
+.fileview-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+/* gutter + code as two columns of ONE scroller: the numbers stay put horizontally against long lines,
+   and because they are a sibling element a selection of the code copies without dragging them along */
+.fileview-code { display: flex; align-items: flex-start; min-height: 100%; }
+.fileview-gutter { flex: 0 0 auto; position: sticky; left: 0; z-index: 1;
+  padding: 10px 8px 10px 10px; text-align: right; user-select: none;
+  font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
+  color: var(--dim); opacity: 0.55; background: var(--bg, #1e1e1e);
+  border-right: 1px solid var(--box-border); white-space: pre; }
+.fileview-pre { flex: 1 1 auto; margin: 0; padding: 10px 12px;
+  font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
+  white-space: pre; tab-size: 4; }
+.fileview-pre code { background: none; padding: 0; font: inherit; }
+/* a refusal explains itself in place, in the kernel's own words (too large — with the size and the
+   cap; not a text file; not found) over the path it was asked for. Never a blank pane. */
+.fileview-err { padding: 18px 14px; font-size: 0.86em; color: #e0a030; }
+.fileview-err-hint { margin-top: 6px; color: var(--dim); font-size: 0.92em;
+  font-family: var(--mono, ui-monospace, monospace); word-break: break-all; }
+/* the way out of a refusal: when the file exists but cannot render (413/415), the kernel's words are
+   followed by the Download the view could not be — same button treatment as the title bar's */
+.fileview-err-dl { display: block; margin-top: 10px; }
+/* the romp loader, per the loading-state rule: swirl + wordmark + three pulsing accent dots */
+.fileview-load { display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 30px 0; color: var(--dim); font-size: 0.86em; }
+.fileview-load img { width: 17px; height: 17px; animation: fileview-spin 1.6s linear infinite reverse; }
+.fileview-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+  animation: fileview-pulse 1.1s ease-in-out infinite; }
+.fileview-dot:nth-of-type(2) { animation-delay: 0.18s; }
+.fileview-dot:nth-of-type(3) { animation-delay: 0.36s; }
+@keyframes fileview-spin { to { transform: rotate(360deg); } }
+@keyframes fileview-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+/* A pressed viewer toggle (Rendered/Raw, Wrap) wears the app-wide selected language — accent text +
+   border + faint wash, gray = off (the .fask-secbtn.on / .feed-modetoggle.on treatment) — with the same
+   reverse-highlight hover so a selected toggle never reads as dead. */
+.fileview-btn.on { color: var(--accent); border-color: var(--accent);
+  background: rgba(156, 210, 255, 0.10); font-weight: 600; }
+.fileview-btn.on:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+
+/* Wrap mode (the Wrap toggle, persisted per browser): long lines soft-wrap instead of scrolling
+   sideways. The flat sibling gutter cannot survive that — one logical line becomes several visual lines
+   and every number below it drifts — so wrap mode restructures: each logical line is a flex row (.fv-cl)
+   numbered by a CSS counter in its ::before (the chat's .cl/.ct treatment in styles.css). The number is
+   ::before content and user-select: none, so a selection still copies clean, same as the gutter it
+   replaces. */
+.fileview-pre.fileview-wrap { white-space: pre-wrap; overflow-wrap: anywhere;
+  counter-reset: fvln; padding-left: 0; }
+.fileview-wrap .fv-cl { display: flex; align-items: baseline; }
+.fileview-wrap .fv-cl::before {
+  counter-increment: fvln; content: counter(fvln);
+  flex: 0 0 3.5em; padding-right: 10px; text-align: right;
+  color: var(--dim); opacity: 0.55; user-select: none;
 }
-.dr-btn:hover:not(:disabled) { border-color: var(--accent); }
-.dr-btn:disabled { opacity: 0.4; cursor: default; }
-.dr-submit { border-color: var(--accent); color: var(--accent); }
-.dr-x { border: 0; opacity: 0.6; font-size: 14px; }
-.dr-x:hover { opacity: 1; }
-.dr-body { overflow: auto; padding: 14px 18px; }
-.dr-doc { line-height: 1.55; }
-.dr-load { display: flex; align-items: center; justify-content: center; min-height: 220px; }
-.dr-err {
-  padding: 10px 12px; border: 1px solid var(--vscode-errorForeground, #f48771); border-radius: 4px;
-  color: var(--vscode-errorForeground, #f48771); font-size: 0.92em;
+.fileview-wrap .fv-ct { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Rendered markdown (the Raw ⇄ Rendered toggle; Rendered is the default — the user 2026-08-09).
+   Typography mirrors the chat's .md block in styles.css, the reference aesthetic (one treatment, two
+   sheets — the .romp-acted precedent); font sizes reuse what this surface already wears (the page base,
+   12px mono, the err-hint's 0.92em). Vars the feed sheet does not define carry the chat's literals as
+   fallbacks (feed-css-vars.test.ts holds that line). */
+.fileview-md { padding: 14px 18px; max-width: 860px; overflow-wrap: anywhere; }
+.fileview-md > :first-child { margin-top: 0; }
+.fileview-md > :last-child { margin-bottom: 0; }
+.fileview-md p { margin: 0.5em 0; }
+.fileview-md h1, .fileview-md h2, .fileview-md h3, .fileview-md h4 {
+  font-weight: 600; color: var(--fg); margin: 1em 0 0.4em; line-height: 1.3; }
+.fileview-md h1 { font-size: 1.3em; } .fileview-md h2 { font-size: 1.15em; } .fileview-md h3 { font-size: 1.05em; }
+.fileview-md ul, .fileview-md ol { margin: 0.4em 0; padding-left: 1.4em; }
+.fileview-md li { margin: 0.2em 0; }
+.fileview-md strong { color: var(--fg); font-weight: 600; }
+.fileview-md em { font-style: italic; }
+.fileview-md a { color: var(--vscode-textLink-foreground, #4daafc); text-decoration: none; }
+.fileview-md a:hover { text-decoration: underline; }
+.fileview-md blockquote { margin: 0.5em 0; padding-left: 12px;
+  border-left: 2px solid var(--box-border); color: var(--dim); }
+.fileview-md hr { border: none; border-top: 1px solid var(--box-border); margin: 1em 0; }
+.fileview-md :not(pre) > code {
+  font-family: var(--mono, ui-monospace, monospace); font-size: 0.92em;
+  color: var(--code-fg, #e1c08d); background: var(--code-bg, rgba(217, 119, 87, 0.10));
+  padding: 0.12em 0.4em; border-radius: 4px;
 }
-.dr-hint { margin-top: 18px; opacity: 0.5; font-size: 0.86em; }
-/* A commented span, marked like the chat's comment highlights so the two read as one idea. */
-mark.dr-hl {
-  background: color-mix(in srgb, var(--cmt-hl) 30%, transparent);
-  color: inherit; cursor: pointer;
+.fileview-md pre {
+  background: var(--box-bg, rgba(255, 255, 255, 0.03)); border: 1px solid var(--box-border);
+  border-radius: 6px; padding: 11px 14px; margin: 0.6em 0; overflow-x: auto;
 }
-mark.dr-hl:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, transparent); }
-.dr-num {
-  margin-left: 2px; padding: 0 3px; border-radius: 6px;
+.fileview-md pre code {
+  background: none; padding: 0; display: block;
+  font-family: var(--mono, ui-monospace, monospace); font-size: 12px; line-height: 1.5;
+  color: var(--code-fg, #e1c08d); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.fileview-md table { border-collapse: collapse; margin: 0.6em 0; }
+.fileview-md th, .fileview-md td { border: 1px solid var(--box-border); padding: 4px 10px; text-align: left; }
+.fileview-md th { background: rgba(255, 255, 255, 0.03); }
+.fileview-md img { max-width: 100%; }
+
+/* a MACHINE-sent message's notch (romp injections, ⚙-tagged sends — the same senderKind verdict the
+   bubble wears): light gray, visibly quieter than the user's blue, so the scroll map separates "you
+   spoke" from "something was injected" at a glance (the user 2026-08-18) */
+.scroll-marks .scroll-mark.machine { background: #8a8f98; opacity: 0.55; }
+
+/* ── review comments in the file viewer (the user 2026-08-14) ──────────────────────────────────
+   Comment on passages while you read, then Submit hands the whole set to the session as one
+   message. The highlight borrows the chat comment threads' tint so the two read as one idea. */
+.fileview-cmtcount { font-size: 0.82em; opacity: 0.6; flex: 0 0 auto; }
+.fileview-submit { border-color: var(--accent); color: var(--accent); }
+mark.fv-hl { background: color-mix(in srgb, var(--cmt-hl) 30%, transparent); color: inherit; cursor: pointer; }
+mark.fv-hl:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, transparent); }
+.fv-num { margin-left: 2px; padding: 0 3px; border-radius: 6px; cursor: pointer;
   background: var(--vscode-menu-background, #252526); color: var(--accent);
-  font-size: 9px; line-height: 13px; cursor: pointer;
-}
-/* The compact form is the numbered marker; the comment's text is one click underneath it. */
-.dr-note {
-  display: inline-flex; align-items: baseline; gap: 6px;
-  margin: 0 4px; padding: 2px 6px; border-radius: 4px;
-  background: rgba(255, 255, 255, 0.06); font-size: 0.86em;
-}
-.dr-note-x { border: 0; background: none; color: inherit; opacity: 0.6; cursor: pointer; font-size: 11px; }
-.dr-note-x:hover { opacity: 1; }
-.dr-new {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 10px; border-top: 1px solid var(--box-border);
-}
-.dr-at { font-size: 0.86em; opacity: 0.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dr-ta {
-  min-height: 62px; padding: 6px 8px; resize: vertical;
+  font-size: 9px; line-height: 13px; }
+.fv-note { display: inline-flex; align-items: baseline; gap: 6px; margin: 0 4px; padding: 2px 6px;
+  border-radius: 4px; background: rgba(255, 255, 255, 0.06); font-size: 0.86em; }
+.fv-note-x { border: 0; background: none; color: inherit; opacity: 0.6; cursor: pointer; font-size: 11px; }
+.fv-note-x:hover { opacity: 1; }
+.fv-new { display: flex; flex-direction: column; gap: 6px; padding: 10px;
+  border-top: 1px solid var(--box-border); }
+.fv-at { font-size: 0.86em; opacity: 0.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fv-ta { min-height: 62px; padding: 6px 8px; resize: vertical; font: inherit; font-size: 0.92em;
   background: var(--vscode-input-background, #3c3c3c); color: inherit;
-  border: 1px solid var(--box-border); border-radius: 4px; font: inherit; font-size: 0.92em;
-}
-.dr-newrow { display: flex; gap: 6px; justify-content: flex-end; }
+  border: 1px solid var(--box-border); border-radius: 4px; }
+.fv-newrow { display: flex; gap: 6px; justify-content: flex-end; }
+/* The viewer's backdrop is z 1200 and .ctx-menu is 100, both fixed on <body> — without this lift the
+   menu renders BEHIND the viewer and the right-click looks dead (that exact bug, 2026-08-18). */
+.ctx-menu.fv-menu { z-index: 1300; }

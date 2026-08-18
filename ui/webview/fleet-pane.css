@@ -28,7 +28,7 @@ font-size:15px;line-height:1;cursor:pointer}
 .fl-head{display:flex;align-items:center;gap:7px;padding:5px 14px 4px;cursor:pointer;font-weight:650}
 .fl-head:hover{background:rgba(255,255,255,0.05)}
 .fl-workdot{width:7px;height:7px;border-radius:50%;background:#e0b020;flex:0 0 auto}
-/* the same pip language the feed's .fwork-dot speaks: straw = awaiting dispatched background work
+/* the same pip language the feed's .fwork-dot speaks: await-green = awaiting dispatched background work
    (--st-awaitbg-bg), gray ring = the live state could not be read (the network strip's down-host
    gray). Idle stays undotted. Hexes because this sheet loads standalone. */
 .fl-workdot.await{background:#54B204}

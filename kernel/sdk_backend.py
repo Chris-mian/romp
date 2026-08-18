@@ -281,6 +281,20 @@ def msg_to_atom(msg, sid, fsid, t, skill_tool_ids=()):
     still shows the confirmation line."""
     n = type(msg).__name__
     u = getattr(msg, "uuid", None)
+    # SIDECHAIN traffic is not the parent's conversation (the user 2026-08-17, screenshot of a
+    # subagent's full kickoff prompt painted as a huge expanded box below the collapsed tool group):
+    # the CLI streams a Task/Agent subagent's OWN turns tagged with parent_tool_use_id — its kickoff
+    # prompt as a UserMessage, its replies and tool calls as AssistantMessages. Untagged, the prompt
+    # fell through to the generic user atom below and, being a live-tail atom whose uuid never
+    # appears in the parent's transcript (the subagent writes its own file), the leak persisted
+    # instead of being superseded. The subagent's designed surfaces are the Task/Agent head's
+    # prompt+report folds and the background-task rows — the parent stream carries only the parent's
+    # turns. The ONE tagged shape that IS the parent's own is a Skill payload (parent_tool_use_id
+    # naming a Skill tool_use from this session's set — skills run inline, not as subagents); it
+    # passes through to the skillMd classification in the UserMessage branch.
+    ptid = getattr(msg, "parent_tool_use_id", None)
+    if ptid and ptid not in (skill_tool_ids or ()):
+        return None
     if n == "AssistantMessage":
         content = [d for b in (getattr(msg, "content", []) or []) if (d := _block_to_dict(b))]
         if not content:
@@ -582,6 +596,21 @@ def append_effort_applied(state_dir: Path, sid: str, effort: str, t: int | None 
     p = Path(state_dir) / "states" / (sid + ".jsonl")
     p.parent.mkdir(parents=True, exist_ok=True)
     rec = {"t": int(time.time()) if t is None else int(t), "effortApplied": str(effort)}
+    with open(p, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def append_cmd_gesture(state_dir: Path, sid: str, text: str, t: int | None = None) -> None:
+    """Record a command GESTURE — a /model-/effort-/auth-style pick — at the moment it was ASKED FOR. The
+    synthesized live chip that acknowledges the pick is in-memory only and prune_live's stale_cmd retires it
+    on the next human turn, so the user's own gesture vanished from their side of the history (the user
+    2026-08-14: the right side should keep what you did; the applied note keeps that it happened). The kernel
+    interleaves a durable `cmdGesture` chat event from this marker, deduped against the still-live chip by
+    (t, text). Its own key ("cmdGesture") so the state/awaiting/recovery readers, which filter by their own
+    keys, skip it. `text` is the full display form, e.g. "/effort high"."""
+    p = Path(state_dir) / "states" / (sid + ".jsonl")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"t": int(time.time()) if t is None else int(t), "cmdGesture": str(text)}
     with open(p, "a") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -1261,6 +1290,12 @@ class SdkSession:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client = None
         self.inflight = 0
+        # The TEXTS of turns fed to the current client whose ResultMessage hasn't landed — the fed-turn
+        # twin of `inflight` (append at feed, cleared at the authoritative settle), all on the loop
+        # thread. Exists for the reconnect teardown: a turn fed into a client being torn down is in NO
+        # store (inputs() already removed it from the persisted queue), and without its text the
+        # loop-top reconcile could only settle counters while the turn itself vanished (2026-08-16).
+        self._inflight_texts: list[str] = []
         # The CLI's own stderr, last few lines (see _on_cli_stderr). The SDK only PIPES the child's
         # stderr when this callback is registered, so without it a launch failure's real cause — the
         # line the CLI printed before exiting — is discarded by the transport and never reaches the
@@ -1574,6 +1609,49 @@ class SdkSession:
             self._wake_set()
         else:
             self._reconnect_when_idle = True   # the ResultMessage handler fires it when the turn ends
+
+    def _reconcile_stranded(self):
+        """RECONCILE ACROSS A RECONNECT, at the loop's top where no client is connected so nothing can
+        legitimately be in flight (the user 2026-07-01, who switched the model on a new session and it
+        said working indefinitely). A reconnect abandons the previous client; a turn it left in flight
+        can NEVER get its ResultMessage on the new connection — so inflight, and the "working" signal it
+        drives, would be stranded elevated FOREVER. request_reconnect defers while inflight>0, but a race
+        (it fired at inflight==0, then the input generator fed a turn before the teardown ran) can still
+        strand a turn here: settle the counters to idle. A not-yet-STARTED _pending turn survives as
+        before (never fed to the dead client; the new inputs() re-feeds it). No-op on the first connect
+        and on a clean reconnect. Event-based on the reconnect itself, not a time/age heuristic.
+
+        And the FED turn itself must not vanish with the client it was fed to (2026-08-16: a spawn's -m
+        kickoff, fed just as an effort-pin's teardown fired, landed nowhere — not in _pending, not in the
+        persisted queue, not in any transcript — and its echo read "sent" for 5.5h until the next thread
+        spawn finally flagged it dropped). `_inflight_texts` carries the fed-but-unresulted texts across
+        the teardown:
+        - NO conversation ever materialized (no init streamed → resume_sid never set): RE-HEAD the queue —
+          the next client starts the conversation fresh, so re-feeding cannot duplicate anything the user
+          can see. (The one theoretical overlap — the dead CLI landed the atom in the same sid-keyed file
+          after our receive loop was cancelled — repeats a kickoff message, which beats silently losing
+          it.)
+        - A RESUMABLE conversation: the atom may genuinely have landed, so re-feeding risks a real
+          duplicate. Surface the loss instead: the drop-mark flips the echo to "never delivered" NOW,
+          rather than hours later at the next thread spawn."""
+        if not self.inflight:
+            return
+        stranded = list(self._inflight_texts)      # fed to the abandoned client, never resulted
+        self._inflight_texts.clear()
+        self.inflight = 0
+        self._interrupted = False
+        self._intr_level = 0
+        self._compacting = False   # an abandoned /compact turn can't emit its boundary/result on the dead client
+        self._clearing = False     # same: an abandoned /clear turn can't emit its init/result either
+        self._mark("waiting")
+        self.backend.retire_live_work(self.sid)    # the abandoned turn's stream is gone with its client
+        if stranded and not self.resume_sid:
+            with self._lock:
+                self._pending[0:0] = stranded
+            self._persist_queue()                  # the fresh inputs() drains _pending on its first pass
+        elif stranded:
+            self.backend._mark_dropped_echoes(self.sid, self.pending())
+        self.backend._poke()
 
     # ---- async internals (run inside the quarantined loop) ----
 
@@ -1900,6 +1978,7 @@ class SdkSession:
                     self._interrupted = False        # a fresh turn → clear any stale interrupt flag
                     self._intr_level = 0             #   ...and its escalation episode (a new stop starts polite)
                 self.inflight += 1
+                self._inflight_texts.append(item)   # the fed-turn twin — see its init comment
                 self._mark("working")
                 self.backend._poke()
                 yield {"type": "user",
@@ -1923,25 +2002,8 @@ class SdkSession:
         while not self.ended:
             self._wake.clear()
             self._reconnect = False
-            # RECONCILE INFLIGHT ACROSS A RECONNECT (the user 2026-07-01, who switched the model on a new session
-            # and it said working indefinitely). A reconnect abandons the previous client; a turn it left in
-            # flight can NEVER get its ResultMessage on the new connection (that client, and its receive loop,
-            # are gone) — so inflight, and the "working" signal it drives, would be stranded elevated FOREVER.
-            # request_reconnect defers while inflight>0, but a race (it fired at inflight==0, then the input
-            # generator started a turn before the teardown ran) can still leave a turn stranded here. At the
-            # TOP of the loop no client is connected, so nothing can legitimately be in flight: settle it to
-            # idle. A not-yet-STARTED _pending turn survives (it was never fed to the dead client) and the new
-            # inputs() re-feeds it, re-stamping "working". No-op on the first connect and on a clean reconnect
-            # (inflight already 0). Event-based on the reconnect itself, not a time/age heuristic.
-            if self.inflight:
-                self.inflight = 0
-                self._interrupted = False
-                self._intr_level = 0
-                self._compacting = False   # an abandoned /compact turn can't emit its boundary/result on the dead client
-                self._clearing = False     # same: an abandoned /clear turn can't emit its init/result either
-                self._mark("waiting")
-                self.backend.retire_live_work(self.sid)   # the abandoned turn's stream is gone with its client
-                self.backend._poke()
+            # settle + recover anything the abandoned client stranded — see _reconcile_stranded
+            self._reconcile_stranded()
             opts = self.backend._options(self, ClaudeAgentOptions)
             # Whether THIS connection carries the fastMode opt-in — snapshotted at the same moment
             # _options composes the flag-settings file, so the two can never disagree. The CLI only
@@ -2352,6 +2414,7 @@ class SdkSession:
             # phantom-working bug, the user 2026-07-09.) If a genuinely separate turn is still queued in
             # the CLI, its next streamed atom re-asserts 'working' via _forward — the stream is the truth.
             self.inflight = 0
+            self._inflight_texts.clear()           # the CLI processed everything fed — same settle semantics
             # A /compact that found NOTHING to compact emits no boundary — the turn just settles here. Clear
             # the authoritative flag so parked ops proceed immediately, instead of waiting out a 180s cap.
             self._compacting = False
@@ -3254,8 +3317,11 @@ class SdkBackend:
         self._poke()
 
     def _record_usage_history(self, data, now=None) -> None:
-        """Append the reading to usage-history.json — the hover graphs' time base (the user 2026-08-13:
-        the window bars kept only the CURRENT snapshot, so nothing could be graphed). Same bounded-hours
+        """Append the reading to usage-history.json — the per-window utilization ledger (the user
+        2026-08-13: the window bars kept only the CURRENT snapshot, so nothing could be graphed).
+        Nothing renders it today — the per-window hover sparks it fed were removed (the user
+        2026-08-14, who wanted only the one fleet $/h graph) — but it keeps recording so a future
+        utilization graph starts with history instead of a blank. Same bounded-hours
         shape as spend.json so both series share one x-axis: per hour keep the MAX pct seen per window
         (utilization only climbs within a window; a ROLL is a new resets_at, which takes the fresh
         reading outright), pruned to 192 hours — 8 days covers the 7-day graph. Caller holds _rl_lock;
@@ -3436,7 +3502,14 @@ class SdkBackend:
             # 2026-07-27 federation shakedown: a remote session's `romp mail send` died
             # command-not-found and re-prompted for permission on the absolute-path retry). options.env
             # merges OVER the inherited environment in the SDK's transport, so this is additive.
-            env=_bin_on_path_env(os.environ),
+            # ROMP_SID gives the CLI process (and every Bash it runs) the session's STABLE identity —
+            # what lets `romp end self` resolve itself to the kernel (the user 2026-08-15). And
+            # ROMP_SESSION_NAME gives child processes the session's human NAME (the user 2026-08-16):
+            # a generic identity surface, deliberately coupled to no consumer. Env is spawn-frozen, so
+            # a rename after spawn is NOT reflected here — the sid stays the stable identity; the name
+            # is a spawn-time label, right for attribution and logging, wrong for addressing.
+            env={**_bin_on_path_env(os.environ), "ROMP_SID": str(sess.sid),
+                 "ROMP_SESSION_NAME": str(sess.name)},
             # Registering this is what makes the CLI's stderr EXIST for romp at all: the SDK transport
             # pipes the child's stderr only when options.stderr is set (otherwise it hands the child
             # our own stderr and reports SDK_STDERR_PLACEHOLDER on failure). Without it, a CLI that
@@ -3564,7 +3637,7 @@ class SdkBackend:
         return sid
 
     def fork(self, name: str, parent_sid: str, cut_uuid: str = "", bg: str = "", fg: str = "",
-             sid: str | None = None, thread_of: str = "") -> str:
+             sid: str | None = None, thread_of: str = "", model: str = "", effort: str = "") -> str:
         """Mint a NEW session that is a FORK of `parent_sid`'s conversation — up to `cut_uuid` when given
         (a transcript record uuid; empty = the whole conversation), the parent untouched either way (the
         user 2026-08-13). The new session gets its OWN sid, registry, name and identity colour — a fork
@@ -3608,6 +3681,17 @@ class SdkBackend:
             reg["threadOf"] = thread_of
         if parent.get("model") and parent["model"] != "default":
             reg["model"] = parent["model"]
+        # Per-fork model/effort OVERRIDES (the user 2026-08-17: a comment thread on a different model
+        # or effort, without touching the parent). Applied HERE, in the reg the first connect reads —
+        # never via set_model, whose write_sdk_default side effect would make a thread's pick the seed
+        # for every future session. 'default' clears the inherited model back to the account default.
+        if model:
+            if model == "default":
+                reg.pop("model", None)
+            else:
+                reg["model"] = model
+        if effort in EFFORT_LEVELS:
+            reg["effort"] = effort
         if parent.get("auth") in ("login", "key"):
             reg["auth"] = parent["auth"]
         write_reg(self.state_dir, sid, reg)
@@ -3651,10 +3735,24 @@ class SdkBackend:
         registry (spread) and especially its lastSid when set — lastSid tracks the NEWEST transcript
         fsid (a /clear or relaunch mints new fsids under the same romp sid) and SdkSession resumes from
         it; stamping the original sid here would silently resume an OLD conversation state (the
-        picker-revive fix, the user 2026-07-05)."""
+        picker-revive fix, the user 2026-07-05).
+
+        A REVIVAL PRESERVES IDENTITY (2026-08-17): when the reg already carries a name, that name WINS
+        over the caller's — the caller's copy came from the names/ registry or a discovery row, both of
+        which other paths rewrite (the tmux launcher's dead-name freeing, fork-lane rows whose "sid" is
+        a transcript stem), and trusting it let a machine-panic relaunch respawn a session under a name
+        nobody chose while it carried its whole history (the local session incident, 2026-08-17: reg
+        name X, caller name Y → revived as Y with X's past, and the spawn-frozen env made Y permanent).
+        The caller's name is only ever ADOPTED when the reg has none — the create-from-nothing revive
+        of a session this backend has never seen, which is also logged, because a sid with no reg is
+        usually a transcript fsid that leaked out of a discovery row rather than a real romp sid."""
         reg = read_reg(self.state_dir, sid) or {}
+        kept = str(reg.get("name") or "").strip()
+        if not reg:
+            self._log("resume minting a reg for unknown sid %s as %r — a sid with no reg is usually "
+                      "a transcript fsid, not a romp session" % (sid[:13], name))
         cwd = cwd or reg.get("cwd") or os.path.expanduser("~")
-        write_reg(self.state_dir, sid, {**reg, "sid": sid, "name": name, "cwd": cwd,
+        write_reg(self.state_dir, sid, {**reg, "sid": sid, "name": kept or name, "cwd": cwd,
                                         "mode": reg.get("mode", "acceptEdits"),
                                         "effort": reg.get("effort", DEFAULT_EFFORT),
                                         "lastSid": reg.get("lastSid") or sid, "alive": True})
@@ -4117,6 +4215,9 @@ class SdkBackend:
                 "type": "user", "uuid": uid, "session_id": sid, "fsid": s.resume_sid, "parentUuid": None,
                 "t": t, "author": "human", "command": "/model", "_echo_text": disp,
                 "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
+            # The DURABLE twin of the live chip (the user 2026-08-14): same t and text, so build_session
+            # can dedup while the chip is live and take over seamlessly once stale_cmd retires it.
+            append_cmd_gesture(self.state_dir, sid, disp, t=t)
             self._wake_push()
         else:
             # DORMANT (no live thread): no turn is coming to report a real name, so resolve to the chosen
@@ -4168,13 +4269,24 @@ class SdkBackend:
         self._wake_push()
         return True
 
+    # bypassPermissions is the one mode that must not become the remembered default. Every other pick
+    # here is a preference worth inheriting; this one removes the approval gate, and spawn() seeds a new
+    # session from the remembered mode with NOTHING in the create UI that shows it — so one click on one
+    # tab would quietly hand every session you started afterwards an unprompted agent. It stays where you
+    # set it: this session, until you change it (the user 2026-08-15, on the picker adding the entry).
+    # The carve-out is HERE and not in spawn() on purpose: romp declines to remember bypass off a click,
+    # but a mode written into sdk-defaults.json by hand is still honoured, so the escape hatch is open to
+    # anyone who genuinely wants every new session unprompted — they just have to say so deliberately.
+    STICKY_MODE_EXCLUDES = {"bypassPermissions"}
+
     def set_mode(self, sid: str, mode: str) -> bool:
         """Change the permission mode. Persisted in the registry and applied LIVE via the SDK control
         channel (set_permission_mode) — not merely stored for the next reconnect."""
         if not read_reg(self.state_dir, sid):
             return False
         self._update_reg(sid, mode=mode)   # locked RMW — see set_effort's race note
-        write_sdk_default(self.state_dir, mode=mode)   # remember as the seed for the NEXT new session, like model/effort (the user 2026-06-27)
+        if mode not in self.STICKY_MODE_EXCLUDES:
+            write_sdk_default(self.state_dir, mode=mode)   # remember as the seed for the NEXT new session, like model/effort (the user 2026-06-27)
         s = self.sessions.get(sid)
         if s:
             s.mode = mode
@@ -4242,6 +4354,7 @@ class SdkBackend:
                 "type": "user", "uuid": uid, "session_id": sid, "fsid": s.resume_sid, "parentUuid": None,
                 "t": t, "author": "human", "command": "/effort", "_echo_text": disp,
                 "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
+            append_cmd_gesture(self.state_dir, sid, disp, t=t)   # durable twin — see set_model
             self._wake_push()
         return True
 
@@ -4275,6 +4388,7 @@ class SdkBackend:
                 "type": "user", "uuid": uid, "session_id": sid, "fsid": s.resume_sid, "parentUuid": None,
                 "t": t, "author": "human", "command": "/auth", "_echo_text": disp,
                 "message": {"role": "user", "content": [{"type": "text", "text": disp}]}}
+            append_cmd_gesture(self.state_dir, sid, disp, t=t)   # durable twin — see set_model
             self._wake_push()
         return True
 

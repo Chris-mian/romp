@@ -13,29 +13,36 @@ import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { quoteReply } from "../quote";
-import { markerLabel } from "./time-marker";
+import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
+import { SessionViews, viewVisible, viewsKey, hideIn, revealIn } from "./session-views";
+import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
+import { senderKind } from "./sender-identity";
 import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { delegate } from "./actions";
-import { isClearCmd, openTopTitles, clearConfirmDetail } from "./clear-confirm";
+import { KIND_WORD } from "./spin-caption";
+import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
 import { reconcileTabOrder } from "./tab-order";
 import { writeViewOrder } from "./view-order";
-import { titleWithKey } from "./keybindings";
+import { titleWithKey, chordOf, effectiveChord, loadOverrides } from "./keybindings";
+import { DEFAULT_CHORDS } from "./commands";
+import { NavHistory } from "./nav-history";
+import { StagedStack } from "./staged-messages";
 import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional } from "./provisional";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
-import { previewKind, previewFull, canPreview, fileUrl } from "./preview";
+import { previewKind, previewFull, canPreview, fileUrl, retryFailedPreviews } from "./preview";
+import { openFileView, setCommentSink } from "./file-view";
 import { pastedFilePath } from "./paste-path";
-import { hostNameNodes, hostPrefix, hostOf, bareId, hostIsDown, hostDownNote } from "./host-prefix";
+import { hostNameNodes, hostPrefix, hostOf, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
 import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 import { apiErrorReason } from "./api-error-reason";
 import { mathBlock, mathInline } from "./math";
 import { threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, type CommentThread } from "./comments";
-import { anchorFor, buildReviewMessage, docKey, type DocComment } from "./docreview";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -77,8 +84,8 @@ type TaskOutputs = Record<string, { command: string; output: string }>;
 type ChatEvent = (
   // mid/mids: postal message ids the kernel could NOT resolve into cards, carried on the raw turn so a
   // timeline arc into it still lands (see _hydrate_postal's unresolved path)
-  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; spacePaths?: string[]; pathLinks?: Record<string, string> }
-  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string> }   // spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
+  | { kind: "user"; md: string; uuid?: string; ts?: string; reminders?: string[]; taskOutputs?: TaskOutputs; human?: boolean; romp?: boolean; rompAuto?: boolean; rompSystem?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; canned?: string; tag?: string; mid?: string; mids?: string[]; images?: { src: string; path?: string }[]; undelivered?: boolean; echoT?: number; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string> }
+  | { kind: "assistant"; md: string; uuid?: string; ts?: string; spacePaths?: string[]; pathLinks?: Record<string, string>; pathPins?: Record<string, string> }   // spacePaths: backticked filenames WITH spaces the kernel verified exist (build_session _space_paths) → whole-span links. pathLinks: path-shaped tokens the kernel verified against the filesystem, token → real open target (build_session _path_links) — the linkifier's gate
   | { kind: "thinking"; text: string; encrypted: boolean; uuid?: string; ts?: string }
   | {
       kind: "tool";
@@ -188,6 +195,13 @@ type ChatEvent = (
   // and the synthesized /effort chip prunes on the next message — so this rail-anchored note marks WHEN the
   // new effort took effect, and stays. Kernel-interleaved by time, like `retried`. SDK-only.
   | { kind: "effortApplied"; effort: string; ts?: string; uuid?: string }
+  // Durable command GESTURE (the user 2026-08-14): a /model-/effort-/auth-style pick used to survive only as
+  // the synthesized live chip, which stale_cmd prunes on the next human turn — the user's own gesture then
+  // vanished from their side of the history while the applied note stayed. The kernel writes a
+  // {"t","cmdGesture"} marker at the request moment and interleaves this once the live chip retires, so the
+  // right side keeps "what you did" and the left rail keeps "it took effect". cmd is the full "/effort high"
+  // text. SDK-only, like effortApplied.
+  | { kind: "cmdGesture"; cmd: string; ts?: string; uuid?: string }
   // The model's safeguards flagged the prompt and the CLI retried the turn on a fallback model (the
   // transcript's system/model_refusal_fallback record). The reply that follows came from a DIFFERENT
   // model — conversation state that must be apparent in the chat, never silent (the user 2026-08-03).
@@ -202,11 +216,14 @@ type ChatEvent = (
 
 interface TodoTask { id: string; subject: string; activeForm?: string; status: string }
 
-type ChipState = "working" | "ready" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // awaiting = a live permission/picker prompt (on YOU); awaitingBg = idle main thread waiting on background work it dispatched (straw, the user 2026-07-13)
-interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingTasks?: string[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; authBoth?: boolean; authAcct?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it when no tracked tasks claim the box (renderAwaitWhy; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+type ChipState = "working" | "ready" | "needsInput" | "awaiting" | "awaitingBg" | "idle" | "closed" | "compacting" | "clearing" | "blocked" | "retrying" | "interrupting" | "opening";   // needsInput = a live permission/picker prompt (on YOU) — renamed from the legacy "awaiting" (2026-08-15), which stays accepted for OLDER REMOTE KERNELS across federation; awaitingBg = idle main thread waiting on background work it dispatched (the user 2026-07-13)
+interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingTasks?: string[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authPending?: boolean; authBoth?: boolean; authAcct?: string; ctx?: string; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it when no tracked tasks claim the box (renderAwaitWhy; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "tmux" | "sdk"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
-// status, expandable to the command + its output. status = running | completed | failed.
+// status, expandable to the command + its output. status = running | completed | failed. For a dispatched
+// agent/workflow, `summary` is the dispatch's description (or the workflow meta's summary) and `command`
+// carries the full ask — the Agent prompt / the Workflow script — so the row's detail level says what the
+// work IS, not a generic label over an empty block (the user 2026-08-15).
 interface BgTask { id: string; status: string; summary: string; command?: string; output?: string; }
 // The box payload: count (total to surface → the "N background tasks" header) + up to 16 tasks (the list).
 interface BgTasks { count: number; tasks: BgTask[]; }
@@ -423,6 +440,35 @@ const CLOSE_ACK_MS = 15_000;
 // The romp identity palette for the tab right-click color picker (the user 2026-06-29). Fetched once from the
 // kernel's /palette so the client holds no color literals; empty until it lands (the menu just omits the row).
 // The palette is SELECTABLE now (the user 2026-07-12): a {type:"palette"} push lands the new set on switch.
+// ── session views (the user 2026-08-18): the kernel's views blob gates which sessions get TABS.
+// A hidden session is a BACKGROUND session — still running, judged and carded; the + picker lists it
+// under "Hidden" and the timeline's corner panel counts it, so it is always one glance away.
+// Captured from every tabOrder push; a local gesture (hide from the tab menu, reveal from the
+// picker) applies optimistically and holds sticky until a push echoes it — yielding to the kernel
+// after three silent pushes, the same machinery the timeline's copy runs.
+let sessionViews: SessionViews | null = null;
+let pendingSessionViews: SessionViews | null = null;
+let pendingViewsAge = 0;
+let allHiddenBlanked = false;   // the active transcript was blanked because EVERY session is view-hidden
+function effViews(): SessionViews | null { return pendingSessionViews ?? sessionViews; }
+function captureViews(v: SessionViews | null) {
+  if (v) sessionViews = v;
+  // v null = a tabOrder frame WITHOUT the blob (an older kernel in a mixed-version mesh): it still
+  // ages a pending edit, or the optimistic state would fake success forever against a kernel that
+  // will never confirm it
+  if (pendingSessionViews && ((v && viewsKey(v) === viewsKey(pendingSessionViews)) || ++pendingViewsAge >= 3)) {
+    pendingSessionViews = null; pendingViewsAge = 0;
+  }
+}
+function postViews(v: SessionViews) {
+  pendingSessionViews = v; pendingViewsAge = 0;
+  if (vscodeApi) vscodeApi.postMessage({ type: "setTimelineViews", views: v });
+  renderTabs();
+}
+function tabInView(id: string): boolean { return viewVisible(effViews(), id); }
+function visibleOrder(): string[] { return order.filter(tabInView); }
+function revealSession(id: string) { postViews(revealIn(effViews(), id)); }
+
 let paletteColors: string[] = [];
 fetch(kernelUrl("/palette"), { cache: "no-store" }).then((r) => r.json())
   .then((d) => { if (Array.isArray(d.colors)) paletteColors = d.colors; }).catch(() => { /* menu omits the swatch row */ });
@@ -442,6 +488,9 @@ let anchorPendingOlder = false; // scrollToAnchor kicked off a loadOlder fetch f
 // around it), then restore it to this y instead of calling landOn. Sticks with pendingAnchor across
 // render-pass retries, like pendingAnchorIntent.
 let pendingAnchorKeepY: number | null = null;
+let flashedAnchor: string | null = null; // the anchor already flashed THIS navigation — a deep anchor
+// re-lands once per older-history fetch round, and each re-land used to pulse again (the user
+// 2026-08-15: "pulsating way too many times"). A NEW navigation (setActive with an anchor) re-arms.
 // Landing diagnostics (the user's ask, 2026-06-10): record HOW each deep-link
 // landing resolved — exact pointer / refused wrong-kind pointer / time-nearby
 // / gave up. The trail is posted to the host (→ ~/.local/state/romp/
@@ -594,7 +643,7 @@ function wrapCodeLines(code: HTMLElement) {
   }).join("");
 }
 
-function dot(kind: "green" | "ring" | "user" | "red" | "romp" | "working"): HTMLElement { return el("span", "dot " + kind); }
+function dot(kind: "green" | "ring" | "user" | "red" | "romp" | "working" | "tag"): HTMLElement { return el("span", "dot " + kind); }
 
 function ioRow(label: "IN" | "OUT", text: string, isError: boolean): HTMLElement {
   const row = el("div", "io-row" + (label === "OUT" ? " io-out" : "") + (isError ? " io-error" : ""));
@@ -669,15 +718,34 @@ document.addEventListener("click", (e) => {
   }
 }, true);
 
-// A clickable file name that opens the real file in the editor (shared
-// open/navigate surface — see extension.ts openFile handler).
+// Where a clicked file path should actually open, which depends entirely on which host you are in.
+//
+//   • VS Code → the host extension's openFile handler, i.e. the editor two inches away. Unbeatable.
+//   • Web dashboard → the viewer, as a modal over THIS pane (file-view.ts; the user 2026-08-15 — the
+//     first cut filled the feed pane, and reading a file cost the cards). The bytes come to the
+//     browser over /file, which is the fix for the original break (the user 2026-08-08): the kernel
+//     used to run an opener on ITS machine, the wrong screen entirely from another device.
+//
+// Same document as the click, so there is no shell relay and no fallback ladder: standalone /chat
+// and the framed pane behave identically.
+function openPath(path: string, sid?: string | null): void {
+  if (!vscodeApi) return;
+  if (location.protocol === "http:" || location.protocol === "https:") {
+    openFileView(path, sid || activeId || null);
+    return;
+  }
+  vscodeApi.postMessage(sid ? { type: "openFile", path, id: sid } : { type: "openFile", path });
+}
+
+// A clickable file name that opens the real file — in the editor (VS Code) or the in-pane viewer
+// modal (web). Shared open/navigate surface; see extension.ts's openFile handler and file-view.ts.
 function fileLink(path: string): HTMLElement {
   const a = el("span", "tool-file");
   a.textContent = shortPath(path);
   a.title = "Open " + path;
   a.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (vscodeApi) vscodeApi.postMessage({ type: "openFile", path });
+    openPath(path);
   });
   return a;
 }
@@ -824,7 +892,10 @@ function fillPathImg(wrap: HTMLElement, p: string): void {
     const img = document.createElement("img"); img.className = "user-img"; img.src = url; img.loading = "lazy"; img.title = p;
     wrap.appendChild(img);
   } else {
-    const chip = el("div", "user-img-path"); chip.textContent = "🖼 " + (p.split("/").pop() || p); chip.title = p;
+    // still waiting on the host round-trip → pulsing-dots loading cue (pure CSS — the sandbox can't
+    // fetch the swirl asset); a FAILED path drops the pulse and reads as the plain chip it is
+    const chip = el("div", "user-img-path" + (imgFailed.has(p) ? "" : " img-pending"));
+    chip.textContent = "🖼 " + (p.split("/").pop() || p); chip.title = p;
     wrap.appendChild(chip);
   }
 }
@@ -893,7 +964,7 @@ function imgPathLink(path: string): HTMLElement {
   a.title = "Open " + path;
   a.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (vscodeApi) vscodeApi.postMessage({ type: "openFile", path });
+    openPath(path);
   });
   return a;
 }
@@ -924,27 +995,19 @@ function fileUriToPath(uri: string): string {
   try { p = decodeURIComponent(p); } catch { /* malformed %-escape — use verbatim */ }
   return p;
 }
-// A clickable, VERBATIM file link that opens in the host's default app — the SAME open-the-file path the
-// caption/image links use ({type:"openFile"} → the kernel runs `open <path>`, so e.g. a PDF opens in the
-// viewer). `raw` is shown as written; `open` is what the host opens. A bare file:// can't be followed by the
-// browser from the http dashboard (blocked scheme) and a VS Code editor won't render a PDF, so it's routed to
-// the host opener instead of navigated. `relative` bare paths carry the active session id so the KERNEL
-// resolves them against THAT session's cwd — a relative `design/foo.md` is relative to the repo the agent
-// runs in, not the kernel's cwd (the user 2026-07-06).
+// A clickable, VERBATIM file link — the SAME open-the-file path the caption/image links use (openPath:
+// the editor in VS Code, the feed pane's viewer on the web). `raw` is shown as written; `open` is what
+// gets opened. A bare file:// can't be followed by the browser from the http dashboard (blocked scheme)
+// and a VS Code editor won't render a PDF, so it's routed rather than navigated. `relative` bare paths
+// carry the active session id so whoever resolves them uses THAT session's cwd — a relative
+// `design/foo.md` is relative to the repo the agent runs in, not the kernel's cwd (the user 2026-07-06).
 function openPathLink(raw: string, open: string, relative = false): HTMLElement {
   const a = el("span", "file-uri-link");
   a.textContent = raw;                       // shown exactly as written, selectable/copyable in place
-  // A text DOCUMENT opens romp's review reader instead of the OS editor (the user 2026-08-14): reading it
-  // here is how you comment on it and hand every comment over at once. The reader's header keeps an
-  // "Open in editor ↗" button, so the old behavior stays one click away.
-  const isDoc = DOC_REVIEW_EXT.test(open);
-  a.title = (isDoc ? "Review " : "Open ") + open;
+  a.title = "Open " + open;
   a.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (isDoc) return openDocReview(raw, open);
-    if (vscodeApi) vscodeApi.postMessage(relative
-      ? { type: "openFile", path: open, id: activeId }   // kernel resolves against this session's cwd
-      : { type: "openFile", path: open });
+    openPath(open, relative ? activeId : null);
   });
   return a;
 }
@@ -999,8 +1062,27 @@ const CLICKABLE_PATH_RE = /file:\/\/\/?[^\s<>"'`)]+|[~.\w\-]*\/[~.\w\-/]*[\w\-]|
 // kernel, a cached payload) keeps today's shape-only linking rather than unlinking history.
 // file:// URIs are explicit absolute paths — never gated on the map.
 function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: string[],
-                         pathLinks?: Record<string, string>): void {
-  const previewable: string[] = [];   // renderable paths found in this message → a thumbnail strip below it
+    pathLinks?: Record<string, string>, pathPins?: Record<string, string>): void {
+  // A whole-backtick http(s) URL becomes a TAPPABLE link that still looks like code (the user
+  // 2026-08-16, on mobile, wanting to tap through to a dashboard link a session sent). Bare URLs
+  // and [text](url) already link via marked's gfm autolink + the global anchor click delegate;
+  // the code-span form was the one dead shape. Inline spans only (never inside <pre> blocks or an
+  // existing anchor), and only when the span's ENTIRE text is one URL — a URL quoted inside prose
+  // code stays code. The scheme is validated here, so the anchor is as safe as md()'s sanitized ones.
+  for (const code of Array.from(root.querySelectorAll("code"))) {
+    const t = (code.textContent || "").trim();
+    if (!/^https?:\/\/\S+$/.test(t)) continue;
+    if (code.closest("pre") || code.closest("a")) continue;
+    const a = document.createElement("a");
+    a.href = t;
+    a.className = "url-code-link";
+    a.title = t + " — opens in a new tab";
+    code.replaceWith(a);
+    a.appendChild(code);
+  }
+  const previewable: string[] = [];   // renderable paths found in this message → full renders at their mentions
+  const mentionAt = new Map<string, HTMLElement>();   // path → its FIRST mention's element (figure anchor)
+  const kernelVerified = new Set<string>();           // paths the kernel stat'd — their previews fail loudly, never silently
   if (spacePaths && spacePaths.length) {
     const verified = new Set(spacePaths);
     for (const code of Array.from(root.querySelectorAll("code"))) {
@@ -1009,7 +1091,11 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
       if (!verified.has(tok)) continue;
       const link = openPathLink(tok, tok, true);
       code.replaceChildren(link);                              // the <code> chrome stays; its content is the link
-      if (previewKind(tok) && !previewable.includes(tok) && !(skipThumbs && skipThumbs.includes(tok))) previewable.push(tok);
+      kernelVerified.add(tok);
+      if (previewKind(tok) && !previewable.includes(tok) && !(skipThumbs && skipThumbs.includes(tok))) {
+        previewable.push(tok);
+        mentionAt.set(tok, code);
+      }
     }
   }
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -1035,8 +1121,13 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
       if (!isUri && pathLinks && typeof fixed !== "string") continue;   // checked against the filesystem: no such file (or several) → prose
       if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
       const open = isUri ? fileUriToPath(tok) : (fixed ?? tok);
-      frag.appendChild(isUri ? fileUriLink(tok) : openPathLink(tok, open, true));
-      if (previewKind(open) && !previewable.includes(open) && !(skipThumbs && skipThumbs.includes(open))) previewable.push(open);
+      const link = isUri ? fileUriLink(tok) : openPathLink(tok, open, true);
+      frag.appendChild(link);
+      if (!isUri && typeof fixed === "string") kernelVerified.add(open);   // the kernel stat'd it this build
+      if (previewKind(open) && !previewable.includes(open) && !(skipThumbs && skipThumbs.includes(open))) {
+        previewable.push(open);
+        mentionAt.set(open, link);
+      }
       last = m.index + tok.length;
       re.lastIndex = last;
       any = true;
@@ -1045,12 +1136,16 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
     if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
     tn.replaceWith(frag);
   }
-  // A mentioned image/PDF renders FULL-SIZE under the message (the user 2026-07-20, who wanted not even a
-  // thumbnail but a rendered image, like the user messages; supersedes the 2026-07-08 thumbnail strip,
-  // which lives on in the feed's artifact strips). Absolute AND relative paths work — the kernel
-  // resolves a relative one against this session's cwd, same as click-to-open. Per surface:
+  // A mentioned image/PDF renders FULL-SIZE at its MENTION — the figure lands right after the
+  // paragraph/list item that names it, like figures in a document (the user 2026-08-15, whose four
+  // captioned plots all collected at the message's tail, far from the prose describing each; the
+  // 2026-07-20 rule — a rendered image, not a thumbnail — stands, this moves WHERE it renders).
+  // Figures mentioned in the same block share one strip; a mention with no block anchor (bare text
+  // at the root) keeps the old below-message placement. Absolute AND relative paths work — the
+  // kernel resolves a relative one against this session's cwd, same as click-to-open. Per surface:
   //   web       — previewFull: the kernel serves the bytes straight into an <img> at the user-image
-  //               scale / a PDF's native inline viewer; a path the kernel can't serve removes itself.
+  //               scale / a PDF card. A KERNEL-VERIFIED path that fails to load shows a retry chip
+  //               (transient failure — restart, tunnel blip); only an unverified one self-removes.
   //   VS Code   — the webview sandbox can't reach the kernel origin from an <img>, so an IMAGE rides
   //               the same host data-URL flow the user-message pictures use (buildPathImg, imgRequest
   //               now carrying the session id for relative resolution); a PDF keeps its click-to-open
@@ -1058,13 +1153,24 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
   // Capped so a message that enumerates a directory of images doesn't wallpaper the chat; every path
   // stays clickable regardless.
   if (previewable.length) {
-    const strip = el("div", "path-thumbs");
+    const BLOCK_SEL = "p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th";
+    const strips = new Map<HTMLElement, HTMLElement>();   // figure anchor → its strip (same block shares one)
     for (const p of previewable.slice(0, 4)) {
-      const full = canPreview() ? previewFull(p, activeId)
+      const full = canPreview() ? previewFull(p, activeId, kernelVerified.has(p), (pathPins || {})[p])
         : previewKind(p) === "img" ? buildPathImg(p) : null;
-      if (full) strip.appendChild(full);
+      if (!full) continue;
+      const block = mentionAt.get(p)?.closest(BLOCK_SEL) as HTMLElement | null;
+      const anchor = block && root.contains(block) && block !== root ? block : root;
+      let strip = strips.get(anchor);
+      if (!strip) {
+        strip = el("div", "path-thumbs");
+        // an li/td keeps its figure INSIDE (stays under its bullet/cell); a p/heading takes it after
+        if (anchor === root || /^(LI|TD|TH)$/.test(anchor.tagName)) anchor.appendChild(strip);
+        else anchor.insertAdjacentElement("afterend", strip);
+        strips.set(anchor, strip);
+      }
+      strip.appendChild(full);
     }
-    if (strip.childElementCount) root.appendChild(strip);
   }
 }
 
@@ -1498,6 +1604,7 @@ function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
   const { text, day, hm } = markerLabel(epoch, prevEpoch, Date.now());
   const m = el("div", "time-marker");
   m.dataset.hm = hm;
+  m.dataset.epoch = String(epoch);   // the top-of-view day-context label reads this (paintRailSticky)
   // The gutter shows the TIME and nothing else. The date rides a full-width day divider
   // instead (dayDividerFor below) — no date word has to fit 47px of rail any more.
   if (text) m.textContent = day ? hm : text;
@@ -1550,11 +1657,198 @@ function ensureRailSticky(): HTMLElement {
   return railSticky;
 }
 
+// The DAY CONTEXT label (the user 2026-08-17): "Yesterday" / "3 days ago" / "Last week" riding just
+// above the rail's TOP stamp whenever that stamp is not from today — so mid-scroll through history
+// the day is always in view even with the day divider scrolled away. One fixed element, painted by
+// the same pass that owns the sticky stamp; its text swaps only at day boundaries, and its position
+// tracks whichever stamp owns the top slot (the sticky at the line, or the leading real stamp as it
+// scrolls toward the line) — the handoff lands at the same pixel, so there is no jump.
+let railDay: HTMLElement | null = null;
+function ensureRailDay(): HTMLElement {
+  if (railDay && railDay.isConnected) return railDay;
+  railDay = el("div", "rail-day");
+  railDay.style.display = "none";
+  document.body.appendChild(railDay);
+  return railDay;
+}
+
+// SCROLL MARKS (the user 2026-08-17): a thin blue notch on the chat's right scroll edge for every
+// USER message — the conversation's shape at a glance, VS Code overview-ruler style. Positions are
+// proportional (turn offset over scroll height), so they are scroll-INVARIANT: the paint rides the
+// rail-sticky scheduler for free, but a signature check skips the DOM work on pure scrolls and only
+// rebuilds when the geometry or the set of user turns actually changed. Passive fixed chrome, like
+// the sticky: it never intercepts the native scrollbar underneath. The blue is the outgoing-bubble
+// blue — the color that already means "yours" — never the romp accent.
+let scrollMarks: HTMLElement | null = null;
+let scrollMarksSig = "";
+// Measured unit heights, remembered once rendered (the user 2026-08-17, whose video showed notches
+// wiggling non-uniformly while scrolling: a message crossing the render-window boundary corrected
+// from the uniform average-height estimate to its true pixels). One number per event, per session —
+// trivial memory — and spacer-slot positions built from these cumulative heights (normalized to the
+// spacer's actual height) match truth so closely that boundary crossings correct by ~nothing.
+const unitHeights = new Map<string, Map<number, number>>();
+
+// EVENT index → DISPLAY-UNIT index. Unit === event only in NORMAL mode; in compact mode tool runs
+// fold into toolgroup units, so the two spaces diverge — and contentOffsetFrame speaks UNITS
+// (data-unit tags, spacer counts, cached heights are all unit-keyed) while marks anchor to EVENTS.
+// Passing event indices straight through was the missing-notch bug (the user 2026-08-18: "some are
+// displayed, others aren't" — replies land beside big tool runs, exactly where the spaces diverge
+// most, and a wrong unit index found no node, so the mark silently vanished).
+function eventUnitIndex(s: Session): Int32Array {
+  const map = new Int32Array(s.events.length).fill(-1);
+  const items = displayItems(s);
+  for (let u = 0; u < items.length; u++) {
+    const it = items[u];
+    if (it.kind === "toolgroup") { for (const i of it.indices) map[i] = u; }
+    else map[it.index] = u;
+  }
+  return map;
+}
+
+// ONE content-space frame for every scrollbar overlay (the user 2026-08-17, watching comment ticks
+// drift past message notches as history loaded): marks anchored to transcript positions share an
+// inherent monotonic order, so every overlay must place them with the SAME event-index → pixel
+// mapping — rendered turns by their true offset, spacer-covered turns by cumulative cached heights
+// normalized to the spacer's real height. The comment rail's old uniform index-fraction percents
+// were a second, disagreeing frame. Returns null while the pane is hidden or degenerate; offsetOf
+// returns null for an event mid-window-update — callers skip that mark, the next paint lands it.
+function contentOffsetFrame(content: HTMLElement, v: View, s: Session):
+    { sh: number; offsetOf: (i: number) => number | null } | null {
+  const cRect = content.getBoundingClientRect();
+  const sh = content.scrollHeight;
+  if (!sh || cRect.height <= 40) return null;
+  const winStart = v.winStart ?? 0;
+  const winEnd = v.winEnd ?? s.events.length;
+  const unitTotal = v.unitTotal ?? s.events.length;
+  const topSp = v.el.querySelector<HTMLElement>(".tx-spacer-top");
+  const botSp = v.el.querySelector<HTMLElement>(".tx-spacer-bot");
+  const topH = topSp ? topSp.offsetHeight : 0;
+  const botH = botSp ? botSp.offsetHeight : 0;
+  const scrollTop = content.scrollTop;
+  // remember every rendered unit's measured height — the spacer estimates below feed on them
+  let uh = unitHeights.get(activeId!);
+  if (!uh) { uh = new Map(); unitHeights.set(activeId!, uh); }
+  for (const node of Array.from(v.el.querySelectorAll<HTMLElement>(".turn[data-unit]"))) {
+    const u = Number(node.dataset.unit);
+    const h = node.offsetHeight;
+    if (Number.isFinite(u) && h > 0) uh.set(u, h);
+  }
+  const avg = v.avgTurnH ?? 60;
+  // Cumulative-height slots within each spacer run, NORMALIZED to the spacer's actual rendered
+  // height (the frame the scrollbar itself stands on) — cached truth where a unit was ever
+  // rendered, the renderer's average for the rest. One prefix-sum pass per spacer per paint (O(n)
+  // total), then O(1) per mark. Normalizing keeps mark and thumb in one frame even when the
+  // cache disagrees with the spacer's uniform sizing.
+  const prefixOver = (from: number, to: number): number[] => {
+    const pre: number[] = [0];
+    let t = 0;
+    for (let u = from; u < to; u++) { t += uh!.get(u) ?? avg; pre.push(t); }
+    return pre;
+  };
+  const topPre = winStart > 0 ? prefixOver(0, winStart) : null;
+  const botPre = unitTotal > winEnd ? prefixOver(winEnd, unitTotal) : null;
+  const slotIn = (pre: number[], k: number, spanH: number): number => {
+    const total = pre[pre.length - 1];
+    if (!(total > 0)) return spanH / 2;
+    return spanH * ((pre[k] + (pre[k + 1] - pre[k]) / 2) / total);
+  };
+  const offsetOf = (i: number): number | null => {
+    let off: number | null = null;
+    if (i >= winStart && i < winEnd) {
+      const node = v.el.querySelector<HTMLElement>('.turn[data-unit="' + i + '"]');
+      if (node) off = node.getBoundingClientRect().top - cRect.top + scrollTop;
+    }
+    if (off == null) {
+      if (i < winStart && topPre) off = slotIn(topPre, i, topH);                        // inside the top spacer
+      else if (i >= winEnd && botPre) off = (sh - botH) + slotIn(botPre, i - winEnd, botH);
+    }
+    return off;                                      // null → window bookkeeping mid-update — skip this one, next paint has it
+  };
+  return { sh, offsetOf };
+}
+
+function ensureScrollMarks(): HTMLElement {
+  if (scrollMarks && scrollMarks.isConnected) return scrollMarks;
+  scrollMarks = el("div", "scroll-marks");
+  scrollMarks.style.display = "none";
+  document.body.appendChild(scrollMarks);
+  return scrollMarks;
+}
+
+function paintScrollMarks(): void {
+  const box = ensureScrollMarks();
+  const content = document.getElementById("content");
+  const v = activeId ? views.get(activeId) : null;
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!content || !v || !s || v.el.style.display === "none") { box.style.display = "none"; scrollMarksSig = ""; return; }
+  const cRect = content.getBoundingClientRect();
+  // The WHOLE loaded conversation gets notches, not just the rendered DOM window (the user
+  // 2026-08-17, who scrolled back and watched the newer messages' marks vanish): the chat
+  // virtualizes — a window of real turns between two spacers sized by the renderer's avg-height
+  // estimate, and the scrollbar spans that estimated whole. contentOffsetFrame owns that mapping —
+  // exactly as accurate as the scrollbar the user is reading the notches against, and shared with
+  // the comment rail so the two mark kinds can never disagree about order.
+  const frame = contentOffsetFrame(content, v, s);
+  if (!frame) { box.style.display = "none"; scrollMarksSig = ""; return; }
+  const sh = frame.sh;
+  const offs: Array<{ top: number; m: string }> = [];
+  const evUnit = eventUnitIndex(s);                       // marks anchor to EVENTS; the frame speaks UNITS
+  for (let i = 0; i < s.events.length; i++) {
+    const ev = s.events[i] as ChatEvent & { human?: boolean; romp?: boolean; rompAuto?: boolean; canned?: string; md?: string; tag?: string };
+    if (ev.kind !== "user") continue;
+    // the SAME classifier the bubble and rail dot read (sender-identity.ts, the user 2026-08-18:
+    // "reuse the same functions that compute how they render in the chat, so there's never any
+    // chance of desynchronization"). user → the blue that means yours; romp/tagged → a light gray
+    // notch (machine-sent activity, visible on the map but never posing as your words); harness
+    // noise ("injected") → no notch at all.
+    const kind = senderKind(ev);
+    if (kind === "injected") continue;
+    const md = (ev.md || "").trim();
+    // gestures are the user's DOINGS, not their words — no notch (the Continue row, a /command)
+    if (!md || ev.canned === "continue" || SLASH_CMD_RE.test(md)) continue;
+    const u = evUnit[i];
+    if (u < 0) continue;                                  // not in the display stream (never for user events)
+    const off = frame.offsetOf(u);
+    if (off == null) continue;
+    offs.push({ top: off, m: kind === "user" ? "" : "machine" });
+  }
+  const ys = offs.map((o) => ({ y: Math.round((o.top / sh) * (cRect.height - 4)), m: o.m }));
+  const sig = activeId + "|" + Math.round(cRect.top) + "," + Math.round(cRect.right) + ","
+    + Math.round(cRect.height) + "|" + ys.map((o) => o.y + (o.m ? "m" : "")).join(",");
+  if (sig !== scrollMarksSig) {
+    scrollMarksSig = sig;
+    // UPDATE IN PLACE when the notch count is unchanged (the user 2026-08-17: scrolling back streams
+    // older history in, the scroller's world grows, and every proportional position legitimately
+    // compresses — the native thumb does the same — but rebuilt nodes TELEPORTED there). Moving the
+    // existing nodes lets the CSS transition carry them, so a history load reads as the map
+    // rescaling rather than notches jumping to wrong places. Count changes (new messages, a fresh
+    // tab) still rebuild outright — those are new marks, not moved ones.
+    const kids = Array.from(box.children) as HTMLElement[];
+    if (kids.length === ys.length) {
+      ys.forEach((o, i) => { kids[i].style.top = o.y + "px"; kids[i].className = "scroll-mark" + (o.m ? " " + o.m : ""); });
+    } else {
+      box.replaceChildren(...ys.map((o) => {
+        const m = el("div", "scroll-mark" + (o.m ? " " + o.m : ""));
+        m.style.top = o.y + "px";
+        return m;
+      }));
+    }
+    box.style.left = (cRect.right - 12) + "px";
+    box.style.top = cRect.top + "px";
+    box.style.height = cRect.height + "px";
+  }
+  box.style.display = ys.length ? "" : "none";
+}
+
 function paintRailSticky(): void {
   const stamp = ensureRailSticky();
   const content = document.getElementById("content");
   const v = activeId ? views.get(activeId) : null;
-  if (!content || !v || v.el.style.display === "none") { stamp.style.display = "none"; return; }
+  if (!content || !v || v.el.style.display === "none") {
+    stamp.style.display = "none";
+    if (railDay) railDay.style.display = "none";
+    return;
+  }
   const cRect = content.getBoundingClientRect();
   const cTop = cRect.top, cBottom = cRect.bottom;
   const BUFFER = 6;                             // the gap kept above the sticky; ALSO the hand-off line
@@ -1577,28 +1871,75 @@ function paintRailSticky(): void {
     }
   }
   const hm = marker ? (marker.dataset.hm || "") : "";
-  // The tracked turn's OWN stamp leads the top slot while it is at or below the line — it scrolls up freely
-  // until it reaches the line, and the instant it crosses ABOVE (markerTop < line) the sticky takes the same
-  // slot showing the same time, so the swap is invisible: no gap, no clipped sliver (the user 2026-07-23).
+  // DAY CONTEXT (the user 2026-08-17): whichever stamp owns the top slot also names its DAY, in a
+  // small label riding just ABOVE it, whenever that day is not today — so scrolling through history
+  // always says where you are even with the day divider off-screen. The anchor is the tracked turn's
+  // marker when there is one, else the first stamp below the line ("the next one"); the label moves
+  // WITH the leading stamp, and at handoff the sticky takes the very pixels the stamp and label held,
+  // so there is no jump at the transition. The text swaps only at day boundaries.
+  const day = ensureRailDay();
+  const firstBelow = all.find(([, top]) => top >= line);
+  const anchorM = marker || (firstBelow ? firstBelow[0] : null);
+  const gRect = anyMarker ? anyMarker.getBoundingClientRect() : null;
+  // ABOVE the stamp, not below (the user 2026-08-18, with a video): below it, the next incoming
+  // stamp scrolled straight through the label's spot and the label had to leap over it — a visible
+  // collision and jump at every handoff. Above it, nothing ever crosses the label's path. A leading
+  // real stamp always has room for its label inside the pane: markers sit 10–20px below their
+  // turn's top, and the label band (dayH + 1 ≈ 9.8px at the default 13px chat font) fits even the
+  // smallest 10px offset — barely, so the tab-bar clamp below backstops it. The sticky alone rests
+  // AT the line, so when a
+  // label shows, the slot line drops by the label's height to make that room (the 2026-08-17 first
+  // cut floated the label above the sticky without shifting it, and bled into the tab bar).
+  const ep = anchorM ? Number(anchorM.dataset.epoch || 0) : 0;
+  const label = ep && gRect ? dayContext(ep, Date.now()) : "";
+  let dayW = 0, dayH = 0;
+  if (label) {
+    if (day.textContent !== label) day.textContent = label;
+    day.style.display = "";                        // must be visible to measure
+    const r = day.getBoundingClientRect(); dayW = r.width; dayH = r.height;
+  } else day.style.display = "none";
+  const slotLine = line + (label ? dayH + 1 : 0);
+  const paintDay = (slotTop: number) => {
+    if (!label) return;
+    if (slotTop > cBottom) { day.style.display = "none"; return; }   // anchor is off the bottom
+    // Natural width, right edge on the gutter's right edge (the stamp's own) — but never past the
+    // pane's left edge: "2 days ago" at 0.68em is wider than the 47px gutter, and a box pinned to
+    // the gutter clipped its leading digit at the pane edge (the user 2026-08-18, with a
+    // screenshot). When it doesn't fit, the label slides right just enough to stay whole.
+    day.style.left = Math.max(2, gRect!.right - dayW) + "px";
+    day.style.top = Math.max(cTop + 1, slotTop - dayH - 1) + "px";
+    day.style.display = "";
+  };
+  // The tracked turn's OWN stamp leads the top slot while it is at or below the slot line — it scrolls up
+  // freely until it reaches it, and the instant it crosses ABOVE (markerTop < slotLine) the sticky takes the
+  // same slot showing the same time, so the swap is invisible: no gap, no clipped sliver (the user 2026-07-23).
   // Deliberately keyed on the TRACKED turn's marker, not on any stamp anywhere: a LATER time change further
   // down the view is a different time, so it must not blank the top — that would leave the slot empty, which
   // is the whole thing the sticky exists to prevent.
-  const realLeads = markerShown && markerTop >= line;
+  const realLeads = markerShown && markerTop >= slotLine;
   if (!hm || realLeads) {
     stamp.style.display = "none";
     for (const [m] of all) m.style.visibility = "";   // real stamp leads → nothing suppressed
+    if (anyMarker) paintDay(realLeads ? markerTop : (firstBelow ? firstBelow[1] : cBottom + 1));
+    else day.style.display = "none";
     return;
   }
-  // The sticky leads: pin it at the line and hide every marker that has crossed ABOVE it, so the real stamp
-  // handing off never shows a clipped duplicate beside the sticky. Markers at or below the line stay visible —
-  // they are the genuine lower stamps, not doubles.
-  for (const [m, top] of all) m.style.visibility = top < line ? "hidden" : "";
+  // The sticky leads: pin it at the slot line and hide every marker that has crossed ABOVE it — or INTO
+  // its box: with the slot dropped for the day label, a not-yet-tracked turn's stamp (marker 10–20px below
+  // a turn top that has not reached the line) can enter the sticky's own band while still "below the slot
+  // line", and two HH:MM texts superimpose. The threshold is therefore the sticky's BOTTOM edge, so an
+  // incoming stamp slides under the sticky hidden and re-emerges only when it leads. With no label this
+  // changes nothing: slotLine === line, and a stamp inside [line, line+stampH) forces its own turn tracked
+  // (offsets ≥ stamp height), which is realLeads — this branch never runs. Markers at or below the sticky's
+  // bottom stay visible — they are the genuine lower stamps, not doubles.
   const g = (anyMarker || marker!).getBoundingClientRect();
+  for (const [m, top] of all) m.style.visibility = top < slotLine + g.height ? "hidden" : "";
   stamp.textContent = hm;
   stamp.style.left = g.left + "px";
   stamp.style.width = g.width + "px";
-  stamp.style.top = line + "px";
+  stamp.style.top = slotLine + "px";
   stamp.style.display = "";
+  paintDay(slotLine);
 }
 
 // Scroll is the sticky stamp's primary driver, and a re-render moves the geometry under it — both funnel
@@ -1609,7 +1950,7 @@ let railStickyPending = false;
 function scheduleRailSticky(): void {
   if (railStickyPending) return;
   railStickyPending = true;
-  requestAnimationFrame(() => { railStickyPending = false; paintRailSticky(); });
+  requestAnimationFrame(() => { railStickyPending = false; paintRailSticky(); paintScrollMarks(); updateCommentRail(); });
 }
 
 function renderEventInner(ev: ChatEvent): HTMLElement {
@@ -1657,8 +1998,15 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     // message romp INJECTED (a feed nudge / follow-up — ev.romp) → a GRAY right-aligned bubble with a
     // "romp" tag, so it's clear romp (not you) sent it (the user 2026-06-19); everything else harness-
     // injected (compact summary, /command stdout, system reminders) → a neutral left note box.
-    const romp = !!ev.romp;
-    const injected = !ev.human && !romp;
+    // ONE classifier (sender-identity.ts, the user 2026-08-18): the bubble dress here, the rail
+    // dot below, and paintScrollMarks' notch color all read the SAME senderKind verdict, so the
+    // surfaces can never desynchronize. The sender-declared render hint (kernel MSG_TAG_RE lift,
+    // the user 2026-08-15) classifies as "tagged": machine-sent on the user's behalf, shedding the
+    // typed-words blue for the gray family under the SENDER's own ⚙ label.
+    const kind = senderKind(ev);
+    const romp = kind === "romp";
+    const injected = kind === "injected";
+    const tagged = kind === "tagged";
     const turn = el("div", "turn turn-user" + (romp ? " romp" : injected ? " injected" : ""));
     // Unresolved postal ids ride the raw turn so a timeline message arc can still land on it. Without
     // this the arc pointed at a turn with nothing to match and the click died silently (the user
@@ -1668,7 +2016,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     // Prompts ride the rail like every other turn: their own dot + a left-gutter HH:MM marker (added in
     // renderEvent). Genuine prompts get the solid blue dot; a romp injection a gray dot; harness notes the
     // hollow ring used by assistant turns.
-    turn.appendChild(dot(romp ? "romp" : injected ? "ring" : "user"));
+    turn.appendChild(dot(romp ? "romp" : tagged ? "tag" : injected ? "ring" : "user"));
     // a TYPED follow-up (resumed a goal) → a compact "↩ Follow-up · <goal>" header, the romp goal-context
     // quote + markers already stripped server-side. Same header the pending queued render uses (consistency).
     if (ev.followUp && !romp) turn.appendChild(followUpHeader(ev.goal, ev.fuCtx, ev.uuid ? "u:" + ev.uuid : undefined));
@@ -1688,7 +2036,12 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         tag.appendChild(document.createTextNode("romp"));
         turn.appendChild(tag);
       }
-      const bubble = el("div", (romp ? "romp-bubble" : injected ? "user-note" : "user-bubble") + " md");
+      if (tagged) {
+        const tchip = el("div", "romp-tag");
+        tchip.appendChild(document.createTextNode("⚙ " + ev.tag));
+        turn.appendChild(tchip);
+      }
+      const bubble = el("div", (romp ? "romp-bubble" : tagged ? "romp-bubble tag-bubble" : injected ? "user-note" : "user-bubble") + " md");
       // A slash COMMAND you sent reads as a special keyword, not prose (the user 2026-06-29): render the leading
       // "/cmd" token as a monospace chip. Genuine human bubbles only (a romp/injected note is never a command).
       // paths this turn already renders as full in-bubble images (both the caption path and a
@@ -1696,21 +2049,32 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
       const imgPaths = (ev.images || [])
         .flatMap((im) => [im.path, im.src.startsWith("path:") ? im.src.slice(5) : ""])
         .filter((p): p is string => !!p);
-      if (!romp && !injected && ev.md && renderSlashCmd(bubble, ev.md)) {
+      if (!romp && !injected && !tagged && ev.md && renderSlashCmd(bubble, ev.md)) {
         // a COMMAND is a user GESTURE, not a user message (the user 2026-08-13): it changes something
         // rather than saying something, so it sheds the blue said-thing bubble and reads in the
         // system-event family (the ✦ dividers) — a dim left-aligned row: ✦ mark, mono chip, args
         turn.classList.add("turn-cmd");
         bubble.classList.add("cmd-row");
-      } else if (!romp && !injected && ev.md && ev.canned === "continue") {
-        // The card's Continue button (the user 2026-08-13): YOUR gesture in YOUR colour — the judges
-        // file it as your reply, the bubble stays blue — but not your prose: a one-line gist says what
-        // you did, and the exact canned words sit one click deeper (the nudge fold, in the user
-        // family). The ↩ follow-up header above already names the goal it answers.
-        const gistEl = el("div", "nudge-gist");
-        const c = el("span", "nudge-caret"); c.textContent = "▸"; gistEl.appendChild(c);
-        gistEl.appendChild(document.createTextNode("Continue — keep going; open calls are yours"));
-        bubble.appendChild(gistEl);
+      } else if (!romp && !injected && !tagged && ev.md && ev.canned === "continue") {
+        // The card's Continue button: a user GESTURE, not typed prose. Third cut (the user
+        // 2026-08-17, superseding the 2026-08-15 slash-command dress — its ✦ mark said nothing, and
+        // the boxed chip + trailing caret made a second gesture grammar next to ↩ Follow-up's):
+        // Continue now wears the SAME grammar as the Follow-up header — caret, "→ Continue" in the
+        // accent, the SENT text's own first line dimmed beside it, the rest one click deeper, so
+        // expanding only ever reveals MORE of the same words. Uniqueness rides the word + the →
+        // glyph exactly as Follow-up's rides ↩. The judges still file it as your reply, and the ↩
+        // follow-up header above still names the goal it answers.
+        bubble.classList.add("cont-row");
+        const raw = ev.md.replace(/<!--[\s\S]*?-->/g, "").trim();
+        const lines = raw.split("\n").map((l) => l.trim());
+        const first = lines.find((l) => l && !l.startsWith(">")) || lines.find((l) => l) || raw;   // skip a goal-context "> …" quote
+        const clipped = first.length > 90 ? first.slice(0, 88).replace(/\s+\S*$/, "") + "…" : first;
+        const head = el("div", "followup-tag cont-tag");
+        const tri = el("span", "followup-tri cont-tri");         // glyph via CSS, so expansion flips it
+        const lbl = el("span", "followup-lbl"); lbl.textContent = "→ Continue";
+        const g = el("span", "followup-goal"); g.textContent = clipped;
+        head.append(tri, lbl, g);
+        bubble.appendChild(head);
         const full = el("div", "nudge-full md");
         full.innerHTML = md(ev.md);
         bubble.appendChild(full);
@@ -1720,6 +2084,29 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         if (ckey) bubble.dataset.nkey = ckey;
         applyFold(bubble, "expanded", ckey);
         bubble.title = bubble.classList.contains("expanded") ? "click to collapse" : "click to expand";
+      } else if (tagged) {
+        // long templates fold like nudges: the gist is the message's OWN first non-quote line —
+        // never a paraphrase — with the full text one click deeper, keyed to survive re-renders
+        const raw = ev.md.replace(/<!--[\s\S]*?-->/g, "").trim();
+        const lines = raw.split("\n").map((l) => l.trim());
+        const first = lines.find((l) => l && !l.startsWith(">")) || lines.find((l) => l) || raw;
+        const gist = first.length > 90 ? first.slice(0, 88).replace(/\s+\S*$/, "") + "…" : first;
+        const more = collapseWs(raw) !== collapseWs(gist);
+        const gistEl = el("div", "nudge-gist");
+        if (more) { const c = el("span", "nudge-caret"); c.textContent = "▸"; gistEl.appendChild(c); }
+        gistEl.appendChild(document.createTextNode(gist));
+        bubble.appendChild(gistEl);
+        if (more) {
+          const full = el("div", "nudge-full md");
+          full.innerHTML = md(ev.md);
+          bubble.appendChild(full);
+          bubble.classList.add("nudge-collapsible");
+          bubble.dataset.act = "nudgetoggle";   // the stable body delegate, never a per-render listener
+          const tkey = ev.uuid ? "tag:" + ev.uuid : undefined;
+          if (tkey) bubble.dataset.nkey = tkey;
+          applyFold(bubble, "expanded", tkey);
+          bubble.title = bubble.classList.contains("expanded") ? "click to collapse" : "click to expand";
+        }
       } else if (romp && ev.md) {
         // A romp-injected NUDGE (auto status-check, Nudge button, injected follow-up) is mechanical
         // bookkeeping — progressive disclosure (the user 2026-07-17): default is a ONE-LINE gist with a
@@ -1741,7 +2128,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         if (more) {
           const full = el("div", "nudge-full md");
           full.innerHTML = md(raw);
-          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks);
+          linkifyFileUris(full, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins);
           bubble.appendChild(full);
           bubble.classList.add("nudge-collapsible");
           // toggle rides the stable document.body delegate (data-act), NOT a per-render listener —
@@ -1754,7 +2141,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         }
       } else if (ev.md) {
         bubble.innerHTML = md(ev.md);
-        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks);   // bare file:// URLs in a message → clickable (open in the host's default app)
+        linkifyFileUris(bubble, imgPaths, ev.spacePaths, ev.pathLinks, ev.pathPins);   // bare file:// URLs in a message → clickable (open in the host's default app)
       }
       // images, IN the bubble (part of his message): thumbnail + open/copy caption;
       // a literal path in the typed text becomes the same open-link inline.
@@ -1903,7 +2290,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     const body = el("div", "assistant md");
     body.innerHTML = md(ev.md);
     highlight(body);
-    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks);   // bare file:// URLs + verified spaced filenames → clickable
+    linkifyFileUris(body, undefined, ev.spacePaths, ev.pathLinks, ev.pathPins);   // bare file:// URLs + verified spaced filenames → clickable
     turn.appendChild(body);
     return turn;
   }
@@ -1955,6 +2342,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "retryGaveUp") return renderRetryGaveUp(ev);
   if (ev.kind === "apiErrorNote") return renderApiErrorNote(ev);
   if (ev.kind === "effortApplied") return renderEffortApplied(ev);
+  if (ev.kind === "cmdGesture") return renderCmdGesture(ev);
   if (ev.kind === "modelFallback") return renderModelFallback(ev);
   if (ev.kind === "compact") return renderCompact(ev);
   return renderTool(ev);
@@ -2534,6 +2922,20 @@ function renderEffortApplied(ev: Extract<ChatEvent, { kind: "effortApplied" }>):
   line.appendChild(txt);
   line.title = "reasoning effort is a connect-time setting; the session reconnected to apply it, and this marks when the new level took effect";
   turn.appendChild(line);
+  return turn;
+}
+
+// The durable COMMAND-GESTURE row (the user 2026-08-14): wears the SAME dress as a live command turn —
+// turn-user's flex-end puts it on the user's side, ✦ + the mono chip via the shared renderSlashCmd — so the
+// moment prune_live retires the synthesized chip and this interleaved event takes over is invisible. No
+// edit/delete/fork affordances on purpose: the uuid is synthetic ("cmdg:<t>"), not a rewindable transcript
+// atom, and a gesture is not a message to edit.
+function renderCmdGesture(ev: Extract<ChatEvent, { kind: "cmdGesture" }>): HTMLElement {
+  const turn = el("div", "turn turn-user turn-cmd");
+  turn.appendChild(dot("user"));
+  const bubble = el("div", "user-bubble md cmd-row");
+  if (!renderSlashCmd(bubble, ev.cmd)) bubble.textContent = ev.cmd;
+  turn.appendChild(bubble);
   return turn;
 }
 
@@ -3558,7 +3960,7 @@ function makePlaceholderTab(id: string): HTMLElement {
 // The empty transcript case was already handled with a "No messages yet." placeholder; this is its
 // missing sibling, one level up: no sessions rather than no messages. Saying so also beats a spinner —
 // it tells a new user the pane is working and what to do next.
-function syncNoSessionsPlaceholder(visibleCount: number) {
+function syncNoSessionsPlaceholder(visibleCount: number, totalCount = 0) {
   const content = document.getElementById("content");
   if (!content) return;
   const existing = document.getElementById("no-sessions");
@@ -3566,10 +3968,14 @@ function syncNoSessionsPlaceholder(visibleCount: number) {
     existing?.remove();               // a session arrived → the real view takes over
     return;
   }
-  if (existing) return;               // idempotent: renderTabs runs on every push
+  // sessions exist but the active view hides them all — say THAT, not "no sessions yet"
+  const txt = totalCount > 0
+    ? "Every session is hidden from this view. Reveal one from the + picker, or switch views on the timeline's Show menu."
+    : "No sessions yet. Start one with  romp new <name>  or the + above.";
+  if (existing) { existing.textContent = txt; return; }   // idempotent: renderTabs runs on every push
   const ph = el("div", "tx-empty");
   ph.id = "no-sessions";
-  ph.textContent = "No sessions yet. Start one with  romp new <name>  or the + above.";
+  ph.textContent = txt;
   content.appendChild(ph);
 }
 
@@ -3617,14 +4023,17 @@ function renderTabs() {
   // real sessions keep running, just hidden from this view. No tag → visibleIds === ids (unchanged).
   const only = onlyTag();
   const nameOf = (id: string) => sessions.get(id)?.name ?? tabMeta.get(id)?.name ?? "";
-  const visibleIds = only ? ids.filter((id) => matchesOnly(nameOf(id), only)) : ids;
+  // the session VIEWS filter composes here too (the user 2026-08-18): a view-hidden session keeps
+  // its state, drafts and cached transcript — it just loses its tab until revealed
+  const inViewIds = ids.filter(tabInView);
+  const visibleIds = only ? inViewIds.filter((id) => matchesOnly(nameOf(id), only)) : inViewIds;
   // ...and it must govern the CHAT BODY too, not just the bar (the user 2026-07-16). Hiding a
   // non-matching TAB while its transcript keeps rendering leaks precisely what the filter exists to
   // hide: a real session's chat sitting on screen under `#only=api,tests,web`, statusline and all —
   // found while shooting the demo, with nimbus's transcript filling a "filtered" frame. Re-point the
   // selection at the first visible session. Deferred so we never re-enter the render we're inside;
   // setActive is a no-op once activeId is visible, so this settles in one pass.
-  if (only && activeId && !visibleIds.includes(activeId) && visibleIds.length) {
+  if (activeId && ids.includes(activeId) && !visibleIds.includes(activeId) && visibleIds.length) {
     const next = visibleIds[0];
     setTimeout(() => { if (activeId !== next) setActive(next); }, 0);
   }
@@ -3667,12 +4076,12 @@ function renderTabs() {
     // the user 2026-07-14), or a spent model allowance (switch model, the user 2026-08-01) — is alarm-red dashed; a TRANSIENT API error is auto-retrying and needs no attention → the
     // amber retrying treatment, not red (the user 2026-06-29).
     else if (st === "blocked") tab.classList.add((s.status.apiTooLong || s.status.apiSpendLimit || s.status.apiModelLimit || s.status.apiAuthErr) ? "tab-blocked" : "tab-retrying");
-    else if (st === "awaiting") tab.classList.add("tab-awaiting");
+    else if (st === "needsInput" || st === "awaiting") tab.classList.add("tab-awaiting");   // legacy name = an older remote kernel
     else if (st === "retrying") tab.classList.add("tab-retrying");       // amber: soft-blocked on an API auto-retry
     else if (st === "compacting" || st === "clearing") tab.classList.add("tab-compacting");   // both: a context op in flight
     else if (st === "closed") tab.classList.add("tab-closed");       // dead session: read-only, struck-through label
     if (s.status.faded) tab.classList.add("at-rest");
-    // WORKING shows a yellow dot; AWAITING-BG the same dot in straw — matching the chip's color, so the
+    // WORKING shows a yellow dot; AWAITING-BG the same dot in await-green — matching the chip's color, so the
     // tab reads the split at a glance (the user 2026-07-13); BLOCKED (API error) gets NO dot — the dashed
     // red tab highlight instead (the user 2026-06-16).
     if (st === "working") tab.appendChild(el("span", "tab-dot"));
@@ -3760,7 +4169,16 @@ function renderTabs() {
   bar.appendChild(add);
   // Restore tab-mode focus if a tab held it before this rebuild (see the top of renderTabs).
   if (refocusTab) focusActiveTab();
-  syncNoSessionsPlaceholder(visibleIds.length);
+  syncNoSessionsPlaceholder(visibleIds.length, ids.length);
+  // Hiding the LAST visible session must also blank its transcript: a strip with no tabs cannot sit
+  // over a hidden session's live chat (the ghost would show exactly what the hide asked to put away).
+  // Restored the moment anything is visible again — the placeholder owns the empty state meanwhile.
+  if (activeId) {
+    const av = views.get(activeId);
+    const blank = !visibleIds.length && ids.length > 0 && !tabInView(activeId);
+    if (av && blank && av.el.style.display !== "none") { av.el.style.display = "none"; allHiddenBlanked = true; }
+    else if (av && !blank && allHiddenBlanked) { av.el.style.display = ""; allHiddenBlanked = false; }
+  }
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
   // the rotated toggles in the chat pane's vertical strip — see _LANDING_FLEET_JS — so the pill was redundant.)
   // (The collapse caret moved OFF the tab bar into the #ledger strip's title row — the strip now always
@@ -3784,32 +4202,6 @@ function showSelectionMenu(e: MouseEvent) {
   const content = document.getElementById("content");
   const sel = window.getSelection();
   const text = sel ? sel.toString() : "";
-  // Inside the doc reader the same gesture means "comment on this passage" — one menu vocabulary, one
-  // chrome, one dismissal (CLAUDE.md: menus wear ONE vocabulary).
-  const inDoc = !!(docReview && sel?.anchorNode
-    && document.getElementById("doc-review")?.querySelector(".dr-doc")?.contains(sel.anchorNode));
-  if (inDoc && text.trim()) {
-    e.preventDefault();
-    dismissTabMenu();
-    // ctx-menu is z-index 100 and the reader's backdrop is 130, both fixed siblings on <body> — so the
-    // menu rendered BEHIND the reader and the right-click looked dead (found in local testing,
-    // 2026-08-18). This class lifts it over the panel it belongs to.
-    const m = el("div", "ctx-menu ctx-over-doc");
-    const item = (labelText: string, fn: () => void) => {
-      const it = el("div", "ctx-item");
-      it.textContent = labelText;
-      it.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
-      m.appendChild(it);
-    };
-    item("Comment", () => beginDocComment(text));
-    item("Copy", () => copyToClipboard(text));
-    document.body.appendChild(m);
-    ctxMenuEl = m;
-    const rr = m.getBoundingClientRect();
-    m.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - rr.width - 4)) + "px";
-    m.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - rr.height - 4)) + "px";
-    return;
-  }
   if (!content || !sel || !sel.anchorNode || !content.contains(sel.anchorNode) || !text.trim()) return;
   e.preventDefault();
   dismissTabMenu();
@@ -3863,279 +4255,6 @@ function quoteSelectionIntoComposer(text: string) {
 
 function copyToClipboard(text: string) {
   navigator.clipboard?.writeText(text).catch(() => { try { document.execCommand("copy"); } catch { /* best effort */ } });
-}
-
-// ── doc review (the user 2026-08-14) ────────────────────────────────────────────────────────────────
-// Reviewing a markdown doc an agent wrote used to mean opening it in an editor and hand-copying every
-// line you wanted changed back into the chat. Now: clicking an .md path opens the doc RENDERED over the
-// chat pane; right-click a selection to comment on it; one Submit turns every comment on that file into
-// a single message drafted into this session's composer, each one carrying its quote and source line, so
-// the agent applies the lot in one pass and nothing is copy-pasted.
-//
-// Pane-local on purpose (CLAUDE.md blesses this for the feed's card modal): the composer it drafts into
-// lives in THIS pane, so there is no cross-iframe plumbing and no question about which session gets it.
-const DOC_REVIEW_EXT = /\.(?:md|markdown|txt)$/i;
-const docComments = new Map<string, DocComment[]>();   // docKey(sid, path) → this file's un-submitted comments
-// The open reader. `label` is the path as the message wrote it (what the header shows); `path` is what
-// the kernel resolved and serves.
-let docReview: { sid: string; label: string; path: string; source: string; mtime: number } | null = null;
-let docReviewErr = "";                                 // a load failure, shown in place (never a blank reader)
-let docReviewStale = false;                            // the file moved under us between open and Submit
-let docPendingQuote: { quote: string; line: number | null } | null = null;   // selection awaiting its comment text
-let docOpenComment: string | null = null;              // which saved comment's text is expanded
-
-function docList(): DocComment[] {
-  if (!docReview) return [];
-  return docComments.get(docKey(docReview.sid, docReview.path)) || [];
-}
-
-function setDocList(list: DocComment[]): void {
-  if (!docReview) return;
-  const k = docKey(docReview.sid, docReview.path);
-  if (list.length) docComments.set(k, list); else docComments.delete(k);
-  persistDrafts();
-}
-
-// Open the reader for a path clicked in the transcript. The overlay goes up IMMEDIATELY with the romp
-// loader (CLAUDE.md: the loader is the first thing a wait shows), and the fetch fills it in.
-function openDocReview(label: string, path: string): void {
-  const sid = activeId;
-  if (!sid) return;
-  docReviewErr = ""; docReviewStale = false; docPendingQuote = null; docOpenComment = null;
-  docReview = { sid, label, path, source: "", mtime: 0 };
-  renderDocReview();
-  if (hostOf(sid)) {   // a remote session's doc lives on ANOTHER machine; /doc has no relay yet — say so
-    docReviewErr = "Doc review isn’t available for sessions on another machine yet — this file lives on "
-      + hostOf(sid) + ". Open it there, or use the plain file link.";
-    return renderDocReview();
-  }
-  fetchDocSource(sid, path)
-    .then((d) => {
-      if (!docReview || docReview.sid !== sid || docReview.path !== path) return;   // reader moved on
-      docReview.source = d.text; docReview.mtime = d.mtime; docReview.path = d.path;
-      renderDocReview();
-    })
-    .catch((e: Error) => {
-      if (!docReview || docReview.sid !== sid) return;
-      docReviewErr = e.message || "could not read this file";
-      renderDocReview();
-    });
-}
-
-function fetchDocSource(sid: string, path: string): Promise<{ path: string; text: string; mtime: number }> {
-  const url = kernelUrl("/doc?path=" + encodeURIComponent(path) + "&sid=" + encodeURIComponent(bareId(sid)));
-  return fetch(url, { cache: "no-store" }).then((r) => {
-    if (r.ok) return r.json();
-    // Fail LOUDLY with the kernel's own words — a 404 here means the path is gone or not a text doc
-    return r.text().then((t) => Promise.reject(new Error(
-      r.status === 404 ? "the kernel can’t read this file (moved, or not a text document)"
-        : r.status === 413 ? "this file is too big to review"
-          : (t || "HTTP " + r.status))));
-  });
-}
-
-function closeDocReview(): void {
-  docReview = null; docReviewErr = ""; docPendingQuote = null; docOpenComment = null;
-  document.getElementById("doc-review")?.remove();
-}
-
-// A selection inside the reader → a new comment. anchorFor does the honest work of finding the source
-// line (or admitting it can't); the box below the doc takes the text.
-function beginDocComment(selected: string): void {
-  if (!docReview || !docReview.source) return;
-  const a = anchorFor(docReview.source, selected);
-  if (!a.quote) return;
-  docPendingQuote = a;
-  renderDocReview();
-  (document.getElementById("doc-comment-body") as HTMLTextAreaElement | null)?.focus();
-}
-
-function saveDocComment(body: string): void {
-  if (!docReview || !docPendingQuote || !body.trim()) return;
-  setDocList(docList().concat([{
-    id: "dc" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    quote: docPendingQuote.quote, line: docPendingQuote.line, body: body.trim(), ts: Date.now(),
-  }]));
-  docPendingQuote = null;
-  renderDocReview();
-}
-
-function removeDocComment(id: string): void {
-  setDocList(docList().filter((c) => c.id !== id));
-  if (docOpenComment === id) docOpenComment = null;
-  renderDocReview();
-}
-
-// Submit: every comment on this file becomes ONE message in the composer. Before building it, re-read the
-// file — if the agent edited it while you were reading, the line anchors may now point at the wrong place,
-// and you are told so rather than sending quietly-wrong numbers.
-function submitDocReview(): void {
-  if (!docReview) return;
-  const { sid, label, path } = docReview;
-  const list = docList();
-  if (!list.length) return;
-  fetchDocSource(sid, path)
-    .then((d) => { docReviewStale = d.mtime !== docReview?.mtime; })
-    .catch(() => { docReviewStale = false; })    // can't re-read → don't claim staleness we didn't observe
-    .then(() => {
-      const text = buildReviewMessage(label, list);
-      if (!text) return;
-      docCommentsIntoComposer(sid, text);
-      setDocList([]);
-      if (docReviewStale) {
-        warnToast("The file changed while you were reading it — check the line numbers before sending.");
-      }
-      closeDocReview();
-    });
-}
-
-// The composer insert, mirroring quoteSelectionIntoComposer: APPEND (never clobber a draft), caret at the
-// end, remembered as the draft. Nothing sends — the user reads the assembled message and hits send.
-function docCommentsIntoComposer(sid: string, text: string): void {
-  if (sid !== activeId) return;
-  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-  if (!ta) return;
-  const sep = !ta.value ? "" : ta.value.endsWith("\n\n") ? "" : ta.value.endsWith("\n") ? "\n" : "\n\n";
-  ta.value = ta.value + sep + text;
-  ta.selectionStart = ta.selectionEnd = ta.value.length;
-  growComposer(ta);
-  ta.focus();
-  drafts.set(sid, ta.value);
-  persistDrafts();
-}
-
-function renderDocReview(): void {
-  document.getElementById("doc-review")?.remove();
-  if (!docReview) return;
-  const back = el("div", ""); back.id = "doc-review";
-  const card = el("div", "dr-card");
-  back.appendChild(card);
-
-  const head = el("div", "dr-head");
-  const name = el("div", "dr-name"); name.textContent = docReview.label; name.title = docReview.path;
-  const list = docList();
-  const count = el("div", "dr-count");
-  count.textContent = list.length === 1 ? "1 comment" : list.length + " comments";
-  const openIn = el("button", "dr-btn") as HTMLButtonElement;
-  openIn.type = "button"; openIn.dataset.act = "dropen";
-  openIn.textContent = "Open in editor ↗";
-  const submit = el("button", "dr-btn dr-submit") as HTMLButtonElement;
-  submit.type = "button"; submit.dataset.act = "drsubmit";
-  submit.textContent = "Submit " + (list.length || "") + (list.length === 1 ? " comment" : " comments");
-  submit.disabled = !list.length;
-  const x = el("button", "dr-btn dr-x") as HTMLButtonElement; x.type = "button"; x.dataset.act = "drclose";
-  x.textContent = "✕"; x.title = "Close (Esc)";
-  head.append(name, count, openIn, submit, x);
-  card.appendChild(head);
-
-  const body = el("div", "dr-body");
-  card.appendChild(body);
-  if (docReviewErr) {
-    const err = el("div", "dr-err"); err.textContent = docReviewErr;
-    body.appendChild(err);
-  } else if (!docReview.source) {
-    body.appendChild(docLoader());
-  } else {
-    const doc = el("div", "dr-doc md");
-    doc.innerHTML = md(docReview.source);
-    highlight(doc, false);
-    body.appendChild(doc);
-    markDocComments(doc, list);
-    const hint = el("div", "dr-hint");
-    hint.textContent = "Select any passage and right-click to comment on it.";
-    body.appendChild(hint);
-  }
-
-  if (docPendingQuote) card.appendChild(docCommentBox(docPendingQuote));
-  document.body.appendChild(back);
-}
-
-function docLoader(): HTMLElement {
-  const wrap = el("div", "dr-load");
-  const inner = el("div", "rl-in");
-  const word = el("div", "rl-word");
-  const r = el("span", ""); (r as HTMLElement).style.color = "#1EA1EB"; r.textContent = "R";
-  const swirl = el("img", "rl-o") as HTMLImageElement;
-  swirl.src = mediaSrc("romp-swirl-o.svg"); swirl.alt = "o"; swirl.onerror = () => swirl.remove();
-  const mm = el("span", ""); (mm as HTMLElement).style.color = "#54B204"; mm.textContent = "m";
-  const p = el("span", ""); (p as HTMLElement).style.color = "#4EA8A9"; p.textContent = "p";
-  word.append(r, swirl, mm, p);
-  const dots = el("div", "rl-dots"); dots.append(el("i", ""), el("i", ""), el("i", ""));
-  inner.append(word, dots);
-  wrap.appendChild(inner);
-  return wrap;
-}
-
-// The box that takes a new comment's text. Shows the anchor it will carry, so you can see the agent will
-// be pointed at the right place before you type.
-function docCommentBox(anchor: { quote: string; line: number | null }): HTMLElement {
-  const box = el("div", "dr-new");
-  const at = el("div", "dr-at");
-  at.textContent = (anchor.line ? "line " + anchor.line + " — " : "") + "“" + anchor.quote.slice(0, 120) + "”";
-  const ta = el("textarea", "dr-ta") as HTMLTextAreaElement;
-  ta.id = "doc-comment-body";
-  ta.placeholder = "What should change here?";
-  ta.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveDocComment(ta.value); }
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); docPendingQuote = null; renderDocReview(); }
-  });
-  const row = el("div", "dr-newrow");
-  const save = el("button", "dr-btn dr-submit") as HTMLButtonElement;
-  save.type = "button"; save.dataset.act = "drsave";
-  save.textContent = "Add comment";
-  const cancel = el("button", "dr-btn") as HTMLButtonElement; cancel.type = "button"; cancel.dataset.act = "drcancel";
-  cancel.textContent = "Cancel";
-  row.append(save, cancel);
-  box.append(at, ta, row);
-  return box;
-}
-
-// Mark every commented span in the rendered doc, reusing the comment-thread re-anchoring (findAnchorRange
-// tolerates the whitespace the renderer collapses; sliceRanges splits the hit over text nodes). A comment
-// whose span can no longer be found still rides the Submit — only its highlight is missing.
-function markDocComments(doc: HTMLElement, list: DocComment[]): void {
-  list.forEach((c, i) => {
-    const walker = document.createTreeWalker(doc, NodeFilter.SHOW_TEXT);
-    const nodes: Text[] = [];
-    let n: Node | null;
-    // Skip the chrome this pass already inserted — an earlier comment's mark (its number lives inside)
-    // and any expanded note — or a later comment could anchor to romp's own text.
-    while ((n = walker.nextNode())) if (!(n.parentElement?.closest("mark.dr-hl, .dr-note"))) nodes.push(n as Text);
-    const r = findAnchorRange(nodes.map((t) => t.data).join(""), c.quote);
-    if (!r) return;
-    const slices = sliceRanges(nodes.map((t) => t.data.length), r.start, r.end);
-    slices.forEach((sl, k) => {
-      const t = nodes[sl.idx];
-      const mid = sl.s > 0 ? t.splitText(sl.s) : t;
-      if (sl.e - sl.s < mid.data.length) mid.splitText(sl.e - sl.s);
-      const m = document.createElement("mark");
-      m.className = "dr-hl";
-      m.dataset.dcid = c.id;
-      m.dataset.act = "drmark";
-      m.title = c.body;
-      mid.parentNode?.insertBefore(m, mid);
-      m.appendChild(mid);
-      if (k === slices.length - 1) {                // the numbered marker rides the run's tail
-        const badge = document.createElement("sup");
-        badge.className = "dr-num";
-        badge.dataset.dcid = c.id;
-        badge.dataset.act = "drmark";
-        badge.textContent = String(i + 1);
-        m.appendChild(badge);
-      }
-    });
-    if (docOpenComment === c.id) {                  // expanded: the comment's text, inline under its span
-      const first = doc.querySelector(`mark.dr-hl[data-dcid="${cssEscape(c.id)}"]`);
-      const pop = document.createElement("span");
-      pop.className = "dr-note";
-      const txt = document.createElement("span"); txt.textContent = c.body;
-      const del = document.createElement("button");
-      del.type = "button"; del.className = "dr-note-x"; del.dataset.dcid = c.id; del.dataset.act = "drdel";
-      del.textContent = "✕"; del.title = "Remove this comment";
-      pop.append(txt, del);
-      first?.parentNode?.insertBefore(pop, first.nextSibling);
-    }
-  });
 }
 // Toggle a per-session view flag (feed mute / postal isolation) — the SAME message the timeline lane toggles
 // send, persisted + re-broadcast by the kernel. Optimistically update the local copy so reopening the menu
@@ -4225,6 +4344,19 @@ function showTabMenu(e: MouseEvent, id: string) {
     onBell ? "Stop notifying" : "Notify me",
     onBell ? "no more system notifications for this session" : "system notification when its work blocks on you or completes",
     () => setSessionFlag(id, "notify", !onBell));
+  // Background the session (the user 2026-08-18): out of the tab strip AND the timeline lanes — it
+  // keeps running, judged and carded; the + picker lists it under "Hidden — reveal" and the
+  // timeline's corner panel counts it. Same views blob the timeline dialog edits. A plain item, not
+  // a toggle: its undo lives where the hidden session lives (the picker, the timeline panel).
+  {
+    const hide = el("div", "ctx-item ctx-item-toggle");
+    const bodyEl = el("span", "ctx-item-body");
+    const l = el("span", "ctx-item-label"); l.textContent = "Hide from chat & timeline"; bodyEl.appendChild(l);
+    const sb = el("span", "ctx-item-sub"); sb.textContent = "background it — the + picker and the feed still surface it"; bodyEl.appendChild(sb);
+    hide.appendChild(bodyEl);
+    hide.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); postViews(hideIn(effViews(), id)); });
+    menu.appendChild(hide);
+  }
   // Billing submenu (the user 2026-08-09, who wants the login/API-key switch here rather than as a
   // statusline badge). Only when the machine offers BOTH choices (st.authBoth) — a one-auth machine
   // keeps the fact on the tab hover, never a dead selector — and the key stays labelled plainly
@@ -4299,11 +4431,6 @@ function showTabMenu(e: MouseEvent, id: string) {
 window.addEventListener("romp-hosts", () => { renderTabs(); });
 window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) dismissTabMenu(); }, true);
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") dismissTabMenu(); }, true);
-// Esc closes the doc reader — after the menus, and only when no comment box is open (that box eats its
-// own Esc first, so one press cancels the comment and a second closes the reader).
-window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && docReview && !docPendingQuote) { e.stopPropagation(); closeDocReview(); }
-});
 window.addEventListener("scroll", dismissTabMenu, true);
 window.addEventListener("blur", () => dismissTabMenu());
 
@@ -4377,10 +4504,11 @@ function onTabKey(e: KeyboardEvent) {
   if (!activeId || !order.length) return;
   if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
     e.preventDefault();
-    const i = order.indexOf(activeId);
+    const ord = visibleOrder();                 // never cycle onto a view-hidden session
+    const i = ord.indexOf(activeId);
     if (i < 0) return;
     const dir = e.key === "ArrowRight" ? 1 : -1;
-    setActive(order[(i + dir + order.length) % order.length]);
+    setActive(ord[(i + dir + ord.length) % ord.length]);
     focusActiveTab();
   } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
     e.preventDefault();
@@ -4437,11 +4565,12 @@ window.addEventListener("keydown", (e) => {
   if (document.querySelector(".picker-overlay")) return;   // #picker / #confirm open
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
     if (!activeId || order.length < 2) return;
-    const i = order.indexOf(activeId);
+    const ord = visibleOrder();                 // never cycle onto a view-hidden session
+    const i = ord.indexOf(activeId);
     if (i < 0) return;
     e.preventDefault();
     const dir = e.key === "ArrowRight" ? 1 : -1;
-    setActive(order[(i + dir + order.length) % order.length]);
+    setActive(ord[(i + dir + ord.length) % ord.length]);
   } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
     const content = document.getElementById("content");
     if (!content) return;
@@ -4489,6 +4618,26 @@ window.addEventListener("keydown", (e) => {
   if (inRompShell()) return;   // the shell's handler on this document takes it from here
   e.preventDefault(); e.stopPropagation();
   if (pickerVisible()) closePicker(); else openPicker();
+}, true);
+// Ctrl+M / Ctrl+, — chat history back/forward, the user's own Obsidian nav keys (their vault's
+// hotkeys.json, verified 2026-08-14: Ctrl, not Option). The trail lives in THIS pane (navHist), so
+// the keys are handled here whenever focus is inside the chat — capture-phase like Cmd+O above, so
+// they work from the composer too. Registered as chat.navBack/chat.navForward in the shell's command
+// registry (palette + Customize shortcuts…); this handler reads the SAME overrides store per press,
+// so a rebind in the dialog moves both dispatch paths at once. Chat-only for now (the user's scoping).
+window.addEventListener("keydown", (e) => {
+  if (!e.ctrlKey && !e.metaKey) return;                 // both defaults carry Ctrl; a rebind may use Meta
+  const ch = chordOf(e);
+  if (!ch || !ch.includes("+")) return;
+  const mac = /Mac|iP(hone|ad|od)/.test(navigator.platform || "");
+  const ov = loadOverrides();
+  if (ch === effectiveChord("chat.navBack", DEFAULT_CHORDS["chat.navBack"], ov, mac)) {
+    e.preventDefault(); e.stopPropagation();
+    navHist.go(-1);
+  } else if (ch === effectiveChord("chat.navForward", DEFAULT_CHORDS["chat.navForward"], ov, mac)) {
+    e.preventDefault(); e.stopPropagation();
+    navHist.go(1);
+  }
 }, true);
 // Nearest tab in the row above (dir<0) or below (dir>0) the given tab, by column.
 function tabInAdjacentRow(id: string, dir: number): string | null {
@@ -5419,9 +5568,23 @@ const commentThreads = new Map<string, CommentThread[]>();          // parent si
 const commentPending = new Map<string, { text: string; t: number }[]>(); // tid → optimistic sends
 const commentDrafts = new Map<string, string>();                    // draft key → unsent popover text
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
-let pendingCommentAnchor: { sid: string; uuid: string; exact: string } | null = null; // create mode
+let pendingCommentAnchor: { sid: string; uuid: string; exact: string;
+  model?: string; effort?: string; color?: string } | null = null; // create mode (+ the thread's own picks)
 let pendingAdoptTid: string | null = null;                          // commentCreated ack that beat its frame
 let commentPopPos: { x: number; y: number } | null = null;
+
+// the popover's own file picker (the user 2026-08-17: the attach clip, like the chat's) — files
+// ship through the SAME dropFile flow; the droppedPath ack sees the open popover and lands there
+const cmtFilePicker = document.createElement("input");
+cmtFilePicker.type = "file";
+cmtFilePicker.multiple = true;
+cmtFilePicker.style.display = "none";
+cmtFilePicker.addEventListener("change", () => {
+  const sid = pendingCommentAnchor?.sid || openCommentKey?.sid || activeId;
+  Array.from(cmtFilePicker.files || []).forEach((f) => shipFileToHost(f, sid));
+  cmtFilePicker.value = "";
+});
+document.body.appendChild(cmtFilePicker);
 
 function closeCommentPop(): void {
   document.getElementById("cmt-pop")?.remove();
@@ -5429,10 +5592,16 @@ function closeCommentPop(): void {
   pendingCommentAnchor = null;
 }
 
-// close on any press outside the popover (drafts persist in commentDrafts; reopening restores them)
+// close on any press outside the popover (drafts persist in commentDrafts; reopening restores them).
+// The model/effort dropdowns and the break-out dialog ride document.body, so popover containment
+// can't see them: without the exemption, pressing a menu item closed the box on mousedown and nulled
+// pendingCommentAnchor before the item's click could land the pick (the user 2026-08-18), and a
+// press inside the break-out dialog stranded its Cancel the same way (Escape-cancel kept the box).
 document.addEventListener("mousedown", (ev) => {
   const pop = document.getElementById("cmt-pop");
-  if (pop && !pop.contains(ev.target as Node)) closeCommentPop();
+  if (!pop || pop.contains(ev.target as Node)) return;
+  if ((ev.target as HTMLElement).closest?.(".meta-menu, #fork-prompt")) return;
+  closeCommentPop();
 }, true);
 
 /** Re-anchor every thread of `sid` onto its rendered turn: the exact-text <mark> plus the turn badge.
@@ -5442,20 +5611,16 @@ function applyCommentMarks(sid: string): void {
   const v = views.get(sid);
   if (!v) return;
   applyBranchChips(sid, v);   // same driver, same hooks: branch chips re-anchor with the marks
+  if (sid === activeId) updateCommentRail();   // and the scroll-rail ticks follow the active view
   const threads = commentThreads.get(sid) || [];
   const have = new Set(threads.map((t) => t.tid));
   for (const old of Array.from(v.el.querySelectorAll("mark.cmt-hl"))) {
     if (!have.has((old as HTMLElement).dataset.tid || "")) unwrapCommentMark(old as HTMLElement);
   }
-  for (const b of Array.from(v.el.querySelectorAll(".cmt-badge"))) {
-    const uuid = (b.closest(".turn") as HTMLElement | null)?.dataset.uuid || "";
-    if (!threads.some((t) => t.anchorUuid === uuid)) b.remove();
-  }
   if (!threads.length) return;
   for (const [uuid, list] of threadsByAnchor(threads)) {
     const turn = v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`) as HTMLElement | null;
     if (!turn) continue;                       // windowed out — the mark returns when the turn does
-    ensureCommentBadge(turn, list);
     for (const th of list) ensureCommentMark(turn, th);
   }
 }
@@ -5489,29 +5654,78 @@ function applyBranchChips(sid: string, v: View): void {
   }
 }
 
+/** Yellow ticks on the chat's scroll rail marking commented spots (the user 2026-08-15) — one per
+ *  open/resolved thread of the ACTIVE session, clicking jumps there and opens the thread. Placed in
+ *  the SAME content-space frame as the message notches (contentOffsetFrame): the old uniform
+ *  index-fraction percents were a second frame that drifted past the notches as history loaded and
+ *  real turn heights diverged from uniform (the user 2026-08-17) — two marks on one scrollbar may
+ *  never disagree about order. Rides the notches' rAF scheduler so both repaint from one world; a
+ *  signature skips untouched paints, and an unchanged tick set moves IN PLACE (same tids, same
+ *  order) so a mid-press rebuild can't eat the click (these ticks are buttons). */
+let cmtRailSig = "";
+function updateCommentRail(): void {
+  let rail = document.getElementById("cmt-rail");
+  const content = document.getElementById("content");
+  const v = activeId ? views.get(activeId) : null;
+  const s = activeId ? sessions.get(activeId) : null;
+  const threads = ((activeId && commentThreads.get(activeId)) || [])
+    .filter((t) => t.status === "open" || t.status === "resolved");
+  if (!content || !v || !s || !threads.length || v.el.style.display === "none") { rail?.remove(); cmtRailSig = ""; return; }
+  const r = content.getBoundingClientRect();
+  if (!r.height) { rail?.remove(); cmtRailSig = ""; return; }              // hidden pane
+  const frame = contentOffsetFrame(content, v, s);
+  if (!frame) { rail?.remove(); cmtRailSig = ""; return; }
+  const ticks: Array<{ th: CommentThread; y: number }> = [];
+  const evUnit = eventUnitIndex(s);                       // anchors are EVENTS; the frame speaks UNITS
+  for (const th of threads) {
+    const idx = s.events.findIndex((e) => e.uuid === th.anchorUuid);
+    if (idx < 0 || evUnit[idx] < 0) continue;
+    const off = frame.offsetOf(evUnit[idx]);
+    if (off == null) continue;
+    // the same proportional map the notches use, clamped so the last tick stays on the strip
+    ticks.push({ th, y: Math.min(r.height - 6, Math.round((off / frame.sh) * (r.height - 4))) });
+  }
+  const sig = activeId + "|" + Math.round(r.top) + "," + Math.round(r.right) + "," + Math.round(r.height)
+    + "|" + ticks.map((t) => t.th.tid + ":" + t.y + ":" + t.th.status + ":" + (t.th.unread ? 1 : 0)).join(",");
+  if (sig === cmtRailSig && rail) return;
+  cmtRailSig = sig;
+  if (!rail) { rail = el("div", "cmt-rail"); rail.id = "cmt-rail"; document.body.appendChild(rail); }
+  rail.style.left = (r.right - 10) + "px";
+  rail.style.top = r.top + "px";
+  rail.style.height = r.height + "px";
+  const cls = (th: CommentThread) => "cmt-tick" + (th.status === "resolved" ? " resolved" : "")
+    + (th.unread && th.status === "open" ? " unread" : "");
+  const kids = Array.from(rail.children) as HTMLElement[];
+  if (kids.length === ticks.length && kids.every((k, i) => k.dataset.tid === ticks[i].th.tid)) {
+    ticks.forEach((t, i) => { kids[i].style.top = t.y + "px"; kids[i].className = cls(t.th); });
+    return;
+  }
+  rail.replaceChildren(...ticks.map((t) => {
+    const tick = el("button", cls(t.th)) as HTMLButtonElement;
+    tick.type = "button";
+    tick.dataset.act = "cmtjump";
+    tick.dataset.tid = t.th.tid;
+    tick.dataset.uuid = t.th.anchorUuid;
+    tick.style.top = t.y + "px";
+    tick.title = (t.th.name || "comment") + ": click to jump to it";
+    return tick;
+  }));
+}
+window.addEventListener("resize", () => updateCommentRail());
+
+// (The per-turn count badge is GONE — the user 2026-08-17: the highlight does the speaking, and
+// the scroll-rail tick already covers a thread whose rendered text drifted beyond re-matching.)
+
 function unwrapCommentMark(markEl: HTMLElement): void {
   const p = markEl.parentNode;
   if (!p) return;
-  if (p instanceof Element) p.classList.remove("cmt-hl-host");   // an inline-code span it tinted
+  if (p instanceof Element) {
+    p.classList.remove("cmt-hl-host");                             // an inline-code span it tinted
+    (p.closest(".katex.cmt-hl-host") as HTMLElement | null)?.classList.remove("cmt-hl-host");   // or the math block
+  }
   while (markEl.firstChild) p.insertBefore(markEl.firstChild, markEl);
   markEl.remove();
   p.normalize();
-}
-
-function ensureCommentBadge(turn: HTMLElement, list: CommentThread[]): void {
-  turn.classList.add("has-cmt");               // positions the badge (styles.css .turn.has-cmt)
-  let b = turn.querySelector(":scope > .cmt-badge") as HTMLButtonElement | null;
-  if (!b) {
-    b = el("button", "cmt-badge") as HTMLButtonElement;
-    b.type = "button";
-    b.dataset.act = "cmtopen";                 // delegated on document.body — click-safe across rebuilds
-    turn.appendChild(b);
-  }
-  b.textContent = String(list.length);
-  b.dataset.tid = (list.find((t) => t.unread && t.status === "open") || list[list.length - 1]).tid;
-  b.classList.toggle("unread", list.some((t) => t.unread && t.status === "open"));
-  b.classList.toggle("busy", list.some((t) => threadBusy(t.state) && t.status === "open"));
-  b.title = (list.length === 1 ? "1 thread" : list.length + " threads") + " on this message. Click to open";
 }
 
 function ensureCommentMark(turn: HTMLElement, th: CommentThread): void {
@@ -5550,11 +5764,16 @@ function ensureCommentMark(turn: HTMLElement, th: CommentThread): void {
     styleCommentMark(segs[i], th);
     segs[i].classList.toggle("hl-first", i === 0);
     segs[i].classList.toggle("hl-last", i === segs.length - 1);
+    // hosts a mark can't paint from inside: an inline-code span's padding, and KaTeX's inter-glyph
+    // spacing (the user 2026-08-15, screenshot: math highlighted with gaps punched at every glyph
+    // box) — tint the ELEMENT instead; resolved threads drop the tint like the marks dim
     const host = segs[i].parentElement;
     if (host && host.tagName === "CODE" && host.parentElement?.tagName !== "PRE"
         && host.childNodes.length === 1) {
-      host.classList.toggle("cmt-hl-host", th.status !== "resolved");   // resolved dims like the marks
+      host.classList.toggle("cmt-hl-host", th.status !== "resolved");
     }
+    const kat = segs[i].parentElement?.closest(".katex") as HTMLElement | null;
+    if (kat) kat.classList.toggle("cmt-hl-host", th.status !== "resolved");
   }
 }
 
@@ -5567,8 +5786,21 @@ function styleCommentMark(m: HTMLElement, th: CommentThread): void {
     : "thread: click to open";
 }
 
+/** The comment's identity color (the user 2026-08-17): one of the session palette's colors,
+ *  DISTINCT from the parent session's and, where the palette allows, from every open tab's —
+ *  the same standing-out rule _pick_identity_color applies to new sessions, decided client-side
+ *  so the dialog can wear it before the thread exists. */
+function pickThreadColor(sid: string): string {
+  const parent = (sessions.get(sid)?.color?.bg || "").toLowerCase();
+  const worn = new Set<string>();
+  sessions.forEach((se) => { const c = (se.color?.bg || "").toLowerCase(); if (c) worn.add(c); });
+  (commentThreads.get(sid) || []).forEach((t) => { if (t.color) worn.add(t.color.toLowerCase()); });
+  const free = paletteColors.find((c) => !worn.has(c.toLowerCase()) && c.toLowerCase() !== parent);
+  return free || paletteColors.find((c) => c.toLowerCase() !== parent) || "#e8b220";
+}
+
 function openCommentComposer(sid: string, uuid: string, exact: string, x: number, y: number): void {
-  pendingCommentAnchor = { sid, uuid, exact };
+  pendingCommentAnchor = { sid, uuid, exact, color: pickThreadColor(sid) };
   openCommentKey = null;
   commentPopPos = { x, y };
   renderCommentPopover();
@@ -5591,6 +5823,7 @@ function openCommentPopover(sid: string, tid: string, x?: number, y?: number): v
 function adoptCommentThread(sid: string, tid: string): void {
   if (pendingCommentAnchor && pendingCommentAnchor.sid === sid) {
     commentDrafts.delete("new:" + pendingCommentAnchor.uuid);
+    commentDrafts.delete("newname:" + pendingCommentAnchor.uuid);
     pendingCommentAnchor = null;
   }
   pendingAdoptTid = null;
@@ -5623,7 +5856,21 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
   list.replaceChildren();
   const pend = prunePending(commentPending.get(th.tid) || [], th.msgs);
   commentPending.set(th.tid, pend);
-  for (const m of th.msgs) list.appendChild(commentMsgEl(m.who, m.text));
+  const evs = (th.events || []) as ChatEvent[];
+  if (evs.length) {
+    // the CHAT's own renderer, from the branch point on (the user 2026-08-17: the same component —
+    // rail dots, markdown, tool folds, notice cards — never a simplified twin). renderingSid keys
+    // the folds per thread, exactly as a chat tab would.
+    const saved = renderingSid;
+    renderingSid = th.tid;
+    let prev: number | null = null;
+    for (const ev of evs) {
+      list.appendChild(renderEvent(ev, prev, null));
+      const ep = eventEpoch(ev);
+      if (ep != null) prev = ep;
+    }
+    renderingSid = saved;
+  } else for (const m of th.msgs) list.appendChild(commentMsgEl(m.who, m.text));
   for (const p of pend) {
     const n = commentMsgEl("you", p.text);
     n.classList.add("pending");
@@ -5649,10 +5896,11 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
 }
 
 function commentPopTitle(create: boolean, th: CommentThread | null | undefined): string {
-  return create ? "New thread"
+  const nm = th?.name || "Thread";
+  return create ? "New comment:"
     : th!.status === "promoted" ? "Now its own session: " + th!.promotedName
     : th!.status === "promoting" ? "Breaking out…"
-    : th!.status === "resolved" ? "Thread (resolved)" : "Thread";
+    : th!.status === "resolved" ? nm + " (resolved)" : nm;
 }
 
 /** Send the popover composer's text — the Enter key and the delegated Send button share this. The
@@ -5664,14 +5912,30 @@ function commentSendFromPop(pop: HTMLElement): void {
   if (!box || !text || !vscodeApi) return;
   const create = pendingCommentAnchor;
   if (create) {
-    if (send) { send.disabled = true; send.textContent = "Starting…"; }   // ack before the round-trip;
-    //                                       the draft survives until commentCreated adopts the thread
-    vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact, text });
+    const nameBox = pop.querySelector(".cmt-name") as HTMLInputElement | null;
+    const nm = (nameBox?.value || "").trim();
+    if (nm && !/^[A-Za-z0-9._-]+$/.test(nm)) { nameBox?.classList.add("bad"); nameBox?.focus(); return; }
+    if (send) { send.disabled = true; send.classList.add("busy"); }   // ack before the round-trip (the ➤
+    //                                       dims); the draft survives until commentCreated adopts the thread
+    // the ants start on the GESTURE (the user 2026-08-17: the cue lagged the kernel round-trip):
+    // a synthetic working thread marks the passage NOW; the kernel's frame replaces the whole list,
+    // so its never-listed tid unwraps through the standard sweep the moment the real thread lands
+    const synth: CommentThread = { tid: "pending:" + create.uuid, anchorUuid: create.uuid,
+      exact: create.exact, status: "open", createdT: Date.now() / 1000, state: "working",
+      unread: false, promotedName: "", msgs: [], name: nm || "comment", color: create.color || "" };
+    const cur0 = commentThreads.get(create.sid) || [];
+    commentThreads.set(create.sid, [...cur0.filter((t) => t.tid !== synth.tid), synth]);
+    applyCommentMarks(create.sid);
+    vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact,
+      text, name: nm, model: create.model || "", effort: create.effort || "",
+      color: create.color || "" });
     return;
   }
   const cur = openCommentThread();
   if (!cur) return;
   vscodeApi.postMessage({ type: "commentReply", id: cur.sid, tid: cur.th.tid, text });
+  cur.th.state = "working";                     // optimistic: the ants march on the SEND, not the
+  applyCommentMarks(cur.sid);                   // round-trip (the kernel's next frame confirms)
   const pl = commentPending.get(cur.th.tid) || [];
   pl.push({ text, t: Date.now() / 1000 });
   commentPending.set(cur.th.tid, pl);
@@ -5679,6 +5943,16 @@ function commentSendFromPop(pop: HTMLElement): void {
   box.value = "";
   const list = pop.querySelector(".cmt-msgs") as HTMLElement | null;
   if (list) fillCommentMsgs(list, cur.th);      // the pending bubble IS the acknowledgement
+}
+
+/** A live thread's model/effort chip label: the frame's value, tinted from the shared /models
+ *  colors. Shared by the chip's build and the in-place refresh — the popover survives the pick
+ *  now, so the frame's fresh value must reach the label it left behind. */
+function liveMetaLabel(label: HTMLElement, kind: "model" | "effort", th: CommentThread): void {
+  label.textContent = kind === "model" ? (th.model || "Default") : (th.effort || "default");
+  const choice = META_CHOICES[kind].find((c) => (label.textContent || "").toLowerCase().startsWith(c.value));
+  label.style.color = choice?.color && choice.color.length === 3
+    ? `rgb(${choice.color[0]},${choice.color[1]},${choice.color[2]})` : "";
 }
 
 /** The popover — ONE pane-local card (no backdrop: the conversation stays readable beside it).
@@ -5698,11 +5972,15 @@ function renderCommentPopover(): void {
   const status = th ? th.status : "";
   if (prev && prev.dataset.mode === mode && prev.dataset.tid === (th ? th.tid : create!.uuid)
       && prev.dataset.status === status) {
-    // in-place refresh: conversation + title only
+    // in-place refresh: conversation, title, and the live model/effort labels
     const t = prev.querySelector(".cmt-title") as HTMLElement | null;
     if (t) t.textContent = commentPopTitle(!!create, th);
     const list = prev.querySelector(".cmt-msgs") as HTMLElement | null;
     if (th && list) fillCommentMsgs(list, th);
+    if (th) for (const b of Array.from(prev.querySelectorAll(".meta-btn[data-kind]")) as HTMLElement[]) {
+      const lbl = b.querySelector(".meta-label") as HTMLElement | null;
+      if (lbl) liveMetaLabel(lbl, b.dataset.kind === "model" ? "model" : "effort", th);
+    }
     return;
   }
   const hadFocus = !!prev?.querySelector(".cmt-input:focus-within, .cmt-input:focus");
@@ -5715,23 +5993,51 @@ function renderCommentPopover(): void {
   const head = el("div", "cmt-head");
   const title = el("span", "cmt-title");
   title.textContent = commentPopTitle(!!create, th);
+  if (th?.color) title.style.color = th.color;   // an existing thread's title wears its identity color
+  let nameBox: HTMLInputElement | null = null;
+  if (create) {
+    // the name lives IN the header — "New comment: <name>" — bold and editable right there (the
+    // user 2026-08-17); prefilled <session>-comment-<N>, drafted under its own key so a refused
+    // create hands an edited name back too
+    const nk = "newname:" + create.uuid;
+    nameBox = document.createElement("input");
+    nameBox.type = "text";
+    nameBox.className = "cmt-name";
+    nameBox.setAttribute("autocapitalize", "off");
+    nameBox.setAttribute("autocomplete", "off");
+    nameBox.setAttribute("spellcheck", "false");
+    const sess0 = sessions.get(sid);
+    nameBox.value = commentDrafts.get(nk)
+      || ((sess0?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-")
+          + "-comment-" + ((commentThreads.get(sid) || []).length + 1));
+    nameBox.title = "The comment's name — edit it right here";
+    if (create.color) nameBox.style.color = create.color;   // its identity color, distinct from the parent's
+    const nb = nameBox;
+    nb.addEventListener("input", () => { nb.classList.remove("bad"); commentDrafts.set(nk, nb.value); });
+  }
   const closeBtn = el("button", "cmt-x") as HTMLButtonElement;
   closeBtn.type = "button";
   closeBtn.textContent = "×";
   closeBtn.title = "Close (the thread stays on its highlight)";
   closeBtn.dataset.act = "cmtclose";
-  head.append(title, closeBtn);
+  if (nameBox) head.append(title, nameBox, closeBtn);
+  else head.append(title, closeBtn);
   // DRAG by the header (the user 2026-08-13, who found the popover's spot inconvenient): pointer
   // capture, viewport-clamped, and the position writes through to commentPopPos so a later full
   // rebuild (a status flip) reopens where the user parked it. The header survives in-place
   // refreshes, so a drag is never cut by a comments frame; a full rebuild mid-drag just ends it.
   head.title = "Drag to move";
-  head.addEventListener("pointerdown", (ev: PointerEvent) => {
-    if ((ev.target as HTMLElement).closest(".cmt-x")) return;
+  // the WHOLE box drags (the user 2026-08-17), not just the header — any grip that isn't an
+  // interactive control or selectable text, and never the bottom-right resize corner
+  pop.addEventListener("pointerdown", (ev: PointerEvent) => {
+    const t = ev.target as HTMLElement;
+    if (t.closest(".cmt-x, .cmt-name, .cmt-input, .cmt-msgs, .cmt-quote, button, input, textarea, .meta-btn, .meta-menu")) return;
+    const pr = pop.getBoundingClientRect();
+    if (ev.clientX > pr.right - 18 && ev.clientY > pr.bottom - 18) return;   // the resize handle's corner
     ev.preventDefault();
     const dx = ev.clientX - pop.offsetLeft, dy = ev.clientY - pop.offsetTop;
-    head.setPointerCapture(ev.pointerId);
-    head.classList.add("dragging");
+    pop.setPointerCapture(ev.pointerId);
+    pop.classList.add("dragging");
     const move = (mv: PointerEvent) => {
       const x = Math.max(4, Math.min(mv.clientX - dx, window.innerWidth - pop.offsetWidth - 4));
       const y = Math.max(4, Math.min(mv.clientY - dy, window.innerHeight - 40));
@@ -5740,24 +6046,77 @@ function renderCommentPopover(): void {
       commentPopPos = { x, y };
     };
     const up = () => {
-      head.classList.remove("dragging");
-      head.removeEventListener("pointermove", move);
-      head.removeEventListener("pointerup", up);
-      head.removeEventListener("pointercancel", up);
+      pop.classList.remove("dragging");
+      pop.removeEventListener("pointermove", move);
+      pop.removeEventListener("pointerup", up);
+      pop.removeEventListener("pointercancel", up);
     };
-    head.addEventListener("pointermove", move);
-    head.addEventListener("pointerup", up);
-    head.addEventListener("pointercancel", up);
+    pop.addEventListener("pointermove", move);
+    pop.addEventListener("pointerup", up);
+    pop.addEventListener("pointercancel", up);
   });
   pop.appendChild(head);
-  const quote = el("div", "cmt-quote");
-  quote.textContent = create ? create.exact : th!.exact;
-  quote.title = "the highlighted passage this thread is about";
-  pop.appendChild(quote);
+  if (create || !(th!.events || []).length) {
+    // the chat-parity view opens ON the quoting message, so a second quote block would say it twice
+    const quote = el("div", "cmt-quote");
+    quote.textContent = create ? create.exact : th!.exact;
+    quote.title = "the highlighted passage this thread is about";
+    pop.appendChild(quote);
+  }
   if (th) {
     const list = el("div", "cmt-msgs");
     fillCommentMsgs(list, th);
     pop.appendChild(list);
+  }
+  let metaRowPending: HTMLElement | null = null;   // appended under the composer row — the statusline position
+  if (create) {
+    // the thread's OWN model + effort (the user 2026-08-17): the same /models-fed choices the
+    // chat's statusline selectors use, defaulting to what this session runs now — picking one
+    // affects only the thread; the conversation it branches from is never touched
+    const st = sessions.get(sid)?.status;
+    const metaRow = el("div", "cmt-meta-row");
+    const mkSel = (kind: "model" | "effort") => {
+      // the statusline's own badge chrome (.meta-btn/.meta-label/.meta-caret) so the two stay in
+      // sync by construction (the user 2026-08-17), tinted from the /models list's shared colors
+      const btn = el("span", "meta-btn cmt-meta") as HTMLElement;
+      const chosen = kind === "model" ? create.model : create.effort;
+      const choice = chosen ? META_CHOICES[kind].find((c) => c.value === chosen) : null;
+      const label = el("span", "meta-label");
+      label.textContent = choice ? choice.label : (kind === "model" ? (st?.model || "Default") : (st?.effort || "default"));
+      const tint = choice?.color || (kind === "model" ? st?.modelColor : st?.effortColor);
+      if (tint && tint.length === 3) label.style.color = `rgb(${tint[0]},${tint[1]},${tint[2]})`;
+      const caret = el("span", "meta-caret");
+      caret.textContent = "▾";
+      btn.append(label, caret);
+      btn.title = chosen ? "the comment runs on its own " + kind + "; this session keeps its"
+        : "inherits this session's " + kind + " — click to pick another for the comment only";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeMetaMenu();
+        const menu = el("div", "meta-menu");
+        for (const c of META_CHOICES[kind]) {
+          const cur = chosen ? c.value === chosen : (st ? isCurrentMeta(kind, st, c.value) : false);
+          const item = el("div", "meta-item" + (cur ? " current" : ""));
+          item.textContent = c.label;
+          item.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            if (pendingCommentAnchor) pendingCommentAnchor[kind] = c.value;
+            closeMetaMenu();
+            document.getElementById("cmt-pop")?.remove();   // full rebuild shows the pick
+            renderCommentPopover();
+          });
+          menu.appendChild(item);
+        }
+        document.body.appendChild(menu);
+        const r2 = btn.getBoundingClientRect();
+        menu.style.left = r2.left + "px";
+        menu.style.top = (r2.bottom + 4) + "px";
+        metaMenuEl = menu;
+      });
+      return btn;
+    };
+    metaRow.append(mkSel("model"), mkSel("effort"));
+    metaRowPending = metaRow;
   }
   if (create || th!.status !== "promoted") {
     const dk = create ? "new:" + create.uuid : th!.tid;
@@ -5772,13 +6131,65 @@ function renderCommentPopover(): void {
       if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); commentSendFromPop(pop); }
       else if (ev.key === "Escape") { ev.stopPropagation(); closeCommentPop(); }
     });
-    pop.appendChild(box);
-    const row = el("div", "cmt-actions");
+    const crow = el("div", "cmt-composer");   // the chat composer's shape: clip left, ➤ right
+    const attach = el("button", "cmt-attach") as HTMLButtonElement;
+    attach.type = "button";
+    attach.title = "Attach a file";
+    attach.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" '
+      + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+      + '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66'
+      + 'l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+    attach.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); cmtFilePicker.click(); });
     const send = el("button", "cmt-send") as HTMLButtonElement;
     send.type = "button";
-    send.textContent = create ? "Start thread" : "Send";
+    send.textContent = "➤";
+    send.title = create ? "Comment (Enter)" : "Send (Enter)";
+    send.setAttribute("aria-label", create ? "Comment" : "Send");
     send.dataset.act = "cmtsend";
-    row.appendChild(send);
+    crow.append(attach, box, send);
+    pop.appendChild(crow);
+    if (metaRowPending) pop.appendChild(metaRowPending);   // model/effort under the box, like the chat
+    if (th && th.status === "open") {
+      // the thread is a real session under the hood — its model/effort switch LIVE through the
+      // chat's own ops (setModel/setEffort route by sid; be.owns makes the thread reachable)
+      const mrow = el("div", "cmt-meta-row");
+      const mkLive = (kind: "model" | "effort") => {
+        const btn = el("span", "meta-btn cmt-meta") as HTMLElement;
+        btn.dataset.kind = kind;
+        const label = el("span", "meta-label");
+        liveMetaLabel(label, kind, th);
+        const caret = el("span", "meta-caret");
+        caret.textContent = "▾";
+        btn.append(label, caret);
+        btn.title = "the thread's own " + kind + " — switching it never touches the session it branched from";
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          closeMetaMenu();
+          const menu = el("div", "meta-menu");
+          for (const c of META_CHOICES[kind]) {
+            const item = el("div", "meta-item");
+            item.textContent = c.label;
+            item.addEventListener("click", (ev) => {
+              ev.stopPropagation();
+              vscodeApi?.postMessage({ type: kind === "model" ? "setModel" : "setEffort", id: th.tid, value: c.value });
+              label.textContent = c.label;   // acknowledge the pick now; the next comments frame is authoritative
+              if (c.color && c.color.length === 3) label.style.color = `rgb(${c.color[0]},${c.color[1]},${c.color[2]})`;
+              closeMetaMenu();
+            });
+            menu.appendChild(item);
+          }
+          document.body.appendChild(menu);
+          const r2 = btn.getBoundingClientRect();
+          menu.style.left = r2.left + "px";
+          menu.style.top = (r2.bottom + 4) + "px";
+          metaMenuEl = menu;
+        });
+        return btn;
+      };
+      mrow.append(mkLive("model"), mkLive("effort"));
+      pop.appendChild(mrow);
+    }
+    const row = el("div", "cmt-actions");
     if (th) {
       const br = el("button", "cmt-act") as HTMLButtonElement;
       br.type = "button";
@@ -5786,18 +6197,15 @@ function renderCommentPopover(): void {
       br.title = "Continue this thread as its own session; it keeps everything it knows";
       br.dataset.act = "cmtbreak";
       row.appendChild(br);
-      if (th.status === "open") {
-        const rs = el("button", "cmt-act") as HTMLButtonElement;
-        rs.type = "button";
-        rs.textContent = "Resolve";
-        rs.title = "Settle this thread: the highlight dims, and replying reopens it";
-        rs.dataset.act = "cmtresolve";
-        row.appendChild(rs);
-      } else if (th.status === "resolved") {   // never for 'promoting' — the kernel would refuse anyway
+      // Resolve is GONE (the user 2026-08-17): an idle thread draws no usage and its transcript
+      // is on disk either way, so the real verbs are Break out and Delete. Legacy resolved rows
+      // still render dimmed and reopen on reply; they just can't be minted anymore. Never for
+      // 'promoting' — the kernel would refuse anyway.
+      if (th.status === "open" || th.status === "resolved") {
         const dl = el("button", "cmt-act cmt-del") as HTMLButtonElement;
         dl.type = "button";
         dl.textContent = "Delete";
-        dl.title = "Remove this thread and its highlight";
+        dl.title = "Remove this thread and its highlight (the conversation file stays on disk)";
         dl.dataset.act = "cmtdelete";
         dl.addEventListener("pointerleave", () => { dl.classList.remove("armed"); dl.textContent = "Delete"; });
         row.appendChild(dl);
@@ -5815,6 +6223,15 @@ function renderCommentPopover(): void {
     pop.appendChild(row);
   }
   document.body.appendChild(pop);
+  if (typeof ResizeObserver === "function") {
+    // resizing the BOX (resize: both) hands the extra room to the quoted context: the .sized class
+    // unlocks the quote's clamp; armed only after a real user resize, so the natural size stays tight
+    const w0 = pop.offsetWidth, h0 = pop.offsetHeight;
+    const ro = new ResizeObserver(() => {
+      if (Math.abs(pop.offsetWidth - w0) > 6 || Math.abs(pop.offsetHeight - h0) > 6) pop.classList.add("sized");
+    });
+    ro.observe(pop);
+  }
   const r = pop.getBoundingClientRect();
   const px = Math.max(8, Math.min(commentPopPos?.x ?? (window.innerWidth - r.width) / 2, window.innerWidth - r.width - 8));
   const py = Math.max(8, Math.min(commentPopPos?.y ?? 120, window.innerHeight - r.height - 8));
@@ -5831,7 +6248,8 @@ function renderCommentPopover(): void {
 // flips to "promoted" on the next comments frame.
 function showBreakoutPrompt(sid: string, tid: string): void {
   const sess = sessions.get(sid);
-  const base = (sess?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-");
+  const thName = (commentThreads.get(sid) || []).find((t) => t.tid === tid)?.name || "";
+  const base = thName || ((sess?.name || "session").replace(/[^A-Za-z0-9._-]/g, "-") + "-thread");
   document.getElementById("fork-prompt")?.remove();
   const overlay = el("div", "picker-overlay confirm-overlay");
   overlay.id = "fork-prompt";
@@ -5843,7 +6261,7 @@ function showBreakoutPrompt(sid: string, tid: string): void {
   const input = document.createElement("input");
   input.type = "text";
   input.className = "fork-name";
-  input.value = base + "-thread";
+  input.value = base;
   input.setAttribute("autocapitalize", "off");
   input.setAttribute("autocomplete", "off");
   input.setAttribute("autocorrect", "off");
@@ -6090,7 +6508,10 @@ function renderPicker(items: any[]) {
     name.replaceChildren(...hostNameNodes(it.name, it.id));
     if (it.color && it.color.bg) name.style.color = it.color.bg;
     const time = el("span", "picker-time");
-    if (it.running) {   // a live session (SDK/tmux backend) whose tab is closed → a green "running" badge
+    if (it.hiddenTab) {   // open as a tab but view-hidden (a background session) → picking reveals it
+      time.textContent = "hidden";
+      time.style.opacity = "0.7";
+    } else if (it.running) {   // a live session (SDK/tmux backend) whose tab is closed → a green "running" badge
       time.classList.add("picker-running-badge");
       time.append(el("span", "picker-run-dot"), document.createTextNode("running"));
     } else {
@@ -6108,6 +6529,9 @@ function renderPicker(items: any[]) {
       if (pickMode) {
         if (vscodeApi) vscodeApi.postMessage({ type: "pickResult", id: it.id, name: it.name });
         pickMode = false; // so closePicker doesn't also post a cancel
+      } else if (it.hiddenTab) {
+        revealSession(it.id);   // its tab already exists — un-hide it and switch to it
+        setActive(it.id);
       } else if (vscodeApi) {
         vscodeApi.postMessage({ type: "openSession", id: it.id });
       }
@@ -6124,10 +6548,16 @@ function renderPicker(items: any[]) {
     for (const it of items) list.appendChild(mkRow(it));
   } else {
     const avail = items.filter((it) => !isOpenTab(it.id));
+    // open-as-tab but view-HIDDEN sessions still list (the user 2026-08-18): a background session's
+    // one visible home on the chat side — omitting them here plus hiding the tab would recreate the
+    // secret-running-session state abolished 2026-08-11
+    const hidden = items.filter((it) => isOpenTab(it.id) && !tabInView(it.id))
+                        .map((it) => Object.assign({}, it, { hiddenTab: true }));
     const running = avail.filter((it) => it.running);
     const rest = avail.filter((it) => !it.running);
     if (running.length) { list.appendChild(label("Running — reopen")); for (const it of running) list.appendChild(mkRow(it)); }
-    if (rest.length) { if (running.length) list.appendChild(label("Recent")); for (const it of rest) list.appendChild(mkRow(it)); }
+    if (hidden.length) { list.appendChild(label("Hidden — reveal")); for (const it of hidden) list.appendChild(mkRow(it)); }
+    if (rest.length) { if (running.length || hidden.length) list.appendChild(label("Recent")); for (const it of rest) list.appendChild(mkRow(it)); }
   }
   if (!list.children.length && pickerListHost) {
     // a machine romp can reach but which has no sessions in the window: say that, or an empty list reads
@@ -6291,7 +6721,7 @@ function scrollToAnchor(uuid: string): boolean {
     return true;
   }
   landTrail.push("pointer-exact");
-  landOn(target);
+  landOn(target, uuid);
   return true;
 }
 
@@ -6305,11 +6735,14 @@ function scrollToAnchor(uuid: string): boolean {
 // off its mark. So: re-align whenever the bar/ledger actually resizes, plus two
 // timed retries for late layout (images, markdown), for ~1.2s — canceled the
 // moment the user wheel-scrolls so we never fight a real gesture.
-function landOn(target: HTMLElement) {
+function landOn(target: HTMLElement, flashKey?: string) {
   const realign = () => target.scrollIntoView({ block: "start", behavior: "auto" });
   realign();
-  target.classList.add("anchor-flash");
-  setTimeout(() => target.classList.remove("anchor-flash"), 1700);
+  if (flashKey == null || flashKey !== flashedAnchor) {   // one flash per navigation (see flashedAnchor)
+    if (flashKey != null) flashedAnchor = flashKey;
+    target.classList.add("anchor-flash");
+    setTimeout(() => target.classList.remove("anchor-flash"), 1700);
+  }
   const until = Date.now() + 1200;
   let ro: ResizeObserver | null = null;
   const stop = () => { ro?.disconnect(); ro = null; window.removeEventListener("wheel", stop); };
@@ -7106,6 +7539,80 @@ if (typeof ResizeObserver === "function") {
   }
 }
 
+// ── drag-to-resize the tab strip (the user 2026-08-18) ── #tabbar wraps its tabs into rows and scrolls
+// past its max-height cap (150px ≈ four rows), which clipped the fifth row of a many-session strip with
+// no way to see more. The #tabbar-resize grip straddles the strip's bottom border: drag DOWN for more
+// rows, UP for fewer; it stays a scroll pane at every size. The dragged cap is per-viewer arrangement
+// like the tab ORDER (romp:vieworder), so it lives in localStorage — applied at boot, written on release
+// (not per-move). A double-click resets to the CSS default. Same pattern as #composer-resize; the grip
+// is a SIBLING below the bar (a child would scroll away with the rows), so it also survives every #tabs
+// re-render. The content-anchor ResizeObserver above cancels the scroll jump the resize would cause.
+{
+  const bar = document.getElementById("tabbar");
+  const grip = document.getElementById("tabbar-resize");
+  if (bar && grip) {
+    // `cap` is the preference of record. The APPLIED value re-clamps to the live window on every
+    // resize (an oversized cap must not crush the transcript when the window shrinks), but a
+    // briefly-small window never rewrites the preference — the applied style heals back when the
+    // window grows. Applied through the --tabbar-cap VAR, never the max-height property: the mobile
+    // page's `#tabbar{max-height:none}` must keep winning (an inline max-height would override that
+    // media rule and clip the mobile header, e.g. after a tablet rotation).
+    let cap = parseTabbarH(localStorage.getItem(TABBAR_H_KEY));
+    const applyCap = () => {
+      if (cap == null) bar.style.removeProperty("--tabbar-cap");
+      else bar.style.setProperty("--tabbar-cap", clampTabbarH(cap, window.innerHeight) + "px");
+    };
+    applyCap();
+    window.addEventListener("resize", applyCap);
+    let startY = 0, startH = 0, pid = 0, dragging = false, stick = false;
+    const onMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      if (!(e.buttons & 1)) { onUp(); return; }    // release swallowed (context menu, off-window) → end, never strand a phantom drag
+      cap = clampTabbarH(startH + (e.clientY - startY), window.innerHeight);
+      applyCap();
+      // growing the bar shrinks #content, which would push a tail-following view off the tail one
+      // sub-threshold step at a time — if it was at the tail when the drag began, keep it there
+      const content = document.getElementById("content");
+      if (stick && content) content.scrollTop = content.scrollHeight;
+    };
+    const onUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      try { grip.releasePointerCapture(pid); } catch { /* already released */ }
+      grip.classList.remove("dragging");
+      document.body.classList.remove("tabbar-resizing");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      if (cap != null) localStorage.setItem(TABBAR_H_KEY, String(cap));
+    };
+    grip.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;                  // a right-click opens menus, never a drag
+      e.preventDefault();
+      dragging = true;
+      startY = e.clientY;
+      // Anchor to the EFFECTIVE cap, never the rendered height: with fewer rows than the cap the
+      // rect is content-sized, and anchoring there silently collapsed a larger stored cap to about
+      // the content height on any drag — invisible at the time, and the clipped strip came back
+      // weeks later with no visible cause.
+      startH = cap != null ? clampTabbarH(cap, window.innerHeight) : TABBAR_H_DEFAULT;
+      const content = document.getElementById("content");
+      stick = !!content && nearBottom(content);
+      pid = e.pointerId;
+      // capture so the drag survives leaving the pane; a pointer already gone throws — the window
+      // listeners below carry the drag either way, so a failed capture must not abort the setup
+      try { grip.setPointerCapture(pid); } catch { /* pointer already released */ }
+      grip.classList.add("dragging");
+      document.body.classList.add("tabbar-resizing");
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+    // a double-click resets to the CSS default cap — the quick escape hatch, like the composer's
+    grip.addEventListener("dblclick", () => { cap = null; applyCap(); localStorage.removeItem(TABBAR_H_KEY); });
+  }
+}
+
 // Keep the rendered window over the viewport as the user scrolls — a steady scroll-back OR a scrollbar JUMP
 // to anywhere (random access). On every scroll we estimate the unit at the viewport top; if it has drifted
 // within REVIRT_MARGIN units of a rendered edge (or sits in a blank spacer after a jump), we re-render a
@@ -7420,7 +7927,7 @@ function renderBgTasks() {
 // The Awaiting session's WHY, in the same box when NO tracked tasks claim it (the user 2026-08-13:
 // the reason spent a few hours beside the statusline chip — PR #350 — and crowded the composer area;
 // this box between transcript and composer is where dispatched work has always surfaced). Same fold
-// treatment as the task header: one straw-dotted line, click → the full why, each awaited item when
+// treatment as the task header: one await-green-dotted line, click → the full why, each awaited item when
 // there are several, and a plain-words note on what the state means. No Stop here — an untracked wait
 // (a peer's PR, a build) has no process to kill; tracked run_in_background tasks take the list path
 // above, which carries one Stop per running row.
@@ -7437,7 +7944,8 @@ function renderAwaitWhy(host: HTMLElement, s: Session | null) {
   const lab = el("span", "bg-fold-label");
   // the kernel's why leads with the verb ("waiting on a background task: …") — strip it so the
   // labeled header doesn't stutter; the expanded body keeps the full sentence
-  lab.textContent = "Awaiting · " + why.replace(/^(waiting on|awaiting)\s+/i, "");
+  const kw = KIND_WORD[(s!.status.awaitingKind || "")] || "";
+  lab.textContent = "Awaiting" + (kw ? " " + kw : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "");
   head.appendChild(lab);
   host.appendChild(head);
   if (!open) return;
@@ -7485,9 +7993,11 @@ function isCoarsePointer(): boolean {
 // the two buttons (the user 2026-07-30), so even the "/" hint wrapped and got clipped: mobile keeps just
 // the core prompt, and slash-command discovery stays a desktop hint.
 function composerRestingPlaceholder(): string {
+  // the one canonical hint line (the user 2026-08-15): send, newline, stage, commands — and just
+  // "/ for commands", not "type / for commands". The static skeletons carry the same string.
   return isCoarsePointer()
     ? "Message this session…"
-    : "Message this session…  (⏎ send · ⇧⏎ newline · type / for commands)";
+    : "Message this session…  (⏎ send · ⇧⏎ newline · ⌘⏎ stage · ↑ history · / for commands)";
 }
 
 // How a message typed into the NORMAL composer should be routed while a live picker is up — the picker's
@@ -7949,23 +8459,35 @@ function elapsedMs(sinceMs: number | null): string {
 // /model or /effort slash command into the session's pane; the label then updates
 // when the TUI's statusline republishes the tmux vars (meta-pending bridges the gap).
 type MetaKind = "mode" | "model" | "effort" | "fast";
+// One dropdown entry. `sub` is the second line for a choice whose consequence is not obvious from its
+// label; `sdkOnly` drops the entry on a tmux session, whose backend cannot apply it.
+interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boolean; color?: number[] | null }
 // Model + effort choices come from the kernel's /models — the ONE list shared with the timeline lanes and the
 // judge-tier settings (the user 2026-07-02, who wanted one shared code path, not hardcoded in multiple places), so
 // the client holds no model literals (mirrors paletteColors above). Populated in place on load so META_CHOICES
 // keeps its reference; the session picker appends its own "Default" (use-the-CLI-default) sentinel — not a model.
-const MODEL_CHOICES: { label: string; value: string }[] = [];
-const EFFORT_CHOICES: { label: string; value: string }[] = [];
+const MODEL_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
+const EFFORT_CHOICES: { label: string; value: string; color?: number[] | null }[] = [];
 fetch(kernelUrl("/models"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
   if (Array.isArray(d.models)) { MODEL_CHOICES.length = 0; MODEL_CHOICES.push(...d.models, { label: "Default", value: "default" }); }
   if (Array.isArray(d.efforts)) { EFFORT_CHOICES.length = 0; EFFORT_CHOICES.push(...d.efforts); }
 }).catch(() => { /* picker stays empty until it lands */ });
-// Permission mode: the shift+tab cycle (no slash command), so the picker offers the three cycle modes;
-// the host sets them by sending shift+tab the right number of times (the user 2026-06-16).
-const MODE_CHOICES: { label: string; value: string }[] = [
+// Permission mode. A tmux session has no slash command for it — the host cycles shift+tab the right
+// number of times (the user 2026-06-16) — so the four CYCLE modes are all that backend can reach.
+// An SDK session sets it outright over the control channel (set_permission_mode), which is what makes
+// Bypass offerable there and only there: on tmux the click would land on a mode the cycle cannot
+// express, and _cycle_mode would drop it. `sdkOnly` is the filter, applied in toggleMetaMenu.
+const MODE_CHOICES: MetaChoice[] = [
   { label: "Normal", value: "default" },
   { label: "Accept edits", value: "acceptEdits" },
   { label: "Auto", value: "auto" },
   { label: "Plan", value: "plan" },
+  // The one mode that removes the gate rather than moving it, so it says what that costs right in the
+  // menu (the user 2026-08-15). Two things are worth the sub-line: every tool runs unasked, and romp's
+  // own approve/deny cards go with them — they are rendered from the SDK's can_use_tool callback, which
+  // bypass never fires, so you lose the RECORD of what ran, not just the asking.
+  { label: "Bypass permissions", value: "bypassPermissions", sdkOnly: true,
+    sub: "every tool runs unasked, and romp stops showing approvals" },
 ];
 // Fast mode (the CLI's /fast — Opus-only research preview): a two-state toggle offered as the same
 // dropdown shape as the other badges. The badge exists only when the session REPORTS a fast state
@@ -8014,7 +8536,7 @@ function prettyMode(m: string | undefined): string {
     default: return "Normal";   // default / normal / unknown
   }
 }
-const META_CHOICES: Record<MetaKind, { label: string; value: string }[]> = {
+const META_CHOICES: Record<MetaKind, MetaChoice[]> = {
   mode: MODE_CHOICES, model: MODEL_CHOICES, effort: EFFORT_CHOICES, fast: FAST_CHOICES,
 };
 // the live value of a meta kind for the active session
@@ -8143,12 +8665,23 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
   if (!s) return;
   // a pending permission/picker prompt owns the pane's keyboard — injecting a
   // slash command there would answer the prompt instead (host guards this too)
-  if (s.status.state === "awaiting") return;
+  if (s.status.state === "needsInput" || s.status.state === "awaiting") return;
   const menu = el("div", "meta-menu");
   menu.dataset.kind = kind;
-  for (const c of META_CHOICES[kind]) {
+  // An sdkOnly entry is dropped on tmux rather than shown-and-refused: the backend cannot apply it, and
+  // a menu that lists a mode you can't have is worse than one that doesn't.
+  for (const c of META_CHOICES[kind].filter((c) => !c.sdkOnly || s.status.backend === "sdk")) {
     const item = el("div", "meta-item" + (isCurrentMeta(kind, s.status, c.value) ? " current" : ""));
-    item.textContent = c.label;
+    if (c.sub) {
+      const head = el("div");
+      head.textContent = c.label;
+      const sub = el("div", "meta-item-sub");
+      sub.textContent = c.sub;
+      item.appendChild(head);
+      item.appendChild(sub);
+    } else {
+      item.textContent = c.label;
+    }
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       if (activeId && vscodeApi) {
@@ -8183,7 +8716,7 @@ function ctxBar(): HTMLElement {
     const s = activeId ? sessions.get(activeId) : null;
     if (!s || !vscodeApi) return;
     // awaiting: the pane's keyboard belongs to the prompt; compacting/closed: nothing to do
-    if (s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
+    if (s.status.state === "needsInput" || s.status.state === "awaiting" || s.status.state === "compacting" || s.status.state === "closed") return;
     vscodeApi.postMessage({ type: "compactSession", id: activeId });
     bar.classList.add("ctx-clicked");   // immediate cue; the real compacting state takes over via the poll
   });
@@ -8228,8 +8761,9 @@ function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = fa
 }
 
 const CHIP_LABEL: Record<ChipState, string> = {
-  working: "Working", ready: "Ready", awaiting: "Blocked",
-  awaitingBg: "Awaiting",   // idle, waiting on background work it dispatched — straw, not working-yellow (the user 2026-07-13)
+  working: "Working", ready: "Ready", needsInput: "Blocked",
+  awaiting: "Blocked",   // the legacy name for needsInput — an older remote kernel still sends it
+  awaitingBg: "Awaiting",   // idle, waiting on background work it dispatched — the romp await-green, not working-yellow (the user 2026-07-13; recolored from straw 2026-07-22)
   idle: "Idle", closed: "Closed", compacting: "Compacting", clearing: "Clearing", blocked: "API error",
   retrying: "API retrying…",   // a live session stalled on an API rate-limit/overload auto-retry (api 2026-06-23)
   interrupting: "Interrupting…",   // stop sent, turn not yet settled (the user 2026-07-02) — clears to READY on its own
@@ -8309,11 +8843,16 @@ function updateStatusline() {
     timer.textContent = elapsedMs(s.status.sinceEpoch);
     sl.appendChild(timer);
   } else if (s.status.state === "awaitingBg") {
-    // idle main thread, waiting on background work it dispatched (the user 2026-07-13): its own straw
+    // idle main thread, waiting on background work it dispatched (the user 2026-07-13): its own await-green
     // chip — no pulse (nothing is computing HERE), but the elapsed timer stays so the wait has a clock
     const chip = el("span", "chip chip-awaitingBg");
-    chip.textContent = CHIP_LABEL.awaitingBg;
-    chip.title = "idle, waiting on background work it dispatched — clears when the result lands";
+    // the KIND rides the label so a glance says WHAT is awaited (the user 2026-08-15) — tooltips are
+    // dead on the touch PWA, so the word must be visible; the subject stays in the #bg-tasks box
+    const kw = KIND_WORD[s.status.awaitingKind || ""] || "";
+    chip.classList.add("chip-awaiting-" + (s.status.awaitingKind || "untyped"));   // per-kind hook, one hue today
+    chip.textContent = CHIP_LABEL.awaitingBg + (kw ? " " + kw : "");
+    chip.title = (s.status.awaitingWhy || "idle, waiting on background work it dispatched")
+               + " — clears when the result lands";
     sl.appendChild(chip);
     const timer = el("span", "status-timer");
     timer.id = "work-timer";
@@ -8442,9 +8981,12 @@ function addPendingShip(id: string | null, name: string): void {
 // An ack (or nack) retires ONE pending chip: the entry whose sanitized name `key` ends with — `key`
 // is the saved path on ack (basename <ms>-<safe name>) or the raw name on nack, and both end with
 // the sanitized original — else the oldest (the kernel answers a connection's dropFiles in order).
-// Searched active-tab-first across all sessions because the ack carries no session id — like the
-// attachment itself, it lands wherever the user now is.
-function retirePendingShip(key: string): void {
+// Searched active-tab-first across all sessions because the ack carries no session id. Returns the
+// sid whose chip it retired (null if none matched), so the ack can attach the file to the composer
+// that SHIPPED it — attaching to whatever tab was active at ack time put a slow upload's file on the
+// wrong session's strip after a mid-flight tab switch (the user 2026-08-16, the send-while-uploading
+// report's second face).
+function retirePendingShip(key: string): string | null {
   const k = "-" + shipSafeName(key.split("/").pop() || key);
   const ids = activeId ? [activeId, ...pendingShips.keys()] : [...pendingShips.keys()];
   for (const id of ids) {
@@ -8454,9 +8996,19 @@ function retirePendingShip(key: string): void {
     list.splice(i >= 0 ? i : 0, 1);
     if (!list.length) pendingShips.delete(id);
     if (id === activeId) renderComposerFiles(id);
-    return;
+    return id;
   }
+  return null;
 }
+
+// Sids whose SEND is HELD until every pending ship acks (the user 2026-08-16: sending mid-upload
+// silently dropped the attachment — the send read only the acked list). Armed by the confirm's
+// "wait" pick in sendComposer's gate; fired by the LAST droppedPath ack (event-based), cancelled by
+// a dropSaveFailed nack or by any successful send for the sid.
+const sendOnShip = new Set<string>();
+// Assigned by setupComposer (sendComposer lives in its closure); the WS ack handler fires a held
+// send through it when the last pending ship lands.
+let fireHeldSend: () => void = () => {};
 
 // Persist drafts across a full RELOAD (the user 2026-06-25: a half-typed message must survive a refresh, not
 // only a tab switch). The Map is in-memory, so mirror it into the webview's persisted state — the same store
@@ -8468,9 +9020,7 @@ function persistDrafts(): void {
     vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), drafts: Object.fromEntries(drafts),
                             citations: Object.fromEntries(composerCitations),
                             files: Object.fromEntries(composerFiles),
-                            // doc-review comments ride the draft lifecycle: a long read survives a reload
-                            // and a tab switch, and clears when its batch lands in the composer
-                            docComments: Object.fromEntries(docComments) });
+                            staged: stagedMsgs.entries() });
   } catch { /* ignore */ }
 }
 try {
@@ -8496,23 +9046,121 @@ try {
       }
       if (list.length) composerCitations.set(k, list);
     }
-  const savedDocs = ((vscodeApi?.getState?.() || {}) as any).docComments;
-  if (savedDocs && typeof savedDocs === "object")
-    for (const [k, v] of Object.entries(savedDocs)) {
-      const list = (Array.isArray(v) ? v : []).filter((c: any) =>
-        c && typeof c.id === "string" && typeof c.quote === "string" && typeof c.body === "string");
-      if (list.length) docComments.set(k, list.map((c: any) => ({
-        id: c.id, quote: c.quote, body: c.body,
-        line: typeof c.line === "number" ? c.line : null,
-        ts: typeof c.ts === "number" ? c.ts : 0,
-      })));
-    }
 } catch { /* ignore */ }
 
 // Composer EDIT mode (per session): set when the user clicks a bubble's edit affordance — the composer
 // then sends a rewindSend (branch from just before that message) instead of a plain message. The chip
 // strip shows an "Editing message" pill whose ✕ (or Esc in the box) cancels back to normal sending.
 const composerEdits = new Map<string, { uuid: string; orig: string }>();
+
+// STAGED messages (the user 2026-08-15): compose against a highlight, ⌘/Ctrl+⏎ to HOLD it — citation
+// chips and all — clear the box and keep reading; repeat. Nothing sends until the next plain send
+// (the stack flushes first, in stage order, the typed message last) or the strip's Send now.
+// Deliberately NOT the queue and never called "queued": queued is romp's injection-side wait (sent,
+// pending injection); staged is user-side — unsent by choice, each message keeping the context it was
+// written against so the batch reads as quote → comment, quote → comment. Per-tab, persisted with the
+// drafts (a reload or tab switch never drops a stack). The pure stack rules live in staged-messages.ts,
+// executed by its test; this file owns the strip DOM and the send routing.
+const stagedMsgs = new StagedStack();
+const stagedOpen = new Set<string>();   // sid:index of staged chips expanded to their full text
+try { stagedMsgs.restore(((vscodeApi?.getState?.() || {}) as any).staged); } catch { /* ignore */ }
+
+// One routing owner for a user message (the deliver path and the staged flush both speak it): a goal
+// chip rides askFollowUp, quote chips wrap client-side, a bare message is a plain send with the
+// optimistic bubble (chip sends have their own kernel-side echo).
+function routeUserMessage(sid: string, text: string, cites: Citation[] | undefined): void {
+  if (!vscodeApi) return;
+  const goalCite = cites?.find((c) => c.itemId);
+  const quoteCites = cites ? cites.filter((c) => c.quote) : [];
+  if (goalCite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid });
+  else if (quoteCites.length) vscodeApi.postMessage({ type: "sendMessage", id: sid, text: quoteReplyBody(quoteCites, text) });
+  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text }); registerOptimistic(sid, text); }
+}
+
+/** Release the tab's staged stack (deliver's guards — host down, provisional — run before this in the
+ *  send path; Send now re-checks reachability itself). Returns how many went. */
+function flushStaged(sid: string): number {
+  const batch = stagedMsgs.takeAll(sid);
+  for (const s of batch) routeUserMessage(sid, s.text, s.cites as Citation[]);
+  if (batch.length) { persistDrafts(); renderStagedStrip(sid); }
+  return batch.length;
+}
+
+function renderStagedStrip(id: string | null): void {
+  const strip = document.getElementById("composer-staged");
+  if (!strip) return;
+  strip.replaceChildren();
+  const list = id ? stagedMsgs.list(id) : [];
+  if (!id || !list.length) { strip.style.display = "none"; return; }
+  strip.style.display = "flex";
+  const head = el("div", "staged-head");
+  const lbl = el("span");
+  lbl.textContent = list.length + " staged — sends with your next message";
+  lbl.title = "⌘⏎ (or Ctrl+⏎) stages what you've typed, quote chips and all, without sending. "
+    + "A plain send releases them in order with your new message last — or Send now releases them alone.";
+  const go = el("button", "staged-go");
+  go.textContent = "Send now";
+  go.addEventListener("click", () => {
+    if (!id) return;
+    if (hostIsDown(id) || isProvisionalId(id)) {
+      warnToast("Can't send yet — the session isn't reachable. They stay staged.");
+      return;
+    }
+    flushStaged(id);
+  });
+  head.append(lbl, go);
+  strip.appendChild(head);
+  list.forEach((s, i) => {
+    const chip = el("div", "staged-chip");
+    // each staged reply keeps the CONTEXT it was written against visible inside its own dotted box
+    // (the user 2026-08-15): one small context chip per quote, independently expandable — clicking
+    // the quote opens the quote, clicking anywhere else in the box opens the reply text. Both folds
+    // are keyed so they survive the strip re-render.
+    const quotes = (s.cites as Citation[]).filter((c) => c && c.quote);
+    for (let j = 0; j < quotes.length; j++) {
+      const ck = id + ":" + i + ":" + j;
+      const cOpen = stagedOpen.has(ck);
+      // the SAME blue citation pill the composer wears (the user 2026-08-15: the context must keep
+      // "its little blue background chip", not restyle inside the staged box)
+      const cite = el("div", "composer-chip staged-cite" + (cOpen ? " open" : ""));
+      const cm = el("span", "composer-chip-mark"); cm.textContent = "“";
+      const cl = el("span", "composer-chip-label"); cl.textContent = quotes[j].quote || "";
+      const ch = el("span", "staged-expand"); ch.textContent = cOpen ? "(collapse)" : "(expand)";
+      cite.append(cm, cl, ch);
+      cite.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (stagedOpen.has(ck)) stagedOpen.delete(ck); else stagedOpen.add(ck);
+        renderStagedStrip(id);
+      });
+      chip.appendChild(cite);
+    }
+    const row = el("div", "staged-row");
+    const mark = el("span", "composer-chip-mark");
+    mark.textContent = "•";
+    const label = el("span", "composer-chip-label");
+    label.textContent = s.text;
+    // one line, ellipsized IN BOUNDS, with a colored "(expand)" that is visibly chrome, not message
+    // text; click toggles the full text — the context-fold idiom (the user 2026-08-15, whose staged
+    // line ran off the right edge with no ellipsis and no way to read the rest)
+    const open = stagedOpen.has(id + ":" + i);
+    if (open) chip.classList.add("open");
+    const hint = el("span", "staged-expand");
+    hint.textContent = open ? "(collapse)" : "(click to expand)";
+    const toggle = () => {
+      const k = id + ":" + i;
+      if (stagedOpen.has(k)) stagedOpen.delete(k); else stagedOpen.add(k);
+      renderStagedStrip(id);
+    };
+    chip.addEventListener("click", toggle);
+    const x = el("button", "composer-chip-x");
+    x.setAttribute("aria-label", "Discard staged message");
+    x.textContent = "✕";
+    x.addEventListener("click", (ev) => { ev.stopPropagation(); stagedMsgs.removeAt(id, i); persistDrafts(); renderStagedStrip(id); });
+    row.append(mark, label, hint, x);
+    chip.appendChild(row);
+    strip.appendChild(chip);
+  });
+}
 
 function beginComposerEdit(sid: string, uuid: string, orig: string): void {
   composerEdits.set(sid, { uuid, orig });
@@ -8598,6 +9246,16 @@ function renderComposerChips(id: string | null): void {
 function renderComposerFiles(id: string | null): void {
   const strip = document.getElementById("composer-files");
   if (!strip) return;
+  // the held-send state rides the send button (see sendOnShip): dimmed + titled while a "wait for
+  // the upload" pick is armed, restored the moment the hold fires or cancels — this renderer runs
+  // on every strip change AND every tab switch, so the button always reflects the ACTIVE tab
+  const sendBtn = document.getElementById("composer-send");
+  if (sendBtn) {
+    const held = !!id && sendOnShip.has(id);
+    sendBtn.classList.toggle("send-held", held);
+    if (held) sendBtn.setAttribute("title", "sends when the upload finishes");
+    else if (sendBtn.getAttribute("title") === "sends when the upload finishes") sendBtn.removeAttribute("title");
+  }
   strip.replaceChildren();
   const paths = (id ? composerFiles.get(id) : undefined) || [];
   const pending = (id ? pendingShips.get(id) : undefined) || [];
@@ -8626,7 +9284,7 @@ function renderComposerFiles(id: string | null): void {
     } else {
       box.appendChild(composerFileDoc(p));
     }
-    box.addEventListener("click", () => { vscodeApi?.postMessage({ type: "openFile", path: p, id: id || undefined }); });
+    box.addEventListener("click", () => { openPath(p, id || null); });
     const x = el("button", "composer-file-x");
     x.setAttribute("aria-label", "Remove attachment");
     x.textContent = "\u2715";
@@ -8955,9 +9613,30 @@ function noteMru(id: string): void {
   if (sessionMru.length > 50) sessionMru.pop();
 }
 
+// The chat's back/forward trail (the user 2026-08-14) — the rules live in nav-history.ts, executed
+// by its test. The deps close over this pane's real state: the active tab + #content scroll for
+// "now", the sessions map for liveness, and a land that pre-seeds the per-tab scroll restore (views)
+// BEFORE setActive — so the entering tab's own restore applies the remembered spot — then re-asserts
+// it once the pane is visible (a same-tab jump returns early from setActive and needs the direct set).
+const navHist = new NavHistory({
+  now: () => {
+    const c = document.getElementById("content");
+    return activeId && c ? { sid: activeId, top: c.scrollTop } : null;
+  },
+  alive: (sid) => sessions.has(sid),
+  apply: (spot) => {
+    const v = views.get(spot.sid);
+    if (v) { v.scrollTop = spot.top; v.stick = false; }   // land on the remembered spot, never the live bottom
+    setActive(spot.sid);
+    const c = document.getElementById("content");
+    if (c) whenChatVisible(() => { if (activeId === spot.sid) c.scrollTop = spot.top; });
+  },
+});
+
 function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
   noteMru(id);
   if (activeId === id && anchor == null && anchorT == null) return; // already active, nothing to do
+  navHist.record();   // every real navigation records the spot being LEFT (the user 2026-08-14: Ctrl+M / Ctrl+, walk the trail)
   closeMetaMenu(); // an open model/effort menu targets the tab we're leaving
   // a comment popover belongs to its parent session's view — leaving that session closes it (the
   // user 2026-08-13: it lingered over the next tab's chat); the highlight reopens it any time
@@ -8983,10 +9662,12 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
     ta.value = drafts.get(id) ?? "";
     growComposer(ta);
     renderComposerChips(id);   // the entering tab's own citation chip (if any)
+    renderStagedStrip(id);     // …and its staged stack (per-tab; the strip follows the switch)
     renderComposerFiles(id);   // …and its attachment thumbnails (draft lifecycle: they survive the switch)
     persistDrafts();   // the leaving tab's draft was just stashed → keep the persisted copy in sync
   }
   pendingAnchor = anchor ?? null;
+  if (anchor) flashedAnchor = null;        // a fresh navigation re-arms the one-per-navigation flash
   pendingAnchorIntent = anchor ? (anchorKind ?? null) : null;
   activeId = id;
   try { vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), activeId: id }); } catch { /* ignore */ }
@@ -8996,10 +9677,11 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
 }
 
 function cycleTab(dir: number) {
-  if (order.length < 2 || !activeId) return;
-  const i = order.indexOf(activeId);
+  const ord = visibleOrder();                   // never cycle onto a view-hidden session
+  if (ord.length < 2 || !activeId) return;
+  const i = ord.indexOf(activeId);
   if (i < 0) return;
-  setActive(order[(i + dir + order.length) % order.length]);
+  setActive(ord[(i + dir + ord.length) % ord.length]);
 }
 
 // First event carrying a uuid — a stable identity for "which transcript is this".
@@ -9236,6 +9918,7 @@ function chatHead(msg: any) {
   // the click somewhere the user never named.
   if (anchorUuid && !pendingAnchor) {
     pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
+    flashedAnchor = null;                  // ditto: this path is also a user navigation
     pendingAnchorKeepY = keepY ?? null;
   }
   showActive();
@@ -9375,7 +10058,15 @@ window.addEventListener("message", (e: MessageEvent) => {
     if (activeId && !isProvisionalId(activeId) && sessions.get(activeId)) showForkPrompt(activeId, "");
     return;
   }
+  // the shell's palette / shell-focus chords: the chat owns the nav trail, the shell just asks
+  if (m.romp === "chatNav") { navHist.go(m.dir === 1 ? 1 : -1); return; }
   if (m.type === "pipeState") { pipeBanner(!!m.up, Number(m.queued) || 0); return; }
+  // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
+  // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's
+  // tunnel poll rides this same path: it dispatches {type:"hostUp"} on a host's down→up transition,
+  // so relay-failed figures heal the moment the tunnel returns even when no chat traffic flows
+  // (idle sessions generated no messages, so figures sat until the user's next send — 2026-08-17)
+  retryFailedPreviews();
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
     globalRetryPaused = !!m.value;
@@ -9583,19 +10274,37 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "ledger") setLedger(m.id, m.ledger ?? null);
   else if (m.type === "working") { workingSet = new Set(Array.isArray(m.names) ? m.names : []); refreshPostalDots(); }
   else if (m.type === "imgData" && typeof m.path === "string") onImgData(m.path, typeof m.url === "string" ? m.url : null);
-  else if (m.type === "tabOrder") applyTabOrder(m.order, m.tabs);
+  else if (m.type === "tabOrder") { captureViews(m.views || null); applyTabOrder(m.order, m.tabs); }
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
     const s = sessions.get(m.id);
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
   }
   else if (m.type === "droppedPath" && typeof m.path === "string") {   // host-saved drop/paste/pick → a thumbnail, not path text (the user 2026-08-04)
-    retirePendingShip(m.path);                                         // the in-flight chip this ack answers (no-op for pickFile, which never ships)
-    addComposerFile(activeId, m.path);
+    const cbox = document.getElementById("cmt-pop")?.querySelector(".cmt-input") as HTMLTextAreaElement | null;
+    if (cbox) {
+      // a comment popover is open — its own clip shipped this file, so the path lands in ITS box
+      retirePendingShip(m.path);
+      cbox.value = (cbox.value ? cbox.value.trimEnd() + " " : "") + m.path + " ";
+      cbox.dispatchEvent(new Event("input"));   // the draft listener persists it
+      cbox.focus();
+      return;
+    }
+    const owner = retirePendingShip(m.path) || activeId;               // the chip this ack answers names the OWNING composer (no-op for pickFile, which never ships)
+    addComposerFile(owner, m.path);
+    if (owner && sendOnShip.has(owner) && !(pendingShips.get(owner) || []).length) {
+      // the LAST ship landed — the event the held send was waiting for (the user 2026-08-16)
+      sendOnShip.delete(owner);
+      if (owner === activeId) fireHeldSend();
+      else warnToast("attachments finished uploading on another tab — the held message was not sent; review it there.");
+    }
   } else if (m.type === "dropSaveFailed" && typeof m.name === "string") {
     // the kernel could not SAVE the shipped bytes — clear the pending chip and say so loudly,
     // never leave dots pulsing over a file that is not coming (fail loudly, don't degrade silently)
-    retirePendingShip(m.name);
-    warnToast(m.name + " couldn't be saved on the kernel, so it was not attached — try again.");
+    const owner = retirePendingShip(m.name) || activeId;
+    const held = !!owner && sendOnShip.delete(owner);    // a held send must not fire without the file it waited for
+    warnToast(m.name + " couldn't be saved on the kernel, so it was not attached — try again."
+              + (held ? " Your message was NOT sent." : ""));
+    if (owner && owner === activeId) renderComposerFiles(owner);   // the held-send button state clears with the hold
   }
   // an EDITOR highlight (VS Code host, onDidChangeTextEditorSelection — the user 2026-07-13) seeds the
   // same quote chip a transcript highlight does, labeled + wrapped with its file:lines origin (m.src)
@@ -9655,8 +10364,17 @@ window.addEventListener("message", (e: MessageEvent) => {
   // any payload that rebuilt transcript DOM must get its highlights re-applied (marks live IN that DOM)
   if (m && m.id && (m.type === "session" || m.type === "chatTail" || m.type === "chatHead" || m.type === "chatEpisode"))
     applyCommentMarks(String(m.id));
-  // a refused create (warn) must hand the popover back — the draft is intact, the button un-sticks
-  if (m && m.type === "warn" && pendingCommentAnchor) renderCommentPopover();
+  // a refused create (warn) must hand the popover back — the draft is intact, the button un-sticks.
+  // FULL rebuild: the in-place refresh path deliberately never touches the composer, so it would
+  // leave the disabled "Starting…" button stuck (the user 2026-08-15, screenshot of exactly that)
+  if (m && m.type === "warn" && pendingCommentAnchor) {
+    // the synthetic working mark must die with the refusal, or it marches forever
+    const pa = pendingCommentAnchor;
+    commentThreads.set(pa.sid, (commentThreads.get(pa.sid) || []).filter((t) => t.tid !== "pending:" + pa.uuid));
+    applyCommentMarks(pa.sid);
+    document.getElementById("cmt-pop")?.remove();
+    renderCommentPopover();
+  }
 });
 
 // Tick the working timer (the chip color-pulse is pure CSS) and keep the model/ctx
@@ -9706,10 +10424,57 @@ function setupComposer() {
   if (!ta) return;
   // Send the composer's text to the active session — the single path shared by ⏎ and the explicit send
   // button (the user 2026-06-17). Trims, remembers for a Ctrl+C restore, clears the box.
-  const sendComposer = () => {
+  // ⌘/Ctrl+⏎ — STAGE the box instead of sending (the user 2026-08-15): the text and its citation
+  // chips move to the staged strip, the box clears, focus stays for the next highlight-and-comment.
+  // The states that already own the box refuse loudly rather than staging a lie: a picker answer
+  // answers NOW or sends normally; an edit replaces a past message; attachments ride a normal send.
+  const stageComposer = () => {
+    if (!activeId) return;
+    const typed = ta.value.trim();
+    if (!typed) return;
+    if (composerAnswersAsk()) { warnToast("A picker is waiting on this box — answer it, or send normally."); return; }
+    if (composerEdits.has(activeId)) { warnToast("An edit replaces a past message — send it normally."); return; }
+    if ((composerFiles.get(activeId) || []).length) { warnToast("Attachments can't be staged — send them with a normal message."); return; }
+    stagedMsgs.push(activeId, { text: typed, cites: (composerCitations.get(activeId) || []).slice() });
+    composerCitations.delete(activeId); renderComposerChips(activeId);   // the chips now live on the staged item
+    drafts.delete(activeId); draftStartedAt.delete(activeId);
+    ta.value = ""; composerManualH = null; ta.style.height = "";
+    persistDrafts();
+    renderStagedStrip(activeId);
+  };
+  const sendComposer = (opts?: { pastShipGate?: boolean }) => {
     const typed = ta.value.trim();
     if (!activeId) return;
+    // an empty plain send with a staged stack = "go": release what's held, nothing new to add
+    if (!typed && !(composerFiles.get(activeId) || []).length && stagedMsgs.count(activeId)) {
+      if (hostIsDown(activeId) || isProvisionalId(activeId)) {
+        warnToast("Can't send yet — the session isn't reachable. They stay staged.");
+        return;
+      }
+      flushStaged(activeId);
+      return;
+    }
     const attached = composerFiles.get(activeId) || [];
+    // SHIP GATE (the user 2026-08-16): an upload still in flight is NOT in `attached` (the send reads
+    // only acked paths), so sending now silently drops it — the exact report. Intercept with the same
+    // pane-local confirm the /clear guard uses: send WITHOUT it explicitly, or hold the send and let
+    // the last droppedPath ack fire it (event-based; a save nack cancels the hold loudly instead).
+    const shipping = (pendingShips.get(activeId) || []).length;
+    if (shipping && !opts?.pastShipGate) {
+      const sid = activeId;
+      const what = shipping === 1 ? "An attachment is" : shipping + " attachments are";
+      const them = shipping === 1 ? "it" : "them";
+      showConfirm(what + " still uploading",
+                  "Send now and your message goes without " + them + ". Wait, and it sends itself "
+                  + "the moment the upload finishes.",
+                  [{ label: "Wait for the upload", value: "wait" },
+                   { label: "Send without " + them, value: "now", danger: true }],
+                  (v) => {
+                    if (v === "now") sendComposer({ pastShipGate: true });
+                    else if (v === "wait") { sendOnShip.add(sid); renderComposerFiles(sid); }
+                  });
+      return;
+    }
     if (!typed && !attached.length) return;
     // Attachment thumbnails ride the send as a trailing line of paths — quoted when they contain spaces,
     // the way a person would type them (the user 2026-08-04). Not for a picker answer or an edit: a
@@ -9758,8 +10523,11 @@ function setupComposer() {
       // it (the user 2026-07-30) — silently accepting it would clear the composer and deliver nothing.
       if (hostIsDown(sid)) {
         const host = String(sid).slice(0, String(sid).indexOf(":"));
+        // the refusal itself is DEMAND: ask the kernel to re-dial that host's tunnel right now,
+        // so "romp is re-dialing" below is literally true at the moment it is read (2026-08-16)
+        vscodeApi?.postMessage({ type: "redial", host });
         warnToast(host + " is disconnected, so this wasn't sent. It's still in the box — romp is "
-          + "reconnecting, and you can send it then.");
+          + "re-dialing the link now; send again when it's back.");
         return;
       }
       if (isProvisionalId(sid)) {
@@ -9772,33 +10540,37 @@ function setupComposer() {
         }
         provisionalQueue.push(text);
         registerOptimistic(sid, text);
+        sendOnShip.delete(sid);                       // a send happened — any held one is superseded
+        histWalk.delete(sid);                         // …and the history walk starts fresh
         if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }
         drafts.delete(sid); draftStartedAt.delete(sid); persistDrafts();
         ta.value = ""; composerManualH = null; ta.style.height = "";
         return;
       }
       lastSent.set(activeId, text);   // remembered for a possible Ctrl+C restore
+      // STAGED first (the user 2026-08-15): the held run releases in stage order, each message with the
+      // context it was written against, and the message being typed right now lands LAST — the reading
+      // the user composed: quote → comment, quote → comment, then the wrap-up. The guards above (host
+      // down, provisional) have already passed, so nothing staged can be half-lost here.
+      flushStaged(sid);
       // A pending citation chip → send as a FOLLOW-UP on that goal (the user 2026-07-01): askFollowUp wraps the
       // text with the goal's context + the romp-goal-id marker (kernel side), so the goal reopens (done→working,
       // unless cleared) and the chat renders the ↩ Follow-up header — the same path the Follow-up button uses,
       // just seeded by the click. A QUOTE chip (highlighted transcript text, the user 2026-07-13) has no goal:
-      // it wraps client-side (quoteReplyBody) into a plain message. No chip → plain sendMessage.
-      // `sid: activeId` is what ROUTES this to the owning kernel in a federated dashboard (the user 2026-07-29):
-      // federation keys routing off `id`/`sid` only, and an `itemId` ("‹sid›:‹goal›") can't be one — its own
-      // colon would read the session uuid as a host. Without the sid a follow-up on a REMOTE card went to the
-      // LOCAL kernel, which owns no such session and dropped it into tmux by uuid — nothing sent, no error,
-      // the card flashing to Working and back. The kernel keeps deriving its sid from itemId, so this is inert
-      // locally; every other card op (askClear/cardNotify/showOnTimeline) already carries the sid the same way.
+      // it wraps client-side (quoteReplyBody) into a plain message. No chip → plain sendMessage. The three
+      // branches live in routeUserMessage — ONE routing owner, shared with the staged flush above.
+      // Inside it, `sid` is what ROUTES this to the owning kernel in a federated dashboard (the user
+      // 2026-07-29): federation keys routing off `id`/`sid` only, and an `itemId` ("‹sid›:‹goal›") can't
+      // be one — its own colon would read the session uuid as a host. Without the sid a follow-up on a
+      // REMOTE card went to the LOCAL kernel, which owns no such session and dropped it into tmux by
+      // uuid — nothing sent, no error, the card flashing to Working and back. The kernel keeps deriving
+      // its sid from itemId, so this is inert locally; every other card op carries the sid the same way.
       const cites = composerCitations.get(activeId);
-      const goalCite = cites?.find((c) => c.itemId);   // a goal chip rides alone (flavors never mix)
-      const quoteCites = cites ? cites.filter((c) => c.quote) : [];
-      if (vscodeApi) {
-        if (goalCite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid: activeId });
-        else if (quoteCites.length) vscodeApi.postMessage({ type: "sendMessage", id: activeId, text: quoteReplyBody(quoteCites, text) });
-        else { vscodeApi.postMessage({ type: "sendMessage", id: activeId, text }); registerOptimistic(activeId, text); }
-        // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
-      }
+      routeUserMessage(activeId, text, cites);
+      // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
       if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
+      sendOnShip.delete(sid);                       // a send happened — any held one is superseded
+      histWalk.delete(sid);                         // …and the history walk starts fresh
       if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }   // the strip emptied into this message
       drafts.delete(activeId); draftStartedAt.delete(activeId); persistDrafts();   // sent — no draft to restore on a later switch-back
       ta.value = "";
@@ -9837,6 +10609,7 @@ function setupComposer() {
   // blur instead so the keyboard collapses and the box drops back to the bottom (the user 2026-07-22).
   const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
   sendBtn?.addEventListener("mousedown", (e) => { e.preventDefault(); sendComposer(); if (isCoarsePointer()) ta.blur(); else ta.focus(); });
+  fireHeldSend = () => sendComposer();   // the ack handler's door into this closure (see sendOnShip)
 
   // ── drag-to-resize the message box (the user 2026-07-07) ── the #composer-resize handle straddles the
   // top-edge divider; dragging it UP grows the composer (to see a long message in full), DOWN shrinks it.
@@ -10037,8 +10810,63 @@ function setupComposer() {
   ta.addEventListener("blur", () => window.setTimeout(closeSlash, 120));   // close when leaving (a row's mousedown keeps focus, so it fires only on a real leave)
   window.addEventListener("resize", positionSlash);
 
+  // ── PROMPT HISTORY (the user 2026-08-16): ↑ with the caret on the box's FIRST line recalls the
+  // session's previously SENT prompts, shell-style; ↓ on the last line walks forward again, and
+  // walking past the newest restores the draft you were typing (stashed on the first ↑). History is
+  // the session payload's own human-sent messages — authoritative, survives reloads — with romp's
+  // injected turns excluded and adjacent repeats collapsed. The walk drops on send.
+  const histWalk = new Map<string, { idx: number; stash: string }>();   // sid → walk position + stashed draft
+  let recalling = false;                               // fences the recall's own synthetic input event
+  const composerHistory = (sid: string): string[] => {
+    const out: string[] = [];
+    for (const ev of sessions.get(sid)?.events || []) {
+      if (ev.kind !== "user" || !ev.human || ev.romp || ev.rompAuto) continue;
+      const t = (ev.md || "").trim();
+      if (t && out[out.length - 1] !== t) out.push(t);
+    }
+    return out;                                        // oldest → newest
+  };
   ta.addEventListener("keydown", (e) => {
     if (slashKey(e)) return;   // the slash menu owns ↑/↓/⏎/Tab/Esc while it's open
+    // ↑/↓ recall history ONLY from an EMPTY box (the user 2026-08-17, tightening the first cut's
+    // first-line rule: any text already in the box — even one character — means a draft in progress,
+    // and arrows must never hijack it). Once a walk is ACTIVE the recalled text is the walk's own, so
+    // ↑/↓ keep navigating from its boundary lines; the first manual edit ends the walk (see the input
+    // listener) and the text becomes an ordinary draft that recall won't touch.
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && activeId
+        && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+        && ta.selectionStart === ta.selectionEnd) {
+      const onFirst = !ta.value.slice(0, ta.selectionStart).includes("\n");
+      const onLast = !ta.value.slice(ta.selectionStart).includes("\n");
+      const w = histWalk.get(activeId);
+      if (e.key === "ArrowUp" ? (w ? onFirst : ta.value === "") : (onLast && w)) {
+        const hist = composerHistory(activeId);
+        if (e.key === "ArrowUp") {
+          const idx = w ? w.idx - 1 : hist.length - 1;
+          if (idx >= 0 && hist.length) {
+            e.preventDefault();
+            histWalk.set(activeId, { idx, stash: w ? w.stash : ta.value });
+            recalling = true;
+            ta.value = hist[idx];
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+            growComposer(ta);
+            ta.dispatchEvent(new Event("input"));      // draft/slash/ask-mode bookkeeping stays true
+            recalling = false;
+          }
+          return;                                      // nothing older → native caret-to-start is fine
+        }
+        e.preventDefault();
+        const idx = w!.idx + 1;
+        recalling = true;
+        if (idx >= hist.length) { ta.value = w!.stash; histWalk.delete(activeId); }
+        else { w!.idx = idx; ta.value = hist[idx]; }
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+        growComposer(ta);
+        ta.dispatchEvent(new Event("input"));
+        recalling = false;
+        return;
+      }
+    }
     // Backspace at the very START of the box deletes the citation chip "like a character" (the user
     // 2026-07-01) — the chip sits just before the caret, so this is the natural way to remove it by keyboard.
     if (e.key === "Backspace" && !e.metaKey && !e.ctrlKey && ta.selectionStart === 0 && ta.selectionEnd === 0
@@ -10074,6 +10902,13 @@ function setupComposer() {
     // Shift+Enter, and the software return key should just return. Mobile sends with the explicit Send
     // button only (the user 2026-07-15). Desktop keeps ⏎ send / ⇧⏎ newline. The `!isCoarsePointer()` guard
     // lets Enter fall through to the textarea's native newline on touch.
+    // ⌘⏎ / Ctrl+⏎ stages (the user 2026-08-15) — and focus STAYS in the box, because the whole point
+    // is highlighting the next spot and typing again. Checked before the plain-Enter send below.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey) {
+      e.preventDefault();
+      stageComposer();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !isCoarsePointer()) {
       e.preventDefault();
       sendComposer();
@@ -10083,6 +10918,9 @@ function setupComposer() {
     }
   });
   ta.addEventListener("input", () => {
+    // a MANUAL edit ends any history walk (the user 2026-08-17): the text becomes an ordinary
+    // draft, and recall stays away from drafts. The recall's own synthetic dispatch is fenced.
+    if (!recalling && activeId) histWalk.delete(activeId);
     growComposer(ta);
     updateSlash();   // open/refresh/close the slash-command menu as the leading "/token" changes
     // keep the per-tab draft (and its persisted copy) current as you type, so a reload restores it
@@ -10387,6 +11225,16 @@ setupSettings();
       openCommentPopover(activeId, tid, Math.min(r.left, window.innerWidth - 380), r.bottom + 6);
     },
     cmtclose: () => closeCommentPop(),
+    // a scroll-rail tick: jump the chat to the commented message (fresh navigation → one flash)
+    // and open its thread beside it
+    cmtjump: (elx) => {
+      const tid = elx.dataset.tid, uuid = elx.dataset.uuid;
+      if (!tid || !uuid || !activeId) return;
+      flashedAnchor = null;
+      scrollToAnchor(uuid);
+      const r = elx.getBoundingClientRect();
+      openCommentPopover(activeId, tid, Math.max(8, r.left - 380), Math.max(60, r.top - 40));
+    },
     cmtsend: (elx) => {
       const pop = elx.closest(".cmt-pop") as HTMLElement | null;
       if (pop) commentSendFromPop(pop);
@@ -10407,6 +11255,11 @@ setupSettings();
       if (!cur) return;
       if (!elx.classList.contains("armed")) { elx.classList.add("armed"); elx.textContent = "Really delete?"; return; }
       vscodeApi?.postMessage({ type: "commentDelete", id: cur.sid, tid: cur.th.tid });
+      // optimistic removal (the user 2026-08-17: the highlight must go NOW, mid-animation included);
+      // the kernel's next frame confirms, and kernel-side the delete also interrupts the in-flight
+      // reply so the work stops with its cue
+      commentThreads.set(cur.sid, (commentThreads.get(cur.sid) || []).filter((t) => t.tid !== cur.th.tid));
+      applyCommentMarks(cur.sid);
       closeCommentPop();
     },
     cmtopensession: (elx) => {
@@ -10414,26 +11267,6 @@ setupSettings();
       closeCommentPop();
       if (tid) setActive(tid);
     },
-    // Doc review (the user 2026-08-14). Delegated for the same reason as the comment marks: the reader
-    // re-renders on every saved comment, so a per-render listener would eat a mid-press click.
-    drclose: () => closeDocReview(),
-    drsubmit: () => submitDocReview(),
-    dropen: () => {
-      if (!docReview) return;
-      vscodeApi?.postMessage({ type: "openFile", path: docReview.path, id: docReview.sid });
-    },
-    drsave: () => {
-      const ta = document.getElementById("doc-comment-body") as HTMLTextAreaElement | null;
-      if (ta) saveDocComment(ta.value);
-    },
-    drcancel: () => { docPendingQuote = null; renderDocReview(); },
-    drmark: (elx) => {                       // a highlighted span or its number → show/hide its comment
-      const id = elx.dataset.dcid;
-      if (!id) return;
-      docOpenComment = docOpenComment === id ? null : id;
-      renderDocReview();
-    },
-    drdel: (elx) => { if (elx.dataset.dcid) removeDocComment(elx.dataset.dcid); },
     // a branch divider (child side) or branch chip (parent side): jump to the other end of the
     // branch, landing on the branch-point turn via the deep-link anchor machinery
     branchjump: (elx) => {
@@ -10494,8 +11327,12 @@ setupSettings();
       // session — still judged and billed, but invisible — a tmux-era affordance with no SDK-era use
       // case. Close-and-reopen is End + Revive, which keeps the whole history.
       const nm = sessions.get(id)?.name || "";
+      // …and the confirm NAMES what is still open on its board (the user 2026-08-15, who ended a
+      // session holding an open task with no warning — the /clear gate has warned this way since
+      // 2026-07-27, and ending drops the cards from the working surfaces the same way)
       showConfirm(`End “${nm}”?`,
-        "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline.",
+        endConfirmDetail(openTopTitles(ledgers.get(id)?.tree),
+          "The session shuts down. Its history stays on disk — revive it any time from the picker or timeline."),
         [{ label: "End session", value: "end", danger: true }, { label: "Cancel", value: "" }],
         (v) => {
           if (v !== "end") return;   // Cancel → nothing
@@ -10523,13 +11360,20 @@ setupSettings();
 })();
 // right-click a selection in the transcript → Reply (quote it) / Copy
 document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
-// ...and in the doc reader → Comment / Copy. The reader overlays the pane from document.body, OUTSIDE
-// #content, so without this binding its right-click fell through to the browser's native menu and the
-// ONLY way to make a comment was unreachable (found in local testing, 2026-08-18). Bound once at the
-// document, gated on the reader being open, rather than per-render inside the builder.
-document.addEventListener("contextmenu", (e) => {
-  if (!docReview) return;
-  const t = e.target as Node | null;
-  if (t && document.getElementById("doc-review")?.contains(t)) showSelectionMenu(e);
+// The file viewer's review comments come back here as ONE assembled message (the user 2026-08-14).
+// It is DRAFTED into the composer, never sent: you read what the session will get, add a line if you
+// want, and send it yourself. Appended, so it never clobbers a half-typed draft.
+setCommentSink((text) => {
+  const sid = activeId;
+  if (!sid) return;
+  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!ta) return;
+  const sep = !ta.value ? "" : ta.value.endsWith("\n\n") ? "" : ta.value.endsWith("\n") ? "\n" : "\n\n";
+  ta.value = ta.value + sep + text;
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+  growComposer(ta);
+  ta.focus();
+  drafts.set(sid, ta.value);
+  persistDrafts();
 });
 if (vscodeApi) vscodeApi.postMessage({ type: "ready" });

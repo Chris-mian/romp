@@ -54,6 +54,19 @@ const ARRAY_ID = ["order", "names", "working", "awaiting", "stateUnknown"]; // a
 const OBJ_SID = ["asks", "items", "ledgers", "sessions"]; //  an array of objects keyed by `.sid`
 const OBJ_ID = ["tabs"]; //                       an array of objects keyed by `.id`
 
+// Gear settings the KERNEL acts on, which each kernel stores its own copy of: they describe how romp
+// behaves towards the sessions it is running, so a machine that never hears the change goes on behaving
+// the old way. setUpdateMode belongs here too: each kernel runs its own boot release check, so a machine
+// that misses the change keeps handling new releases under the old policy (ask/auto/off). The distilling
+// pair rides like the other judge tiers (the user 2026-08-14: everything kernel-side stays in sync; the
+// gear's mixed marks surface any machine that disagrees rather than overwriting it silently). Broadcast in
+// routeOutbound rather than routed. Deliberately NOT here: setDefaultDir (a path on one machine,
+// meaningless on another) and setColormap/setPalette (the viewer's display prefs, which the local kernel
+// persists for this browser).
+const KERNEL_SETTING = new Set(["setAutoNudge", "setJudgeModel", "setIndexModel",
+                                "setJudgeEffort", "setIndexEffort", "setUpdateMode",
+                                "setDistillModel", "setDistillEffort"]);
+
 /** Return a COPY of an inbound message with every session-id field prefixed by `host`. The local host
  *  ("") is the identity transform, so local messages are untouched. Unknown fields pass through. */
 export function prefixInbound(host: string, msg: any): any {
@@ -82,6 +95,10 @@ export function prefixInbound(host: string, msg: any): any {
   // the path checker's answer, stamped with the machine that gave it: the picker drops a verdict that
   // arrives for a host it is no longer on, instead of showing one machine's answer about another's disk.
   if (out.type === "dirCompletions") out.host = host;
+  // a remote kernel's answer to a card-move prediction: its ids are goal ids (globally unique, never
+  // prefixed), but its buildId only means something on THAT kernel's counter — stamp the host so the
+  // feed pane compares it against the same host's frame in the merged payload, never the local counter
+  if (out.type === "cardMoveAck" || out.type === "cardPredict") out.host = host;
   if (out.type === "sessionList" && Array.isArray(out.items)) {
     out.items = out.items.map((it: any) => (it && typeof it === "object" && typeof it.id === "string"
       ? { ...it, id: prefixId(host, it.id),
@@ -115,6 +132,11 @@ function _prefixIdBearing(host: string, o: any, idKey: string): any {
   // and keep peerSid bare — the viewer may be that very host, where the bare uuid opens directly.
   if (out.origin && typeof out.origin === "object" && typeof out.origin.peerSid === "string" && !out.origin.peerHost)
     out.origin = { ...out.origin, peerHost: host, peerSid: prefixId(host, out.origin.peerSid) };
+  // a timeline lane's fork parent (sessions[].branch.fromId): the view looks it up against PREFIXED
+  // lane ids (vidx), so an unprefixed remote parent silently missed and the branch connector never
+  // drew for remote lanes (found 2026-08-17 auditing the merge)
+  if (out.branch && typeof out.branch === "object" && typeof out.branch.fromId === "string")
+    out.branch = { ...out.branch, fromId: prefixId(host, out.branch.fromId) };
   return out;
 }
 
@@ -184,8 +206,8 @@ export interface Route {
  *  `knownHosts` (the manager passes its attached set) enables two extra routings that need to know which
  *  hosts exist: NAME-addressed messages (the timeline's compact/sendCommand target a session by display
  *  name, which inbound prefixing made `host:name`) route to a KNOWN host only — a local name that happens
- *  to contain ":" must never misroute — and a hover CLEAR (`timelineHover {off}` carries no sid) fans out
- *  to every kernel so a remote highlight can't stick. */
+ *  to contain ":" must never misroute — and messages with no sid that mean the same thing on every kernel
+ *  (a hover CLEAR, the gear's kernel-side settings) fan out to all of them. */
 export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route[] {
   if (!msg || typeof msg !== "object") return [{ host: LOCAL, msg }];
 
@@ -210,6 +232,14 @@ export function routeOutbound(msg: any, knownHosts?: ReadonlySet<string>): Route
 
   // a hover CLEAR has no session id — broadcast so every kernel drops its highlight.
   if (msg.type === "timelineHover" && msg.off) return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg }));
+
+  // The gear's kernel-side settings mean the same thing on every attached machine, and carry no session
+  // id to route by — so the fall-through at the bottom sent them to the LOCAL kernel alone. Every other
+  // kernel silently kept its old setting while the gear, which fills from the local /version, showed the
+  // change as applied everywhere: Auto Nudge switched off in the dashboard, still nudging the sessions
+  // running on the other machine (the user 2026-08-14, whose two kernels had been disagreeing for days
+  // with nothing on screen to say so). Broadcast, like the hover clear above.
+  if (KERNEL_SETTING.has(msg.type)) return [LOCAL, ...(knownHosts || [])].map((h) => ({ host: h, msg }));
 
   // openFolder ALWAYS stays LOCAL, `id` UNSTRIPPED (the user 2026-07-03): unlike every other id-bearing
   // message, this one means "open a window on the machine the BROWSER is running on" — routing it to a
@@ -287,13 +317,33 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // dismissed/undo chrome spans hosts: the count SUMS and undo is possible when ANY kernel can undo —
   // clearing a remote card must light the local Undo button (the clear routed to that kernel).
   let dismissed = 0, anyDismissed = false, canUndo = false;
+  // remote kernels' automatic-sync outcomes (self-updates, pushes, pulls) reach the local Log too
+  // (the user 2026-08-15: a devbox updating itself all day left no trace on the laptop dashboard —
+  // mergeHostFeeds kept only the local host's scalar chrome, dropping remote syncNotices on the
+  // floor). Remote rows are host-prefixed like every other remote surface; the SIG is host-scoped so
+  // two kernels' ring sequences can never collide in the seen-set.
+  const syncs: any[] = [];
+  // Every kernel counts feed builds on its OWN counter, so `merged.buildId` (the local scalar kept by
+  // the spread above) says nothing about any REMOTE host's frame. The per-host map is what lets the
+  // feed pane compare a payload against a cardMoveAck on the SAME counter (the user 2026-08-15, whose
+  // reply to a remote card bounced Working → Completed → Working: the local buildId, large after days
+  // of uptime, "outranked" the remote ack's small post-restart buildId on the first merged emission,
+  // dropping the prediction while the cached remote frame still predated the reopen).
+  const buildIds: Record<string, number> = {};
   for (const h of hostSeq) {
     const f = perHost[h];
     if (!f) continue;
+    if (typeof f.buildId === "number") buildIds[h] = f.buildId;
+    if (Array.isArray(f.syncNotices)) {
+      for (const r of f.syncNotices) {
+        if (!r || !r.sig) continue;
+        syncs.push(h === LOCAL ? r : { ...r, sig: h + "|" + r.sig, text: h + ": " + (r.text || "") });
+      }
+    }
     if (Array.isArray(f.items)) merged.items.push(...f.items);
     if (Array.isArray(f.asks)) merged.asks.push(...f.asks);
     if (Array.isArray(f.working)) merged.working.push(...f.working);
-    if (Array.isArray(f.awaiting)) merged.awaiting.push(...f.awaiting);   // straw awaiting dots ride like working
+    if (Array.isArray(f.awaiting)) merged.awaiting.push(...f.awaiting);   // await-green awaiting dots ride like working
     // the unreadable-state list rides the same way; a host too old to send it contributes to
     // NEITHER list, so its sessions stay blank (= "quiet") rather than reading falsely as unknown
     if (Array.isArray(f.stateUnknown)) merged.stateUnknown.push(...f.stateUnknown);
@@ -310,7 +360,85 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   else delete merged.ledgers;
   if (anyDismissed) merged.dismissedCount = dismissed;
   if ("canUndoClear" in merged || canUndo) merged.canUndoClear = canUndo;
+  if (syncs.length) merged.syncNotices = syncs;
+  else delete merged.syncNotices;
+  merged.buildIds = buildIds;
   return merged;
+}
+
+// ── cross-host clock re-basing (the user 2026-08-15) ─────────────────────────────────────────────
+// Every kernel stamps its payload times with ITS OWN clock, and the merges keep the LOCAL kernel as
+// the clock authority — so an attached machine whose clock runs ahead painted its bars and marks
+// shifted right, and a postal connector could touch a sender's lane AFTER that lane's last bar (the
+// screenshot: a send apparently fired by a stopped session — impossible, and false). Each payload
+// carries its emitting kernel's `now`; the delta against the LOCAL payload's `now` in the same merge
+// IS that host's offset — re-measured every merge, so drift self-corrects, and a sub-second delta is
+// measurement jitter, not skew: left alone, so pixels never move without new information. A host
+// whose payload carries no `now` (older kernel) is unknown and never guessed — its times pass
+// through untouched, exactly the not-reporting rule everywhere else in this file.
+// One field is DELIBERATELY cross-clock: a connector's `exec` is the RECIPIENT machine's event (the
+// read receipt carries the reader's clock into the sender's log — bin/romp-postal-service), so exec
+// re-bases by the offset of the host the toId lane lives on, knowable only after the stitch resolves
+// foreign endpoints onto lanes (rebaseExecs). A connector still pending (hasExec false) carries a
+// sender-clock COPY of sent in exec, which therefore shifts with its emitter like sent itself.
+const SKEW_FLOOR_S = 1;
+const BAR_TIMES = ["start", "end"] as const;      // turns[sid] bars
+const MARK_TIMES = ["t"] as const;                // judging / nudge marks
+const LANE_TIMES = ["since"] as const;            // session rows
+
+export function hostOffsets(perHost: Record<string, any>): Record<string, number> {
+  const local = perHost[LOCAL];
+  const ln = local && typeof local.now === "number" ? local.now : null;
+  const out: Record<string, number> = {};
+  if (ln == null) return out;
+  for (const [h, d] of Object.entries(perHost)) {
+    if (h === LOCAL || !d || typeof d.now !== "number") continue;
+    const off = ln - d.now;
+    if (Math.abs(off) >= SKEW_FLOOR_S) out[h] = off;
+  }
+  return out;
+}
+
+function shiftRow(r: any, keys: readonly string[], off: number): any {
+  if (!r || typeof r !== "object") return r;
+  const c: any = { ...r };
+  for (const k of keys) if (typeof c[k] === "number") c[k] += off;
+  return c;
+}
+
+/** Re-base ONE host's payload times onto the local clock (a copy; zero offset returns it untouched). */
+export function rebaseHostTimes(d: any, off: number): any {
+  if (!off || !d || typeof d !== "object") return d;
+  const c: any = { ...d };
+  if (Array.isArray(c.sessions)) c.sessions = c.sessions.map((s: any) => shiftRow(s, LANE_TIMES, off));
+  if (c.turns && typeof c.turns === "object") {
+    const t: any = {};
+    for (const [sid, bars] of Object.entries(c.turns))
+      t[sid] = Array.isArray(bars) ? bars.map((b: any) => shiftRow(b, BAR_TIMES, off)) : bars;
+    c.turns = t;
+  }
+  for (const k of ["judging", "nudges"] as const)
+    if (Array.isArray(c[k])) c[k] = c[k].map((m: any) => shiftRow(m, MARK_TIMES, off));
+  if (Array.isArray(c.messages))
+    c.messages = c.messages.map((m: any) => {
+      const s = shiftRow(m, ["sent"], off);
+      // pending exec is the emitter's copy of sent — it moves with the emitter; a REAL exec is the
+      // recipient's clock and waits for rebaseExecs (post-stitch, when the recipient lane is known)
+      if (s && typeof s === "object" && typeof s.exec === "number" && !s.hasExec) s.exec += off;
+      return s;
+    });
+  return c;
+}
+
+/** The exec pass, post-stitch: shift each delivered connector's exec by the RECIPIENT lane's host
+ *  offset (a local recipient, or an unmeasured host, shifts nothing). */
+export function rebaseExecs(messages: any[], offsets: Record<string, number>): any[] {
+  if (!messages.length) return messages;
+  return messages.map((m: any) => {
+    if (!m || typeof m !== "object" || typeof m.exec !== "number" || !m.hasExec) return m;
+    const off = offsets[hostOf(String(m.toId || ""))] || 0;
+    return off ? { ...m, exec: m.exec + off } : m;
+  });
 }
 
 /** Stitch CROSS-HOST postal connectors onto merged lanes. Each kernel emits a connector when at least
@@ -356,9 +484,10 @@ export function stitchMessages(messages: any[], sessions: readonly any[]): any[]
 export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readonly string[],
                                    view: readonly string[] = []): any {
   const local = perHost[LOCAL] || {};
+  const offsets = hostOffsets(perHost);   // each host's clock vs the local authority, this merge
   const merged: any = { ...local, sessions: [], turns: {}, messages: [], judging: [] };
   for (const h of hostSeq) {
-    const d = perHost[h];
+    const d = rebaseHostTimes(perHost[h], offsets[h] || 0);
     if (!d) continue;
     if (Array.isArray(d.sessions)) merged.sessions.push(...d.sessions.map((s: any) => ({ ...s, host: h })));
     if (d.turns && typeof d.turns === "object") Object.assign(merged.turns, d.turns);
@@ -367,7 +496,7 @@ export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readon
   // lanes are the third surface reading this order (chat strip, feed groups, timeline lanes): arrange them
   // the same way, before the message stitch, which pairs postal arrows against the lane list.
   merged.sessions = applyViewOrderTo(merged.sessions, view, (x: any) => String((x && x.id) || ""));
-  merged.messages = stitchMessages(merged.messages, merged.sessions);
+  merged.messages = rebaseExecs(stitchMessages(merged.messages, merged.sessions), offsets);
   return merged;
 }
 
@@ -379,15 +508,16 @@ export function mergeHostTimelines(perHost: Record<string, any>, hostSeq: readon
 export function mergeHostBars(perHost: Record<string, any>, hostSeq: readonly string[],
                               sessions: readonly any[] = []): any {
   const local = perHost[LOCAL] || {};
+  const offsets = hostOffsets(perHost);   // each host's clock vs the local authority, this merge
   const merged: any = { ...local, type: "bars", turns: {}, messages: [], judging: [], warming: false };
   for (const h of hostSeq) {
-    const b = perHost[h];
+    const b = rebaseHostTimes(perHost[h], offsets[h] || 0);
     if (!b) continue;
     if (b.turns && typeof b.turns === "object") Object.assign(merged.turns, b.turns);
     for (const k of ["messages", "judging", "nudges"]) if (Array.isArray(b[k])) merged[k].push(...b[k]);
     if (b.warming) merged.warming = true;   // still warming if ANY host's build is the cold partial (keep the loader)
   }
-  merged.messages = stitchMessages(merged.messages, sessions);
+  merged.messages = rebaseExecs(stitchMessages(merged.messages, sessions), offsets);
   return merged;
 }
 
@@ -411,6 +541,7 @@ export class FederationManager {
   private conns = new Map<string, Conn>();
   private perHostOrder: Record<string, string[]> = {};
   private perHostTabs: Record<string, any[]> = {};
+  private localViews: any = null;   // the LOCAL kernel's session-views blob, carried on merged tabOrder re-emits
   private perHostSids: Record<string, Set<string>> = {};
   private perHostFeed: Record<string, any> = {}; // last feed snapshot per host — merged so they don't clobber
   private perHostTl: Record<string, any> = {}; //   last timeline lanes payload ({type:"data"}.data) per host
@@ -467,6 +598,11 @@ export class FederationManager {
       const prevTabs = this.perHostTabs[host] || [];
       this.perHostOrder[host] = Array.isArray(m.order) ? m.order.filter((x: any) => typeof x === "string") : [];
       this.perHostTabs[host] = Array.isArray(m.tabs) ? m.tabs : [];
+      // session VIEWS (the user 2026-08-18): the blob is the LOCAL kernel's viewer pref (ids arrive
+      // host-prefixed inside it already) — remote kernels' copies are their own dashboards' prefs.
+      // Without this passthrough the merged re-emit silently dropped the field and the browser
+      // dashboard's chat never learned the views at all.
+      if (host === LOCAL && m.views && typeof m.views === "object") this.localViews = m.views;
       this.ensureHost(host);
       this.absorbHostReport(host, prevOrder, prevTabs);   // a host just reported its sessions → the one
       this.emitMergedOrder();                             //   moment the stored arrangement may be touched
@@ -527,6 +663,13 @@ export class FederationManager {
     // lines, no bars" bug, 2026-07-15). The local kernel pushes on connect, so the hold is momentary,
     // and the local arrival itself emits (event-based, no timer).
     if (!(LOCAL in this.perHostTl)) return;
+    // The BARS emission holds for the LOCAL bars snapshot too (2026-08-17, the after-attach "most of
+    // my sessions vanished" report): at page boot with hosts already attached, a remote's bars can
+    // land before the local kernel's — and the panel's applyBars REPLACES turns wholesale, so the
+    // merged-without-local emission blanked every local lane until the next local push. Same
+    // discipline as the lanes hold above: the local kernel pushes bars on connect, so the hold is
+    // momentary, and the local arrival itself emits.
+    if (bars && !(LOCAL in this.perHostTlBars)) return;
     const data = bars
       // the bars message carries no lanes — hand the merged lane list in for the connector stitch
       ? mergeHostBars(this.perHostTlBars, this.hostSeq, mergeHostTimelines(this.perHostTl, this.hostSeq, this.view()).sessions)
@@ -542,7 +685,7 @@ export class FederationManager {
   private emitMergedOrder(): void {
     const order = mergeHostOrder(this.perHostOrder, this.hostSeq, this.view());
     const tabs = this.hostSeq.flatMap((h) => this.perHostTabs[h] || []);
-    window.dispatchEvent(new MessageEvent("message", { data: { type: "tabOrder", order, tabs } }));
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "tabOrder", order, tabs, views: this.localViews ?? undefined } }));
   }
 
   // Fold a host's OWN report — the one moment with fresh evidence about what exists — into the stored
@@ -648,6 +791,14 @@ export class FederationManager {
     // "last seen" a pane shows survives a page reload and doesn't restart with the browser.
     for (const [host, t] of want) if (typeof t.lastOk === "number" && t.lastOk) this.lastSeen[host] = t.lastOk;
     const changed = down.size !== this.downHosts.size || [...down].some((h) => !this.downHosts.has(h));
+    // A host coming BACK is the recovery event failed previews wait for. The message-driven heal
+    // (render.ts's listener re-runs retryFailedPreviews on any kernel message) never ticks on an
+    // idle session — no traffic flows — so a relay-failed figure sat as a chip until the user's
+    // next send generated pushes (the user 2026-08-17). This poll is the authority on tunnel
+    // state; the down→up transition is the exact moment the relay works again, so it dispatches
+    // through the same message path and the heal fires with zero chat traffic.
+    const recovered = [...this.downHosts].filter((h) => want.has(h) && !down.has(h));
+    if (recovered.length) window.dispatchEvent(new MessageEvent("message", { data: { type: "hostUp", hosts: recovered } }));
     this.downHosts = down;
     if (changed) window.dispatchEvent(new Event("romp-hosts"));   // panes repaint their disconnected marks
   }

@@ -35,14 +35,14 @@ test("the kernel verifies with the filesystem, resolved exactly like a click", (
 });
 
 test("linkifyFileUris whole-links a verified span's entire inline-code content", () => {
-  assert.match(RENDER, /function linkifyFileUris\(root: HTMLElement, skipThumbs\?: string\[\], spacePaths\?: string\[\],\s*\n\s*pathLinks\?: Record<string, string>\): void/);
+  assert.match(RENDER, /function linkifyFileUris\(root: HTMLElement, skipThumbs\?: string\[\], spacePaths\?: string\[\],\s*\n\s*pathLinks\?: Record<string, string>, pathPins\?: Record<string, string>\): void/);
   // the pass targets inline <code> only, skips anything already linked or fenced
   assert.match(RENDER, /for \(const code of Array\.from\(root\.querySelectorAll\("code"\)\)\) \{\s*\n\s*if \(code\.closest\("a, \.file-uri-link, pre"\)\) continue;/);
   // exact-match against the kernel's verified set, then the whole content becomes one open link
   assert.match(RENDER, /const tok = \(code\.textContent \|\| ""\)\.trim\(\);\s*\n\s*if \(!verified\.has\(tok\)\) continue;/);
   assert.match(RENDER, /code\.replaceChildren\(link\);/);
-  // a verified image/PDF joins the same full-size preview strip the token links feed
-  assert.match(RENDER, /if \(previewKind\(tok\) && !previewable\.includes\(tok\) && !\(skipThumbs && skipThumbs\.includes\(tok\)\)\) previewable\.push\(tok\);/);
+  // a verified image/PDF joins the same full-size previews the token links feed (figure at its mention)
+  assert.match(RENDER, /if \(previewKind\(tok\) && !previewable\.includes\(tok\) && !\(skipThumbs && skipThumbs\.includes\(tok\)\)\) \{\s*\n\s*previewable\.push\(tok\);\s*\n\s*mentionAt\.set\(tok, code\);/);
 });
 
 test("the whole-span pass runs BEFORE the token walk, so the new link is skipped by it", () => {
@@ -54,7 +54,7 @@ test("the whole-span pass runs BEFORE the token walk, so the new link is skipped
 });
 
 test("every message render threads its event's spacePaths through", () => {
-  assert.match(RENDER, /linkifyFileUris\(bubble, imgPaths, ev\.spacePaths, ev\.pathLinks\);/);   // user bubble
-  assert.match(RENDER, /linkifyFileUris\(full, imgPaths, ev\.spacePaths, ev\.pathLinks\);/);     // expanded nudge body
-  assert.match(RENDER, /linkifyFileUris\(body, undefined, ev\.spacePaths, ev\.pathLinks\);/);    // assistant reply
+  assert.match(RENDER, /linkifyFileUris\(bubble, imgPaths, ev\.spacePaths, ev\.pathLinks, ev\.pathPins\);/);   // user bubble
+  assert.match(RENDER, /linkifyFileUris\(full, imgPaths, ev\.spacePaths, ev\.pathLinks, ev\.pathPins\);/);     // expanded nudge body
+  assert.match(RENDER, /linkifyFileUris\(body, undefined, ev\.spacePaths, ev\.pathLinks, ev\.pathPins\);/);    // assistant reply
 });

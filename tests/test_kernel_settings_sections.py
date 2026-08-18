@@ -25,11 +25,12 @@ class SettingsSectionsTest(unittest.TestCase):
     def test_the_subsection_headers_are_present_in_order(self):
         h = _gear_src()
         self.assertIn("<div class='rs-sec rs-sec-first'>Sessions</div>", h)
-        for sec in ("Judges", "Keyboard shortcuts", "Chat", "Timeline", "Colors", "Debug"):
+        for sec in ("Judges", "Keyboard shortcuts", "Chat", "Feed", "Timeline", "Colors", "Debug"):
             self.assertIn("<div class=rs-sec>%s</div>" % sec, h)
-        self.assertNotIn(">Feed<", h, "the Feed section dissolved into Colors (its colormap is global)")
+        # (The 2026-07-12 "Feed dissolved into Colors" rule ended 2026-08-18: the Feed section is back,
+        # carrying the collapse-by-default checkbox moved off the feed footer.)
         order = [">Sessions<", ">Judges<", ">Keyboard shortcuts<", ">Chat<",
-                 ">Timeline<", ">Colors<", ">Debug<", ">romp · version<"]
+                 ">Feed<", ">Timeline<", ">Colors<", ">Debug<", ">romp · version<"]
         idx = [h.index(t) for t in order]
         self.assertEqual(idx, sorted(idx), "sections in the 2026-07-12 order, version last")
 
@@ -70,12 +71,16 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertNotIn("headless", h)
 
     def test_judge_rows_are_one_line_label_plus_picker(self):
-        # label + picker share the line (the user 2026-07-12): four .rs-jrow rows, the select right after
-        # the hover sub, no full-width select stacked under the label; the flex CSS carries the layout
+        # label + picker share the line (the user 2026-07-12): six .rs-jrow rows since the distilling
+        # tier split out of triage (the user 2026-08-14), the select right after the hover sub, no
+        # full-width select stacked under the label; the flex CSS carries the layout. Each label now
+        # carries the hidden mixed-state marker (the settings-sync work, same day).
         h = _gear_src()
-        self.assertEqual(h.count("rs-jrow"), 4)
-        for sel in ("rs-judgemodel", "rs-judgeeffort", "rs-indexmodel", "rs-indexeffort"):
-            self.assertRegex(h, r"rs-jrow'><b>[^<]+</b><span class=rs-sub>[^<]*</span><select id=" + sel)
+        self.assertEqual(h.count("rs-jrow"), 6)
+        for sel in ("rs-judgemodel", "rs-judgeeffort", "rs-distillmodel", "rs-distilleffort",
+                    "rs-indexmodel", "rs-indexeffort"):
+            self.assertRegex(h, r"rs-jrow'><b>[^<]+<span class=rs-mixed hidden></span></b>"
+                                r"<span class=rs-sub>[^<]*</span><select id=" + sel)
         self.assertIn("#rsettings .rs-jrow select {", _gear_css_src())
 
     def test_collapse_gaps_is_wired_to_the_shared_collapseGaps_setting(self):

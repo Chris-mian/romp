@@ -21,16 +21,15 @@ complementary views of what the agents are doing:
 
 ![Tool calls fold into runs; each expands to one line per call](assets/guide/chat-detail.png){ width="100%" }
 
-**Reviewing a document.** When a session mentions a Markdown file it wrote, clicking that
-path opens the document rendered right over the chat rather than handing it to your
-editor. Select any passage and right-click to comment on it, then keep reading — comments
-stack up as you go, each remembering the passage it belongs to and where in the file that
-passage lives. **Submit** turns the whole set into a single message in the composer,
-listing every comment with its quote and line number, for you to glance over and send. The
-session then applies the lot in one pass, and you never copy a line out of the document by
-hand. Comments survive a reload and a tab switch, so a long read can be picked up later,
-and the reader's header keeps an **Open in editor** button for when you want the file
-itself.
+**Reviewing a document.** The file viewer takes comments. Select any passage,
+right-click, and say what should change; keep reading and they stack up, each one
+remembering the passage it belongs to and where in the file that passage lives.
+**Submit** turns the whole set into a single message in the composer, listing every
+comment with its quote and line number, for you to glance over and send. The session
+applies the lot in one pass, and you never copy a line out of the document by hand.
+Comments persist per file until you submit them, so a long review can be picked up later,
+and if the file changes while you are reading it the message says so rather than carrying
+line numbers that have quietly moved.
 
 ### The feed
 

@@ -115,9 +115,10 @@ class CommentBase(unittest.TestCase):
 class CutTarget(CommentBase):
     def test_an_assistant_anchor_cuts_at_itself_not_its_ancestor(self):
         p = self._write(PARENT, self._parent_records())
-        cut, err = km._comment_cut_target(str(p), PARENT, "a1")
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "a1")
         self.assertIsNone(err)
         self.assertEqual(cut, "a1", "the thread must HOLD the highlighted answer — inclusive cut")
+        self.assertGreater(cut_t, 0, "the cut record's own time rides along for the timeline square")
 
     def test_a_tool_row_anchor_falls_to_its_nearest_prose_ancestor(self):
         # a tool_use record is type "assistant" but NOT a clean cut — including it would leave the
@@ -125,7 +126,7 @@ class CutTarget(CommentBase):
         t = self.now - 300
         recs = self._parent_records() + [tline(t, "tu9", "a2")]
         p = self._write(PARENT, recs)
-        cut, err = km._comment_cut_target(str(p), PARENT, "tu9")
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "tu9")
         self.assertIsNone(err)
         self.assertEqual(cut, "a2")
 
@@ -136,15 +137,50 @@ class CutTarget(CommentBase):
                 boundary(t + 100, "b1", "a1"),
                 uline(t + 200, "fresh ask", "u2", parent="b1")]
         p = self._write(PARENT, recs)
-        cut, err = km._comment_cut_target(str(p), PARENT, "a1")
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "a1")
         self.assertIsNone(cut)
         self.assertIn("compaction", err)
 
     def test_an_unknown_anchor_is_refused(self):
         p = self._write(PARENT, self._parent_records())
-        cut, err = km._comment_cut_target(str(p), PARENT, "nope")
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "nope")
         self.assertIsNone(cut)
         self.assertTrue(err)
+
+    def _seamed_session(self):
+        """A machine-cut resume that forked fresh-headed: old records in the resumed-from file,
+        new ones in the current file, joined only by the states resumeFork lineage row — the shape
+        that read every pre-seam message as 'not in the transcript' (the user 2026-08-15)."""
+        old_fsid, new_fsid = PARENT, "cccccccc-dddd-eeee-ffff-000000000000"
+        t = self.now - 900
+        self._write(old_fsid, [uline(t, "the pre-seam ask", "u1"),
+                               aline(t + 5, "the pre-seam answer, the one worth a comment", "a1", parent="u1")])
+        p = self._write(new_fsid, [uline(t + 300, "the post-seam ask", "u9", parent=None),
+                                   aline(t + 305, "the post-seam answer", "a9", parent="u9")])
+        sdir = jd.STATE / "states"
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / (PARENT + ".jsonl")).write_text(
+            json.dumps({"resumeFork": {"from": old_fsid, "to": new_fsid}, "t": t + 250}) + "\n")
+        return p
+
+    def test_a_pre_seam_anchor_is_found_and_falls_back_to_a_tip_fork(self):
+        p = self._seamed_session()
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "a1")
+        self.assertIsNone(err, "the stitched chain must FIND the message the chat shows")
+        self.assertEqual(cut, "", "behind the seam the CLI can't address it — tip fork instead")
+        self.assertGreater(cut_t, 0, "the anchor's own time still stamps the row")
+
+    def test_a_post_seam_anchor_still_cuts_at_itself(self):
+        p = self._seamed_session()
+        cut, cut_t, err = km._comment_cut_target(str(p), PARENT, "a9")
+        self.assertIsNone(err)
+        self.assertEqual(cut, "a9")
+
+    def test_rewind_names_the_seam_instead_of_denying_the_message_exists(self):
+        p = self._seamed_session()
+        cut, err = km._rewind_target(str(p), PARENT, "u1")
+        self.assertIsNone(cut)
+        self.assertIn("restart seam", err)
 
 
 # ── the thread fork's invisibility contract ───────────────────────────────────────────────────────
@@ -363,8 +399,11 @@ class FakeBackend:
         self.calls = []
         self.sent = []
 
-    def fork(self, name, parent_sid, cut_uuid="", bg="", fg="", sid=None, thread_of=""):
+    def fork(self, name, parent_sid, cut_uuid="", bg="", fg="", sid=None, thread_of="",
+             model="", effort=""):
         self.calls.append(("fork", name, parent_sid, cut_uuid, sid, thread_of))
+        self.forked_meta = (model, effort)
+        self.forked_bg = bg
         return sid
 
     def connect(self, sid):
@@ -378,6 +417,10 @@ class FakeBackend:
 
     def resume(self, name, sid, cwd=None):
         self.calls.append(("resume", sid))
+        return True
+
+    def interrupt(self, sid):
+        self.calls.append(("interrupt", sid))
         return True
 
     def kill(self, sid):
@@ -396,21 +439,21 @@ class CommentOps(CommentBase):
         self._saved_backend_for = km.Sessions.backend_for
         self._saved_ready = km._sdk_ready
         self._saved_sessions = km._sessions
-        self._saved_reveal = km._reveal_chat
+        self._saved_reveal = km._reveal_chat_for
         self._saved_push_now = km._push_session_now
         km.Sessions.backend_for = staticmethod(lambda sid: self.be)
         km._sdk_ready = lambda: True
         p = self._write(PARENT, self._parent_records())
         km._sessions = lambda now, window=None, forks=True: [
             {"sid": PARENT, "name": "parent", "path": str(p), "mtime": self.now}]
-        km._reveal_chat = lambda msg: None
+        km._reveal_chat_for = lambda client, msg: None
         km._push_session_now = lambda sid: None
 
     def tearDown(self):
         km.Sessions.backend_for = self._saved_backend_for
         km._sdk_ready = self._saved_ready
         km._sessions = self._saved_sessions
-        km._reveal_chat = self._saved_reveal
+        km._reveal_chat_for = self._saved_reveal
         km._push_session_now = self._saved_push_now
         super().tearDown()
 
@@ -427,6 +470,52 @@ class CommentOps(CommentBase):
         row = km._comment_thread(PARENT, tid)
         self.assertEqual(row["status"], "open")
         self.assertEqual(row["anchorUuid"], "a1")
+
+    def test_threads_autoname_by_count_and_accept_an_edited_name(self):
+        _, tid1 = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        _, tid2 = km._comment_create(PARENT, "a1", "the cap", "And this?")
+        self.assertEqual(km._comment_thread(PARENT, tid1)["name"], "parent-comment-1")
+        self.assertEqual(km._comment_thread(PARENT, tid2)["name"], "parent-comment-2")
+        self.assertEqual(self.be.calls[0][1], "parent-comment-1",
+                         "the thread's reg wears the name — a break-out inherits it")
+        _, tid3 = km._comment_create(PARENT, "a1", "jitter", "Named.", name="my.question")
+        self.assertEqual(km._comment_thread(PARENT, tid3)["name"], "my.question")
+        err, _ = km._comment_create(PARENT, "a1", "jitter", "Bad.", name="no spaces!")
+        self.assertIn("letters, digits", err)
+        fr = km._comments_frame(PARENT)
+        self.assertEqual(fr["threads"][0]["name"], "parent-comment-1",
+                         "the popover titles threads by name off the frame")
+
+    def test_model_and_effort_picks_ride_the_fork_untouched_by_default(self):
+        km._comment_create(PARENT, "a1", "exponential backoff", "Why?", model="haiku", effort="low")
+        self.assertEqual(self.be.forked_meta, ("haiku", "low"))
+        km._comment_create(PARENT, "a1", "the cap", "Plain.")
+        self.assertEqual(self.be.forked_meta, ("", ""), "no pick = inherit; the parent is never touched")
+
+    def test_the_comments_identity_color_rides_create_fork_row_and_frame(self):
+        _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?", color="#a3be8c")
+        self.assertEqual(self.be.forked_bg, "#a3be8c")
+        self.assertEqual(km._comment_thread(PARENT, tid)["color"], "#a3be8c")
+        self.assertEqual(km._comments_frame(PARENT)["threads"][0]["color"], "#a3be8c")
+        _, tid2 = km._comment_create(PARENT, "a1", "the cap", "Junk color.", color="not-a-hex")
+        self.assertEqual(self.be.forked_bg, "", "a non-hex color falls to the backend's own pick")
+        self.assertNotIn("color", km._comment_thread(PARENT, tid2))
+
+    def test_a_harness_task_notification_never_renders_as_the_users_words(self):
+        recs = self._parent_records()
+        t = self.now - 200
+        recs += [uline(t, km._comment_first_message("exponential backoff", "Why?"), "cu1", parent="a2"),
+                 uline(t + 5, "<task-notification>\n<task-id>b1</task-id>\n<status>stopped</status>"
+                       "\n</task-notification>", "tn1", parent="cu1"),
+                 aline(t + 10, "Because herds.", "ca1", parent="tn1")]
+        self._write(THREAD, recs)
+        (jd.SDKDIR / (THREAD + ".json")).write_text(json.dumps(
+            {"sid": THREAD, "name": "t", "cwd": self.cdir, "lastSid": THREAD,
+             "alive": True, "threadOf": PARENT}))
+        msgs = km._thread_messages(THREAD, "a2")
+        self.assertEqual([m["who"] for m in msgs], ["you", "agent"],
+                         "the harness notice is for the AGENT, not a popover bubble")
+        self.assertNotIn("task-notification", json.dumps(msgs))
 
     def test_a_refused_cut_leaves_no_thread_row_behind(self):
         err, tid = km._comment_create(PARENT, "missing-uuid", "text", "comment")
@@ -445,6 +534,13 @@ class CommentOps(CommentBase):
         self.assertIn(("resume", tid), self.be.calls, "replying IS the reopen gesture")
         self.assertEqual(km._comment_thread(PARENT, tid)["status"], "open")
         self.assertEqual(self.be.sent[-1], (tid, "one more question"))
+
+    def test_delete_interrupts_the_inflight_reply_before_the_kill(self):
+        # deleting a thread mid-generation must STOP the work, not just its cue (the user 2026-08-17)
+        _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")
+        km._comment_delete(PARENT, tid)
+        kinds = [c[0] for c in self.be.calls if c[0] in ("interrupt", "kill")]
+        self.assertEqual(kinds, ["interrupt", "kill"], "cut the turn first, then shut the CLI down")
 
     def test_delete_removes_the_row(self):
         _, tid = km._comment_create(PARENT, "a1", "exponential backoff", "Why?")

@@ -192,6 +192,32 @@ def _safe_id(s):
         return False
     return bool(_SAFE_ID_RE.match(s))
 
+# Every character str.splitlines() treats as a line break — \n \r \v \f \x1c \x1d \x1e
+# \x85 U+2028 U+2029 — plus the rest of the C0/C1 control range and NUL with them. Nothing
+# printable is in here: spaces, punctuation, accents, CJK and emoji all live outside it.
+_HDR_BREAK_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+def _hdr_val(v):
+    """One value, made safe to write into a maildir header line (see deliver).
+
+    The header block is FRAMED by newlines and read back by splitting on them: read_box
+    ends the block at the first blank line and lets a later key overwrite an earlier one.
+    So a line break inside any VALUE forges or overwrites every other header — including
+    the From: line the recipient is shown — and a blank line promotes the rest of that
+    value into the body. Five of the six values deliver() writes reach it over the bus:
+    the sender's claimed name and id from /send, and the kind, origin host and relay mid
+    a peer supplies on an inbound relay.
+
+    A break is REPLACED (U+FFFD), never dropped: nothing goes missing silently, the value
+    keeps its length and position, and the substitution is visible — a recipient looking
+    at a tampered From: sees that it was tampered with rather than a plausible-looking
+    name. Ordinary content is untouched, so a name with spaces or accents round-trips
+    unchanged.
+
+    This makes the values SAFE TO FRAME, not TRUSTWORTHY: from_id is still an
+    unauthenticated claim the sender asserts about itself, exactly as before."""
+    return _HDR_BREAK_RE.sub("\ufffd", "" if v is None else str(v))
+
 def _mailbox(sid):
     if not _safe_id(sid):
         raise ValueError("unsafe session id")
@@ -256,15 +282,31 @@ def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host="",
     mb = _mailbox(to_id)
     name = _unique()
     tmp = mb / "tmp" / name
-    hdr = "From: %s\nFrom-Id: %s\nDate: %s\n" % (from_name, from_id, _iso_now())
+    # THE header write point — every value that lands in a header line goes through _hdr_val
+    # first, because a line break in any ONE of them rewrites all the others (see _hdr_val).
+    # Doing it here and not at the callers covers all four of them at once: /send, an inbound
+    # peer relay, a quarantine approval, and a deferred push putting mail back. Date is this
+    # module's own strftime output, so it is written as-is, and the BODY is deliberately left
+    # alone: it comes after the blank line and is never parsed as headers.
+    raw = {"from": from_name, "from_id": from_id, "kind": kind,
+           "from_host": from_host, "relay_mid": relay_mid, "relay_via": relay_via}
+    h = {k: _hdr_val(v) for k, v in raw.items()}
+    broke = sorted(k for k, v in raw.items() if h[k] != str(v or ""))
+    if broke:
+        # Say so — a header value with a line break in it is either a bug or an attempt — but
+        # still deliver: the recipient needs the BODY, and dropping the mail over a malformed
+        # attribution would lose more than it protects. Field names only, no attacker text.
+        _log("deliver to %s: line breaks neutralized in header value(s) %s"
+             % (to_id, ", ".join(broke)))
+    hdr = "From: %s\nFrom-Id: %s\nDate: %s\n" % (h["from"], h["from_id"], _iso_now())
     if park:
         hdr += "X-Park: 1\n"
-    if kind:
-        hdr += "X-Kind: %s\n" % kind                # sender-declared delegate|coordinate|question (2026-07-08)
-    if from_host:
-        hdr += "X-From-Host: %s\n" % from_host
-    if relay_mid and relay_via:
-        hdr += "X-Peer-Mid: %s\nX-Peer-Via: %s\n" % (relay_mid, relay_via)
+    if h["kind"]:
+        hdr += "X-Kind: %s\n" % h["kind"]           # sender-declared delegate|coordinate|question (2026-07-08)
+    if h["from_host"]:
+        hdr += "X-From-Host: %s\n" % h["from_host"]
+    if h["relay_mid"] and h["relay_via"]:
+        hdr += "X-Peer-Mid: %s\nX-Peer-Via: %s\n" % (h["relay_mid"], h["relay_via"])
     tmp.write_text(hdr + "\n" + body + "\n")
     tmp.rename(mb / "new" / name)   # atomic within the same filesystem
     _mark_pending(to_id)            # new/ is now non-empty -> raise the marker (covers park + live)
@@ -402,9 +444,16 @@ def format_inbox(msgs, me_id=""):
         mid = ("\n<!-- romp-msg-id: %s -->" % m["id"]) if m.get("id") else ""   # exact id for the timeline join
         if m.get("kind"):
             mid += "\n<!-- romp-msg-kind: %s -->" % m["kind"]   # sender-declared kind, read by the courier
-        out.append("\n— from %s%s%s:\n%s%s" % (m.get("from", "?"), d, pk, m.get("body", ""), mid))
+        out.append("\n— from %s%s%s:\n%s%s" % (_from_disp(m), d, pk, m.get("body", ""), mid))
     out.append("\n" + REPLY_HINT)
     return "\n".join(out)
+
+def _from_disp(m):
+    """The sender name a banner shows. Never the literal "unknown"/"?" a broken sender minted
+    (pre-2026-08-18 mail, or a peer bus older than the /send refusal): a canned body over
+    "from unknown" reads as a greeting from a ghost. Say what is true instead."""
+    nm = str(m.get("from") or "").strip()
+    return nm if nm and nm.lower() != "unknown" and nm != "?" else "an unidentified session"
 
 def format_agents(agents, me, me_id=""):
     if not agents:
@@ -969,7 +1018,7 @@ def format_push(msgs):
     out = []
     for m in msgs:
         pk = " · ⏸ parked (you were offline)" if m.get("park") else ""
-        head = "## \U0001F4EC from %s · %s%s" % (m.get("from", "?"), _hhmm(m.get("date", "")), pk)
+        head = "## \U0001F4EC from %s · %s%s" % (_from_disp(m), _hhmm(m.get("date", "")), pk)
         out += [bar, head, bar, m.get("body", "")]
         if m.get("id"):
             out.append("<!-- romp-msg-id: %s -->" % m["id"])   # exact id for the timeline join
@@ -1150,6 +1199,17 @@ class Handler(BaseHTTPRequestHandler):
             to = data.get("to", "")
             frm, frm_id = data.get("from", "unknown"), data.get("from_id", "")
             body = data.get("body", "")
+            if not frm_id:
+                # An unidentifiable sender's mail arrives literally "from unknown" — a canned-sounding
+                # greeting the recipient can neither place nor answer (the user 2026-08-18, who met one
+                # on their laptop; the 2026-07-27 clear-fork minted the same ghost). Refuse LOUDLY at
+                # the one door every sender uses: the breakage is the SENDER's identity resolution, and
+                # a visible error there beats ghost mail here (fail loudly, 2026-07-03). Cross-host
+                # relays are unaffected — they arrive on the peer routes with identity in their headers.
+                return self._send({"error": "sender identity required: this send carried no from_id, so "
+                                   "it would arrive as mail 'from unknown' that the recipient cannot "
+                                   "place or answer. The sender should know its own session id — fix "
+                                   "that resolution and resend."}, 400)
             kind = str(data.get("kind", "")).strip().lower()
             if kind not in ("delegate", "coordinate", "question"):
                 kind = ""                              # legacy/CLI mail may be undeclared; never invent one
@@ -1183,6 +1243,9 @@ class Handler(BaseHTTPRequestHandler):
                 if PEERS.get(phost, {}).get("up"):
                     return self._send({"ok": True, "id": mid,
                                        "note": "relaying to '%s' on %s" % (hit.get("name") or to, phost)})
+                _kernel_post("/redial", {"host": phost})   # parking IS demand: ask the kernel to
+                #                                             re-dial the host's tunnel now instead of
+                #                                             waiting out its backoff (the user 2026-08-16)
                 return self._send({"ok": True, "id": mid, "parked": phost,
                                    "note": "parked for %s (unreachable) — delivers on reconnect, "
                                            "or bounces back to you" % phost})
@@ -1566,6 +1629,15 @@ def remote_holds():
         for hd in st.get("holds") or []:
             out.append(dict(hd, atHost=hd.get("via") or h))
     return out
+
+_TRUST_RANK = {"isolated": 0, "directed": 1, "trusted": 2}
+
+
+def least_trust(a, b):
+    """The more restrictive of two tiers. Used to cap a FORWARDED message at its forwarder's tier:
+    trust must never be assembled from a claim the claimant wrote about itself."""
+    return a if _TRUST_RANK.get(a, 1) <= _TRUST_RANK.get(b, 1) else b
+
 
 def my_tier_of(host):
     """The trust tier THIS bus applies to `host`'s direct mail — what _relay_in resolves for a
@@ -1989,9 +2061,10 @@ def _relay_in(host, m, token_proven=False):
     kernel is gated by the same token — a holder can inject into any session directly). So holding the
     dialer's OWN mail protects nothing and only strands the user's outgoing mail on a machine they
     attached (the user 2026-07-26, whose delegation to a fresh box sat quarantined on it). The proof
-    covers only the direct dialer: mail it FORWARDED (origin-stamped) is still judged by the origin's
-    tier, and an EXPLICIT tier the user set for the dialer (directed/isolated) still wins — the
-    exemption replaces only the unknown-origin default. The dialer side (peer_exchange_apply) proves
+    covers only the direct dialer: mail it FORWARDED (origin-stamped) is judged by the origin's tier
+    CAPPED at the forwarder's own (least_trust — a relay can never hand its cargo more trust than it
+    holds itself), and an EXPLICIT tier the user set for the dialer (directed/isolated) still wins —
+    the exemption replaces only the unknown-origin default. The dialer side (peer_exchange_apply) proves
     nothing: whatever answers the tunnel port never showed our token, so tiers gate it as before."""
     mid = m.get("mid") or ""
     if not mid:
@@ -2008,6 +2081,18 @@ def _relay_in(host, m, token_proven=False):
         trust = (prow or {}).get("trust") or "directed"
         if prow is None and token_proven and not m.get("origin"):
             trust = "trusted"                        # token-proven direct dialer, no explicit tier → deliver (see docstring)
+        if m.get("origin") and origin != host:
+            # A FORWARDED message can never outrank the host that forwarded it. m["origin"] is
+            # written BY the forwarder, so keying trust on the origin alone let any peer we dial
+            # stamp the name of a host tiered `trusted` and have its mail auto-injected into a
+            # session — precisely the attacker `directed` exists to hold for approval, and the
+            # names to guess are handed out by our own presence gossip. Cap at the forwarder's
+            # own tier so a directed relay stays directed however it labels its cargo.
+            hrow = PEERS.get(host)
+            htrust = (hrow or {}).get("trust") or "directed"
+            if hrow is None and token_proven:
+                htrust = "trusted"                   # token possession is already full control here (see docstring)
+            trust = least_trust(trust, htrust)
         if trust == "trusted":
             deliver(match[0]["id"], m.get("frm") or "?", m.get("frm_id") or "", m.get("body") or "",
                     kind=m.get("kind") or "", from_host=origin,
@@ -2488,8 +2573,14 @@ def _mcp_call(name, args):
         if kind not in ("delegate", "coordinate", "question"):
             return ("Need 'kind': one of delegate (the recipient owns the work now), "
                     "coordinate (aligning/heads-up), or question (you need an answer).", True)
+        if not mid:
+            # the bus would refuse this anyway (anonymous mail arrives "from unknown"); say it
+            # HERE with the actionable half — the sender's own identity is what's broken
+            return ("Cannot send: this session's own identity did not resolve (no session id), so "
+                    "the mail would arrive anonymously and the recipient could not place or answer "
+                    "it. This is a session-identity bug worth surfacing to the user.", True)
         try:
-            resp = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body,
+            resp = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid, "body": body,
                                            "kind": kind})
             # "Delivered" has to MEAN delivered. A cross-host send is only relaying (or parked for
             # an unreachable host, or held for the human on the far side), and the bus says so in
@@ -2500,7 +2591,7 @@ def _mcp_call(name, args):
             if note:
                 return "Message to '%s': %s" % (to, note), False
             # Echo what the DECLARATION did, not just that bytes moved (the user 2026-07-26): a question
-            # or delegate records the SENDER as waiting on the recipient — a real hold that a mis-declared
+            # records the SENDER as waiting on the recipient — a real hold that a mis-declared
             # kind creates by accident (a "question" whose prose said no reply was needed parked its
             # sender for a day). Reading the cost back lets the sender self-correct on the spot, while
             # recall_message still works.
@@ -2509,8 +2600,10 @@ def _mcp_call(name, args):
                         "reply until they answer. If you don't actually need a reply, recall this "
                         "message and resend it as coordinate." % to, False)
             if kind == "delegate":
-                return ("Delivered to '%s' as a handoff — you are now recorded as waiting on them to "
-                        "report back; their next message to you clears it." % to, False)
+                return ("Delivered to '%s' as a handoff — they own it now; you are NOT recorded as "
+                        "waiting (the user 2026-08-15: ownership transferred is not a dependency). "
+                        "If you genuinely need their report before you can proceed, send a question "
+                        "instead." % to, False)
             return "Delivered to '%s'." % to, False
         except BusError as e:
             return str(e), True
@@ -2618,8 +2711,14 @@ def cli_send(argv):
     if not ensure():
         sys.stderr.write("[romp mail] %s\n" % _unreachable_hint()); return 1
     me, mid = my_name(), my_id()
+    if not mid:
+        # the bus refuses anonymous sends; say it here with the actionable half
+        sys.stderr.write("[romp mail] cannot send: this session's own identity did not resolve "
+                         "(no session id), so the mail would arrive anonymously. Surface this to "
+                         "the user as a session-identity bug.\n")
+        return 1
     try:
-        resp = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid or "", "body": body,
+        resp = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid, "body": body,
                                        "kind": kind})
     except BusError as e:
         sys.stderr.write("[romp mail] %s\n" % e); return 1

@@ -78,7 +78,9 @@ class UsageHistoryLedger(unittest.TestCase):
 
 
 class SeriesPayloads(unittest.TestCase):
-    """_spend_series / _usage_history_series: dense arrays + base hour; honest gaps."""
+    """_spend_series: dense arrays + base hour; honest gaps. (The winSeries assembler that lived
+    beside it is gone — the user 2026-08-14 wanted only the fleet $/h graph; rail-spend.test.ts
+    pins the removal. usage-history.json keeps recording — sdk_backend _record_usage_history.)"""
 
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
@@ -105,20 +107,8 @@ class SeriesPayloads(unittest.TestCase):
         self.assertEqual(km._spend_series(keyed_only=True, now=FIXED)["usd"][-4], 0.0,
                          "an hour with no key sub-counter contributes nothing to the keyed series")
 
-    def test_win_series_gaps_are_null_and_foreign_accounts_are_skipped(self):
-        (jd.STATE / "usage-history.json").write_text(json.dumps({"hours": {
-            _h(): {"acct": "me", "five_hour": {"pct": 40, "ra": 1}},
-            _h(2): {"acct": "someone-else", "five_hour": {"pct": 99, "ra": 1}},
-        }}))
-        ws = km._usage_history_series(now=FIXED)
-        self.assertEqual(ws["fiveHour"][-1], 40)
-        self.assertIsNone(ws["fiveHour"][-2], "no reading is null — the unknown-is-not-0 rule, drawn as a gap")
-        self.assertIsNone(ws["fiveHour"][-3], "another login's reading is skipped, like the bars' logout rule")
-        self.assertEqual(ws["sevenDay"], [None] * 192)
-
     def test_empty_stores_return_none(self):
         self.assertIsNone(km._spend_series(now=FIXED))
-        self.assertIsNone(km._usage_history_series(now=FIXED))
 
 
 class ApiKeyHostReportsSpend(unittest.TestCase):

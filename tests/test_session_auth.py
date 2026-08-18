@@ -291,6 +291,27 @@ class SpendKeyedSplit(_Keyed):
         self.assertEqual(day["key"]["turns"], 1)
         self.assertEqual(day["key"]["tok"], 15)
 
+    def test_spend_windows_carry_a_rolling_hour(self):
+        # the hover's API-spend section leads with "1 hour" (the user 2026-08-15): the last hour by
+        # the same rolling bucket math as day, so a burst shows up without waiting for the day sum
+        self.be._record_spend(2.0, {"input_tokens": 10}, keyed=True)
+        real_state = km.jd.STATE
+        try:
+            km.jd.STATE = Path(self.d)
+            win = km._spend_windows()
+            # …and an old bucket (3h ago) stays out of the hour window while the day keeps it
+            import json as _json, time as _time
+            sp = _json.loads((Path(self.d) / "spend.json").read_text())
+            oldkey = _time.strftime("%Y-%m-%dT%H", _time.localtime(_time.time() - 3 * 3600))
+            sp.setdefault("hours", {})[oldkey] = {"usd": 7.0, "turns": 1, "tokIn": 5}
+            (Path(self.d) / "spend.json").write_text(_json.dumps(sp))
+            win2 = km._spend_windows()
+        finally:
+            km.jd.STATE = real_state
+        self.assertEqual(win["hour"]["usd"], 2.0)
+        self.assertEqual(win2["hour"]["usd"], 2.0, "a 3h-old bucket is outside the rolling hour")
+        self.assertEqual(win2["day"]["usd"], 9.0, "…but inside the rolling day")
+
     def test_spend_windows_keyed_only_reads_the_subcounts(self):
         self.be._record_spend(1.5, {"input_tokens": 10}, keyed=True)
         self.be._record_spend(4.0, None, keyed=False)
@@ -475,7 +496,7 @@ class DrivePlumbing(unittest.TestCase):
 
     def test_create_paths_pass_the_pick_through(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
-        self.assertIn("def _create_sdk_session(nm, cwd, auth=\"\"):", src)
+        self.assertIn("def _create_sdk_session(nm, cwd, auth=\"\", prefs=None, client=None):", src)
         self.assertEqual(src.count('auth=(a if a in ("login", "key") else "")'), 2,
                          "the WS op and POST /new both pass it")
 
