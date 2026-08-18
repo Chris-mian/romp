@@ -1493,6 +1493,77 @@ def append_caption(fsid, uid, grain, t, caption, live=False, natoms=None):
         f.write(json.dumps(rec) + "\n")
 
 
+CAPTION_FAIL_CAP = 3   # empty captures per unit-set before the tombstone — ARCH_FAIL_CAP's rationale
+                       # (the 2026-07-06 archiver storm), met again by the captioner on 2026-08-18:
+                       # 2,920 caption calls in 2h produced 62 records (~24/min of pure churn), because
+                       # an empty capture wrote nothing and the same closed units re-captioned every
+                       # pass, forever, fleet-wide — and fed the API-capacity window that broke a brief.
+
+
+def _caption_fails(fsid):
+    """{unit_id: consecutive empty-capture count} for units still under the cap — the captioner's
+    fail ledger (CAPDIR/<fsid>.fails.json), the archiver give-up's per-unit sibling."""
+    try:
+        d = json.loads((CAPDIR / (fsid + ".fails.json")).read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_caption_fails(fsid, d):
+    CAPDIR.mkdir(parents=True, exist_ok=True)
+    path = CAPDIR / (fsid + ".fails.json")
+    if d:
+        path.write_text(json.dumps(d))
+    else:
+        try:
+            path.unlink()                             # empty ledger → no file (nothing to prune later)
+        except OSError:
+            pass
+
+
+def _caption_strike(task, struck, gave):
+    """One EMPTY capture on a CLOSED unit-set: the call actually ran (paused/rate-gated skips never
+    reach here — _judge_run's paused contract) and produced no usable caption. A closed unit's text
+    never changes, so retrying it is superstition: at CAPTION_FAIL_CAP each unit gets an EMPTY
+    tombstone caption record — captioned_ids dedups it, and every reader filters on caption
+    truthiness, so the unit stops costing a call without ever rendering. Re-arm is structural, not
+    timed: only a re-parse minting NEW unit ids (a fork, a cut) makes new caption work.
+    `struck` is the PASS's already-struck id set: two tasks can carry the same unit id at different
+    grains, and one pass is one world-state — the same unchanged unit is one piece of evidence, one
+    strike, however many calls the pass spent on it."""
+    fsid = task["fsid"]
+    fails = _caption_fails(fsid)
+    give_up = []
+    for w in task["writes"]:
+        if w["id"] in struck:
+            continue
+        struck.add(w["id"])
+        n = int(fails.get(w["id"], 0)) + 1
+        if n >= CAPTION_FAIL_CAP:
+            fails.pop(w["id"], None)
+            give_up.append(w)
+        else:
+            fails[w["id"]] = n
+    _write_caption_fails(fsid, fails)
+    if give_up:
+        for w in give_up:
+            append_caption(fsid, w["id"], w["grain"], w["t"], "")
+        gave[fsid] = gave.get(fsid, 0) + len(give_up)     # ONE give-up row per fsid per pass (logged
+        #                                                   after the loop) — several tasks can cross
+        #                                                   the cap in the same pass
+
+
+def _caption_unfail(task):
+    """A successful caption clears its units' strike counts — only CONSECUTIVE empties tombstone."""
+    fsid = task["fsid"]
+    fails = _caption_fails(fsid)
+    ids = {w["id"] for w in task["writes"]}
+    kept = {k: v for k, v in fails.items() if k not in ids}
+    if kept != fails:
+        _write_caption_fails(fsid, kept)
+
+
 # ───────────────────────── the archiver (index tier; per session) ─────────────────────────
 # One record per session: a TOC headline + a 2-3 sentence abstract, summarized from the
 # session's TURN captions (cheap input, not raw transcript). Refreshed when the session gains a
@@ -4074,11 +4145,12 @@ def _discover_impl(now, window=None, forks=True):
 def _caption_call(task):
     """Caption one unit in a worker thread, tagging its session for usage logging. A 'prompt' task is the
     MESSAGE caption — a present-focused gist of the ask (gist_llm, logged as the captioner); a 'work' task
-    is the past-tense 'what got done' (caption_llm)."""
+    is the past-tense 'what got done' (caption_llm). Returns (caption, paused): paused rides out of the
+    worker thread because _judge_ctx is thread-local — the strike ledger in the main loop must never
+    count a rate-gate/pause skip as the model's empty verdict (the _judge_run paused contract)."""
     _judge_ctx.fsid = task.get("fsid")
-    if task.get("kind") == "prompt":
-        return gist_llm(task["text"])
-    return caption_llm(task["text"])
+    cap = gist_llm(task["text"]) if task.get("kind") == "prompt" else caption_llm(task["text"])
+    return cap, bool(getattr(_judge_ctx, "paused", False))
 
 
 def _archive_call(fsid, caps):
@@ -4128,22 +4200,36 @@ def _run_index(now=None, budget=BUDGET, fairness=FAIRNESS, concurrency=CONCURREN
     if verbose:
         sys.stderr.write("romp-judge: %d undone caption tasks, %d selected\n" % (len(pending), len(selected)))
     captions = 0
+    struck = set()                                        # one strike per unit per PASS (grains share ids)
+    gave = {}                                             # fsid → units tombstoned this pass (one log row each)
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futs = {ex.submit(_caption_call, t): t for t in selected}
         for fut in as_completed(futs):
             task = futs[fut]
             try:
-                cap = fut.result()
+                cap, cap_paused = fut.result()
             except Exception:
-                cap = ""
+                cap, cap_paused = "", True                # a crashed worker is not the model's verdict
             if not cap:
-                continue                                  # empty = failed capture; skip, retry next pass
+                # A LIVE task retries by design (the open segment's text grows — the chunk cadence
+                # gates it) and a paused/rate-gated skip is not a verdict. A CLOSED unit's empty
+                # capture STRIKES toward the tombstone (CAPTION_FAIL_CAP): the same unchanged input
+                # re-captioned every pass was the 2026-08-18 churn — 2,920 calls for 62 records in 2h.
+                if not task.get("live") and not cap_paused:
+                    _caption_strike(task, struck, gave)
+                continue
+            if not task.get("live"):
+                _caption_unfail(task)                     # only CONSECUTIVE empties tombstone
             for w in task["writes"]:                      # one call → all the task's records (id-deduped)
                 append_caption(task["fsid"], w["id"], w["grain"], w["t"], cap,
                                live=task.get("live", False), natoms=task.get("natoms"))
                 captions += 1
                 if verbose:
                     sys.stderr.write("  [%s] %s\n" % (w["grain"], cap))
+    for _fsid, _n in gave.items():
+        _log_judge_error("captioner", _fsid, "give-up",
+                         note="%d unit(s) tombstoned after %d empty captures each; a re-parse minting "
+                              "new unit ids re-arms" % (_n, CAPTION_FAIL_CAP))
     # ── archiver: refresh a session's record when its turn-caption count grew (runs AFTER
     #    captioning, so this pass's new turn captions are included) ──
     arch_tasks = []
