@@ -15956,7 +15956,13 @@ def _postal_wait_maps():
             # toName ("<host>:<name>") resolves to the real sid through the alias map above; an
             # unresolvable relay keeps the raw id and behaves exactly as before.
             if isinstance(t_, str) and t_.startswith("peer:") and o.get("toName"):
-                t_ = alias.get(str(o["toName"]), t_)
+                # unresolvable (the peer never sent a row, so the alias map can't know its sid) →
+                # key on the NAMED recipient rather than the bare relay: two asks to different
+                # sessions on one detached host used to collapse onto the single (from, relay)
+                # pair, the later silently overwriting the earlier (the 2026-08-18 audit found a
+                # 29.6h-invisible ask eaten this way). The maps rebuild from the full log, so the
+                # moment the peer speaks the alias resolves and every row re-keys to the real sid.
+                t_ = alias.get(str(o["toName"]), "peer:" + str(o["toName"]))
             ts = int(ts)
             last_any[(f, t_)] = max(last_any.get((f, t_), 0), ts)
             k = o.get("kind")                            # the sender's DECLARED intent (schema field) wins
@@ -16018,11 +16024,17 @@ def _peer_answered_at(sid):
     carry the wait, and the closer's next pass can re-stamp with a fresh awaitingAt."""
     last_any, last_ask = _postal_wait_maps()
     best = 0
-    for (f, t_), (ts, _k, _h) in last_ask.items():
+    # OUTBOUND rides last_any, not last_ask (2026-08-18 audit): the 2026-08-15 change that stopped
+    # DELEGATES from making chip edges also emptied last_ask of them — which silently removed this
+    # release, so a delegated peer's reply no longer superseded a judge kind=peer stamp (a cross-host
+    # handoff answered in 23 minutes still wore Awaiting six hours later, with the 6h wake as the
+    # only exit). Reading every outbound restores the designed exact ending event for questions and
+    # handoffs alike; the chip edge stays question-only, exactly as #430 intended.
+    for (f, t_), sent in last_any.items():
         if f != sid:
             continue
         r = last_any.get((t_, f), 0)
-        if r >= ts:                                      # the pair's newest ask is answered
+        if r >= sent:                                    # the pair's newest outbound is answered
             best = max(best, r)
     return best
 
