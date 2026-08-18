@@ -100,6 +100,7 @@ class TimelineViews(unittest.TestCase):
     def test_payloads_echo_the_views_blob(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn('"views": _timeline_views(),', src, "the timeline payload carries it")
+        self.assertIn('"palette": pal.colors(),', src, "and the palette, for group colors in every host")
         self.assertIn('"tabs": tab_meta, "views": _timeline_views()', src, "tabOrder pushes carry it")
         self.assertIn('"tabs": _tabs, "views": _timeline_views()', src, "the connect-time tabOrder carries it")
 
