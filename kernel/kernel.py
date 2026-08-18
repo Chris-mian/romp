@@ -1483,6 +1483,7 @@ def _ordered(sessions):
             a = _nm(sid)
             sib = [i for i, n in enumerate(name_at) if a and n == a]   # same-name entries already placed
             if sib:
+                _heal_timeline_views(order[sib[-1]], sid)   # the fork inherits hidden/group state too
                 order.insert(sib[-1] + 1, sid)           # a fork inherits its session's slot, not the END
                 name_at.insert(sib[-1] + 1, a)           # keep name_at aligned with order as we splice
             else:
@@ -1504,6 +1505,102 @@ def _ordered_alive(now, tmux):
 # carded and billed: a secret running session, a tmux-era affordance (sessions lived outside romp) with
 # no SDK-era use case. Every running session now always shows; × means End session, and close-and-reopen
 # is End + Revive, which keeps history. A stale hidden-tabs.json on disk is inert, like web-kernel.json.)
+
+
+# ── session VIEWS: which sessions the user is looking at (the user 2026-08-18) ────────────────────
+# One blob under STATE (timeline-views.json), shared by every dashboard this kernel serves (browser,
+# VS Code, Obsidian): {"active": "all"|group-id, "hidden": [id...], "groups": [{"id","name","color",
+# "members": [id...]}]}. "all" shows every session EXCEPT the hidden set — hiding makes a BACKGROUND
+# session: out of the timeline lanes and the chat tab strip, still judged, carded and reachable (the
+# feed and the session pickers keep surfacing it, so nothing runs in secret — the 2026-08-11 rule).
+# A named group shows exactly its members; explicit membership beats the hidden set, which is the
+# one clean answer to "does a hidden session show when its group is picked". Persisted by the LOCAL
+# kernel like colormap/palette (a viewer display pref, deliberately not federated); ids are stored
+# as the viewer sees them (host-prefixed for remote sessions), opaque to this kernel. mtime-cached
+# like _session_flags. Remote-session ids that churn on a REMOTE kernel are not healed here (that
+# kernel cannot reach this blob) — same accepted gap session-flags has; SDK sids are stable anyway.
+_VIEWS_MAX_GROUPS = 32
+_VIEWS_MAX_NAME = 40
+
+
+def _views_path():
+    return jd.STATE / "timeline-views.json"
+
+
+def _norm_timeline_views(d):
+    """Validate + normalize a views blob from disk or a client: always returns the full shape, drops
+    junk quietly, clamps sizes, and falls back active→"all" when the named group does not exist."""
+    if not isinstance(d, dict):
+        d = {}
+    _lst = lambda x: x if isinstance(x, list) else []   # wrong-typed junk (a number, a string) drops, never raises
+    hidden = [str(x) for x in _lst(d.get("hidden")) if isinstance(x, str) and x]
+    groups = []
+    for g in _lst(d.get("groups"))[:_VIEWS_MAX_GROUPS]:
+        if not isinstance(g, dict) or not g.get("id") or not isinstance(g.get("id"), str):
+            continue
+        members = [str(x) for x in _lst(g.get("members")) if isinstance(x, str) and x]
+        groups.append({"id": g["id"][:64],
+                       "name": str(g.get("name") or "group")[:_VIEWS_MAX_NAME],
+                       "color": str(g.get("color") or "")[:16],
+                       "members": sorted(set(members))})
+    active = d.get("active") if isinstance(d.get("active"), str) else "all"
+    if active != "all" and not any(g["id"] == active for g in groups):
+        active = "all"
+    return {"active": active, "hidden": sorted(set(hidden)), "groups": groups}
+
+
+def _timeline_views():
+    p = _views_path()
+    try:
+        st = p.stat(); key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return _norm_timeline_views({})
+    hit = _flags_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    try:
+        d = json.loads(p.read_text())
+    except Exception:
+        d = {}
+    d = _norm_timeline_views(d)
+    _flags_cache[str(p)] = (key, d)
+    return d
+
+
+def _set_timeline_views(blob):
+    _atomic_write(_views_path(), json.dumps(_norm_timeline_views(blob), sort_keys=True))
+
+
+def _view_visible(views, sid):
+    """The one visibility decision, kernel-authoritative: mirrored (three lines each) by the chat
+    renderer and the timeline for optimistic feedback — tests pin all three against this shape."""
+    if views["active"] == "all":
+        return sid not in views["hidden"]
+    for g in views["groups"]:
+        if g["id"] == views["active"]:
+            return sid in g["members"]
+    return True
+
+
+def _heal_timeline_views(old_sid, new_sid):
+    """fsid churn (a /clear, relaunch or revive mints a new transcript fsid for the same logical
+    session): carry the old sid's hidden bit and group memberships to the new one, exactly like the
+    order-slot inheritance that detects the churn. Without this a hidden tmux session would pop back
+    visible on every /clear — and worse, a grouped one would silently fall out of its group."""
+    v = _timeline_views()
+    if old_sid not in v["hidden"] and not any(old_sid in g["members"] for g in v["groups"]):
+        return
+    v = json.loads(json.dumps(v))                    # deep copy: never mutate the cached blob
+    # COPY, never move: stripping the old sid un-hid its DEAD lane, which lingers on the timeline for
+    # hours — and when the old sid is still alive (a fork beside a living parent, or an unrelated new
+    # session reusing a name), moving would steal the living session's state. A dead sid left in the
+    # lists is inert; the normalizer keeps them bounded.
+    if old_sid in v["hidden"]:
+        v["hidden"] = sorted(set(v["hidden"]) | {new_sid})
+    for g in v["groups"]:
+        if old_sid in g["members"]:
+            g["members"] = sorted(set(g["members"]) | {new_sid})
+    _set_timeline_views(v)
 
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
@@ -18636,6 +18733,8 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     # letting the bar slide through the map's hues as it compresses — mirroring the context battery fill.
     cmap_grad = [list(cm.ramp(v, ctx_stops)) for v in (0.12, 0.34, 0.56, 0.78, 1.0)]
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
+            "views": _timeline_views(),
+            "palette": pal.colors(_palette_name()),   # group color choices — the same set sessions draw identity colors from
             "messages": messages, "judging": judging,
             "cmapGrad": cmap_grad,
             "activeChat": None, "focus": None, "hover": None, "usage": _usage_for_client()}
@@ -18902,6 +19001,21 @@ def _reveal_chat_for(client, focus_msg):
     revealSelfPane) — which covers every kernel, local included, and makes the shell line a harmless
     duplicate rather than the only mover."""
     wid = (client or {}).get("wid") or ""
+    # The reveal rule (the user 2026-08-18): every gesture that focuses a session's chat — create,
+    # open, revive, a deep link, a feed chip — REVEALS it in the session views first, or the focus
+    # would land on a tab the strip doesn't show (a session created under an active group view was
+    # born invisible, with the focus yanked away by the strip's re-point). Drop its hidden bit; when
+    # the active group excludes it, fall back to All — the same one rule the chat picker applies.
+    sid = focus_msg.get("id") if isinstance(focus_msg, dict) else None
+    if sid:
+        v = _timeline_views()
+        if not _view_visible(v, sid):
+            v = json.loads(json.dumps(v))
+            v["hidden"] = [x for x in v["hidden"] if x != sid]
+            if v["active"] != "all" and not any(g["id"] == v["active"] and sid in g["members"] for g in v["groups"]):
+                v["active"] = "all"
+            _set_timeline_views(v)
+            _mark_views_dirty()
     _send_to_view("chat", focus_msg, wid)
     _send_to_view("shell", {"type": "reveal", "pane": "chat"}, wid)
 
@@ -19957,7 +20071,7 @@ def _push(targets, connect=False, tmux=None):
                 _send_client(c, ("globalRetryPaused",), {"type": "globalRetryPaused", "value": _retry_paused_on(),
                                                          "resumeAt": _retry_resume_at(),   # limit reset epoch → the card counts down to the real retry
                                                          "reason": _retry_pause_reason()})   # "spend" → the card says 'raise your cap', no countdown
-                _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
+                _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta, "views": _timeline_views()})
             active = {c.get("active") for c in chat_clients if c.get("active")}
             # Stable: active tabs first — and TRANSCRIPT-LESS sessions with them. A just-created session
             # has no transcript, so its build is near-free, and its creator is guaranteed to be staring
@@ -20168,7 +20282,7 @@ def _push_session_now(sid):
             return
         ms = None                                    # lazy: the first full send materializes it, the rest reuse
         for c in targets:
-            _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta})
+            _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta, "views": _timeline_views()})
             ms = _send_chat(c, m, ms, 0, True)       # change_from 0 → always the full-session form
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
@@ -21368,6 +21482,7 @@ window.__rompTimelineWriteOrder=function(order){if(window.__rompWriteOrder)windo
 window.__rompTimelineCompact=function(name){post({type:"compact",name:name});};
 window.__rompTimelineSendCommand=function(name,cmd){post({type:"sendCommand",name:name,cmd:cmd});};
 window.__rompTimelineSetFlag=function(id,flag,value){post({type:"setSessionFlag",id:id,flag:flag,value:!!value});};
+window.__rompTimelineSetViews=function(views){post({type:"setTimelineViews",views:views});};
 window.__rompTimelineDismiss=function(id){post({type:"dismissLane",id:id});};
 window.__rompTimelineHover=function(sid,segIds,t0,t1){post(sid?{type:"timelineHover",sid:sid,segIds:segIds||[],t0:t0,t1:t1}:{type:"timelineHover",off:true});};
 window.__rompConnectTimeline=function(p){panel=p;post({type:"ready"});};})();
@@ -25306,7 +25421,7 @@ class Handler(BaseHTTPRequestHandler):
                 _o = [s["sid"] for s in _alive]
                 # name+color per tab → the client paints the whole strip as placeholders up front (tabs-first)
                 _tabs = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in _alive]
-                client["send"](json.dumps({"type": "tabOrder", "order": _o, "tabs": _tabs}))
+                client["send"](json.dumps({"type": "tabOrder", "order": _o, "tabs": _tabs, "views": _timeline_views()}))
             except Exception:
                 pass
             # a push tap parked a reveal for this window's chat pane → deliver it now, AFTER the
@@ -25327,6 +25442,11 @@ class Handler(BaseHTTPRequestHandler):
                 _set_notify_session(str(msg["id"]), bool(msg.get("value")))
             else:
                 _set_session_flag(str(msg["id"]), str(msg["flag"]), bool(msg.get("value")))
+            _mark_views_dirty()
+        elif msg and msg.get("type") == "setTimelineViews" and isinstance(msg.get("views"), dict):
+            # timeline corner panel → replace the whole views blob (tiny; last-write-wins across
+            # dashboards, like colormap). Validation/normalization happens in the setter.
+            _set_timeline_views(msg["views"])
             _mark_views_dirty()
         elif msg and msg.get("type") == "cardNotify" and msg.get("itemId"):
             # feed card right-click → per-card bell (OS notification when THIS card blocks on you /
