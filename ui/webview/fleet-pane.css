@@ -90,3 +90,47 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
 .fl-hover-sub.done .m{color:#54b204}
 .fl-hover-sub.blocked .m{color:#e5484d}
 .fl-hover-more{color:var(--vscode-descriptionForeground,#9a9a9a);margin-top:2px}
+
+/* ── the per-goal PR chip (the user 2026-08-17) ─────────────────────────────────────────────────────
+   #number · state · checks · review, in that fixed order, so the eye lands in the same place on every
+   row. The chip never shrinks — the goal TITLE ellipsizes instead (a truncated title is recoverable from
+   the hover card, a truncated PR state is not). Colours are existing tokens: the romp accent for live,
+   the working yellow for pending, the pane's done-time purple for merged. */
+.fl-pr{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;margin-left:8px;padding:0 6px;height:17px;
+  border-radius:9px;border:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));
+  background:rgba(255,255,255,0.04);color:var(--vscode-descriptionForeground,#9a9a9a);
+  font-size:0.82em;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
+.fl-pr:hover{background:rgba(255,255,255,0.09);color:var(--vscode-foreground,#cccccc)}
+.fl-pr-num{color:#9cd2ff;font-weight:500}                       /* the romp accent */
+.fl-pr.st-open .fl-pr-state{color:#54b204}                      /* the pane's own done/green */
+.fl-pr.st-draft .fl-pr-state{color:var(--vscode-descriptionForeground,#9a9a9a)}
+.fl-pr.st-merged .fl-pr-state{color:#b48ce0}                    /* matches the done-time purple */
+.fl-pr.st-closed .fl-pr-state{color:#e5484d}
+.fl-pr.ck-pass .fl-pr-ck{color:#54b204}
+.fl-pr.ck-fail .fl-pr-ck{color:#e5484d}
+.fl-pr.ck-running .fl-pr-ck{color:#e0b020}                      /* the working yellow */
+.fl-pr .fl-pr-rv{color:#e0b020}
+.fl-pr.roll{border-style:none;background:transparent;padding:0 3px}
+.fl-pr.roll:hover{background:rgba(255,255,255,0.07)}
+.fl-pr.roll.w-fail .fl-pr-ck{color:#e5484d}
+.fl-pr.err{color:#e5484d;border-color:rgba(229,72,77,0.45);cursor:help}
+/* live = this session's branch AND unpushed work: the romp accent, same blue as the in-progress dots */
+.fl-pr.live{border-color:#9cd2ff;background:rgba(156,210,255,0.10);color:var(--vscode-foreground,#cccccc)}
+.fl-pr-pulse{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:#9cd2ff;
+  animation:fl-pr-pulse 1.4s ease-in-out infinite}
+@keyframes fl-pr-pulse{0%,100%{opacity:0.35}50%{opacity:1}}
+/* the goal title yields to the chip, never the other way round */
+.ledger-tnode .ledger-ttext{overflow:hidden;text-overflow:ellipsis}
+
+/* one click deeper: the same body the hover card shows, plus the actions */
+.fl-prdet{margin:2px 0 5px 0;padding:6px 10px;font-size:0.9em;
+  border-left:2px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));
+  background:rgba(255,255,255,0.03);border-radius:0 4px 4px 0;
+  color:var(--vscode-descriptionForeground,#9a9a9a)}
+.fl-prdet-num{color:#9cd2ff;font-weight:500;cursor:pointer;margin-top:4px}
+.fl-prdet-line:first-child{color:var(--vscode-foreground,#cccccc)}
+.fl-prdet-acts{margin-top:5px;display:flex;gap:7px}
+.fl-prdet-acts button{background:#2a2a2a;color:var(--vscode-foreground,#cccccc);border-radius:4px;
+  border:1px solid var(--vscode-editorHoverWidget-border,rgba(255,255,255,0.12));
+  font:inherit;font-size:0.9em;padding:1px 8px;cursor:pointer}
+.fl-prdet-acts button:hover{background:#333}
