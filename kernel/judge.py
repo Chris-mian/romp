@@ -653,6 +653,41 @@ def active_runs():
         return [dict(v) for v in _active.values()]
 
 
+_USAGE_PRUNE_BYTES = 48 * 1024 * 1024   # prune trigger — never reached at healthy volume (a normal
+                                         # month is a few MB); the 2026-08-18 captioner storm grew the
+                                         # log to 59.5MB, which the kernel then re-read per timeline build
+_USAGE_RETAIN_S = 31 * 86400             # matches the kernel reader's widest consumer window
+                                         # (_JUDGE_USAGE_RETAIN, the 30-day analytics view + slack)
+
+
+def _prune_usage_log():
+    """Rewrite USAGE keeping the newest 31 days once it outgrows the cap. The kernel's incremental
+    reader detects the shrink (size < offset) and re-reads cleanly. Best-effort and racy by design:
+    an append from a concurrent judge process during the rewrite window can be lost — this is
+    telemetry whose consumers read a bounded window, and the trigger only fires in pathological
+    growth. The prune says what it did (one stderr line), never silently."""
+    try:
+        if USAGE.stat().st_size <= _USAGE_PRUNE_BYTES:
+            return
+        parsed = []
+        for ln in USAGE.read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(ln)
+            except Exception:
+                continue
+            if isinstance(o, dict):
+                parsed.append((o.get("t") or 0, ln))
+        floor = max((t for t, _ in parsed), default=0) - _USAGE_RETAIN_S
+        keep = [ln for t, ln in parsed if t >= floor]
+        tmp = USAGE.with_name(USAGE.name + ".tmp")
+        tmp.write_text("\n".join(keep) + ("\n" if keep else ""))
+        os.replace(tmp, USAGE)
+        sys.stderr.write("romp-judge: judge-usage.jsonl outgrew %dMB — pruned to the newest 31 days "
+                         "(%d rows kept)\n" % (_USAGE_PRUNE_BYTES // (1024 * 1024), len(keep)))
+    except Exception:
+        pass
+
+
 def _log_judge_usage(judge, tier, model, fsid, wrap, sent=None, recv=None):
     """Append ONE per-call usage line to USAGE for the kernel/UI cost rollup (judge_ui 2026-06-17).
     `wrap` is the claude -p JSON envelope. `sent`/`recv` are the LITERAL wall-clock floats bracketing the
@@ -663,6 +698,7 @@ def _log_judge_usage(judge, tier, model, fsid, wrap, sent=None, recv=None):
     must not break a judge call."""
     try:
         u = wrap.get("usage") or {}
+        _prune_usage_log()                       # bounded growth (one cheap stat at healthy sizes)
         with open(USAGE, "a") as f:
             f.write(json.dumps({"t": int(time.time()), "judge": judge, "tier": tier, "model": model,
                                 "fsid": fsid or None, "ms": wrap.get("duration_ms"),
