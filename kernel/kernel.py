@@ -16780,6 +16780,7 @@ def build_feed(now, tmux=None):
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the completion turn's wrap-up (completed pin), else the cited/latest prose (the user 2026-07-14)
                 "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
+                "failLog": nodes[nid].get("failLog") or None,   # the summarizer's failed attempts (judge _fail_log): model + literal error per try → the chip's hover history + modal "What was tried" (the user 2026-08-18)
                 "nudged": ({"count": int(nrec.get("count", 0)), "times": _nudge_times().get(nid, [])[-8:]}
                            if nrec.get("count") else None),   # auto-nudge HISTORY (fires + when) → the stalled chip's evidence, on the chip tooltip + modal (the user 2026-07-02)
                 "blocked": ({"state": "apiError",
@@ -18241,6 +18242,27 @@ def _attach_run_usage(judging, t0, alive_sids):
                 mk["sent"], mk["recv"] = r.get("sent"), r.get("recv")
 
 
+_BARS_COMPLAINED = {}   # (who, stage) → cause head already logged: one line per DISTINCT cause,
+#                       never one per 2s build — but never silence (fail loudly, 2026-07-03)
+
+
+def _bars_complain(who, stage, e):
+    """A bars-build stage failed for `who` (a sid, or "*" for a global stage). The old behavior was a
+    silent swallow — a working session rendered its lane with ZERO bars forever and nothing said why
+    (the user 2026-08-18). The lane/frame still degrades the same way; the difference is the trace."""
+    head = "%s: %s" % (type(e).__name__, str(e)[:160])
+    if _BARS_COMPLAINED.get((who, stage)) == head:
+        return
+    _BARS_COMPLAINED[(who, stage)] = head
+    sys.stderr.write("timeline bars: %s %s failed — rendering without that data: %s\n"
+                     % (str(who)[:8], stage, head))
+
+
+_JUDGING_ROW_CAP = 20000     # judging marks per bars frame — far above any legible band density,
+                             # far below the 147k-mark storm frame that starved bars (2026-08-18)
+_JUDGING_TRIMMED = {}        # transition latch for the trim log line (order-of-magnitude keyed)
+
+
 def _run_judging(t0, alive_sids, semantic):
     """The judging band built from the per-call LOG (judge-usage.jsonl) instead of back-placed onto the
     work: ONE span per API call, plotted at its real wall-clock [sent, recv] — so the band shows WHEN each
@@ -18256,16 +18278,15 @@ def _run_judging(t0, alive_sids, semantic):
     for v in by.values():
         v.sort(key=lambda m: m["t"])
     out = []
-    try:
-        lines = (jd.STATE / "judge-usage.jsonl").read_text(errors="replace").splitlines()
-    except OSError:
-        return out
+    # The SHARED incremental reader, not a per-build full read: this used to read_text + json.loads
+    # the whole of judge-usage.jsonl on EVERY bars build (measured 2026-08-18 during the captioner
+    # storm: 59.5MB / 222,947 rows ≈ 1s per build, cache-busted every ~2s by the next usage row) —
+    # the pusher then spent its cycles parsing telemetry while {type:"bars"} frames starved and
+    # working sessions painted lanes with no bars. _judge_usage_rows already existed for exactly
+    # this (the 2026-08-13 analytics freeze); the band just never adopted it.
+    rows = _judge_usage_rows()
     done = set()                                      # (sid, judge, sent) of completed runs — to dedup live ones
-    for ln in lines:
-        try:
-            o = json.loads(ln)
-        except Exception:
-            continue
+    for o in rows:
         sid, judge = o.get("fsid"), o.get("judge")
         judge = _JUDGE_FAMILY.get(judge, judge)
         if sid not in alive_sids:
@@ -18301,6 +18322,21 @@ def _run_judging(t0, alive_sids, semantic):
         out.append({"judge": judge, "sid": sid, "t": sent, "t1": now,
                     "kind": (src or {}).get("kind", "run"), "text": (src or {}).get("text", ""),
                     "ms": 0, "in": 0, "out": 0, "sent": sent, "recv": None, "open": True})
+    # VOLUME BOUND on what rides the wire: every {type:"bars"} frame carries this array, and during
+    # the 2026-08-18 captioner storm 147,803 rows passed the 48h horizon and serialized to ~35MB per
+    # frame per client — the frames arrived minutes late or killed the socket, which IS the
+    # lanes-without-bars symptom. Past any legible density the band gains nothing, so keep the
+    # NEWEST marks and say what was dropped (never a silent cap) — one line per order-of-change,
+    # not per 2s build.
+    if len(out) > _JUDGING_ROW_CAP:
+        out.sort(key=lambda m: m["t"])
+        cut = len(out) - _JUDGING_ROW_CAP
+        del out[:cut]
+        if _JUDGING_TRIMMED.get("mag") != cut // 10000:
+            _JUDGING_TRIMMED["mag"] = cut // 10000
+            sys.stderr.write("timeline judging band: %d oldest marks trimmed from the frame "
+                             "(cap %d; a judge storm is the usual cause — see judge-usage.jsonl)\n"
+                             % (cut, _JUDGING_ROW_CAP))
     return out
 
 
@@ -18382,7 +18418,8 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
         if with_bars:
             try:
                 session = _parse(s["path"], sid, now)
-            except Exception:
+            except Exception as e:
+                _bars_complain(sid, "parse", e)           # a lane with zero bars must SAY why
                 session = {"turns": []}
             if live:
                 # Merge the LIVE TAIL like the chat does (the user 2026-07-02): a /model change streams the
@@ -18393,8 +18430,8 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                 # Safe for the working signal — a command atom never forces the turn open (live_work).
                 try:
                     session = _merge_live_atoms(session, sid)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _bars_complain(sid, "live-merge", e)  # disk-only bars from here — say so
             caps = _captions(sid)
             st_turns = session["turns"]
             open_now = _session_working(st_turns)         # WORKING from the event model — the one shared signal
@@ -18452,7 +18489,16 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             turn_open = (live and ti == len(st_turns) - 1 and not turn["ended"]
                          and not any(x["type"] == "idle" for x in turn["atoms"])
                          and not _suspended_after(turn["end"]))   # dead lane (live False) or pre-sleep freeze → not an open bar
-            segs = _segs_seam(turn, goals)
+            try:
+                segs = _segs_seam(turn, goals)
+            except Exception as e:
+                # a malformed goals row must cost the SEAMS, not the lane's bars (2026-08-18: any
+                # exception here used to abort the whole bars frame after the skeleton had shipped)
+                _bars_complain(sid, "seams", e)
+                try:
+                    segs = em.segments(turn)
+                except Exception:
+                    segs = []
             _bft = (branch_of.get(sid) or {}).get("t")
             for si, seg in enumerate(segs):
                 if _bft and (seg.get("end") or seg["t"]) <= _bft:
@@ -18500,7 +18546,10 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
                 pass
         if with_bars:
             turns[sid] = bars
-            _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
+            try:
+                _derive_judging(sid, caps, goals, now - TL_HORIZON, semantic, seg_ends)
+            except Exception as e:
+                _bars_complain(sid, "judging-marks", e)   # this lane loses its marks, the frame ships
         _bft = (branch_of.get(sid) or {}).get("t")
         compactions = [{"t": a["t"]} for turn in st_turns for a in turn["atoms"]
                        if a.get("type") == "system" and a.get("subtype") == "compact_boundary" and a.get("t")
@@ -18555,18 +18604,31 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
             "postalServiceOff": _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"),  # lane mailbox → isolate from the Romp Postal Service (bin/romp-postal-service)
             "notify": _notify_session_effective(sid)})   # lane bell, EFFECTIVE (override, else the master default) → OS notification when this session's work blocks on you / completes (the user 2026-07-28)
     if with_bars:
-        messages = _postal_messages(now, set(id2name), id2name)
-        _bind_message_execs(messages, turns)             # connector exec → the recipient's process-start (real transit)
-        # mids STAY on the wire (2026-08-17): the merged-view dmid join (romp-timeline-view.js) re-binds
-        # a relayed connector's exec to the recipient turn by bar mids — the 2026-07-07 payload-audit pop
-        # ("no client ever read them") predated that 2026-08-06 feature and had silently starved it: the
-        # join's key set was always empty on live payloads, so relayed execs never re-bound client-side.
-        for _m in messages:
-            _m.pop("fromOrig", None)
+        # Each with_bars-only stage is guarded ALONE (2026-08-18): the pusher sends the cheap lane
+        # SKELETON before this heavy build, and its shared try used to abort the WHOLE bars frame on
+        # one malformed store row — every cycle re-sent fresh skeletons while {type:"bars"} never
+        # shipped, so every live lane painted bar-less with only a "push build:" stderr line as
+        # evidence. A band that fails now costs THAT band, loudly, never the frame.
+        try:
+            messages = _postal_messages(now, set(id2name), id2name)
+            _bind_message_execs(messages, turns)         # connector exec → the recipient's process-start (real transit)
+            # mids STAY on the wire (2026-08-17): the merged-view dmid join (romp-timeline-view.js) re-binds
+            # a relayed connector's exec to the recipient turn by bar mids — the 2026-07-07 payload-audit pop
+            # ("no client ever read them") predated that 2026-08-06 feature and had silently starved it: the
+            # join's key set was always empty on live payloads, so relayed execs never re-bound client-side.
+            for _m in messages:
+                _m.pop("fromOrig", None)
+        except Exception as e:
+            _bars_complain("*", "messages", e)
+            messages = []
         # The band's marks are the per-call RUN SPANS (g70): each judge call plotted at its real [sent, recv],
         # glossed by the nearest artifact mark — so a judge that ran shows up WHEN it ran (incl. distiller lag +
         # coordinating-courier classifications the artifact marks miss), not back-placed onto the work.
-        judging = _run_judging(now - TL_HORIZON, set(id2name), semantic)
+        try:
+            judging = _run_judging(now - TL_HORIZON, set(id2name), semantic)
+        except Exception as e:
+            _bars_complain("*", "judging", e)
+            judging = []
     else:                                                # SKELETON: the heavy time-plotted detail rides the {type:"bars"} message
         messages, judging = [], []
     # compaction-sweep gradient (widest→narrowest): the timeline's scan-bar has no client-side colormap, so
@@ -19216,9 +19278,27 @@ def _apply_judge_settings(body):
     the ack shows what actually landed, since an invalid value is deliberately ignored. The
     distill pair answers RAW ("triage" = following the triage pick), matching /version: the
     gear shows the user's choice, not its resolution."""
+    _dm_before = jd._distill_model()
     for key, setter in _JUDGE_SETTING_FIELDS:
         if isinstance(body, dict) and key in body:
             setter(str(body.get(key) or ""))
+    if jd._distill_model() != _dm_before:
+        # Switching the distill tier's EFFECTIVE model is a discrete recovery event (the user
+        # 2026-08-18, who pointed the tier away from an outage-scoped model and expected the failed
+        # cards to retry): re-arm every given-up summary/brief/stall line so the next pass retries on
+        # the new model, wake the producer so that pass starts now, and push so the cards trade their
+        # "distill failed" chip for the live "Distilling…" swirl immediately. The effective compare
+        # (jd._distill_model, not the raw field) also catches a triage-model change while the distill
+        # pick is "triage" (follow). Propagated picks land here too on each receiving kernel, so a
+        # switch made on one machine re-arms the whole mesh.
+        try:
+            _n = jd.rearm_failed_summaries(int(time.time()))
+            if _n:
+                sys.stderr.write("distiller: re-armed %d given-up card(s) — distill model changed\n" % _n)
+        except Exception:
+            sys.stderr.write("rearm-on-model-change: %s\n" % traceback.format_exc())
+        _producer_wake.set()
+        _push_all()
     return {"ok": True, "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),
             "judgeEffort": jd._triage_effort(), "indexEffort": jd._index_effort(),
             "distillModel": jd._state_str("distill-model", "triage"),
@@ -20720,6 +20800,13 @@ def _producer():
                     sys.stderr.write("compact: archived %d cleared goal node(s)\n" % moved)
             except Exception:
                 sys.stderr.write("compact: %s\n" % traceback.format_exc())
+            try:                                       # judge calls served again after failing (the degraded→
+                if jd.consume_judge_recovery():        # serving edge, e.g. a 529 storm ending) → re-arm the
+                    _n = jd.rearm_failed_summaries(int(time.time()), auto=True)   # give-up cards; next pass retries
+                    if _n:
+                        sys.stderr.write("distiller: re-armed %d given-up card(s) — judge calls serving again\n" % _n)
+            except Exception:
+                sys.stderr.write("rearm-on-recovery: %s\n" % traceback.format_exc())
             _end_goals_pass()      # pass + compact done → drop the snapshot BEFORE bumping the gen, so the cache-
                                    # busting rebuild below reads the fully-applied (post-pass) state, not pre-pass.
             _judge_gen[0] += 1     # a judge pass may have changed goal/caption state WITHOUT touching any
@@ -20985,6 +21072,7 @@ _CHAT_MOBILE_CSS = (
     "@media (pointer:coarse) and (max-width:1024px){"
     "#tabbar{max-height:none;overflow:visible;position:relative;padding:6px 8px}"
     "#tabbar #tabs{display:none}"                       # the wrapping multi-row tab strip
+    "#tabbar-resize{display:none}"                      # nothing to resize under the mobile header
     "#mhdr{display:flex;align-items:stretch;gap:6px;width:100%}"
     "#mcur{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer;"
     "background:#2a2a2a;color:#dddddd;border:1px solid #3a3a3a;border-radius:6px;padding:7px 10px;"
@@ -21319,6 +21407,7 @@ def _timeline_page():
 def _chat_body():
     # ported from vscode-extension/src/page-skeleton.chatBody
     return ('<div id="winframe"></div><div id="tabbar"><span id="tabs"></span></div>'
+            '<div id="tabbar-resize" title="Drag to resize the tab strip"></div>'
             '<div id="ledger" style="display:none"></div>'
             # the live-ask picker lives INSIDE #content (the user 2026-06-27) so it flows at the bottom of the
             # transcript and scrolls WITH the chat history, instead of a fixed mini-window below it.
@@ -26100,6 +26189,12 @@ def main():
             sys.stderr.write("romp-kernel: pruned %d judge scratch transcript(s)\n" % _n)
     except Exception:
         sys.stderr.write("judge scratch prune: %s\n" % traceback.format_exc())
+    try:                                                      # a restart is a discrete recovery event: re-arm
+        _n = jd.rearm_failed_summaries(int(time.time()))      # every given-up summary/brief/stall line so the
+        if _n:                                                # first passes retry them (rearm's docstring
+            sys.stderr.write("romp-kernel: re-armed %d given-up summary line(s) at startup\n" % _n)   # promised this since 07-03; now wired)
+    except Exception:
+        sys.stderr.write("startup rearm: %s\n" % traceback.format_exc())
     _write_palette_mirror()                                   # keep bin/romp's palette-colors mirror current across code updates
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
     threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot

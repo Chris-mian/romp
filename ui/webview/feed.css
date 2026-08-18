@@ -147,10 +147,15 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    thumb-padded); the category CHIP is itself the drag surface (no separate handle — the grab cursor
    it wears in the stacked layout is the affordance). */
 .fcol-fold { display: none; }
-.feed-col.col-collapsed .feed-col-list { display: none; }   /* folded: the header (chip + count) stands in */
 
 @container (max-width: 540px) {
   .feed-cols { flex-direction: column; }
+  /* Folding exists ONLY here, so the fold BITING lives here too (the user 2026-08-18): this rule used
+     to sit outside the query, so a section collapsed while stacked stayed hidden after the feed
+     widened to side-by-side — an empty column with no caret to reopen it (the caret is stacked-only).
+     Scoped, the side-by-side layout always shows every card; the persisted fold re-applies the moment
+     the feed narrows back to one column. */
+  .feed-col.col-collapsed .feed-col-list { display: none; }   /* folded: the header (chip + count) stands in */
   /* stacked, the columns read TOP-DOWN as Completed → Blocked (needs you) → Working by default (the
      user 2026-07-30, moving Completed up from the middle; supersedes the 2026-07-08 Blocked-first
      order): what finished first, then what needs you, then what's still running. DOM order stays
