@@ -3131,9 +3131,13 @@ AWAITING_BACKSTOP_SECS = 6 * 3600
 # banned by the injected-voice rule — and sat outside tests/test_injected_voice.py's index, which is how it
 # survived the 2026-07-24 sweep. It is indexed there now.
 AWAITING_BACKSTOP_TEXT = (
-    "Checking in on the background work you set in motion here. If it finished, pick the result up and "
-    "keep going. If it stalled or died, relaunch it or find another way; your call. If you're now blocked, "
-    "say exactly what you need from me. If it's genuinely still running, a one-line status is enough.")
+    "Checking in on the background work you set in motion here. Go LOOK at the thing itself first — "
+    "the job queue, the pull request, the run's output, whatever you were waiting on — rather than "
+    "answering from memory. If it finished, pick the result up and keep going. If it stalled or died, "
+    "relaunch it or find another way; your call. If it can only move when someone acts on it and "
+    "they haven't, chase it or route around it. If you're now blocked, say exactly what you need "
+    "from me. Only if you checked just now and it's genuinely still running is a one-line status "
+    "enough.")
 
 
 def _put_nudged(gid, rec):
