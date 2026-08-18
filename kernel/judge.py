@@ -8079,10 +8079,37 @@ def _close_session(fsid, path, now, cap=CLOSE_FAIRNESS):
             continue
         if cap is not None and did >= cap:             # cap is None by default now (no per-pass close cap);
             break                                      # an explicit caller (a test) can still bound a backfill
+        _judge_ctx.last_call_fail = None               # a stale stash must never charge THIS turn (below)
         res = _close_turn(store, turn, seg_by_id=seg_by_id)
         if res is None:
+            # SAFEGUARDS TOMBSTONE (the user 2026-08-18): a safeguards refusal is the filter ruling on
+            # this turn's CONTENT — deterministic per prompt — so the retry-next-pass contract for
+            # transient failures burned one doomed call per pass, forever (2,955 refusals in six days,
+            # 1,301 on one research session alone). Strike-count refusals per turn AT ITS CURRENT SIZE;
+            # at the cap, adopt the turn exactly as a success would (swept + closedSig at fp), loudly —
+            # the turn GROWING then re-judges it through the same closedSig growth check that re-judges
+            # any closed turn, so the re-arm event is new evidence, never a clock. Transient failures
+            # (529s, timeouts) keep the plain retry: their recovery is the storm ending, and each pass
+            # costs one call, not a give-up.
+            if not getattr(_judge_ctx, "paused", False):
+                last = getattr(_judge_ctx, "last_call_fail", None)
+                if isinstance(last, dict) and "safeguards flagged" in str(last.get("note") or ""):
+                    fails = dict(store.get("closeFails") or {})
+                    rec = fails.get(tid) if isinstance(fails.get(tid), dict) else None
+                    k = (rec.get("fails", 0) + 1) if rec and rec.get("fp") == fp else 1
+                    if k >= DISTILL_FAIL_CAP:
+                        swept.add(tid); sig[tid] = fp; did += 1
+                        fails.pop(tid, None)
+                        _log_judge_error("closer", fsid, "give-up",
+                                         note="%d safeguards refusals on this turn's content; swept "
+                                              "without verdicts; the turn growing re-judges it" % k)
+                    else:
+                        fails[tid] = {"fp": fp, "fails": k}
+                    store["closeFails"] = fails
             continue                                   # LLM/parse failed → leave unswept, retry next pass
         newly += res
+        if isinstance(store.get("closeFails"), dict):
+            store["closeFails"].pop(tid, None)         # a landed judgment retires the strike record
         swept.add(tid); sig[tid] = fp; did += 1        # remember the size we judged at → detect later growth
     store["closedTurns"] = sorted(swept)
     store["closedSig"] = sig
