@@ -95,7 +95,10 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}
 
 @test "an anonymous send is refused at the door, and by the CLI before it" {
     # the bus: a raw POST without from_id names the sender's identity resolution as the breakage
-    run curl -s -X POST "127.0.0.1:$ROMP_POSTAL_PORT/send" \
+    # (authorized with the machine's serve token, like every direct caller — the CLI carries it)
+    _tok="${ROMP_SERVE_TOKEN:-$(cat "$XDG_STATE_HOME/romp/serve-token")}"
+    run curl -s -X POST -H "X-Romp-Token: $_tok" \
+        "127.0.0.1:$ROMP_POSTAL_PORT/send" \
         -d '{"to": "beta", "body": "How is it going?", "kind": "question"}'
     [[ "$output" == *"sender identity required"* ]]
     [ "$(cnt "$(mb uuid-b)/new")" = "0" ]        # no ghost mail minted
