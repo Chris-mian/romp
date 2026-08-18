@@ -73,6 +73,56 @@ class RedistillOverrideReplay(unittest.TestCase):
         self.assertIsNone(jd.load_goals(SID).get("nodes", {}).get(SID + ":gone"))
 
 
+class RedistillReplayRecoveryExtensions(unittest.TestCase):
+    """Try again reaches the give-ups the "" flip can't (2026-08-18): a give-up that KEPT an older real
+    summary (a re-completion never blanks prior text) re-arms by clearing its event stamp — gated on the
+    live "*-failed" warn, so replays past a success stay no-ops; the stall line joins the family; and a
+    manual retry drops the era mark so the health-edge auto-rearm starts fresh."""
+
+    def tearDown(self):
+        for d in (jd.GOALDIR, jd._overrides_dir()):
+            for f in d.glob("*"):
+                f.unlink()
+
+    def _seed(self, nd):
+        base = {"text": "ship the api", "parentId": None, "mt": 1781100000}
+        base.update(nd)
+        store = jd.load_goals(SID)
+        store["nodes"][NID] = jd.GuardedNode(base)
+        jd.save_goals(SID, store)
+
+    def test_replay_rearms_a_kept_older_summary_by_stamp(self):
+        self._seed({"summary": "Old takeaway.", "distilledMt": 1781100000,
+                    "warns": [{"kind": "summary-failed", "t": 1781100000,
+                               "msg": "synthetic msg", "detail": "synthetic detail"}]})
+        jd.append_override(SID, NID, "redistill", 1781100100)
+        nd = jd.load_goals(SID)["nodes"][NID]
+        self.assertEqual(nd.get("summary"), "Old takeaway.", "prior text is never clobbered")
+        self.assertIsNone(nd.get("distilledMt"), "stamp cleared → the done gate re-enters, prior intact")
+        # the retry then succeeds: new text, new stamp, warn cleared → the journaled click goes no-op
+        st = jd.load_goals(SID)
+        st["nodes"][NID]["summary"] = "New takeaway."
+        st["nodes"][NID]["distilledMt"] = 1781100500
+        st["nodes"][NID]["warns"] = []
+        jd.save_goals(SID, st)
+        nd = jd.load_goals(SID)["nodes"][NID]            # journal replays again on this load
+        self.assertEqual(nd.get("distilledMt"), 1781100500,
+                         "no live warn → the stamp-clear never replays past a success")
+
+    def test_replay_flips_the_stall_sentinel_and_leaves_the_era_mark(self):
+        self._seed({"stallSummary": "", "stallFails": 2, "autoRearmed": True,
+                    "warns": [{"kind": "stall-failed", "t": 1781100000,
+                               "msg": "synthetic msg", "detail": "synthetic detail"}]})
+        jd.append_override(SID, NID, "redistill", 1781100100)
+        nd = jd.load_goals(SID)["nodes"][NID]
+        self.assertIsNone(nd.get("stallSummary"), "the stall line re-arms like summary/blockSummary")
+        self.assertEqual(nd.get("stallFails"), 0, "the consecutive-fail counter starts over")
+        self.assertTrue(nd.get("autoRearmed"),
+                        "the era mark SURVIVES replay: the journal replays on every load forever, so a "
+                        "historical click erasing it would defeat the one-auto-retry bound for good — "
+                        "the mark clears only on a landed summary or a discrete recovery event")
+
+
 class RedistillOpWiring(unittest.TestCase):
     """Source pins on the kernel handler — the ws plumbing is exercised end-to-end by the push
     responsiveness suite; here we pin the journal-first order and the loud ACK."""
