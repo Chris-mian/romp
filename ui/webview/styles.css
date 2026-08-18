@@ -2799,3 +2799,8 @@ body.fileview-open { overflow: hidden; }
 .fileview-md th, .fileview-md td { border: 1px solid var(--box-border); padding: 4px 10px; text-align: left; }
 .fileview-md th { background: rgba(255, 255, 255, 0.03); }
 .fileview-md img { max-width: 100%; }
+
+/* a MACHINE-sent message's notch (romp injections, ⚙-tagged sends — the same senderKind verdict the
+   bubble wears): light gray, visibly quieter than the user's blue, so the scroll map separates "you
+   spoke" from "something was injected" at a glance (the user 2026-08-18) */
+.scroll-marks .scroll-mark.machine { background: #8a8f98; opacity: 0.55; }

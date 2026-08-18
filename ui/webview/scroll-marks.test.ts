@@ -17,8 +17,9 @@ test("one notch per real user message across the WHOLE loaded conversation", () 
   // come from the full resident events array: true pixels for rendered turns, a proportional slot
   // inside the MEASURED spacer for the rest — the same estimate the scrollbar itself stands on.
   assert.match(RENDER, /for \(let i = 0; i < s\.events\.length; i\+\+\) \{/);
-  assert.match(RENDER, /if \(ev\.kind !== "user" \|\| !ev\.human \|\| ev\.romp \|\| ev\.rompAuto \|\| ev\.tag\) continue;/,
-    "machine-sent tagged messages never wear the blue that means yours");
+  // the filter reads the ONE senderKind verdict (2026-08-18): user → blue, romp/tagged → the gray
+  // machine notch, harness noise → none — the same classifier the bubble and rail dot wear
+  assert.match(RENDER, /const kind = senderKind\(ev\);\s*\n\s*if \(kind === "injected"\) continue;/);
   assert.match(RENDER, /ev\.canned === "continue" \|\| SLASH_CMD_RE\.test\(md\)/,
     "a /command or Continue gesture is a doing, not words — no notch");
   assert.match(RENDER, /'\.turn\[data-unit="' \+ i \+ '"\]'/, "rendered events use their true pixel offset");
@@ -37,7 +38,8 @@ test("a history load rescales the map smoothly — moved notches are carried, ne
   // the user 2026-08-17: scrolling back streams older history in; the scroller's world grows and
   // every proportional position compresses (the native thumb does the same). Rebuilt nodes can't
   // transition, so same-count updates move the EXISTING nodes and CSS carries them.
-  assert.match(RENDER, /if \(kids\.length === ys\.length\) \{\s*\n\s*ys\.forEach\(\(y, i\) => \{ kids\[i\]\.style\.top = y \+ "px"; \}\);/);
+  assert.match(RENDER, /if \(kids\.length === ys\.length\) \{\s*\n\s*ys\.forEach\(\(o, i\) => \{ kids\[i\]\.style\.top = o\.y \+ "px"; kids\[i\]\.className = "scroll-mark" \+ \(o\.m \? " " \+ o\.m : ""\); \}\);/,
+    "…and the kind class updates in place too (a machine notch stays gray through a rescale)");
   assert.match(CSS, /transition: top 180ms ease;/);
   assert.match(CSS, /prefers-reduced-motion: reduce\) \{ \.scroll-marks \.scroll-mark \{ transition: none; \} \}/);
 });
