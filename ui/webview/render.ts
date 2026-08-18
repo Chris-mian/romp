@@ -17,6 +17,7 @@ import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./ta
 import { SessionViews, viewVisible, viewsKey, hideIn, revealIn } from "./session-views";
 import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
+import { senderKind } from "./sender-identity";
 import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { delegate } from "./actions";
 import { KIND_WORD } from "./spin-caption";
@@ -1790,13 +1791,18 @@ function paintScrollMarks(): void {
   const frame = contentOffsetFrame(content, v, s);
   if (!frame) { box.style.display = "none"; scrollMarksSig = ""; return; }
   const sh = frame.sh;
-  const offs: number[] = [];
+  const offs: Array<{ top: number; m: string }> = [];
   const evUnit = eventUnitIndex(s);                       // marks anchor to EVENTS; the frame speaks UNITS
   for (let i = 0; i < s.events.length; i++) {
     const ev = s.events[i] as ChatEvent & { human?: boolean; romp?: boolean; rompAuto?: boolean; canned?: string; md?: string; tag?: string };
-    // a TAGGED message is machine-sent under a label, not the user's words — the blue that means
-    // "yours" would lie (the same identity rule the rail dot follows since the tag dress landed)
-    if (ev.kind !== "user" || !ev.human || ev.romp || ev.rompAuto || ev.tag) continue;
+    if (ev.kind !== "user") continue;
+    // the SAME classifier the bubble and rail dot read (sender-identity.ts, the user 2026-08-18:
+    // "reuse the same functions that compute how they render in the chat, so there's never any
+    // chance of desynchronization"). user → the blue that means yours; romp/tagged → a light gray
+    // notch (machine-sent activity, visible on the map but never posing as your words); harness
+    // noise ("injected") → no notch at all.
+    const kind = senderKind(ev);
+    if (kind === "injected") continue;
     const md = (ev.md || "").trim();
     // gestures are the user's DOINGS, not their words — no notch (the Continue row, a /command)
     if (!md || ev.canned === "continue" || SLASH_CMD_RE.test(md)) continue;
@@ -1804,11 +1810,11 @@ function paintScrollMarks(): void {
     if (u < 0) continue;                                  // not in the display stream (never for user events)
     const off = frame.offsetOf(u);
     if (off == null) continue;
-    offs.push(off);
+    offs.push({ top: off, m: kind === "user" ? "" : "machine" });
   }
-  const ys = offs.map((top) => Math.round((top / sh) * (cRect.height - 4)));
+  const ys = offs.map((o) => ({ y: Math.round((o.top / sh) * (cRect.height - 4)), m: o.m }));
   const sig = activeId + "|" + Math.round(cRect.top) + "," + Math.round(cRect.right) + ","
-    + Math.round(cRect.height) + "|" + ys.join(",");
+    + Math.round(cRect.height) + "|" + ys.map((o) => o.y + (o.m ? "m" : "")).join(",");
   if (sig !== scrollMarksSig) {
     scrollMarksSig = sig;
     // UPDATE IN PLACE when the notch count is unchanged (the user 2026-08-17: scrolling back streams
@@ -1819,11 +1825,11 @@ function paintScrollMarks(): void {
     // tab) still rebuild outright — those are new marks, not moved ones.
     const kids = Array.from(box.children) as HTMLElement[];
     if (kids.length === ys.length) {
-      ys.forEach((y, i) => { kids[i].style.top = y + "px"; });
+      ys.forEach((o, i) => { kids[i].style.top = o.y + "px"; kids[i].className = "scroll-mark" + (o.m ? " " + o.m : ""); });
     } else {
-      box.replaceChildren(...ys.map((y) => {
-        const m = el("div", "scroll-mark");
-        m.style.top = y + "px";
+      box.replaceChildren(...ys.map((o) => {
+        const m = el("div", "scroll-mark" + (o.m ? " " + o.m : ""));
+        m.style.top = o.y + "px";
         return m;
       }));
     }
@@ -1992,14 +1998,15 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     // message romp INJECTED (a feed nudge / follow-up — ev.romp) → a GRAY right-aligned bubble with a
     // "romp" tag, so it's clear romp (not you) sent it (the user 2026-06-19); everything else harness-
     // injected (compact summary, /command stdout, system reminders) → a neutral left note box.
-    const romp = !!ev.romp;
-    const injected = !ev.human && !romp;
-    // sender-declared render hint (kernel MSG_TAG_RE lift, the user 2026-08-15): auto-generated
-    // text — a kickoff template, a scripted brief — is machine-sent on the user's behalf, so it
-    // sheds the typed-words blue for the gray injected family, labeled with the SENDER's own word
-    // (romp attaches no meaning to the label; ⚙ marks "scripted", vs romp's swirl). Hoisted above
-    // the rail dot (2026-08-18): the dot is its own identity channel and must agree with the bubble.
-    const tagged = !romp && !injected && !!ev.tag && !!ev.md;
+    // ONE classifier (sender-identity.ts, the user 2026-08-18): the bubble dress here, the rail
+    // dot below, and paintScrollMarks' notch color all read the SAME senderKind verdict, so the
+    // surfaces can never desynchronize. The sender-declared render hint (kernel MSG_TAG_RE lift,
+    // the user 2026-08-15) classifies as "tagged": machine-sent on the user's behalf, shedding the
+    // typed-words blue for the gray family under the SENDER's own ⚙ label.
+    const kind = senderKind(ev);
+    const romp = kind === "romp";
+    const injected = kind === "injected";
+    const tagged = kind === "tagged";
     const turn = el("div", "turn turn-user" + (romp ? " romp" : injected ? " injected" : ""));
     // Unresolved postal ids ride the raw turn so a timeline message arc can still land on it. Without
     // this the arc pointed at a turn with nothing to match and the click died silently (the user
