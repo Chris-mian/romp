@@ -1085,13 +1085,15 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   position: fixed; z-index: 3; pointer-events: none;
   color: var(--dim); opacity: 0.92;
 }
-/* The day-context label above the top rail stamp (render.ts paintDay, the user 2026-08-17):
+/* The day-context label ABOVE the top rail stamp (render.ts paintDay, the user 2026-08-17):
    "Yesterday" / "3 days ago" / "Last week" whenever the top stamp's day is not today. Fixed like
-   the sticky, passive like the sticky; right-aligned to the gutter's right edge via the translate
-   (left is set to that edge, no width math), sitting just above the stamp it names. Smaller than
-   the stamp on purpose — context, not the time itself — and nowrap: fixed positioning escapes the
-   pane's overflow clip, and the longest form ("2 weeks ago") clears the gutter into the turn
-   padding, never over prose. */
+   the sticky, passive like the sticky. It sat BELOW the stamp until 2026-08-18 (the user, with a
+   video): there, the next incoming stamp scrolled straight through it and the label leapt over —
+   above the stamp nothing crosses its path. No width pin: the box shrinkwraps its nowrap text, and
+   paintDay puts its right edge on the gutter's right edge while never letting its left edge past
+   the pane's — "2 days ago" is wider than the 47px gutter, and the old gutter-pinned box clipped
+   the leading digit at the pane edge (the user 2026-08-18, with a screenshot). Smaller than the
+   stamp on purpose — context, not the time itself. */
 /* the user-message scroll notches (render.ts paintScrollMarks, the user 2026-08-17): passive fixed
    chrome over the scroller's right edge, one 2px tick per user message at its proportional position.
    The blue is the OUTGOING-BUBBLE blue (#2b6cef, "yours"), deliberately not the romp accent. */
@@ -1101,9 +1103,11 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   transition: top 180ms ease; }   /* history streaming in rescales the map — carried, not teleported */
 @media (prefers-reduced-motion: reduce) { .scroll-marks .scroll-mark { transition: none; } }
 .rail-day {
-  position: fixed; z-index: 3; pointer-events: none; white-space: nowrap;
-  text-align: right;   /* the STAMP's own box + its own alignment — the right edges match by construction */
+  position: fixed; z-index: 3; pointer-events: none; white-space: nowrap; line-height: 1;
   font-size: 0.68em; letter-spacing: 0.03em; color: var(--dim); opacity: 0.85;
+  background: var(--bg);   /* the widest labels ("2 weeks ago") poke a few px past the gutter into the
+                              session rail line; a pane-bg plate interrupts the line cleanly instead of
+                              striking text through it */
 }
 /* match the dot's vertical position per turn type (default dot top:15, tool/thinking top:10) */
 .turn-tool .time-marker, .turn-thinking .time-marker { top: 10px; }
