@@ -266,6 +266,78 @@ class GiveUpWarnNamesTheError(unittest.TestCase):
         self.assertNotIn("last attempt failed", nd["warns"][0]["detail"])
 
 
+class ConfirmingWarnSurvives(unittest.TestCase):
+    """rollup's summary-surface warn retire must NOT eat a warn during the done-CONFIRMING window (the
+    user 2026-08-18, the chipless summaryless card): the distiller enters confirming tops, so its
+    give-up/unreadable warns stamp while status still reads "working" — the old `st != "completed"`
+    retire dropped them within the same pass, before any chip ever rendered, leaving the "" sentinel
+    orphaned with nothing armed to retry it."""
+
+    def tearDown(self):
+        for f in jd.GOALDIR.glob("*"):
+            f.unlink()
+
+    def _store(self, done_verdict):
+        node = {"id": NID, "text": "ship the api", "parentId": None, "nodeComplete": bool(done_verdict),
+                "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0 + 30,
+                "summary": "", "warns": [_warn("summary-failed")],
+                "log": ([{"src": "planner", "kind": "done", "ev_t": T0 + 20, "at": T0 + 21}]
+                        if done_verdict else [])}
+        return {"rompUuid": SID, "seq": 1, "placementsV": jd.PLACEMENTS_V, "lastNode": NID,
+                "placements": {}, "status": {NID: "working"}, "nodes": {NID: jd.GuardedNode(node)}}
+
+    def test_a_confirming_tops_summary_warn_survives_the_retire(self):
+        store = self._store(done_verdict=True)         # done verdict in, focus unmoved, session open
+        jd.rollup_status(store, False)
+        self.assertIn(NID, store.get("confirming") or (), "the window this test exists for")
+        self.assertTrue(any(w.get("kind") == "summary-failed"
+                            for w in (store["nodes"][NID].get("warns") or [])),
+                        "the give-up warn lives to render its chip")
+
+    def test_a_plain_working_tops_summary_warn_still_retires(self):
+        store = self._store(done_verdict=False)        # no done verdict → genuinely working
+        jd.rollup_status(store, False)
+        self.assertNotIn(NID, store.get("confirming") or ())
+        self.assertFalse(any(w.get("kind") == "summary-failed"
+                             for w in (store["nodes"][NID].get("warns") or [])),
+                         "a reopened/working card's takeaway isn't shown — its warn retires as before")
+
+
+class OrphanedSentinelRecheck(unittest.TestCase):
+    """A completed top WITH recorded work whose summary is the "" sentinel and whose warn never survived
+    (eaten during confirming, before the fix above) is re-checked on DISCRETE recovery events: the stamp
+    clears so the distiller re-enters — resolving work writes the real summary; unreadable work
+    re-settles and re-warns loudly. Umbrellas (no recorded work) keep their designed silent ""."""
+
+    def tearDown(self):
+        for f in jd.GOALDIR.glob("*"):
+            f.unlink()
+
+    def test_a_discrete_event_reopens_an_orphaned_sentinel_with_recorded_work(self):
+        _seed(status="completed", summary="", distilledMt=T0, trail=[SID + ":s1"])
+        self.assertEqual(jd.rearm_failed_summaries(T0 + 100), 1)
+        nd = _node()
+        self.assertIsNone(nd.get("distilledMt"), "the cleared stamp re-enters the distiller")
+        self.assertEqual(nd.get("summary"), "", "the sentinel itself is untouched until the retry rules")
+
+    def test_the_health_edge_never_touches_orphans(self):
+        _seed(status="completed", summary="", distilledMt=T0, trail=[SID + ":s1"])
+        self.assertEqual(jd.rearm_failed_summaries(T0 + 100, auto=True), 0,
+                         "warn-less orphans re-check on discrete events only — the auto edge is "
+                         "reserved for the warn-gated era machinery")
+
+    def test_an_umbrella_keeps_its_designed_silent_sentinel(self):
+        _seed(status="completed", summary="", distilledMt=T0)   # no trail, no placements anywhere
+        self.assertEqual(jd.rearm_failed_summaries(T0 + 100), 0,
+                         "no recorded work → the silent '' is correct (the 2026-07-10 design)")
+
+    def test_a_card_with_a_live_summary_warn_is_the_warn_paths_business(self):
+        _seed(status="completed", summary="", distilledMt=T0, trail=[SID + ":s1"],
+              warns=[_warn("summary-unreadable")])
+        self.assertEqual(jd.rearm_failed_summaries(T0 + 100), 0,
+                         "a visible chip means the loud path owns it — the sweep is for eaten warns")
+
+
 class ModelHealthDiagnosis(unittest.TestCase):
     """_giveup_cause names the failing MODEL once its consecutive call failures reach the give-up cap —
     a deterministic count, reset by that model's next served reply — and suggests the settings switch

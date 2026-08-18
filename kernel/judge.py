@@ -3582,8 +3582,13 @@ def rollup_status(store, session_closed, now=None):
         dead = set()
         if st != "blocked":
             dead.add("brief")                          # the card left Needs-you → the brief isn't shown
-        if st != "completed":
-            dead.add("summary")                        # the card isn't completed → the takeaway isn't shown
+        if st != "completed" and nid not in confirming:
+            # the card isn't completed → the takeaway isn't shown. CONFIRMING is the exception (the user
+            # 2026-08-18, the chipless summaryless card): the distiller enters done-confirming tops, so
+            # its give-up/unreadable warns stamp while status still reads "working" — retiring them here
+            # ate the warn within the same pass, before the user ever saw a chip, leaving the "" sentinel
+            # orphaned with nothing armed to retry it.
+            dead.add("summary")
         if any(_warn_surface(w) == "stall" for w in ws):
             if _stalls is None:
                 _stalls = stalled_facts(store.get("rompUuid") or "")
@@ -9490,6 +9495,27 @@ def rearm_failed_summaries(now=None, auto=False):
             else:
                 nd.pop("autoRearmed", None)            # a discrete event (startup/pause-clear) opens a fresh era
             changed = True; n += 1
+        if not auto:
+            # ORPHANED "" sentinels (the user 2026-08-18, the chipless summaryless card): a completed top
+            # WITH recorded work settled to "" and no summary-surface warn survived (stamped during the
+            # confirming window, rollup's retire ate it — fixed alongside, but already-eaten cards stay
+            # silent forever: every path above is warn-gated and Try again needs the chip). On DISCRETE
+            # recovery events only, clear the stamp so the distiller re-enters: work that resolves now
+            # writes the real summary; work still unreadable re-settles "" and re-warns (the warn now
+            # survives confirming), so the card is loud either way. One-shot per card: once a warn
+            # exists, the no-warn gate here excludes it and the warn-gated path above owns it. Umbrellas
+            # (no recorded work anywhere in the subtree) keep their designed silent "".
+            for nid, nd in (store.get("nodes") or {}).items():
+                if not isinstance(nd, dict) or nd.get("parentId") is not None:
+                    continue
+                if status.get(nid) != "completed" and nid not in confirming:
+                    continue
+                if nd.get("summary") == "" and nd.get("distilledMt") is not None \
+                        and not any(isinstance(w, dict) and _warn_surface(w) == "summary"
+                                    for w in nd.get("warns") or []) \
+                        and _goal_has_recorded_work(store, nid):
+                    nd["distilledMt"] = None
+                    changed = True; n += 1
         if changed:
             save_goals(fsid, store)
     return n
