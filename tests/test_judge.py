@@ -4636,6 +4636,21 @@ class ProceduralBlockStillSpeaks(unittest.TestCase):
         self.assertEqual(calls["stall"], [])
         self.assertEqual(calls["brief"], [])
 
+    def test_a_kept_brief_under_a_live_giveup_warn_regenerates_instead_of_keeping(self):
+        # the review's never-retries finding (2026-08-18): a proc-only give-up KEPT an older brief and
+        # stamped brief-failed; the recovery re-arm then cleared briefedMt to force a retry — but the
+        # keep short-circuit (_brief_superseded(None) is False by construction) restamped the gate shut
+        # without any model call, burning the re-arm (and its era) on a no-op forever. A live
+        # brief-failed warn refuses the keep, so the re-arm's retry actually runs and clears the warn.
+        calls, node = self._run(node_extra={
+            "blockSummary": "the give-up's kept older brief", "briefedMt": None,
+            "warns": [{"kind": "brief-failed", "t": T0 + 30, "msg": "synthetic msg",
+                       "detail": "synthetic detail"}]})
+        self.assertEqual(node["blockSummary"], "stall take.",
+                         "regenerated through the staller's prompt, not kept")
+        self.assertFalse(any(w.get("kind") == "brief-failed" for w in node.get("warns") or []),
+                         "the landed note clears the give-up warn")
+
     def test_a_fresh_real_block_reopens_a_settled_blank(self):
         # the launch-prep shape: a procedural block settled the brief to "" (that episode had nothing to
         # say), then a REAL decision landed later in the subtree — "" must not keep muting the card
@@ -5503,6 +5518,25 @@ class Distiller(unittest.TestCase):
         self.assertEqual(nd.get("blockSummary"), "Decide A or B.")
         self.assertFalse(any(w.get("kind") == "brief-failed" for w in nd.get("warns") or []),
                          "a landed brief drops the give-up warn")
+
+    def test_a_landed_brief_ends_its_lines_giveup_era(self):
+        # the mutation-test gap from the review (2026-08-18): with the success-path era pops deleted,
+        # the whole suite still passed — so pin them through the REAL path: an auto-re-armed line whose
+        # retry succeeds must drop its era mark, or the health edge is one-per-lifetime per card
+        gid, now = self._blocked_goal()
+        jd.brief_llm = lambda g, w, ow="": ""
+        for _ in range(jd.DISTILL_FAIL_CAP):
+            jd.run_distill(now=now)
+        st = jd.load_goals(SID)                          # the health edge re-armed it (as rearm would):
+        st["nodes"][gid]["blockSummary"] = None          # line owed again, era spent
+        st["nodes"][gid]["autoRearmed"] = {"brief-failed": True}
+        jd.save_goals(SID, st)
+        jd.brief_llm = lambda g, w, ow="": "Decide A or B."
+        jd.run_distill(now=now)
+        nd = jd.load_goals(SID)["nodes"][gid]
+        self.assertEqual(nd.get("blockSummary"), "Decide A or B.")
+        self.assertNotIn("autoRearmed", nd,
+                         "the landed brief pops its line's era mark — the next give-up era can auto-retry")
 
     def test_scan_counts_failures_and_rearm_reopens_only_warned_cards(self):
         gid, now = self._blocked_goal()
