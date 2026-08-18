@@ -13,6 +13,7 @@ import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { quoteReply } from "../quote";
+import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
 import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
 import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
@@ -7435,6 +7436,80 @@ if (typeof ResizeObserver === "function") {
       lastH = h;
     });
     tro.observe(box);
+  }
+}
+
+// ── drag-to-resize the tab strip (the user 2026-08-18) ── #tabbar wraps its tabs into rows and scrolls
+// past its max-height cap (150px ≈ four rows), which clipped the fifth row of a many-session strip with
+// no way to see more. The #tabbar-resize grip straddles the strip's bottom border: drag DOWN for more
+// rows, UP for fewer; it stays a scroll pane at every size. The dragged cap is per-viewer arrangement
+// like the tab ORDER (romp:vieworder), so it lives in localStorage — applied at boot, written on release
+// (not per-move). A double-click resets to the CSS default. Same pattern as #composer-resize; the grip
+// is a SIBLING below the bar (a child would scroll away with the rows), so it also survives every #tabs
+// re-render. The content-anchor ResizeObserver above cancels the scroll jump the resize would cause.
+{
+  const bar = document.getElementById("tabbar");
+  const grip = document.getElementById("tabbar-resize");
+  if (bar && grip) {
+    // `cap` is the preference of record. The APPLIED value re-clamps to the live window on every
+    // resize (an oversized cap must not crush the transcript when the window shrinks), but a
+    // briefly-small window never rewrites the preference — the applied style heals back when the
+    // window grows. Applied through the --tabbar-cap VAR, never the max-height property: the mobile
+    // page's `#tabbar{max-height:none}` must keep winning (an inline max-height would override that
+    // media rule and clip the mobile header, e.g. after a tablet rotation).
+    let cap = parseTabbarH(localStorage.getItem(TABBAR_H_KEY));
+    const applyCap = () => {
+      if (cap == null) bar.style.removeProperty("--tabbar-cap");
+      else bar.style.setProperty("--tabbar-cap", clampTabbarH(cap, window.innerHeight) + "px");
+    };
+    applyCap();
+    window.addEventListener("resize", applyCap);
+    let startY = 0, startH = 0, pid = 0, dragging = false, stick = false;
+    const onMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      if (!(e.buttons & 1)) { onUp(); return; }    // release swallowed (context menu, off-window) → end, never strand a phantom drag
+      cap = clampTabbarH(startH + (e.clientY - startY), window.innerHeight);
+      applyCap();
+      // growing the bar shrinks #content, which would push a tail-following view off the tail one
+      // sub-threshold step at a time — if it was at the tail when the drag began, keep it there
+      const content = document.getElementById("content");
+      if (stick && content) content.scrollTop = content.scrollHeight;
+    };
+    const onUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      try { grip.releasePointerCapture(pid); } catch { /* already released */ }
+      grip.classList.remove("dragging");
+      document.body.classList.remove("tabbar-resizing");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      if (cap != null) localStorage.setItem(TABBAR_H_KEY, String(cap));
+    };
+    grip.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;                  // a right-click opens menus, never a drag
+      e.preventDefault();
+      dragging = true;
+      startY = e.clientY;
+      // Anchor to the EFFECTIVE cap, never the rendered height: with fewer rows than the cap the
+      // rect is content-sized, and anchoring there silently collapsed a larger stored cap to about
+      // the content height on any drag — invisible at the time, and the clipped strip came back
+      // weeks later with no visible cause.
+      startH = cap != null ? clampTabbarH(cap, window.innerHeight) : TABBAR_H_DEFAULT;
+      const content = document.getElementById("content");
+      stick = !!content && nearBottom(content);
+      pid = e.pointerId;
+      // capture so the drag survives leaving the pane; a pointer already gone throws — the window
+      // listeners below carry the drag either way, so a failed capture must not abort the setup
+      try { grip.setPointerCapture(pid); } catch { /* pointer already released */ }
+      grip.classList.add("dragging");
+      document.body.classList.add("tabbar-resizing");
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+    // a double-click resets to the CSS default cap — the quick escape hatch, like the composer's
+    grip.addEventListener("dblclick", () => { cap = null; applyCap(); localStorage.removeItem(TABBAR_H_KEY); });
   }
 }
 
