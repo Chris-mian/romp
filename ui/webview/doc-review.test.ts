@@ -102,8 +102,25 @@ test("the comment's text is one click under its marker (progressive disclosure)"
 });
 
 test("commenting uses the chat's own selection menu chrome — one menu vocabulary", () => {
-  assert.match(RENDER, /const m = el\("div", "ctx-menu"\);/);
+  assert.match(RENDER, /const m = el\("div", "ctx-menu ctx-over-doc"\);/);
   assert.match(RENDER, /item\("Comment", \(\) => beginDocComment\(text\)\);/);
+});
+
+test("that menu clears the reader's own backdrop, or it is invisible", () => {
+  // The regression this pins: .ctx-menu sits at z-index 100 and #doc-review's backdrop at 130, both
+  // fixed siblings on <body> — so the menu rendered BEHIND the reader and right-click looked dead
+  // (found in local testing, 2026-08-18). Assert the lift, and that it out-ranks the backdrop.
+  const menuZ = Number(CSS.match(/\.ctx-menu\.ctx-over-doc \{ z-index: (\d+); \}/)![1]);
+  const backZ = Number(CSS.match(/#doc-review \{\s*\n\s*position: fixed; inset: 0; z-index: (\d+);/)![1]);
+  assert.ok(menuZ > backZ, `menu z-index ${menuZ} must exceed the reader backdrop's ${backZ}`);
+});
+
+test("the reader's right-click is REACHABLE — it overlays from body, outside #content", () => {
+  // The regression this pins: showSelectionMenu was bound to #content alone, so a right-click inside
+  // the reader hit the browser's native menu and Comment — the only way to make one — could not be
+  // reached at all (found in local testing, 2026-08-18).
+  assert.match(RENDER, /document\.addEventListener\("contextmenu", \(e\) => \{\s*\n\s*if \(!docReview\) return;/);
+  assert.match(RENDER, /document\.getElementById\("doc-review"\)\?\.contains\(t\)\) showSelectionMenu\(e\)/);
 });
 
 test("the panel dims the pane behind it rather than replacing it", () => {

@@ -3791,7 +3791,10 @@ function showSelectionMenu(e: MouseEvent) {
   if (inDoc && text.trim()) {
     e.preventDefault();
     dismissTabMenu();
-    const m = el("div", "ctx-menu");
+    // ctx-menu is z-index 100 and the reader's backdrop is 130, both fixed siblings on <body> — so the
+    // menu rendered BEHIND the reader and the right-click looked dead (found in local testing,
+    // 2026-08-18). This class lifts it over the panel it belongs to.
+    const m = el("div", "ctx-menu ctx-over-doc");
     const item = (labelText: string, fn: () => void) => {
       const it = el("div", "ctx-item");
       it.textContent = labelText;
@@ -10520,4 +10523,13 @@ setupSettings();
 })();
 // right-click a selection in the transcript → Reply (quote it) / Copy
 document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
+// ...and in the doc reader → Comment / Copy. The reader overlays the pane from document.body, OUTSIDE
+// #content, so without this binding its right-click fell through to the browser's native menu and the
+// ONLY way to make a comment was unreachable (found in local testing, 2026-08-18). Bound once at the
+// document, gated on the reader being open, rather than per-render inside the builder.
+document.addEventListener("contextmenu", (e) => {
+  if (!docReview) return;
+  const t = e.target as Node | null;
+  if (t && document.getElementById("doc-review")?.contains(t)) showSelectionMenu(e);
+});
 if (vscodeApi) vscodeApi.postMessage({ type: "ready" });

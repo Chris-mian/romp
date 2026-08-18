@@ -2484,6 +2484,8 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    comments on it; Submit hands every comment to the composer as one message. Pane-local (the
    feed card modal's precedent) — the composer it drafts into lives in this pane. The backdrop
    dims the chat behind it rather than replacing it, the same read as every other romp panel. */
+/* The selection menu inside the reader must clear the reader's own backdrop (z 130). */
+.ctx-menu.ctx-over-doc { z-index: 140; }
 #doc-review {
   position: fixed; inset: 0; z-index: 130;
   display: flex; align-items: center; justify-content: center;
