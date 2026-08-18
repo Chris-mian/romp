@@ -559,6 +559,35 @@ def _mid_elide(s, cap=6200):
     return "%s\n… [%d chars elided] …\n%s" % (s[:half], len(s) - 2 * half, s[-half:])
 
 
+# ── judge call health: the degraded→serving edge (the user 2026-08-18) ─────────────────────────────
+# A give-up card's designed recovery is a retry on a discrete RECOVERY event — but the only wired event
+# was the usage-limit retry-pause clearing, and the failures that actually cause most give-ups (a 529
+# overload storm, an auth blip) never engage that pause, so their cards kept the "distill failed" chip
+# long after the API recovered. This latch tracks the exact event those cards wait on: the first SERVED
+# judge call after a call-level failure. "call" rows latch degraded (_log_judge_error); a served reply
+# flips it back and records the edge (_mark_call_served, from _judge_run's success paths); the kernel
+# consumes the edge between passes — its single-writer window — and re-arms the give-up cards once per
+# era (rearm_failed_summaries auto=True). Process-global on purpose: every judge thread shares one API.
+_CALL_HEALTH = {"degraded": False, "recovered": False}
+_health_lock = threading.Lock()
+
+
+def _mark_call_served():
+    """A judge call came back with a real reply — if calls had been failing, record the recovery edge."""
+    with _health_lock:
+        if _CALL_HEALTH["degraded"]:
+            _CALL_HEALTH["degraded"] = False
+            _CALL_HEALTH["recovered"] = True
+
+
+def consume_judge_recovery():
+    """True exactly ONCE per degraded→serving transition — the kernel's between-pass re-arm trigger."""
+    with _health_lock:
+        r = _CALL_HEALTH["recovered"]
+        _CALL_HEALTH["recovered"] = False
+        return r
+
+
 def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
     """Append one failure row to ERRORS (judge-errors.jsonl) so `romp judges` can surface it. The row contract
     (the user 2026-07-09) — every row answers who/where/what/why on its own:
@@ -584,6 +613,9 @@ def _log_judge_error(judge, fsid, err, note=None, goal=None, seg=None):
     `tier` is written as a legacy twin of `judge` for pre-07-09 readers. Best-effort, NEVER raises — it
     runs inside the very failure paths it records."""
     try:
+        if err == "call":                              # a call-level failure (not the model's verdict) →
+            with _health_lock:                         # latch degraded; the next served reply is the edge
+                _CALL_HEALTH["degraded"] = True
         rec = {"t": int(time.time()), "judge": judge, "tier": judge, "fsid": fsid or "",
                "err": err, "note": note or ""}
         if goal:
@@ -970,6 +1002,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
                 _judge_ctx.last["reply"] = _mid_elide(wrap["result"])
                 _log_judge_usage(judge or tier, tier, model, fsid, wrap, sent, recv)
                 _auth_down_clear(fsid)                # billing works → unlatch (cheap no-op when unlatched)
+                _mark_call_served()                   # calls serve again → the give-up re-arm edge
                 return wrap["result"]
         except Exception:
             pass
@@ -986,6 +1019,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
                                      (getattr(p, "stderr", "") or "").strip()[-200:] or "no stderr"))
             return ""
         _judge_ctx.last["reply"] = _mid_elide(out)
+        _mark_call_served()                           # a raw reply is still a served call (recovery edge)
         return out                                    # wrapper unparseable but non-empty → raw stdout (defensive)
     finally:
         _active_end(rid)                              # call done (success/timeout/parse-fail) → drop the live bar
@@ -2304,19 +2338,33 @@ def _replay_overrides(fsid, store):
         elif op == "redistill":
             # The warn modal's "Try again" (the user 2026-08-13): re-arm a GIVEN-UP summary line so the
             # next triage pass re-runs the distiller — the same flip rearm_failed_summaries applies on
-            # the usage-limit recovery edge, journaled here so a concurrent pass's last-writer save
-            # can't silently erase the click. Idempotent by shape: only the "" give-up sentinel flips
-            # to None (owed); a line that has since succeeded (non-empty) or is already owed (None) is
-            # untouched, so replays past a success never clobber it. No supersede guard needed — this
-            # is a field flip, not a log verdict, and its no-op form IS the guard.
-            for k in ("summary", "blockSummary"):
+            # the recovery edges, journaled here so a concurrent pass's last-writer save can't silently
+            # erase the click. Idempotent by shape: only the "" give-up sentinel flips to None (owed); a
+            # line that has since succeeded (non-empty) or is already owed (None) is untouched, so
+            # replays past a success never clobber it. A give-up that KEPT an older real summary (a
+            # re-completion's give-up never blanks prior text) re-arms by clearing its event stamp
+            # instead — gated on the live "*-failed" warn, which a later success clears, so that replay
+            # is a no-op past a success too. No supersede guard needed — these are field flips, not log
+            # verdicts, and their no-op forms ARE the guard.
+            warned = {w.get("kind") for w in nd.get("warns") or [] if isinstance(w, dict)}
+            for k, stamp, wkind in (("summary", "distilledMt", "summary-failed"),
+                                    ("blockSummary", "briefedMt", "brief-failed"),
+                                    ("stallSummary", "stalledMt", "stall-failed")):
                 if nd.get(k) == "":
                     nd[k] = None
                     applied = True
-            for k in ("distillFails", "briefFails"):
+                elif nd.get(k) and wkind in warned and nd.get(stamp) is not None:
+                    nd[stamp] = None
+                    applied = True
+            for k in ("distillFails", "briefFails", "stallFails"):
                 if nd.get(k):
                     nd[k] = 0
                     applied = True
+            # Deliberately NOT touching nd["autoRearmed"] here: the journal replays on EVERY load,
+            # forever, so a single historical click would erase the era mark on each replay and defeat
+            # the one-auto-retry bound for good. The mark clears only where the era truly ends — a
+            # landed summary, or a discrete recovery event (startup / retry-pause clear) in
+            # rearm_failed_summaries. The click still always retries: the flips above don't consult it.
     return applied
 
 
@@ -2684,7 +2732,7 @@ def _warn_summary_failed(nd, judge, t):
     cause, ratelimited = _giveup_cause()
     retry = ("romp retries it automatically the moment the limit resets; nudging the session refreshes it sooner."
              if ratelimited else
-             "Nudge the session to refresh it, or it retries on its own the next time that session works on this goal.")
+             "romp retries it on its own after it recovers or restarts — or hit Try again to retry it now.")
     _node_warn(nd, kind, t,
                "romp couldn't write this card's %s." % line,
                "romp tried to generate this %s several times and each attempt failed, because %s. No work was "
@@ -8980,6 +9028,7 @@ def _distill_session(fsid, path, now):
             _node_warn_clear(nodes[top], "cite-miss")
             nodes[top]["stalledMt"] = due
             nodes[top]["stallFails"] = 0
+            nodes[top].pop("autoRearmed", None)        # a landed note ends the give-up era (see rearm)
             _node_warn_clear(nodes[top], "stall-failed")
             _node_warn_clear(nodes[top], "stall-unreadable")
             n += 1; changed = True
@@ -9104,6 +9153,7 @@ def _distill_session(fsid, path, now):
             _node_warn_clear(nodes[top], "cite-miss")      # anchored either way → any older warn is over
             nodes[top]["briefedMt"] = due
             nodes[top]["briefFails"] = 0                # success → reset the counter (for a future re-open)
+            nodes[top].pop("autoRearmed", None)         # a landed brief ends the give-up era (see rearm)
             _node_warn_clear(nodes[top], "brief-failed")   # a brief landed → drop any earlier give-up warn
             _node_warn_clear(nodes[top], "brief-unreadable")   # …and any earlier orphaned-history warn
             n += 1; changed = True
@@ -9166,6 +9216,7 @@ def _distill_session(fsid, path, now):
         _node_warn_clear(nodes[top], "cite-miss")          # anchored either way → any older warn is over
         nodes[top]["distilledMt"] = due
         nodes[top]["distillFails"] = 0                 # success → reset the counter
+        nodes[top].pop("autoRearmed", None)            # a landed summary ends the give-up era (see rearm)
         _node_warn_clear(nodes[top], "summary-failed") # a summary landed → drop any earlier give-up warn
         _node_warn_clear(nodes[top], "summary-unreadable")   # …and any earlier orphaned-history warn
         n += 1; changed = True
@@ -9175,7 +9226,12 @@ def _distill_session(fsid, path, now):
 
 
 # ── failed-summary give-up: fleet count (for the banner) + re-arm on recovery (auto-retry) ──
-_FAILED_WARN_KINDS = ("summary-failed", "brief-failed")
+# stall-failed joined 2026-08-18: the staller's give-up warns "stall-failed" (_warn_line_kind), but the
+# scan/re-arm knew only the other two — a given-up stall note was invisible to the banner and never retried.
+_FAILED_WARN_KINDS = ("summary-failed", "brief-failed", "stall-failed")
+_FAILED_FIELDS = {"summary-failed": ("summary", "distilledMt"),     # warn kind → (line field, event stamp)
+                  "brief-failed": ("blockSummary", "briefedMt"),
+                  "stall-failed": ("stallSummary", "stalledMt")}
 
 
 def _failed_nodes(store):
@@ -9189,8 +9245,8 @@ def _failed_nodes(store):
 
 
 def judge_failure_scan():
-    """Fleet-wide give-up state for the top banner (the user 2026-07-03): every card whose summary/brief GAVE
-    UP carries a live "*-failed" warn; count them across all goal stores and name the current CAUSE (an
+    """Fleet-wide give-up state for the top banner (the user 2026-07-03): every card whose summary/brief/
+    stall note GAVE UP carries a live "*-failed" warn; count them across all goal stores and name the CAUSE (an
     account usage limit if one is maxed, else errors/timeouts). Returns {count, cause, ratelimited} or None
     when nothing is failing. Cheap: read-only, one parse per store; the kernel mtime-caches it."""
     import glob
@@ -9207,13 +9263,19 @@ def judge_failure_scan():
     return {"count": count, "cause": cause, "ratelimited": ratelimited}
 
 
-def rearm_failed_summaries(now=None):
-    """Auto-retry give-up cards on a RECOVERY event (the kernel calls this when the retry-pause clears and once
-    at startup): a genuine transient failure (a timeout under load, a brief rate-limit spike) blanks a card to
-    the "" sentinel + a "*-failed" warn and would otherwise stay blank until the goal's mt advances. Re-arm =
-    put the sentinel back to None so the distiller re-enters and retries; the warn stays until a re-summarize
-    SUCCEEDS (then _node_warn_clear) or FAILS again (re-gives-up, re-warns, visible). Bounded: only nodes with
-    a live give-up warn, and only on discrete recovery events — never a per-pass loop. Returns the count."""
+def rearm_failed_summaries(now=None, auto=False):
+    """Auto-retry give-up cards on a RECOVERY event — the kernel calls this once at startup, when the
+    retry-pause clears, and (auto=True) on the judge-health edge: the first served judge call after a
+    call-level failure (consume_judge_recovery). A genuine transient failure (a 529 storm, a timeout under
+    load, an auth blip) blanks a card to the "" sentinel + a "*-failed" warn and would otherwise stay
+    failed until a manual Try again. Re-arm = put the sentinel back to None so the summarizer re-enters
+    and retries — or, when the give-up KEPT an older real summary (a re-completion's give-up never
+    clobbers prior text), clear the event stamp instead so the gate re-enters with the prior intact. The
+    warn stays until a re-summarize SUCCEEDS (then _node_warn_clear) or FAILS again (re-gives-up,
+    re-warns, visible). Bounded two ways: only nodes with a live give-up warn, and the health edge
+    (auto=True) retries each give-up era at most ONCE (nd["autoRearmed"], dropped on success and by the
+    discrete events) — otherwise a card whose own call is broken would burn DISTILL_FAIL_CAP calls on
+    every edge a healthy neighbor produces. Returns the count re-armed."""
     import glob
     n = 0
     for fp in glob.glob(str(GOALDIR / "*.json")):
@@ -9224,10 +9286,20 @@ def rearm_failed_summaries(now=None):
             continue
         changed = False
         for nid, nd, kind in _failed_nodes(store):
-            if kind == "summary-failed" and nd.get("summary") == "":
-                nd["summary"] = None; changed = True; n += 1
-            elif kind == "brief-failed" and nd.get("blockSummary") == "":
-                nd["blockSummary"] = None; changed = True; n += 1
+            if auto and nd.get("autoRearmed"):
+                continue                               # this era already got its one automatic retry
+            field, stamp = _FAILED_FIELDS[kind]
+            if nd.get(field) == "":
+                nd[field] = None                       # "" (gave up) → None (owed): the next pass retries
+            elif nd.get(field) and nd.get(stamp) is not None:
+                nd[stamp] = None                       # give-up kept an older summary → re-enter by stamp
+            else:
+                continue                               # already owed (None) → nothing to flip
+            if auto:
+                nd["autoRearmed"] = True
+            else:
+                nd.pop("autoRearmed", None)            # a discrete event (startup/pause-clear) opens a fresh era
+            changed = True; n += 1
         if changed:
             save_goals(fsid, store)
     return n

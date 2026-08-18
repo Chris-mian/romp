@@ -20712,6 +20712,13 @@ def _producer():
                     sys.stderr.write("compact: archived %d cleared goal node(s)\n" % moved)
             except Exception:
                 sys.stderr.write("compact: %s\n" % traceback.format_exc())
+            try:                                       # judge calls served again after failing (the degraded→
+                if jd.consume_judge_recovery():        # serving edge, e.g. a 529 storm ending) → re-arm the
+                    _n = jd.rearm_failed_summaries(int(time.time()), auto=True)   # give-up cards; next pass retries
+                    if _n:
+                        sys.stderr.write("distiller: re-armed %d given-up card(s) — judge calls serving again\n" % _n)
+            except Exception:
+                sys.stderr.write("rearm-on-recovery: %s\n" % traceback.format_exc())
             _end_goals_pass()      # pass + compact done → drop the snapshot BEFORE bumping the gen, so the cache-
                                    # busting rebuild below reads the fully-applied (post-pass) state, not pre-pass.
             _judge_gen[0] += 1     # a judge pass may have changed goal/caption state WITHOUT touching any
@@ -26092,6 +26099,12 @@ def main():
             sys.stderr.write("romp-kernel: pruned %d judge scratch transcript(s)\n" % _n)
     except Exception:
         sys.stderr.write("judge scratch prune: %s\n" % traceback.format_exc())
+    try:                                                      # a restart is a discrete recovery event: re-arm
+        _n = jd.rearm_failed_summaries(int(time.time()))      # every given-up summary/brief/stall line so the
+        if _n:                                                # first passes retry them (rearm's docstring
+            sys.stderr.write("romp-kernel: re-armed %d given-up summary line(s) at startup\n" % _n)   # promised this since 07-03; now wired)
+    except Exception:
+        sys.stderr.write("startup rearm: %s\n" % traceback.format_exc())
     _write_palette_mirror()                                   # keep bin/romp's palette-colors mirror current across code updates
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
     threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot
