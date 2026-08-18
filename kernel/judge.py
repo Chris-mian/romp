@@ -51,6 +51,9 @@ MESSAGES = STATE / "timeline" / "messages.jsonl"
 ERRORS   = STATE / "judge-errors.jsonl"  # swallowed judge-call failures (parse-fails, call timeouts/exceptions) — surfaced by `romp judges`
 USAGE    = STATE / "judge-usage.jsonl"   # one line per successful judge call: tokens/cost/ms — the kernel/UI roll up pipeline cost
 JUDGE_AUTH = STATE / "judge-auth.json"   # judge-auth-down latch {fsid: {t, mode, note}}: set by a credential-class error
+JUDGE_LIMIT = STATE / "judge-limit.json"  # usage-limit-down latch {t, bucket, pct, resets_at, model}: the gate
+#                                           (or a limit-shaped error envelope) proved the account can't bill a
+#                                           judge call — build_feed ships it so the pause is LOUD (2026-08-18)
                                          #   envelope, cleared by the session's next successful call — build_feed floors from it
 GONEDIR  = STATE / "gone"                # session-death markers {t, by[, endedAt]} — one small json per sid, written by the
                                          #   kernel's death writers at the death EVENT (kill gesture / probe-confirmed absence),
@@ -112,6 +115,8 @@ def _rebind_state(path):
     GOALARCHDIR = STATE / "goals-archive"
     STATESDIR, PCACHE = STATE / "states", STATE / "judge-units-cache"
     MESSAGES, ERRORS, USAGE = STATE / "timeline" / "messages.jsonl", STATE / "judge-errors.jsonl", STATE / "judge-usage.jsonl"
+    global JUDGE_LIMIT
+    JUDGE_LIMIT = STATE / "judge-limit.json"
     SDKDIR = STATE / "sdk"
     EPIDIR = STATE / "episodes"
     _lastsid_memo.clear()   # sdk-registry reads are mtime-memoized per sid — a rebind must not serve the old root's values
@@ -794,6 +799,64 @@ def _auth_down_clear(fsid):
             _auth_write_locked(d)
 
 
+_limit_cache = [None, {}]
+_USAGE_REFRESH_FN = None   # the kernel wires this to SdkBackend.refresh_usage: a limit-shaped error
+#                            envelope triggers ONE exact usage poll, so an idle-stale usage.json
+#                            (get_usage rides turn ends — an idle fleet refreshes nothing, measured
+#                            ~15h stale) updates on the FIRST doomed call and the gate blocks the rest.
+_LIMIT_ENVELOPE_RE = re.compile(r"usage limit|rate.?limit|limit reached", re.I)
+
+
+def _limit_down():
+    """The usage-limit-down latch, or None when absent/expired. SELF-EXPIRING on resets_at — the
+    window reset IS the deciding event, no age heuristics — and mtime-cached like _auth_down_map."""
+    try:
+        key = JUDGE_LIMIT.stat().st_mtime_ns
+    except OSError:
+        return None
+    if _limit_cache[0] != key:
+        try:
+            d = json.loads(JUDGE_LIMIT.read_text())
+            _limit_cache[:] = [key, d if isinstance(d, dict) else {}]
+        except Exception:
+            _limit_cache[:] = [key, {}]
+    row = _limit_cache[1]
+    if not row:
+        return None
+    ra = row.get("resets_at")
+    if isinstance(ra, (int, float)) and ra <= time.time():
+        return None
+    return row
+
+
+def _limit_mark(bucket, pct, resets_at, model):
+    """LATCH usage-limit-down: the gate (or a limit-shaped envelope) just proved the account cannot
+    bill this judge call. The first evidence is decisive; the latch holds until the window resets
+    (self-expiry in _limit_down) or a call SUCCEEDS (_limit_clear) — never re-derived per build.
+    Loud by design (the user 2026-08-18, whose judges failed quietly into ~22,400 doomed retries
+    over two days): build_feed ships this row and the dashboard says the pause out loud."""
+    try:
+        cur = _limit_down() or {}
+        if cur.get("bucket") == bucket and cur.get("resets_at") == resets_at:
+            return
+        tmp = JUDGE_LIMIT.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"t": int(time.time()), "bucket": bucket, "pct": pct,
+                                   "resets_at": resets_at, "model": str(model or "")}))
+        os.replace(tmp, JUDGE_LIMIT)
+    except Exception:
+        pass
+
+
+def _limit_clear():
+    """Unlatch on the deciding event in the other direction: a judge call SUCCEEDED, so whatever
+    window blocked billing is no longer in the way (a reset, or the judges moved to another model)."""
+    try:
+        if JUDGE_LIMIT.exists():
+            JUDGE_LIMIT.unlink()
+    except OSError:
+        pass
+
+
 def _judge_env(tier, auth="login"):
     """The subprocess env for ONE judge call. Drops the TMUX vars (so the child isn't taken for a live
     pane) and trips the Stop-hook recursion guard. For the INDEX tier it also disables extended thinking
@@ -883,10 +946,19 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
         # failure. The `fable` bucket is deliberately ignored (judges run Sonnet). Unreadable/absent
         # usage.json → never gate: the gate is an optimization, judging is the job.
         u = json.loads((STATE / "usage.json").read_text())
-        for _b in ("five_hour", "seven_day"):
+        # The gated buckets FOLLOW THE CALL'S MODEL (2026-08-18, user-approved via the optimizer's
+        # audit): the account-wide windows gate every model, and a model-scoped window gates exactly
+        # the calls that would bill it. The old tuple hardcoded the account buckets and deliberately
+        # ignored `fable` ("judges run Sonnet") — stale the day the judge-model pin read fable: the
+        # fable window sat at 100% through 08-16/17 while this gate saw a healthy account, and
+        # ~22,400 doomed retries burned (9,305 on 08-17 alone), goal filing and mail summarizing
+        # down the whole stretch.
+        _buckets = ["five_hour", "seven_day"] + (["fable"] if "fable" in str(model).lower() else [])
+        for _b in _buckets:
             _lim = u.get(_b) or {}
             if (_lim.get("pct") or 0) >= 100 and (_lim.get("resets_at") or 0) > time.time():
                 _judge_ctx.paused = True
+                _limit_mark(_b, _lim.get("pct"), _lim.get("resets_at"), model)   # the LOUD half: build_feed ships it
                 if _RATE_GATE_LOGGED.get(_b) != _lim.get("resets_at"):   # one log line per limit window
                     _RATE_GATE_LOGGED[_b] = _lim.get("resets_at")
                     _log_judge_error(tier, None, "rate-limited",
@@ -961,6 +1033,16 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
                 _judge_ctx.last["reply"] = str(wrap.get("result") or "")[:2000]
                 _log_judge_error(judge or tier, fsid, "call",
                                  note="error envelope: %r" % msg[:160])
+                if _LIMIT_ENVELOPE_RE.search(msg):
+                    # a limit-shaped envelope is the EVENT that says usage.json is stale (get_usage
+                    # rides turn ends; an idle fleet refreshes nothing): latch the loud banner NOW
+                    # and poke one exact poll so the gate blocks the follow-on calls
+                    _limit_mark("account", None, None, model)
+                    if _USAGE_REFRESH_FN:
+                        try:
+                            _USAGE_REFRESH_FN()
+                        except Exception:
+                            pass
                 if _is_auth_error(msg):
                     # credential-class: only the user can fix it — latch, so build_feed floors this
                     # session's focus card instead of leaving the board silently frozen (2026-08-12)
@@ -970,6 +1052,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
                 _judge_ctx.last["reply"] = _mid_elide(wrap["result"])
                 _log_judge_usage(judge or tier, tier, model, fsid, wrap, sent, recv)
                 _auth_down_clear(fsid)                # billing works → unlatch (cheap no-op when unlatched)
+                _limit_clear()                        # ...and the usage-limit latch (a reset, or a model switch)
                 return wrap["result"]
         except Exception:
             pass

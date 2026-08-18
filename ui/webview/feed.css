@@ -1134,3 +1134,16 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fitem.ask:hover .fask-bellbtn { visibility: visible; }
 .fitem.ask .fask-bellbtn:hover { opacity: 1; background: rgba(255, 255, 255, 0.10); }
 .fask-bellbtn.on { visibility: visible; opacity: 0.85; color: var(--accent); }
+
+/* usage-limit banner (2026-08-18): analysis paused on a usage limit says so above the columns —
+   loud but compact, one line + (Fable only) the switch-to-Opus action. Neutral card chrome, never
+   the accent (this is status, not highlight); red would overstate it — the pause is expected and
+   self-resolving at the window reset. */
+.judge-limit-banner { display: flex; align-items: center; gap: 10px; margin: 6px 8px 2px;
+  padding: 7px 12px; background: #252526; border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px; font-size: 0.9em; }
+.judge-limit-banner .jl-text { opacity: 0.85; }
+.judge-limit-banner .jl-switch { flex: none; padding: 3px 10px; border-radius: 4px; border: 1px solid
+  rgba(255, 255, 255, 0.18); background: #333; color: inherit; cursor: pointer; font-size: 0.95em; }
+.judge-limit-banner .jl-switch:hover { background: #3c3c3c; }
+.judge-limit-banner .jl-switch:disabled { opacity: 0.6; cursor: default; }

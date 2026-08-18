@@ -3464,10 +3464,54 @@ function feedToast(text: string) {
   }, 4200);
 }
 
+// ── usage-limit banner (the user 2026-08-18): a judge layer down on a USAGE LIMIT must say so ──
+// loudly, never fail quietly into retries. The kernel ships the judge-limit latch on the feed
+// payload (self-expiring at the window reset, cleared by the next successful call). Built ONCE and
+// updated in place — the button must survive re-renders (the click-safety rule), and it
+// acknowledges immediately, then the latch clearing hides the banner on a later payload.
+let judgeLimit: { bucket?: string; resets_at?: number; model?: string } | null = null;
+function ensureJudgeLimit(): HTMLElement {
+  let b = document.getElementById("judge-limit-banner");
+  if (b) return b;
+  b = el("div", "judge-limit-banner");
+  b.id = "judge-limit-banner";
+  const txt = el("span", "jl-text"); b.appendChild(txt);
+  const btn = el("button", "jl-switch") as HTMLButtonElement;
+  btn.type = "button";
+  btn.textContent = "Run analysis on Opus until then";
+  btn.title = "switch the analysis model to Opus (cheaper per token than Fable) while the Fable window is full";
+  btn.onclick = () => {
+    btn.disabled = true;
+    btn.textContent = "Switching…";                      // acknowledge before the round-trip
+    vscodeApi?.postMessage({ type: "setJudgeModel", model: "opus" });
+  };
+  b.appendChild(btn);
+  const list = document.getElementById("feed-list")!;
+  list.parentElement!.insertBefore(b, list);
+  return b;
+}
+function paintJudgeLimit(): void {
+  const b = ensureJudgeLimit();
+  if (!judgeLimit) { b.style.display = "none"; return; }
+  const ra = judgeLimit.resets_at;
+  const when = typeof ra === "number" && ra > 0
+    ? new Date(ra * 1000).toTimeString().slice(0, 5) : "";
+  const fable = judgeLimit.bucket === "fable";
+  const txt = b.querySelector(".jl-text")!;
+  txt.textContent = fable
+    ? "Analysis is paused — the Fable usage window is full" + (when ? " (resets " + when + ")." : ".")
+    : "Analysis is paused — the account's usage window is full" + (when ? "; it resumes at " + when + "." : ".");
+  const btn = b.querySelector(".jl-switch") as HTMLButtonElement;
+  btn.style.display = fable ? "" : "none";
+  if (!judgeLimit || !fable) { btn.disabled = false; btn.textContent = "Run analysis on Opus until then"; }
+  b.style.display = "";
+}
+
 function render() {
   const list = document.getElementById("feed-list")!;
   pruneAgeTip();   // drop the tip only if the render tore its hovered stamp out (see pruneAgeTip)
   applyFollowMove(asks);   // keep optimistically-moved follow-up cards in Working until the kernel confirms (or reverts)
+  paintJudgeLimit();   // the usage-limit banner above the columns (build-once; hidden when unlatched)
   auditShownColumns(asks); // tripwire: what this render SHOWS is the record a bounce report needs
   const prevScroll = list.scrollTop;
   // footer pane (below the cards, no overlap): Newest first · Collapsed · Clear all · UndoClear
@@ -3803,6 +3847,8 @@ window.addEventListener("message", (e: MessageEvent) => {
     return;
   }
   if (m.type === "feed") {
+    judgeLimit = m.judgeLimit && typeof m.judgeLimit === "object"
+      ? m.judgeLimit as { bucket?: string; resets_at?: number; model?: string } : null;
     const incomingAsks: AskItem[] = Array.isArray(m.asks) ? m.asks : [];
     // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
     // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
