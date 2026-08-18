@@ -23,7 +23,8 @@ test("the kernel ships the latch and the judge gate writes it model-aware", () =
   assert.match(JUDGE, /_limit_mark\(_b, _lim\.get\("pct"\), _lim\.get\("resets_at"\), model\)/);
   assert.match(JUDGE, /_limit_clear\(\) {8,}# \.\.\.and the usage-limit latch|_limit_clear\(\)/, "a success clears it");
   assert.match(JUDGE, /jd\._USAGE_REFRESH_FN|_USAGE_REFRESH_FN = None/, "the idle-stale poke hook exists");
-  assert.match(KERNEL, /jd\._USAGE_REFRESH_FN = _sdk_backend\.refresh_usage/, "…and the kernel wires it");
+  assert.match(KERNEL, /jd\._USAGE_REFRESH_FN = getattr\(_sdk_backend, "refresh_usage", None\)/,
+    "…and the kernel wires it (getattr: the hook is best-effort, so a stub backend can't break the build)");
 });
 
 test("the banner is build-once, acknowledges, and offers Opus only for the Fable window", () => {
