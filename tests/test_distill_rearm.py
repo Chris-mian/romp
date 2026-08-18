@@ -11,10 +11,12 @@ again. Under test here:
     clearing its event stamp, since the "" flip cannot apply;
   - "stall-failed" joins the scan/re-arm family (the staller's give-ups were invisible to both).
 SYNTHETIC fixtures only (placeholder UUIDs, invented text)."""
+import json
 import os
 import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 BIN = os.path.join(os.path.dirname(HERE), "bin")
@@ -127,6 +129,56 @@ class RearmRecoveryEvents(unittest.TestCase):
         self.assertEqual(scan["count"], 1, "a given-up stall note counts toward the banner")
         self.assertEqual(jd.rearm_failed_summaries(T0 + 100), 1)
         self.assertIsNone(_node().get("stallSummary"), "the stall note re-arms like the other lines")
+
+
+class GiveUpWarnNamesTheError(unittest.TestCase):
+    """The "distill failed" modal names the LAST attempt's literal error and the model it called (the
+    user 2026-08-18): an Opus-scoped 529 outage read as generic "errors or timeouts" while every other
+    tier served — the modal gave no way to see that only the distill tier's model was down."""
+
+    def setUp(self):
+        jd.STATE.mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "usage.json").write_text(json.dumps(
+            {"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
+        jd._judge_ctx.last_call_fail = None
+
+    def _run_fake(self, envelope, model="opus"):
+        def fake_run(cmd, input=None, capture_output=None, text=None, cwd=None, env=None, timeout=None):
+            return SimpleNamespace(stdout=json.dumps(envelope), stderr="", returncode=0)
+        saved = jd.subprocess.run
+        jd.subprocess.run = fake_run
+        try:
+            return jd._judge_run(model, "SYS", "u", judge="distiller", tier="distill")
+        finally:
+            jd.subprocess.run = saved
+
+    def test_an_error_envelope_stashes_the_note_and_the_model(self):
+        out = self._run_fake({"is_error": True, "result": "API Error: Repeated 529 Overloaded errors."})
+        self.assertEqual(out, "", "an error envelope is a failed call to the caller")
+        st = jd._judge_ctx.last_call_fail
+        self.assertIn("529 Overloaded", st["note"])
+        self.assertEqual(st["model"], "opus")
+
+    def test_a_served_reply_retires_the_stash(self):
+        self._run_fake({"is_error": True, "result": "API Error: Repeated 529 Overloaded errors."})
+        self._run_fake({"result": "a fine reply", "usage": {}}, model="sonnet")
+        self.assertIsNone(jd._judge_ctx.last_call_fail,
+                          "a served reply must retire the evidence — a later unrelated give-up "
+                          "never wears a stale error")
+
+    def test_warn_detail_names_the_error_and_the_model(self):
+        jd._judge_ctx.last_call_fail = {"note": "API Error: Repeated 529 Overloaded errors.",
+                                        "model": "opus"}
+        nd = {}
+        jd._warn_summary_failed(nd, "distiller", T0)
+        det = nd["warns"][0]["detail"]
+        self.assertIn("529 Overloaded", det, "the literal error reaches the modal")
+        self.assertIn("opus", det, "the model is named — a model-scoped outage is visible as such")
+
+    def test_warn_detail_stays_generic_without_evidence(self):
+        nd = {}
+        jd._warn_summary_failed(nd, "distiller", T0)
+        self.assertNotIn("last attempt failed", nd["warns"][0]["detail"])
 
 
 class KernelRearmWiring(unittest.TestCase):

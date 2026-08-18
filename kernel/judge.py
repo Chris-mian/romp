@@ -976,6 +976,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
             # _judge_run owns ALL call-level logging (this, the error envelope below, the rate gate above)
             # so callers never double-log: to a caller every failed call is just "", and "call" rows always
             # carry the judge's own name + fsid (pre-07-09 rows said "index"/"triage" with no session).
+            _judge_ctx.last_call_fail = {"note": type(e).__name__, "model": model}
             _log_judge_error(judge or tier, fsid, "call", note=type(e).__name__)
             return ""
         recv = time.time()                            # literal wall-clock: the response is back
@@ -991,6 +992,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
                 # No usage row: a zero-cost error envelope is not a model call the cost rollup should count.
                 msg = str(wrap.get("result") or wrap.get("subtype") or "")
                 _judge_ctx.last["reply"] = str(wrap.get("result") or "")[:2000]
+                _judge_ctx.last_call_fail = {"note": msg[:160], "model": model}
                 _log_judge_error(judge or tier, fsid, "call",
                                  note="error envelope: %r" % msg[:160])
                 if _is_auth_error(msg):
@@ -1003,6 +1005,7 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
                 _log_judge_usage(judge or tier, tier, model, fsid, wrap, sent, recv)
                 _auth_down_clear(fsid)                # billing works → unlatch (cheap no-op when unlatched)
                 _mark_call_served()                   # calls serve again → the give-up re-arm edge
+                _judge_ctx.last_call_fail = None      # a served reply retires the stashed error evidence
                 return wrap["result"]
         except Exception:
             pass
@@ -1013,6 +1016,9 @@ def _judge_run(model, sys_prompt, user, effort=None, judge=None, tier="triage", 
             # and the card's warn could only GUESS its cause ("errors or timeouts"). The returncode and
             # stderr tail are the only evidence a dead CLI leaves — record them (fail loudly; a silent
             # fallback hides the very breakage we need to know about).
+            _judge_ctx.last_call_fail = {
+                "note": "the model CLI died with no output (exit %s)" % getattr(p, "returncode", "?"),
+                "model": model}
             _log_judge_error(judge or tier, fsid, "call",
                              note="empty stdout (exit %s): %s"
                                   % (getattr(p, "returncode", "?"),
@@ -2726,17 +2732,24 @@ def _warn_line_kind(judge):
 
 def _warn_summary_failed(nd, judge, t):
     """Stamp this card's summary/brief-FAILED warning after a give-up. Concise, takeaway-first, names the
-    cause; the developer audit (the raw call failures) stays in judge-errors.jsonl."""
+    cause — including the LAST attempt's literal error and the model it called (the user 2026-08-18, who
+    could not tell from "errors or timeouts" that only the distill tier's model was down while everything
+    else served): _judge_run stashes each call-level failure per-thread, and the give-up is written in the
+    same thread right after the capping failure, so the stash IS this give-up's evidence. The developer
+    audit (every raw call failure) stays in judge-errors.jsonl."""
     line, pre = _warn_line_kind(judge)
     kind = pre + "-failed"
     cause, ratelimited = _giveup_cause()
     retry = ("romp retries it automatically the moment the limit resets; nudging the session refreshes it sooner."
              if ratelimited else
              "romp retries it on its own after it recovers or restarts — or hit Try again to retry it now.")
+    last = getattr(_judge_ctx, "last_call_fail", None)
+    spec = ("" if (ratelimited or not isinstance(last, dict) or not last.get("note")) else
+            ' The last attempt failed with: "%s" (the %s model).' % (last["note"], last.get("model") or "?"))
     _node_warn(nd, kind, t,
                "romp couldn't write this card's %s." % line,
-               "romp tried to generate this %s several times and each attempt failed, because %s. No work was "
-               "lost — this is only the summary line. %s" % (line, cause, retry))
+               "romp tried to generate this %s several times and each attempt failed, because %s.%s No work "
+               "was lost — this is only the summary line. %s" % (line, cause, spec, retry))
 
 
 def _warn_history_unreadable(nd, judge, t):
