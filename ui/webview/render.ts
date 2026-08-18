@@ -1656,6 +1656,23 @@ let scrollMarksSig = "";
 // spacer's actual height) match truth so closely that boundary crossings correct by ~nothing.
 const unitHeights = new Map<string, Map<number, number>>();
 
+// EVENT index → DISPLAY-UNIT index. Unit === event only in NORMAL mode; in compact mode tool runs
+// fold into toolgroup units, so the two spaces diverge — and contentOffsetFrame speaks UNITS
+// (data-unit tags, spacer counts, cached heights are all unit-keyed) while marks anchor to EVENTS.
+// Passing event indices straight through was the missing-notch bug (the user 2026-08-18: "some are
+// displayed, others aren't" — replies land beside big tool runs, exactly where the spaces diverge
+// most, and a wrong unit index found no node, so the mark silently vanished).
+function eventUnitIndex(s: Session): Int32Array {
+  const map = new Int32Array(s.events.length).fill(-1);
+  const items = displayItems(s);
+  for (let u = 0; u < items.length; u++) {
+    const it = items[u];
+    if (it.kind === "toolgroup") { for (const i of it.indices) map[i] = u; }
+    else map[it.index] = u;
+  }
+  return map;
+}
+
 // ONE content-space frame for every scrollbar overlay (the user 2026-08-17, watching comment ticks
 // drift past message notches as history loaded): marks anchored to transcript positions share an
 // inherent monotonic order, so every overlay must place them with the SAME event-index → pixel
@@ -1743,13 +1760,18 @@ function paintScrollMarks(): void {
   if (!frame) { box.style.display = "none"; scrollMarksSig = ""; return; }
   const sh = frame.sh;
   const offs: number[] = [];
+  const evUnit = eventUnitIndex(s);                       // marks anchor to EVENTS; the frame speaks UNITS
   for (let i = 0; i < s.events.length; i++) {
-    const ev = s.events[i] as ChatEvent & { human?: boolean; romp?: boolean; rompAuto?: boolean; canned?: string; md?: string };
-    if (ev.kind !== "user" || !ev.human || ev.romp || ev.rompAuto) continue;
+    const ev = s.events[i] as ChatEvent & { human?: boolean; romp?: boolean; rompAuto?: boolean; canned?: string; md?: string; tag?: string };
+    // a TAGGED message is machine-sent under a label, not the user's words — the blue that means
+    // "yours" would lie (the same identity rule the rail dot follows since the tag dress landed)
+    if (ev.kind !== "user" || !ev.human || ev.romp || ev.rompAuto || ev.tag) continue;
     const md = (ev.md || "").trim();
     // gestures are the user's DOINGS, not their words — no notch (the Continue row, a /command)
     if (!md || ev.canned === "continue" || SLASH_CMD_RE.test(md)) continue;
-    const off = frame.offsetOf(i);
+    const u = evUnit[i];
+    if (u < 0) continue;                                  // not in the display stream (never for user events)
+    const off = frame.offsetOf(u);
     if (off == null) continue;
     offs.push(off);
   }
@@ -5564,10 +5586,11 @@ function updateCommentRail(): void {
   const frame = contentOffsetFrame(content, v, s);
   if (!frame) { rail?.remove(); cmtRailSig = ""; return; }
   const ticks: Array<{ th: CommentThread; y: number }> = [];
+  const evUnit = eventUnitIndex(s);                       // anchors are EVENTS; the frame speaks UNITS
   for (const th of threads) {
     const idx = s.events.findIndex((e) => e.uuid === th.anchorUuid);
-    if (idx < 0) continue;
-    const off = frame.offsetOf(idx);
+    if (idx < 0 || evUnit[idx] < 0) continue;
+    const off = frame.offsetOf(evUnit[idx]);
     if (off == null) continue;
     // the same proportional map the notches use, clamped so the last tick stays on the strip
     ticks.push({ th, y: Math.min(r.height - 6, Math.round((off / frame.sh) * (r.height - 4))) });
