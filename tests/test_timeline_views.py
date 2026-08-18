@@ -57,6 +57,11 @@ class TimelineViews(unittest.TestCase):
         v = km._norm_timeline_views({"active": "ghost", "hidden": ["a", 7, "", "a"],
                                      "groups": [{"id": "g1", "name": "x" * 99, "members": ["m", 3]},
                                                 {"noid": True}, "junk"]})
+        self.assertEqual(km._norm_timeline_views({"hidden": 7, "groups": "nope"}),
+                         {"active": "all", "hidden": [], "groups": []},
+                         "wrong-TYPED fields drop instead of raising")
+        self.assertEqual(km._norm_timeline_views({"groups": [{"id": "g", "members": 3}]})["groups"][0]["members"],
+                         [], "a wrong-typed members list drops, never raises")
         self.assertEqual(v["active"], "all", "an active group that does not exist falls back to all")
         self.assertEqual(v["hidden"], ["a"], "junk and duplicates dropped")
         self.assertEqual(len(v["groups"]), 1)
@@ -68,13 +73,15 @@ class TimelineViews(unittest.TestCase):
         km._set_timeline_views({"hidden": ["s9"]})
         self.assertEqual(km._timeline_views()["hidden"], ["s9"], "mtime+size key sees the write")
 
-    def test_churn_heal_carries_hidden_and_membership(self):
+    def test_churn_heal_copies_hidden_and_membership(self):
+        # COPY, never move: stripping the old sid un-hid its dead lane (it lingers on the timeline for
+        # hours), and a still-alive same-name session would have its state stolen
         km._set_timeline_views({"active": "all", "hidden": ["old"], "groups": [
             {"id": "g1", "name": "pool", "members": ["old", "other"]}]})
         km._heal_timeline_views("old", "new")
         v = km._timeline_views()
-        self.assertEqual(v["hidden"], ["new"], "the hidden bit follows the fork")
-        self.assertEqual(v["groups"][0]["members"], ["new", "other"], "membership follows the fork")
+        self.assertEqual(v["hidden"], ["new", "old"], "the fork inherits the hidden bit; the old sid keeps it")
+        self.assertEqual(v["groups"][0]["members"], ["new", "old", "other"], "membership copies the same way")
         before = json.loads((jd.STATE / "timeline-views.json").read_text())
         km._heal_timeline_views("stranger", "new2")   # untouched sid → no write at all
         self.assertEqual(json.loads((jd.STATE / "timeline-views.json").read_text()), before)
@@ -86,7 +93,7 @@ class TimelineViews(unittest.TestCase):
         (jd.STATE / "names" / "old").write_text("web\t/tmp\t#123456\twhite\n")
         km._set_timeline_views({"active": "all", "hidden": ["old"], "groups": []})
         km._ordered([{"sid": "old", "name": "web"}, {"sid": "new", "name": "web"}])
-        self.assertEqual(km._timeline_views()["hidden"], ["new"])
+        self.assertEqual(km._timeline_views()["hidden"], ["new", "old"], "copied, so the dead lane stays hidden too")
 
     def test_ws_op_persists_via_normalizer(self):
         # the handler body is _set_timeline_views + _mark_views_dirty; pin the setter's normalization
@@ -108,3 +115,18 @@ class TimelineViews(unittest.TestCase):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn("window.__rompTimelineSetViews=function(views)", src)
         self.assertIn('post({type:"setTimelineViews",views:views});', src)
+
+    def test_focus_reveals_a_hidden_session(self):
+        # the reveal rule: every gesture that focuses a session's chat (create/open/revive/deep link,
+        # all through _reveal_chat_for) reveals it first — a session created under an active group
+        # view must not be born invisible with its focus yanked away
+        km._set_timeline_views({"active": "g1", "hidden": ["s9"],
+                                "groups": [{"id": "g1", "name": "pool", "members": ["s2"]}]})
+        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s9"})
+        v = km._timeline_views()
+        self.assertNotIn("s9", v["hidden"], "the hidden bit drops")
+        self.assertEqual(v["active"], "all", "the excluding group yields to All")
+        km._set_timeline_views({"active": "g1", "hidden": [],
+                                "groups": [{"id": "g1", "name": "pool", "members": ["s2"]}]})
+        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
+        self.assertEqual(km._timeline_views()["active"], "g1", "a member's focus changes nothing")

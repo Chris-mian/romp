@@ -46,6 +46,22 @@ function viewLabel(views) {
 function viewMoreCount(views, sessions) {
   return (sessions || []).filter((s) => s.live && !viewVisible(views, s.id)).length;
 }
+// the dialog's two checkbox mutations, pure (executed by tests; the dialog itself only wires DOM):
+// all-view → toggle the hidden bit; group view → toggle membership in that group alone
+function viewToggleHidden(views, id) {
+  const v = JSON.parse(JSON.stringify(views || {}));
+  const i = (v.hidden || []).indexOf(id);
+  if (i >= 0) v.hidden.splice(i, 1); else (v.hidden = v.hidden || []).push(id);
+  return v;
+}
+function viewToggleMember(views, gid, id) {
+  const v = JSON.parse(JSON.stringify(views || {}));
+  const g = (v.groups || []).find((x) => x.id === gid);
+  if (!g) return v;
+  const i = (g.members || []).indexOf(id);
+  if (i >= 0) g.members.splice(i, 1); else (g.members = g.members || []).push(id);
+  return v;
+}
 
 function _rompMatchesOnly(name, tag) {
   if (!tag) return true;
@@ -584,6 +600,7 @@ class TimelinePanel {
     this._pendingViewsAge = 0;   // pushes since the edit — the kernel is authoritative, so a stale pending yields
     this._viewsMenu = null;      // the Show-dropdown element, when open
     this._viewsDialog = null;    // the sessions/group dialog backdrop, when open
+    this._viewsDialogKey = null; // its Escape hook {doc, fn}, removed on every close path
     this._palette = [];          // group color choices (the kernel ships its palette on the payload)
     // "Collapse idle gaps" now lives in the SETTINGS dialog (romp:settings.collapseGaps), moved out of the
     // timeline toolbar (the user 2026-06-25). Read it fresh here + re-read on the 'storage' event so a toggle
@@ -2327,11 +2344,18 @@ class TimelinePanel {
     try {
       if (typeof window !== 'undefined' && typeof window.__rompTimelineSetViews === 'function') {
         window.__rompTimelineSetViews(v);
-      } else {
+      } else if (typeof process !== 'undefined' && process.versions && process.versions.electron) {
+        // Obsidian only — the Electron guard keeps a bare-node test run from ever touching the real
+        // file (the 2026-07-02 _persistOrder lesson). Resolve the state root the way the kernel does
+        // (ROMP_STATE_DIR, then XDG_STATE_HOME, then the default), write tmp+rename so a reader never
+        // sees a torn blob.
         const fs = require('fs'), os = require('os'), path = require('path');
-        const dir = path.join(os.homedir(), '.local', 'state', 'romp');
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, 'timeline-views.json'), JSON.stringify(v));
+        const root = process.env.ROMP_STATE_DIR
+          || path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'romp');
+        fs.mkdirSync(root, { recursive: true });
+        const fp = path.join(root, 'timeline-views.json');
+        fs.writeFileSync(fp + '.tmp', JSON.stringify(v));
+        fs.renameSync(fp + '.tmp', fp);
       }
     } catch (e) { /* no host hook + no Node fs → session-local only */ }
     this.draw();
@@ -2341,10 +2365,13 @@ class TimelinePanel {
     const v = this._curViews();
     const g = (v.groups || []).find((x) => x.id === v.active);
     const more = viewMoreCount(v, (this.data && this.data.sessions) || []);
-    // ellipsize the view name so the trigger never crosses into the time labels: the gutter is all it owns
+    // ellipsize so the WHOLE trigger stays inside the gutter — measured on the full string (the
+    // 650-weight lane font over-measures the plain spans, which is the safe direction), because a
+    // fixed reserve under-counted "· NN more" and let the tail cross into the first time label
     let name = viewLabel(v);
-    const budget = Math.max(60, this.M.left - PADL - 78);   // room for "Show: ", the caret, and the count
-    while (name.length > 3 && this.labelWidth(name) > budget) name = name.slice(0, -2) + '…';
+    const tail = ' ▾' + (more ? ' · ' + more + ' more' : '');
+    const fits = (n) => this.labelWidth('Show: ' + n + tail) <= this.M.left - PADL - 6;
+    while (name.length > 3 && !fits(name)) name = name.slice(0, -2) + '…';
     const t = el('text', { x: PADL, y: axisY + 14, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG });
     const lead = el('tspan', {}); lead.textContent = 'Show: '; t.appendChild(lead);
     const nm = el('tspan', { fill: (g && g.color) || '#cccccc', 'font-weight': 650 }); nm.textContent = name; t.appendChild(nm);
@@ -2356,7 +2383,14 @@ class TimelinePanel {
   }
 
   _closeViewsMenu() { if (this._viewsMenu) { this._viewsMenu.remove(); this._viewsMenu = null; } }
-  _closeViewsDialog() { if (this._viewsDialog) { this._viewsDialog.remove(); this._viewsDialog = null; } }
+  _closeViewsDialog() {
+    if (!this._viewsDialog) return;
+    this._viewsDialog.remove(); this._viewsDialog = null;
+    if (this._viewsDialogKey) {   // the Escape hook dies with the dialog on EVERY close path, not just Escape
+      try { this._viewsDialogKey.doc.removeEventListener('keydown', this._viewsDialogKey.fn); } catch (e) {}
+      this._viewsDialogKey = null;
+    }
+  }
 
   _openViewsMenu(anchorEl) {
     const reopen = !!this._viewsMenu;
@@ -2507,16 +2541,9 @@ class TimelinePanel {
         const st = row.createSpan({ text: s.live ? (s.model || '') : 'gone' });
         st.setAttribute('style', 'margin-left:auto;flex:0 0 auto;opacity:0.5;font-size:0.82em;');
         const toggle = () => {
-          const nv = JSON.parse(JSON.stringify(this._curViews()));
-          if (gr) {
-            const g2 = nv.groups.find((x) => x.id === gid); if (!g2) return;
-            const i = (g2.members || []).indexOf(s.id);
-            if (i >= 0) g2.members.splice(i, 1); else (g2.members = g2.members || []).push(s.id);
-          } else {
-            const i = (nv.hidden || []).indexOf(s.id);
-            if (i >= 0) nv.hidden.splice(i, 1); else (nv.hidden = nv.hidden || []).push(s.id);
-          }
-          this._setViews(nv); build();                 // the dialog stays open and repaints in place
+          this._setViews(gr ? viewToggleMember(this._curViews(), gid, s.id)
+                            : viewToggleHidden(this._curViews(), s.id));
+          build();                                     // the dialog stays open and repaints in place
         };
         cb.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
         row.addEventListener('click', (e) => { if (e.target !== cb) toggle(); });
@@ -2527,8 +2554,9 @@ class TimelinePanel {
     build();
     const h = this._menuHost({ left: 0, top: 0, bottom: 0, right: 0 });
     back.addEventListener('pointerdown', (e) => { if (e.target === back) this._closeViewsDialog(); });
-    const onKey = (e) => { if (e.key === 'Escape') { this._closeViewsDialog(); h.doc.removeEventListener('keydown', onKey); } };
+    const onKey = (e) => { if (e.key === 'Escape') this._closeViewsDialog(); };
     h.doc.addEventListener('keydown', onKey);
+    this._viewsDialogKey = { doc: h.doc, fn: onKey };
     h.doc.body.appendChild(back);
     this._viewsDialog = back;
   }
@@ -3751,4 +3779,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleHidden, viewToggleMember };

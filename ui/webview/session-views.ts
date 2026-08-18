@@ -25,10 +25,17 @@ export function viewsKey(v: SessionViews | null | undefined): string {
                                            members: (g.members || []).slice().sort() })) });
 }
 
-// hide: add the session to the hidden set — its group memberships stay (membership beats hidden)
+// hide: add the session to the hidden set — and when the ACTIVE view is a group that contains it,
+// drop it from that group too, or the gesture is a silent no-op (membership beats hidden, so a
+// member stays visible however hidden it is). Other groups keep it: hiding from what you are
+// looking at must not quietly rewrite views you are not.
 export function hideIn(views: SessionViews | null | undefined, id: string): SessionViews {
   const v: SessionViews = JSON.parse(JSON.stringify(views || {}));
   if (!(v.hidden || []).includes(id)) v.hidden = (v.hidden || []).concat([id]);
+  if (v.active && v.active !== "all") {
+    const g = (v.groups || []).find((x) => x.id === v.active);
+    if (g && (g.members || []).includes(id)) g.members = (g.members || []).filter((x) => x !== id);
+  }
   return v;
 }
 

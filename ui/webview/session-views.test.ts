@@ -25,6 +25,12 @@ test("executed: hide adds the bit; reveal drops it and falls back to All when th
   const hid = hideIn({ active: "all", hidden: [] }, "s1");
   assert.deepEqual(hid.hidden, ["s1"]);
   assert.deepEqual(hideIn(hid, "s1").hidden, ["s1"], "idempotent");
+  // hiding while a group that CONTAINS the session is active must also leave that group — membership
+  // beats hidden, so without this the gesture is a silent no-op
+  const g = hideIn({ active: "g1", hidden: [], groups: [{ id: "g1", members: ["s2", "s3"] }, { id: "g2", members: ["s2"] }] }, "s2");
+  assert.deepEqual(g.hidden, ["s2"]);
+  assert.deepEqual(g.groups![0].members, ["s3"], "dropped from the ACTIVE group");
+  assert.deepEqual(g.groups![1].members, ["s2"], "other groups keep it");
   const rev = revealIn({ active: "g1", hidden: ["s1"], groups: [G] }, "s1");
   assert.deepEqual(rev.hidden, []);
   assert.equal(rev.active, "all", "the active group excludes it → fall back to All");
@@ -40,12 +46,13 @@ test("executed: the canonical key ignores list order — the kernel normalizer r
 });
 
 test("the tabOrder frame carries the blob and the strip filters on it, composing with #only", () => {
-  assert.match(RENDER, /else if \(m\.type === "tabOrder"\) \{ if \(m\.views\) captureViews\(m\.views\); applyTabOrder\(m\.order, m\.tabs\); \}/);
+  assert.match(RENDER, /else if \(m\.type === "tabOrder"\) \{ captureViews\(m\.views \|\| null\); applyTabOrder\(m\.order, m\.tabs\); \}/,
+    "echo-less frames still reach captureViews — an older kernel must age out a pending edit");
   assert.match(RENDER, /const inViewIds = ids\.filter\(tabInView\);/);
   assert.match(RENDER, /const visibleIds = only \? inViewIds\.filter\(\(id\) => matchesOnly\(nameOf\(id\), only\)\) : inViewIds;/);
-  // the active-tab re-point now covers BOTH filters — a hidden active session must not keep
-  // rendering its transcript under a strip that no longer shows it
-  assert.match(RENDER, /if \(activeId && !visibleIds\.includes\(activeId\) && visibleIds\.length\) \{/);
+  // the active-tab re-point covers BOTH filters — but only for a session that still EXISTS: a
+  // torn-down session's reselect belongs to the teardown path's MRU logic, not to us
+  assert.match(RENDER, /if \(activeId && ids\.includes\(activeId\) && !visibleIds\.includes\(activeId\) && visibleIds\.length\) \{/);
 });
 
 test("every cycling path walks the VISIBLE order — keyboard can never land on a hidden session", () => {
@@ -56,7 +63,7 @@ test("every cycling path walks the VISIBLE order — keyboard can never land on 
 });
 
 test("optimistic edits hold sticky and yield to the kernel after three silent pushes", () => {
-  assert.match(RENDER, /function captureViews\(v: SessionViews\) \{[\s\S]{0,400}\+\+pendingViewsAge >= 3/);
+  assert.match(RENDER, /function captureViews\(v: SessionViews \| null\) \{[\s\S]{0,600}\+\+pendingViewsAge >= 3/);
   assert.match(RENDER, /function postViews\(v: SessionViews\) \{[\s\S]{0,300}setTimelineViews/);
 });
 
@@ -70,4 +77,22 @@ test("a hidden session keeps one visible home: the picker's Hidden section, and 
 test("the tab menu's hide gesture posts the same blob the timeline dialog edits", () => {
   assert.match(RENDER, /l\.textContent = "Hide from chat & timeline";/);
   assert.match(RENDER, /postViews\(hideIn\(effViews\(\), id\)\);/);
+});
+
+test("federation carries the LOCAL kernel's views blob through merged tabOrder re-emits", () => {
+  const FED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
+  assert.match(FED, /if \(host === LOCAL && m\.views && typeof m\.views === "object"\) this\.localViews = m\.views;/);
+  assert.match(FED, /\{ type: "tabOrder", order, tabs, views: this\.localViews \?\? undefined \}/,
+    "without this the browser dashboard's chat never receives the blob at all");
+});
+
+test("view edits are INTENT ops — they survive a kernel-restart reconnect instead of dropping", () => {
+  const PIPE = fs.readFileSync(path.resolve(process.cwd(), "src", "pipe-intent.ts"), "utf8");
+  assert.match(PIPE, /"setTimelineViews"/);
+});
+
+test("hiding the last visible session blanks its transcript and the placeholder says why", () => {
+  assert.match(RENDER, /const blank = !visibleIds\.length && ids\.length > 0 && !tabInView\(activeId\);/);
+  assert.match(RENDER, /Every session is hidden from this view\./);
+  assert.match(RENDER, /allHiddenBlanked = false;/, "…and the transcript restores when anything is visible again");
 });

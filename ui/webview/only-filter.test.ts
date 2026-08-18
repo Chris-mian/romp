@@ -77,7 +77,7 @@ test("a filtered view re-points the CHAT BODY, not just the tab bar", () => {
   // whole point of the filter is a clean recording frame, so the selection must follow it.
   // the re-point covers BOTH filters since session views landed (2026-08-18): a hidden or
   // filtered-out active session must not keep its transcript on screen
-  assert.match(RENDER, /if \(activeId && !visibleIds\.includes\(activeId\) && visibleIds\.length\)/);
+  assert.match(RENDER, /if \(activeId && ids\.includes\(activeId\) && !visibleIds\.includes\(activeId\) && visibleIds\.length\)/);
   assert.match(RENDER, /setTimeout\(\(\) => \{ if \(activeId !== next\) setActive\(next\); \}, 0\);/);
 });
 

@@ -14,7 +14,7 @@ import { createRequire } from "node:module";
 const requireCjs = createRequire(__filename);
 const VIEW_PATH = path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js");
 const SRC = fs.readFileSync(VIEW_PATH, "utf8");
-const { TimelinePanel, viewVisible, viewLabel, viewMoreCount } = requireCjs(VIEW_PATH);
+const { TimelinePanel, viewVisible, viewLabel, viewMoreCount, viewToggleHidden, viewToggleMember } = requireCjs(VIEW_PATH);
 
 const G = { id: "g1", name: "pool", color: "#DD42FF", members: ["s2", "s3"] };
 const V = (active: string, hidden: string[] = [], groups: any[] = [G]) => ({ active, hidden, groups });
@@ -82,11 +82,30 @@ test("the two display toggles write the host's own romp:settings — reachable i
   assert.match(SRC, /localStorage\.setItem\('romp:settings', JSON\.stringify\(s\)\);/);
 });
 
-test("_setViews posts through the host hook with the Obsidian file fallback, optimistic + sticky", () => {
+test("_setViews posts through the host hook with a GUARDED, atomic Obsidian fallback", () => {
   assert.match(SRC, /window\.__rompTimelineSetViews === 'function'/);
-  assert.match(SRC, /timeline-views\.json'\), JSON\.stringify\(v\)\);/);
+  // Electron-gated (a bare-node test run must never touch the real file — the 2026-07-02 lesson),
+  // env-aware state root, tmp+rename so a reader never sees a torn blob
+  assert.match(SRC, /process\.versions && process\.versions\.electron/);
+  assert.match(SRC, /process\.env\.ROMP_STATE_DIR\n?\s*\|\| path\.join\(process\.env\.XDG_STATE_HOME \|\| path\.join\(os\.homedir\(\), '\.local', 'state'\), 'romp'\)/);
+  assert.match(SRC, /fs\.renameSync\(fp \+ '\.tmp', fp\);/);
   assert.match(SRC, /this\._pendingViews = v; this\._pendingViewsAge = 0;/);
   assert.match(SRC, /this\._reconcileViews\(\);\s*\/\/ \.\.\.and an optimistic view edit/);
+});
+
+test("executed: the dialog's two checkbox mutations, pure", () => {
+  const v = { active: "all", hidden: ["a"], groups: [{ id: "g1", members: ["m"] }] };
+  assert.deepEqual(viewToggleHidden(v, "a").hidden, [], "unhide");
+  assert.deepEqual(viewToggleHidden(v, "b").hidden, ["a", "b"], "hide");
+  assert.deepEqual(viewToggleMember(v, "g1", "m").groups[0].members, [], "leave");
+  assert.deepEqual(viewToggleMember(v, "g1", "n").groups[0].members, ["m", "n"], "join");
+  assert.deepEqual(viewToggleMember(v, "ghost", "n"), v, "an unknown group mutates nothing");
+});
+
+test("the trigger measures its WHOLE string against the gutter, and the dialog's Escape hook dies on every close", () => {
+  assert.match(SRC, /const fits = \(n\) => this\.labelWidth\('Show: ' \+ n \+ tail\) <= this\.M\.left - PADL - 6;/);
+  assert.match(SRC, /this\._viewsDialogKey = \{ doc: h\.doc, fn: onKey \};/);
+  assert.match(SRC, /this\._viewsDialogKey\.doc\.removeEventListener\('keydown', this\._viewsDialogKey\.fn\);/);
 });
 
 test("the views menu closes with its siblings on outside click / Escape / pagehide", () => {

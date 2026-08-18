@@ -1532,12 +1532,13 @@ def _norm_timeline_views(d):
     junk quietly, clamps sizes, and falls back active→"all" when the named group does not exist."""
     if not isinstance(d, dict):
         d = {}
-    hidden = [str(x) for x in d.get("hidden") or [] if isinstance(x, str) and x]
+    _lst = lambda x: x if isinstance(x, list) else []   # wrong-typed junk (a number, a string) drops, never raises
+    hidden = [str(x) for x in _lst(d.get("hidden")) if isinstance(x, str) and x]
     groups = []
-    for g in (d.get("groups") or [])[:_VIEWS_MAX_GROUPS]:
+    for g in _lst(d.get("groups"))[:_VIEWS_MAX_GROUPS]:
         if not isinstance(g, dict) or not g.get("id") or not isinstance(g.get("id"), str):
             continue
-        members = [str(x) for x in g.get("members") or [] if isinstance(x, str) and x]
+        members = [str(x) for x in _lst(g.get("members")) if isinstance(x, str) and x]
         groups.append({"id": g["id"][:64],
                        "name": str(g.get("name") or "group")[:_VIEWS_MAX_NAME],
                        "color": str(g.get("color") or "")[:16],
@@ -1590,11 +1591,15 @@ def _heal_timeline_views(old_sid, new_sid):
     if old_sid not in v["hidden"] and not any(old_sid in g["members"] for g in v["groups"]):
         return
     v = json.loads(json.dumps(v))                    # deep copy: never mutate the cached blob
+    # COPY, never move: stripping the old sid un-hid its DEAD lane, which lingers on the timeline for
+    # hours — and when the old sid is still alive (a fork beside a living parent, or an unrelated new
+    # session reusing a name), moving would steal the living session's state. A dead sid left in the
+    # lists is inert; the normalizer keeps them bounded.
     if old_sid in v["hidden"]:
-        v["hidden"] = sorted((set(v["hidden"]) - {old_sid}) | {new_sid})
+        v["hidden"] = sorted(set(v["hidden"]) | {new_sid})
     for g in v["groups"]:
         if old_sid in g["members"]:
-            g["members"] = sorted((set(g["members"]) - {old_sid}) | {new_sid})
+            g["members"] = sorted(set(g["members"]) | {new_sid})
     _set_timeline_views(v)
 
 
@@ -18988,6 +18993,21 @@ def _reveal_chat_for(client, focus_msg):
     revealSelfPane) — which covers every kernel, local included, and makes the shell line a harmless
     duplicate rather than the only mover."""
     wid = (client or {}).get("wid") or ""
+    # The reveal rule (the user 2026-08-18): every gesture that focuses a session's chat — create,
+    # open, revive, a deep link, a feed chip — REVEALS it in the session views first, or the focus
+    # would land on a tab the strip doesn't show (a session created under an active group view was
+    # born invisible, with the focus yanked away by the strip's re-point). Drop its hidden bit; when
+    # the active group excludes it, fall back to All — the same one rule the chat picker applies.
+    sid = focus_msg.get("id") if isinstance(focus_msg, dict) else None
+    if sid:
+        v = _timeline_views()
+        if not _view_visible(v, sid):
+            v = json.loads(json.dumps(v))
+            v["hidden"] = [x for x in v["hidden"] if x != sid]
+            if v["active"] != "all" and not any(g["id"] == v["active"] and sid in g["members"] for g in v["groups"]):
+                v["active"] = "all"
+            _set_timeline_views(v)
+            _mark_views_dirty()
     _send_to_view("chat", focus_msg, wid)
     _send_to_view("shell", {"type": "reveal", "pane": "chat"}, wid)
 

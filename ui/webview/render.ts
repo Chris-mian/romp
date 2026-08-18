@@ -448,10 +448,14 @@ const CLOSE_ACK_MS = 15_000;
 let sessionViews: SessionViews | null = null;
 let pendingSessionViews: SessionViews | null = null;
 let pendingViewsAge = 0;
+let allHiddenBlanked = false;   // the active transcript was blanked because EVERY session is view-hidden
 function effViews(): SessionViews | null { return pendingSessionViews ?? sessionViews; }
-function captureViews(v: SessionViews) {
-  sessionViews = v;
-  if (pendingSessionViews && (viewsKey(v) === viewsKey(pendingSessionViews) || ++pendingViewsAge >= 3)) {
+function captureViews(v: SessionViews | null) {
+  if (v) sessionViews = v;
+  // v null = a tabOrder frame WITHOUT the blob (an older kernel in a mixed-version mesh): it still
+  // ages a pending edit, or the optimistic state would fake success forever against a kernel that
+  // will never confirm it
+  if (pendingSessionViews && ((v && viewsKey(v) === viewsKey(pendingSessionViews)) || ++pendingViewsAge >= 3)) {
     pendingSessionViews = null; pendingViewsAge = 0;
   }
 }
@@ -3949,7 +3953,7 @@ function makePlaceholderTab(id: string): HTMLElement {
 // The empty transcript case was already handled with a "No messages yet." placeholder; this is its
 // missing sibling, one level up: no sessions rather than no messages. Saying so also beats a spinner —
 // it tells a new user the pane is working and what to do next.
-function syncNoSessionsPlaceholder(visibleCount: number) {
+function syncNoSessionsPlaceholder(visibleCount: number, totalCount = 0) {
   const content = document.getElementById("content");
   if (!content) return;
   const existing = document.getElementById("no-sessions");
@@ -3957,10 +3961,14 @@ function syncNoSessionsPlaceholder(visibleCount: number) {
     existing?.remove();               // a session arrived → the real view takes over
     return;
   }
-  if (existing) return;               // idempotent: renderTabs runs on every push
+  // sessions exist but the active view hides them all — say THAT, not "no sessions yet"
+  const txt = totalCount > 0
+    ? "Every session is hidden from this view. Reveal one from the + picker, or switch views on the timeline's Show menu."
+    : "No sessions yet. Start one with  romp new <name>  or the + above.";
+  if (existing) { existing.textContent = txt; return; }   // idempotent: renderTabs runs on every push
   const ph = el("div", "tx-empty");
   ph.id = "no-sessions";
-  ph.textContent = "No sessions yet. Start one with  romp new <name>  or the + above.";
+  ph.textContent = txt;
   content.appendChild(ph);
 }
 
@@ -4018,7 +4026,7 @@ function renderTabs() {
   // found while shooting the demo, with nimbus's transcript filling a "filtered" frame. Re-point the
   // selection at the first visible session. Deferred so we never re-enter the render we're inside;
   // setActive is a no-op once activeId is visible, so this settles in one pass.
-  if (activeId && !visibleIds.includes(activeId) && visibleIds.length) {
+  if (activeId && ids.includes(activeId) && !visibleIds.includes(activeId) && visibleIds.length) {
     const next = visibleIds[0];
     setTimeout(() => { if (activeId !== next) setActive(next); }, 0);
   }
@@ -4154,7 +4162,16 @@ function renderTabs() {
   bar.appendChild(add);
   // Restore tab-mode focus if a tab held it before this rebuild (see the top of renderTabs).
   if (refocusTab) focusActiveTab();
-  syncNoSessionsPlaceholder(visibleIds.length);
+  syncNoSessionsPlaceholder(visibleIds.length, ids.length);
+  // Hiding the LAST visible session must also blank its transcript: a strip with no tabs cannot sit
+  // over a hidden session's live chat (the ghost would show exactly what the hide asked to put away).
+  // Restored the moment anything is visible again — the placeholder owns the empty state meanwhile.
+  if (activeId) {
+    const av = views.get(activeId);
+    const blank = !visibleIds.length && ids.length > 0 && !tabInView(activeId);
+    if (av && blank && av.el.style.display !== "none") { av.el.style.display = "none"; allHiddenBlanked = true; }
+    else if (av && !blank && allHiddenBlanked) { av.el.style.display = ""; allHiddenBlanked = false; }
+  }
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
   // the rotated toggles in the chat pane's vertical strip — see _LANDING_FLEET_JS — so the pill was redundant.)
   // (The collapse caret moved OFF the tab bar into the #ledger strip's title row — the strip now always
@@ -10250,7 +10267,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "ledger") setLedger(m.id, m.ledger ?? null);
   else if (m.type === "working") { workingSet = new Set(Array.isArray(m.names) ? m.names : []); refreshPostalDots(); }
   else if (m.type === "imgData" && typeof m.path === "string") onImgData(m.path, typeof m.url === "string" ? m.url : null);
-  else if (m.type === "tabOrder") { if (m.views) captureViews(m.views); applyTabOrder(m.order, m.tabs); }
+  else if (m.type === "tabOrder") { captureViews(m.views || null); applyTabOrder(m.order, m.tabs); }
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
     const s = sessions.get(m.id);
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
