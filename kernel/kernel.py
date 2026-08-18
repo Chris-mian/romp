@@ -10375,7 +10375,17 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
 
 def _parse_send_body(raw):
     """Parse a POST /send body into {"who","text"}, or None if invalid. who = id or
-    name; text must be a non-empty string. Pure (no I/O) so the route is unit-testable."""
+    name; text must be a non-empty string. Pure (no I/O) so the route is unit-testable.
+
+    Optional "tag": a one-word label (letters/digits/dashes, <=24 chars — MSG_TAG_RE's
+    grammar) for SCHEDULED/SCRIPTED senders (the user 2026-08-18, whose nightly
+    optimizer briefing wore the wrong dress): the kernel appends the render-hint marker
+    `<!-- romp-tag: <label> -->` so the chat shows the message machine-sent under that
+    label — the same third identity `romp send --tag` writes by hand — instead of
+    posing it as the user's typed words or dressing it as romp's own. A malformed tag
+    fails the WHOLE parse (loud, per the fail-loudly rule): the caller asked for an
+    identity the kernel can't honor, and delivering the text anyway would silently
+    misattribute it."""
     try:
         body = json.loads(raw or b"{}")
     except Exception:
@@ -10386,6 +10396,11 @@ def _parse_send_body(raw):
     text = body.get("text")
     if not who or not isinstance(text, str) or not text:
         return None
+    tag = body.get("tag")
+    if tag is not None:
+        if not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,23}", tag):
+            return None
+        text = text + "\n\n<!-- romp-tag: " + tag + " -->"
     return {"who": who, "text": text}
 
 
@@ -24647,7 +24662,8 @@ class Handler(BaseHTTPRequestHandler):
                 # (X-Romp-Token read from the 0600 file, or ?token=).
                 body = _parse_send_body(raw_body)
                 if not body:
-                    return self._send(400, json.dumps({"ok": False, "error": "id and text required"}), "application/json")
+                    return self._send(400, json.dumps({"ok": False, "error":
+                        "id and text required (optional tag: one word, letters/digits/dashes, <=24 chars)"}), "application/json")
                 sid = _sid_of(body["who"])
                 # POSTAL ISOLATION holds on every sanctioned route (the user 2026-07-10): postal-SHAPED
                 # content to a mailbox-off session is agent mail arriving by the wrong door — refuse it

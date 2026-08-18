@@ -24,7 +24,7 @@ test("a romp event renders the gray romp-bubble + a romp tag, NOT the blue or th
   assert.doesNotMatch(RENDER, /tag\.textContent = "↯ romp"/, "the ↯ placeholder is gone");
   assert.match(RENDER, /\(romp \? "romp-bubble" : tagged \? "romp-bubble tag-bubble" : injected \? "user-note" : "user-bubble"\)/);
   // its own gray rail dot
-  assert.match(RENDER, /dot\(romp \? "romp" : injected \? "ring" : "user"\)/);
+  assert.match(RENDER, /dot\(romp \? "romp" : tagged \? "tag" : injected \? "ring" : "user"\)/);
   assert.match(RENDER, /"green" \| "ring" \| "user" \| "red" \| "romp"/, "the dot helper knows the romp variant");
 });
 

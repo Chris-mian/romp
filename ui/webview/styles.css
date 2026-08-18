@@ -1140,6 +1140,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* your prompt — the SAME royal/indigo blue as your message bubble (#2b6cef), so the dot matches your
    chat box (the user 2026-06-15). Distinct from the cyan ✓ success disc (--check-bg #1EA1EB). */
 .dot.user { background: #2b6cef; border: none; }
+/* a TAGGED (machine-sent under a label) prompt: the gray of its tag-bubble family, so the rail agrees
+   with the bubble — it used to wear the blue "you typed this" dot (the identity-channel gap, 2026-08-18) */
+.dot.tag { background: #8a8f98; border: none; }
 /* A romp-injected message (a nudge, a status note) wears the SWIRL in a dark disc — the same mark the
    timeline already puts on a romp event (romp-timeline-view.js draws a black dot with the glyph inside),
    so one kind of event looks like itself on both surfaces (the user 2026-07-23). It used to be an
