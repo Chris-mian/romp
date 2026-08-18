@@ -433,7 +433,7 @@ installSettingsSync();   // a gear save in ANOTHER VS Code pane lands here via t
 // Card-display prefs read straight from the shared 'romp:settings' (the kernel's ⛭ gear writes it; same
 // document as this feed bundle). Default ON. These gate the CARDS only — the modal always shows everything
 // (the user 2026-06-17). `!== false` so a missing key defaults to shown.
-function feedPrefs(): { newestFirst: boolean; collapsed: boolean; grouped: boolean } {
+function feedPrefs(): { newestFirst: boolean; collapsed: boolean; grouped: boolean; stacked: boolean } {
   try {
     const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
     // newestFirst + collapsed default OFF (=== true): the feed's natural order is oldest-first, and cards
@@ -443,8 +443,9 @@ function feedPrefs(): { newestFirst: boolean; collapsed: boolean; grouped: boole
     // grouped (the user 2026-07-13): each column groups its cards by SESSION (tab/lane order), a session-name
     // header on the backdrop between runs, the per-card name dropped — the compact by-session read.
     // Default ON (!== false, same day): grouping is the feed's normal reading mode; the toggle opts OUT.
-    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true, grouped: s.grouped !== false };
-  } catch { return { newestFirst: false, collapsed: false, grouped: true }; }
+    return { newestFirst: s.newestFirst === true, collapsed: s.collapsed === true, grouped: s.grouped !== false,
+             stacked: s.stacked === true };
+  } catch { return { newestFirst: false, collapsed: false, grouped: true, stacked: false }; }
 }
 // The kernel's session order (session-order.json — the SAME order the chat tabs + timeline lanes hold; the
 // user 2026-07-13: grouped-mode sessions must match it). Rides every feed push; federation concatenates
@@ -3083,21 +3084,33 @@ function ensureFeedToggle(id: string, label: string, get: () => boolean, key: st
   b.title = on ? onTitle : offTitle;
   return b;
 }
-// "Newest first" — reverse each column to newest-at-top (default OFF; the feed is naturally oldest-first).
+// "Modified ↑/↓" — the sort control (the user 2026-08-18, renamed from the "Newest first" toggle): cards
+// sort by modified time, the arrow shows the direction, and a click reverses it. Both directions are
+// valid sorts, so the button never wears the pressed accent — the arrow IS the state.
 function ensureNewestFirst(): HTMLElement {
-  return ensureFeedToggle("feed-newestfirst", "Newest first", () => feedPrefs().newestFirst, "newestFirst",
-    "showing newest first — click for the default oldest-first order",
-    "show the newest cards at the top (default: oldest first)");
+  const b = ensureFeedToggle("feed-newestfirst", "Modified", () => feedPrefs().newestFirst, "newestFirst",
+    "newest at the top — click for oldest first",
+    "oldest at the top — click for newest first");
+  b.textContent = "Modified " + (feedPrefs().newestFirst ? "\u2193" : "\u2191");
+  b.classList.remove("on");
+  return b;
 }
-// "Collapsed" — the DEFAULT section state cards inherit (the user 2026-07-07): ON collapses every card and
-// makes NEW cards arrive collapsed; a per-card expand overrides just that card WITHOUT turning the mode off.
-// Toggling drops the per-card overrides so the mode visibly re-flows every card to the new default.
-function ensureCollapsedToggle(): HTMLElement {
-  return ensureFeedToggle("feed-collapsed", "Collapsed", () => feedPrefs().collapsed, "collapsed",
-    "new cards arrive collapsed; expanding one is a per-card override — click to expand by default",
-    "collapse every card and have new ones arrive collapsed",
-    () => secChoice.clear());   // drop per-card section overrides so every card re-flows to the new default
+// "Stack" — force the one-column layout at ANY width (the user 2026-08-18): the same stacked view the
+// narrow container query produces, as a standing choice. The pref drives a style() container condition
+// on #feed-list (see feed.css), so the CSS stays the single owner of what stacking means; the narrow
+// query still stacks regardless.
+function applyStacked(on: boolean) {
+  document.getElementById("feed-list")?.style.setProperty("--romp-stack", on ? "on" : "off");
 }
+function ensureStackToggle(): HTMLElement {
+  return ensureFeedToggle("feed-stacked", "Stack", () => feedPrefs().stacked, "stacked",
+    "one-column layout at any width — click for side-by-side columns when the feed is wide",
+    "stack the columns into one, whatever the width",
+    (on) => applyStacked(on));
+}
+// (The "Collapsed" default-section toggle moved into the settings modal, 2026-08-18 — a set-and-forget
+// preference, not a per-glance view action. The pref and its behavior are unchanged; the gear writes
+// romp:settings.collapsed and the settings watcher below drops the per-card overrides on change.)
 
 // "Group" — organize each column BY SESSION (the user 2026-07-13): kernel tab/lane order, a name+dot header
 // on the backdrop opening each session's run, per-card names dropped (the header carries the identity).
@@ -3538,8 +3551,8 @@ function render() {
   const prevScroll = list.scrollTop;
   // footer pane (below the cards, no overlap): Newest first · Collapsed · Clear all · UndoClear
   const showCA = !!asks.length;
-  ensureNewestFirst().style.display = showCA ? "" : "none";       // reverse the column order
-  ensureCollapsedToggle().style.display = showCA ? "" : "none";   // default section state (collapsed / expanded)
+  ensureNewestFirst().style.display = showCA ? "" : "none";       // Modified ↑/↓ — the sort direction
+  ensureStackToggle().style.display = showCA ? "" : "none";       // force one-column at any width (the user 2026-08-18)
   ensureGroupToggle().style.display = showCA ? "" : "none";       // by-session grouping (the user 2026-07-13)
   ensureSessionFilter().style.display = showCA ? "" : "none";     // one-session filter menu (the user 2026-08-08)
   ensureClearAll().style.display = showCA ? "" : "none";
@@ -3802,8 +3815,21 @@ window.addEventListener("blur", () => { if (kbMode) kbExit(); });   // shell mov
 // Re-render when the card-display prefs change: a 'storage' event fires for a change made in ANOTHER
 // same-origin pane/tab, and the ⛭ gear (same document) dispatches a "romp:settings" event after it writes
 // (a same-doc write fires no storage event). Either way the cards re-gate to the new Explanations/Sub-goals.
-window.addEventListener("storage", (e) => { if (e.key === "romp:settings") render(); });
-window.addEventListener("romp:settings", () => render());
+// The collapsed DEFAULT now changes from the settings modal (2026-08-18), so the override-drop that
+// used to live in the footer toggle rides the settings-change event instead: when `collapsed` flips —
+// whichever surface flipped it — the per-card section overrides drop, so every card visibly re-flows
+// to the new default. And the stacked pref re-applies on every change (another window's gear or a
+// same-page toggle both land here).
+let lastCollapsedPref = feedPrefs().collapsed;
+function onSettingsChanged(): void {
+  const p = feedPrefs();
+  if (p.collapsed !== lastCollapsedPref) { lastCollapsedPref = p.collapsed; secChoice.clear(); }
+  applyStacked(p.stacked);
+  render();
+}
+window.addEventListener("storage", (e) => { if (e.key === "romp:settings") onSettingsChanged(); });
+window.addEventListener("romp:settings", () => onSettingsChanged());
+applyStacked(feedPrefs().stacked);   // boot: a persisted Stack takes effect before the first render
 
 // The VS Code pipe's down-banner (the user 2026-07-21): while the extension host's kernel
 // socket is down, the pane says so instead of sitting silently frozen on its last frame —
