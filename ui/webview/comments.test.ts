@@ -307,7 +307,8 @@ test("ticks and message notches share ONE scrollbar frame, so they can never dis
   // drifts from the notches' measured-height pixel offsets. Both painters now consume
   // contentOffsetFrame, the one event-index → content-pixel mapping.
   assert.match(UI, /function contentOffsetFrame\(/);
-  assert.match(UI, /const off = frame\.offsetOf\(idx\);/, "ticks place by the shared frame");
+  assert.match(UI, /const off = frame\.offsetOf\(evUnit\[idx\]\);/,
+    "ticks place by the shared frame, in UNIT space (anchors are events; the frame speaks units)");
   assert.doesNotMatch(UI, /\(idx \/ n\) \* 100/, "the uniform index-fraction percent frame is gone");
   // the rail repaints with the notches (same rAF), so both always draw from one world
   assert.match(UI, /paintRailSticky\(\); paintScrollMarks\(\); updateCommentRail\(\);/);

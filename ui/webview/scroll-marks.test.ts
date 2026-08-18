@@ -17,7 +17,8 @@ test("one notch per real user message across the WHOLE loaded conversation", () 
   // come from the full resident events array: true pixels for rendered turns, a proportional slot
   // inside the MEASURED spacer for the rest — the same estimate the scrollbar itself stands on.
   assert.match(RENDER, /for \(let i = 0; i < s\.events\.length; i\+\+\) \{/);
-  assert.match(RENDER, /if \(ev\.kind !== "user" \|\| !ev\.human \|\| ev\.romp \|\| ev\.rompAuto\) continue;/);
+  assert.match(RENDER, /if \(ev\.kind !== "user" \|\| !ev\.human \|\| ev\.romp \|\| ev\.rompAuto \|\| ev\.tag\) continue;/,
+    "machine-sent tagged messages never wear the blue that means yours");
   assert.match(RENDER, /ev\.canned === "continue" \|\| SLASH_CMD_RE\.test\(md\)/,
     "a /command or Continue gesture is a doing, not words — no notch");
   assert.match(RENDER, /'\.turn\[data-unit="' \+ i \+ '"\]'/, "rendered events use their true pixel offset");
@@ -50,4 +51,18 @@ test("positions are proportional and pure scrolls do no DOM work", () => {
 test("passive chrome in the user's own blue", () => {
   assert.match(CSS, /\.scroll-marks \{ position: fixed; z-index: 3; pointer-events: none; width: 12px; \}/);
   assert.match(CSS, /background: #2b6cef; opacity: 0\.65;/, "the outgoing-bubble blue, never the romp accent");
+});
+
+test("marks translate EVENT indices to DISPLAY UNITS before asking the frame", () => {
+  // the user 2026-08-18: "some notches are displayed, others aren't — maybe the ones where I
+  // replied". Unit === event only in normal mode; compact mode folds tool runs into toolgroup
+  // units, so event indices passed straight to the unit-keyed frame found no node (or the wrong
+  // one) and the mark silently vanished — worst exactly beside big tool runs, where replies to a
+  // working session land. Both painters now translate through eventUnitIndex.
+  assert.match(RENDER, /function eventUnitIndex\(s: Session\): Int32Array/);
+  assert.match(RENDER, /if \(it\.kind === "toolgroup"\) \{ for \(const i of it\.indices\) map\[i\] = u; \}/);
+  assert.match(RENDER, /const evUnit = eventUnitIndex\(s\);/);
+  assert.match(RENDER, /const u = evUnit\[i\];/);
+  assert.match(RENDER, /const off = frame\.offsetOf\(u\);/, "notches ask the frame in unit space");
+  assert.match(RENDER, /const off = frame\.offsetOf\(evUnit\[idx\]\);/, "comment ticks too — one translation, both overlays");
 });
