@@ -18,10 +18,10 @@ test("the caret folds a category to its header and persists like every other dis
   // The fold BITES only in the stacked layout (the user 2026-08-18): collapsed while stacked, then
   // widened to three columns, the section stayed hidden with no caret to reopen it. The rule must
   // live INSIDE the stacked container query — side by side, every card always shows.
-  const stacked = CSS.slice(CSS.indexOf("@container (max-width: 540px)"));
+  const stacked = CSS.slice(CSS.indexOf("@container (max-width: 540px) or style(--romp-stack: on)"));
   assert.match(stacked, /\.feed-col\.col-collapsed \.feed-col-list \{ display: none; \}/,
     "the collapse rule is scoped to the stacked layout");
-  assert.doesNotMatch(CSS.slice(0, CSS.indexOf("@container (max-width: 540px)")),
+  assert.doesNotMatch(CSS.slice(0, CSS.indexOf("@container (max-width: 540px) or style(--romp-stack: on)")),
     /\.col-collapsed \.feed-col-list/,
     "and no unscoped copy survives to hide cards side-by-side");
   assert.match(FEED, /fold\.textContent = folded \? "▸" : "▾";/);

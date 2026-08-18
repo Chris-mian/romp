@@ -81,7 +81,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   /* #feed-foot now DOCKS below as an in-flow flex item (the user 2026-06-29), so the list no longer needs to
      reserve space for a float — it just flexes to fill above the bar. */
   padding: 12px;
-  container-type: inline-size;   /* so the columns can stack responsively (see @container below) */
+  container-type: inline-size;   /* so the columns can stack responsively (see @container below);
+                                    the Stack toggle forces the same block via style(--romp-stack: on),
+                                    so the CSS stays the single owner of what stacking means */
 }
 /* inbox zero → the romp tri-color WORDMARK, centered (the user 2026-06-22; was the plain swirl
    square). This is the one unobtrusive home for the wordmark: it shows ONLY when there is nothing
@@ -148,7 +150,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    it wears in the stacked layout is the affordance). */
 .fcol-fold { display: none; }
 
-@container (max-width: 540px) {
+@container (max-width: 540px) or style(--romp-stack: on) {
   .feed-cols { flex-direction: column; }
   /* Folding exists ONLY here, so the fold BITING lives here too (the user 2026-08-18): this rule used
      to sit outside the query, so a section collapsed while stacked stayed hidden after the feed
