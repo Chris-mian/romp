@@ -611,7 +611,7 @@ function wrapCodeLines(code: HTMLElement) {
   }).join("");
 }
 
-function dot(kind: "green" | "ring" | "user" | "red" | "romp" | "working"): HTMLElement { return el("span", "dot " + kind); }
+function dot(kind: "green" | "ring" | "user" | "red" | "romp" | "working" | "tag"): HTMLElement { return el("span", "dot " + kind); }
 
 function ioRow(label: "IN" | "OUT", text: string, isError: boolean): HTMLElement {
   const row = el("div", "io-row" + (label === "OUT" ? " io-out" : "") + (isError ? " io-error" : ""));
@@ -1926,6 +1926,12 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     // injected (compact summary, /command stdout, system reminders) → a neutral left note box.
     const romp = !!ev.romp;
     const injected = !ev.human && !romp;
+    // sender-declared render hint (kernel MSG_TAG_RE lift, the user 2026-08-15): auto-generated
+    // text — a kickoff template, a scripted brief — is machine-sent on the user's behalf, so it
+    // sheds the typed-words blue for the gray injected family, labeled with the SENDER's own word
+    // (romp attaches no meaning to the label; ⚙ marks "scripted", vs romp's swirl). Hoisted above
+    // the rail dot (2026-08-18): the dot is its own identity channel and must agree with the bubble.
+    const tagged = !romp && !injected && !!ev.tag && !!ev.md;
     const turn = el("div", "turn turn-user" + (romp ? " romp" : injected ? " injected" : ""));
     // Unresolved postal ids ride the raw turn so a timeline message arc can still land on it. Without
     // this the arc pointed at a turn with nothing to match and the click died silently (the user
@@ -1935,7 +1941,7 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
     // Prompts ride the rail like every other turn: their own dot + a left-gutter HH:MM marker (added in
     // renderEvent). Genuine prompts get the solid blue dot; a romp injection a gray dot; harness notes the
     // hollow ring used by assistant turns.
-    turn.appendChild(dot(romp ? "romp" : injected ? "ring" : "user"));
+    turn.appendChild(dot(romp ? "romp" : tagged ? "tag" : injected ? "ring" : "user"));
     // a TYPED follow-up (resumed a goal) → a compact "↩ Follow-up · <goal>" header, the romp goal-context
     // quote + markers already stripped server-side. Same header the pending queued render uses (consistency).
     if (ev.followUp && !romp) turn.appendChild(followUpHeader(ev.goal, ev.fuCtx, ev.uuid ? "u:" + ev.uuid : undefined));
@@ -1955,11 +1961,6 @@ function renderEventInner(ev: ChatEvent): HTMLElement {
         tag.appendChild(document.createTextNode("romp"));
         turn.appendChild(tag);
       }
-      // sender-declared render hint (kernel MSG_TAG_RE lift, the user 2026-08-15): auto-generated
-      // text — a kickoff template, a scripted brief — is machine-sent on the user's behalf, so it
-      // sheds the typed-words blue for the gray injected family, labeled with the SENDER's own word
-      // (romp attaches no meaning to the label; ⚙ marks "scripted", vs romp's swirl).
-      const tagged = !romp && !injected && !!ev.tag && !!ev.md;
       if (tagged) {
         const tchip = el("div", "romp-tag");
         tchip.appendChild(document.createTextNode("⚙ " + ev.tag));
