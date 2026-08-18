@@ -14,6 +14,7 @@ import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { quoteReply } from "../quote";
 import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
+import { SessionViews, viewVisible, viewsKey, hideIn, revealIn } from "./session-views";
 import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
 import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
@@ -438,6 +439,31 @@ const CLOSE_ACK_MS = 15_000;
 // The romp identity palette for the tab right-click color picker (the user 2026-06-29). Fetched once from the
 // kernel's /palette so the client holds no color literals; empty until it lands (the menu just omits the row).
 // The palette is SELECTABLE now (the user 2026-07-12): a {type:"palette"} push lands the new set on switch.
+// ── session views (the user 2026-08-18): the kernel's views blob gates which sessions get TABS.
+// A hidden session is a BACKGROUND session — still running, judged and carded; the + picker lists it
+// under "Hidden" and the timeline's corner panel counts it, so it is always one glance away.
+// Captured from every tabOrder push; a local gesture (hide from the tab menu, reveal from the
+// picker) applies optimistically and holds sticky until a push echoes it — yielding to the kernel
+// after three silent pushes, the same machinery the timeline's copy runs.
+let sessionViews: SessionViews | null = null;
+let pendingSessionViews: SessionViews | null = null;
+let pendingViewsAge = 0;
+function effViews(): SessionViews | null { return pendingSessionViews ?? sessionViews; }
+function captureViews(v: SessionViews) {
+  sessionViews = v;
+  if (pendingSessionViews && (viewsKey(v) === viewsKey(pendingSessionViews) || ++pendingViewsAge >= 3)) {
+    pendingSessionViews = null; pendingViewsAge = 0;
+  }
+}
+function postViews(v: SessionViews) {
+  pendingSessionViews = v; pendingViewsAge = 0;
+  if (vscodeApi) vscodeApi.postMessage({ type: "setTimelineViews", views: v });
+  renderTabs();
+}
+function tabInView(id: string): boolean { return viewVisible(effViews(), id); }
+function visibleOrder(): string[] { return order.filter(tabInView); }
+function revealSession(id: string) { postViews(revealIn(effViews(), id)); }
+
 let paletteColors: string[] = [];
 fetch(kernelUrl("/palette"), { cache: "no-store" }).then((r) => r.json())
   .then((d) => { if (Array.isArray(d.colors)) paletteColors = d.colors; }).catch(() => { /* menu omits the swatch row */ });
@@ -3982,14 +4008,17 @@ function renderTabs() {
   // real sessions keep running, just hidden from this view. No tag → visibleIds === ids (unchanged).
   const only = onlyTag();
   const nameOf = (id: string) => sessions.get(id)?.name ?? tabMeta.get(id)?.name ?? "";
-  const visibleIds = only ? ids.filter((id) => matchesOnly(nameOf(id), only)) : ids;
+  // the session VIEWS filter composes here too (the user 2026-08-18): a view-hidden session keeps
+  // its state, drafts and cached transcript — it just loses its tab until revealed
+  const inViewIds = ids.filter(tabInView);
+  const visibleIds = only ? inViewIds.filter((id) => matchesOnly(nameOf(id), only)) : inViewIds;
   // ...and it must govern the CHAT BODY too, not just the bar (the user 2026-07-16). Hiding a
   // non-matching TAB while its transcript keeps rendering leaks precisely what the filter exists to
   // hide: a real session's chat sitting on screen under `#only=api,tests,web`, statusline and all —
   // found while shooting the demo, with nimbus's transcript filling a "filtered" frame. Re-point the
   // selection at the first visible session. Deferred so we never re-enter the render we're inside;
   // setActive is a no-op once activeId is visible, so this settles in one pass.
-  if (only && activeId && !visibleIds.includes(activeId) && visibleIds.length) {
+  if (activeId && !visibleIds.includes(activeId) && visibleIds.length) {
     const next = visibleIds[0];
     setTimeout(() => { if (activeId !== next) setActive(next); }, 0);
   }
@@ -4291,6 +4320,19 @@ function showTabMenu(e: MouseEvent, id: string) {
     onBell ? "Stop notifying" : "Notify me",
     onBell ? "no more system notifications for this session" : "system notification when its work blocks on you or completes",
     () => setSessionFlag(id, "notify", !onBell));
+  // Background the session (the user 2026-08-18): out of the tab strip AND the timeline lanes — it
+  // keeps running, judged and carded; the + picker lists it under "Hidden — reveal" and the
+  // timeline's corner panel counts it. Same views blob the timeline dialog edits. A plain item, not
+  // a toggle: its undo lives where the hidden session lives (the picker, the timeline panel).
+  {
+    const hide = el("div", "ctx-item ctx-item-toggle");
+    const bodyEl = el("span", "ctx-item-body");
+    const l = el("span", "ctx-item-label"); l.textContent = "Hide from chat & timeline"; bodyEl.appendChild(l);
+    const sb = el("span", "ctx-item-sub"); sb.textContent = "background it — the + picker and the feed still surface it"; bodyEl.appendChild(sb);
+    hide.appendChild(bodyEl);
+    hide.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); postViews(hideIn(effViews(), id)); });
+    menu.appendChild(hide);
+  }
   // Billing submenu (the user 2026-08-09, who wants the login/API-key switch here rather than as a
   // statusline badge). Only when the machine offers BOTH choices (st.authBoth) — a one-auth machine
   // keeps the fact on the tab hover, never a dead selector — and the key stays labelled plainly
@@ -4438,10 +4480,11 @@ function onTabKey(e: KeyboardEvent) {
   if (!activeId || !order.length) return;
   if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
     e.preventDefault();
-    const i = order.indexOf(activeId);
+    const ord = visibleOrder();                 // never cycle onto a view-hidden session
+    const i = ord.indexOf(activeId);
     if (i < 0) return;
     const dir = e.key === "ArrowRight" ? 1 : -1;
-    setActive(order[(i + dir + order.length) % order.length]);
+    setActive(ord[(i + dir + ord.length) % ord.length]);
     focusActiveTab();
   } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
     e.preventDefault();
@@ -4498,11 +4541,12 @@ window.addEventListener("keydown", (e) => {
   if (document.querySelector(".picker-overlay")) return;   // #picker / #confirm open
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
     if (!activeId || order.length < 2) return;
-    const i = order.indexOf(activeId);
+    const ord = visibleOrder();                 // never cycle onto a view-hidden session
+    const i = ord.indexOf(activeId);
     if (i < 0) return;
     e.preventDefault();
     const dir = e.key === "ArrowRight" ? 1 : -1;
-    setActive(order[(i + dir + order.length) % order.length]);
+    setActive(ord[(i + dir + ord.length) % ord.length]);
   } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
     const content = document.getElementById("content");
     if (!content) return;
@@ -6440,7 +6484,10 @@ function renderPicker(items: any[]) {
     name.replaceChildren(...hostNameNodes(it.name, it.id));
     if (it.color && it.color.bg) name.style.color = it.color.bg;
     const time = el("span", "picker-time");
-    if (it.running) {   // a live session (SDK/tmux backend) whose tab is closed → a green "running" badge
+    if (it.hiddenTab) {   // open as a tab but view-hidden (a background session) → picking reveals it
+      time.textContent = "hidden";
+      time.style.opacity = "0.7";
+    } else if (it.running) {   // a live session (SDK/tmux backend) whose tab is closed → a green "running" badge
       time.classList.add("picker-running-badge");
       time.append(el("span", "picker-run-dot"), document.createTextNode("running"));
     } else {
@@ -6458,6 +6505,9 @@ function renderPicker(items: any[]) {
       if (pickMode) {
         if (vscodeApi) vscodeApi.postMessage({ type: "pickResult", id: it.id, name: it.name });
         pickMode = false; // so closePicker doesn't also post a cancel
+      } else if (it.hiddenTab) {
+        revealSession(it.id);   // its tab already exists — un-hide it and switch to it
+        setActive(it.id);
       } else if (vscodeApi) {
         vscodeApi.postMessage({ type: "openSession", id: it.id });
       }
@@ -6474,10 +6524,16 @@ function renderPicker(items: any[]) {
     for (const it of items) list.appendChild(mkRow(it));
   } else {
     const avail = items.filter((it) => !isOpenTab(it.id));
+    // open-as-tab but view-HIDDEN sessions still list (the user 2026-08-18): a background session's
+    // one visible home on the chat side — omitting them here plus hiding the tab would recreate the
+    // secret-running-session state abolished 2026-08-11
+    const hidden = items.filter((it) => isOpenTab(it.id) && !tabInView(it.id))
+                        .map((it) => Object.assign({}, it, { hiddenTab: true }));
     const running = avail.filter((it) => it.running);
     const rest = avail.filter((it) => !it.running);
     if (running.length) { list.appendChild(label("Running — reopen")); for (const it of running) list.appendChild(mkRow(it)); }
-    if (rest.length) { if (running.length) list.appendChild(label("Recent")); for (const it of rest) list.appendChild(mkRow(it)); }
+    if (hidden.length) { list.appendChild(label("Hidden — reveal")); for (const it of hidden) list.appendChild(mkRow(it)); }
+    if (rest.length) { if (running.length || hidden.length) list.appendChild(label("Recent")); for (const it of rest) list.appendChild(mkRow(it)); }
   }
   if (!list.children.length && pickerListHost) {
     // a machine romp can reach but which has no sessions in the window: say that, or an empty list reads
@@ -9597,10 +9653,11 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
 }
 
 function cycleTab(dir: number) {
-  if (order.length < 2 || !activeId) return;
-  const i = order.indexOf(activeId);
+  const ord = visibleOrder();                   // never cycle onto a view-hidden session
+  if (ord.length < 2 || !activeId) return;
+  const i = ord.indexOf(activeId);
   if (i < 0) return;
-  setActive(order[(i + dir + order.length) % order.length]);
+  setActive(ord[(i + dir + ord.length) % ord.length]);
 }
 
 // First event carrying a uuid — a stable identity for "which transcript is this".
@@ -10193,7 +10250,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "ledger") setLedger(m.id, m.ledger ?? null);
   else if (m.type === "working") { workingSet = new Set(Array.isArray(m.names) ? m.names : []); refreshPostalDots(); }
   else if (m.type === "imgData" && typeof m.path === "string") onImgData(m.path, typeof m.url === "string" ? m.url : null);
-  else if (m.type === "tabOrder") applyTabOrder(m.order, m.tabs);
+  else if (m.type === "tabOrder") { if (m.views) captureViews(m.views); applyTabOrder(m.order, m.tabs); }
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
     const s = sessions.get(m.id);
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
