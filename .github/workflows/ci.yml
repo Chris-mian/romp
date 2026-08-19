@@ -80,11 +80,23 @@ jobs:
         os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install bats + tmux (Linux)
+      # bats comes from the pinned release tarball, NOT apt: an Azure apt-mirror outage hung
+      # `apt-get update` to the job timeout three runs in a row (2026-08-19, ~35 wasted minutes
+      # each). GitHub itself is already on the critical path (checkout), so this adds no new
+      # dependency — and no bats test needs a real tmux (every suite PATH-prepends its own mock),
+      # so nothing else is installed at all. The step timeout kills any residual network hang in
+      # minutes instead of letting it eat the job's budget.
+      - name: Install bats (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bats tmux
+        timeout-minutes: 5
+        run: |
+          curl -fsSL --retry 3 -o /tmp/bats.tar.gz \
+            https://github.com/bats-core/bats-core/archive/refs/tags/v1.11.1.tar.gz
+          tar -xzf /tmp/bats.tar.gz -C /tmp
+          sudo /tmp/bats-core-1.11.1/install.sh /usr/local
       - name: Install bats + tmux (macOS)
         if: runner.os == 'macOS'
+        timeout-minutes: 15
         run: brew install bats-core tmux
       - name: Run bats
         run: bats --print-output-on-failure tests/*.bats
