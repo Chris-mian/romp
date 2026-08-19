@@ -2406,6 +2406,12 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   padding: 2px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); color: var(--fg);
   border: 1px solid rgba(255, 255, 255, 0.18); }
 .romp-lightbox-close:hover { border-color: var(--accent); }
+/* download: an anchor dressed exactly like the close button beside it (one control vocabulary —
+   same chip, same hover cue), sitting between the filename and the ✕ */
+.romp-lightbox-dl { font: inherit; font-size: 0.86em; cursor: pointer; flex: 0 0 auto;
+  padding: 2px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.18); text-decoration: none; line-height: normal; }
+.romp-lightbox-dl:hover { border-color: var(--accent); }
 
 /* The "host:" prefix on a FEDERATED session's name (host-prefix.ts): metadata, not part of the name
    (the user 2026-07-11) — quiet gray, never bold, italic, a step smaller than the name it precedes.
