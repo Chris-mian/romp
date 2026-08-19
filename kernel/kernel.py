@@ -25136,6 +25136,45 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=_spawn_session, args=(nm, cwd), daemon=True).start()
                 return self._send(200, json.dumps({"ok": True, "pending": True, "dir": cwd}),
                                   "application/json")
+            if u.path == "/fork":
+                # Headless session fork (`romp fork`, the user 2026-08-19 via lab_manager): the WS
+                # forkSession op as a one-shot POST beside /new and /send, so a terminal or another
+                # machine's plugin can split a session — the first per-stage experiment split had to
+                # hand-drive the WS op with the dashboard token, which nobody should repeat. Body:
+                # {"parent": <live name or sid>, "name": <new-name>, "at": <record-uuid, optional>}
+                # ("at" empty = the whole conversation, the tip fork). Same contract as the op:
+                # parent untouched, explicit new name, and the fork discoverable the moment we ack
+                # (be.fork writes names/ synchronously inside _fork_session). Loud on refusal.
+                try:
+                    b = json.loads(raw_body or b"{}")
+                except Exception:
+                    b = {}
+                parent = str((b or {}).get("parent") or "").strip()
+                nm = str((b or {}).get("name") or "").strip()
+                if not parent or not nm:
+                    return self._send(400, json.dumps({"ok": False, "error": "parent and name required"}),
+                                      "application/json")
+                live = _live_names(_tmux_sessions())
+                if nm in live:
+                    # a second session under one name would poison every by-name surface (postal,
+                    # romp send, this very route's post-fork lookup) — refuse, never overload
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        'a session named "%s" is already running — pick another name' % nm}),
+                                      "application/json")
+                psid = live.get(parent) or ""
+                if not psid and re.fullmatch(r"[0-9a-fA-F-]{32,36}", parent):
+                    psid = parent                 # a sid: _fork_session validates it owns a transcript
+                if not psid:
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        'no live session named "%s" (a dormant one can be forked by sid)' % parent}),
+                                      "application/json")
+                err = _fork_session(psid, str((b or {}).get("at") or ""), nm)
+                if err:
+                    return self._send(200, json.dumps({"ok": False, "error": err}), "application/json")
+                # be.fork registered the name synchronously above, so the live store answers by ack time
+                fsid = _live_names(_tmux_sessions()).get(nm) or ""
+                return self._send(200, json.dumps({"ok": True, "id": fsid, "name": nm}),
+                                  "application/json")
             if u.path == "/working":
                 # Publish/clear a session's working-note in the backend-agnostic store, so the postal bus's
                 # set_working goes through the kernel (no tmux @romp-working) and an SDK session can publish a
