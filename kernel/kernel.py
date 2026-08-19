@@ -21240,6 +21240,9 @@ _CHAT_MOBILE_CSS = (
     # document to 450px, panning every surface ~15% off-screen. Wrap it on touch (the bar drops to a
     # second line), reclaim the desktop gutter, and clamp stray horizontal overflow at the body so one
     # oversized control can never widen the page again.
+    ".mrow.ph .nm{opacity:.55}"
+    ".mrow.ph::after{content:'syncing\u2026';margin-left:auto;opacity:.5;font-size:.82em;font-style:italic}"
+    ".mrow.pending::after{content:'opening\u2026';margin-left:auto;opacity:.7;font-size:.82em;font-style:italic}"
     "body{overflow-x:hidden}"
     ".statusline{flex-wrap:wrap;gap:6px 8px;padding:6px 10px 0 10px}"
     "#composer{padding:8px 10px 6px}"
@@ -21266,7 +21269,8 @@ function read(){return [].map.call(tabs.querySelectorAll('.tab[data-id]'),functi
 var lab=t.querySelector('.tab-label');
 return {id:t.getAttribute('data-id'),name:(lab?lab.textContent:t.getAttribute('data-id')),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
-working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),active:t.classList.contains('active')};});}
+working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),active:t.classList.contains('active'),
+ph:t.classList.contains('tab-placeholder')};});}
 // A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
 // federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
 // metadata (host-prefix.ts: dim, italic, never bold, a step smaller), and textContent threw that span
@@ -21279,7 +21283,29 @@ working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.
 function fillName(elm,s){elm.textContent='';
 if(s.lab&&s.lab.childNodes.length)[].slice.call(s.lab.cloneNode(true).childNodes).forEach(function(n){elm.appendChild(n);});
 else elm.textContent=s.name;}
-function sync(){var ts=read(),act=null;
+function rowUpdate(row,s){row.classList.toggle('active',!!s.active);
+// a PLACEHOLDER tab (its session payload hasn't merged yet — a remote host still relaying, a fresh
+// reconnect) reads as syncing, never as a normal row whose tap silently dies (the user 2026-08-19,
+// who tapped a remote session on the phone and nothing happened)
+row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
+row.classList.toggle('pending',pendingId===s.id);
+var wd=row.querySelector('.workdot');
+if(s.working||s.awaitbg){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
+wd.classList.toggle('await',!s.working&&!!s.awaitbg);}
+else if(wd)wd.remove();
+var lbl=row.querySelector('.nm');fillName(lbl,s);lbl.style.color=s.bg||'';}
+function rowMake(s){var row=document.createElement('div');row.className='mrow';row.setAttribute('data-id',s.id);
+var lbl=document.createElement('span');lbl.className='nm';row.appendChild(lbl);
+var x=document.createElement('span');x.className='mclose';x.textContent='\u00d7';x.title='End session';
+row.appendChild(x);rowUpdate(row,s);return row;}
+var pendingId=null,held=false,dirty=false;
+function sync(){
+// pointer-held defer (the timeline draw()'s pattern, CLAUDE.md click-safety): a push landing while a
+// finger is DOWN must not move or destroy the row under it — flush on release instead. The old
+// innerHTML wipe here rebuilt every row per push (0.5-3s) and reset the list's scroll to the top,
+// so a tap raced a 2s window and rows below the fold snapped away mid-reach (the user 2026-08-19).
+if(held){dirty=true;return;}
+var ts=read(),act=null;
 for(var i=0;i<ts.length;i++){if(ts[i].active){act=ts[i];break;}}
 if(!act&&ts.length)act=ts[0];
 var nm=cur.querySelector('.nm');
@@ -21289,22 +21315,38 @@ if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}
 else{nm.textContent='no sessions';cur.classList.remove('colored');}
-list.innerHTML='';
-ts.forEach(function(s){var row=document.createElement('div');row.className='mrow'+(s.active?' active':'');
-// desktop parity: the identity color tints the NAME (inline, like the Fleet list); the dot mirrors the
-// tab's own dot — gold when working, green (awaitbg) when idle-waiting-on-bg-work, none otherwise.
-if(s.working){var wd=document.createElement('span');wd.className='workdot';row.appendChild(wd);}
-else if(s.awaitbg){var wd=document.createElement('span');wd.className='workdot await';row.appendChild(wd);}
-var lbl=document.createElement('span');lbl.className='nm';fillName(lbl,s);if(s.bg)lbl.style.color=s.bg;
-row.appendChild(lbl);
-// End-session x: clicks the hidden desktop tab's own .tab-close, reusing its confirm dialog (End session /
-// Cancel) + endSession plumbing — the mobile picker's only way to end a session
-// (the user 2026-07-22). stopPropagation so it doesn't also switch to the session.
-var x=document.createElement('span');x.className='mclose';x.textContent='×';x.title='End session';
-x.addEventListener('click',function(e){e.stopPropagation();hide();var rt=realTab(s.id);var c=rt&&rt.querySelector('.tab-close');if(c)c.click();});
-row.appendChild(x);
-row.addEventListener('click',function(){var rt=realTab(s.id);if(rt)rt.click();hide();});
-list.appendChild(row);});}
+// a PENDING tap resolves the moment the payload lands: this sync ran because the tabs changed, so
+// re-check the real tab — real now means activate now (event-based; the arrival is the trigger)
+if(pendingId){var prt=realTab(pendingId);
+if(prt&&!prt.classList.contains('tab-placeholder')){pendingId=null;prt.click();hide();}
+else if(!prt){pendingId=null;}}
+// IN-PLACE list update keyed by data-id — never a wipe: rows persist across pushes (click-safe),
+// and the list keeps its scroll position because nothing detaches unchanged rows
+var want={};ts.forEach(function(s){want[s.id]=1;});
+[].slice.call(list.children).forEach(function(r){if(!want[r.getAttribute('data-id')])r.remove();});
+ts.forEach(function(s,i){var row=list.querySelector('.mrow[data-id="'+s.id.replace(/"/g,'\\"')+'"]');
+if(!row)row=rowMake(s);else rowUpdate(row,s);
+var at=list.children[i];if(at!==row)list.insertBefore(row,at||null);});}
+// ONE delegated listener on the STABLE list (rows are swapped by sync; the parent survives) — the
+// same delegation rule the desktop strip follows, so a mid-press row swap can still land its tap
+list.addEventListener('click',function(e){
+var row=e.target&&e.target.closest?e.target.closest('.mrow'):null;
+if(!row)return;
+var id=row.getAttribute('data-id');
+if(e.target.closest('.mclose')){e.stopPropagation();hide();
+// End-session x: clicks the hidden desktop tab's own .tab-close, reusing its confirm dialog (End
+// session / Cancel) + endSession plumbing — the mobile picker's only way to end a session (2026-07-22)
+var rtc=realTab(id);var c=rtc&&rtc.querySelector('.tab-close');if(c)c.click();return;}
+var rt=realTab(id);
+if(rt&&!rt.classList.contains('tab-placeholder')){rt.click();hide();return;}
+// a tab whose session data hasn't arrived: the tap must never die silently — mark it pending
+// (the row says "opening"), keep the list open, and the arrival-triggered sync above activates it.
+// Classes only — refilling the name here would flatten the host-prefix span (the 2026-07-30 bug).
+pendingId=id;row.classList.add('pending');row.classList.remove('ph');});
+list.addEventListener('pointerdown',function(){held=true;});
+function release(){if(held){held=false;if(dirty){dirty=false;sync();}}}
+document.addEventListener('pointerup',release);
+document.addEventListener('pointercancel',release);
 cur.addEventListener('click',function(e){e.stopPropagation();list.classList.toggle('open');});
 add.addEventListener('click',function(e){e.stopPropagation();var a=tabs.querySelector('.tab-add');if(a)a.click();});
 document.addEventListener('click',function(e){if(!hdr.contains(e.target)&&!list.contains(e.target))hide();});
