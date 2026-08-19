@@ -23048,7 +23048,18 @@ _LANDING_MOBILE_JS = """
 // Chat/Feed/Timeline bar on real Android Chrome — dvh didn't track the painted area (the user 2026-06-19).
 // visualViewport.height IS the live visible height (address-bar- AND keyboard-aware), so drive --app-h
 // off it and re-fit on every resize/orientation change. Runs even if #mtabs is missing.
-function fit(){try{var h=(window.visualViewport&&window.visualViewport.height)||window.innerHeight;
+// PINCH-AWARE (the user 2026-08-19): a trackpad reverse-pinch zooms the VISUAL viewport, which
+// SHRINKS vv.height by the zoom factor — and blindly re-fitting --app-h to it re-laid the whole shell
+// into the zoomed-in window, so the bottom bar climbed up over the very thing being zoomed (timeline
+// open or not; it is the shell's own layout var). On a DESKTOP (fine pointer) the layout height is
+// simply innerHeight — pinch-immune in every browser BY DEFINITION of the layout viewport, and
+// deliberately not vv.height*scale: desktop Firefox does not reliably report scale during a pinch
+// (the user 2026-08-19, in Firefox), so any scale arithmetic is a Chrome-ism there. The visual
+// viewport drives the fit only where its problems live — the coarse-pointer mobile world of soft
+// keyboards and collapsing toolbars — where height*scale keeps a mobile pinch from re-fitting too.
+function fit(){try{var vv=window.visualViewport;
+var coarse=window.matchMedia&&matchMedia('(pointer: coarse)').matches;
+var h=(!coarse||!vv)?window.innerHeight:Math.round(vv.height*(vv.scale||1));
 if(h)document.documentElement.style.setProperty('--app-h',h+'px');}catch(e){}}
 fit();window.addEventListener('resize',fit);window.addEventListener('orientationchange',fit);
 // iOS Safari collapses/expands its toolbars AS YOU SCROLL, and the visible height changes with them
@@ -23066,7 +23077,7 @@ var bar=document.getElementById('mtabs');if(!bar)return;
 // dead black band between the composer and the keyboard (the user 2026-07-22) — collapse the reservation
 // to 0 so the chat pane extends flush above the keyboard, and restore it when the keyboard closes. The
 // keyboard is open when the visual viewport is much shorter than the layout viewport (event: vv resize).
-function kbOpen(){var vv=window.visualViewport;return vv?(window.innerHeight-vv.height>120):false;}
+function kbOpen(){var vv=window.visualViewport;return vv?(window.innerHeight-vv.height*(vv.scale||1)>120):false;}
 function barfit(){try{document.documentElement.style.setProperty('--mtabs-h',(kbOpen()?0:(bar.offsetHeight||0))+'px');}catch(e){}}
 barfit();window.addEventListener('resize',barfit);window.addEventListener('orientationchange',barfit);
 if(window.visualViewport){window.visualViewport.addEventListener('resize',barfit);}
