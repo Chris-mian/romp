@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""The /file preview endpoint (the user 2026-07-08): chat path-thumbnails
-load real bytes from `GET /file?path=…`, existence- and extension-gated.
+"""The /file preview endpoint + _feed_artifacts (the user 2026-07-08): chat path-thumbnails and feed
+artifact strips load real bytes from `GET /file?path=…`, existence- and extension-gated, and the feed
+only ever ships artifact paths that exist RIGHT NOW (_feed_artifacts filters the distiller's list at
+build time — a hallucinated or deleted path never reaches a card).
 
 Drives the REAL Handler over HTTP (the test_kernel_ws_auth.py pattern). Synthetic only — temp files,
 no session state touched.
@@ -312,6 +314,84 @@ class AttachmentDisposition(unittest.TestCase):
 
     def test_an_empty_name_still_yields_a_usable_filename(self):
         self.assertIn('filename="download"', km._attachment_disposition(""))
+
+
+class FeedArtifactsFilter(unittest.TestCase):
+    """_feed_artifacts: the authoritative existence filter between the distiller's transcription and
+    the card — only real, absolute-resolvable files ship; order kept; duplicates and junk dropped."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.a = os.path.join(self.tmp.name, "a.png")
+        self.b = os.path.join(self.tmp.name, "b.pdf")
+        for p in (self.a, self.b):
+            with open(p, "wb") as f:
+                f.write(b"x")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_keeps_existing_drops_missing_and_junk(self):
+        gone = os.path.join(self.tmp.name, "gone.png")
+        out = km._feed_artifacts([self.a, gone, self.b, self.a, "", None, 7], sid=None)
+        self.assertEqual(out, [self.a, self.b])   # order kept, dup/missing/non-str dropped
+
+    def test_none_when_nothing_survives(self):
+        self.assertIsNone(km._feed_artifacts([os.path.join(self.tmp.name, "gone.png")], sid=None))
+        self.assertIsNone(km._feed_artifacts(None, sid=None))
+        self.assertIsNone(km._feed_artifacts([], sid=None))
+
+    def test_relative_without_a_session_cwd_is_dropped_not_guessed(self):
+        # no sid → _resolve_open_path leaves it relative → not absolute → dropped (never the kernel's cwd)
+        self.assertIsNone(km._feed_artifacts(["a.png"], sid=None))
+
+
+class SubtreeArtifacts(unittest.TestCase):
+    """_subtree_artifacts (the user 2026-08-19): the card renders a node, but the ARTIFACTS line lands
+    on whichever node the distiller ran against — for a merged umbrella that is a CHILD goal. The hoist
+    unions the whole subtree so the card shows what its own work produced, however the tree was merged."""
+
+    def _tree(self, nodes):
+        children = {}
+        for nid, nd in nodes.items():
+            children.setdefault(nd.get("parentId"), []).append(nid)
+        return children
+
+    def test_an_umbrella_shows_the_artifacts_its_children_recorded(self):
+        nodes = {
+            "g10": {"parentId": None, "umbrella": True},                      # the CARD: distilled whole, no line of its own
+            "g1": {"parentId": "g10", "artifacts": ["/tmp/sop.md"]},
+            "g9": {"parentId": "g10", "artifacts": ["/tmp/recap.md", "/tmp/onboard.md"]},
+        }
+        out = km._subtree_artifacts(nodes, self._tree(nodes), "g10")
+        self.assertEqual(sorted(out), ["/tmp/onboard.md", "/tmp/recap.md", "/tmp/sop.md"])
+
+    def test_the_cards_own_paths_come_first_and_dups_list_once(self):
+        nodes = {
+            "g1": {"parentId": None, "artifacts": ["/tmp/own.md", "/tmp/shared.md"]},
+            "g2": {"parentId": "g1", "artifacts": ["/tmp/shared.md", "/tmp/child.md"]},
+        }
+        out = km._subtree_artifacts(nodes, self._tree(nodes), "g1")
+        self.assertEqual(out[:2], ["/tmp/own.md", "/tmp/shared.md"], "the node's own list leads")
+        self.assertEqual(out.count("/tmp/shared.md"), 1)
+        self.assertIn("/tmp/child.md", out)
+
+    def test_a_child_card_never_borrows_its_parents_artifacts(self):
+        # the hoist reaches DOWN only: a sub-goal card claims nothing the umbrella above it recorded
+        nodes = {"g1": {"parentId": None, "artifacts": ["/tmp/parent.md"]},
+                 "g2": {"parentId": "g1"}}
+        self.assertEqual(km._subtree_artifacts(nodes, self._tree(nodes), "g2"), [])
+
+    def test_no_artifacts_anywhere_is_an_empty_list(self):
+        nodes = {"g1": {"parentId": None}, "g2": {"parentId": "g1"}}
+        self.assertEqual(km._subtree_artifacts(nodes, self._tree(nodes), "g1"), [])
+
+    def test_a_parent_cycle_terminates(self):
+        # a malformed tree (mutual parents) must not spin the feed build
+        nodes = {"g1": {"parentId": "g2", "artifacts": ["/tmp/a.md"]},
+                 "g2": {"parentId": "g1", "artifacts": ["/tmp/b.md"]}}
+        self.assertEqual(sorted(km._subtree_artifacts(nodes, self._tree(nodes), "g1")),
+                         ["/tmp/a.md", "/tmp/b.md"])
 
 
 if __name__ == "__main__":

@@ -16383,6 +16383,7 @@ def build_feed(now, tmux=None):
                 x = stack.pop(); acc.append(x); stack.extend(children.get(x, []))
             return acc
 
+
         # VERDICTS ONLY (the user 2026-07-15; roll-UP removed — it painted an authored-looking ✓ on a
         # goal nobody ruled done, see build_session's _subtree_done twin): a node is "done" if it's
         # explicitly nodeComplete (verdict or roll-down cache), OR if a done ancestor checks it off
@@ -16962,6 +16963,7 @@ def build_feed(now, tmux=None):
                 "briefParts": nodes[nid].get("briefParts") or None,   # MULTI-item brief: [{id, since}] one per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null for single-item briefs, whose stamp is the card header's age (the user 2026-07-24)
                 "summaryParts": nodes[nid].get("summaryParts") or None,   # the DONE twin: [{id, since}] per takeaway paragraph when the distiller split by <completed-items>; done-event times (the user 2026-07-24)
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
+                "artifacts": _feed_artifacts(_subtree_artifacts(nodes, children, nid), fsid),   # files the work PRODUCED (distiller ARTIFACTS line, hoisted from the whole subtree), existence-filtered NOW — "N artifacts" under the summary; previews in the modal (the user 2026-07-08/2026-08-19)
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the completion turn's wrap-up (completed pin), else the cited/latest prose (the user 2026-07-14)
                 "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
                 "failLog": nodes[nid].get("failLog") or None,   # the summarizer's failed attempts (judge _fail_log): model + literal error per try → the chip's hover history + modal "What was tried" (the user 2026-08-18)
@@ -19548,7 +19550,7 @@ _IMG_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 _IMG_MAX_BYTES = 8_000_000
 _img_cache = {}                                  # "path:mtime:size" → dataURL | None
 
-# ---- /file preview serving (the user 2026-07-08): chat path-thumbnails load
+# ---- /file preview serving (the user 2026-07-08): chat path-thumbnails + feed artifact strips load
 #      the actual bytes over HTTP (behind _authorize, like everything else) instead of a data-URL round
 #      trip — the browser lazy-loads, caches, and renders a PDF natively in the lightbox iframe. The
 #      allowlist is RENDERABLE media only; anything else 404s and the client shows a plain link. SVG is
@@ -19690,6 +19692,49 @@ def _resolve_open_path(p, sid=None):
         if base:
             p = os.path.join(base, p)
     return p
+
+
+def _subtree_artifacts(nodes, children, root):
+    """Every ARTIFACTS path recorded at/under `root`, the card's own node first.
+
+    A goal's produced files land on the node the DISTILLER ran against. A merged umbrella is
+    distilled as a WHOLE, so its own node carries no ARTIFACTS line while the child goals folded
+    into it still hold theirs — and reading only the card's own node stranded exactly those: the
+    card rendered no artifacts line while verified paths sat one level down, invisible (the user
+    2026-08-19, whose written docs never surfaced on the umbrella that summarized them). Pre-order
+    keeps the card's own paths first; a path recorded at two levels lists once. The filesystem
+    still decides what is real — see `_feed_artifacts`.
+    """
+    stack, seen, acc = [root], set(), []
+    while stack:
+        nid = stack.pop()
+        if nid in seen:          # a malformed parent cycle must not spin the feed build
+            continue
+        seen.add(nid)
+        for p in ((nodes.get(nid) or {}).get("artifacts") or []):
+            if p not in acc:
+                acc.append(p)
+        stack.extend(children.get(nid, []))
+    return acc
+
+
+def _feed_artifacts(paths, sid):
+    """The distiller's ARTIFACTS paths → the files a feed card may actually show. Resolved like a
+    click-to-open (~ expanded, relative → the session's cwd) and existence-checked HERE, at feed build —
+    the authoritative filter that keeps a hallucinated or since-deleted path off the card (the distiller
+    only transcribes what it read in <work>; the filesystem decides what's real). None when nothing
+    survives, so the client renders no artifacts line at all."""
+    out = []
+    for p in paths or []:
+        if not isinstance(p, str) or not p.strip():
+            continue
+        try:
+            ap = _resolve_open_path(p.strip(), sid)
+            if os.path.isabs(ap) and os.path.isfile(ap) and ap not in out:
+                out.append(ap)
+        except Exception:
+            continue
+    return out or None
 
 
 # Inline-code spans that name an EXISTING file despite containing spaces (the user 2026-08-04: a note
@@ -24396,7 +24441,7 @@ class Handler(BaseHTTPRequestHandler):
         return False, None, "token required (loopback included; token file: ~/.local/state/romp/serve-token)"
 
     def _file_preview(self, q, head=False):
-        """GET/HEAD /file — the preview bytes behind a chat path-thumbnail (the
+        """GET/HEAD /file — the preview bytes behind a chat path-thumbnail / feed artifact strip (the
         user 2026-07-08). Same path resolution as click-to-open (~ expanded, relative → the session's
         cwd — _resolve_open_path); RENDERABLE media only (_PREVIEW_MIME), anything else 404s and the
         client keeps its plain link. Oversize 413s rather than silently truncating. HEAD is the
@@ -24712,7 +24757,7 @@ class Handler(BaseHTTPRequestHandler):
                 # pinned to the layer that dropped it instead of black-box probing. Read-only.
                 return self._send(200, json.dumps(_sendvis_diag((q.get("sid") or [""])[0])),
                                   "application/json", cache="no-cache")
-            if p == "/file":                                  # preview bytes for a chat path-thumbnail
+            if p == "/file":                                  # preview bytes for a chat path-thumbnail / feed artifact
                 return self._file_preview(q)
             if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),

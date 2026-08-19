@@ -2961,6 +2961,21 @@ def _warn_history_unreadable(nd, judge, t):
                "cards, that's a bug worth reporting." % line)
 
 
+def _split_artifacts(text):
+    """(body, paths) — split a distill reply's optional trailing `ARTIFACTS: p1, p2` line (the user
+    2026-07-08: a completed goal that PRODUCED files — a plot, a PDF report — lists them so the feed
+    card can show/preview them). Anchored to the END of the body (after _split_source peeled the
+    citation), so prose that merely mentions the word is never mistaken for the line. Paths are the
+    model's transcription of <work> — the kernel existence-checks them against the filesystem at feed
+    build, so a hallucinated path never reaches a card. Absent line → (text, [])."""
+    text = (text or "").strip()
+    m = re.search(r"(?:^|\n)\s*ARTIFACTS:\s*(\S[^\n]*)$", text)
+    if not m:
+        return text, []
+    paths = [p.strip() for p in m.group(1).split(",") if p.strip()]
+    return text[:m.start()].strip(), paths[:5]
+
+
 _SEC_DECOR = re.compile(r"(?m)^[ \t]{0,3}(?:\*{1,3}|_{1,3}|#{1,6}[ \t]*)?(BACKGROUND|TAKEAWAY)"
                         r"[ \t]*:?[ \t]*(?:\*{1,3}|_{1,3})?[ \t]*:?[ \t]*")
 
@@ -8742,7 +8757,7 @@ DISTILL_SYS = (
     "follow-up, often a specific piece of the goal rather than the whole thing, not a recap of the entire "
     "history. Fold the earlier thread into BACKGROUND as orientation. When there is no such line, "
     "summarize the whole <work> as usual.\n\n"
-    "Reply with two labeled sections, plus, when required below, the final SOURCE line, "
+    "Reply with two labeled sections, plus, when required below, the final ARTIFACTS and SOURCE lines, "
     "and nothing else: no JSON, no preamble, no markdown. Both sections use plain declarative sentences "
     "addressed to the user as **you**: never call them 'the user', never call the session 'the "
     "assistant'. One message per paragraph, and no paragraph longer than three sentences. No "
@@ -8768,6 +8783,16 @@ DISTILL_SYS = (
     "outcomes the user would weigh independently, write one short paragraph per item, in the order given, "
     "each leading with that item's own outcome and separated from the next by a blank line. Never pad a "
     "single story into per-item paragraphs. A still-open paragraph, when there is one, comes after them.\n\n"
+    "When the work PRODUCED a standalone output file the user would open to see the result, such as a "
+    "written document (a spec, a summary, a report, a runbook, a set of notes, a plan), a plot image, a "
+    "PDF, an exported data file, or a generated screenshot, add one line after the takeaway that is "
+    "exactly ARTIFACTS: followed by their paths, comma-separated, transcribed character-for-character "
+    "from <work>, the most important first, at most five. A file the work CREATED or REWROTE as the "
+    "deliverable itself counts whatever its extension: a written document meant to be read is an output "
+    "file, never source code. Still excluded: source code, tests and configs touched along the way, a "
+    "path merely read or mentioned, and any path you cannot see verbatim in <work>. A goal that produced "
+    "no such file omits the line entirely. This line is parsed off and shown as file previews, so the "
+    "file-path ban above does not apply to it.\n\n"
     "Assistant messages in <work> may carry [mN] labels. When they do, your reply is complete **only** "
     "with a third element after the takeaway: a final line that is exactly SOURCE: mN, nothing before it "
     "on the line and nothing after it. Never omit it while labels are present, and never invent a label "
@@ -9466,10 +9491,21 @@ def _distill_session(fsid, path, now):
             continue
         raw = out
         out, src = _split_source(out)
+        out, arts = _split_artifacts(out)           # optional produced-files line (before the section split — it trails the takeaway)
         bg, out = _split_sections(out)
         nodes[top]["summary"] = out                 # full text — NEVER truncate a takeaway mid-word (the user 2026-07-06)
         nodes[top]["summaryParts"] = ([{"id": d["id"], "since": _done_since(d)} for d in _dsubs]
                                       if len(_dsubs) > 1 else None)   # same order as <completed-items>; the feed's count-match gate decides whether the model actually split
+        # Files the work PRODUCED (paths as written in <work>) — the kernel existence-filters at feed
+        # build (the user 2026-07-08). A LATER distill of the same node that emits no ARTIFACTS line
+        # KEEPS what an earlier one recorded (the user 2026-08-19): a re-distill reads a fresher, often
+        # longer <work> where the file's own creation has scrolled out of the window, and the paths are
+        # transcribe-only, so overwriting with None erased artifacts a completed goal really had. The
+        # filesystem still retires them — a moved or deleted path drops at feed build.
+        if arts:
+            nodes[top]["artifacts"] = arts
+        elif not nodes[top].get("artifacts"):
+            nodes[top]["artifacts"] = None
         nodes[top]["background"] = bg if bg else None   # re-orientation for a reader who forgot the thread (2026-07-02)
         # the takeaway's cited source, else the WRITE-TIME deterministic stamp: the newest labeled atom
         # this very call read (the user 2026-07-21) — every summary ships a stored anchor

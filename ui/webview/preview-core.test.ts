@@ -1,5 +1,6 @@
 // File-preview core (the user 2026-07-08, re-homed from feed-artifacts.test.ts when the feed's
-// artifact strips were removed 2026-08-14 — the chat is the one preview surface now): a path
+// artifact strips were removed 2026-08-14; the strips came back 2026-08-19 on this fork and
+// feed-artifacts.test.ts owns their pins again, so this file stays the CHAT-surface core): a path
 // mentioned in the CHAT gets an inline render, bytes ride the kernel's /file endpoint. Source pins
 // over preview.ts / render.ts / styles.css / the kernel (render.ts has import-time DOM side effects,
 // so no test imports it as a module — see distill-background.test.ts precedent).
@@ -53,7 +54,7 @@ test("chat: a mentioned image/PDF grows a FULL render at its mention, deduped an
   assert.match(RENDER, /previewFull\(p, activeId, kernelVerified\.has\(p\), \(pathPins \|\| \{\}\)\[p\]\)/, "relative paths resolve against the ACTIVE session's cwd, as openPathLink; verified paths fail loudly");
 });
 
-test("the chat sheet carries the lightbox + preview styles (the feed no longer previews)", () => {
+test("the chat sheet carries the lightbox + preview styles (the feed sheet carries its own)", () => {
   assert.match(CHAT_CSS, /#romp-lightbox \{ position: fixed; inset: 0; z-index: 1300;/);
   assert.match(CHAT_CSS, /\.path-thumb-tag \{ font-size: 0\.74em;/, "the PDF card's label (previewFull)");
   assert.match(CHAT_CSS, /\.path-full-img \{ display: block; max-width: 100%;/, "the full render's image scale");

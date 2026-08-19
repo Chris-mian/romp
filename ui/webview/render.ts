@@ -1144,6 +1144,7 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
   // paragraph/list item that names it, like figures in a document (the user 2026-08-15, whose four
   // captioned plots all collected at the message's tail, far from the prose describing each; the
   // 2026-07-20 rule — a rendered image, not a thumbnail — stands, this moves WHERE it renders).
+  // The 2026-07-08 thumbnail strip lives on in the feed's artifact strips, which stay glanceable.
   // Figures mentioned in the same block share one strip; a mention with no block anchor (bare text
   // at the root) keeps the old below-message placement. Absolute AND relative paths work — the
   // kernel resolves a relative one against this session's cwd, same as click-to-open. Per surface:

@@ -122,8 +122,9 @@ test("full-size images wear the user-image scale — one size per information ty
   assert.match(CSS, /\.path-full-pdfcard \{/);
 });
 
-test("previewThumb is gone with the feed's artifact strips (2026-08-14) — the full render is the one preview", () => {
-  assert.doesNotMatch(PREVIEW, /previewThumb/, "no orphaned thumbnail builder");
+test("the feed's artifact strips keep their compact thumbnails (cards stay glanceable)", () => {
+  assert.match(FEED, /previewThumb\(/);
+  assert.match(PREVIEW, /export function previewThumb\(path: string, sid\?: string \| null\): HTMLElement \| null/);
 });
 
 test("a flaky link finishes the picture ACROSS retries: resume, narrate progress, hold the layout", () => {
