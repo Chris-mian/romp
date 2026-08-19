@@ -78,6 +78,17 @@ test("the dropdown and dialog wear the shared menu vocabulary and adopt into the
   assert.match(SRC, /const h = this\._menuHost\(anchorEl\.getBoundingClientRect\(\)\);[\s\S]{0,400}this\._viewsMenu = menu;/);
 });
 
+test("the sessions dialog is the pool builder: each live row carries the lane gear's feed toggle", () => {
+  // the user 2026-08-19, from the manager/worker experiment: a background worker wants BOTH edits —
+  // out of the default group AND off the feed — in one visit. Reused machinery, never a new one;
+  // and deliberately NOT auto-coupled to membership (hideFromFeed seals goals + gates the planner).
+  assert.match(SRC, /const ft = LANE_TOGGLES\.find\(\(t\) => t\.flag === 'hideFromFeed'\);/);
+  assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.hideFromFeed = next;/,
+    "the same optimistic sticky flags the lane gear uses");
+  assert.match(SRC, /this\._setSessionFlag\(s, 'hideFromFeed', next\);\s*\n\s*this\._reconcilePendingFlags\(\);/);
+  assert.match(SRC, /e\.stopPropagation\(\);\s*\/\/ the row toggle is membership; this is the feed/);
+});
+
 test("the two display toggles write the host's own romp:settings — reachable in every host now", () => {
   assert.match(SRC, /item\('Collapse idle gaps', \{ current: !!this\._collapseGaps, dim: true \}\)/);
   assert.match(SRC, /item\('Active sessions only', \{ current: !!this\._activeOnly, dim: true \}\)/);
