@@ -34,7 +34,7 @@ import { initStrip } from "./strip";
 import { installSettingsSync, loadSettings, onExternalSettingsChange } from "./settings";
 import { applyTheme } from "./theme";
 import { hostsGear, openGear } from "./gear-host";
-import { canPreview } from "./preview";
+import { previewThumb, previewKind, canPreview } from "./preview";
 import { sanitizeMd } from "./md-sanitize";
 import { noticeBodyNodes, noticeAttachmentNodes } from "./notice-face";   // the one face the feed card, its modal and the chat box share
 import { applySections, resolveSec, stallText, secChoice, cardTreeExpanded, clearedTag, parkedTag, nodeStatusClass, TREE_INDENT_EM, CLEARED_TIP, registerSectionHost,
@@ -108,6 +108,7 @@ interface AskItem {
              expiresAt: number | null; dismissOnAction: boolean; acted?: boolean } | null;   // acted: the one-shot action ran (a card back from Undo carries no actions)
   summary?: string | null;                         // distiller's key takeaway for a COMPLETED goal → the done card's one auto-written line (kernel asks.append); null until produced
   distillState?: "completed" | "blocked" | null;   // the GENUINE resolution state the distiller line keys on, so the brief/takeaway rides the real block instead of the transient `column` (which recheck/rejudging flicker to working) — the user 2026-07-21; absent from older/remote payloads → fall back to column
+  artifacts?: string[] | null;                     // files the work PRODUCED (distiller ARTIFACTS line, kernel existence-filtered at build): "N artifacts" under the summary; previewed in the modal (the user 2026-07-08)
   blockSummary?: string | null;                    // block-distiller's decision brief for a BLOCKED goal → the blocked card's one auto-written line (kernel 466393c); null until produced
   relayNote?: string | null;   // a far host still holds a relayed question after its wait ended (kernel relayCarried) → its own dim line under the brief, never a brief paragraph
   briefParts?: { id?: string; since: number }[] | null;   // MULTI-item brief: one {id, since} per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null/absent = single ask, the card header's age is the stamp (the user 2026-07-24)
@@ -1461,6 +1462,12 @@ function makeAskCard(it: AskItem): HTMLElement {
   const se = buildSectionElements();
   const { bgBtn, bgBody, takeBtn, distill, subBtn, stallBtn, stallBody, taskBtn, taskLbl, secs, checklist, awaitSpin, awaitWhy } = se;
   secs.style.display = "none";
+  // "N artifacts" (the user 2026-07-08): when the distiller listed PRODUCED files (and the kernel verified
+  // they exist), a small nav line at the BOTTOM of the summary body — click opens the modal, where the
+  // artifacts render as previews. Feed-only, so it rides the shared bodies rather than the builder; filled
+  // in applyArtline, shown only with the summary section.
+  const artline = el("div", "fask-artline nav"); artline.style.display = "none";
+  secs.appendChild(artline);
   row3.append(...se.toggles, actions);
   // NOTICE CARD (T370): the producer label beside the session name, then the body, the attachment and the actions, all
   // hidden until updateAskCard finds it.notice. The body is the sanitizer's inert DOM adopted (never innerHTML), the
@@ -1612,7 +1619,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._nProd = nprod; a._nBody = nbody; a._nAttach = nattach; a._nActions = nactions;
   a._delegations = delegations;
   a._checklist = checklist;
-  a._distill = distill;
+  a._distill = distill; a._artline = artline;
   a._secs = secs; a._bgBtn = bgBtn; a._bgBody = bgBody; a._takeBtn = takeBtn; a._subBtn = subBtn;
   a._stallBtn = stallBtn; a._stallBody = stallBody;
   a._taskBtn = taskBtn; a._taskLbl = taskLbl;
@@ -1921,7 +1928,25 @@ const sectionEnv: SectionEnv = {
   },
   openWarns: (it, title) => { if (it.warns && it.warns.length) feedWarnModal(title, it.warns, { itemId: it.itemId, sid: it.sid }, it.failLog); },   // the warn-detail overlay: what happened and why
   workDot: (peer, name) => setWorkDot(peer, dotFor(name)),   // the board's live working/awaiting dot before a tracked recipient's name
+  afterApply: (a) => applyArtline(a),   // a pick re-applies the sections without updateAskCard; the artifacts line follows the summary
 };
+// "N artifacts" under the summary (the user 2026-07-08): the kernel already existence-filtered the distiller's
+// list, so a count here is always openable. Shown only while the summary body is (applySections decides that).
+// Click → the modal, where they render as previews.
+function applyArtline(a: any): void {
+  const artline = a._artline as HTMLElement | undefined;
+  if (!artline) return;
+  const it = a._it as AskItem;
+  const arts = (it && it.artifacts) || [];
+  if (arts.length && (a._distill as HTMLElement).style.display !== "none") {
+    artline.textContent = arts.length === 1 ? "1 artifact" : arts.length + " artifacts";
+    artline.title = "files this work produced — click to preview\n" + arts.join("\n");
+    artline.style.display = "";
+    artline.onclick = (ev: Event) => { ev.stopPropagation(); fullscreenAskId = it.itemId; renderModal(); };
+  } else {
+    artline.style.display = "none";
+  }
+}
 function updateAskCard(card: HTMLElement, it: AskItem) {
   const a = card as any;
   a._it = it;   // the freshest payload copy — the right-click bell menu reads this, never a stale closure; and the gate's identity
@@ -2045,7 +2070,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   applyDistillLanding(a, it, distillShown, dCompleted, dBlocked, sectionEnv);
   // TWO collapsible distiller sections (the user 2026-07-02): BACKGROUND (re-orientation for a reader who
   // forgot the thread, collapsed by default) above the takeaway (expanded by default), each with a +/−.
-  applySections(a, it, !!distillShown, sectionEnv);   // bg/summary/sub-goals (mutually exclusive): applyDistillLine returns the line's TEXT (string), coerce to "has content"
+  applySections(a, it, !!distillShown, sectionEnv); applyArtline(a);   // bg/summary/sub-goals (mutually exclusive): applyDistillLine returns the line's TEXT (string), coerce to "has content"
   // A SESSION-STARTED root (T319): work the session began on its own (a Workflow run, an agent, a thread of
   // its own) that stands as a card only because its parent is gone, no request could host it, or it is
   // blocked (needs-you breaks through). The face says what it is and why in one line, so it never reads as
@@ -2661,6 +2686,50 @@ function renderTreeBody(host: HTMLElement, it: AskItem, skipRoot = false) {
     renderTreeNode(box, it, root, byId, briefs, seen, 0, root.who);
   }
   host.appendChild(box);
+}
+
+// The modal's ARTIFACTS strip (the user 2026-07-08): the files this work produced (distiller ARTIFACTS
+// line, kernel existence-filtered), rendered below the tree as click-to-expand previews — an image
+// thumb / PDF chip opening the lightbox on the web dashboard, a plain open-the-file chip in the VS Code
+// webview (its sandbox can't load the kernel's /file URL). Sig-guarded on the path list so a kernel
+// repush doesn't re-fetch every thumb; renderTreeBody wipes the host when the TREE changes, so the
+// strip is (re)appended after it on every modal render.
+function applyModalArtifacts(host: HTMLElement, it: AskItem): void {
+  const arts = it.artifacts || [];
+  let strip = host.querySelector(":scope > .fmodal-arts") as HTMLElement | null;
+  if (!arts.length) { strip?.remove(); return; }
+  const sig = arts.join("\n");
+  if (strip && (strip as any)._sig === sig) return;
+  strip?.remove();
+  strip = el("div", "fmodal-arts");
+  (strip as any)._sig = sig;
+  const head = el("div", "fmodal-arts-head");
+  head.textContent = arts.length === 1 ? "Artifact" : "Artifacts";
+  strip.appendChild(head);
+  const row = el("div", "fmodal-arts-row");
+  for (const p of arts) {
+    const cell = el("div", "fmodal-art");
+    const name = p.slice(p.lastIndexOf("/") + 1) || p;
+    const th = previewThumb(p, it.sid);   // null off the web dashboard (or an unpreviewable type) → chip
+    if (th) {
+      cell.appendChild(th);
+      if (previewKind(p) === "img") {     // a PDF chip already carries its filename; only pixels need a caption
+        const cap = el("div", "fmodal-art-name");
+        cap.textContent = name;
+        cap.title = p;
+        cell.appendChild(cap);
+      }
+    } else {
+      const chip = el("button", "fmodal-art-chip");
+      chip.textContent = name;
+      chip.title = "open " + p;
+      chip.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openFile", path: p, id: it.sid }); };
+      cell.appendChild(chip);
+    }
+    row.appendChild(cell);
+  }
+  strip.appendChild(row);
+  host.appendChild(strip);
 }
 
 // Debug-mode judge warnings (the user 2026-07-09): every judge failure touching this card, appended
@@ -3301,6 +3370,7 @@ function renderModalNow() {
     // toggling the button reveals the composer.
     wireFollowUp(fupEl, fuboxEl, fuinEl, fusendEl, (txt) => postFollowUp(txt, it.itemId, it.sid));
     renderTreeBody(body, it, false);   // root goal IS the first list line; sub-goals render beneath it
+    applyModalArtifacts(body, it);     // produced-file previews below the tree (the user 2026-07-08)
     applyModalWarnings(body, it);      // debug mode: this card's judge failures, input+reply expandable (the user 2026-07-09)
     }
   }

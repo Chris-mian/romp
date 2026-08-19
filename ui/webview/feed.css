@@ -1348,8 +1348,26 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 }
 .feed-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* ── artifact previews (the user 2026-07-08): files the work PRODUCED, distiller ARTIFACTS line,
+   kernel existence-filtered. On the card: an "N artifacts" nav line at the bottom of the summary.
+   In the modal: a strip of click-to-expand previews below the tree. .path-thumb / the lightbox are
+   SHARED with the chat (preview.ts) and defined in BOTH sheets — each page loads only its own css
+   (the .romp-acted precedent). ── */
+.fask-artline { font-size: 0.86em; color: var(--dim); cursor: pointer; margin: 2px 0 1px; }
+.fask-artline:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.fmodal-arts { margin-top: 12px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.fmodal-arts-head { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); margin-bottom: 6px; }
+.fmodal-arts-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.fmodal-art { display: flex; flex-direction: column; gap: 3px; max-width: 240px; min-width: 0; }
+.fmodal-art-name { font-size: 0.72em; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fmodal-art-chip { font: inherit; font-size: 0.72em; cursor: pointer; padding: 4px 9px; border-radius: 6px;
+  background: var(--vscode-input-background, #3c3c3c); color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.14); max-width: 240px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fmodal-art-chip:hover { border-color: var(--accent); }
+
 /* debug-mode judge warnings (the user 2026-07-09): the card modal's failure-inspection section.
-   0.72em heads, 0.82em body rows (labels match labels). */
+   Sizes reuse the artifact strip's (labels match labels): 0.72em heads, 0.82em body rows. */
 .fmodal-warns { margin-top: 12px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
 .fmodal-warns-head { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--warn); margin-bottom: 6px; }
 .fmodal-warn-row { margin-bottom: 6px; }
@@ -1772,6 +1790,63 @@ a.fileview-gh-note { border-style: dashed; }
 .hljs-attribute { color: var(--hl-attr); }
 .hljs-addition { color: var(--hl-str); }
 .hljs-deletion { color: var(--err); }
+
+/* a renderable file mentioned by path → a click-to-expand thumbnail (preview.ts previewThumb) */
+.path-thumb { display: inline-flex; align-items: center; gap: 6px; cursor: zoom-in; border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14); overflow: hidden; background: rgba(0, 0, 0, 0.25); }
+.path-thumb:hover { border-color: var(--accent); }
+.path-thumb-img { display: block; max-width: 220px; max-height: 140px; object-fit: contain; }
+
+/* the preview's LOADING cue (the user 2026-07-31): the mini romp swirl holds a mentioned image's spot
+   until its load event lands (preview.ts withLoadCue) — a remote file rides the ssh tunnel, and the
+   picture used to pop in with nothing saying it was on the way. First load of a URL only, so re-renders
+   never re-flash it. Both sheets carry it (each page loads only its own — the .romp-acted precedent). */
+.path-load-spin { display: block; width: 20px; height: 20px; margin: 8px 10px;
+  animation: path-load-spin 2.4s linear infinite; }   /* the calm mini-swirl spin, same as the awaiting glyphs */
+@keyframes path-load-spin { to { transform: rotate(-360deg); } }
+.path-img-loading { display: none; }   /* the <img> takes the spot the instant it has pixels */
+@media (prefers-reduced-motion: reduce) { .path-load-spin { animation: none; } }
+.path-thumb.pdf { padding: 5px 9px; cursor: pointer; }
+.path-thumb-tag { font-size: 0.72em; font-weight: 700; letter-spacing: 0.04em; color: var(--accent); flex: 0 0 auto; }
+.path-thumb-name { font-size: 0.72em; color: var(--fg); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 200px; }
+
+/* full-view lightbox (preview.ts openLightbox): image at natural-but-capped size, or the PDF in the
+   browser's native viewer. Above every overlay layer. Mirrored from styles.css — the feed page loads only this sheet (the .romp-acted precedent). Backdrop click / Esc / ✕ closes. */
+#romp-lightbox { position: fixed; inset: 0; z-index: 1300; background: rgba(0, 0, 0, 0.72);
+  display: flex; align-items: center; justify-content: center; }
+.romp-lightbox-inner { display: flex; flex-direction: column; gap: 8px; max-width: 92vw; max-height: 90vh; min-width: var(--lb-acts-w, 0px); }   /* the floor: the bar's download-and-copy group, measured by openLightbox (review, round two) */
+.romp-lightbox-img { max-width: 92vw; max-height: 82vh; object-fit: contain; border-radius: 8px; align-self: center;
+  box-shadow: var(--shadow-modal);
+  transform-origin: 0 0; will-change: transform; }   /* pinch-zoom renders translate+scale from this corner (T162; pinch.ts) */
+/* the stage owns every touch gesture (T162): pinch must zoom the IMAGE, never the page — the bar's
+   buttons still tap fine (touch-action only disables the browser's own gestures) */
+.romp-lightbox-inner { touch-action: none; }
+.romp-lightbox-inner.pdf { width: 88vw; height: 88vh; }
+.romp-lightbox-frame { flex: 1 1 auto; width: 100%; border: 0; border-radius: 8px; background: #fff; }
+/* the bar sits ABOVE the picture and the PDF frame (T385, the user 2026-09-12: the controls at the top, the way a
+   file opens): it IS the file viewer's bar (.fileview-bar; .fileview-name as dimmed directory + basename; .fileview-acts
+   with the file group and the close cross alone at the end; .fileview-btn.fileview-icon glyph buttons; file-view.ts,
+   T367), one set of rules for both surfaces, so a control added to one wears the same dress in the other. The
+   lightbox's own classes stay as hooks: the placement here and the stage's tap rule (pinch.ts, closest(".romp-lightbox-bar")).
+   The bar's OWN placement rules are scoped under the lightbox id: an id outranks the viewer's later rules of equal
+   specificity, which a plain .romp-lightbox-bar rule tied with and lost to (round one measured the served bar at the
+   viewer's 7px 10px and the title at 12em; the repo's cascade rule: pin the tiebreak). No side padding: the picture's
+   edges are the column's. contain: inline-size makes the bar contribute NO intrinsic width, so the PICTURE sets the
+   column (a 120px thumbnail is a 120px column, not a bar-wide one) and the bar stretches to it; inside, the title
+   truncates, the basename too (the viewer's card owns its width and keeps its basename whole; the lightbox's column is
+   the picture's), and the actions wrap beneath the title when the picture is narrower than they are. */
+#romp-lightbox .romp-lightbox-bar { padding: 0 2px 6px; contain: inline-size; }
+#romp-lightbox .romp-lightbox-bar .fileview-name { min-width: 0; overflow: hidden; }
+#romp-lightbox .romp-lightbox-bar .fileview-base { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* the viewer's rule kept as far as the column allows (review, round two): the directory gives up its room first, by a shrink weight
+   a thousand times the basename's, so the basename reads whole down to the width where it alone does not fit */
+#romp-lightbox .romp-lightbox-bar .fileview-dir { flex-shrink: 1000; }
+/* the backdrop is 72% black in BOTH themes, so inside the lightbox the bar's tokens are the dark theme's whatever the
+   page wears: the light theme's near-black prose, hairline and clay accent would sit on a dark field otherwise */
+#romp-lightbox { --fg: #e8e8e8; --dim: #b8b8b8; --accent: #9cd2ff; --accent-fg: #0c1a2e; --accent-wash: rgba(156, 210, 255, 0.12);
+  --err: #f48771; --card-border: rgba(255, 255, 255, 0.18); --box-border: rgba(255, 255, 255, 0.18); }
+.romp-lightbox-cue { flex: 0 0 auto; font-size: 0.82em; color: var(--dim); font-variant-numeric: tabular-nums; }   /* the ←/→ position mark (house sub scale) */
 
 /* the "host:" prefix on a federated session's name — see styles.css (one treatment, two sheets) */
 .host-prefix { color: var(--dim); font-weight: 400; font-style: italic; font-size: 0.86em; }

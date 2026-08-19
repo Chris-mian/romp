@@ -46875,6 +46875,7 @@ def _feed_session_entry(s, ctx):
             "summaryStale": bool((nodes[nid].get("followupAt") or 0) > (nodes[nid].get("distilledMt") or 0)
                                  and (nodes[nid].get("summary") or "").strip()) or None,   # the DONE twin: [{id, since}] per takeaway paragraph when the distiller split by <completed-items>; done-event times (the user 2026-07-24)
             "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
+            "artifacts": _subtree_artifacts(nodes, children, nid) or None,   # files the work PRODUCED (the distiller's ARTIFACTS line, hoisted from the whole subtree); the fold existence-filters them per build — "N artifacts" under the summary, previews in the modal
             "summaryAnchorUuid": _sa_u,    # click the summary line → the completion turn's wrap-up (completed pin), else the cited/latest prose (the user 2026-07-14)
             # the supporting SPAN (T218): the distiller's verbatim quote, located in the cited atom at
             # write time — shipped ONLY while the resolved anchor IS the cited atom (the fallback tiers
@@ -47037,6 +47038,11 @@ def _feed_fold_card(card, now, cmap):
         card["t"] = now                              # a placeholder with no turn to date it: the build's clock, as before
         age_t = now
     card["trgb"] = list(cm.age_rgb(now - age_t, cmap))
+    if card.get("artifacts"):
+        # the filesystem decides what is real, so the check belongs per BUILD, not inside the memoized
+        # entry: a since-deleted artifact must leave the card on the next build, not when the session's
+        # own inputs happen to move
+        card["artifacts"] = _feed_artifacts(card["artifacts"], card.get("sid"))
     for r in card.get("tree") or []:
         rt = r.pop("_ageT", None)
         r["trgb"] = list(cm.age_rgb(now - (rt if rt is not None else now), cmap))
@@ -57914,6 +57920,49 @@ def _file_github_url(raw, sid):
     alone, without the origin check (no network query for a caller that wants only the address).
     Kept for callers that predate the reason; the viewer's op uses _file_github_link."""
     return _file_github_link(raw, sid, check_origin=False)[0]
+
+
+def _subtree_artifacts(nodes, children, root):
+    """Every ARTIFACTS path recorded at/under `root`, the card's own node first.
+
+    A goal's produced files land on the node the DISTILLER ran against. A merged umbrella is
+    distilled as a WHOLE, so its own node carries no ARTIFACTS line while the child goals folded
+    into it still hold theirs — and reading only the card's own node stranded exactly those: the
+    card rendered no artifacts line while verified paths sat one level down, invisible (the user
+    2026-08-19, whose written docs never surfaced on the umbrella that summarized them). Pre-order
+    keeps the card's own paths first; a path recorded at two levels lists once. The filesystem
+    still decides what is real — see `_feed_artifacts`.
+    """
+    stack, seen, acc = [root], set(), []
+    while stack:
+        nid = stack.pop()
+        if nid in seen:          # a malformed parent cycle must not spin the feed build
+            continue
+        seen.add(nid)
+        for p in ((nodes.get(nid) or {}).get("artifacts") or []):
+            if p not in acc:
+                acc.append(p)
+        stack.extend(children.get(nid, []))
+    return acc
+
+
+def _feed_artifacts(paths, sid):
+    """The distiller's ARTIFACTS paths → the files a feed card may actually show. Resolved like a
+    click-to-open (~ expanded, relative → the session's cwd) and existence-checked HERE, at feed build —
+    the authoritative filter that keeps a hallucinated or since-deleted path off the card (the distiller
+    only transcribes what it read in <work>; the filesystem decides what's real). None when nothing
+    survives, so the client renders no artifacts line at all."""
+    out = []
+    for p in paths or []:
+        if not isinstance(p, str) or not p.strip():
+            continue
+        try:
+            ap = _resolve_open_path(p.strip(), sid)
+            if os.path.isabs(ap) and os.path.isfile(ap) and ap not in out:
+                out.append(ap)
+        except Exception:
+            continue
+    return out or None
 
 
 # Inline-code spans that name an EXISTING file despite containing spaces (the user 2026-08-04: a note
@@ -71943,7 +71992,7 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith("/glossary/"):                    # T351 stage 2: one term's section as JSON, for the lab's own consumers
                 status, payload = _glossary_lookup((q.get("sid") or [None])[0], unquote(p[len("/glossary/"):]))
                 return self._send(status, json.dumps(payload), "application/json", cache="no-cache")
-            if p == "/file":                                  # preview bytes for a chat path-thumbnail
+            if p == "/file":                                  # preview bytes for a chat path-thumbnail / feed artifact
                 return self._file_preview(q)
             if p == "/ssh-hosts":                             # ~/.ssh/config Host aliases for the attach-a-remote UI
                 return self._send(200, json.dumps({"hosts": _ssh_config_hosts()}),
