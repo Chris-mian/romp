@@ -5338,7 +5338,7 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
         data.setdefault("threads", []).append(row)
         _save_comments(parent_sid, data)
     try:
-        be.fork(nm, parent_sid, cut, bg=col, fg=("#ffffff" if col else ""), sid=tsid, thread_of=parent_sid,
+        be.fork(nm, parent_sid, cut, bg=col, fg=(pal.fg_for(col) if col else ""), sid=tsid, thread_of=parent_sid,
                 model=str(model or ""), effort=str(effort or ""))
         be.connect(tsid)
         be.send(tsid, _comment_first_message(exact, text))
@@ -5495,7 +5495,10 @@ def _comment_promote(parent_sid, tid, new_name, now=None, client=None):
         return _revert("not promoted: sealing the thread's history failed: %s" % e)
     if prior == "resolved":
         be.resume(nm, tsid)                          # a resolved thread promotes straight to a live session
-    bg, fg = _pick_identity_color()
+    # the thread KEEPS its identity color (the user 2026-08-19: the color the dialog suggested must
+    # persist to the session it becomes) — a fresh pick here handed the board session a different one
+    col = str(th.get("color") or "")
+    bg, fg = (col, pal.fg_for(col)) if col else _pick_identity_color()
     if not be.promote_thread(tsid, nm, bg, fg):
         return _revert("couldn't promote this thread.")
     _comment_update(parent_sid, tid, status="promoted", promotedName=nm)
