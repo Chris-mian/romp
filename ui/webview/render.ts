@@ -9006,6 +9006,10 @@ function retirePendingShip(key: string): string | null {
 // "wait" pick in sendComposer's gate; fired by the LAST droppedPath ack (event-based), cancelled by
 // a dropSaveFailed nack or by any successful send for the sid.
 const sendOnShip = new Set<string>();
+// The ship-gate confirm currently open, by owning sid (the user 2026-08-19): while the "still
+// uploading" dialog is up, the upload FINISHING answers the question itself — the dialog closes and
+// the send fires, no click needed. The deciding event is the same last-ship ack a held send waits on.
+let shipGateSid: string | null = null;
 // Assigned by setupComposer (sendComposer lives in its closure); the WS ack handler fires a held
 // send through it when the last pending ship lands.
 let fireHeldSend: () => void = () => {};
@@ -10291,9 +10295,13 @@ window.addEventListener("message", (e: MessageEvent) => {
     }
     const owner = retirePendingShip(m.path) || activeId;               // the chip this ack answers names the OWNING composer (no-op for pickFile, which never ships)
     addComposerFile(owner, m.path);
-    if (owner && sendOnShip.has(owner) && !(pendingShips.get(owner) || []).length) {
+    // an OPEN ship-gate dialog counts as a held send (the user 2026-08-19): the upload finishing is
+    // the answer to the question it asks, so it closes itself and the send fires — no click needed
+    const gateOpen = shipGateSid === owner;
+    if (owner && (sendOnShip.has(owner) || gateOpen) && !(pendingShips.get(owner) || []).length) {
       // the LAST ship landed — the event the held send was waiting for (the user 2026-08-16)
       sendOnShip.delete(owner);
+      if (gateOpen) { shipGateSid = null; closeConfirm(null); }
       if (owner === activeId) fireHeldSend();
       else warnToast("attachments finished uploading on another tab — the held message was not sent; review it there.");
     }
@@ -10302,8 +10310,10 @@ window.addEventListener("message", (e: MessageEvent) => {
     // never leave dots pulsing over a file that is not coming (fail loudly, don't degrade silently)
     const owner = retirePendingShip(m.name) || activeId;
     const held = !!owner && sendOnShip.delete(owner);    // a held send must not fire without the file it waited for
+    const gateWasOpen = shipGateSid === owner;
+    if (gateWasOpen) { shipGateSid = null; closeConfirm(null); }   // the question is moot — but a failed save never auto-sends
     warnToast(m.name + " couldn't be saved on the kernel, so it was not attached — try again."
-              + (held ? " Your message was NOT sent." : ""));
+              + (held || gateWasOpen ? " Your message was NOT sent." : ""));
     if (owner && owner === activeId) renderComposerFiles(owner);   // the held-send button state clears with the hold
   }
   // an EDITOR highlight (VS Code host, onDidChangeTextEditorSelection — the user 2026-07-13) seeds the
@@ -10464,12 +10474,14 @@ function setupComposer() {
       const sid = activeId;
       const what = shipping === 1 ? "An attachment is" : shipping + " attachments are";
       const them = shipping === 1 ? "it" : "them";
+      shipGateSid = sid;                       // the last-ship ack resolves the open dialog itself
       showConfirm(what + " still uploading",
-                  "Send now and your message goes without " + them + ". Wait, and it sends itself "
-                  + "the moment the upload finishes.",
+                  "Send now and your message goes without " + them + ". Or just wait — it sends "
+                  + "itself the moment the upload finishes.",
                   [{ label: "Wait for the upload", value: "wait" },
                    { label: "Send without " + them, value: "now", danger: true }],
                   (v) => {
+                    shipGateSid = null;
                     if (v === "now") sendComposer({ pastShipGate: true });
                     else if (v === "wait") { sendOnShip.add(sid); renderComposerFiles(sid); }
                   });
