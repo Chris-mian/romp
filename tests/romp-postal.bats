@@ -109,6 +109,23 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}
     [ "$(cnt "$(mb uuid-b)/new")" = "0" ]
 }
 
+@test "a non-session caller sends with --from, and the refusal names the flag" {
+    # a launchd/cron script has no session identity; --from gives it an explicit, placeable one
+    CLAUDE_CODE_SESSION_ID= ROMP_SID= run "$POSTAL" send --from morning-brief beta "the morning summary"
+    [ "$status" -eq 0 ]
+    [ "$(cnt "$(mb uuid-b)/new")" = "1" ]
+    grep -q "From: morning-brief" "$(mb uuid-b)/new/"*
+    grep -q "ext:morning-brief" "$(mb uuid-b)/new/"*
+    # without --from the refusal is loud AND names the door
+    CLAUDE_CODE_SESSION_ID= ROMP_SID= run "$POSTAL" send beta "anonymous attempt"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"pass --from"* ]]
+    # a garbage label exits 2
+    CLAUDE_CODE_SESSION_ID= ROMP_SID= run "$POSTAL" send --from "two words" beta "x"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"--from must be one word"* ]]
+}
+
 @test "send to an unknown session errors" {
     run "$POSTAL" send ghost "x"
     [ "$status" -ne 0 ]
