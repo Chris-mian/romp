@@ -555,7 +555,9 @@ function mdBlock(text: string): HTMLElement {
   const box = el("div", "fileview-md");
   try {
     const dirty = marked.parse(text) as string;
-    box.innerHTML = DOMPurify.sanitize(dirty, { USE_PROFILES: { html: true }, ADD_DATA_URI_TAGS: ["img"] });
+    // html + svg, in lockstep with the chat's md(): KaTeX draws stretchy glyphs (\sqrt radicals,
+    // wide accents) as inline <svg> even in html output, and the html-only profile ate them.
+    box.innerHTML = DOMPurify.sanitize(dirty, { USE_PROFILES: { html: true, svg: true }, ADD_DATA_URI_TAGS: ["img"] });
   } catch {
     box.textContent = text;                            // a marked bug must never cost the content
   }
