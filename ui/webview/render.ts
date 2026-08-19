@@ -11363,17 +11363,29 @@ document.getElementById("content")?.addEventListener("contextmenu", showSelectio
 // The file viewer's review comments come back here as ONE assembled message (the user 2026-08-14).
 // It is DRAFTED into the composer, never sent: you read what the session will get, add a line if you
 // want, and send it yourself. Appended, so it never clobbers a half-typed draft.
-setCommentSink((text) => {
-  const sid = activeId;
-  if (!sid) return;
-  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-  if (!ta) return;
-  const sep = !ta.value ? "" : ta.value.endsWith("\n\n") ? "" : ta.value.endsWith("\n") ? "\n" : "\n\n";
-  ta.value = ta.value + sep + text;
-  ta.selectionStart = ta.selectionEnd = ta.value.length;
-  growComposer(ta);
-  ta.focus();
-  drafts.set(sid, ta.value);
+setCommentSink((sid, text) => {
+  // Routed by the REVIEWED session's sid, never activeId-at-submit (2026-08-19: switching tabs
+  // while the viewer was open drafted session A's review into session B's composer). Active tab →
+  // the live textarea; any other sid → straight into that session's persisted draft, where the
+  // composer restores it on the next visit (or on revival — drafts outlive the tab).
+  if (!sid) return false;
+  if (sid === activeId) {
+    const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+    if (ta) {
+      const sep = !ta.value ? "" : ta.value.endsWith("\n\n") ? "" : ta.value.endsWith("\n") ? "\n" : "\n\n";
+      ta.value = ta.value + sep + text;
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+      growComposer(ta);
+      ta.focus();
+      drafts.set(sid, ta.value);
+      persistDrafts();
+      return true;
+    }
+  }
+  const prev = drafts.get(sid) || "";
+  const sep = !prev ? "" : prev.endsWith("\n\n") ? "" : prev.endsWith("\n") ? "\n" : "\n\n";
+  drafts.set(sid, prev + sep + text);
   persistDrafts();
+  return true;
 });
 if (vscodeApi) vscodeApi.postMessage({ type: "ready" });
