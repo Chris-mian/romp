@@ -1236,9 +1236,12 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 .turn-user:hover .msg-del, .msg-del:focus-visible,
-.turn-user:hover .msg-restorefiles, .msg-restorefiles:focus-visible,
-.turn-user:hover .msg-fork, .msg-fork:focus-visible { opacity: 0.9; }
+.turn-user:hover .msg-restorefiles, .msg-restorefiles:focus-visible { opacity: 0.9; }
 .msg-del:hover, .msg-restorefiles:hover { color: var(--fg); border-color: #ff6a6a; }
+/* fork lives BELOW the response it branches from (the user 2026-08-19) — .fork-spot rides the run's
+   LAST assistant turn (applyForkSpots), revealed by hovering that turn, left with the response column */
+.fork-spot { display: flex; margin-top: 3px; }
+.turn-assistant:hover .msg-fork, .msg-fork:focus-visible { opacity: 0.9; }
 .msg-fork:hover { color: var(--fg); border-color: var(--accent); }   /* non-destructive: accent, never the rewind red */
 /* armed = one click from rolling back: destructive red, holds until blur/pointerleave/re-render */
 .msg-del.armed, .msg-restorefiles.armed { color: #ff6a6a; border-color: #ff6a6a; opacity: 0.95; }
