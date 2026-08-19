@@ -57,3 +57,29 @@ test("both controls live on the build-once header — click-safe across re-rende
   assert.ok(build.includes('el("button", "fcol-fold")') && build.includes("wireColDrag(name, col, key)"),
     "wired inside ensureCols' one-time scaffold, never in a render loop");
 });
+
+test("the Stack toggle says so when narrow width already forces stacking (2026-08-19)", () => {
+  // at or under the container query's 540px the layout stacks regardless of the pref, so the
+  // toggle is a no-op there: faded (aria-disabled), click no-ops, tooltip names the way out.
+  // The width constant must match the CSS query — the two stacking owners cannot drift.
+  assert.match(FEED, /const STACK_FORCED_W = 540;/);
+  assert.match(CSS, /@container \(max-width: 540px\) or style\(--romp-stack: on\)/);
+  assert.match(FEED, /b\.classList\.toggle\("forced", forced\);/);
+  assert.match(FEED, /widen the feed to unstack into three columns/);
+  assert.match(FEED, /if \(b\.classList\.contains\("forced"\)\) return;/,
+    "keyboard activation bypasses pointer-events, so the handler itself no-ops");
+  assert.match(FEED, /new ResizeObserver\(\(\) => refreshStackForced\(b\)\)/,
+    "width changes are the event — never a poll");
+  assert.match(CSS, /#feed-foot \.feed-modetoggle\.forced \{ opacity: 0\.5; cursor: default;\s*\n\s*color: var\(--accent\); border-color: var\(--accent\); \}/,
+    "grayed but still wearing the on-accent — stacking IS active (the user 2026-08-19)");
+  assert.match(CSS, /#feed-foot \.feed-modetoggle\.forced:hover \{ opacity: 0\.75;/, "hover stays responsive");
+  // THE CASCADE, not just the rule (the user's third report, 2026-08-19): `.on { opacity: 1 }` ties
+  // the forced fade's specificity, so the fade only paints if its rule comes LATER in the file. The
+  // first two cuts pinned the rule's existence while `.on` silently won — pin the tiebreak itself.
+  const onAt = CSS.indexOf("#feed-foot .feed-modetoggle.on");
+  const forcedAt = CSS.indexOf("#feed-foot .feed-modetoggle.forced");
+  assert.ok(onAt >= 0 && forcedAt > onAt,
+    "the forced rule must follow the .on rule at equal specificity, or opacity: 1 wins and the fade never shows");
+  assert.doesNotMatch(CSS, /#feed-stacked\.forced/,
+    "no (1,1,0) leftovers — every forced rule must tie the .on rule's specificity");
+});
