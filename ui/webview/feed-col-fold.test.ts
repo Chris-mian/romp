@@ -70,5 +70,7 @@ test("the Stack toggle says so when narrow width already forces stacking (2026-0
     "keyboard activation bypasses pointer-events, so the handler itself no-ops");
   assert.match(FEED, /new ResizeObserver\(\(\) => refreshStackForced\(b\)\)/,
     "width changes are the event — never a poll");
-  assert.match(CSS, /#feed-stacked\.forced \{ opacity: 0\.4; cursor: default; \}/);
+  assert.match(CSS, /#feed-stacked\.forced \{ opacity: 0\.5; cursor: default;\s*\n\s*color: var\(--accent\); border-color: var\(--accent\); \}/,
+    "grayed but still wearing the on-accent — stacking IS active (the user 2026-08-19)");
+  assert.match(CSS, /#feed-stacked\.forced:hover \{ opacity: 0\.75; \}/, "hover stays responsive");
 });
