@@ -1502,7 +1502,10 @@ fi
 # through the API and this var, never tmux). Mirrors the SDK backend's spawn env (sdk_backend
 # _options); both values are already sanitized above (sid: hex+hyphens, name: [A-Za-z0-9_-]),
 # so the interpolation into the respawn-pane exec line is injection-safe.
-claude_cmd="ROMP_SID=$sid ROMP_SESSION_NAME=\"$display\" $claude_cmd"
+# Prefixed with `env`, NOT bare assignments: the tmux launch runs this string as
+# `exec $claude_cmd`, and `exec VAR=val cmd` is a syntax the shell reads as "run the
+# program named VAR=val" — every new tmux session died with status 127 (2026-08-18).
+claude_cmd="env ROMP_SID=$sid ROMP_SESSION_NAME=\"$display\" $claude_cmd"
 
 # Load the Romp Postal Service MCP server (tool-native messaging) into romp
 # sessions only (scoped via --mcp-config), when installed.

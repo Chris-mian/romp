@@ -30,8 +30,13 @@ class SessionIdentityEnv(unittest.TestCase):
     def test_the_terminal_launcher_exports_the_same_identity(self):
         # both backends: the tmux launch line carries ROMP_SID + ROMP_SESSION_NAME into the CLI's
         # environment (the user 2026-08-16 — external tools attribute env-first, never via tmux)
+        #
+        # Through `env`, NOT bare assignments (the user 2026-08-18): the tmux launch runs this
+        # string as `exec $claude_cmd`, and `exec VAR=val cmd` asks the shell to run a PROGRAM
+        # named "VAR=val" — every new tmux session died with status 127. The pin carries the
+        # prefix so the fix cannot be silently undone.
         launcher = Path(os.path.join(os.path.dirname(HERE), "bin", "romp")).read_text()
-        self.assertIn('claude_cmd="ROMP_SID=$sid ROMP_SESSION_NAME=\\"$display\\" $claude_cmd"', launcher)
+        self.assertIn('claude_cmd="env ROMP_SID=$sid ROMP_SESSION_NAME=\\"$display\\" $claude_cmd"', launcher)
 
     def test_one_env_overlay_only(self):
         # both vars ride _options' single env= overlay (additive over os.environ via
