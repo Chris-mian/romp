@@ -1157,8 +1157,13 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 
 /* the Stack toggle while the narrow container query FORCES stacking (2026-08-19): stacking IS on,
    so the button keeps the pressed accent — grayed by opacity, never stripped of its on-state (the
-   user 2026-08-19: "grayed out but still blue to show that it's on"). Hover stays responsive (a
-   gentle brighten, not the action-blue that promises a click); the tooltip names the way out. */
-#feed-stacked.forced { opacity: 0.5; cursor: default;
+   user 2026-08-19, who wanted it grayed but still blue). Hover stays responsive (a gentle brighten,
+   not the action-blue that promises a click); the tooltip names the way out. The selector MUST tie
+   the .on rule's (1,2,0) specificity and sit LATER in this file: the first two cuts keyed the
+   rule on the button id alone at (1,1,0), so `.on { opacity: 1 }` silently won the cascade and the
+   fade never painted while the button was pressed — which forced stacking always implies (the user's
+   third report, 2026-08-19). */
+#feed-foot .feed-modetoggle.forced { opacity: 0.5; cursor: default;
   color: var(--accent); border-color: var(--accent); }
-#feed-stacked.forced:hover { opacity: 0.75; }
+#feed-foot .feed-modetoggle.forced:hover { opacity: 0.75;
+  background: rgba(156, 210, 255, 0.12); }   /* keep the pressed wash — never the action hover's promise */
