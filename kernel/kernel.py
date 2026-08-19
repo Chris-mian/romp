@@ -16464,7 +16464,7 @@ def build_feed(now, tmux=None):
             _bcmemo[nid] = res
             return res
 
-        def flatten(nid, out, ancestor_done=False):  # AskTreeNode flat list, root first; nest via children ids
+        def flatten(nid, out, ancestor_done=False, boundary=None):  # AskTreeNode flat list, root first; nest via children ids
             nd = nodes[nid]
             kids = sorted(children.get(nid, []), key=_fsubmax, reverse=True)   # most-recent-first (matches the ledger)
             explicit = bool(nd.get("nodeComplete"))
@@ -16494,6 +16494,14 @@ def build_feed(now, tmux=None):
                         # user-cleared sub (nodeOverride op:clear) → renders struck-through + faded with a
                         # "cleared" chip; `status` above stays honest (box = done, the user 2026-07-26)
                         "cleared": bool(nd.get("cleared")),
+                        # this DONE sub's outcome was already REVIEWED: its done predates the top's
+                        # review boundary (jd.review_boundary — the same boundary the distiller scopes
+                        # the takeaway with, so the fold and the summary can never disagree). The card
+                        # collapses these behind one "N reviewed earlier" row instead of re-presenting
+                        # them on every re-completion (the user 2026-08-19). `out` is empty only for
+                        # the ROOT row, which is the card head, never a checklist row.
+                        "reviewedEarlier": bool(boundary and out and done
+                                                and jd._done_since(nd) <= boundary) or None,
                         # a rolled-UP question (the block lives in a descendant, not here) — the client's
                         # mark tooltip says "blocked inside", and the actual ask keeps its own ⏸ below
                         "qderived": st == "question" and not nd.get("blocked"),
@@ -16524,7 +16532,7 @@ def build_feed(now, tmux=None):
                         "log": _node_log_rows(nd, seg_uuid) if st != "done" else None,
                         "children": kids})
             for c in kids:
-                flatten(c, out, ancestor_done=done)
+                flatten(c, out, ancestor_done=done, boundary=boundary)
             return out
         # HARD blocked floor: a session stopped RIGHT NOW on a live permission prompt (tmux state)
         # floors its ACTIVE-FOCUS card under BLOCKED — the strongest signal, beats the goal's planner
@@ -16960,7 +16968,13 @@ def build_feed(now, tmux=None):
                 "distillState": distill_state,   # "completed" | "blocked" | null — the GENUINE state the distiller line keys on, so the brief/takeaway doesn't flicker off when recheck/rejudging drops `column` to working (the user 2026-07-21)
                 "blockSummary": nodes[nid].get("blockSummary"),    # the block-distiller's decision brief for a blocked goal (modal); null until produced — the user 2026-06-18
                 "briefParts": nodes[nid].get("briefParts") or None,   # MULTI-item brief: [{id, since}] one per paragraph IN ORDER (judge briefParts) → per-paragraph "Nm ago" stamps; null for single-item briefs, whose stamp is the card header's age (the user 2026-07-24)
-                "summaryParts": nodes[nid].get("summaryParts") or None,   # the DONE twin: [{id, since}] per takeaway paragraph when the distiller split by <completed-items>; done-event times (the user 2026-07-24)
+                "summaryParts": nodes[nid].get("summaryParts") or None,
+                # the user FOLLOWED UP after the takeaway they read (followupAt postdates what the
+                # summary covers) → the summary section says so instead of presenting the old takeaway
+                # as current; self-clears when the re-distill stamps a newer distilledMt (16 live cards
+                # measured reading stale, the user 2026-08-19)
+                "summaryStale": bool((nodes[nid].get("followupAt") or 0) > (nodes[nid].get("distilledMt") or 0)
+                                     and (nodes[nid].get("summary") or "").strip()) or None,   # the DONE twin: [{id, since}] per takeaway paragraph when the distiller split by <completed-items>; done-event times (the user 2026-07-24)
                 "background": nodes[nid].get("background"),    # the distiller's BACKGROUND section: re-orientation for a reader who forgot the thread — collapsed by default on the card (the user 2026-07-02)
                 "summaryAnchorUuid": _sa_u,    # click the summary line → the completion turn's wrap-up (completed pin), else the cited/latest prose (the user 2026-07-14)
                 "warns": nodes[nid].get("warns") or None,   # judge-stamped anomalies (judge _node_warn) → yellow "warning" chip; click shows each warn's what/why detail (the user 2026-07-02)
@@ -17017,7 +17031,7 @@ def build_feed(now, tmux=None):
                 "warnRows": (_card_warn_rows(dbg_rows, fsid, set(_subtree(nid)),
                                              store.get("placements") or {}) or None)
                             if dbg_rows is not None else None,   # debug mode only: the card's judge failures, modal "Warnings" section
-                "tree": flatten(nid, [])})
+                "tree": flatten(nid, [], boundary=jd.review_boundary(nodes[nid]))})
         # A session actively working a brand-new ask shows NO card until the planner classifies the held
         # segment at turn-end — surface a live-prompt placeholder so it isn't invisible. Only when nothing
         # already covers it (no working card); replaced by the real card once the planner places it.
