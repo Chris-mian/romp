@@ -1,6 +1,6 @@
 // The timeline's corner control panel (the user 2026-08-18): "Show: <view> ▾ · N more" in the
 // bottom-left corner — the strip under the lane gutter, left of the time labels. The dropdown picks
-// the active VIEW (All sessions / named groups), holds New group… / Edit sessions…, and carries the
+// the active VIEW (the default group / named groups), holds New group… / Edit sessions…, and carries the
 // two timeline display toggles (collapse idle gaps, active only) so they finally work in every host.
 // The dialog is one checkbox per session: unchecked in the all-view = hidden from the timeline AND
 // the chat strip (a background session); checked in a group = member. House pattern: execute the
@@ -29,7 +29,9 @@ test("executed: the all-view hides the hidden set; a group shows exactly its mem
 });
 
 test("executed: the trigger label and the N-more cue (live sessions outside the view)", () => {
-  assert.equal(viewLabel(null), "All");
+  // the built-in view is the DEFAULT GROUP (the user 2026-08-19), not "All": every session joins it
+  // at birth, and hiding means leaving it
+  assert.equal(viewLabel(null), "default");
   assert.equal(viewLabel(V("g1")), "pool");
   const sessions = [{ id: "s1", live: true }, { id: "s2", live: true }, { id: "s4", live: false }];
   assert.equal(viewMoreCount(V("g1"), sessions), 1, "s1 is live and outside; dead s4 never counts");

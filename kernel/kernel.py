@@ -19076,19 +19076,28 @@ def _reveal_chat_for(client, focus_msg):
     revealSelfPane) — which covers every kernel, local included, and makes the shell line a harmless
     duplicate rather than the only mover."""
     wid = (client or {}).get("wid") or ""
-    # The reveal rule (the user 2026-08-18): every gesture that focuses a session's chat — create,
-    # open, revive, a deep link, a feed chip — REVEALS it in the session views first, or the focus
-    # would land on a tab the strip doesn't show (a session created under an active group view was
-    # born invisible, with the focus yanked away by the strip's re-point). Drop its hidden bit; when
-    # the active group excludes it, fall back to All — the same one rule the chat picker applies.
+    # The reveal rule (the user 2026-08-18; reshaped 2026-08-19 with the DEFAULT-GROUP model): every
+    # gesture that focuses a session's chat — create, open, revive, a deep link, a feed chip — must
+    # land on a visible tab. Focusing now SWITCHES the active view to one that shows the session and
+    # never mutates membership: peeking at a pool worker must not permanently drag it back into the
+    # default group. Preference order: the default group (active "all" — "everything not removed"),
+    # else the first named group holding it; a session in NO view at all (removed from default,
+    # member of nothing) is re-added to the default group — the one case where visibility requires
+    # a membership edit.
     sid = focus_msg.get("id") if isinstance(focus_msg, dict) else None
     if sid:
         v = _timeline_views()
         if not _view_visible(v, sid):
             v = json.loads(json.dumps(v))
-            v["hidden"] = [x for x in v["hidden"] if x != sid]
-            if v["active"] != "all" and not any(g["id"] == v["active"] and sid in g["members"] for g in v["groups"]):
+            if sid not in v["hidden"]:
                 v["active"] = "all"
+            else:
+                holder = next((g["id"] for g in v["groups"] if sid in g["members"]), None)
+                if holder:
+                    v["active"] = holder
+                else:
+                    v["hidden"] = [x for x in v["hidden"] if x != sid]
+                    v["active"] = "all"
             _set_timeline_views(v)
             _mark_views_dirty()
     _send_to_view("chat", focus_msg, wid)
