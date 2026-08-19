@@ -26,9 +26,13 @@ function _rompOnlyTag() {
 // on-camera prefix (the user 2026-07-16). Mirrors ui/webview/only-filter.ts's matchesOnly.
 // ── session VIEWS (the user 2026-08-18): which sessions the lanes — and the chat tab strip — show.
 // {active:"all"|gid, hidden:[id...], groups:[{id,name,color,members:[id...]}]}, kernel-persisted
-// (timeline-views.json) and echoed on every payload as data.views. "all" shows everything except the
-// hidden set (a hidden session is a BACKGROUND session: still judged and carded, surfaced by the feed
-// and the pickers); a named group shows exactly its members — membership beats the hidden bit. The
+// (timeline-views.json) and echoed on every payload as data.views. The DEFAULT-GROUP model (the user
+// 2026-08-19): every session is in the default group at birth; `hidden` stores the sessions REMOVED
+// from it ("all" minus hidden IS the default group, so the wire shape is unchanged). A session out of
+// the default group is a BACKGROUND session — still judged and carded, surfaced by the feed and the
+// pickers. Named groups are independent member lists (multi-membership by construction: put a manager
+// in the default group AND its workers' group; remove the workers from default and they live only in
+// their group). A named group shows exactly its members — membership beats the hidden bit. The
 // kernel's _view_visible is the decision of record; this is its three-line mirror for the lanes.
 function viewVisible(views, id) {
   if (!views || !views.active || views.active === 'all')
@@ -37,9 +41,9 @@ function viewVisible(views, id) {
   return g ? (g.members || []).indexOf(id) >= 0 : true;
 }
 function viewLabel(views) {
-  if (!views || !views.active || views.active === 'all') return 'All';
+  if (!views || !views.active || views.active === 'all') return 'default';
   const g = (views.groups || []).find((x) => x.id === views.active);
-  return g ? (g.name || 'group') : 'All';
+  return g ? (g.name || 'group') : 'default';
 }
 // live sessions the current view is NOT showing — the "N more" cue that keeps a hidden session
 // exactly one glance away (nothing may run in secret: the 2026-08-11 hidden-tabs rule)
@@ -2422,7 +2426,7 @@ class TimelinePanel {
     };
     const v = this._curViews();
     const pick = (active) => { const nv = JSON.parse(JSON.stringify(v)); nv.active = active; this._setViews(nv); this._closeViewsMenu(); };
-    item('All sessions', { current: !v.active || v.active === 'all' }).addEventListener('click', () => pick('all'));
+    item('default', { current: !v.active || v.active === 'all' }).addEventListener('click', () => pick('all'));
     for (const gr of v.groups || [])
       item(gr.name, { dot: gr.color || MODEL_FG, current: v.active === gr.id }).addEventListener('click', () => pick(gr.id));
     sep();
@@ -2523,8 +2527,8 @@ class TimelinePanel {
           });
         }
       }
-      const sub = card.createDiv({ text: gr ? 'Checked sessions are in this group.'
-        : 'Unchecked sessions are hidden from the timeline and the chat tabs.' });
+      const sub = card.createDiv({ text: gr ? 'Checked sessions are in this group. A session can be in several groups.'
+        : 'Every session joins the default group at birth. Unchecked sessions leave it — out of the timeline and the chat tabs until you view a group that has them.' });
       sub.setAttribute('style', 'opacity:0.6;font-size:0.82em;margin:0 0 6px;');
       for (const s of (this.data && this.data.sessions) || []) {
         const row = card.createDiv();
