@@ -11207,6 +11207,15 @@ def _awaiting_task_descs(sid, path):
     return [t["desc"] or "background task" for t in awaited]
 
 
+def _awaiting_task_ids(sid, path):
+    """The AWAITED live background-task launch IDS — the same _bg_split set as _awaiting_task_descs,
+    as tool_use ids, so the chat's #bg-tasks box can outline exactly the rows the await-green chip is
+    waiting on (the user 2026-08-19). The box rows carry the same launching id (_bg_tasks "id" / the
+    lifecycle set's toolUseId), so the match is exact — never a description-string guess."""
+    awaited, _ = _bg_split(sid, path, _bg_live_norm(sid, path))
+    return [t["tid"] for t in awaited if t.get("tid")]
+
+
 def _bg_service_descs(sid, path):
     """The live background-task descriptions the judge classified as SERVICES (_bg_split) — persistent
     processes the session keeps around, surfaced as the feed's neutral per-session chip (bgServices in
@@ -15009,6 +15018,9 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   "awaitingWhy": awaiting_why or None,
                   "awaitingKind": awaiting_kind,   # WHAT the wait is on (jd.AWAIT_KINDS; None = kindless)
                   "awaitingTasks": (_awaiting_task_descs(sid, sess["path"]) if awaiting_why else []),
+                  # …and the same tasks' launch ids, so the #bg-tasks box outlines exactly the awaited
+                  # rows in the chip's await-green (the user 2026-08-19)
+                  "awaitingTaskIds": (_awaiting_task_ids(sid, sess["path"]) if awaiting_why else []),
                   "apiTooLong": bool(aerr and aerr.get("tooLong")),
                   # a spend cap is on-you like tooLong (red tab, "raise your cap") AND never auto-retried:
                   # the client's apiRetryTick skips it, and the global pause it engages stops the loop too

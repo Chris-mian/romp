@@ -485,6 +485,10 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .bg-task { --bgt: var(--st-working-bg); }
 .bg-task.bg-failed { --bgt: var(--st-blocked-bg); }
 .bg-task.bg-completed { --bgt: var(--st-ready-bg); }
+/* AWAITED (the user 2026-08-19): the session's await-green chip is waiting on THIS task — the box
+   border + the row's thin outline take the chip's green; the dot keeps meaning the task's own status */
+#bg-tasks.bg-awaited { border-color: var(--st-awaitbg-bg); }
+.bg-task.bg-awaited { box-shadow: inset 0 0 0 1px var(--st-awaitbg-bg); border-radius: 5px; }
 .bg-head { display: flex; align-items: center; gap: 8px; padding: 5px 9px; cursor: pointer; user-select: none; border-radius: 5px; }
 .bg-head:hover { background: rgba(255, 255, 255, 0.04); }
 /* SOLID status dot — no pulse (the user 2026-07-07: the pulsating yellow was distracting; a running dot is
