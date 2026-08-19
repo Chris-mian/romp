@@ -105,7 +105,7 @@ iso() { mkdir -p "$XDG_STATE_HOME/romp"; printf '{"%s":{"postalServiceOff":true}
     # the CLI: with no resolvable self, it refuses with the actionable half and posts nothing
     CLAUDE_CODE_SESSION_ID= ROMP_SID= run "$POSTAL" send beta "How is it going?"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"identity did not resolve"* ]]
+    [[ "$output" == *"no session identity resolved"* ]]
     [ "$(cnt "$(mb uuid-b)/new")" = "0" ]
 }
 
