@@ -566,7 +566,11 @@ function md(src: string): string {
   // on <img> (the CSP allows them and inline transcript images rely on them).
   try {
     const dirty = marked.parse(src) as string;
-    return DOMPurify.sanitize(dirty, { USE_PROFILES: { html: true }, ADD_DATA_URI_TAGS: ["img"] });
+    // svg profile too (the user 2026-08-19): KaTeX's html output still draws STRETCHY glyphs —
+    // \sqrt radicals, wide accents, extensible arrows — as inline <svg><path>, and the html-only
+    // profile silently ate them: $\sqrt{d}$ rendered as a bare serif "d", the radical gone.
+    // DOMPurify's svg profile is still sanitized (no scripts, handlers, or foreignObject).
+    return DOMPurify.sanitize(dirty, { USE_PROFILES: { html: true, svg: true }, ADD_DATA_URI_TAGS: ["img"] });
   } catch { const d = document.createElement("div"); d.textContent = src; return d.innerHTML; }
 }
 
