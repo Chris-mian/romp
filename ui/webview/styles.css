@@ -2508,17 +2508,20 @@ mark.cmt-hl.busy {
     repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
     repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
     repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px);
-  background-size: 100% 1.5px, 100% 1.5px, 1.5px 100%, 1.5px 100%;
-  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  background-size: calc(100% + 12px) 1.5px, calc(100% + 12px) 1.5px, 1.5px calc(100% + 12px), 1.5px calc(100% + 12px);
+  background-position: -12px 0, 0 100%, 0 0, 100% -12px;
   background-repeat: no-repeat;
   animation: cmt-ants 1.2s linear infinite;
 }
 mark.cmt-hl.hl-first { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
 mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
-/* the ants march clockwise: top strip right, bottom left, left edge up, right edge down — one
-   12px dash cycle per period, slow and steady */
+/* the ants march clockwise: top strip right, bottom left, left edge up, right edge down — exactly
+   one 12px dash cycle per period, so the loop point is invisible. Each no-repeat strip is oversized
+   by that same 12px along its travel axis and starts one period back: a strip sized exactly to its
+   edge slid open a growing gap at its trailing end and snapped shut every cycle — a lurch that on a
+   text-height vertical edge swallowed most of the edge (the user 2026-08-19). */
 @keyframes cmt-ants {
-  to { background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px; }
+  to { background-position: 0 0, -12px 100%, 0 -12px, 100% 0; }
 }
 /* a code/math HOST whose mark is mid-reply wears the ants too — its element tint would otherwise
    stay solid and defeat the outline-then-fill cue */
@@ -2530,8 +2533,8 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
     repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
     repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
     repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px);
-  background-size: 100% 1.5px, 100% 1.5px, 1.5px 100%, 1.5px 100%;
-  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  background-size: calc(100% + 12px) 1.5px, calc(100% + 12px) 1.5px, 1.5px calc(100% + 12px), 1.5px calc(100% + 12px);
+  background-position: -12px 0, 0 100%, 0 0, 100% -12px;
   background-repeat: no-repeat;
   animation: cmt-ants 1.2s linear infinite;
 }
