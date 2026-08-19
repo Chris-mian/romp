@@ -2544,6 +2544,31 @@ class TimelinePanel {
         nm.setAttribute('style', 'min-width:0;overflow:hidden;text-overflow:ellipsis;' + (s.live ? '' : 'opacity:0.55;'));
         const st = row.createSpan({ text: s.live ? (s.model || '') : 'gone' });
         st.setAttribute('style', 'margin-left:auto;flex:0 0 auto;opacity:0.5;font-size:0.82em;');
+        // The pool-builder's second switch (the user 2026-08-19, from the manager/worker experiment):
+        // a background worker usually wants BOTH edits — out of the default group AND off the feed —
+        // so the same row carries the lane gear's feed toggle. Reused machinery end to end (icon,
+        // optimistic _pendingFlags, _setSessionFlag); deliberately NOT auto-coupled to membership:
+        // hideFromFeed seals goals and gates the planner, an edit the user makes knowingly.
+        const ft = LANE_TOGGLES.find((t) => t.flag === 'hideFromFeed');
+        if (ft && s.live) {
+          const on = ft.enabled(s);
+          const fic = el('svg', { viewBox: '0 0 17 17', width: 14, height: 14 });
+          fic.setAttribute('style', 'flex:0 0 auto;cursor:pointer;' + (on ? '' : 'opacity:0.55;'));
+          fic.appendChild(ft.icon(!on, 8.5, 8.5, on ? ROMP_BLUE : MODEL_FG));
+          fic.addEventListener('click', (e) => {
+            e.stopPropagation();                       // the row toggle is membership; this is the feed
+            const next = ft.value(!on);
+            s.hideFromFeed = next;
+            (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = next;
+            this._setSessionFlag(s, 'hideFromFeed', next);
+            this._reconcilePendingFlags();
+            build();
+          });
+          const tip = on ? 'its prompts make feed cards — click to mute (a pool worker usually wants this off)'
+                         : 'feed-muted: new prompts mint no cards — click to restore';
+          fic.addEventListener('mouseenter', () => { fic.setAttribute('title', tip); });
+          row.appendChild(fic);
+        }
         const toggle = () => {
           this._setViews(gr ? viewToggleMember(this._curViews(), gid, s.id)
                             : viewToggleHidden(this._curViews(), s.id));
