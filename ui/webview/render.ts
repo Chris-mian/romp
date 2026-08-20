@@ -75,8 +75,10 @@ marked.use({ extensions: [mathBlock, mathInline] });
 
 // One answered (or pending) question on an AskUserQuestion turn: the prompt + its options, plus the
 // user's answer TEXT per question (`chosen`). Answer text may name an option label OR be free-text
-// ("Other"), and is empty while the question is still pending (multi-select answers arrive pre-split).
-type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[] };
+// ("Other"), and is empty while the question is still pending (multi-select answers arrive pre-split:
+// the kernel fills chosen from the record's structured answers map — a LIST of picked labels when
+// multiSelect, which renderAsk highlights per value; the flag itself rides along for reference).
+type AskAnswerBlock = { question: string; header?: string; options: { label: string; description?: string }[]; chosen: string[]; multiSelect?: boolean };
 
 // A completed background command's detail, keyed by its tool-use-id — the shell it ran + its output tail,
 // joined in by the kernel (build_session's taskOutputs) so the inline completion card can expand into it.
@@ -2567,6 +2569,9 @@ function renderAsk(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement | null
 // renderAsk consumes. The answer text may name an option label OR be free-text ("Other"); multi-select
 // joins labels as "A, B, C". Comma-split only when a label actually matches, so a free-text answer that
 // happens to contain commas isn't shredded.
+// NOTE: effectively unreachable — the kernel always attaches askAnswer to AskUserQuestion events, filled
+// from the record's structured answers map (authoritative; this scrape garbles quote-bearing questions).
+// Kept as the belt-and-suspenders raw parse only; don't extend it.
 function parseAskRaw(ev: Extract<ChatEvent, { kind: "tool" }>): AskAnswerBlock[] | null {
   let data: any;
   try { data = JSON.parse(ev.input); } catch { return null; }
