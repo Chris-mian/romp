@@ -2741,6 +2741,11 @@ body.fileview-open { overflow: hidden; }
   padding: 3px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); color: var(--fg);
   border: 1px solid var(--box-border); }
 .fileview-btn:hover { border-color: var(--accent); }
+/* the GitHub link wears the button treatment but IS an anchor — the browser owns the new tab */
+a.fileview-btn { text-decoration: none; display: inline-flex; align-items: center; }
+/* an author `display` beats the UA's [hidden] rule — without this the anchor shows hrefless
+   before the kernel ever answers */
+a.fileview-btn[hidden] { display: none; }
 .fileview-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
 /* the raw-mode editor: height: 100% (not flex) — .fileview-body above is a plain overflow block,
    not a flex container, so a flex basis on its child is inert and the textarea sat at the UA's

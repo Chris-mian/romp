@@ -121,6 +121,46 @@ let editHooks: { reqId: number; saved: (mtimeNs: string) => void; failed: (err: 
 // handler both close through it without knowing an edit is in progress.
 let closeGuard: (() => boolean) | null = null;
 
+// ── viewer action registry (the user 2026-08-22) ── INTERNAL SEAM, no compatibility promise:
+// reshape freely. Anything acting on the OPEN file declares itself here instead of hand-wiring into
+// openFileView's action row, where every file-viewer change used to collide. mount() runs once per
+// open and returns the action's element for the row (or null to sit this file out); an action that
+// answers asynchronously (the GitHub link's kernel ask) mounts hidden and reveals itself when its
+// reply lands. Ordering is registration order, after the built-ins.
+export interface FileViewActionCtx { path: string; sid: string | null; }
+export interface FileViewAction { id: string; mount: (ctx: FileViewActionCtx) => HTMLElement | null; }
+const fileViewActions: FileViewAction[] = [];
+export function registerFileViewAction(a: FileViewAction): void {
+  if (!fileViewActions.some((x) => x.id === a.id)) fileViewActions.push(a);
+}
+
+// ── the GitHub link (the user 2026-08-15) — the registry's first entry ─────────────────────────────
+// An anchor, not a button: the browser owns opening a new tab. Hidden until the OWNING kernel answers
+// the lazy fileGitLink ask with a real URL — an untracked file, a non-repo path, or a non-GitHub
+// origin all honestly have no link, and it simply never appears. One question per open, reqId-guarded.
+let gitSeq = 0;
+let gitHooks: { reqId: number; apply: (url: string) => void } | null = null;
+registerFileViewAction({
+  id: "github-link",
+  mount({ path, sid }) {
+    const gh = el("a", "fileview-btn fileview-gh") as HTMLAnchorElement;
+    gh.textContent = "GitHub ↗";
+    gh.target = "_blank"; gh.rel = "noopener";
+    gh.hidden = true;
+    gitHooks = {
+      reqId: ++gitSeq,
+      apply: (url) => {
+        if (!url) return;
+        gh.href = url;
+        gh.title = url;                            // the full URL one hover away
+        gh.hidden = false;
+      },
+    };
+    post({ type: "fileGitLink", path, sid: sid || undefined, reqId: gitSeq });
+    return gh;
+  },
+});
+
 // ── review comments (the user 2026-08-14, who found coordinating a doc review painful) ─────────────
 // Reading a doc an agent wrote used to mean hand-copying every line you wanted changed back into the
 // chat. Now you comment on passages IN the viewer and one Submit hands the whole set over as a single
@@ -163,6 +203,7 @@ export function closeFileView(): void {
   if (closeGuard && !closeGuard()) return;   // unsaved edits, and the user chose to keep them
   closeGuard = null;
   editHooks = null;
+  gitHooks = null;                                     // a reply landing after the close decorates nothing
   wrap.remove();
   document.body.classList.remove("fileview-open");
 }
@@ -174,6 +215,7 @@ export function openFileView(path: string, sid?: string | null): void {
   if (document.getElementById("romp-fileview") && closeGuard && !closeGuard()) return;
   closeGuard = null;
   editHooks = null;
+  gitHooks = null;                                     // the replace path skips closeFileView — same drop
   document.getElementById("romp-fileview")?.remove();
   // backdrop (the whole overlay carries the id every open/closed check targets) + the ~95% card.
   // The backdrop treatment matches the lightbox: dimmed, click outside the card closes, content
@@ -303,6 +345,12 @@ export function openFileView(path: string, sid?: string | null): void {
   cancelBtn.hidden = true;
   cancelBtn.addEventListener("click", () => { if (confirmDiscard()) exitEdit(); });
   acts.appendChild(editBtn); acts.appendChild(saveBtn); acts.appendChild(cancelBtn);
+  // Registered actions render after the built-ins — the registry walk is the ONE place row
+  // conventions live (see registerFileViewAction above). The GitHub link mounts here.
+  for (const a of fileViewActions) {
+    const n = a.mount({ path, sid: sid || null });
+    if (n) acts.appendChild(n);
+  }
 
   // ── download (the user 2026-08-09) ── Any linked file can be SAVED, including everything the pane
   // cannot show: the kernel's ?download=1 serves anything on disk (the rationale lives with
@@ -783,11 +831,12 @@ function mdBlock(text: string): HTMLElement {
   return box;
 }
 
-/** Bind the pane's WS poster and route saveFile replies back to the open viewer. Called once, from
- *  the pane's boot (render.ts and feed.ts today — either document, one mechanism). The viewFile
- *  branch honors a shell's relay of a chat file-link click — nothing sends it since the viewer moved
- *  into the chat document, but a not-yet-reloaded shell page still might, and honoring it costs
- *  nothing. */
+/** Bind the pane's WS poster and route saveFile + fileGitLink replies back to the open viewer.
+ *  Called once, from the pane's boot (render.ts and feed.ts today — either document, one mechanism);
+ *  every reply is reqId-guarded so one landing after a close or a replace-open touches nothing. The
+ *  viewFile branch honors a shell's relay of a chat file-link click — nothing sends it since the
+ *  viewer moved into the chat document, but a not-yet-reloaded shell page still might, and honoring
+ *  it costs nothing. */
 export function initFileView(poster: (m: Record<string, unknown>) => void): void {
   post = poster;
   window.addEventListener("message", (e: MessageEvent) => {
@@ -795,6 +844,9 @@ export function initFileView(poster: (m: Record<string, unknown>) => void): void
     if (!m) return;
     if (m.romp === "viewFile" && typeof m.path === "string" && m.path) {
       openFileView(m.path, typeof m.sid === "string" ? m.sid : null);
+    } else if (m.type === "fileGitLink" && gitHooks && m.reqId === gitHooks.reqId) {
+      const h = gitHooks; gitHooks = null;
+      h.apply(String(m.url || ""));
     } else if (m.type === "fileSaved" && editHooks && m.reqId === editHooks.reqId) {
       const h = editHooks; editHooks = null;
       h.saved(String(m.mtimeNs || ""));
