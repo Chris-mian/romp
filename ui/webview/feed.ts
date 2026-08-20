@@ -18,6 +18,7 @@ import { badgeNotices, clearBoundaryNotices, sdkProblemNotices, syncNotices,
 import { initStrip } from "./strip";
 import { installSettingsSync } from "./settings";
 import { canPreview } from "./preview";
+import { initFileView } from "./file-view";
 import { initFileBrowse, openFileBrowse } from "./file-browse";
 import { VIEW_STATE_KEY, parseViewState, serializeViewState, pruneViewState, capViewState, type FeedViewState } from "./feed-view-state";
 
@@ -4304,6 +4305,7 @@ setInterval(() => {
   }
 }, 15000);
 
-initFileBrowse((m) => vscodeApi?.postMessage(m));   // a Browse files ask lands its overlay in this pane
+initFileView((m) => vscodeApi?.postMessage(m));   // the file browser opens the viewer in this pane (and saves ride the poster)
+initFileBrowse((m) => vscodeApi?.postMessage(m));   // …and a Browse files ask lands its sibling overlay
 
 vscodeApi?.postMessage({ type: "ready" });

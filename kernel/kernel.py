@@ -11,7 +11,7 @@ zero protocol change at switchover. WS is hand-rolled on the stdlib socket (no d
 
 Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 """
-import json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid
+import json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid, tempfile, stat
 from pathlib import Path
 from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
@@ -20444,6 +20444,85 @@ def _resolve_open_path(p, sid=None):
     return p
 
 
+def _httpdate(t):
+    """Epoch → the RFC 7231 form a Last-Modified header wears (the viewer's Date.parse reads it)."""
+    from email.utils import formatdate
+    return formatdate(t, usegmt=True)
+
+
+def _save_file(raw, sid, content, base_mtime_ns):
+    """The viewer's raw-mode SAVE (the file browser's slice 2, the user 2026-08-14): write `content`
+    over an existing text file, atomically, refusing when the disk moved on. Returns (mtime_ns, None)
+    on success, (None, error) on refusal — every refusal names the resolved path (fail loudly).
+
+    THE guard is optimistic concurrency: agents edit these same trees while a human has the viewer
+    open, and a silent last-writer-wins would eat one side's work. The client sends the mtime_ns it
+    LOADED at (/file's X-Romp-Mtime-Ns — NANOSECONDS, because an HTTP date's whole seconds let an
+    agent write landing in the same second slip the guard, the review's finding); a moved disk
+    refuses with reload-and-say-so — never a merge, never an overwrite.
+
+    Scope is exactly what raw mode can faithfully round-trip: _is_text_path names within
+    _TEXT_MAX_BYTES, existing files only (no create in this slice), and UTF-8 ONLY — /file's latin-1
+    fallback means a non-UTF-8 file reaches the textarea re-decoded, and writing it back as UTF-8
+    silently rewrote every non-ASCII byte (review, executed repro), so the save refuses instead.
+    A symlinked path writes THROUGH the link (realpath) — os.replace on the link itself destroyed it
+    while the viewer showed and guarded the target. The write is temp-file + os.replace in the same
+    directory, mode preserved — a full disk or a kill mid-write leaves the original intact."""
+    p = _resolve_open_path(str(raw or ""), sid)
+    if not os.path.isabs(p):
+        return None, "cannot save %s: not an absolute path (no session cwd to resolve against)" % _tilde(p)
+    p = os.path.normpath(p)
+    if not isinstance(content, str):
+        # a malformed frame must refuse, not truncate: str(None or "") wrote ZERO bytes with a
+        # success ack before this check (review)
+        return None, "cannot save %s: the request carried no text" % _tilde(p)
+    if not _is_text_path(p):
+        return None, "cannot save %s: not a text file the viewer edits" % _tilde(p)
+    if not os.path.isfile(p):
+        return None, "cannot save %s: no such file (creating files is not a viewer edit)" % _tilde(p)
+    try:
+        data = content.encode("utf-8")
+    except UnicodeError:
+        # a lone surrogate raised OUTSIDE the OSError net and the client never got a reply (review)
+        return None, "cannot save %s: the text contains bytes UTF-8 cannot encode" % _tilde(p)
+    if len(data) > _TEXT_MAX_BYTES:
+        return None, ("cannot save %s: %s exceeds the %s text cap"
+                      % (_tilde(p), _human_bytes(len(data)), _human_bytes(_TEXT_MAX_BYTES)))
+    try:
+        base_ns = int(base_mtime_ns or 0)
+    except (TypeError, ValueError):
+        return None, "cannot save %s: the request carried no load-time anchor" % _tilde(p)
+    try:
+        wp = os.path.realpath(p)                # write THROUGH a symlink, never over it
+        st = os.stat(wp)
+        if st.st_mtime_ns != base_ns:
+            return None, ("%s changed on disk since you opened it — reload before editing "
+                          "(someone else, likely an agent, wrote it)" % _tilde(p))
+        with open(wp, "rb") as f:
+            cur = f.read()
+        try:
+            cur.decode("utf-8")
+        except UnicodeError:
+            return None, ("cannot save %s: the file is not UTF-8 on disk — saving would silently "
+                          "re-encode bytes you never touched" % _tilde(p))
+        d = os.path.dirname(wp)
+        fd, tmp = tempfile.mkstemp(prefix=".romp-save-", dir=d)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.chmod(tmp, stat.S_IMODE(st.st_mode))   # the original's mode survives the replace
+            os.replace(tmp, wp)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return os.stat(wp).st_mtime_ns, None
+    except OSError as ex:
+        return None, "cannot save %s: %s" % (_tilde(p), getattr(ex, "strerror", None) or str(ex))
+
+
 # Inline-code spans that name an EXISTING file despite containing spaces (the user 2026-08-04: a note
 # titled `Moving from correlation to causal components.md` linkified only its last word). The client's
 # token linkifier can never span a space — in prose that boundary is exactly what keeps ordinary text
@@ -25216,10 +25295,19 @@ class Handler(BaseHTTPRequestHandler):
                               "too large to show: %s (%s, limit %s)"
                               % (_tilde(fp), _human_bytes(size), _human_bytes(cap)),
                               "text/plain")
+        # The file's mtime rides every success twice: Last-Modified (the standard form) and
+        # X-Romp-Mtime-Ns — NANOSECONDS, the anchor saveFile's conflict floor actually compares,
+        # because the HTTP date's whole seconds let an agent write landing in the same second slip
+        # the guard (the raw-mode edit slice; the granularity hole was the review's finding).
+        fst = os.stat(fp)
+        lastmod = _httpdate(fst.st_mtime)
+        mtime_ns = str(fst.st_mtime_ns)
         if head:
             self.send_response(200)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(size))   # the real length, no body (HEAD semantics)
+            self.send_header("Last-Modified", lastmod)
+            self.send_header("X-Romp-Mtime-Ns", mtime_ns)
             self.send_header("X-Content-Type-Options", "nosniff")   # _send's guarantee, restated on the HEAD path
             self.send_header("Cache-Control", "no-cache")
             if getattr(self, "_cors_origin", None):         # the chat's fetch-HEAD probe rides CORS too
@@ -25263,8 +25351,20 @@ class Handler(BaseHTTPRequestHandler):
             body = _decode_text(raw)
             if body is None:                     # named like text, isn't — say so rather than serve garbage
                 return self._send(415, "not a text file: %s" % _tilde(fp), "text/plain")
-            return self._send(200, body, mime, cache="no-cache")
-        return self._send(200, raw, mime, cache="no-cache")
+            # Which decode branch produced the text travels WITH it: _decode_text's latin-1 fallback
+            # re-decodes a non-UTF-8 file, and an Edit armed on that text would re-encode every
+            # non-ASCII byte on save (the review's executed repro) — so Edit arms only on "1", and
+            # _save_file refuses the "0" case server-side regardless.
+            try:
+                raw.decode("utf-8")
+                u8 = "1"
+            except UnicodeError:
+                u8 = "0"
+            return self._send(200, body, mime, cache="no-cache",
+                              headers={"Last-Modified": lastmod, "X-Romp-Mtime-Ns": mtime_ns,
+                                       "X-Romp-Text-Utf8": u8})
+        return self._send(200, raw, mime, cache="no-cache",
+                          headers={"Last-Modified": lastmod, "X-Romp-Mtime-Ns": mtime_ns})
 
     def _file_download(self, fp, head=False):
         """GET/HEAD /file?download=1 — the SAVE half of the route (the user 2026-08-09): any file that
@@ -26798,6 +26898,20 @@ class Handler(BaseHTTPRequestHandler):
                                  "sid": msg.get("sid") or ""},
                                 **_list_dir(msg.get("path"), msg.get("sid") or None,
                                             hidden=bool(msg.get("hidden")))))
+        elif msg and msg.get("type") == "saveFile":
+            # The viewer's raw-mode save (the file browser's slice 2). Routed by sid to the
+            # session-OWNING kernel like listDir, so a remote session's file saves on ITS machine.
+            # The reply is the ACK the client's Save button waits on; a refusal (the mtime conflict
+            # above all) rides back verbatim for the viewer to present — never a silent drop.
+            mt, err = _save_file(msg.get("path"), msg.get("sid") or None,
+                                 msg.get("content"), msg.get("baseMtimeNs"))
+            if err:
+                _reply(client, {"type": "fileSaveFailed", "reqId": msg.get("reqId"), "error": err})
+            else:
+                # mtimeNs travels as a STRING: ~1.7e18 exceeds JS's safe-integer range, so a JSON
+                # number would round in the browser and every next save would falsely conflict
+                _reply(client, {"type": "fileSaved", "reqId": msg.get("reqId"),
+                                "path": str(msg.get("path") or ""), "mtimeNs": str(mt)})
         elif msg and msg.get("type") == "browseDir":
             tgt = str(msg.get("target") or "picker")          # which dir field to fill: the new-session picker or the gear
             if not _native_dialogs():
@@ -27044,6 +27158,13 @@ class Handler(BaseHTTPRequestHandler):
             body = b"" if head else resp.read(_PREVIEW_MAX_BYTES + 1)
             status, ctype = resp.status, mime          # OUR mime, never resp.getheader("Content-Type")
             clen = resp.getheader("Content-Length")
+            # These three are MIRRORED, unlike Content-Type: they are data about the remote's file
+            # (the save-conflict floor and the Edit gate ride on them), not instructions to this
+            # browser — nothing executes off a date or a flag, and deriving them locally would be a
+            # lie about a remote disk.
+            lastmod = resp.getheader("Last-Modified")
+            r_ns = resp.getheader("X-Romp-Mtime-Ns")
+            r_u8 = resp.getheader("X-Romp-Text-Utf8")
             crange = resp.getheader("Content-Range") or ""
         except (OSError, http.client.HTTPException) as e:
             _demand_redial(host, "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
@@ -27062,6 +27183,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ctype)
             if clen is not None:
                 self.send_header("Content-Length", clen)
+            if lastmod:
+                self.send_header("Last-Modified", lastmod)
+            if r_ns:
+                self.send_header("X-Romp-Mtime-Ns", r_ns)
             self.send_header("X-Content-Type-Options", "nosniff")   # _send's guarantee, restated on the HEAD path
             self.send_header("Cache-Control", "no-cache")
             if getattr(self, "_cors_origin", None):
@@ -27087,7 +27212,11 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        return self._send(status, body, ctype, cache="no-cache")
+        # These three are MIRRORED for the same reason they were read above: the save-conflict floor
+        # and the Edit gate ride on them, and deriving them locally would lie about a remote disk.
+        mirrored = {k: v for k, v in (("Last-Modified", lastmod), ("X-Romp-Mtime-Ns", r_ns),
+                                      ("X-Romp-Text-Utf8", r_u8)) if v}
+        return self._send(status, body, ctype, cache="no-cache", headers=mirrored or None)
 
     def _relay_download(self, host, port, rtok, q, head=False):
         """GET/HEAD /remote/<host>/file?download=1 — the download half of the relay. Forwards the one

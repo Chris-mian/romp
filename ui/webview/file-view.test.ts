@@ -68,6 +68,8 @@ test("the viewer is a singleton MODAL over its pane: ~95% card, dimmed backdrop,
   // (one treatment, two sheets — the hljs-palette precedent below)
   assert.match(FEED_CSS, /#romp-fileview \{ position: fixed; inset: 0;/);
   assert.match(FEED_CSS, /\.fileview \{ width: 95%; height: 95%;/);
+  assert.match(FEED, /initFileView\(\(m\) => vscodeApi\?\.postMessage\(m\)\);/,
+    "the feed boots the listener with the WS poster (saves ride it — the raw-mode slice)");
 });
 
 test("the FEED-hosted viewer registers no comment sink, so the review layer gates itself off", () => {
@@ -248,7 +250,8 @@ test("the Wrap toggle persists, hides with rendered prose, and its numbers still
     assert.match(SHEET, /\.fileview-wrap \.fv-cl::before \{[\s\S]*?user-select: none/);
   }
   // wrap governs the pre view only — rendered prose always wraps — so the button leaves with it
-  assert.match(VIEW, /wrapBtn\.hidden = rendered;/);
+  // (and with edit mode, whose textarea has no wrap toggle to govern — the raw-mode slice)
+  assert.match(VIEW, /wrapBtn\.hidden = rendered \|\| editing;/);
   assert.match(VIEW, /wrapBtn\.classList\.toggle\("on", fmt\.wrap\);/, "pressed state flips synchronously");
 });
 

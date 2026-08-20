@@ -115,7 +115,8 @@ test("the viewer's directory half is the click INTO the browser — no import cy
   assert.match(FEED_CSS, /\.fileview-dir-link \{ cursor: pointer; \}/);
 });
 
-test("the feed boots the browse overlay with the pane's WS poster", () => {
+test("the feed boots both overlays side by side", () => {
+  assert.match(FEED, /initFileView\(\(m\) => vscodeApi\?\.postMessage\(m\)\);/);
   assert.match(FEED, /initFileBrowse\(\(m\) => vscodeApi\?\.postMessage\(m\)\);/);
 });
 

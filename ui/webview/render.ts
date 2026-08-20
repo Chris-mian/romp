@@ -35,6 +35,8 @@ import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview, fileUrl, retryFailedPreviews } from "./preview";
 import { openFileView, setCommentSink } from "./file-view";
+// initFileView rides its OWN line: the import above is pinned verbatim by file-view-comments.test.ts
+import { initFileView } from "./file-view";
 import { pastedFilePath } from "./paste-path";
 import { hostNameNodes, hostPrefix, hostOf, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
@@ -11555,4 +11557,9 @@ setCommentSink((sid, text) => {
   persistDrafts();
   return true;
 });
+// The chat document hosts the viewer itself (openPath), so it boots the viewer's listener with the
+// same WS poster the feed hands it: Edit/Save round-trips ride post(), and the kernel's replies come
+// back as window MessageEvents via the pane shim — either document, one mechanism (file-view.ts
+// initFileView).
+initFileView((m) => vscodeApi?.postMessage(m));
 if (vscodeApi) vscodeApi.postMessage({ type: "ready" });
