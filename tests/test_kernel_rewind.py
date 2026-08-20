@@ -575,6 +575,41 @@ class TwoPhaseRewindTiming(unittest.TestCase):
         self.assertIn("revert-skipped", km.jd.ERRORS.read_text(), "an error row names the skip")
         self.assertIsNone(km._rewind_hold_get(SID), "no hold is latched on an unknowable cut")
 
+    def test_the_one_time_migration_runs_once_and_marks_itself_done(self):
+        # the boot migration cleans the pre-fix residue (dead-branch orphans on dormant sessions the
+        # cadence-riding reconciliation never revisits) exactly once, marker-gated in state
+        calls = []
+        saved = km.jd.run_rewound_reconcile
+        km.jd.run_rewound_reconcile = lambda **kw: calls.append(kw) or (3, 0)
+        try:
+            km._rewind_migration_bg()
+            km._rewind_migration_bg()
+        finally:
+            km.jd.run_rewound_reconcile = saved
+        self.assertEqual(len(calls), 1, "the second boot found the marker and did nothing")
+        self.assertGreater(calls[0].get("window") or 0, 86400 * 365,
+                           "migration discovery reaches far past the 48h caption horizon")
+        marker = km.jd.STATE / "rewind-reconcile-migration-v2.done"
+        self.assertTrue(marker.exists())
+        self.assertEqual(json.loads(marker.read_text()).get("archived"), 3)
+
+    def test_the_migration_marker_waits_for_a_zero_failure_pass(self):
+        # "returned" is not "succeeded": per-session errors are swallowed loudly inside the pass,
+        # and a marker written over a failed DORMANT session skips its orphans forever (steady-state
+        # discovery never reaches it, and the marker blocks the wide re-run). A dirty pass leaves
+        # the marker unwritten; the clean retry writes it.
+        saved = km.jd.run_rewound_reconcile
+        marker = km.jd.STATE / "rewind-reconcile-migration-v2.done"
+        try:
+            km.jd.run_rewound_reconcile = lambda **kw: (2, 1)      # one session failed this boot
+            km._rewind_migration_bg()
+            self.assertFalse(marker.exists(), "a dirty pass writes no marker — retry next boot")
+            km.jd.run_rewound_reconcile = lambda **kw: (1, 0)      # the retry comes back clean
+            km._rewind_migration_bg()
+            self.assertTrue(marker.exists(), "the clean pass marks itself done")
+        finally:
+            km.jd.run_rewound_reconcile = saved
+
     def test_the_boot_pass_resolves_a_hold_whose_event_fired_while_down(self):
         # kernel restart mid-window: the take landed, no kernel was up to hear the event — boot
         # resolves through the same discriminator instead of leaving the hold latched forever

@@ -13425,6 +13425,35 @@ def _on_rewind_resolved(sid, outcome):
     _pusher_wake.set()
 
 
+def _rewind_migration_bg():
+    """ONE-TIME boot migration (marker-gated): the ongoing dead-branch reconciliation only rides the
+    triage cadence over recently-touched sessions, so the residue that accumulated BEFORE it shipped
+    (85 dead-branch nodes across 8 sessions at audit time, 28 in live stores, 5 resident in live and
+    archive at once) would sit forever on dormant sessions. Run the same check once over every
+    discoverable session regardless of age, then write the marker — only on a ZERO-FAILURE pass:
+    "returned" is not "succeeded" (per-session errors are swallowed loudly inside the pass), and a
+    marker written over a failed dormant session skips its orphans forever. A crash or a dirty pass
+    retries next boot (reconciliation is idempotent: archive-by-identity re-run is a no-op). The
+    marker name is v2: the v1 predicate was blind to dead branches inside pre-/clear episode files
+    (10 of the 28 audited live orphans, all 5 dual-residents), so the widened pass must run once
+    even where a v1 marker exists. Cards archive (recoverable), never delete."""
+    marker = jd.STATE / "rewind-reconcile-migration-v2.done"
+    if marker.exists():
+        return
+    try:
+        n, fails = jd.run_rewound_reconcile(now=int(time.time()), sessions_cap=100000,
+                                            window=10 * 365 * 86400)
+        if fails:
+            sys.stderr.write("romp-kernel: rewind migration left %d session(s) unreconciled — "
+                             "no marker written, retrying next boot\n" % fails)
+        else:
+            marker.write_text(json.dumps({"t": int(time.time()), "archived": n}))
+        if n:
+            sys.stderr.write("romp-kernel: rewind migration archived %d dead-branch goal node(s)\n" % n)
+    except Exception:
+        sys.stderr.write("rewind migration: %s\n" % traceback.format_exc())
+
+
 def _rewind_holds_boot():
     """Boot pass over persisted holds: a kernel restart mid-window must neither drop a hide (the
     file survives; reads keep filtering) nor leave one latched forever after its resolving event
@@ -27177,6 +27206,8 @@ def main():
     threading.Thread(target=_rewind_holds_boot, daemon=True).start()   # resolve holds whose take/fail
     #                                                           event fired while no kernel was up (it
     #                                                           builds the backend itself if it wins the race)
+    threading.Thread(target=_rewind_migration_bg, daemon=True).start()   # one-time dead-branch cleanup
+    #                                                           of pre-fix residue, marker-gated
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
     threading.Thread(target=_heartbeat, daemon=True).start()  # WS keepalive on its own thread (see _heartbeat)
