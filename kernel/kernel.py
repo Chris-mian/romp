@@ -13892,16 +13892,26 @@ def _ask_fill_answers(blocks, answers):
     parsing, so quotes/equals/commas in questions and answers survive verbatim; the regex scrape below
     (_ask_fill_chosen, now the old-record fallback) garbled all of those — a double-quote inside a
     question's text stopped its capture, and the typed answer silently vanished from the answered box
-    (13 of 95 real answers dropped, 1 garbled; the user 2026-08-20)."""
+    (13 of 95 real answers dropped, 1 garbled; the user 2026-08-20).
+
+    Returns the number of blocks ACTUALLY filled — the caller latches askAnswerFilled (which stands
+    the regex fallback down) on it being nonzero, never on the map merely existing: a keying mismatch
+    (a future harness renaming, an empty map) fills nothing, and latching anyway would disarm the
+    safety net while recoverable pairs sit in the flat string."""
     amap = {str(k).strip(): v for k, v in answers.items()}
+    filled = 0
     for blk in blocks:
         ans = amap.get((blk.get("question") or "").strip())
         if ans is None and blk.get("header"):
             ans = amap.get(str(blk["header"]).strip())
         if isinstance(ans, list):
-            blk["chosen"] = [str(v) for v in ans]
+            if ans:                                   # an empty pick-list fills nothing
+                blk["chosen"] = [str(v) for v in ans]
+                filled += 1
         elif ans not in (None, ""):
             blk["chosen"] = [str(ans)]
+            filled += 1
+    return filled
 
 
 def _ask_fill_chosen(blocks, output):
@@ -13921,8 +13931,21 @@ def _ask_fill_chosen(blocks, output):
         ans = (vals[0] if len(blocks) == 1 and vals
                else pairs.get((blk.get("question") or "").strip())
                or pairs.get((blk.get("header") or "").strip()) or "")
-        if ans:
-            blk["chosen"] = [s.strip() for s in ans.split(", ")] if blk.get("multiSelect") else [ans]
+        if not ans:
+            continue
+        # The multiSelect split must be EARNED (parseAskRaw's rule in ui/webview/render.ts, ported):
+        # the flat string joins picked labels as 'A, B, C', but a SINGLE picked label may itself
+        # contain ', ' ("Boston, MA") and a free-typed 'Other' answer may carry any commas — split
+        # unconditionally and either one shreds into bogus fragments (wrong Other rows, lost
+        # highlight). So: an answer that IS an option label stays whole; otherwise split, and keep
+        # the split only when at least one part names a label (some(), not every() — a joined pick
+        # can include a free-typed Other alongside real labels); else keep the value whole.
+        labels = {str(o.get("label") or "") for o in (blk.get("options") or [])} - {""}
+        if blk.get("multiSelect") and ans not in labels:
+            parts = [s.strip() for s in re.split(r",\s*", ans) if s.strip()]
+            blk["chosen"] = parts if any(p in labels for p in parts) else [ans]
+        else:
+            blk["chosen"] = [ans]
 
 
 _compact_clicked = {}         # sid -> ts of a compact WE initiated → optimistic cross-surface "compacting"
@@ -15443,12 +15466,14 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                             # no parsing (see _ask_fill_answers). askAnswerFilled makes the regex
                             # fallback at the bottom of this build stand down: run on top of this it
                             # could overwrite the real answer with a garbled scrape (the single-
-                            # question vals[0] rescue). A DISMISSED picker records toolUseResult as a
-                            # plain string (tur is None here) → blocks stay unanswered, exactly as a
-                            # pending ask renders.
+                            # question vals[0] rescue). It latches only when the fill FILLED something
+                            # — a map whose keys match nothing must leave the fallback armed, or the
+                            # whole ask renders pending despite recoverable pairs in the flat string.
+                            # A DISMISSED picker records toolUseResult as a plain string (tur is None
+                            # here) → blocks stay unanswered, exactly as a pending ask renders.
                             if ev.get("askAnswer") and tur and isinstance(tur.get("answers"), dict):
-                                _ask_fill_answers(ev["askAnswer"], tur["answers"])
-                                ev["askAnswerFilled"] = True
+                                if _ask_fill_answers(ev["askAnswer"], tur["answers"]):
+                                    ev["askAnswerFilled"] = True
                 else:                                            # a genuine prompt OR a delivered peer message
                     text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip() \
                            if blocks else (msg.get("content") if isinstance(msg.get("content"), str) else "")
@@ -15608,9 +15633,10 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                             # this instead of regex-parsing the output). chosen is filled below once the
                             # tool_result (the answer) is in. Built from the UNTRUNCATED input.
                             # multiSelect rides the block: it documents the LIST-valued answers the
-                            # authoritative fill records, and it arms the fallback's ', ' label split
+                            # authoritative fill records, and it arms the fallback's label split
                             # (dead before it was copied — old-record multiSelect picks rendered as
-                            # ONE joined quoted "Other" row instead of highlighted options).
+                            # ONE joined quoted "Other" row instead of highlighted options; the
+                            # split itself is label-guarded, see _ask_fill_chosen).
                             ev["askAnswer"] = [{"question": str(q.get("question") or ""),
                                                 "header": str(q.get("header")) if q.get("header") else None,
                                                 "multiSelect": bool(q.get("multiSelect")),

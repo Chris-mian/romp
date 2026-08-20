@@ -351,8 +351,20 @@ def msg_to_atom(msg, sid, fsid, t, skill_tool_ids=()):
                     "skillMd": text[:_SKILL_MD_CAP] + ("\n\n…(skill content truncated)"
                                                        if len(text) > _SKILL_MD_CAP else ""),
                     "message": {"role": "assistant", "content": [], "stop_reason": None}}
-        return {"type": "user", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
+        atom = {"type": "user", "uuid": u, "session_id": sid, "t": t, "fsid": fsid, "parentUuid": None,
                 "message": {"role": "user", "content": content}}
+        # The record-level STRUCTURED result rides the stream too: the CLI emits the transcript
+        # record's toolUseResult on the wire as `tool_use_result`, and the SDK parser maps it onto
+        # UserMessage.tool_use_result (verified in claude-agent-sdk 0.2.132 / CLI 2.1.224). Carry it
+        # onto the live atom under the SAME key and gates as the file adapter (a tool_result-bearing
+        # atom, dict form only — a dismissed picker records a plain string no consumer reads), or the
+        # live-tail window structurally bypasses the authoritative consumers: a JUST-answered
+        # AskUserQuestion rendered via the lossy regex scrape until the disk record was parsed, and
+        # Edit's diffRows lagged a parse behind the stream.
+        tur = getattr(msg, "tool_use_result", None)
+        if has_tool_result and isinstance(tur, dict):
+            atom["toolUseResult"] = tur
+        return atom
     return None
 
 

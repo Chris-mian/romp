@@ -32,8 +32,9 @@ km = SourceFileLoader("romp_kernel_aa", os.path.join(BIN, "romp-kernel")).load_m
 jd = km.jd
 
 
-def _blk(q, multi=False, header=None):
-    return {"question": q, "header": header, "multiSelect": multi, "options": [], "chosen": []}
+def _blk(q, multi=False, header=None, labels=()):
+    return {"question": q, "header": header, "multiSelect": multi,
+            "options": [{"label": l, "description": ""} for l in labels], "chosen": []}
 
 
 def test_single_question_picked_option():
@@ -49,9 +50,36 @@ def test_free_text_other_is_kept_verbatim_not_split():
 
 
 def test_multiselect_splits_joined_labels():
-    b = [_blk("Pick features", multi=True)]
+    # The split must be EARNED: it survives only because the parts name option labels (parseAskRaw's
+    # rule, ported) — a real picker block always carries its options, so the fixture does too.
+    b = [_blk("Pick features", multi=True, labels=("Alpha", "Beta", "Gamma"))]
     km._ask_fill_chosen(b, '"Pick features"="Alpha, Beta, Gamma"')
     assert b[0]["chosen"] == ["Alpha", "Beta", "Gamma"]
+
+
+def test_multiselect_single_comma_bearing_label_is_not_shredded():
+    # A ONE-label pick whose label itself contains ", " arrives as that exact string. Unguarded, the
+    # fallback's split shredded it into bogus fragments (two wrong "Other" rows, lost highlight). An
+    # answer that IS an option label is that label, whole — the split is only for genuinely joined picks.
+    b = [_blk("Pick a city", multi=True, labels=("Boston, MA", "Denver"))]
+    km._ask_fill_chosen(b, '"Pick a city"="Boston, MA"')
+    assert b[0]["chosen"] == ["Boston, MA"]
+
+
+def test_multiselect_comma_bearing_free_text_stays_whole():
+    # A free-typed "Other" answer with commas names no label even after splitting — keep it verbatim
+    # (parseAskRaw's rule: keep the split only when a part actually names an option label).
+    b = [_blk("Pick features", multi=True, labels=("Alpha", "Beta"))]
+    km._ask_fill_chosen(b, '"Pick features"="reads, writes, and nothing else"')
+    assert b[0]["chosen"] == ["reads, writes, and nothing else"]
+
+
+def test_multiselect_split_kept_when_a_part_names_a_label():
+    # Joined picks that include a free-typed "Other": at least ONE part naming a label keeps the split
+    # (parseAskRaw's exact rule — some(), not every(): label parts highlight, the rest render as Other).
+    b = [_blk("Pick features", multi=True, labels=("Alpha", "Beta"))]
+    km._ask_fill_chosen(b, '"Pick features"="Alpha, my own idea"')
+    assert b[0]["chosen"] == ["Alpha", "my own idea"]
 
 
 def test_multi_question_matches_by_question():
@@ -94,6 +122,23 @@ def test_answers_map_quotes_equals_commas_survive_verbatim():
     b = [_blk(q)]
     km._ask_fill_answers(b, {q: ans})
     assert b[0]["chosen"] == [ans], "exact-key fill: no parsing, nothing garbled"
+
+
+def test_answers_map_fill_count_is_returned():
+    # (#2) The caller latches askAnswerFilled on this return: it must count blocks ACTUALLY filled,
+    # not merely that a dict arrived — a keying mismatch fills nothing and must not disarm the
+    # regex safety net.
+    b = [_blk("Pick a color"), _blk("Second?")]
+    assert km._ask_fill_answers(b, {"Pick a color": "Blue"}) == 1
+    assert km._ask_fill_answers(b, {"Pick a color": "Blue", "Second?": "no"}) == 2
+
+
+def test_answers_map_zero_fills_reports_zero():
+    b = [_blk("Pending?")]
+    assert km._ask_fill_answers(b, {"A different question": "yes"}) == 0
+    assert km._ask_fill_answers(b, {}) == 0
+    assert km._ask_fill_answers(b, {"Pending?": []}) == 0, "an empty multiSelect list fills nothing"
+    assert b[0]["chosen"] == []
 
 
 NOW = 1781100000
@@ -233,6 +278,31 @@ class BuildSessionAskAnswer(unittest.TestCase):
                "options": [{"label": "Alpha"}, {"label": "Beta"}, {"label": "Gamma"}]}]
         self._write(qs, '"Pick features"="Alpha, Gamma"', tool_use_result=None)
         self.assertEqual(self._ask_event()["askAnswer"][0]["chosen"], ["Alpha", "Gamma"])
+
+    def test_old_record_single_comma_bearing_label_not_shredded(self):
+        # (#1, e2e) The fallback path with a ONE-label pick whose label contains ", ": it must render
+        # as that label (highlighted), never shredded into two bogus "Other" rows — the label-match
+        # guard, through the whole build.
+        qs = [{"question": "Pick a city", "multiSelect": True,
+               "options": [{"label": "Boston, MA"}, {"label": "Denver"}]}]
+        self._write(qs, '"Pick a city"="Boston, MA"', tool_use_result=None)
+        self.assertEqual(self._ask_event()["askAnswer"][0]["chosen"], ["Boston, MA"])
+
+    def test_mismatched_answers_map_does_not_disarm_the_fallback(self):
+        # (#2, e2e) askAnswerFilled must latch only on an ACTUAL fill: a keying mismatch (a future
+        # harness renaming) fills nothing, and latching anyway disarmed the regex safety net — the
+        # whole ask rendered pending despite recoverable pairs in the flat string.
+        qs = [{"question": "Pick a color", "multiSelect": False, "options": [{"label": "Blue"}]}]
+        self._write(qs, '"Pick a color"="Blue"',
+                    {"questions": [], "answers": {"A renamed question key": "Blue"}})
+        self.assertEqual(self._ask_event()["askAnswer"][0]["chosen"], ["Blue"],
+                         "zero fills -> the output-string scrape still recovers the answer")
+
+    def test_empty_answers_map_does_not_disarm_the_fallback(self):
+        # (#2, e2e) Same latch, the empty-map shape.
+        qs = [{"question": "Pick a color", "multiSelect": False, "options": [{"label": "Blue"}]}]
+        self._write(qs, '"Pick a color"="Blue"', {"questions": [], "answers": {}})
+        self.assertEqual(self._ask_event()["askAnswer"][0]["chosen"], ["Blue"])
 
     def test_dismissed_picker_stays_unanswered(self):
         # (f) A dismissed picker: is_error tool_result, toolUseResult a plain STRING — no crash,
