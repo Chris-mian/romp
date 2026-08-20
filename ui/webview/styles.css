@@ -2739,6 +2739,10 @@ body.fileview-open { overflow: hidden; }
   border: 1px solid var(--box-border); }
 .fileview-btn:hover { border-color: var(--accent); }
 .fileview-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+/* the directory half of the title is the click into the file BROWSER (feed pane) — mirrored in
+   feed.css so the viewer behaves identically wherever it mounts */
+.fileview-dir-link { cursor: pointer; }
+.fileview-dir-link:hover { color: var(--accent); text-decoration: underline; }
 /* gutter + code as two columns of ONE scroller: the numbers stay put horizontally against long lines,
    and because they are a sibling element a selection of the code copies without dragging them along */
 .fileview-code { display: flex; align-items: flex-start; min-height: 100%; }

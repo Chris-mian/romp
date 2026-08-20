@@ -12,7 +12,9 @@
 //
 // Living in the CHAT page also removes a whole relay: the click and the viewer are the same document
 // now, so there is no shell forwarding, no feed-pane bring-forward/put-back, and the standalone /chat
-// page views files exactly like the framed one.
+// page views files exactly like the framed one. The module stays pane-agnostic on purpose: the file
+// BROWSER (file-browse.ts, feed bundle) opens files through this same viewer in the FEED document, so
+// whichever bundle imports it gets the identical modal.
 import hljs from "highlight.js/lib/core";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -173,6 +175,17 @@ export function openFileView(path: string, sid?: string | null): void {
   dir.textContent = cut >= 0 ? path.slice(0, cut + 1) : "";
   const base = el("span", "fileview-base");
   base.textContent = path.slice(cut + 1);
+  if (cut >= 0) {
+    // The discoverability path into the file BROWSER: the directory half of the title is a click
+    // into its listing. Posted to our OWN window — initFileBrowse listens on the same channel the
+    // shell relays into, so no import cycle between the two overlays.
+    dir.classList.add("fileview-dir-link");
+    dir.title = "Browse this file's folder";
+    dir.addEventListener("click", () => {
+      try { window.postMessage({ romp: "browseFiles", path: path.slice(0, cut) || "/", sid }, "*"); }
+      catch { /* messaging our own window cannot really fail */ }
+    });
+  }
   name.appendChild(dir); name.appendChild(base);
   const acts = el("div", "fileview-acts");
 
@@ -184,7 +197,10 @@ export function openFileView(path: string, sid?: string | null): void {
   submitBtn.type = "button";
   submitBtn.title = "Hand every comment on this file to the session as one message";
   const syncReview = () => {
-    const n = (comments.get(key) || []).length;
+    // No sink registered (the feed's browser-hosted viewer) → Submit has nowhere to deliver, so the
+    // review controls never surface here; comments authored where a sink exists stay in the store
+    // and count only there — no real target, no affordance.
+    const n = commentSink ? (comments.get(key) || []).length : 0;
     cmtCount.textContent = n === 1 ? "1 comment" : n + " comments";
     submitBtn.textContent = "Submit " + n + (n === 1 ? " comment" : " comments");
     cmtCount.hidden = !n;
@@ -277,8 +293,9 @@ export function openFileView(path: string, sid?: string | null): void {
   // Raw one (and the other way round). A span that can no longer be found keeps its comment — only the
   // highlight is missing, and the Submit still carries it.
   function markComments(): void {
-    const list = comments.get(key) || [];
     syncReview();
+    if (!commentSink) return;                   // no sink → the marks (and their remove ✕) stay off too
+    const list = comments.get(key) || [];
     list.forEach((c, i) => {
       const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
       const nodes: Text[] = [];
@@ -334,6 +351,7 @@ export function openFileView(path: string, sid?: string | null): void {
   // Right-click a selection → Comment. Bound on the viewer body, so it never competes with the chat's
   // own selection menu behind the backdrop.
   body.addEventListener("contextmenu", (ev) => {
+    if (!commentSink) return;                   // no sink → no Comment to offer; the native menu keeps Copy
     const sel = window.getSelection();
     const picked = sel ? sel.toString() : "";
     if (!picked.trim() || !sel?.anchorNode || !body.contains(sel.anchorNode)) return;
