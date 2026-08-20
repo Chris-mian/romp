@@ -5669,6 +5669,13 @@ def _sdk_locked():
             # ends, so an idle fleet's usage.json goes stale — measured ~15h — and the rate gate is
             # only as good as that file); the backend picks any live login session to ask
             jd._USAGE_REFRESH_FN = getattr(_sdk_backend, "refresh_usage", None)   # best-effort hook (judge guards None)
+            # The judge parses the SAME cut world the display parse does (jd._PENDING_CUT_FN): during
+            # an armed bare rollback the planner must not see — and mint from — the deleted tail.
+            # getattr-guarded like every other backend probe (a test fake without the affordance
+            # must still construct — the singleton contract outranks the wire).
+            _cut_fn = getattr(_sdk_backend, "pending_cut", None)
+            if _cut_fn:
+                jd.set_pending_cut_provider(_cut_fn)
         except Exception:
             sys.stderr.write("sdk-backend unavailable: %s\n" % traceback.format_exc())
             _sdk_problem("the SDK backend could not be built: %s" % traceback.format_exc())
