@@ -5676,6 +5676,9 @@ def _sdk_locked():
             _cut_fn = getattr(_sdk_backend, "pending_cut", None)
             if _cut_fn:
                 jd.set_pending_cut_provider(_cut_fn)
+            # The backend's flag-consumption events resolve held rewinds (two-phase goal cleanup:
+            # archive at the branch-take, restore on failure — _on_rewind_resolved).
+            _sdk_backend.rewind_resolved_cb = _on_rewind_resolved
         except Exception:
             sys.stderr.write("sdk-backend unavailable: %s\n" % traceback.format_exc())
             _sdk_problem("the SDK backend could not be built: %s" % traceback.format_exc())
@@ -12853,8 +12856,9 @@ def _feed_goals(sid):
                     #                                    card for the whole pass (the user 2026-07-23)
                 except Exception:
                     sys.stderr.write("feed-goals: user-override replay: %s\n" % traceback.format_exc())
-            return store
-    return jd.load_goals(sid)                          # no pass in flight → live read, outside the lock
+            return _apply_rewind_hold(sid, store)      # a pending rewind's cards are hidden NOW (latched
+            #                                            at the gesture; archive lands at the branch-take)
+    return _apply_rewind_hold(sid, jd.load_goals(sid))   # no pass in flight → live read, outside the lock
 
 # Delta-send (the user 2026-06-25, who wanted to stop re-sending what didn't change): the chat pusher used to send the
 # FULL events array (~8MB for a 34MB transcript) on every change, even when one event was appended. Keep the
@@ -13053,13 +13057,16 @@ def _rewind_send(sid, user_uuid, text, now=None):
     if err:
         return err
     # Same as delete: the edited message + its tail are abandoned; read its time before be.rewind arms the
-    # cut, then archive the cards those now-gone turns spawned. The edited text lands as a NEW turn (a later
-    # timestamp), minted AFTER this runs, so its fresh card is never caught by the cut.
+    # cut. The gesture HIDES the cards those turns spawned (a latched hold); the ARCHIVE waits for the
+    # branch-take event and a refused rewind restores them — see _on_rewind_resolved. The edited text lands
+    # as a NEW turn with a LATER timestamp, and the judge's prompt-run mints its card DURING that open turn
+    # (by design, before the take settles) — so the sweep is NOT bare t-keyed: both the hide and the take
+    # thread the kept-chain exemption (_rewind_kept_uuids → jd.swept_ids), which spares any node whose
+    # promptUuid is provably on the live chain. Identity, not time, is what saves the fresh card.
     cut_t = _atom_epoch(sess["path"], sid, str(user_uuid), now)
     ok, berr = be.rewind(sid, target, str(text))
-    if ok and cut_t is not None:
-        _drop_goals_after(sid, cut_t)
-        _mark_views_dirty()
+    if ok:
+        _arm_rewind_hold(be, sid, cut_t)
     return None if ok else (berr or "the rewind could not be applied")
 
 
@@ -13096,22 +13103,350 @@ def _rewind_rollback(sid, user_uuid, now=None):
         return err
     # The DELETED message is user_uuid (target is its surviving ancestor); everything at/after it is
     # abandoned. Read its time NOW, before be.rollback arms the pending_cut that would hide it from _parse.
+    # The gesture HIDES the affected cards; the archive waits for the branch-take (_on_rewind_resolved).
     cut_t = _atom_epoch(sess["path"], sid, str(user_uuid), now)
     ok, berr = be.rollback(sid, target)
-    if ok and cut_t is not None:
-        _drop_goals_after(sid, cut_t)                    # archive cards minted from the now-abandoned turn(s)
-        _mark_views_dirty()
+    if ok:
+        _arm_rewind_hold(be, sid, cut_t)
     return None if ok else (berr or "the rollback could not be applied")
 
 
-def _drop_goals_after(sid, cut_t):
-    """Archive goal cards born in a rewind/delete's abandoned range (jd.drop_goals_after). Best-effort: a
-    failure here must never undo the cut the user already got, so log and move on (fail loud, not silent)."""
+def _arm_rewind_hold(be, sid, cut_t):
+    """The gesture half of the two-phase rewind cleanup: latch the card hold (hide now, archive at
+    the take). cut_t=None — the edited/deleted record's time could not be resolved from the parse —
+    is LOUD, never a silent no-cleanup (the repo rule): the rewind itself already succeeded, the
+    dead-branch reconciliation will still catch any orphans, but the user must be able to see why
+    nothing hid."""
+    if cut_t is None:
+        jd._log_judge_error("romp", sid, "revert-skipped",
+                            note="rewind cut time unresolved (the record is not among the parsed "
+                                 "atoms) — no cards hidden or archived for this rewind; the "
+                                 "dead-branch reconciliation will catch any orphans")
+        return
+    leaf = ""
     try:
-        jd.drop_goals_after(sid, cut_t)
+        fn = getattr(be, "rewind_flags", None)
+        if fn:
+            leaf = (fn(sid) or ("", "", False))[1]     # the transcript leaf recorded at arm time —
+            #                                            the spent discriminator's graph anchor
+    except Exception as e:
+        sys.stderr.write("rewind-hold: could not read the armed leaf: %s\n" % e)
+    _rewind_hold_set(sid, cut_t, leaf)
+    _mark_views_dirty()
+
+
+def _drop_goals_after(sid, cut_t, kept=None):
+    """Archive goal cards born in a rewind/delete's abandoned range (jd.drop_goals_after). `kept` is the
+    kept-chain exemption (see _rewind_kept_uuids). Best-effort: a failure here must never undo the cut
+    the user already got, so log and move on (fail loud, not silent)."""
+    try:
+        jd.drop_goals_after(sid, cut_t, kept=kept)
     except Exception as e:
         jd._log_judge_error("romp", sid, "revert-failed",
                             note="goal cleanup after a rewind/delete failed: %r" % e)
+
+
+# ── two-phase rewind timing (2026-08-17): HIDE at the gesture, ARCHIVE at the branch-take ──
+# The old shape archived at ARM time, which is wrong in both directions: the arm is not the rewind
+# (apply is async and conditional — a CLI refusal or a spent flag leaves the conversation intact,
+# yet its goals were already archived), and archiving once at arm misses every mint that lands in
+# the window after it. The user's gesture IS new information — their cards should vanish at once —
+# so the gesture latches a HOLD (cards hide from the feed, nothing moves in the store) and the
+# store-side archive waits for the event that makes "abandoned" true: the branch-take (the backend's
+# flag-consumption sites). A failed/refused rewind RESTORES the hidden cards loudly. The hold is
+# latched until exactly one of those events — never re-derived per build — and file-backed so a
+# kernel restart mid-window neither drops the hide nor forgets to resolve it (the boot pass below).
+_rewind_holds = [None]                             # lazily loaded {sid: {"cutT": int, "leaf": str, "at": int}}
+_rewind_holds_lock = threading.Lock()
+
+
+def _rewind_holds_file():
+    return jd.STATE / "rewind-holds.json"
+
+
+def _rewind_holds_map():
+    with _rewind_holds_lock:
+        if _rewind_holds[0] is None:
+            try:
+                _rewind_holds[0] = {str(k): v for k, v in
+                                    json.loads(_rewind_holds_file().read_text()).items()
+                                    if isinstance(v, dict)}
+            except Exception:
+                _rewind_holds[0] = {}
+        return _rewind_holds[0]
+
+
+def _rewind_holds_save():
+    try:
+        tmp = _rewind_holds_file().with_suffix(".json.tmp.%d" % os.getpid())
+        tmp.write_text(json.dumps(_rewind_holds[0] or {}))
+        tmp.rename(_rewind_holds_file())
+    except Exception as e:
+        sys.stderr.write("rewind-hold: persist failed: %s\n" % e)
+
+
+def _rewind_hold_set(sid, cut_t, leaf):
+    m = _rewind_holds_map()
+    with _rewind_holds_lock:
+        m[str(sid)] = {"cutT": int(cut_t), "leaf": str(leaf or ""), "at": int(time.time())}
+        _rewind_holds_save()
+
+
+def _rewind_hold_get(sid):
+    return _rewind_holds_map().get(str(sid))
+
+
+def _rewind_hold_clear(sid):
+    m = _rewind_holds_map()
+    _rewind_kept_memo.pop(str(sid), None)              # the memo and the once-per-hold error latch
+    _rewind_kept_err.pop(str(sid), None)               # live exactly as long as the hold does
+    with _rewind_holds_lock:
+        if m.pop(str(sid), None) is not None:
+            _rewind_holds_save()
+
+
+_rewind_kept_memo = {}   # sid -> (input key, kept set) — see _rewind_kept_uuids
+_rewind_kept_err = {}    # sid -> the armed hold's `at` already complained about: the loud degrade
+#                          is once per HOLD, not once per build (a >48h bare hold used to append
+#                          one judge-errors row per ~5s feed rebuild, unbounded, with no dedup)
+_REWIND_ERR_MISS = object()
+
+
+def _rewind_kept_complain(sid, note):
+    """One 'rewind-kept' row per armed hold: the view rebuilds every few seconds for the whole
+    armed window (unbounded on a bare delete), and a lookup that fails once fails every build —
+    the degrade must stay LOUD without judge-errors.jsonl growing by ~17k rows/day. Keyed on the
+    hold's arm time so a NEW hold complains anew; no hold (the one-shot take path) always logs."""
+    hold = _rewind_hold_get(sid)
+    at = (hold or {}).get("at")
+    if hold is not None and _rewind_kept_err.get(str(sid), _REWIND_ERR_MISS) == at:
+        return
+    _rewind_kept_err[str(sid)] = at
+    jd._log_judge_error("romp", sid, "rewind-kept", note=note)
+
+
+def _rewind_kept_uuids(sid):
+    """The session's KEPT-chain uuid set (em.chain_membership over the same inputs the display parse
+    uses, including the backend's pending cut) — the identity exemption threaded through the rewind
+    sweep (jd.swept_ids / jd.drop_goals_after) so the replacement ask's own fresh card, minted by the
+    judge's prompt-run DURING the open rewind turn, is never hidden or archived as if it were part of
+    the abandoned tail. Returns None on ANY failure, LOUDLY: the sweep then degrades to the pure
+    t-keyed selection (the pre-fix behavior) — visible in the log (once per armed hold, see
+    _rewind_kept_complain), never a silent widening.
+
+    The session resolves through the 48h set first, then discover's cached wide walk — the exact
+    fallback _alive_sessions uses: liveness owns visibility, age owns nothing (2026-08-13). A hold
+    outlives the caption window on any bare delete left sitting (its defining property is that NO
+    record lands, freezing the transcript's mtime at arm time), and the 48h miss used to fail this
+    lookup on every build of a still-live session: a deterministic, silent widening to the bare
+    t-keyed hide, plus one error row per rebuild.
+
+    Memoized per sid on the exact inputs that can change the answer — each candidate file's
+    (mtime, size), the states file's stat (a resumeFork row lands there), and the pending cut —
+    because the hold view re-asks on EVERY feed/chat build for the whole armed window, re-walking
+    a provably unchanged transcript (~0.1s warm at tens of MB, partly inside _goals_snap_lock on
+    the mid-pass path). The branch-take busts it by construction: the take's own record moves the
+    transcript stat and consumes the cut, so the archive never sweeps against a stale kept set.
+    A FAILURE is never memoized — the loud degrade retries next build. The memo dies with the
+    hold (_rewind_hold_clear).
+
+    EDIT-REWIND CAVEAT (accepted residual): pending_cut is bare-only, so for the first seconds of
+    an EDIT rewind — until the fork record lands on disk — the kept set here is the full OLD
+    chain: promptUuid-carrying doomed cards are spared by the hold for that window (consistent
+    with the chat, which renders the same doomed tail from the same bare-only cut), and only
+    promptUuid-less mints take the t-keyed hide. The fork record landing self-heals both, and the
+    take-time archive always runs post-fork."""
+    try:
+        sess = next((s for s in _sessions(time.time()) if s["sid"] == sid), None)
+        if not sess:
+            ent = next((f for f in jd.discover(time.time(), window=jd.DEATH_BACKFILL_WINDOW)
+                        if f[0] == sid), None)         # the same cached wide walk _alive_sessions pays for
+            sess = {"sid": ent[0], "path": str(ent[1])} if ent else None
+        if not sess:
+            _rewind_kept_complain(sid, "no transcript to read the kept chain from — the rewind sweep "
+                                       "degrades to the pure t-keyed selection (pre-fix behavior)")
+            return None
+        cands = [sess["path"]]
+        anchor = os.path.join(os.path.dirname(sess["path"]), sid + ".jsonl")
+        if os.path.basename(sess["path"]) != sid + ".jsonl" and os.path.exists(anchor):
+            cands.append(anchor)
+        states = jd.STATESDIR / (sid + ".jsonl")
+        cut = ""
+        be = _sdk()
+        if be:
+            fn = getattr(be, "pending_cut", None)
+            if fn:
+                cut = fn(sid) or ""
+        key = None
+        try:
+            fstats = []
+            for f in cands:
+                st = os.stat(f)
+                fstats.append((f, st.st_mtime, st.st_size))
+            try:
+                sst = os.stat(states)
+                skey = (sst.st_mtime, sst.st_size)
+            except OSError:
+                skey = None
+            key = (tuple(fstats), skey, cut)
+        except OSError:
+            key = None                                 # unstat-able inputs → compute, never cache
+        memo = _rewind_kept_memo.get(str(sid))
+        if key is not None and memo and memo[0] == key:
+            return memo[1]
+        mem = em.chain_membership(sess["path"], candidate_files=cands,
+                                  states=str(states) if states.exists() else None,
+                                  leaf_override=cut or None)
+        if key is not None:
+            _rewind_kept_memo[str(sid)] = (key, mem["kept"])
+        return mem["kept"]
+    except Exception as e:
+        _rewind_kept_complain(sid, "kept-chain lookup failed: %r — the rewind sweep degrades to the "
+                                   "pure t-keyed selection (pre-fix behavior) this time" % e)
+        return None
+
+
+def _apply_rewind_hold(sid, store):
+    """The feed's view of a held session's store: the nodes the pending rewind will archive are
+    hidden NOW (the gesture is the new information; jd.swept_ids is the sweep's own selection —
+    including the kept-chain exemption — so what hides is exactly what the take archives). The
+    live store is never mutated (a filtered shallow copy; re-parents are copy-on-write and the
+    column re-roll runs on a throwaway deep copy), so a failed rewind restores by simply dropping
+    the hold. The view mirrors the world the take will produce, not just its node set:
+    - lastNode re-points at the newest survivor (archive_goal_nodes' own move) — build_feed's
+      perm/api-error/judge-auth floors walk from the focus and silently no-op on a hidden id,
+      the exact frozen-board shape the jauth floor exists to prevent;
+    - spared children of hidden parents re-parent at the nearest surviving ancestor, or the
+      walks that start at the roots would lose them;
+    - the columns RE-ROLL: a pre-cut top whose only blocker is a hidden post-cut sub must not
+      sit in needs-you — presenting an ask the user just deleted — for the whole window
+      (unbounded on a bare delete). The take re-rolls for exactly this reason; the view must too."""
+    hold = _rewind_hold_get(sid)
+    if not hold:
+        return store
+    try:
+        hide = jd.swept_ids(store, hold["cutT"], kept=_rewind_kept_uuids(sid))
+    except Exception:
+        return store
+    if not hide:
+        return store
+    nodes0 = store.get("nodes") or {}
+    out = dict(store)
+    out["nodes"] = {k: v for k, v in nodes0.items() if k not in hide}
+    out["status"] = {k: v for k, v in (store.get("status") or {}).items() if k not in hide}
+    for nid, nd in list(out["nodes"].items()):         # spared survivors of hidden parents stay
+        p = nd.get("parentId")                         # reachable (copy-on-write — never mutate
+        if p in hide:                                  # the live store's node dicts)
+            while p is not None and p in hide:
+                p = (nodes0.get(p) or {}).get("parentId")
+            out["nodes"][nid] = dict(nd, parentId=p)
+    if out.get("lastNode") in hide:
+        nn = out["nodes"]
+        out["lastNode"] = (max(nn, key=lambda n: int(nn[n].get("t") or 0)) if nn else None)
+    try:
+        # rollup_status mutates node dicts and appends diary events, so it runs on a throwaway
+        # DEEP copy and only its derived maps are served. A re-roll failure serves the filtered
+        # columns unchanged — degraded, never no view.
+        tmp = json.loads(json.dumps({"rompUuid": store.get("rompUuid", sid),
+                                     "nodes": out["nodes"], "status": {},
+                                     "lastNode": out.get("lastNode")}))
+        jd.rollup_status(tmp, session_closed=False)
+        out["status"] = tmp["status"]
+        out["confirming"] = tmp.get("confirming") or []
+    except Exception:
+        pass
+    return out
+
+
+def _hold_leaf_still_active(sid, leaf):
+    """The spent-flag discriminator: is the leaf recorded at gesture time still on the active
+    chain? A consumed rewind abandons it (the new branch's ancestry bypasses it), so provably
+    REWOUND means the branch took — archive; provably KEPT means the conversation moved past the
+    arm on the OLD branch (the rewind dissolved without applying) — restore. Discriminated via
+    em.chain_membership — the one exported predicate — so recorded resume-fork lineage (states/
+    resumeFork rows) and multi-hop file lineages read exactly as the display parse does: a
+    lineage-blind hand-rolled walk here read an unreachable-but-live leaf as \"taken\" and archived
+    live cards on a guess (2026-08-17). Anything unprovable (clear/broken/unknown) is None —
+    the caller restores, because a card move needs proof. Resolves the session through the 48h
+    set, then discover's cached wide walk (as _rewind_kept_uuids does): a hold outliving the
+    caption window — a bare delete's freezing of the mtime guarantees exactly that — must not
+    turn 'the transcript exists but is old' into 'unprovable'."""
+    sess = next((s for s in _sessions(time.time()) if s["sid"] == sid), None)
+    if not sess:
+        ent = next((f for f in jd.discover(time.time(), window=jd.DEATH_BACKFILL_WINDOW)
+                    if f[0] == sid), None)
+        sess = {"sid": ent[0], "path": str(ent[1])} if ent else None
+    if not sess or not leaf:
+        return None                                    # no transcript to consult → unprovable
+    try:
+        cands = [sess["path"]]
+        anchor = os.path.join(os.path.dirname(sess["path"]), sid + ".jsonl")
+        if os.path.basename(sess["path"]) != sid + ".jsonl" and os.path.exists(anchor):
+            cands.append(anchor)
+        states = jd.STATESDIR / (sid + ".jsonl")
+        mem = em.chain_membership(sess["path"], candidate_files=cands,
+                                  states=str(states) if states.exists() else None)
+        if leaf in mem["rewind"]:
+            return False                               # provably rewound away → the branch took
+        if leaf in mem["kept"]:
+            return True                                # provably live → the rollback dissolved
+        return None                                    # clear/broken/unknown → unprovable
+    except Exception:
+        return None
+
+
+def _on_rewind_resolved(sid, outcome):
+    """The backend's flag-consumption events, resolving a held rewind (wired in _sdk_locked):
+    "taken"  — the branch took (the rewind/rollback turn's ResultMessage settled) → ARCHIVE the
+               held cards at the recorded cut (drop_goals_after now runs at the event that makes
+               "abandoned" true, and catches any mint that landed during the window).
+    "failed" — the CLI refused the rewind; the conversation is unchanged → RESTORE loudly.
+    "spent"  — the flag was dropped at connect because the leaf moved: either the take already
+               landed (a crash-heal resume mid-rewind-turn) or the conversation moved on the OLD
+               branch without applying — the recorded leaf's chain membership discriminates.
+               Unprovable (no transcript) restores: a card move needs proof, not a guess."""
+    hold = _rewind_hold_get(sid)
+    if not hold:
+        return
+    if outcome == "spent":
+        on_chain = _hold_leaf_still_active(sid, hold.get("leaf"))
+        outcome = "taken" if on_chain is False else "failed"
+        if on_chain is None:
+            jd._log_judge_error("romp", sid, "rewind-restore",
+                                note="spent rewind flag with no transcript to discriminate — "
+                                     "restoring the held cards (never archive on a guess)")
+    if outcome == "taken":
+        _drop_goals_after(sid, hold["cutT"], kept=_rewind_kept_uuids(sid))
+    else:
+        jd._log_judge_error("romp", sid, "rewind-restore",
+                            note="the rewind did not happen — the cards it hid are back on the feed")
+    _rewind_hold_clear(sid)
+    _mark_views_dirty()
+    _pusher_wake.set()
+
+
+def _rewind_holds_boot():
+    """Boot pass over persisted holds: a kernel restart mid-window must neither drop a hide (the
+    file survives; reads keep filtering) nor leave one latched forever after its resolving event
+    fired while no kernel was up. A hold stays latched only while the backend's LEAF-VERIFIED
+    probe (rewind_pending — rewind_disposition against the transcript's current leaf, the same
+    verification pending_cut and the connect path use) still reads the rewind as applicable; raw
+    flag presence is not that: an out-of-band CLI-native continuation grows the transcript past
+    the recorded leaf without ever consuming the reg flag, and the raw check kept the cards hidden
+    with NO future resolving event while the chat rendered the full un-cut tail. Anything not
+    verified-pending resolves through the same spent discriminator (restore on-chain/unprovable,
+    archive off-chain)."""
+    be = _sdk()
+    for sid in list(_rewind_holds_map()):
+        try:
+            reg_pending = False
+            if be:
+                fn = getattr(be, "rewind_pending", None)
+                reg_pending = bool(fn(sid)) if fn else False
+            if not reg_pending:
+                _on_rewind_resolved(sid, "spent")
+        except Exception:
+            sys.stderr.write("rewind-hold boot: %s\n" % traceback.format_exc())
 
 
 def _parse_cached(path):
@@ -15116,7 +15451,12 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
     # LEAF: its descendants are hidden even if open. Skip cleared nodes. `current` marks the focus node
     # being worked on (the graph's lastNode) so render can point a line at it; done nodes carry their
     # time for a recency-coloured "(Xm ago)" on the right.
-    gstore = jd.load_goals(sid)
+    gstore = _apply_rewind_hold(sid, jd.load_goals(sid))   # a pending rewind's cards hide on EVERY
+    #                                            surface — this ledger tree (and the tab-hover
+    #                                            recents derived from it) used to keep showing the
+    #                                            doomed asks for the whole armed window while the
+    #                                            feed hid them (the "one chokepoint" premise was
+    #                                            false; the window is unbounded on a bare delete)
     gnodes, gstatus, gcleared = gstore.get("nodes", {}), gstore.get("status", {}), _cleared_ids()
     gkids = {}
     for _gid, _gn in gnodes.items():
@@ -15914,16 +16254,17 @@ def _compact_goal_store(fsid):
                 stack.extend(children.get(x, []))
     if not move:
         return 0
-    arch = jd.load_goal_archive(fsid)
-    a_nodes = arch.setdefault("nodes", {})
-    a_status = arch.setdefault("status", {})
-    for nid in move:
-        a_nodes[nid] = nodes.pop(nid)
-        if nid in status:
-            a_status[nid] = status.pop(nid)
-    arch["rompUuid"] = store.get("rompUuid", fsid)
-    jd.save_goal_archive(fsid, arch)
-    jd.save_goals(fsid, store)                          # placements/seq/lastNode stay → judge dedup intact
+    with jd._GOAL_ARCH_LOCK:                            # the archive is a blind RMW — see the lock's note
+        arch = jd.load_goal_archive(fsid)
+        a_nodes = arch.setdefault("nodes", {})
+        a_status = arch.setdefault("status", {})
+        for nid in move:
+            a_nodes[nid] = nodes.pop(nid)
+            if nid in status:
+                a_status[nid] = status.pop(nid)
+        arch["rompUuid"] = store.get("rompUuid", fsid)
+        jd.save_goal_archive(fsid, arch)
+        jd.save_goals(fsid, store)                      # placements/seq/lastNode stay → judge dedup intact
     return len(move)
 
 
@@ -15963,43 +16304,59 @@ def _restore_goal_archive(item_ids):
     for iid in item_ids:
         by_sid.setdefault(iid.rsplit(":", 1)[0], []).append(iid)
     for sid, ids in by_sid.items():
-        arch = jd.load_goal_archive(sid)
-        a_nodes = arch.get("nodes", {})
-        if not a_nodes:
-            continue
-        a_status = arch.get("status", {})
-        a_children = {}
-        for nid, nd in a_nodes.items():
-            a_children.setdefault(nd.get("parentId"), []).append(nid)
-        move = []
-        for iid in ids:
-            if iid in a_nodes:
-                stack = [iid]
-                while stack:
-                    x = stack.pop()
-                    if x in a_nodes:
-                        move.append(x)
-                        stack.extend(a_children.get(x, []))
-        if not move:
-            continue
-        store = jd.load_goals(sid)
-        nodes = store.setdefault("nodes", {})
-        status = store.setdefault("status", {})
-        # Journal the payload FIRST (the user 2026-07-10): once the archive save below lands, these nodes
-        # exist only in the live store's save — a stale triage-pass save racing it would drop them from
-        # BOTH files, permanently. The journal carries the node payloads; jd.load_goals re-inserts any
-        # that end up in neither file (and defers to the archive if the user re-clears later).
-        jd.append_restore(sid, {nid: a_nodes[nid] for nid in move},
-                          {nid: a_status[nid] for nid in move if nid in a_status}, int(time.time()))
-        for nid in move:
-            nodes[nid] = a_nodes.pop(nid)
-            if nid in a_status:
-                status[nid] = a_status.pop(nid)
-        # (Sticky completion restore lives in _mark_nodes_cleared now — 2026-07-07: the settle event must
-        # land AFTER the undo reopen it records, or the fold consumes it and the card returns to Working.)
-        jd.save_goals(sid, store)
-        jd.save_goal_archive(sid, arch)
-        _compact_seen.pop(sid, None)                   # force a re-stat next sweep (we just changed the live file)
+        with jd._GOAL_ARCH_LOCK:                       # the archive is a blind RMW — see the lock's note
+            arch = jd.load_goal_archive(sid)
+            a_nodes = arch.get("nodes", {})
+            if not a_nodes:
+                continue
+            a_status = arch.get("status", {})
+            a_children = {}
+            for nid, nd in a_nodes.items():
+                a_children.setdefault(nd.get("parentId"), []).append(nid)
+            move = []
+            for iid in ids:
+                if iid in a_nodes:
+                    stack = [iid]
+                    while stack:
+                        x = stack.pop()
+                        if x in a_nodes:
+                            move.append(x)
+                            stack.extend(a_children.get(x, []))
+            if not move:
+                continue
+            store = jd.load_goals(sid)
+            nodes = store.setdefault("nodes", {})
+            status = store.setdefault("status", {})
+            # Journal the payload FIRST (the user 2026-07-10): once the archive save below lands, these nodes
+            # exist only in the live store's save — a stale triage-pass save racing it would drop them from
+            # BOTH files, permanently. The journal carries the node payloads; jd.load_goals re-inserts any
+            # that end up in neither file (and defers to the archive if the user re-clears later).
+            rt = int(time.time())
+            jd.append_restore(sid, {nid: a_nodes[nid] for nid in move},
+                              {nid: a_status[nid] for nid in move if nid in a_status}, rt)
+            for nid in move:
+                nodes[nid] = a_nodes.pop(nid)
+                if nid in a_status:
+                    status[nid] = a_status.pop(nid)
+                sv = (store.get("rewindSwept") or {}).pop(nid, None)
+                if sv is not None:
+                    # the user's restore outranks a rewind tombstone — pop AND stamp: the pop keeps
+                    # jd._rebase_onto_disk from re-deleting the node on the next rebase, the durable
+                    # stamp survives a stale writer re-unioning its old marker AND stands the node
+                    # down from the identity-keyed reconciliation (boot memo resets, later sig
+                    # changes) for good — the branch's death can never be new information again.
+                    # Stamped max(rt, marker), never bare rt: a superseding re-sweep stamps its
+                    # tombstone STRICTLY past the restore it popped (jd.archive_goal_nodes), so the
+                    # marker this restore pops can lead wall clock by a second — and the rebase
+                    # gives ties to the restore, so at-or-above the popped value is exactly "this
+                    # restore wins against the marker it popped". The journal row still carries the
+                    # gesture's own rt; its replay derives the same stamp from the same popped value.
+                    store.setdefault("rewindRestored", {})[nid] = max(rt, int(sv))
+            # (Sticky completion restore lives in _mark_nodes_cleared now — 2026-07-07: the settle event must
+            # land AFTER the undo reopen it records, or the fold consumes it and the card returns to Working.)
+            jd.save_goals(sid, store)
+            jd.save_goal_archive(sid, arch)
+            _compact_seen.pop(sid, None)               # force a re-stat next sweep (we just changed the live file)
 
 
 def _resolve_node(sid, node_id):
@@ -26817,6 +27174,9 @@ def main():
     threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot
     #                                                           reconcile (cut turns, queues, orphans) runs at
     #                                                           boot, not on the first lazy touch
+    threading.Thread(target=_rewind_holds_boot, daemon=True).start()   # resolve holds whose take/fail
+    #                                                           event fired while no kernel was up (it
+    #                                                           builds the backend itself if it wins the race)
     threading.Thread(target=_producer, daemon=True).start()
     threading.Thread(target=_pusher, daemon=True).start()
     threading.Thread(target=_heartbeat, daemon=True).start()  # WS keepalive on its own thread (see _heartbeat)

@@ -2135,6 +2135,8 @@ class SdkSession:
                  % ((": " + dropped) if dropped else ""))})
         except Exception as e:
             self.backend._log("rewind (%s): could not tell the chat the rewind failed: %s" % (self.name, e))
+        # the conversation is unchanged → the kernel RESTORES the cards its gesture-time hold hid
+        self.backend._rewind_resolved(self.sid, "failed")
         self.backend._poke()
 
     def _learn_model(self, pm):
@@ -2430,6 +2432,9 @@ class SdkSession:
                     self.backend._update_reg(self.sid, rewindTo="", rewindLeaf="", rewindBare=False)
                 except Exception as e:
                     self.backend._log("rewind (%s): registry clear failed after the turn landed: %s" % (self.name, e))
+                # the BRANCH-TAKE event: the settled turn is the new branch's first landed record —
+                # the kernel's held goal cleanup archives on exactly this (two-phase rewind timing)
+                self.backend._rewind_resolved(self.sid, "taken")
             self.backend._turn_completed(self.sid)   # a landed result re-arms the crash-resume budget
             self._mark("waiting")
             self.backend.retire_live_work(self.sid)   # turn over → a work atom that never landed never will
@@ -3784,6 +3789,10 @@ class SdkBackend:
                 self._log("rewind (%s): registry clear failed: %s" % (sess.name, e))
             self._log("rewind (%s): conversation moved since the request — flag spent, resuming plainly"
                       % sess.name)
+            # ambiguous consumption: the leaf moved either because the take landed pre-crash or
+            # because the old branch grew — the kernel discriminates by the recorded leaf's chain
+            # membership and archives or restores the held cards accordingly
+            self._rewind_resolved(sess.sid, "spent")
         if self.mcp_config:
             kw["mcp_servers"] = self.mcp_config
         # The flag-settings layer carries the two keys the SDK has no typed field for — ultracode
@@ -4238,6 +4247,54 @@ class SdkBackend:
         s.request_reconnect()   # idle → reconnects now; a fresh thread's FIRST connect applies the flag
         self._poke()
         return True, ""
+
+    def rewind_flags(self, sid: str) -> "tuple[str, str, bool]":
+        """The session's armed rewind flags (rewindTo, rewindLeaf, rewindBare) — live session first,
+        registry fallback (a kernel restart mid-window). ("", "", False) when nothing is armed. The
+        kernel's two-phase goal cleanup reads the recorded LEAF here at gesture time: it is the graph
+        anchor its spent-flag discriminator later checks chain membership of."""
+        s = self.sessions.get(sid)
+        if s is not None and not s.ended:
+            return (s._rewind_to or "", s._rewind_leaf or "", bool(getattr(s, "_rewind_bare", False)))
+        reg = read_reg(self.state_dir, sid)
+        if not reg:
+            return ("", "", False)
+        return (reg.get("rewindTo") or "", reg.get("rewindLeaf") or "", bool(reg.get("rewindBare")))
+
+    def rewind_pending(self, sid: str) -> bool:
+        """A rewind flag still APPLICABLE — leaf-verified like the connect path (rewind_disposition
+        against the transcript's CURRENT leaf), never raw flag presence. The kernel's boot pass
+        latches a hold only on this: a flag the transcript already moved past is spent, and its
+        consumption event may never fire (an out-of-band CLI-native continuation while no kernel
+        was up leaves the reg armed indefinitely) — raw presence kept those cards hidden with no
+        resolving event while the leaf-verified pending_cut let the chat render the full tail."""
+        s = self.sessions.get(sid)
+        if s is not None and not s.ended:
+            to, leaf = s._rewind_to or "", s._rewind_leaf or ""
+            cwd, fsid = s.cwd, s.resume_sid or s.sid
+        else:
+            reg = read_reg(self.state_dir, sid)
+            if not reg:
+                return False
+            to, leaf = reg.get("rewindTo") or "", reg.get("rewindLeaf") or ""
+            cwd, fsid = reg.get("cwd") or "~", reg.get("lastSid") or sid
+        if not to:
+            return False
+        return rewind_disposition(to, leaf, last_record_uuid(transcript_path(cwd, fsid))) == "apply"
+
+    def _rewind_resolved(self, sid: str, outcome: str):
+        """Tell the kernel a pending rewind RESOLVED (outcome: "taken" — the branch took; "failed" —
+        the CLI refused, conversation intact; "spent" — the flag was dropped at connect because the
+        leaf moved, ambiguous between a crash-heal take and a dissolved rollback). These are the
+        exact flag-consumption events the kernel's two-phase goal cleanup keys its archive/restore
+        on (rewind-holds); no callback wired (tests, standalone) → no-op."""
+        cb = getattr(self, "rewind_resolved_cb", None)
+        if not cb:
+            return
+        try:
+            cb(sid, outcome)
+        except Exception as e:
+            self._log("rewind (%s): resolve callback failed: %s" % (sid, e))
 
     def pending_cut(self, sid: str) -> str:
         """The uuid a PENDING bare rollback (rollback(), no replacement turn) truncates the conversation
