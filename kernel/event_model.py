@@ -26,7 +26,7 @@ Auxiliary inputs the file adapter may read (same category as the transcript):
                                transcript lost to an API-errored try; judge parse only)
   timeline/messages.jsonl   -> peer rompUuid for a postal atom (join on the msg id)
 """
-import json, os, re, sys, time, hashlib
+import json, os, re, sys, time, hashlib, threading
 from datetime import datetime
 from pathlib import Path
 
@@ -439,6 +439,11 @@ _JSONL_CACHE_MAX = 256            # bounds MEMORY only — past the cap, evict t
                                   # background burn (recurred 2026-08-15, kernel pinned at ~30-60% CPU; the survival
                                   # guarantee is pinned by tests/test_kernel_jsonl_cache.py).
 _JSONL_TAIL_GUARD = 64            # bytes of pre-offset content re-verified before an incremental read
+_JSONL_CACHE_LOCK = threading.Lock()   # the cache has cross-thread callers (the judge tiers' worker pools,
+                                       # the pusher, the warm threads) and HITS mutate (LRU reinsert): the
+                                       # lock covers only the cheap dict ops — the parse runs outside it —
+                                       # and pops stay guarded so a lost race degrades to a re-parse, never
+                                       # a raise
 
 
 def _scan_jsonl_bytes(data, base_offset):
@@ -466,13 +471,15 @@ def _read_jsonl_incremental(path):
     try:
         st = os.stat(path)
     except OSError:
-        _JSONL_CACHE.pop(path, None)
+        with _JSONL_CACHE_LOCK:
+            _JSONL_CACHE.pop(path, None)
         return []
-    hit = _JSONL_CACHE.get(path)
-    if hit is not None and hit[0] == st.st_mtime and hit[1] == st.st_size:
-        _JSONL_CACHE.pop(path)            # reinsert at the LRU tail: a served entry is a USED entry
-        _JSONL_CACHE[path] = hit
-        return hit[4]
+    with _JSONL_CACHE_LOCK:
+        hit = _JSONL_CACHE.get(path)
+        if hit is not None and hit[0] == st.st_mtime and hit[1] == st.st_size:
+            _JSONL_CACHE.pop(path, None)  # reinsert at the LRU tail: a served entry is a USED entry
+            _JSONL_CACHE[path] = hit
+            return hit[4]
     try:
         with open(path, "rb") as fh:
             if hit is not None and st.st_size > hit[1]:
@@ -490,12 +497,14 @@ def _read_jsonl_incremental(path):
             fh.seek(tail_from)
             tail = fh.read(offset - tail_from)
     except OSError:
-        _JSONL_CACHE.pop(path, None)
+        with _JSONL_CACHE_LOCK:
+            _JSONL_CACHE.pop(path, None)
         return []
-    _JSONL_CACHE.pop(path, None)
-    while len(_JSONL_CACHE) >= _JSONL_CACHE_MAX:
-        _JSONL_CACHE.pop(next(iter(_JSONL_CACHE)))   # oldest-used first; hot entries survive any cold flood
-    _JSONL_CACHE[path] = (st.st_mtime, st.st_size, offset, tail, records)
+    with _JSONL_CACHE_LOCK:
+        _JSONL_CACHE.pop(path, None)
+        while len(_JSONL_CACHE) >= _JSONL_CACHE_MAX:
+            _JSONL_CACHE.pop(next(iter(_JSONL_CACHE)))   # oldest-used first; hot entries survive any cold flood
+        _JSONL_CACHE[path] = (st.st_mtime, st.st_size, offset, tail, records)
     return records
 
 
