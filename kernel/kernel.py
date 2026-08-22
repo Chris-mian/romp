@@ -526,6 +526,7 @@ def _version_info():
             "boot": _BOOT_ID,   # lets a page retire update offers from a previous kernel life (2026-08-15)
             "uptime_s": int(time.time() - _STARTED), "dist_ver": _dist_ver(), "bundles": bundles,
             "autoNudge": _auto_nudge_on(),   # server-side toggle state → the gear checkbox reflects the kernel
+            "fileEditing": _file_editing_on(),   # dashboard raw-mode editing opt-in → gates the viewer's Edit
             "updateMode": _update_mode(),    # ask|auto|off (the boot release check) → the gear dropdown
             "updateAvail": _UPDATE_AVAIL[0],   # newer release the boot check found ("" = none/unknown)
             "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),      # current per-tier judge models → the gear dropdowns
@@ -536,6 +537,7 @@ def _version_info():
             # /tunnels row so its gear can mark controls where machines disagree (the user 2026-08-14).
             # The top-level fields above stay: this tab's own gear and older kernels read those.
             "settings": {"autoNudge": _auto_nudge_on(), "updateMode": _update_mode(),
+                         "fileEditing": _file_editing_on(),
                          "judgeModel": jd._triage_model(), "judgeEffort": jd._triage_effort(),
                          "indexModel": jd._index_model(), "indexEffort": jd._index_effort(),
                          "distillModel": jd._state_str("distill-model", "triage"),
@@ -1908,6 +1910,25 @@ def _set_auto_nudge(enabled):
     d = dict(_auto_nudge_data())
     d["enabled"] = bool(enabled)
     _write_auto_nudge(d)
+
+
+def _file_editing_on():
+    """Dashboard raw-mode file editing is OFF until the user says yes once (the user 2026-08-22: the
+    viewer's Edit asks with a popup the first time). The flag is a SERVER-side boundary, not
+    cosmetics: _save_file refuses while it is off, so the write-any-text-file capability the save op
+    represents exists only after the explicit opt-in — hiding the button alone would leave every
+    token-holder the write path. Kernel-side setting like Auto Nudge: it broadcasts to every attached
+    kernel (federation.ts KERNEL_SETTING) so the mesh answers with one voice, and /version +
+    the tunnel settings dict report it so disagreement is surfaced, never hidden. Default OFF —
+    absent file, unreadable file, or malformed JSON all refuse: the opt-in must be provable."""
+    try:
+        return bool(json.loads((jd.STATE / "file-editing.json").read_text()).get("enabled"))
+    except Exception:
+        return False
+
+
+def _set_file_editing(enabled):
+    _atomic_write(jd.STATE / "file-editing.json", json.dumps({"enabled": bool(enabled)}))
 
 
 # ── automatic updates of THIS machine (the user 2026-08-09) ───────────────────────────────────────
@@ -20472,6 +20493,12 @@ def _save_file(raw, sid, content, base_mtime_ns):
     if not os.path.isabs(p):
         return None, "cannot save %s: not an absolute path (no session cwd to resolve against)" % _tilde(p)
     p = os.path.normpath(p)
+    if not _file_editing_on():
+        # THE boundary, server-side (the user 2026-08-22): editing is opt-in per an explicit yes, and a
+        # kernel that never got one refuses the write here — the UI's gating is convenience, this is
+        # the wall. Refusing FIRST (before content checks) keeps the answer honest for any caller.
+        return None, ("cannot save %s: dashboard file editing is off on this machine — the viewer's "
+                      "Edit button asks to turn it on" % _tilde(p))
     if not isinstance(content, str):
         # a malformed frame must refuse, not truncate: str(None or "") wrote ZERO bytes with a
         # success ack before this check (review)
@@ -20521,6 +20548,51 @@ def _save_file(raw, sid, content, base_mtime_ns):
         return os.stat(wp).st_mtime_ns, None
     except OSError as ex:
         return None, "cannot save %s: %s" % (_tilde(p), getattr(ex, "strerror", None) or str(ex))
+
+
+def _edit_trace_sid(path, sid):
+    """Which LIVE session owns the tree a dashboard edit just landed in? Longest recorded-cwd prefix
+    match over live sessions, preferring the viewer's own sid on a tie (an edit made while viewing
+    session A's file most likely concerns A). None when no live session's tree contains the file —
+    an edit outside every worktree concerns nobody's thread."""
+    try:
+        wp = os.path.realpath(_resolve_open_path(str(path or ""), sid))
+    except Exception:
+        return None
+    best, best_len = None, 0
+    for cand in _tmux_sessions():
+        d = os.path.realpath(_cwd_of(cand) or "") or ""
+        if d and (wp == d or wp.startswith(d.rstrip(os.sep) + os.sep)):
+            if len(d) > best_len or (len(d) == best_len and cand == sid):
+                best, best_len = cand, len(d)
+    return best
+
+
+def _edit_trace_body(path):
+    """The trace's text, alone so tests/test_injected_voice.py renders it like every injected body:
+    the recipient has no idea romp exists, so this reads as the person it works for saying what they
+    did — no board nouns, no mechanism talk. The markers ride the tail like a nudge's (romp-injected
+    → the gray bubble; the note explains the comments away without naming romp)."""
+    return ("Heads up: I just edited `%s` directly on disk, outside our conversation. If you have it "
+            "open or are mid-change there, re-read it before writing.\n"
+            "<!-- romp-injected -->"
+            "<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
+            "relevant to your work — ignore them -->" % _tilde(str(path or "")))
+
+
+def _edit_trace(path, sid):
+    """After a dashboard raw-mode save lands, TELL the session whose worktree it hit (the user
+    2026-08-22): an agent's world must never change silently under it — the never-lose-the-thread
+    rule, pointed the other way from _save_file's mtime guard (which protects the human from the
+    agent; this protects the agent from the human). Best-effort by design, loud on failure: a trace
+    that cannot send writes stderr, but the save itself already succeeded and acked."""
+    target = _edit_trace_sid(path, sid)
+    if not target:
+        return
+    try:
+        Sessions.backend_for(target).send(target, _edit_trace_body(path))
+    except Exception as ex:
+        sys.stderr.write("edit-trace to %s failed: %s\n" % (target, ex))
 
 
 # Inline-code spans that name an EXISTING file despite containing spaces (the user 2026-08-04: a note
@@ -26519,6 +26591,10 @@ class Handler(BaseHTTPRequestHandler):
             _auto_nudge_tick(int(time.time()), _tmux_sessions())   # act immediately on turn-on (don't wait 4s)
         elif msg and msg.get("type") == "setUpdateMode" and msg.get("mode") in _UPDATE_MODES:
             _set_update_mode(str(msg["mode"]))      # feed gear → how romp handles new releases at boot
+        elif msg and msg.get("type") == "setFileEditing" and msg.get("enabled") is not None:
+            # The viewer's Edit consent popup (the user 2026-08-22) — a kernel-side setting like
+            # setAutoNudge, broadcast by federation.ts KERNEL_SETTING so one yes answers the mesh.
+            _set_file_editing(bool(msg["enabled"]))
         elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
             # a cleared card drops any composer citation chip pointing INTO it (the user 2026-07-01) — the
             # goal is gone, so following up on it makes no sense. Chips can cite a SUB-goal of the card
@@ -26912,6 +26988,7 @@ class Handler(BaseHTTPRequestHandler):
                 # number would round in the browser and every next save would falsely conflict
                 _reply(client, {"type": "fileSaved", "reqId": msg.get("reqId"),
                                 "path": str(msg.get("path") or ""), "mtimeNs": str(mt)})
+                _edit_trace(msg.get("path"), msg.get("sid") or None)   # the owning session is TOLD (never edited under silently)
         elif msg and msg.get("type") == "browseDir":
             tgt = str(msg.get("target") or "picker")          # which dir field to fill: the new-session picker or the gear
             if not _native_dialogs():

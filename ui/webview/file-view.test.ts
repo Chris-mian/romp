@@ -305,6 +305,21 @@ test("a refusal renders the kernel's words PLUS the way out — gated on offersD
   assert.match(CHAT_CSS, /\.fileview-err-dl \{ display: block; margin-top: 10px; \}/);
 });
 
+test("Edit is consent-gated, and the gate is the KERNEL's flag, not the button (the user 2026-08-22)", () => {
+  // the click asks the kernel's live flag first — never a cached copy, another machine may have flipped it
+  assert.match(VIEW, /fetch\(kernelUrl\("\/version"\), \{ cache: "no-store" \}\)/);
+  assert.match(VIEW, /\.fileEditing;/);
+  // no flag → a plain-words popup; only a YES posts the opt-in, and it broadcasts (KERNEL_SETTING)
+  assert.match(VIEW, /window\.confirm\(\s*\n?\s*"Allow editing files from the dashboard\?/);
+  assert.match(VIEW, /post\(\{ type: "setFileEditing", enabled: true \}\);/);
+  // the popup's promise of a gear off-switch is real, and the save route refuses server-side
+  const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
+  assert.ok(GEAR.includes("'setFileEditing'"), "the gear can turn it back off");
+  const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.match(KERNEL, /if not _file_editing_on\(\):/);
+  assert.match(KERNEL, /dashboard file editing is off on this machine/);
+});
+
 // executed: the gutter is a SIBLING of the code, so selecting the code copies it without line numbers
 test("the line gutter numbers every line and drops a trailing newline's phantom line", () => {
   const lines = (text: string): string[] => {

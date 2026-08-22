@@ -37,6 +37,12 @@ class _File(unittest.TestCase):
             f.write("print('v1')\n")
         os.chmod(self.fp, 0o640)
         self.ns = os.stat(self.fp).st_mtime_ns
+        # These tests exercise the SAVE MECHANICS; the consent gate in front of them is opt-in
+        # (off by default, the user 2026-08-22) and owns its own file: tests/test_file_editing_gate.py.
+        km._set_file_editing(True)
+
+    def tearDown(self):
+        km._set_file_editing(False)
 
 
 class SaveFile(_File):

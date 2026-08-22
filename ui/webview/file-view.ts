@@ -19,6 +19,7 @@ import hljs from "highlight.js/lib/core";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { fileUrl } from "./preview";
+import { kernelUrl } from "./media";
 import { findAnchorRange, sliceRanges } from "./comments";
 import { anchorFor, buildReviewMessage, docKey, type DocComment } from "./docreview";
 
@@ -267,7 +268,32 @@ export function openFileView(path: string, sid?: string | null): void {
   const editBtn = el("button", "fileview-btn") as HTMLButtonElement;
   editBtn.type = "button"; editBtn.textContent = "Edit"; editBtn.title = "Edit this file in place";
   editBtn.hidden = true;
-  editBtn.addEventListener("click", () => { if (isMd && fmt.md === "rendered") { fmt.md = "raw"; saveFmt(fmt); } enterEdit(); });
+  // The consent gate (the user 2026-08-22): editing is a kernel-side opt-in the SAVE ROUTE enforces —
+  // this popup is where the one yes happens, and it broadcasts through the settings mesh so every
+  // attached kernel's save route opens together (setFileEditing rides KERNEL_SETTING). The flag is
+  // read fresh per click, never cached: another machine's gear may have flipped it meanwhile. A
+  // decline changes nothing and is asked again next time — consent latches only on yes. If /version
+  // is unreachable the popup still asks: the kernel-side gate refuses regardless, so the worst a
+  // wrongly-granted yes here can do is draw one refused save with its plain-words error.
+  async function editingAllowed(): Promise<boolean> {
+    let on = false;
+    try { on = !!(await (await fetch(kernelUrl("/version"), { cache: "no-store" })).json()).fileEditing; } catch { /* ask below */ }
+    if (on) return true;
+    if (!window.confirm(
+      "Allow editing files from the dashboard?\n\n" +
+      "Saves write straight to disk on the file's machine — and this applies on every machine " +
+      "connected here. A session working in that folder is told when you edit under it.\n\n" +
+      "You can turn this off later in the settings gear.")) return false;
+    post({ type: "setFileEditing", enabled: true });
+    return true;
+  }
+  editBtn.addEventListener("click", () => {
+    void editingAllowed().then((ok) => {
+      if (!ok) return;
+      if (isMd && fmt.md === "rendered") { fmt.md = "raw"; saveFmt(fmt); }
+      enterEdit();
+    });
+  });
   const saveBtn = el("button", "fileview-btn") as HTMLButtonElement;
   saveBtn.type = "button"; saveBtn.textContent = "Save"; saveBtn.title = "Write the file (Ctrl/Cmd+S)";
   saveBtn.hidden = true;
