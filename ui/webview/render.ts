@@ -11576,8 +11576,8 @@ setCommentSink((sid, text) => {
   return true;
 });
 // The chat document hosts the viewer itself (openPath), so it boots the viewer's listener with the
-// same WS poster the feed hands it: Edit/Save round-trips ride post(), and the kernel's replies come
-// back as window MessageEvents via the pane shim — either document, one mechanism (file-view.ts
-// initFileView).
+// same WS poster the feed hands it: Edit/Save round-trips and the GitHub-link ask ride post(), and
+// the kernel's replies come back as window MessageEvents via the pane shim — either document, one
+// mechanism (file-view.ts initFileView).
 initFileView((m) => vscodeApi?.postMessage(m));
 if (vscodeApi) vscodeApi.postMessage({ type: "ready" });
