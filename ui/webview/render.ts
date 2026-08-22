@@ -1910,8 +1910,10 @@ function paintRailSticky(): void {
     // pane's left edge: "2 days ago" at 0.68em is wider than the 47px gutter, and a box pinned to
     // the gutter clipped its leading digit at the pane edge (the user 2026-08-18, with a
     // screenshot). When it doesn't fit, the label slides right just enough to stay whole.
-    day.style.left = Math.max(2, gRect!.right - dayW) + "px";
-    day.style.top = Math.max(cTop + 1, slotTop - dayH - 1) + "px";
+    // +1 right / -3 up from the geometric position (the user 2026-08-22): a hair of breathing room
+    // between the label, the pane edge, and the stamp below it
+    day.style.left = Math.max(3, gRect!.right - dayW + 1) + "px";
+    day.style.top = Math.max(cTop + 1, slotTop - dayH - 4) + "px";
     day.style.display = "";
   };
   // The tracked turn's OWN stamp leads the top slot while it is at or below the slot line — it scrolls up
