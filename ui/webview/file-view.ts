@@ -242,7 +242,9 @@ export function openFileView(path: string, sid?: string | null): void {
   let dirty = false;
   let eolCRLF = false;                        // the file's dominant line ending — textareas normalize
   //   CRLF→LF on assignment, so an untouched CRLF file would otherwise save with every ending rewritten
-  let ta: HTMLTextAreaElement | null = null;
+  let ta: HTMLTextAreaElement | null = null;   // the FALLBACK surface (and the buffer pre-CodeMirror)
+  let cm: { value(): string; focus(): void; destroy(): void } | null = null;   // the CodeMirror handle when mounted
+  const bufValue = (): string | null => (cm ? cm.value() : ta ? ta.value : null);   // whichever surface owns the buffer
   const isMd = langFor(path) === "markdown";  // .md/.markdown — the only kind with a Rendered form
   const segBtns: Array<["rendered" | "raw", HTMLButtonElement]> = [];
   if (isMd) {
@@ -542,33 +544,82 @@ export function openFileView(path: string, sid?: string | null): void {
     !editing || !dirty || window.confirm("Discard unsaved changes to " + path.slice(cut + 1) + "?");
   closeGuard = confirmDiscard;
   const norm = (s: string): string => s.replace(/\r\n/g, "\n");   // the textarea's own view of any text
-  const enterEdit = () => {
-    if (text === null || editing) return;
-    editing = true; dirty = false;
-    eolCRLF = /\r\n/.test(text);
+  // The editing substrate is CodeMirror 6 (the user 2026-08-22), living in its OWN lazily-loaded
+  // bundle so people who never edit download nothing (the main bundles import none of it — the
+  // contract is the window global the chunk registers). The URL derives from the page's own running
+  // bundle script — same directory, same ?v= cache token — so it resolves on the kernel pages and
+  // the VS Code webview alike, and a rebuilt kernel always serves a matching chunk. A failed load
+  // rejects ONCE and clears the latch so a later attempt retries fresh.
+  let edChunk: Promise<{ mount: (host: HTMLElement, opts: object) => { value(): string; focus(): void; destroy(): void } }> | null = null;
+  const editorChunk = () => edChunk || (edChunk = new Promise((res, rej) => {
+    const w = window as any;
+    if (w.__rompEditor) return res(w.__rompEditor);
+    const self = Array.from(document.querySelectorAll("script[src]"))
+      .map((n) => (n as HTMLScriptElement).src).find((u) => /\/(render|feed)\.js/.test(u));
+    if (!self) return rej(new Error("no bundle script tag to derive the editor chunk URL from"));
+    const sc = document.createElement("script");
+    sc.src = self.replace(/\/(render|feed)\.js/, "/editor-chunk.js");
+    sc.onload = () => { const e = (window as any).__rompEditor; e ? res(e) : rej(new Error("editor chunk loaded but did not register")); };
+    sc.onerror = () => { edChunk = null; rej(new Error("the editor bundle failed to load")); };
+    document.head.appendChild(sc);
+  }));
+  const enterFallback = () => {                 // the plain textarea: LOUD fallback, never a silent one
     ta = el("textarea", "fileview-editor") as HTMLTextAreaElement;
-    ta.value = text;                            // the browser normalizes CRLF→LF on assignment…
+    ta.value = text!;                           // the browser normalizes CRLF→LF on assignment…
     ta.spellcheck = false;
     ta.addEventListener("input", () => { dirty = ta!.value !== norm(text!); });   // …so compare normalized
     ta.addEventListener("keydown", (e) => {     // the editor's own save chord; Esc falls through to onKey
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); doSave(); }
     });
-    renderBody();
     body.replaceChildren(ta);
     ta.focus();
   };
+  let editSeq = 0;                              // stale chunk resolutions (edit left before load) no-op
+  const enterEdit = () => {
+    if (text === null || editing) return;
+    editing = true; dirty = false;
+    eolCRLF = /\r\n/.test(text);
+    renderBody();
+    // per the loading-state rule the chunk wait shows the romp loader, not a blank body
+    const wait = el("div", "fileview-load");
+    wait.innerHTML = '<img src="/media/romp-swirl-glyph.svg" alt=""><span>romp</span>'
+      + '<i class="fileview-dot"></i><i class="fileview-dot"></i><i class="fileview-dot"></i>';
+    body.replaceChildren(wait);
+    const my = ++editSeq;
+    editorChunk().then((ed) => {
+      if (!editing || my !== editSeq) return;   // edit mode left (or re-entered) while the chunk loaded
+      const host = el("div", "fileview-cm");
+      body.replaceChildren(host);
+      cm = ed.mount(host, {
+        text: norm(text!), ext: path.slice(path.lastIndexOf(".") + 1),
+        onChange: () => { dirty = cm!.value() !== norm(text!); },
+        onSave: () => doSave(),
+      });
+      cm.focus();
+    }).catch((err) => {
+      if (!editing || my !== editSeq) return;
+      document.getElementById("fileview-save-err")?.remove();
+      const bar2 = el("div", "fileview-err");   // loud: say the editor is degraded, never pretend
+      bar2.id = "fileview-save-err";
+      bar2.textContent = String(err && (err as Error).message || err) + " — editing in the plain fallback editor.";
+      enterFallback();
+      body.prepend(bar2);
+    });
+  };
   const exitEdit = () => {
     editing = false; dirty = false; ta = null;
+    cm?.destroy(); cm = null;
     editHooks = null;                           // a cancelled save's late ack must not touch a NEW session
     saveBtn.disabled = false; saveBtn.textContent = "Save";
     renderBody();
   };
   const doSave = () => {
-    if (!editing || !ta || saveBtn.disabled) return;
+    const buf = bufValue();
+    if (!editing || buf === null || saveBtn.disabled) return;
     if (!dirty) { exitEdit(); return; }         // nothing changed — leaving is the honest ack
     saveBtn.disabled = true; saveBtn.textContent = "Saving…";   // acknowledge before the round-trip
     // restore the file's own line endings — an untouched CRLF file must round-trip byte-identical
-    const content = eolCRLF ? ta.value.replace(/\n/g, "\r\n") : ta.value;
+    const content = eolCRLF ? buf.replace(/\n/g, "\r\n") : buf;
     editHooks = {
       reqId: ++saveSeq,
       saved: (mtNs) => {
@@ -577,7 +628,7 @@ export function openFileView(path: string, sid?: string | null): void {
         // Keystrokes typed DURING the round-trip survive the ack (the review's in-flight-typing
         // finding): if the live buffer moved past the snapshot we saved, stay in edit mode with the
         // new baseline — never re-render over what the user is still typing.
-        if (ta && ta.value !== norm(content)) {
+        if (bufValue() !== null && bufValue() !== norm(content)) {
           dirty = true;
           saveBtn.disabled = false; saveBtn.textContent = "Save";
           return;
