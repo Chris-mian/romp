@@ -52,3 +52,13 @@ test("the kernel's answer is a verdict from git itself, threaded off the recv lo
 test("the hidden anchor stays hidden — an author display must not beat [hidden]", () => {
   assert.match(CHAT_CSS, /a\.fileview-btn\[hidden\] \{ display: none; \}/);
 });
+
+test("the GitHub link is the action REGISTRY's first entry, not another hand-wired button", () => {
+  // the registry (the user 2026-08-22): internal seam, no compatibility promise — actions on the
+  // open file declare a mount() instead of editing openFileView, so viewer PRs stop colliding there
+  assert.match(VIEW, /export function registerFileViewAction\(a: FileViewAction\): void \{/);
+  assert.match(VIEW, /if \(!fileViewActions\.some\(\(x\) => x\.id === a\.id\)\) fileViewActions\.push\(a\);/, "same id registered twice mounts once");
+  assert.match(VIEW, /registerFileViewAction\(\{\n  id: "github-link",/);
+  // openFileView renders registered actions by WALKING THE TABLE, after the built-ins
+  assert.match(VIEW, /for \(const a of fileViewActions\) \{\n    const n = a\.mount\(\{ path, sid: sid \|\| null \}\);\n    if \(n\) acts\.appendChild\(n\);\n  \}/);
+});
