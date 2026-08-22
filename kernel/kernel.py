@@ -3146,6 +3146,7 @@ def _auto_nudge_tick(now, tmux):
                              % (s.get("sid") or "?", traceback.format_exc()))
     try:
         _debt_backstop_tick(now)                       # reminder outcomes for debtors the walk can't reach
+        _dead_wait_sweep(alive_ids, nudged, now)       # dormant owners' stamped cards → procedural block
     except Exception:
         sys.stderr.write("debt-backstop: %s\n" % traceback.format_exc())
     try:
@@ -3397,6 +3398,89 @@ def _lift_spent_awaiting(now, tmux):
             sys.stderr.write("awaiting-lift (session %s): %s\n" % (sid or "?", traceback.format_exc()))
 
 
+_PREV_ALIVE = None                       # last tick's alive sids — a sid LEAVING is the death event
+
+
+def _dead_wait_sweep(alive_ids, nudged, now):
+    """Find DORMANT sessions whose Working cards still hold a judged awaiting stamp and convert each to
+    a procedural block (_dead_wait_block). Event-triggered, never a per-tick poll of every store: the
+    trigger is the DEATH TRANSITION (a sid leaving the alive set between ticks), plus one catch-up
+    sweep of all dormant stores on the first tick after boot — the same boot-re-audit pattern the
+    awaiting stamps already use — for sessions that died under a previous kernel (the two measured
+    cards had been dead 79 hours across many restarts)."""
+    global _PREV_ALIVE
+    prev, _PREV_ALIVE = _PREV_ALIVE, set(alive_ids)
+    if prev is None:
+        try:
+            cands = {f.stem for f in (jd.STATE / "goals").glob("*.json")} - set(alive_ids)
+        except OSError:
+            return
+    else:
+        cands = prev - set(alive_ids)
+    for sid in cands:
+        try:
+            store = jd.load_goals(sid)
+            nodes = store.get("nodes", {})
+            kids = {}
+            for nid, nd in nodes.items():
+                if nd.get("parentId"):
+                    kids.setdefault(nd["parentId"], []).append(nid)
+            answered = _peer_answered_at(sid)
+            for gid, st in (store.get("status") or {}).items():
+                if st != "working":
+                    continue
+                stamp = _goal_awaiting_stamp_full(nodes, gid, kids, answered_at=answered)
+                if stamp:
+                    _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)
+        except Exception:
+            sys.stderr.write("dead-wait sweep (%s): %s\n" % (sid, traceback.format_exc()))
+
+
+def _dead_wait_block(sid, gid, at, why, nudged, now):
+    """Convert a DORMANT session's stamped-awaiting Working card to a procedural block, once per stamp
+    episode (the user 2026-08-22, who expected every Working card nudged until it lands in Completed or
+    Blocked). Once-only rides the shared nudge ledger ({deadWait, anchor}; a genuinely NEW stamp episode
+    — newer anchor — re-arms, exactly the wake's own rule). Two stand-downs before writing, both keyed
+    on recorded events, never the clock:
+      - the session's last recorded STATE must be a genuine stop: an open-turn state (working/retrying/
+        compacting) means a restart CUT, and the resume machinery owns that card — blocking it would
+        race the resume nudge it is about to get;
+      - the stamp must still stand on a FRESH store read with the card still Working (the judges run
+        concurrently; record_verdict's own gate then refuses anything a newer user floor outranks).
+    The block's evidence time is the newest of the stamp anchor and the last state transition — the
+    settle the session actually recorded — never wall-clock (the diary is an evidence-time ledger).
+    Returns True when the block landed (the tick pushes once at the end)."""
+    rec = nudged.get(gid) or {}
+    if rec.get("deadWait") and (rec.get("anchor") or 0) >= at:
+        return False                                  # this stamp episode already converted
+    last, last_t = _last_state(sid)
+    if last in _PROGRESSING_STATES:
+        return False                                  # a cut mid-turn, not a settled death — resume owns it
+    try:
+        store = jd.load_goals(sid)
+        nd = store.get("nodes", {}).get(gid)
+        if (not nd or store.get("status", {}).get(gid, "working") != "working"
+                or not _goal_awaiting_stamp(store.get("nodes", {}), gid,
+                                            answered_at=_peer_answered_at(sid))):
+            return False                              # lifted or resolved since the walk read its snapshot
+        blkwhy = jd.dead_wait_block_why(nd.get("awaitingWhy") or why or "")
+        _ev = int(max(at or 0, last_t or 0) or now)
+        if jd.record_verdict(store, nd, "nudge", "block", _ev, why=blkwhy):
+            nd["mt"] = _ev                            # the event materialized blocked + blockWhy
+            jd.append_block(sid, gid, "nudge", blkwhy, _ev)   # journal before the save it protects (a judge
+            #                                           pass holding this store across its model call erases
+            #                                           the row on save; replay re-records it)
+            jd.rollup_status(store, False)
+            jd.save_goals(sid, store)
+            _mark_views_dirty()
+            nudged[gid] = {"deadWait": True, "anchor": at, "at": int(now)}
+            _put_nudged(gid, nudged[gid])
+            return True
+    except Exception:
+        sys.stderr.write("dead-wait block: %s\n" % traceback.format_exc())
+    return False
+
+
 def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
     """The AWAITING branch of _auto_nudge_session's goal walk — one stamped top goal. The stamp is a
     judged wait, so the plain status nudge stays off; but a wait is not an exemption from the ladder
@@ -3417,8 +3501,14 @@ def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
                 genuinely NEW stamp episode (anchor newer than the one that failed)."""
     at, why = stamp[0], stamp[1]
     if tmux.get(sid) is None:
-        return False                                 # dormant CLI → its work died with it; the death notice
-        #                                              owns that story, not a wake (same rule as the lifts)
+        # DORMANT owner (the user 2026-08-22): the CLI died while this judged wait still stood — and a
+        # stamped Working card on a dead session was exempt from the WHOLE ladder (this wake, the plain
+        # nudge, the staller), so it sat "paused" forever (two live cards measured at 79 hours). The
+        # death notice tells the CHAT what happened; nothing ever moved the CARD. Nothing that could
+        # answer the wait is running, so convert ONCE per stamp episode to a procedural block naming
+        # the dead wait — the same terminal an unanswered wake reaches — and let a revival's reply
+        # lift it like any block.
+        return _dead_wait_block(sid, gid, at, why, nudged, now)
     rec = nudged.get(gid) or {}
     if not rec.get("wake"):
         rec = {}                                     # a REGULAR nudge record (predates the stamp): the wake
