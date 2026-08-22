@@ -79,12 +79,21 @@ function placeDay(o: { label: string; dayW: number; dayH: number; slotTop: numbe
     left: Math.max(3, o.gutterRight - o.dayW + 1),
     top: Math.max(o.cTop + 1, o.slotTop - o.dayH - 4) };
 }
-const G = { cTop: 100, cBottom: 700, gutterRight: 47, dayH: 9 };   // gutter per .thread's 44px pad + marker right at +3
+const G = { cTop: 100, cBottom: 700, gutterRight: 59, dayH: 9 };   // gutter per .thread's 56px pad + marker right at +3
 const LINE = G.cTop + BUFFER;
 
-test("executed: a label wider than the gutter slides right to stay whole — never past the pane's left edge", () => {
-  const r = placeDay({ ...G, label: "2 days ago", dayW: 52, slotTop: 300 });
-  assert.equal(r.left, 3, "left edge clamps at 3px, so no character is ever cut off");
+test("executed: the 56px gutter fits every real label clear of the rail dots; the clamp survives as a backstop", () => {
+  // the whole point of the 2026-08-22 widening: at the old 44px gutter the widest forms clamped left
+  // and their tails ran into the rail dots as turns scrolled past. Dot column starts at
+  // gutterRight + 3 (dot left = turn + 6, marker right = turn + 3).
+  const dotLeft = G.gutterRight + 3;
+  for (const [label, w] of [["2 days ago", 52], ["2 weeks ago", 57], ["Yesterday", 47]] as const) {
+    const r = placeDay({ ...G, label, dayW: w, slotTop: 300 });
+    assert.ok(r.left! >= 3, label + " never leaves the pane");
+    assert.ok(r.left! + w <= dotLeft - 1, label + " stays clear of the dot column");
+  }
+  const extreme = placeDay({ ...G, label: "impossibly wide", dayW: 70, slotTop: 300 });
+  assert.equal(extreme.left, 3, "the left clamp survives as the backstop for absurd widths");
 });
 
 test("executed: a label that fits keeps its right edge on the gutter's right edge, like the stamp's", () => {
