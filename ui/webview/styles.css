@@ -599,6 +599,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 #composer-files, #composer-staged, #composer-chips { flex: 1 1 100%; min-width: 0; max-width: 100%; }
 #composer-staged { flex-direction: column; gap: 3px; padding: 5px 8px 0; }
 .staged-head { display: flex; align-items: center; gap: 8px; font-size: 0.78em; color: var(--dim); letter-spacing: 0.02em; }
+/* the held-send head rides the FILES strip (a wrapping row): full-width so it owns the top line,
+   wearing the staged strip's exact dress — a held send IS a staged message (the user 2026-08-22) */
+.held-head { flex: 1 1 100%; }
 .staged-head .staged-go { margin-left: auto; background: none; border: 1px solid var(--accent); color: var(--accent);
   border-radius: 5px; font: inherit; padding: 1px 8px; cursor: pointer; }
 .staged-head .staged-go:hover { background: var(--accent); color: var(--accent-fg); }

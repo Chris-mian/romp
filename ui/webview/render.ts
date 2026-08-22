@@ -9334,6 +9334,24 @@ function renderComposerFiles(id: string | null): void {
   const pending = (id ? pendingShips.get(id) : undefined) || [];
   if (!paths.length && !pending.length) { strip.style.display = "none"; return; }
   strip.style.display = "flex";
+  // A held send IS a staged message and must LOOK like one (the user 2026-08-22): the same head line
+  // the staged strip wears — what will happen, live count, and the way out. Before this, the only
+  // cue after "Wait for the upload" was the dimmed send button, which read as nothing happening.
+  // Re-rendered here because this renderer already runs on the wait click, every ack, and every tab
+  // switch — the exact events the line must track.
+  if (id && sendOnShip.has(id)) {
+    const head = el("div", "staged-head held-head");
+    const lbl = el("span");
+    lbl.textContent = "staged — sends when the upload finishes"
+      + (pending.length > 1 ? " (" + pending.length + " still uploading)" : "");
+    lbl.title = "You chose to wait. The message sends itself the moment the last attachment lands.";
+    const cancel = el("button", "staged-go");
+    cancel.textContent = "Cancel";
+    cancel.title = "keep the message and attachments — just stop the automatic send";
+    cancel.addEventListener("click", () => { sendOnShip.delete(id); renderComposerFiles(id); });
+    head.append(lbl, cancel);
+    strip.appendChild(head);
+  }
   paths.forEach((p, i) => {
     const box = el("span", "composer-file");
     box.title = p + " — click opens it · ✕ removes";
