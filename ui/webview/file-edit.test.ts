@@ -81,7 +81,7 @@ test("keystrokes typed DURING a save survive the ack", () => {
   // the ack used to re-render from the doSave snapshot, silently deleting everything typed while
   // the save round-tripped (seconds, over a remote tunnel) — now the ack re-baselines and stays
   // in edit mode when the live buffer moved past the snapshot
-  assert.match(VIEW, /if \(ta && ta\.value !== norm\(content\)\) \{\n          dirty = true;\n          saveBtn\.disabled = false; saveBtn\.textContent = "Save";\n          return;\n        \}/);
+  assert.match(VIEW, /if \(bufValue\(\) !== null && bufValue\(\) !== norm\(content\)\) \{\n          dirty = true;\n          saveBtn\.disabled = false; saveBtn\.textContent = "Save";\n          return;\n        \}/);
 });
 
 test("a lost save reply cannot wedge 'Saving…' forever", () => {
@@ -101,8 +101,9 @@ test("CRLF files round-trip byte-identical", () => {
   // the file's own endings — an untouched CRLF file must not save with every line rewritten
   assert.match(VIEW, /const norm = \(s: string\): string => s\.replace\(\/\\r\\n\/g, "\\n"\);/);
   assert.match(VIEW, /eolCRLF = \/\\r\\n\/\.test\(text\);/);
-  assert.match(VIEW, /dirty = ta!\.value !== norm\(text!\);/);
-  assert.match(VIEW, /const content = eolCRLF \? ta\.value\.replace\(\/\\n\/g, "\\r\\n"\) : ta\.value;/);
+  assert.match(VIEW, /dirty = ta!\.value !== norm\(text!\);/);   // the fallback surface
+  assert.match(VIEW, /dirty = cm!\.value\(\) !== norm\(text!\);/);   // …and CodeMirror compares the same way
+  assert.match(VIEW, /const content = eolCRLF \? buf\.replace\(\/\\n\/g, "\\r\\n"\) : buf;/);
 });
 
 test("the anchor headers ride the /remote relay too — mirrored, unlike Content-Type", () => {

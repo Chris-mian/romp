@@ -1333,6 +1333,10 @@ body.filebrowse-open { overflow: hidden; }
    flex basis on its child is inert — the textarea sat at the UA's default rows (the user 2026-08-17,
    whose edit window was a few lines tall). The percentage resolves because the body's own height is
    fixed by the pane's flex layout. */
+/* the CodeMirror host (the user 2026-08-22): the chunk styles the editor itself; the host just
+   fills the body the way the fallback textarea does */
+.fileview-cm { height: 100%; width: 100%; box-sizing: border-box; overflow: hidden; }
+.fileview-cm .cm-editor { height: 100%; }
 .fileview-editor { display: block; height: 100%; width: 100%; box-sizing: border-box;
   margin: 0; padding: 10px 12px; border: none; outline: none; resize: none;
   background: var(--bg, #1e1e1e); color: var(--fg);
