@@ -5983,10 +5983,16 @@ def _fire_api_retry(sid, be, manual=False):
             return                                        # not api-blocked right now → nothing to retry
         # ON-YOU classes are never auto-retried (server-side twin of the client tick's skip, and the
         # kernel driver's own guard): a retry cannot compact a too-long prompt, raise a spend cap, refill
-        # a model allowance, or mend a credential — the card names the real fix. Manual keeps firing:
-        # the button is only rendered where a retry can work, and an explicit click is the user's call.
+        # a model allowance, or mend a credential — the card names the real fix. A safeguards REFUSAL is
+        # the starkest of them (the user 2026-08-15): it's deterministic on the same input, so a retry
+        # re-sends the same prompt and manufactures the same refusal — measured 12/12 in one ~6-minute
+        # storm, where each refusal's NEW error record minted a new episode and the once-per-episode
+        # gate below never terminated — and in fallback configurations each retry manufactures another
+        # model downgrade. Manual keeps firing: the button is only rendered where a retry can work, and
+        # an explicit click is the user's call (they may have rewritten or dropped the thread since).
         if _rerr and (_rerr.get("tooLong") or _rerr.get("spendLimit")
-                      or _rerr.get("modelLimit") or _rerr.get("authErr")):
+                      or _rerr.get("modelLimit") or _rerr.get("authErr")
+                      or _rerr.get("refusal")):
             return
         if _auto_retried.get(sid) == _rk:
             return                                        # this episode already got its retry
@@ -12042,6 +12048,21 @@ def _is_auth_error(text):
             or "authentication_error" in low)
 
 
+# A safeguards REFUSAL — the model's classifier refused the prompt itself ("<Model>'s safeguards
+# flagged this message (https://www.anthropic.com/legal/aup)…"). DETERMINISTIC on the same input, so
+# it's on YOU like the limit classes, only more so: a retry re-sends the same prompt and manufactures
+# the same refusal (measured 12/12 in one storm — each refusal wrote a NEW error record, new uuid →
+# new episode, so the once-per-episode gate never terminated), and in a fallback configuration each
+# retry manufactures another model downgrade. The real fix is rewriting the ask or dropping the
+# thread. This wording check is CO-EQUAL with the event path in _api_error (the system
+# model_refusal_* record), not a legacy fallback: the CLI omits the system record for some refusal
+# errors (observed in the same storm that produced linked ones), and at a transcript's tail the error
+# record can land a beat before its system record — the signature rides the error record itself.
+def _is_refusal_text(text):
+    low = (text or "").lower()
+    return "safeguards flagged" in low or "anthropic.com/legal/aup" in low
+
+
 def _spend_dialog_showing(pane):
     """Is the CLI's spend-cap MODAL currently up in this pane capture? When a tmux session hits the
     monthly cap MID-TURN the CLI drops into an interactive menu ("What do you want to do? / Adjust
@@ -12106,7 +12127,15 @@ def _api_error(path):
                                "modelLimit": _is_model_limit(text),
                                # a dead credential (no login / refused key) — on YOU, never auto-retried;
                                # see _is_auth_error (per-session auth, the user 2026-08-08)
-                               "authErr": _is_auth_error(text)}
+                               "authErr": _is_auth_error(text),
+                               # the error's parent = the refused/failed USER message — kept so the
+                               # system model_refusal_* record below can link itself to THIS episode
+                               "parentUuid": o.get("parentUuid"),
+                               # a safeguards refusal is deterministic on the same input — on YOU
+                               # (rewrite the ask or drop the thread), never auto-retried; see
+                               # _is_refusal_text, and the system-record event path below (the user
+                               # 2026-08-15, after one refused prompt drew 12 auto-retries in ~6min)
+                               "refusal": _is_refusal_text(text)}
                     elif (isinstance(c, list) and any(isinstance(b, dict)
                             and b.get("type") in ("text", "tool_use", "thinking") for b in c)) \
                             or (isinstance(c, str) and c.strip()):
@@ -12117,6 +12146,19 @@ def _api_error(path):
                         isinstance(b, dict) and b.get("type") == "tool_result" for b in c)
                     if not is_tool_result:                    # a genuine prompt (e.g. a retry) clears it
                         err = None
+                elif t == "system" and o.get("subtype") in ("model_refusal_no_fallback",
+                                                            "model_refusal_fallback"):
+                    # The CLI's structured refusal record — the EXACT event behind _is_refusal_text's
+                    # wording check (so a future CLI rephrase still classifies). It lands a few records
+                    # AFTER the assistant error it explains (queue-operation / file-history-snapshot
+                    # lines sit between; none of those clears err), linked by parentUuid: the refusal
+                    # record and the error BOTH carry the refused user message's uuid as parentUuid.
+                    # Deliberately NOT refusedUserMessageUuid — observed diverging from the episode's
+                    # parent in 2 of 13 refusal records of one storm — and deliberately not
+                    # record-alone: the CLI also omits this record for some refusal errors, which is
+                    # why the text signature above stays co-equal rather than a legacy fallback.
+                    if err is not None and o.get("parentUuid") == err.get("parentUuid"):
+                        err["refusal"] = True
     except OSError:
         return None
     if key is not None:
@@ -15263,6 +15305,11 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   # service.env) — and with per-session auth it's how a session that landed on a broken
                   # side gets seen at all instead of idling as an invisible transient (the user 2026-08-08)
                   "apiAuthErr": bool(aerr and aerr.get("authErr")),
+                  # the model's safeguards refused the prompt itself — on-you like the four above (red
+                  # tab), and never auto-retried: a refusal is deterministic on the same input, so a
+                  # retry re-sends the same prompt and manufactures the same refusal (12/12 in the
+                  # audited storm) — rewrite the ask or drop the thread (the user 2026-08-15)
+                  "apiRefusal": bool(aerr and aerr.get("refusal")),
                   # user interrupted this thread's retry/API-error storm → romp's auto-retry stays OFF for it
                   # until a successful turn re-arms (the user 2026-07-06); the card + retry loop read this
                   "retrySuppressed": _session_retry_suppressed(sid),
@@ -17024,8 +17071,12 @@ def build_feed(now, tmux=None):
             # turn until you switch model or top up, so leaving the card in Working left a working card on
             # a session nothing could move — not nudged (the api-error gate suppresses it), not blocked,
             # not awaiting, for 80 minutes.
+            # A safeguards REFUSAL joins them (the user 2026-08-15): deterministic on the same input,
+            # never auto-retried, so a Working card would sit on a session nothing can move — the
+            # human rewriting or dropping the ask IS the only unblock.
             api_block = (nid == api_top and bool(aerr and (aerr.get("tooLong") or aerr.get("spendLimit")
-                                                          or aerr.get("modelLimit") or aerr.get("authErr"))))
+                                                          or aerr.get("modelLimit")
+                                                          or aerr.get("authErr") or aerr.get("refusal"))))
             # NUDGE FAILED (plans/stalled-open-todos-nudge.md, the user 2026-07-01): the tick stamped
             # `failed` on this goal's nudge record — the nudge-response turn completed (judged) and the goal
             # was still working-stalled; per the anti-loop rule it is never re-nudged, so the card carries
@@ -17216,6 +17267,7 @@ def build_feed(now, tmux=None):
                              "spendLimit": bool(aerr.get("spendLimit")),
                              "modelLimit": bool(aerr.get("modelLimit")),
                              "authErr": bool(aerr.get("authErr")),
+                             "refusal": bool(aerr.get("refusal")),
                              "what": ("this account hit its monthly spend limit — raise it at claude.ai/settings/usage to continue" if aerr.get("spendLimit")
                                       else "this session's prompt is too long — compact it to continue" if aerr.get("tooLong")
                                       # the CLI's own text names the model and the two remedies; the card
@@ -17224,6 +17276,9 @@ def build_feed(now, tmux=None):
                                       # a dead credential: retrying re-presents it forever — name the fix
                                       # (per-session auth, the user 2026-08-08)
                                       else "this session's sign-in or API key isn't working — fix the login (claude /login) or the key, or switch which one it bills" if aerr.get("authErr")
+                                      # a refusal is deterministic: retrying re-sends the same prompt and
+                                      # collects the same refusal — name the real fix (the user 2026-08-15)
+                                      else "the model's safeguards refused this prompt — rewrite it or drop this thread" if aerr.get("refusal")
                                       else "this session stopped on an API error — Retry to resume")} if nid == api_top
                             # the session itself is fine — it's romp's ANALYSIS of it whose credential is
                             # refused, so the copy blames the judges, not the session (the user 2026-08-12)
