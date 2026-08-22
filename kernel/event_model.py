@@ -936,15 +936,22 @@ class FileAdapter:
                 out.add(u)
         return out
 
-    def kept_uuids(self, active):
-        """The active leaf-ancestors PLUS any line on a BROKEN chain (its parentUuid points
-        at a uuid that exists in NO transcript — corruption / a partial write). The two
-        kinds of off-path line we DO drop are both intentional: a rewind fork (its chain
-        rejoins the active spine) and a clear branch (its chain reaches a clean null root
-        the leaf does not share — `/clear` breaks the parent link, spec-mandated drop). A
-        dangling chain is the one thing we cannot prove dead, and silently dropping a real
-        ask is this repo's one fatal error, so we keep it. (Verified 0 dangling cases
-        across the live corpus: this is a safety net, not a behavior change.)"""
+    def chain_verdicts(self, active=None):
+        """THE chain-membership identity, one verdict per uuid in the graph — the single
+        implementation every consumer must share (the goal-store rewind cleanup grew four
+        hand-rolled partial twins of this walk before it was exported, and they disagreed
+        on exactly the cases that matter — resume forks, pending cuts, broken chains):
+          "active" — on the leaf->root spine (what the chat shows).
+          "rewind" — the chain rejoins the active spine: this line was REWOUND AWAY. The
+                     only verdict that ever justifies dropping/sweeping content.
+          "clear"  — the chain reaches a clean null root the leaf does not share: `/clear`
+                     jurisdiction (the episode machinery settles those) — never swept as
+                     a rewind.
+          "broken" — parentUuid points at a uuid in NO transcript, or a cycle: unprovable,
+                     KEPT (silently dropping a real ask is this repo's one fatal error).
+        `active` defaults to active_path(); pass it when already computed."""
+        if active is None:
+            active = self.active_path()
         verdict = {}
         def classify(start):
             path, u = [], start
@@ -965,11 +972,25 @@ class FileAdapter:
             for x in path:
                 verdict[x] = res
             return res
-        kept = set(active)
+        out = {}
         for u in self.by_uuid:
-            if u not in active and classify(u) == "broken":
-                kept.add(u)
-        return kept
+            out[u] = "active" if u in active else classify(u)
+        return out
+
+    def kept_uuids(self, active):
+        """The active leaf-ancestors PLUS any line on a BROKEN chain (its parentUuid points
+        at a uuid that exists in NO transcript — corruption / a partial write). The two
+        kinds of off-path line we DO drop are both intentional: a rewind fork (its chain
+        rejoins the active spine) and a clear branch (its chain reaches a clean null root
+        the leaf does not share — `/clear` breaks the parent link, spec-mandated drop). A
+        dangling chain is the one thing we cannot prove dead, and silently dropping a real
+        ask is this repo's one fatal error, so we keep it. (Verified 0 dangling cases
+        across the live corpus: this is a safety net, not a behavior change.)
+        Derived from chain_verdicts — one implementation, so the exported membership
+        predicate (chain_membership) can never diverge from what the parse keeps.
+        set(active) is unioned as-is: the walk can record a dangling FINAL ancestor that is
+        in no file's index, and it has always been kept."""
+        return set(active) | {u for u, v in self.chain_verdicts(active).items() if v == "broken"}
 
     def _absorbed_atom(self, full, t, seq, auid, rompuuid, postal_index):
         """One synthesized user atom for a mid-turn splice. The atom carries the FULL text — any
@@ -1673,6 +1694,62 @@ def resume_fork_links(srows):
     return links
 
 
+def _lineage_closure(leaf_path, candidate_files, links):
+    """The candidate-file set CLOSED over the recorded resume lineage: a fork chain across several
+    restarts needs every resumed-from file present for the stitched walk to cross (a caller's anchor
+    covers only one hop). Shared by parse_session AND chain_membership so the exported membership
+    predicate reads the exact same file set the display parse does. From-files are frozen after
+    their fork (the CLI writes only the new file), so callers' cache keys stay honest."""
+    if not links:
+        return list(candidate_files)
+    have = {Path(f).stem for f in candidate_files}
+    stem, hops = Path(leaf_path).stem, 0
+    candidate_files = list(candidate_files)
+    while stem in links and hops < 16:
+        stem = links[stem]
+        hops += 1
+        fp = Path(leaf_path).with_name(stem + ".jsonl")
+        if stem not in have and fp.exists():
+            candidate_files.append(str(fp))
+            have.add(stem)
+    return candidate_files
+
+
+def chain_membership(leaf_path, candidate_files=None, states=None, leaf_override=None):
+    """THE exported chain-membership fact — {"kept", "rewind", "clear", "broken"} uuid sets, built
+    from the DISPLAY parse's exact inputs (resume links + lineage closure + leaf_override = the
+    kernel's pending bare-rollback cut) so it can never disagree with what the user sees. This is
+    the one predicate every rewind-cleanup consumer must use (goal sweeps, mint-time stand-downs,
+    the dead-branch reconciliation): before it was exported, four partial hand-rolled twins of this
+    walk disagreed on resume forks, pending cuts and broken chains (2026-08-17).
+
+    "rewind" is the ONLY set that ever justifies sweeping a goal: "clear" branches are /clear
+    jurisdiction (the episode machinery settles those cards), "broken" chains are kept by design,
+    and a uuid in NO set is unprovable (a synthetic orphan:<t> salvage id, a cross-file uuid whose
+    file is outside the lineage, a legacy None) — callers must treat unknown as NOT abandoned.
+    Caveat (resume-fork stitch shape): a recorded fork's fresh head is re-pointed at the from-file's
+    LAST record — if that tip was itself an abandoned tail, the stitch makes it active again; this
+    predicate follows the stitch exactly as the display parse does (kept semantics, by design)."""
+    leaf_path = Path(leaf_path)
+    if candidate_files is None:
+        candidate_files = [str(leaf_path)]
+    links = resume_fork_links(_load_states(states))
+    candidate_files = _lineage_closure(leaf_path, candidate_files, links)
+    adapter = FileAdapter(candidate_files, leaf_path, leaf_override=leaf_override, resume_links=links)
+    active = adapter.active_path()
+    verdicts = adapter.chain_verdicts(active)
+    # kept, derived from the verdicts already in hand — BY DEFINITION the same set kept_uuids
+    # computes (active ∪ broken; see its docstring: "derived from chain_verdicts — one
+    # implementation"), without paying the graph walk a second time inside it. The hold view
+    # re-asks this on every build of a held session, so the walk count matters there.
+    out = {"kept": set(active) | {u for u, v in verdicts.items() if v == "broken"},
+           "rewind": set(), "clear": set(), "broken": set()}
+    for u, v in verdicts.items():
+        if v != "active":
+            out[v].add(u)
+    return out
+
+
 def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None,
                   candidate_files=None, states=None, postal_log=None, now=None, sdk_human=False,
                   leaf_override=None):
@@ -1702,23 +1779,13 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
     postal_index = _load_postal_index(postal_log)
     _srows = _load_states(states)
     links = resume_fork_links(_srows)
-    if links:
-        # The lineage closure joins the candidate set: a fork chain across several restarts needs
-        # every resumed-from file present for the stitched walk to cross (the caller's anchor covers
-        # only one hop). Resolved HERE so both parses (the judge's and the kernel's) inherit it from
-        # the one states plumbing they already share. From-files are frozen after their fork (the CLI
-        # writes only the new file), so the callers' cache keys — candidate files + the states file,
-        # whose mtime moves when a lineage row lands — stay honest without knowing about these.
-        have = {Path(f).stem for f in candidate_files}
-        stem, hops = leaf_path.stem, 0
-        candidate_files = list(candidate_files)
-        while stem in links and hops < 16:
-            stem = links[stem]
-            hops += 1
-            fp = leaf_path.with_name(stem + ".jsonl")
-            if stem not in have and fp.exists():
-                candidate_files.append(str(fp))
-                have.add(stem)
+    # The lineage closure joins the candidate set: a fork chain across several restarts needs
+    # every resumed-from file present for the stitched walk to cross (the caller's anchor covers
+    # only one hop). Resolved HERE so both parses (the judge's and the kernel's) inherit it from
+    # the one states plumbing they already share; chain_membership shares the same helper. The
+    # callers' cache keys — candidate files + the states file, whose mtime moves when a lineage
+    # row lands — stay honest without knowing about these.
+    candidate_files = _lineage_closure(leaf_path, candidate_files, links)
     adapter = FileAdapter(candidate_files, leaf_path, leaf_override=leaf_override, resume_links=links)
     adapter.sdk_human = sdk_human            # SDK-backed session → unmarked promptSource "sdk" is the human
     atoms = adapter.atoms(rompuuid, postal_index)
