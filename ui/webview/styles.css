@@ -1230,7 +1230,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .msg-edit {
   align-self: flex-end; margin-top: 3px;
   font-family: var(--sans); font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 4px;
-  border: 1px solid var(--box-border); background: var(--code-bg); color: var(--dim);
+  /* neutral ground, neutral chrome (the user 2026-08-23): these sit on the page, not on a code
+     block, so the code tint .code-copy blends with read here as a faint red button */
+  border: 1px solid var(--box-border); background: rgba(255, 255, 255, 0.06); color: var(--dim);
   cursor: pointer; opacity: 0; user-select: none;
   transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
@@ -1243,7 +1245,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .msg-del, .msg-restorefiles, .msg-fork {
   align-self: flex-end; margin-top: 3px;
   font-family: var(--sans); font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 4px;
-  border: 1px solid var(--box-border); background: var(--code-bg); color: var(--dim);
+  border: 1px solid var(--box-border); background: rgba(255, 255, 255, 0.06); color: var(--dim);
   cursor: pointer; opacity: 0; user-select: none;
   transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
@@ -1387,7 +1389,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 }
 .undelivered-act {
   font-family: var(--sans); font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 4px;
-  border: 1px solid var(--box-border); background: var(--code-bg); color: var(--dim);
+  border: 1px solid var(--box-border); background: rgba(255, 255, 255, 0.06); color: var(--dim);
   cursor: pointer; user-select: none;
   transition: color 0.12s ease, border-color 0.12s ease;
 }
