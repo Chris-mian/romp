@@ -258,6 +258,27 @@ class SessionLevelDelegation(unittest.TestCase):
                          {"kind": "peer", "why": "delegated to probe; waiting on their result",
                           "since": None})   # the handoff graph has no single event time here → no duration
 
+    def test_handoff_peer_identities_carry_name_host_and_colour_for_the_card(self):
+        # the card's awaiting box names the peers the way the origin line does (the user 2026-08-23):
+        # identity colour + quiet host: prefix. The helper resolves the live registry name first; a
+        # sid it cannot resolve keeps federation's recorded host marker and falls to the sid stub.
+        saved = km._name_color
+        km._name_color = lambda s: {"bg": "#abc", "fg": "#000"}
+        try:
+            far = "farhost:88888888-9999-aaaa-bbbb-cccccccccccc"
+            nodes = self._delegated_store()
+            h2 = self._handoff("h2", "g1"); h2["handoff"]["peer"] = far
+            h3 = self._handoff("h3", "g1")                       # duplicate peer → one identity
+            nodes.update({"h2": h2, "h3": h3})
+            got = km._handoff_peer_identities(nodes, ["h1", "h2", "h3"])
+            self.assertEqual(got, [
+                {"name": "88888888", "host": "farhost", "sid": far, "color": {"bg": "#abc", "fg": "#000"}},
+                {"name": "probe", "host": "", "sid": self.PEER, "color": {"bg": "#abc", "fg": "#000"}},
+            ])
+            self.assertIsNone(km._handoff_peer_identities(nodes, []), "no handoffs, no list — never []")
+        finally:
+            km._name_color = saved
+
     def test_stamp_false_stays_none_so_the_feed_keeps_scoping_per_card(self):
         self._seed(self._delegated_store())
         self.assertIsNone(km._session_awaiting(SID, "/p", True, stamp=False))
