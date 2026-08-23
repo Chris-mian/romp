@@ -2313,8 +2313,11 @@ class TimelinePanel {
   // gray = off), its label + state word, and a plain-language line on what it does. Clicking a row
   // toggles that flag with the SAME optimistic + sticky treatment as the old direct icons, and the menu
   // stays open, repainting in place — it's a settings panel, not a command.
-  // ── the corner control panel (the user 2026-08-18): "Show: <view> ▾ · N more" in the bottom-left
-  // corner — the empty strip under the lane gutter, left of the first time label. Progressive
+  // ── the corner control panel (the user 2026-08-18; filter-chip form 2026-08-23): "Filter ▾" in
+  // the bottom-left corner — the empty strip under the lane gutter, left of the first time label.
+  // An active group renders as a REMOVABLE CHIP beside it ("· <name> ✕", the group's colour):
+  // clicking the chip clears the filter back to the default view, no menu trip — the control is
+  // named for what it does now (it FILTERS the lanes; "Show:" read as a passive label). Progressive
   // disclosure: the trigger is the one-line version; the dropdown holds the views and the two
   // timeline display toggles; the dialog holds the per-session checkboxes. All pointerdown-based
   // (the redraw-eats-click rule) and rebuilt per draw like the gear/lock.
@@ -2369,17 +2372,32 @@ class TimelinePanel {
     const v = this._curViews();
     const g = (v.groups || []).find((x) => x.id === v.active);
     const more = viewMoreCount(v, (this.data && this.data.sessions) || []);
+    const active = !!g && v.active && v.active !== 'all';
     // ellipsize so the WHOLE trigger stays inside the gutter — measured on the full string (the
     // 650-weight lane font over-measures the plain spans, which is the safe direction), because a
     // fixed reserve under-counted "· NN more" and let the tail cross into the first time label
-    let name = viewLabel(v);
-    const tail = ' ▾' + (more ? ' · ' + more + ' more' : '');
-    const fits = (n) => this.labelWidth('Show: ' + n + tail) <= this.M.left - PADL - 6;
-    while (name.length > 3 && !fits(name)) name = name.slice(0, -2) + '…';
+    let name = active ? viewLabel(v) : '';
+    const line = (n) => 'Filter ▾' + (active ? ' · ' + n + ' ✕' : '') + (more ? ' · ' + more + ' more' : '');
+    const fits = (n) => this.labelWidth(line(n)) <= this.M.left - PADL - 6;
+    while (active && name.length > 3 && !fits(name)) name = name.slice(0, -2) + '…';
     const t = el('text', { x: PADL, y: axisY + 14, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG });
-    const lead = el('tspan', {}); lead.textContent = 'Show: '; t.appendChild(lead);
-    const nm = el('tspan', { fill: (g && g.color) || '#cccccc', 'font-weight': 650 }); nm.textContent = name; t.appendChild(nm);
-    const caret = el('tspan', {}); caret.textContent = ' ▾'; t.appendChild(caret);
+    const lead = el('tspan', {}); lead.textContent = 'Filter ▾'; t.appendChild(lead);
+    if (active) {
+      const sepc = el('tspan', { opacity: 0.7 }); sepc.textContent = ' · '; t.appendChild(sepc);
+      // the active group as a removable filter chip: its own colour, an ✕, ITS OWN pointerdown —
+      // one click back to the default view, no menu trip (the user 2026-08-23)
+      const chip = el('tspan', { fill: g.color || '#cccccc', 'font-weight': 650 });
+      chip.textContent = name + ' ✕';
+      chip.setAttribute('style', 'cursor:pointer;');
+      const tt = el('title', {});
+      tt.textContent = 'showing only ' + (g.name || 'this group') + ' — click to remove the filter (back to the default view)';
+      chip.appendChild(tt);
+      chip.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const nv = JSON.parse(JSON.stringify(v)); nv.active = 'all'; this._setViews(nv);
+      });
+      t.appendChild(chip);
+    }
     if (more) { const m = el('tspan', { opacity: 0.7 }); m.textContent = ' · ' + more + ' more'; t.appendChild(m); }
     t.setAttribute('style', 'cursor:pointer;user-select:none;');
     t.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(t); });
