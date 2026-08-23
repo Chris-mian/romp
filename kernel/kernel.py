@@ -3445,11 +3445,16 @@ def _dead_wait_sweep(alive_ids, nudged, now):
             for nid, nd in nodes.items():
                 if nd.get("parentId"):
                     kids.setdefault(nd["parentId"], []).append(nid)
-            answered = _peer_answered_at(sid)
             for gid, st in (store.get("status") or {}).items():
                 if st != "working":
                     continue
-                stamp = _goal_awaiting_stamp_full(nodes, gid, kids, answered_at=answered)
+                # RAW stamp, answered_at=0 (the fix for the 100-hour survivors, 2026-08-23): the
+                # peer-answered supersede reads ANY inbound mail after the ask as the wait being met —
+                # a worker's "starting now" ack 110s after the stamp made the sweep see no wait at all,
+                # while the card's chip kept showing awaiting and nothing ever closed it. For a DORMANT
+                # owner the distinction is moot either way: an answer that landed in a dead session's
+                # mailbox moved nothing, so a recorded wait on a still-Working card converts regardless.
+                stamp = _goal_awaiting_stamp_full(nodes, gid, kids)
                 if stamp:
                     _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)
         except Exception:
@@ -3480,8 +3485,7 @@ def _dead_wait_block(sid, gid, at, why, nudged, now):
         store = jd.load_goals(sid)
         nd = store.get("nodes", {}).get(gid)
         if (not nd or store.get("status", {}).get(gid, "working") != "working"
-                or not _goal_awaiting_stamp(store.get("nodes", {}), gid,
-                                            answered_at=_peer_answered_at(sid))):
+                or not _goal_awaiting_stamp(store.get("nodes", {}), gid)):   # raw: see the sweep's note
             return False                              # lifted or resolved since the walk read its snapshot
         blkwhy = jd.dead_wait_block_why(nd.get("awaitingWhy") or why or "")
         _ev = int(max(at or 0, last_t or 0) or now)
