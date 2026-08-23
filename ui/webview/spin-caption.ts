@@ -11,7 +11,9 @@
 // aimed at came from keying the LINE on `column`, and distillState already fixed that. Both show now.
 //
 // THE CONTRACT (spin-caption.test.ts executes every branch, in order):
-//   1. AWAITING      — held in Working on dispatched/delegated work (no peer chip, no bg-task pill)
+//   1. AWAITING      — held in Working on dispatched/delegated work (no peer chip). With tracked
+//                      tasks the caption NAMES the first one (2026-08-23: the pill-only design let
+//                      the quiet floor say "nothing is in motion" under an Awaiting-task pill)
 //   2. PROVISIONAL   — a dashed live-prompt placeholder the planner hasn't classified yet
 //   3. RE-CHECK      — a soft-block answered with a TARGETED follow-up, pending re-judge
 //   4. RE-JUDGING    — a soft-block + a PLAIN thread reply, with the reply in flight
@@ -31,7 +33,7 @@
 
 /** The card fields the ladder reads. Structural, so the test can pass plain objects. */
 export interface SpinItem {
-  awaiting?: { why?: string | null; kind?: string | null; tasks?: unknown[] | null } | null;
+  awaiting?: { why?: string | null; kind?: string | null; since?: number | null; tasks?: unknown[] | null } | null;   // since = the wait's own event time (kernel or-chain / _session_awaiting; the user 2026-08-23)
   waitingOn?: unknown;
   provisional?: boolean;
   column?: string;
@@ -63,10 +65,18 @@ export const KIND_WORD: Record<string, string> = {
 /** dCompleted/dBlocked come from distillInputs(distillState, column) — the GENUINE resolution state, not
  *  the transient column. distillPending is passed in (rather than recomputed) so the two modules keep one
  *  owner for the "is the distiller still working" rule. */
-/** Compact duration for the working narration: minutes under an hour, then h+m. */
-function workingFor(secs: number): string {
+/** Compact duration for the working narration AND the awaiting box: minutes under an hour, then h+m. */
+export function workingFor(secs: number): string {
   const m = Math.max(0, Math.floor(secs / 60));
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/** " · 42m" for a wait with a known start, "" otherwise — the awaiting counterpart of the working
+ *  narration's duration (the user 2026-08-23: Working says how long it's been running, the awaiting
+ *  states said nothing, so a wait stuck for hours read the same as one seconds old). Kernel-supplied
+ *  event time only — no since, no duration, never a guess. */
+export function waitedSuffix(since: number | null | undefined, nowS: number | undefined): string {
+  return nowS && since && since > 0 ? " · " + workingFor(nowS - since) : "";
 }
 
 
@@ -75,6 +85,22 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
   // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Awaiting task" pill
   // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
   const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
+  // Only the WORKING column carries this caption: elsewhere there is no floor to contradict,
+  // and the 2026-07-13 rule (the pill alone carries a bg-task wait) still holds.
+  if (aw && !it.waitingOn && awTasks.length && it.column === "working") {
+    // AWAITING with TRACKED TASKS (the user 2026-08-23, from a screenshot of the contradiction): the
+    // 2026-07-13 rule handed the why to the "Awaiting task" pill and let this card fall through to
+    // the quiet floor — which then said "Paused — nothing is in motion" DIRECTLY UNDER the pill
+    // saying work is in flight. Two surfaces on one card disagreed. The caption keeps the awaiting
+    // read and NAMES the first awaited task; the pill still expands the full list.
+    const first = String(awTasks[0] || "background work");
+    return {
+      caption: "Waiting on a background task: " + first,
+      tip: (aw.why || "Waiting on background work it dispatched.")
+        + " Not on you; the Awaiting-task list below has each one.",
+      awaitingBg: true,
+    };
+  }
   if (aw && !it.waitingOn && !awTasks.length) {
     // AWAITING — the session is held, waiting on work it dispatched. It keeps its own read: a boxed
     // "Awaiting <kind-word>" label, the kind carried as DATA from the kernel (the user 2026-08-15) so
@@ -85,9 +111,12 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     // "waiting on" is shown verbatim (capitalized); the kind word is the fallback frame.
     const why = aw.why || "";
     const word = KIND_WORD[aw.kind || ""] || "agents";   // kindless = the box's historic default
+    // how long the wait has held, from the kernel's event time — the same live readout the working
+    // narration wears, so a stuck wait is visible at a glance (the user 2026-08-23)
+    const waited = waitedSuffix(aw.since, nowS);
     return {
-      caption: /^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
-                                        : "Awaiting " + word,
+      caption: (/^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
+                                         : "Awaiting " + word) + waited,
       tip: why ? why + ". Not on you; paused until the background work lands."
                : "Paused, waiting on background work it dispatched (not on you). Clears when the result lands.",
       awaitingBg: true,

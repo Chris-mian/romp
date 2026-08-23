@@ -7,7 +7,7 @@
 // pushes and updated in place — never torn down — so hovering one doesn't flicker
 // when the fleet streams new deliverables in.
 import { distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote } from "./distiller-line";
-import { spinFor, KIND_WORD } from "./spin-caption";
+import { spinFor, KIND_WORD, waitedSuffix } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
@@ -101,8 +101,8 @@ interface AskItem {
   nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null; live?: boolean } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders). live = the sender's linked entry is still OPEN; false → the badge is PROVENANCE, dimmed (the completed-column merge, the user 2026-08-16)
-  waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25)
-  awaiting?: { why?: string | null; kind?: string | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Awaiting task" pill (expands the list, like Sub-goals) replaces the boxed why.
+  waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string; since?: number } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25). since = when the unanswered ask was sent → the chip's elapsed readout (the user 2026-08-23)
+  awaiting?: { why?: string | null; kind?: string | null; since?: number | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Awaiting task" pill (expands the list, like Sub-goals) replaces the boxed why. since = the wait's own event time → the box/pill elapsed readout (the user 2026-08-23)
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
@@ -1195,8 +1195,10 @@ function makeAskCard(it: AskItem): HTMLElement {
 // "none" (collapsed), so NEW cards arrive collapsed too. Clicking a toggle sets an explicit per-card override
 // (click the open one → off; click another → switch) that survives the mode.
 const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none">();
-function resolveSec(id: string): "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none" {
-  return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : "summary");
+function resolveSec(id: string, hasAwaitTasks = false): "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none" {
+  // an awaiting-on-tasks card OPENS its task list by default (the user 2026-08-23: the wait is the
+  // one thing to read on that card); an explicit user pick and collapsed mode still win
+  return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : hasAwaitTasks ? "tasks" : "summary");
 }
 // The Stalled body's text: the staller's plain-language note when the judge has written one, else the
 // kernel's own mechanical reason. Never a waiting-on-the-judge placeholder — a stalled card always has
@@ -1309,7 +1311,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   // the stall note (the user 2026-07-23) — shown whenever the kernel says romp is holding this card, with
   // or without a judge-written note, since `why` alone already answers "why is nothing happening"
   const stall = it.stalled && it.stalled.why ? it.stalled : null;
-  let choice = resolveSec(id);
+  let choice = resolveSec(id, hasTasks);
   if (choice === "bg" && !bg) choice = "none";
   if (choice === "summary" && !distillShown) choice = "none";
   if (choice === "subgoals" && !hasSubs) choice = "none";
@@ -1363,8 +1365,12 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   // class in the visible label (tooltips are dead on the touch PWA); kindless keeps the classic "task"
   const kw = KIND_WORD[(it.awaiting && it.awaiting.kind) || ""] || "task";
   const one = kw === "agents" ? "agent" : kw;   // singular form: "Awaiting agent", plural "N agents"
+  // the wait's elapsed time rides the pill exactly as it rides the awaiting box and the working
+  // narration — a stuck wait must be glanceable everywhere the state shows (the user 2026-08-23)
+  const pillWaited = waitedSuffix(it.awaiting && it.awaiting.since, Date.now() / 1000);
   (a._taskLbl as HTMLElement).textContent =
-    taskList.length === 1 ? "Awaiting " + one : "Awaiting " + taskList.length + " " + (one === kw ? kw + "s" : kw);
+    (taskList.length === 1 ? "Awaiting " + one
+                           : "Awaiting " + taskList.length + " " + (one === kw ? kw + "s" : kw)) + pillWaited;
   taskBtn.classList.toggle("on", choice === "tasks");
   taskBtn.setAttribute("aria-pressed", choice === "tasks" ? "true" : "false");
   taskBtn.title = choice === "tasks" ? "hide the tasks" : "show the tasks";
@@ -1625,6 +1631,13 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     const woName = el("span", "fask-waiton-name"); woName.textContent = wo.name;
     if (wo.color && wo.color.bg) woName.style.color = wo.color.bg;   // the peer's own identity colour
     a._waitOn.append(woPre, woName);
+    // elapsed since the unanswered ask went out (kernel _wait_for_graph's since) — the same readout the
+    // working narration and awaiting box wear, so a wait stuck for hours is glanceable (the user 2026-08-23)
+    const woWaited = waitedSuffix(wo.since, Date.now() / 1000);
+    if (woWaited) {
+      const woDur = el("span", "fask-waiton-dur"); woDur.textContent = woWaited;
+      a._waitOn.append(woDur);
+    }
     a._waitOn.title = wo.inCycle
       ? "MUTUAL WAIT — this session and " + wo.name + " are each waiting on the other (a deadlock); auto-nudge surfaces it instead of nudging"
       : wo.kind === "delegate"

@@ -2159,6 +2159,42 @@ def _main_drift_verdict(origin, checkout, running):
     return ("", "")
 
 
+KERNEL_CODE_PREFIXES = ("kernel/", "bin/", "postal/", "cli/")
+_REBUILT_FOR = [""]   # the checkout sha this RUNNING kernel already converged to by rebuilding dist
+#                       in place (UI-only change) — the drift check treats it as in-sync until a
+#                       kernel-code commit moves the target past it
+
+
+def _kernel_code_changed(a, b):
+    """Does a..b touch code the RUNNING PROCESS executes? UI/dist inputs, tests, docs, plans do not —
+    a build whose kernel code is unchanged converges by REBUILDING dist in place with the kernel left
+    up (the user 2026-08-23: most changes are UI-only, and every restart cuts every in-flight turn).
+    Any error reads as True: when unsure, the restart is the safe converge."""
+    if not a or not b:
+        return True
+    try:
+        r = subprocess.run(["git", "diff", "--name-only", "%s..%s" % (a, b)], cwd=str(ROOT),
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return True
+        files = [f for f in r.stdout.splitlines() if f.strip()]
+        return any(f.startswith(KERNEL_CODE_PREFIXES) for f in files)
+    except Exception:
+        return True
+
+
+def _rebuild_dist():
+    """Rebuild the served bundles in place — the UI-only converge. The same esbuild the launcher runs,
+    kernel left up: _dist_ver() stats per page render so the fresh ?v= token flows on the next paint,
+    and the extension's newer-build prompt keys off the dv keepalive. (ok, err_tail)."""
+    try:
+        r = subprocess.run(["node", "esbuild.js"], cwd=str(ROOT / "vscode-extension"),
+                           capture_output=True, text=True, timeout=180)
+        return r.returncode == 0, (r.stderr or r.stdout or "").strip()[-300:]
+    except Exception as e:
+        return False, str(e)
+
+
 def _main_drift_check():
     """One origin/checkout/running comparison pass; fires the SAME banner as the release check (the
     shell's offer() renders the main-drift wording off kind:"main"). Re-fires only when the target sha
@@ -2166,6 +2202,21 @@ def _main_drift_check():
     if _update_mode() == "off":
         return
     kind, target = _main_drift_verdict(_origin_main_sha(), _checkout_sha(), _kernel_sha())
+    if kind == "restart" and target == _REBUILT_FOR[0]:
+        return                                        # already converged in place (UI-only rebuild)
+    if kind == "restart" and not _kernel_code_changed(_kernel_sha(), target):
+        # UI-ONLY drift (the user 2026-08-23): the checkout moved but nothing the running process
+        # executes changed — converge by rebuilding dist in place, in EVERY mode and with no
+        # cool-down (a rebuild cuts no turns, which is the only thing the gates protect). A failed
+        # build falls through to the normal restart path, loudly.
+        ok, err = _rebuild_dist()
+        if ok:
+            _REBUILT_FOR[0] = target
+            _sync_notice("new build served in place (UI-only change; no restart) — reload the "
+                         "dashboard to pick it up")
+            return
+        _sync_notice("UI-only update failed to build in place (%s) — taking the restart path" % err,
+                     ok=False)
     if not kind:
         _MAIN_DRIFT[0] = _MAIN_DRIFT[1] = ""          # in sync: a future drift is new information again
         return
@@ -2217,6 +2268,16 @@ def _run_main_update(kind, immediate=False):
             _sync_notice("main moved at origin, but the pull step failed: %s" % e, ok=False)
             _MAIN_DRIFT[0] = ""
             return
+    if kind == "pull" and not _kernel_code_changed(_kernel_sha(), _checkout_sha()):
+        # the pull only moved UI/dist inputs — same in-place converge as the restart-kind branch
+        ok, err = _rebuild_dist()
+        if ok:
+            _REBUILT_FOR[0] = _checkout_sha()
+            _sync_notice("new build served in place (UI-only change; no restart) — reload the "
+                         "dashboard to pick it up")
+            return
+        _sync_notice("UI-only update failed to build in place (%s) — taking the restart path" % err,
+                     ok=False)
     try:
         import urllib.request
         req = urllib.request.Request("http://127.0.0.1:%d/restart-all%s"
@@ -3445,15 +3506,64 @@ def _dead_wait_sweep(alive_ids, nudged, now):
             for nid, nd in nodes.items():
                 if nd.get("parentId"):
                     kids.setdefault(nd["parentId"], []).append(nid)
-            answered = _peer_answered_at(sid)
             for gid, st in (store.get("status") or {}).items():
                 if st != "working":
                     continue
-                stamp = _goal_awaiting_stamp_full(nodes, gid, kids, answered_at=answered)
+                # RAW stamp, answered_at=0 (the fix for the 100-hour survivors, 2026-08-23): the
+                # peer-answered supersede reads ANY inbound mail after the ask as the wait being met —
+                # a worker's "starting now" ack 110s after the stamp made the sweep see no wait at all,
+                # while the card's chip kept showing awaiting and nothing ever closed it. For a DORMANT
+                # owner the distinction is moot either way: an answer that landed in a dead session's
+                # mailbox moved nothing, so a recorded wait on a still-Working card converts regardless.
+                stamp = _goal_awaiting_stamp_full(nodes, gid, kids)
                 if stamp:
                     _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)
+            # …and incomplete DELEGATION handoffs (the user 2026-08-23: a dead sender's "↪ delegated
+            # to X" item waits on run_propagate, and if the courier link never landed — or the peer
+            # folded the work without one — nothing can ever check it off; five were 240h old). The
+            # same terminal as a stamped wait: the card needs the user, not more patience.
+            for nid, nd in nodes.items():
+                h = nd.get("handoff") if isinstance(nd, dict) else None
+                if isinstance(h, dict) and not nd.get("nodeComplete") and not nd.get("blocked"):
+                    _dead_handoff_block(sid, nid, h, nd, nudged, now)
         except Exception:
             sys.stderr.write("dead-wait sweep (%s): %s\n" % (sid, traceback.format_exc()))
+
+
+def _dead_handoff_block(sid, nid, h, nd, nudged, now):
+    """A DORMANT sender's incomplete '↪ delegated to <peer>' tracking node converts to a procedural
+    block (the user 2026-08-23) — the sibling of _dead_wait_block for the delegation graph: the
+    completion event is run_propagate following the courier link, and a dead sender can neither chase
+    the peer nor act on the result. Same discipline: once per node (ledger), open-turn stand-down,
+    fresh re-read, evidence-time from recorded events."""
+    rec = nudged.get(nid) or {}
+    anchor = int(nd.get("t") or 0)
+    if rec.get("deadWait") and (rec.get("anchor") or 0) >= anchor:
+        return False
+    last, last_t = _last_state(sid)
+    if last in _PROGRESSING_STATES:
+        return False
+    try:
+        store = jd.load_goals(sid)
+        cur = store.get("nodes", {}).get(nid)
+        if not cur or cur.get("nodeComplete") or cur.get("blocked"):
+            return False
+        peer = _name_of(h.get("peer") or "") or (h.get("peer") or "")[:8] or "a peer"
+        blkwhy = jd.dead_wait_block_why("the delegation to %s (%s)"
+                                        % (peer, (cur.get("text") or "").replace("↪ ", "")[:80]))
+        _ev = int(max(anchor, last_t or 0) or now)
+        if jd.record_verdict(store, cur, "nudge", "block", _ev, why=blkwhy):
+            cur["mt"] = _ev
+            jd.append_block(sid, nid, "nudge", blkwhy, _ev)
+            jd.rollup_status(store, False)
+            jd.save_goals(sid, store)
+            _mark_views_dirty()
+            nudged[nid] = {"deadWait": True, "anchor": anchor, "at": int(now)}
+            _put_nudged(nid, nudged[nid])
+            return True
+    except Exception:
+        sys.stderr.write("dead-handoff block: %s\n" % traceback.format_exc())
+    return False
 
 
 def _dead_wait_block(sid, gid, at, why, nudged, now):
@@ -3480,8 +3590,7 @@ def _dead_wait_block(sid, gid, at, why, nudged, now):
         store = jd.load_goals(sid)
         nd = store.get("nodes", {}).get(gid)
         if (not nd or store.get("status", {}).get(gid, "working") != "working"
-                or not _goal_awaiting_stamp(store.get("nodes", {}), gid,
-                                            answered_at=_peer_answered_at(sid))):
+                or not _goal_awaiting_stamp(store.get("nodes", {}), gid)):   # raw: see the sweep's note
             return False                              # lifted or resolved since the walk read its snapshot
         blkwhy = jd.dead_wait_block_why(nd.get("awaitingWhy") or why or "")
         _ev = int(max(at or 0, last_t or 0) or now)
@@ -3966,6 +4075,34 @@ def _deferral_sweep_tick(now):
         _write_auto_nudge(d)
 
 
+def _last_assistant_text(path, cap=4000):
+    """The newest assistant message's text from the transcript TAIL — what the redundancy gate shows
+    the judge as "the session's most recent report". Tail-read only (the newest turn is always
+    recent); '' on any trouble, which fires the nudge as before."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 262144))
+            lines = f.read().decode(errors="replace").splitlines()
+        for line in reversed(lines):
+            if '"assistant"' not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("type") != "assistant":
+                continue
+            c = ((rec.get("message") or {}).get("content"))
+            if isinstance(c, list):
+                txt = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+                if txt.strip():
+                    return txt[-cap:]
+        return ""
+    except Exception:
+        return ""
+
+
 def _nudge_response_ready(turns, store, rec, gid, now):
     """The nudge-failed stamp's structural gates, as one testable decision: (ready, resp_seg).
     ready False → skip this tick; ready True → every gate passed and the stamp may proceed
@@ -4239,6 +4376,42 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
                         if _nudge_deferred_ok(f[0], _why, now, sid, ev_t=_ev or None)]
         except Exception:
             pass
+    if to_fire:
+        # REDUNDANCY GATE (the user 2026-08-23, approved via the optimizer's audit): the session's
+        # own LAST message may already report exactly the status this nudge would ask for — 2 of 3
+        # fires on 08-22 came 12-13 minutes after the asked-about status had been reported, each
+        # burning a turn on a restatement. One cheap judge look per due goal; a YES records the
+        # report as the ANSWER (answeredAt: the ladder measures its next patience window from it,
+        # exactly as it would from a real reply) and skips the fire. Any failure fires as before —
+        # the gate is an optimization, the ladder is the job.
+        recent = _last_assistant_text(s["path"])
+        if recent:
+            try:
+                _nodes = jd.load_goals(sid).get("nodes", {})
+            except Exception:
+                _nodes = {}
+            still = []
+            for f in to_fire:
+                gtxt = (_nodes.get(f[0]) or {}).get("text") or ""
+                rec0 = nudged.get(f[0]) or {}
+                skips = rec0.get("redundantSkips") or 0
+                try:
+                    # CAPPED at two consecutive skips (the user 2026-08-23, the same day the gate
+                    # shipped: on a status-heavy session every due nudge can read as redundant, and
+                    # each skip restarting the patience window is a forever-pause with no reviver —
+                    # the exact suppressed-without-reviver class the ladder exists to prevent). Past
+                    # the cap the nudge fires regardless; any real fire or answer resets the count.
+                    if skips < 2 and gtxt and jd.nudge_redundant(gtxt, recent):
+                        nudged[f[0]] = dict(rec0, answeredAt=int(now), redundantSkips=skips + 1)
+                        _put_nudged(f[0], nudged[f[0]])
+                        continue
+                except Exception:
+                    pass
+                if skips:
+                    nudged[f[0]] = dict(rec0, redundantSkips=0)   # firing (or an unjudgeable check) resets
+                    _put_nudged(f[0], nudged[f[0]])
+                still.append(f)
+            to_fire = still
     if len(to_fire) == 1:
         gid, count, stalled = to_fire[0]
         text = _nudge_text(count, stalled)             # variant by escalation count — a repeat re-asks in fresh words
@@ -11582,9 +11755,13 @@ def _session_delegated_why(sid):
 
 def _session_awaiting(sid, path, idle, stamp=False):
     """A session AWAITING dispatched/delegated background work (a WORKING flavor, the user 2026-06-22) →
-    {"kind", "why"}: the one-line 'why' for the ⏳ awaiting badge plus WHAT the wait is on (jd.AWAIT_KINDS,
-    the user 2026-08-15 — kind rides as DATA so surfaces can word it and rules can scope by it; None =
-    kindless, the legacy shape). Falsy (None) when not awaiting, so truthiness callers read unchanged.
+    {"kind", "why", "since"}: the one-line 'why' for the ⏳ awaiting badge plus WHAT the wait is on
+    (jd.AWAIT_KINDS, the user 2026-08-15 — kind rides as DATA so surfaces can word it and rules can scope
+    by it; None = kindless, the legacy shape) plus WHEN the wait began — each source's own event time
+    (a dispatch stamp, an overlay row's t, the judge's awaitingAt), never wall-clock now, so the chips can
+    say how long the wait has held (the user 2026-08-23: a stuck wait was invisible without a duration).
+    `since` is None when the winning source carries no event time — the surfaces then show no duration
+    rather than a guessed one. Falsy (None) when not awaiting, so truthiness callers read unchanged.
     Only when IDLE — an actively producing turn is just 'working'. The EVENT-BASED sources, in order:
       0. the backend snapshot's LIVE subagent count (SubagentStart/Stop) — genuine delegated Claude
          AGENTS in flight, held in memory, independent of any turn.
@@ -11646,7 +11823,8 @@ def _session_awaiting(sid, path, idle, stamp=False):
         # formatted the list itself with %d (latent TypeError since 3325771, masked because a subagent
         # normally runs inside an open turn → idle=False → this branch never ran) — count via len().
         n = len(subs)
-        return {"kind": "agents", "why": "%d background agent%s still working" % (n, "" if n == 1 else "s")}
+        return {"kind": "agents", "why": "%d background agent%s still working" % (n, "" if n == 1 else "s"),
+                "since": min([s.get("since") for s in subs if s.get("since")] or [None])}   # the oldest live agent's start — the wait has held at least this long
     tasks = _bg_live_norm(sid, path)
     if tasks:
         # Sources 0.5/0.75 — only the PENDING tasks (launch not yet placed) count; a placed launch's
@@ -11658,14 +11836,18 @@ def _session_awaiting(sid, path, idle, stamp=False):
             # (or plain shell work) is kind task — the generic word for in-harness background work
             kind = ("agents" if all("agent" in (t.get("type") or "") or t.get("type") == "local_workflow"
                                     for t in pending) else "task")
+            since = min([t.get("t") for t in pending if t.get("t")] or [None])   # the oldest pending dispatch
             if len(pending) == 1:
-                return {"kind": kind, "why": "waiting on a background task%s" % ((": " + d0) if d0 else "")}
-            return {"kind": kind, "why": "waiting on %d background tasks%s"
-                                         % (len(pending), (" — " + d0 + ", …") if d0 else "")}
+                return {"kind": kind, "since": since,
+                        "why": "waiting on a background task%s" % ((": " + d0) if d0 else "")}
+            return {"kind": kind, "since": since,
+                    "why": "waiting on %d background tasks%s"
+                           % (len(pending), (" — " + d0 + ", …") if d0 else "")}
     ov = _states_awaiting_overlay(sid)
     if ov is not None and ov.get("awaiting"):         # a producer wrote a LIVE awaiting:true → trust its why
         ovk = ov.get("kind")
         return {"kind": ovk if ovk in jd.AWAIT_KINDS else None,
+                "since": ov.get("t") or None,          # the overlay row's own stamp — when the hook declared the wait
                 "why": ov.get("why") or "waiting on dispatched work"}
     # An awaiting:false overlay row is NOT a veto — it says only that THIS channel has nothing to add.
     # The SDK Stop hook has written an unconditional false at every turn end since 2026-07-07 while
@@ -11692,13 +11874,13 @@ def _session_awaiting(sid, path, idle, stamp=False):
         # and nobody else's (the user 2026-08-08): the three surfaces answered one question two ways.
         y = _owned_yield_why(sid, path)
         if y:
-            return {"kind": "task", "why": y}          # a live owned dispatch — in-harness work
+            return {"kind": "task", "why": y, "since": None}   # a live owned dispatch — in-harness work (no single event time to show)
         _gid, _at, st_why, st_kind = _session_stamp_full(sid)
         if st_why:
-            return {"kind": st_kind, "why": st_why}    # the judge's own classification rides the stamp
+            return {"kind": st_kind, "why": st_why, "since": _at or None}   # the judge's own classification rides the stamp, with its awaitingAt
         d = _session_delegated_why(sid)
         if d:
-            return {"kind": "peer", "why": d}          # the courier handoff graph is peer by construction
+            return {"kind": "peer", "why": d, "since": None}   # the courier handoff graph is peer by construction
     return None
 
 
@@ -16777,7 +16959,7 @@ def _provisional_card(s, name, color, fsid, live, now, store=None):
             "provisional": True, "judging": not turn_open, "tree": []}
 
 
-def _awaiting_card(s, name, color, fsid, live, now, why, kind=None):
+def _awaiting_card(s, name, color, fsid, live, now, why, kind=None, since=None):
     """A lightweight WORKING-column placeholder for a LIVE, IDLE session AWAITING a dispatched BACKGROUND
     TASK when there is NO open goal to floor to awaiting (the user 2026-07-13). The turn ended and every
     card is done/cleared/placed, so the goal loop has nothing to floor AND _provisional_card bows out (its
@@ -16811,7 +16993,8 @@ def _awaiting_card(s, name, color, fsid, live, now, why, kind=None):
             # awaiting flavor with the live bg-task descriptions → the "Waiting on task" pill (the user
             # 2026-07-13). judging False: this session is idle-awaiting, not analyzing — the pill, not a
             # "Working…"/"Analyzing…" chip, carries the state (feed.ts defers the provisional chip when awaiting).
-            "awaiting": {"why": why, "kind": kind, "tasks": _awaiting_task_descs(fsid, s["path"])},
+            "awaiting": {"why": why, "kind": kind, "since": since,
+                         "tasks": _awaiting_task_descs(fsid, s["path"])},
             "provisional": True, "judging": False, "tree": []}
 
 
@@ -17454,6 +17637,7 @@ def build_feed(now, tmux=None):
         _sess_aw = _session_awaiting(fsid, s["path"], not who_working) if ps else None   # cache-only: fills in after the warm
         sess_awaiting_why = _sess_aw["why"] if _sess_aw else None
         sess_awaiting_kind = _sess_aw["kind"] if _sess_aw else None
+        sess_awaiting_since = _sess_aw.get("since") if _sess_aw else None   # the wait's own event time (the user 2026-08-23)
         if sess_awaiting_why and not who_working:
             awaiting.append(name)                    # the AWAITING dot list (await-green, the user 2026-07-13) — the
             #                                          same split _session_chip makes; feed/chat dots match the chip
@@ -17533,6 +17717,7 @@ def build_feed(now, tmux=None):
             #    the user questions while its own background timer ran).
             _await_ok = bool(sess_awaiting_why)
             _owned_why = None
+            _owned_since = None
             if col == "blocked":
                 _blk_t = max([nodes[x].get("mt", nodes[x]["t"]) for x in _subtree(nid)
                               if nodes[x].get("blocked") and not _closure_done(x)] or [0])
@@ -17544,6 +17729,7 @@ def build_feed(now, tmux=None):
                 if _await_ok:
                     _owned_why = "waiting on a background task%s" % (
                         (": " + _own["descs"][0]) if _own["descs"] else "")
+                    _owned_since = _own["since"]           # the dispatch event that proved the yield
             # The JUDGE's durable ⏳ stamp (the closer's awaiting verdict, kernel/judge.py): this goal's
             # latest audited turn ended waiting on async work it set in motion. Store-backed, so it holds
             # across kernel restarts — exactly where the live snapshot signals above go dark and a
@@ -17553,6 +17739,7 @@ def build_feed(now, tmux=None):
                    if col == "working" else None)
             _stamp_why = _sf[1] if _sf else None
             _stamp_kind = _sf[2] if _sf else None
+            _stamp_since = (_sf[0] or None) if _sf else None   # the stamp's awaitingAt — when the judge filed the wait
             # DELEGATION-derived awaiting (the courier's durable handoff graph, not the question-regex):
             # every OPEN leaf under this top is a handoff-tracking node → the only outstanding work lives
             # with peers, so the card reads ⏳ "delegated to <peer>" instead of plain working (which reads
@@ -17561,13 +17748,17 @@ def build_feed(now, tmux=None):
             # surfaces (rail/chat/timeline) read the SAME evidence via _session_delegated_why in
             # _session_awaiting's stamp branch — keep the two in step (the user 2026-08-08).
             _deleg_why = None
+            _deleg_since = None
             if col == "working" and not _stamp_why and not _await_ok \
                     and _all_outstanding_delegated(nodes, nid):
+                _hnodes = [x for x in _subtree(nid)
+                           if isinstance(nodes[x].get("handoff"), dict)
+                           and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")]
                 _peers = sorted({(_name_of((nodes[x].get("handoff") or {}).get("peer")) or "a peer")
-                                 for x in _subtree(nid)
-                                 if isinstance(nodes[x].get("handoff"), dict)
-                                 and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")})
+                                 for x in _hnodes})
                 _deleg_why = "delegated to %s; waiting on their result" % (", ".join(_peers) or "a peer")
+                # the newest outstanding handoff's mint — the last local act before the wait began
+                _deleg_since = max([nodes[x].get("t") or 0 for x in _hnodes] or [0]) or None
             if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
                     _await_ok or _stamp_why or _deleg_why or (col == "blocked" and _peer_wait)):
                 col = "awaiting"
@@ -17596,12 +17787,14 @@ def build_feed(now, tmux=None):
                           "peerHost": ("" if pname else o.get("peerHost") or ""),
                           "peerSid": psid, "color": _name_color(psid), "live": live}
             await_why = (sess_awaiting_why or _stamp_why or _deleg_why or _owned_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph, then the blocked-yield's owned dispatch (None for the postal-only case → the waitingOn chip names the peer)
-            await_kind = None                        # the winning why's KIND rides beside it, mirroring the
-            if col == "awaiting":                    # or-chain exactly (a kindless winner stays kindless)
-                for _w, _k in ((sess_awaiting_why, sess_awaiting_kind), (_stamp_why, _stamp_kind),
-                               (_deleg_why, "peer"), (_owned_why, "task")):
+            await_kind = None                        # the winning why's KIND and SINCE ride beside it,
+            await_since = None                       # mirroring the or-chain exactly (a kindless winner
+            if col == "awaiting":                    # stays kindless; since = the wait's own event time)
+                for _w, _k, _s in ((sess_awaiting_why, sess_awaiting_kind, sess_awaiting_since),
+                                   (_stamp_why, _stamp_kind, _stamp_since),
+                                   (_deleg_why, "peer", _deleg_since), (_owned_why, "task", _owned_since)):
                     if _w:
-                        await_kind = _k
+                        await_kind, await_since = _k, _s
                         break
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
@@ -17861,7 +18054,7 @@ def build_feed(now, tmux=None):
                 # work) — the user 2026-06-22. `tasks` = the live bg-task descriptions (the user 2026-07-13):
                 # when present the card wears the compact "Waiting on task" pill (expands to this list, like
                 # Sub-goals) instead of the boxed why; empty for subagent/overlay flavors, which keep the box.
-                "awaiting": ({"why": await_why, "kind": await_kind,
+                "awaiting": ({"why": await_why, "kind": await_kind, "since": await_since,
                               "tasks": _awaiting_task_descs(fsid, s["path"])} if col == "awaiting" else None),
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "distillState": distill_state,   # "completed" | "blocked" | null — the GENUINE state the distiller line keys on, so the brief/takeaway doesn't flicker off when recheck/rejudging drops `column` to working (the user 2026-07-21)
@@ -17968,7 +18161,7 @@ def build_feed(now, tmux=None):
                 # awaiting card so the wait shows in the FEED, not just on the timeline — the hole the user
                 # hit ("there's no card there"). Ephemeral: gone the moment sess_awaiting_why clears.
                 asks.append(_awaiting_card(s, name, color, fsid, live, now, sess_awaiting_why,
-                                           kind=sess_awaiting_kind))
+                                           kind=sess_awaiting_kind, since=sess_awaiting_since))
     if cold_parse:
         _warm_fleet_bg(now)                          # a living session wasn't parsed yet → warm it + re-push (dots/anchors)
     # NO caption stream. The feed's cards are TOP-LEVEL GOALS ONLY (read-side.md: Inbox = goal cards;
