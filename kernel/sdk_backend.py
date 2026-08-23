@@ -1185,6 +1185,21 @@ def work_api_key() -> str:
     return _WORK_KEY
 
 
+def _expected_auth() -> str:
+    """The box-wide INTENDED auth, declared in the manager's environment (service.env):
+    ROMP_EXPECTED_AUTH=key|login; unset or any other value declares nothing. On a machine whose
+    sessions authenticate through Claude Code's apiKeyHelper the key never rides service.env, so
+    _launched_keyed reads "login" for every session while key auth IS the box's design — and the
+    per-init apiKeySource mismatch line was a permanent false alarm (the user 2026-08-15). Under a
+    declaration _note_auth_source compares the landing against the DECLARED side instead: the
+    intended landing is quiet, the contradicting one is flagged — the never-silent property inverts
+    rather than disappears. Read fresh per call (the cost is a dict lookup, and a cached read would
+    outlive a test's env change); never popped — unlike ANTHROPIC_API_KEY it is not a secret and
+    nothing downstream misreads it."""
+    v = (os.environ.get("ROMP_EXPECTED_AUTH") or "").strip().lower()
+    return v if v in ("key", "login") else ""
+
+
 # ---------------------------------------------------------------------------
 # Fast-mode permission for key-billed sessions — ask the account that PAYS.
 # ---------------------------------------------------------------------------
@@ -1379,10 +1394,17 @@ class SdkSession:
         #   the NEXT turn's init (the badge reads off for a whole turn right after the CLI acknowledged
         #   the toggle). The init re-sync lets that single stale word yield to this; the next init wins
         #   unconditionally.
-        self.api_key_auth = False   # THIS session's init said it authenticates with an API key — a
+        _aka = reg.get("apiKeyAuth")   # the persisted CLI truth (written by _note_auth_source on flip)
+        self.api_key_auth = bool(_aka)   # THIS session's init said it authenticates with an API key — a
         #   PER-SESSION fact (the user 2026-08-08: one keyed session must not speak for the login's
         #   windows). Gates this session's get_usage polls + its RateLimitEvent records; set by
-        #   _note_auth_source on every init.
+        #   _note_auth_source on every init, PERSISTED (reg apiKeyAuth) and restored here — as a
+        #   runtime-only default-False flag, a keyed session's rate-limit events landed in the login's
+        #   usage.json between a kernel restart and its next init (the max-merge contamination the
+        #   gate exists to prevent).
+        self.auth_live = ("key" if _aka else "login") if isinstance(_aka, bool) else ""   # what the
+        #   CLI's init actually reported ("" until one ever lands) → snapshot()'s authLive, the
+        #   Billing row's live truth; restored with the flag so the hover stays honest across restarts
         self.auth = reg.get("auth") if reg.get("auth") in ("login", "key") else ""   # the user's
         #   per-session auth pick (the user 2026-08-08: some sessions on the personal login, some on
         #   the work key). "" = no explicit pick → effective_auth() preserves the pre-selector world.
@@ -2792,6 +2814,9 @@ class SdkSession:
                 "modelPending": bool(self._model_pending),   # a /model switch resolving → the badge shows switching-dots
                 "effortPending": bool(self._effort_pending),   # an /effort switch reconnecting → effort-badge dots + "Reloading session…"
                 "auth": self.effective_auth(),   # which account this session bills ('login'|'key') → gear badge
+                "authLive": self.auth_live,   # what the CLI's init actually reported ("" until one
+                #   lands) — the Billing row says so when it disagrees with the launch intent above
+                #   (a key found via apiKeyHelper bills the key while `auth` still reads login)
                 "authPending": bool(self._auth_pending),   # an /auth switch reconnecting → badge dots
                 "mode": self.perm_mode, "ctx": self._ctx_pct(), "summary": "",
                 "connected": bool(self.client),   # the SDK handshake is up (set at connect, cleared at
@@ -2888,6 +2913,10 @@ class SdkBackend:
         self._pending_ask: dict[str, bool] = {}   # sid -> has an ask awaiting answer
         self._live: dict[str, dict] = {}          # sid -> {key -> atom}: the in-memory LIVE TAIL (ahead of disk)
         self._rl_lock = threading.Lock()          # serializes usage.json read-merge-write (_record_rate_limit)
+        self._usage_all_keyed = False             # refresh_usage's one-shot: the last refresh found only
+        #                                           keyed candidates (already logged); reset when a
+        #                                           pollable session exists again, so the 60s rail timer
+        #                                           logs the condition once per episode, not per call
         self._fork_children_memo = None           # (sdk/ dir mtime_ns, {parent sid: [child lineage]}) — fork_children()
         self.work_key = work_api_key()            # the manager env's API key, claimed out of os.environ
         #   ("" = none): per-session auth injects it via _options; its presence is the "key" half of
@@ -3361,16 +3390,35 @@ class SdkBackend:
         whose loop has gone away is enough to make a click do nothing at all, and the rail then shows a
         stale reading with no sign that the refresh never happened. Says so in the log when none can be
         asked, rather than returning quietly. API-keyed sessions are not candidates (per-session auth,
-        the user 2026-08-08): their get_usage only times out, and the windows belong to the login."""
+        the user 2026-08-08): their get_usage only times out, and the windows belong to the login. A box
+        where EVERY live session is keyed says so too (the all-keyed branch) instead of clicking into
+        silence — once per episode, not per call: both standing callers repeat (the rail's 60s timer and
+        the kernel's 15-minute usage poll, _usage_poll_tick), so the one-shot is load-bearing."""
         with self._lock:
             sessions = list(self.sessions.values())
-        live = [s for s in sessions if s.client and s.loop and not s.ended and not s.api_key_auth]
+        connected = [s for s in sessions if s.client and s.loop and not s.ended]
+        live = [s for s in connected if not s.api_key_auth]
+        if not live:
+            # Every live session bills an API key (distinct from "no live sessions at all", which the
+            # per-turn refreshes make unremarkable): nobody can poll the subscription windows, and the
+            # log line below sat inside `if live:`, so the condition was COMPLETELY silent (the user
+            # 2026-08-15). Under a ROMP_EXPECTED_AUTH=key declaration this is the box working as
+            # designed — an info line; undeclared, an all-keyed box is the surprising case and rings.
+            if connected and not self._usage_all_keyed:
+                self._usage_all_keyed = True
+                self._log("usage refresh: %d live session(s), all billing API keys — no session can "
+                          "poll the subscription windows, so rate-limit telemetry is unavailable"
+                          % len(connected), problem=not _expected_auth())
+            return
+        if any(s.auth_live == "login" for s in live):
+            # Re-armed only by an init that CONFIRMED a login — a fresh spawn's default-False flag
+            # means "unknown", not "login", and re-arming on it re-rang once per session creation.
+            self._usage_all_keyed = False
         for s in live:
             if s.refresh_usage():
                 return
-        if live:
-            self._log("usage refresh: %d live session(s), none with a loop to run it on — the rail bars "
-                      "keep their last reading" % len(live), problem=True)
+        self._log("usage refresh: %d live session(s), none with a loop to run it on — the rail bars "
+                  "keep their last reading" % len(live), problem=True)
 
     def _record_spend(self, cost, usage=None, keyed=False) -> None:
         """Accumulate a turn's total_cost_usd AND its token counts into spend.json, keyed by LOCAL date —
@@ -3445,21 +3493,44 @@ class SdkBackend:
         A subscription login answers with the ABSENCE of an API key, and the CLI has said that two
         ways: the field simply absent (verified live 2026-08-04), and — since about CLI 2.1.222 — the
         literal string 'none' (two hosts' journals, 2026-08-08). Logged once per per-session change,
-        so every host's kernel log still self-documents who authenticates how."""
+        so every host's kernel log still self-documents who authenticates how.
+
+        The mismatch check compares against ROMP_EXPECTED_AUTH when the box declares one
+        (_expected_auth) and the session carries no explicit per-session pick — a pick outranks
+        the declaration — else against _launched_keyed as before; see the comment at the check."""
         keyed = bool(source) and str(source).strip().lower() != "none"
-        # The CLI landed on a DIFFERENT auth than _options launched it with (a key found some other
-        # way — apiKeyHelper, a project setting — or a login where the key was expected): that is a
-        # session billing the wrong account, the one failure this feature must never let pass
-        # silently (the user 2026-08-08). Flagged on every init that disagrees, not just flips, and
-        # into the problems ring so the Log panel shows it.
-        if keyed != sess._launched_keyed:
-            self._log("auth (%s): launched for %s but the CLI reports apiKeySource=%r — this session "
-                      "is billing the %s. Check the login (claude /login) and service.env."
-                      % (sess.name, "the API key" if sess._launched_keyed else "the login", source,
-                         "API key" if keyed else "login"), problem=True)
+        # The CLI landed on a DIFFERENT auth than EXPECTED — the expected side is the box-wide
+        # ROMP_EXPECTED_AUTH declaration when one is set (an apiKeyHelper box injects no key at
+        # launch, so _launched_keyed said "login" while key auth was the design and every init rang
+        # a false alarm — the user 2026-08-15), else what _options actually launched with (a key
+        # found some other way — apiKeyHelper, a project setting — or a login where the key was
+        # expected). Either way the unexpected landing is a session billing the wrong account, the
+        # one failure this feature must never let pass silently (the user 2026-08-08). Flagged on
+        # every init that disagrees, not just flips, and into the problems ring so the Log panel
+        # shows it; a landing that MATCHES the declaration is the intended, quiet state.
+        # An EXPLICIT per-session Billing pick outranks the declaration: the declaration describes
+        # the box's UNPICKED design, while set_auth's contract is that the next init confirms the
+        # PICK — judged (and worded) against what the pick launched, so a landing honoring the pick
+        # stays quiet whatever the box declares, and one contradicting it still rings.
+        exp = "" if sess.auth in ("login", "key") else _expected_auth()
+        if keyed != ((exp == "key") if exp else sess._launched_keyed):
+            if exp:
+                self._log("auth (%s): ROMP_EXPECTED_AUTH=%s but the CLI reports apiKeySource=%r — this "
+                          "session is billing the %s. Check the helper and service.env."
+                          % (sess.name, exp, source, "API key" if keyed else "login"), problem=True)
+            else:
+                self._log("auth (%s): launched for %s but the CLI reports apiKeySource=%r — this session "
+                          "is billing the %s. Check the login (claude /login) and service.env."
+                          % (sess.name, "the API key" if sess._launched_keyed else "the login", source,
+                             "API key" if keyed else "login"), problem=True)
+        sess.auth_live = "key" if keyed else "login"   # the CLI's own report, for the Billing row
         if keyed == sess.api_key_auth:
             return
         sess.api_key_auth = keyed
+        # Persisted with the flip: runtime-only, a kernel restart reset a keyed session to False and
+        # its rate-limit events landed in the login's usage.json until the next init corrected it —
+        # exactly the max-merge contamination the per-session gate exists to prevent.
+        self._update_reg(sess.sid, apiKeyAuth=keyed)
         self._log("auth (%s): apiKeySource=%r — %s" % (sess.name, source,
                   "this session bills an API key: its usage polls and rate-limit events are ignored"
                   if keyed else "subscription auth: this session's usage polls resume"))
@@ -4706,12 +4777,17 @@ class SdkBackend:
         if not read_reg(self.state_dir, sid):
             return False
         # authPending: the applying reconnect hasn't completed → badge dots. Locked RMW — see set_effort.
-        self._update_reg(sid, auth=value, authPending=True)
+        # apiKeyAuth=None: the persisted CLI report described the process this reconnect replaces,
+        # so a restart must restore "no init has landed yet", never the old side (both readers guard
+        # with isinstance(..., bool), so None reads as absent).
+        self._update_reg(sid, auth=value, authPending=True, apiKeyAuth=None)
         write_sdk_default(self.state_dir, auth=value)   # the seed for the NEXT new session, like model/effort
         s = self.sessions.get(sid)
         if s:
             s.auth = value
             s._auth_pending = value
+            s.auth_live = ""   # the last init's report predates this switch — the Billing row shows
+            #   the plain intent (no "CLI reports" parenthetical) until the next init re-confirms
             s.request_reconnect()
             # Acknowledge the pick in the chat exactly as set_effort does: the reconnect writes no
             # transcript record, so without a synthesized chip an idle session's auth change shows
@@ -4774,6 +4850,10 @@ class SdkBackend:
                             "effortPending": bool(reg.get("effortPending")),
                             "effort": reg.get("effort", ""),
                             "auth": self.default_auth(reg),
+                            # the persisted CLI truth (apiKeyAuth, the liveModel pattern) so a dormant
+                            # session's Billing row keeps telling it; absent = no init ever landed
+                            "authLive": ("key" if reg.get("apiKeyAuth") else "login")
+                                        if isinstance(reg.get("apiKeyAuth"), bool) else "",
                             "authPending": bool(reg.get("authPending")),
                             "mode": reg.get("mode", ""),
                             # last persisted fast state (liveFast, like liveCtx above) → the badge

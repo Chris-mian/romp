@@ -16023,6 +16023,10 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                   # The key is labelled 'API key', never any fragment of it (2026-08-08: even a last-4
                   # tail is more key than a label needs); authAcct names WHICH login account.
                   "auth": tm.get("auth", ""),
+                  # the CLI's OWN report ('key'/'login', "" until an init lands) — the Billing row
+                  # renders it when it disagrees with the intent above (a key found via apiKeyHelper
+                  # bills the key while `auth` still reads login; the user 2026-08-15)
+                  "authLive": tm.get("authLive", ""),
                   # whether this machine offers BOTH choices — the gate for the CONTROLS (statusline
                   # badge menu / picker buttons); display no longer hangs on it (the user 2026-08-09)
                   "authBoth": _auth_both(),
@@ -18194,6 +18198,15 @@ def _usage():
             out = {"apiKey": True, "spend": _spend_windows(),
                    "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
                    "acct": _claude_account()}
+            # Under key auth the windows are STRUCTURALLY absent, not late — both usage.json writers
+            # skip keyed sessions — so the payload says why and the rail hover can say it too (fail
+            # loudly, not silence; the user 2026-08-15). Key auth is the reason when the manager env
+            # carries a key (_auth_key_present) or the box declares ROMP_EXPECTED_AUTH=key (the
+            # apiKeyHelper box, where the key never rides service.env). A no-login, no-key machine
+            # showing legacy spend gets no line: its windows could yet arrive with a login.
+            if (_auth_key_present()
+                    or (os.environ.get("ROMP_EXPECTED_AUTH") or "").strip().lower() == "key"):
+                out["telemetryUnavailable"] = True
             ss = _spend_series()          # TOTAL, like the windows above: everything here bills the key
             if ss:
                 out["spendSeries"] = ss   # the hover's money-rate graph (the user 2026-08-13)
@@ -23327,6 +23340,7 @@ var live=ROWS.filter(function(r){return hasBars(r.usage)||hasSpend(r.usage);});
 if(!live.length){el.innerHTML='';tip.style.display='none';return;}
 shareFreshest(live);
 LAST=live.map(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
+if(r.usage.telemetryUnavailable)det._telemUnavail=true;   // key auth: the windows are structurally absent, and the hover says why
 winDet(r.usage,det);spendDet(r.usage,det);
 return {host:r.host||selfHost||'this machine',det:det};});
 el.innerHTML=aggBarsHTML(LAST)+apiCellHTML(LAST);
@@ -23453,16 +23467,22 @@ return h+'</div>';}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
 var blocks=sets.map(function(e){return setHTML(e,many);}).filter(function(b){return b;});
-if(!blocks.length)return '';
 // Hosts sit SIDE BY SIDE, one column each (the user 2026-08-08: the breakdown used to stack every
 // host into one tall pillar; columns put them beside each other so hosts compare at a glance).
 // flex-wrap folds the columns back into a stack when width runs out — the mobile Usage modal
 // reuses this exact HTML, so narrow screens degrade on their own, no second layout.
-var h=many?('<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'):blocks[0];
+// No window block anywhere (every session keyed) still renders the spend section — an early ''
+// return on empty blocks left the API cell with an EMPTY hover exactly when spend was all there
+// was to show (the user 2026-08-15).
+var h=blocks.length?(many?('<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'):blocks[0]):'';
 // no footer hint: refresh is AUTOMATIC (the 60s pull below + the timeline's live forward), and a
 // click-me line misread on a hover surface (the user 2026-08-14) — the click stays as a manual
 // kick, it just doesn't advertise. An OPEN tip follows every data landing via renderRows.
-return h+fleetSpendHTML(sets);}
+h+=fleetSpendHTML(sets);
+// one quiet line saying WHY there are no bars (the acct line's dim dress): under key auth the
+// windows cannot arrive — absence is the designed state, not a stale read (the user 2026-08-15)
+if(h&&sets.some(function(e){return e.det._telemUnavail;}))h+='<div class=ru-tip-acct>rate-limit telemetry unavailable under API-key auth</div>';
+return h;}
 // The tip anchors ABOVE the rail, centered on the cursor (the user 2026-08-08: it used to pin to the
 // container's RIGHT edge, nowhere near a hover on the left end of a wide multi-account rail).
 function showTip(ev){var h=tipHTML();
