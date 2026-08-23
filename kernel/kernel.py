@@ -4284,13 +4284,23 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
             still = []
             for f in to_fire:
                 gtxt = (_nodes.get(f[0]) or {}).get("text") or ""
+                rec0 = nudged.get(f[0]) or {}
+                skips = rec0.get("redundantSkips") or 0
                 try:
-                    if gtxt and jd.nudge_redundant(gtxt, recent):
-                        nudged[f[0]] = dict(nudged.get(f[0]) or {}, answeredAt=int(now))
+                    # CAPPED at two consecutive skips (the user 2026-08-23, the same day the gate
+                    # shipped: on a status-heavy session every due nudge can read as redundant, and
+                    # each skip restarting the patience window is a forever-pause with no reviver —
+                    # the exact suppressed-without-reviver class the ladder exists to prevent). Past
+                    # the cap the nudge fires regardless; any real fire or answer resets the count.
+                    if skips < 2 and gtxt and jd.nudge_redundant(gtxt, recent):
+                        nudged[f[0]] = dict(rec0, answeredAt=int(now), redundantSkips=skips + 1)
                         _put_nudged(f[0], nudged[f[0]])
                         continue
                 except Exception:
                     pass
+                if skips:
+                    nudged[f[0]] = dict(rec0, redundantSkips=0)   # firing (or an unjudgeable check) resets
+                    _put_nudged(f[0], nudged[f[0]])
                 still.append(f)
             to_fire = still
     if len(to_fire) == 1:

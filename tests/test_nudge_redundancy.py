@@ -69,11 +69,15 @@ class NudgeRedundancy(unittest.TestCase):
         self.assertEqual(km._last_assistant_text(p), "the exporter shipped; nothing is blocked")
         self.assertEqual(km._last_assistant_text(os.path.join(td, "missing.jsonl")), "")
 
-    def test_the_fire_path_carries_the_gate(self):
+    def test_the_fire_path_carries_the_gate_with_the_skip_cap(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn("jd.nudge_redundant(gtxt, recent)", src)
         self.assertIn('recent = _last_assistant_text(s["path"])', src)
-        self.assertIn('answeredAt=int(now)', src)
+        self.assertIn("redundantSkips=skips + 1", src)
+        self.assertIn("if skips < 2 and gtxt", src,
+                      "two consecutive skips max — past that the nudge fires regardless, so the "
+                      "gate can never become a forever-pause with no reviver")
+        self.assertIn("redundantSkips=0", src, "a real fire resets the count")
 
 
 if __name__ == "__main__":
