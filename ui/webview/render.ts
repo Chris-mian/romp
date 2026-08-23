@@ -5776,7 +5776,7 @@ function updateCommentRail(): void {
   const v = activeId ? views.get(activeId) : null;
   const s = activeId ? sessions.get(activeId) : null;
   const threads = ((activeId && commentThreads.get(activeId)) || [])
-    .filter((t) => t.status === "open" || t.status === "resolved");
+    .filter((t) => t.status === "open" || t.status === "resolved" || t.status === "merged");
   if (!content || !v || !s || !threads.length || v.el.style.display === "none") { rail?.remove(); cmtRailSig = ""; return; }
   const r = content.getBoundingClientRect();
   if (!r.height) { rail?.remove(); cmtRailSig = ""; return; }              // hidden pane
@@ -5801,7 +5801,7 @@ function updateCommentRail(): void {
   rail.style.left = (r.right - 10) + "px";
   rail.style.top = r.top + "px";
   rail.style.height = r.height + "px";
-  const cls = (th: CommentThread) => "cmt-tick" + (th.status === "resolved" ? " resolved" : "")
+  const cls = (th: CommentThread) => "cmt-tick" + (th.status === "resolved" || th.status === "merged" ? " resolved" : "")
     + (th.unread && th.status === "open" ? " unread" : "")
     + (threadBusy(th.state) && th.status === "open" ? " busy" : "");   // the crawl rides the tick (2026-08-23)
   const kids = Array.from(rail.children) as HTMLElement[];
@@ -5879,18 +5879,19 @@ function ensureCommentMark(turn: HTMLElement, th: CommentThread): void {
     const host = segs[i].parentElement;
     if (host && host.tagName === "CODE" && host.parentElement?.tagName !== "PRE"
         && host.childNodes.length === 1) {
-      host.classList.toggle("cmt-hl-host", th.status !== "resolved");
+      host.classList.toggle("cmt-hl-host", th.status !== "resolved" && th.status !== "merged");
     }
     const kat = segs[i].parentElement?.closest(".katex") as HTMLElement | null;
-    if (kat) kat.classList.toggle("cmt-hl-host", th.status !== "resolved");
+    if (kat) kat.classList.toggle("cmt-hl-host", th.status !== "resolved" && th.status !== "merged");
   }
 }
 
 function styleCommentMark(m: HTMLElement, th: CommentThread): void {
-  m.classList.toggle("resolved", th.status === "resolved");
+  m.classList.toggle("resolved", th.status === "resolved" || th.status === "merged");
   m.classList.toggle("unread", !!th.unread && th.status === "open");
   m.classList.toggle("busy", threadBusy(th.state) && th.status === "open");
   m.title = th.status === "promoted" ? "thread, now the session '" + th.promotedName + "'"
+    : th.status === "merged" ? "merged thread: its outcome was folded back into the session"
     : th.status === "resolved" ? "resolved thread: click to read or reopen"
     : "thread: click to open";
 }
@@ -6011,6 +6012,8 @@ function commentPopTitle(create: boolean, th: CommentThread | null | undefined):
   return create ? "New comment:"
     : th!.status === "promoted" ? "Now its own session: " + th!.promotedName
     : th!.status === "promoting" ? "Breaking out…"
+    : th!.status === "merging" ? "Merging back in…"
+    : th!.status === "merged" ? nm + " (merged into the session)"
     : th!.status === "resolved" ? nm + " (resolved)" : nm;
 }
 
@@ -6235,6 +6238,7 @@ function renderCommentPopover(): void {
     box.className = "cmt-input";
     box.rows = 2;
     box.placeholder = create ? "Comment on this passage…"
+      : th!.status === "merged" ? "Merged — its outcome lives in the session now"
       : th!.status === "resolved" ? "Reply to reopen…" : "Reply…";
     box.value = commentDrafts.get(dk) || "";
     box.addEventListener("input", () => commentDrafts.set(dk, box.value));
@@ -6308,6 +6312,18 @@ function renderCommentPopover(): void {
       br.title = "Continue this thread as its own session; it keeps everything it knows";
       br.dataset.act = "cmtbreak";
       row.appendChild(br);
+      // MERGE (the user 2026-08-23): the third exit — fold the thread's outcome back into the
+      // session. The kernel sends the parent the discussion as the person's own handoff and the
+      // thread settles to 'merged'; only a thread with something to say can merge (kernel-refused
+      // otherwise, loudly).
+      if (th.status === "open" || th.status === "resolved") {
+        const mg = el("button", "cmt-act") as HTMLButtonElement;
+        mg.type = "button";
+        mg.textContent = "Merge";
+        mg.title = "Send this discussion back into the session as direction going forward; the thread closes as merged";
+        mg.dataset.act = "cmtmerge";
+        row.appendChild(mg);
+      }
       // Resolve is GONE (the user 2026-08-17): an idle thread draws no usage and its transcript
       // is on disk either way, so the real verbs are Break out and Delete. Legacy resolved rows
       // still render dimmed and reopen on reply; they just can't be minted anymore. Never for
@@ -11450,6 +11466,13 @@ setupSettings();
     cmtbreak: () => {
       const cur = openCommentThread();
       if (cur) showBreakoutPrompt(cur.sid, cur.th.tid);
+    },
+    cmtmerge: (elx) => {
+      const cur = openCommentThread();
+      if (!cur) return;
+      (elx as HTMLButtonElement).disabled = true;   // acknowledge before the round-trip
+      elx.textContent = "Merging…";
+      vscodeApi?.postMessage({ type: "commentMerge", id: cur.sid, tid: cur.th.tid });
     },
     cmtresolve: (elx) => {
       const cur = openCommentThread();
