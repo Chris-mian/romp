@@ -1523,6 +1523,7 @@ def _ordered_alive(now, tmux):
 # kernel cannot reach this blob) — same accepted gap session-flags has; SDK sids are stable anyway.
 _VIEWS_MAX_GROUPS = 32
 _VIEWS_MAX_NAME = 40
+_views_lock = threading.Lock()   # read-modify-write on the views blob from handler threads (_comments_lock precedent)
 
 
 def _views_path():
@@ -1603,6 +1604,60 @@ def _heal_timeline_views(old_sid, new_sid):
         if old_sid in g["members"]:
             g["members"] = sorted(set(g["members"]) | {new_sid})
     _set_timeline_views(v)
+
+
+def _b36(n):
+    """Date.now().toString(36) — the id mint the timeline corner panel uses for new groups, so a group
+    gets ONE id shape whether it was born in the dashboard or over POST /group."""
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out, n = "", int(n)
+    while n:
+        n, r = divmod(n, 36)
+        out = digits[r] + out
+    return out or "0"
+
+
+def _edit_group(name, add=(), remove=(), color=None, delete=False):
+    """Targeted edit of ONE named group in the views blob — the merge op behind POST /group. The WS
+    setTimelineViews op replaces the whole blob, which is right for the dashboard (it holds the
+    current one) and wrong for an agent: replaying a stale read would clobber the active view and
+    every group it never looked at. So: read, edit the one group, write back through the
+    normalizer. The group is addressed by NAME (the id is a UI-internal mint); two same-named
+    groups refuse rather than guess. Members are stored ids — the route resolves live names before
+    calling. A missing group is created on any edit, never on delete. Returns
+    (group-or-None, error-or-None); the returned row is the post-normalize one."""
+    # Clamp the name into the STORED basis before the lookup: the normalizer clamps names to
+    # _VIEWS_MAX_NAME on write, so matching on the raw name would miss the stored group and mint an
+    # unaddressable same-named duplicate on every subsequent edit.
+    name = str(name)[:_VIEWS_MAX_NAME]
+    with _views_lock:   # the server is threaded; two unlocked merges would both copy the same pre-state
+        v = json.loads(json.dumps(_timeline_views()))     # deep copy: never mutate the cached blob
+        hits = [g for g in v["groups"] if g["name"] == name]
+        if len(hits) > 1:
+            return None, 'two groups are named "%s" — rename one in the dashboard first' % name
+        if delete:
+            if not hits:
+                return None, 'no group named "%s"' % name
+            v["groups"] = [g for g in v["groups"] if g["id"] != hits[0]["id"]]
+            _set_timeline_views(v)      # an active pointing at it falls back to "all" in the normalizer
+            return None, None
+        if hits:
+            g = hits[0]
+        else:
+            if len(v["groups"]) >= _VIEWS_MAX_GROUPS:     # the normalizer would drop the appended 33rd, SILENTLY
+                return None, "the views blob caps at %d groups" % _VIEWS_MAX_GROUPS
+            n = int(time.time() * 1000)
+            taken = {g2["id"] for g2 in v["groups"]}
+            while "g" + _b36(n) in taken:   # same-ms creates must not share an id — delete filters by id
+                n += 1
+            g = {"id": "g" + _b36(n), "name": name, "color": "", "members": []}
+            v["groups"].append(g)
+        g["members"] = sorted((set(g["members"]) | set(add)) - set(remove))
+        if color is not None:
+            g["color"] = color
+        v = _norm_timeline_views(v)
+        _set_timeline_views(v)
+        return next(g2 for g2 in v["groups"] if g2["id"] == g["id"]), None
 
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
@@ -26342,6 +26397,11 @@ class Handler(BaseHTTPRequestHandler):
                     "colors": pal.colors(_pn), "active": _pn,
                     "palettes": [{"name": k, "label": v["label"], "colors": v["bg"]}
                                  for k, v in pal.PALETTES.items()]}), "application/json", cache="no-cache")
+            if p == "/views":                             # the session-views blob (active view, hidden set,
+                # groups) for scripts/agents: the read half of POST /group. The dashboard reads the same
+                # blob off the tabOrder WS push; this route exists for token-bearing curl consumers
+                # (`romp group` with no args prints it).
+                return self._send(200, json.dumps(_timeline_views()), "application/json", cache="no-cache")
             if p == "/models":                                # the ONE model + effort choice list — chat statusline, timeline lanes, AND judge settings all read it (the user 2026-07-02: no hardcoding in multiple places)
                 # each choice carries its colormap tint (the user 2026-08-17: the new-comment dialog's
                 # selectors wear the same colors the statusline badges do, for ANY pick — the badge
@@ -26900,6 +26960,89 @@ class Handler(BaseHTTPRequestHandler):
                 _mark_views_dirty()
                 return self._send(200, json.dumps({"ok": True, "id": tsid, "name": nm}),
                                   "application/json")
+            if u.path == "/color":
+                # Headless recolor (`romp color`, the user 2026-08-23 via the manager/worker workflow:
+                # a manager keeps its whole worker group one identity color): the setSessionColor WS op
+                # as a one-shot POST, sibling of /rename. Body: {"target": <live name or sid>,
+                # "bg": <swatch hex>}. Only a swatch from a known palette is accepted (its palette
+                # supplies the fg word) — GET /palette lists the choosable ones. A recolor is a
+                # names-registry write, so a dormant session works by sid, same as /rename. Loud errors.
+                try:
+                    b = json.loads(raw_body or b"{}")
+                except Exception:
+                    b = {}
+                target = str((b or {}).get("target") or "").strip()
+                bg = str((b or {}).get("bg") or "").strip()
+                if not target or not bg:
+                    return self._send(400, json.dumps({"ok": False, "error": "target and bg required"}),
+                                      "application/json")
+                live = _live_names(_tmux_sessions())
+                tsid = live.get(target) or ""
+                if not tsid and re.fullmatch(r"[0-9a-fA-F-]{32,36}", target):
+                    tsid = target
+                if not tsid:
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        'no live session named "%s" (a dormant one can be recolored by sid)' % target}),
+                                      "application/json")
+                if not pal.find(bg):
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        '"%s" is not a swatch of any palette — GET /palette lists the choosable ones' % bg}),
+                                      "application/json")
+                if not _set_session_color(tsid, bg):
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        "no names record for that session — is it known to this kernel?"}),
+                                      "application/json")
+                _mark_views_dirty()
+                return self._send(200, json.dumps({"ok": True, "id": tsid, "bg": bg,
+                                                   "fg": pal.fg_for(bg)}), "application/json")
+            if u.path == "/group":
+                # Headless group edit (`romp group`, the user 2026-08-23, same manager/worker workflow:
+                # the worker roster IS a session group, so an agent needs to keep one current). NOT the
+                # WS setTimelineViews op re-exposed — that op replaces the whole views blob; this is a
+                # targeted merge on ONE group (_edit_group has the why). Body: {"name": <group>,
+                # "add": [name-or-sid...], "remove": [...], "color": <swatch, optional>,
+                # "delete": true|false}. Member names resolve against live sessions; sids (dead
+                # sessions) and host-prefixed remote SIDs (host:<sid>) pass through verbatim — the
+                # same opaque-id contract the blob keeps. Unknown names — host:NAME included, since
+                # the blob stores ids and a stored name would be a member nothing ever matches —
+                # refuse loudly.
+                try:
+                    b = json.loads(raw_body or b"{}")
+                except Exception:
+                    b = {}
+                name = str((b or {}).get("name") or "").strip()
+                if not name:
+                    return self._send(400, json.dumps({"ok": False, "error": "name required"}),
+                                      "application/json")
+                live = _live_names(_tmux_sessions())
+                ids, unknown = {"add": [], "remove": []}, []
+                for k in ("add", "remove"):
+                    for x in (b.get(k) if isinstance(b.get(k), list) else []):
+                        x = str(x).strip()
+                        if not x:
+                            continue
+                        if x in live:
+                            ids[k].append(live[x])
+                        elif re.fullmatch(r"[0-9a-fA-F-]{32,36}", x) or \
+                                re.fullmatch(r"[^:]+:[0-9a-fA-F-]{32,36}", x):
+                            ids[k].append(x)          # a sid, or a host-prefixed remote SID, verbatim
+                        else:
+                            unknown.append(x)
+                if unknown:
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        "no live session named %s (dead ones go by sid, remote ones by host:<sid>)" %
+                        ", ".join('"%s"' % x for x in unknown)}), "application/json")
+                color = b.get("color")
+                g, err = _edit_group(name, add=ids["add"], remove=ids["remove"],
+                                     color=(str(color) if isinstance(color, str) else None),
+                                     delete=bool(b.get("delete")))
+                if err:
+                    return self._send(200, json.dumps({"ok": False, "error": err}), "application/json")
+                _mark_views_dirty()
+                if g is None:
+                    return self._send(200, json.dumps({"ok": True, "deleted": True, "name": name}),
+                                      "application/json")
+                return self._send(200, json.dumps({"ok": True, "group": g}), "application/json")
             if u.path == "/working":
                 # Publish/clear a session's working-note in the backend-agnostic store, so the postal bus's
                 # set_working goes through the kernel (no tmux @romp-working) and an SDK session can publish a

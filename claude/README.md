@@ -12,6 +12,9 @@ place by `install.sh`):
 - **`skills/romp-postal/`** — the full postal-service guide, loaded on demand
   (sessions get only a compact pointer at start — see
   `hooks/romp-postal-context.sh`).
+- **`skills/manager/`** — the manager workflow: one session dispatching work to
+  a group of worker sessions (roster = a session group, uniform worker color,
+  dispatch/track/verify/report norms). Loaded on demand.
 
 Skills live in this repo (not `~/.claude/skills/` directly) so a skill and the
 tool it documents change in the same commit; the installer creates the

@@ -2,7 +2,7 @@
 # Install romp onto this machine:
 #   - symlink the Claude Code hooks into ~/.claude/hooks/
 #   - symlink the MCP config (Romp Postal Service) into ~/.claude/
-#   - symlink the romp + romp-postal skills into ~/.claude/skills/
+#   - symlink the romp-postal + manager skills into ~/.claude/skills/
 #   - build + install the romp-chat-view VS Code extension
 #
 # bin/ is NOT symlinked anywhere — add it to PATH in your shell rc:
@@ -184,6 +184,10 @@ fi
 # the link itself.
 ln -sfn "$ROMP_DIR/claude/skills/romp-postal" "$HOME/.claude/skills/romp-postal"
 echo "  Symlinked romp-postal skill"
+
+# manager skill — running one session as the dispatcher of a worker group (same -n rationale)
+ln -sfn "$ROMP_DIR/claude/skills/manager" "$HOME/.claude/skills/manager"
+echo "  Symlinked manager skill"
 
 # The Agent SDK venv — the backend plain `romp new` uses. Best-effort: a host missing python >= 3.10
 # or Debian's python3-venv still runs tmux sessions (romp-sdk-setup says exactly what to install).
