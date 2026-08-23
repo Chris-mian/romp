@@ -3966,6 +3966,34 @@ def _deferral_sweep_tick(now):
         _write_auto_nudge(d)
 
 
+def _last_assistant_text(path, cap=4000):
+    """The newest assistant message's text from the transcript TAIL — what the redundancy gate shows
+    the judge as "the session's most recent report". Tail-read only (the newest turn is always
+    recent); '' on any trouble, which fires the nudge as before."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 262144))
+            lines = f.read().decode(errors="replace").splitlines()
+        for line in reversed(lines):
+            if '"assistant"' not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("type") != "assistant":
+                continue
+            c = ((rec.get("message") or {}).get("content"))
+            if isinstance(c, list):
+                txt = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+                if txt.strip():
+                    return txt[-cap:]
+        return ""
+    except Exception:
+        return ""
+
+
 def _nudge_response_ready(turns, store, rec, gid, now):
     """The nudge-failed stamp's structural gates, as one testable decision: (ready, resp_seg).
     ready False → skip this tick; ready True → every gate passed and the stamp may proceed
@@ -4239,6 +4267,32 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
                         if _nudge_deferred_ok(f[0], _why, now, sid, ev_t=_ev or None)]
         except Exception:
             pass
+    if to_fire:
+        # REDUNDANCY GATE (the user 2026-08-23, approved via the optimizer's audit): the session's
+        # own LAST message may already report exactly the status this nudge would ask for — 2 of 3
+        # fires on 08-22 came 12-13 minutes after the asked-about status had been reported, each
+        # burning a turn on a restatement. One cheap judge look per due goal; a YES records the
+        # report as the ANSWER (answeredAt: the ladder measures its next patience window from it,
+        # exactly as it would from a real reply) and skips the fire. Any failure fires as before —
+        # the gate is an optimization, the ladder is the job.
+        recent = _last_assistant_text(s["path"])
+        if recent:
+            try:
+                _nodes = jd.load_goals(sid).get("nodes", {})
+            except Exception:
+                _nodes = {}
+            still = []
+            for f in to_fire:
+                gtxt = (_nodes.get(f[0]) or {}).get("text") or ""
+                try:
+                    if gtxt and jd.nudge_redundant(gtxt, recent):
+                        nudged[f[0]] = dict(nudged.get(f[0]) or {}, answeredAt=int(now))
+                        _put_nudged(f[0], nudged[f[0]])
+                        continue
+                except Exception:
+                    pass
+                still.append(f)
+            to_fire = still
     if len(to_fire) == 1:
         gid, count, stalled = to_fire[0]
         text = _nudge_text(count, stalled)             # variant by escalation count — a repeat re-asks in fresh words
