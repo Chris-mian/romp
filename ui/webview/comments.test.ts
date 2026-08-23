@@ -80,6 +80,20 @@ test("threadsByAnchor groups threads per turn", () => {
   assert.equal(by.get("a1")!.length, 2);
 });
 
+test("the popover keeps the chat renderer but sheds its transcript-coupled hover chrome", () => {
+  // the user 2026-08-23, with a recording: hovering inside the comment box appended glow bands into
+  // .cmt-msgs (the band math expects the transcript's host), posted dotHover/dotOpen with the MAIN
+  // session's id and the THREAD's uuids (cross-lighting the timeline wrongly), and rail time-markers
+  // painted 45px left of gutterless turns — a clipped sliver at the popover edge.
+  assert.match(UI, /let renderingIntoThread = false;/);
+  assert.match(UI, /renderingIntoThread = true;\s*\/\/ same renderer, minus the transcript-coupled hover chrome/);
+  assert.match(UI, /renderingIntoThread = false;\s*\n\s*renderingSid = saved;/, "cleared before the fill returns");
+  assert.match(UI, /if \(\(anchorUuid \|\| epoch != null\) && !renderingIntoThread\) wireTurnHover/,
+    "no glow bands, no cross-pane posts, no dot-nav promises inside the thread");
+  assert.match(UI, /epoch != null && !renderingIntoThread && turn\.querySelector/,
+    "no rail time-markers on gutterless popover turns");
+});
+
 test("busy and stuck are disjoint state families", () => {
   for (const s of ["working", "retrying", "compacting"]) assert.ok(threadBusy(s) && !threadStuck(s));
   for (const s of ["permission", "picker"]) assert.ok(threadStuck(s) && !threadBusy(s));
