@@ -4266,7 +4266,11 @@ function showSelectionMenu(e: MouseEvent) {
     item.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
     menu.appendChild(item);
   };
-  mk("Reply", () => quoteSelectionIntoComposer(text));
+  // "Quote in message", not "Reply" (the user 2026-08-22, who asked if it duplicated the automatic
+  // selection chip): the chip already handles replying — select and just type. This item is the
+  // DIFFERENT thing: it drops the passage INTO the box as an editable markdown blockquote (trim it,
+  // annotate inside it), and the handler below de-duplicates the chip the same selection seeded.
+  mk("Quote in message", () => quoteSelectionIntoComposer(text));
   // Comment (the user 2026-08-13): open a side thread anchored to this passage. Only when the
   // selection sits in a real transcript turn (transcriptSelection's uuid) on a real session.
   const q = transcriptSelection();
