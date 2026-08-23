@@ -101,14 +101,27 @@ class DormantHandoffConverts(unittest.TestCase):
         d = jd.STATE / "states"
         d.mkdir(parents=True, exist_ok=True)
         (d / (SENDER + ".jsonl")).write_text(json.dumps({"state": "idle", "t": T + 50}) + "\n")
+        # the names-registry launch record: what marks a reg-less sid as one the owner scan can
+        # answer for — without it the corroborator reads the sid as transcript-derived and stands down
+        jd.NAMES.mkdir(parents=True, exist_ok=True)
+        (jd.NAMES / SENDER).write_text("web\t~/notes-api\t#3355aa\t#ffffff\n")
         km._PREV_ALIVE = None
         self.nudged = {}
+        # hermetic liveness (the corroboration the sweep runs since the deadwait-probe change): the
+        # owner scan answers WITHOUT this synthetic sid, so the death is corroborated — the world
+        # these tests assert. Same fixture as test_dead_wait_block.py; without it the corroborator
+        # returns None (reg-less sid, no owner answer) and the sweep rightly stands down.
+        km._TMUX.available = lambda: True
+        km._TMUX.alive_sids = lambda t=3: set()
 
     def tearDown(self):
+        for nm in ("available", "alive_sids"):
+            km._TMUX.__dict__.pop(nm, None)   # instance attrs shadow the class methods; drop them
         for f in jd.GOALDIR.glob("*"):
             f.unlink()
         for f in (jd.STATE / "states").glob("*"):
             f.unlink()
+        (jd.NAMES / SENDER).unlink(missing_ok=True)
 
     def test_dormant_sender_handoff_blocks_with_the_dead_wait_why(self):
         km._dead_wait_sweep(set(), self.nudged, T + 900)
