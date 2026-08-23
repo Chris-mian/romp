@@ -127,6 +127,39 @@ class DeclarationInvertsTheMismatch(_Declared):
                         "no declaration → the launch-intent comparison, verbatim: %r" % texts)
 
 
+class AllKeyedUsageLineHonorsTheDeclaration(_Declared):
+    """The refresh_usage all-keyed line rings as a PROBLEM exactly when the state contradicts (or
+    lacks) a declaration: =key → the box working as designed, an info line; =login → all-keyed
+    CONTRADICTS the declaration and must ring; undeclared → the surprising case, rings as before.
+    `not _expected_auth()` muted the contradiction — the one state the declaration exists to flag."""
+
+    def _all_keyed_box(self, n=7):
+        s = self._sess(n)
+        s.client, s.loop, s.ended, s.api_key_auth = object(), object(), False, True
+        self.be.sessions[s.sid] = s
+        return s
+
+    def _usage_problems(self):
+        return [p for p in self.be.problems(20) if "telemetry is unavailable" in p["text"]]
+
+    def test_declared_key_is_an_info_line(self):
+        os.environ["ROMP_EXPECTED_AUTH"] = "key"
+        self._all_keyed_box()
+        self.be.refresh_usage()
+        self.assertFalse(self._usage_problems(), "all-keyed under =key is the design, not a problem")
+
+    def test_declared_login_rings_the_contradiction(self):
+        os.environ["ROMP_EXPECTED_AUTH"] = "login"
+        self._all_keyed_box()
+        self.be.refresh_usage()
+        self.assertTrue(self._usage_problems(), "all-keyed CONTRADICTS =login — it must ring")
+
+    def test_undeclared_still_rings(self):
+        self._all_keyed_box()
+        self.be.refresh_usage()
+        self.assertTrue(self._usage_problems(), "undeclared all-keyed stays the surprising case")
+
+
 class PickOutranksTheDeclaration(_Declared):
     """An explicit per-session Billing pick (sess.auth) beats the box-wide declaration: the
     declaration describes the box's UNPICKED design, and set_auth's contract is that the next

@@ -3403,12 +3403,15 @@ class SdkBackend:
             # per-turn refreshes make unremarkable): nobody can poll the subscription windows, and the
             # log line below sat inside `if live:`, so the condition was COMPLETELY silent (the user
             # 2026-08-15). Under a ROMP_EXPECTED_AUTH=key declaration this is the box working as
-            # designed — an info line; undeclared, an all-keyed box is the surprising case and rings.
+            # designed — an info line; anything else rings: undeclared (the surprising case), and a
+            # declared-LOGIN box gone all-keyed, which CONTRADICTS its own declaration — `not
+            # _expected_auth()` read that contradiction as quiet, muting the exact state the
+            # declaration exists to flag.
             if connected and not self._usage_all_keyed:
                 self._usage_all_keyed = True
                 self._log("usage refresh: %d live session(s), all billing API keys — no session can "
                           "poll the subscription windows, so rate-limit telemetry is unavailable"
-                          % len(connected), problem=not _expected_auth())
+                          % len(connected), problem=_expected_auth() != "key")
             return
         if any(s.auth_live == "login" for s in live):
             # Re-armed only by an init that CONFIRMED a login — a fresh spawn's default-False flag
