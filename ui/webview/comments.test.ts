@@ -106,6 +106,19 @@ test("an unread thread wears a NEW-here dot on its last segment and a shouting r
   assert.match(UI, /if \(th\) th\.unread = false;\s*\/\/ optimistic; the kernel's watermark reconciles/);
 });
 
+test("an unread thread tints its turn's RAIL segment yellow; clicking the rail opens the thread", () => {
+  // the user 2026-08-23: the corner dot is easy to miss — the identity line's own segment is the
+  // prominent cue. Cleared on this same pass the moment the thread is viewed (openCommentPopover
+  // drops the flag and re-runs applyCommentMarks); the clear sweep runs BEFORE the re-apply so a
+  // resolved/removed thread can never leave a stale tint.
+  assert.match(UI, /for \(const t of Array\.from\(v\.el\.querySelectorAll\("\.turn\.cmt-rail-unread"\)\)\) t\.classList\.remove\("cmt-rail-unread"\);/);
+  assert.match(UI, /turn\.classList\.toggle\("cmt-rail-unread", list\.some\(\(t\) => !!t\.unread && t\.status === "open"\)\);/);
+  assert.match(CSS, /\.turn\.cmt-rail-unread::before \{ background: var\(--cmt-hl\); opacity: 1; width: 3px; left: 10px; \}/);
+  // the rail-hit click checks at CLICK time, so the strip reverts to timeline navigation once read
+  assert.match(UI, /const um = turn\.querySelector\("mark\.cmt-hl\.unread"\) as HTMLElement \| null;/);
+  assert.match(UI, /if \(um\?\.dataset\.tid && activeId\) \{ openCommentPopover\(activeId, um\.dataset\.tid, e\.clientX, e\.clientY\); return; \}/);
+});
+
 test("busy and stuck are disjoint state families", () => {
   for (const s of ["working", "retrying", "compacting"]) assert.ok(threadBusy(s) && !threadStuck(s));
   for (const s of ["permission", "picker"]) assert.ok(threadStuck(s) && !threadBusy(s));
@@ -355,24 +368,22 @@ test("ticks and message notches share ONE scrollbar frame, so they can never dis
   assert.match(UI, /kids\[i\]\.style\.top = t\.y \+ "px";/);
 });
 
-test("while the thread is WRITING the region wears marching ants ON TOP of the solid fill", () => {
+test("while the thread is WRITING the passage pales and the CRAWL rides the scroll-rail tick", () => {
+  // the user 2026-08-23 (superseding the same-day ants-on-top design): a crawl around the passage
+  // read as distraction, not progress. The passage now holds a PALER solid tint — visibly not the
+  // final color — and the four-strip march lives in miniature on the thread's scroll-rail tick.
   assert.match(UI, /m\.classList\.toggle\("busy", threadBusy\(th\.state\) && th\.status === "open"\)/);
-  // a dashed outline whose dashes crawl around the box — four gradient strips, animated offsets,
-  // the solid tint STAYS under the ants (the user 2026-08-23: no more mixed half-dashed phase, the
-  // only state change is the ants appearing); never a border (it would shift the inline text)
-  assert.match(CSS, /mark\.cmt-hl\.busy \{\s*\n\s*background-color: color-mix\(in srgb, var\(--cmt-hl\) 30%, transparent\);\s*\n\s*background-image:\s*\n\s*repeating-linear-gradient/);
-  assert.match(CSS, /animation: cmt-ants 3\.6s linear infinite;/, "3× slower than the original 1.2s march");
-  assert.doesNotMatch(CSS, /cmt-ants 1\.2s/, "no fast march survives anywhere");
-  // each no-repeat strip is oversized by one 12px dash period along its travel axis and starts a
-  // period back, and the keyframe travels exactly that period — a strip sized to its edge slid open
-  // a gap that snapped shut every cycle, a visible lurch on text-height vertical edges (2026-08-19)
-  assert.match(CSS, /background-size: calc\(100% \+ 12px\) 1\.5px, calc\(100% \+ 12px\) 1\.5px, 1\.5px calc\(100% \+ 12px\), 1\.5px calc\(100% \+ 12px\);/);
-  assert.match(CSS, /background-position: -12px 0, 0 100%, 0 0, 100% -12px;/);
-  assert.match(CSS, /@keyframes cmt-ants \{\s*\n\s*to \{ background-position: 0 0, -12px 100%, 0 -12px, 100% 0; \}/);
-  assert.match(CSS, /code\.cmt-hl-host:has\(mark\.cmt-hl\.busy\)/, "hosts march too, or their tint defeats the cue");
-  // both ants blocks (mark + host) carry the oversize — a lone fixed block leaves the other lurching
-  assert.strictEqual((CSS.match(/background-size: calc\(100% \+ 12px\) 1\.5px/g) || []).length, 2);
-  assert.match(KERNEL, /state = be\.session_state\(tsid\)/);
+  assert.match(CSS, /mark\.cmt-hl\.busy \{\s*\n\s*background-color: color-mix\(in srgb, var\(--cmt-hl\) 16%, transparent\);\s*\n\}/);
+  assert.doesNotMatch(CSS, /mark\.cmt-hl\.busy \{[^}]*repeating-linear-gradient/s, "no strips on prose");
+  assert.doesNotMatch(CSS, /@keyframes cmt-ants /, "the passage keyframes are gone with them");
+  // the tick's miniature march: 6px dash cycle, strips oversized by one period (the 2026-08-19
+  // loop-point lesson, scaled down), and the tick class rides threadBusy with the sig tracking it
+  assert.match(CSS, /\.cmt-tick\.busy::after \{[\s\S]*?animation: cmt-tick-ants 1\.8s linear infinite;/);
+  assert.match(CSS, /@keyframes cmt-tick-ants \{\s*\n\s*to \{ background-position: 0 0, -6px 100%, 0 -6px, 100% 0; \}/);
+  assert.match(UI, /\+ \(threadBusy\(th\.state\) && th\.status === "open" \? " busy" : ""\);/);
+  assert.match(UI, /\+ ":" \+ \(threadBusy\(t\.th\.state\) \? 1 : 0\)\)/, "a state flip re-renders the tick");
+  // the code/math hosts pale the same way — no strips there either
+  assert.match(CSS, /\.md \.katex\.cmt-hl-host:has\(mark\.cmt-hl\.busy\) \{\s*\n\s*background-color: color-mix\(in srgb, var\(--cmt-hl\) 16%, transparent\);\s*\n\}/);
 });
 
 test("the popover renders the thread with the CHAT's own renderer from the branch point", () => {

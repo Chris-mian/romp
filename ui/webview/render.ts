@@ -1313,6 +1313,10 @@ function wireTurnHover(turn: HTMLElement, dot: HTMLElement | null, uuid: string 
   // dotOpen payload, so the line and the dot that begins its turn navigate to exactly the same place.
   rail.addEventListener("click", (e) => {
     e.stopPropagation();
+    // a tinted (unread-comment) rail opens THAT thread (the user 2026-08-23) — checked at click
+    // time, so the same strip goes back to timeline navigation the moment the thread is read
+    const um = turn.querySelector("mark.cmt-hl.unread") as HTMLElement | null;
+    if (um?.dataset.tid && activeId) { openCommentPopover(activeId, um.dataset.tid, e.clientX, e.clientY); return; }
     if (activeId) vscodeApi?.postMessage({ type: "dotOpen", sid: activeId, uuid, t, tlId });
   });
   let railTimer: ReturnType<typeof setTimeout> | undefined;
@@ -5669,11 +5673,19 @@ function applyCommentMarks(sid: string): void {
   for (const old of Array.from(v.el.querySelectorAll("mark.cmt-hl"))) {
     if (!have.has((old as HTMLElement).dataset.tid || "")) unwrapCommentMark(old as HTMLElement);
   }
+  // the rail cue clears first (idempotent re-apply): a thread viewed, resolved, or removed must
+  // drop its turn's tint on this very pass, not linger until the next anchor match
+  for (const t of Array.from(v.el.querySelectorAll(".turn.cmt-rail-unread"))) t.classList.remove("cmt-rail-unread");
   if (!threads.length) return;
   for (const [uuid, list] of threadsByAnchor(threads)) {
     const turn = v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`) as HTMLElement | null;
     if (!turn) continue;                       // windowed out — the mark returns when the turn does
     for (const th of list) ensureCommentMark(turn, th);
+    // the turn's RAIL segment shouts the new-here state too (the user 2026-08-23: the corner dot is
+    // easy to miss — the identity line's own segment tints comment-yellow while any thread on this
+    // turn is unread, and clicking the rail opens it). Cleared above the moment it's viewed —
+    // openCommentPopover drops the unread flag and re-runs this pass.
+    turn.classList.toggle("cmt-rail-unread", list.some((t) => !!t.unread && t.status === "open"));
   }
 }
 
@@ -5781,7 +5793,8 @@ function updateCommentRail(): void {
     ticks.push({ th, y: Math.min(r.height - 6, Math.round((off / frame.sh) * (r.height - 4))) });
   }
   const sig = activeId + "|" + Math.round(r.top) + "," + Math.round(r.right) + "," + Math.round(r.height)
-    + "|" + ticks.map((t) => t.th.tid + ":" + t.y + ":" + t.th.status + ":" + (t.th.unread ? 1 : 0)).join(",");
+    + "|" + ticks.map((t) => t.th.tid + ":" + t.y + ":" + t.th.status + ":" + (t.th.unread ? 1 : 0)
+                            + ":" + (threadBusy(t.th.state) ? 1 : 0)).join(",");
   if (sig === cmtRailSig && rail) return;
   cmtRailSig = sig;
   if (!rail) { rail = el("div", "cmt-rail"); rail.id = "cmt-rail"; document.body.appendChild(rail); }
@@ -5789,7 +5802,8 @@ function updateCommentRail(): void {
   rail.style.top = r.top + "px";
   rail.style.height = r.height + "px";
   const cls = (th: CommentThread) => "cmt-tick" + (th.status === "resolved" ? " resolved" : "")
-    + (th.unread && th.status === "open" ? " unread" : "");
+    + (th.unread && th.status === "open" ? " unread" : "")
+    + (threadBusy(th.state) && th.status === "open" ? " busy" : "");   // the crawl rides the tick (2026-08-23)
   const kids = Array.from(rail.children) as HTMLElement[];
   if (kids.length === ticks.length && kids.every((k, i) => k.dataset.tid === ticks[i].th.tid)) {
     ticks.forEach((t, i) => { kids[i].style.top = t.y + "px"; kids[i].className = cls(t.th); });
