@@ -2159,6 +2159,42 @@ def _main_drift_verdict(origin, checkout, running):
     return ("", "")
 
 
+KERNEL_CODE_PREFIXES = ("kernel/", "bin/", "postal/", "cli/")
+_REBUILT_FOR = [""]   # the checkout sha this RUNNING kernel already converged to by rebuilding dist
+#                       in place (UI-only change) — the drift check treats it as in-sync until a
+#                       kernel-code commit moves the target past it
+
+
+def _kernel_code_changed(a, b):
+    """Does a..b touch code the RUNNING PROCESS executes? UI/dist inputs, tests, docs, plans do not —
+    a build whose kernel code is unchanged converges by REBUILDING dist in place with the kernel left
+    up (the user 2026-08-23: most changes are UI-only, and every restart cuts every in-flight turn).
+    Any error reads as True: when unsure, the restart is the safe converge."""
+    if not a or not b:
+        return True
+    try:
+        r = subprocess.run(["git", "diff", "--name-only", "%s..%s" % (a, b)], cwd=str(ROOT),
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return True
+        files = [f for f in r.stdout.splitlines() if f.strip()]
+        return any(f.startswith(KERNEL_CODE_PREFIXES) for f in files)
+    except Exception:
+        return True
+
+
+def _rebuild_dist():
+    """Rebuild the served bundles in place — the UI-only converge. The same esbuild the launcher runs,
+    kernel left up: _dist_ver() stats per page render so the fresh ?v= token flows on the next paint,
+    and the extension's newer-build prompt keys off the dv keepalive. (ok, err_tail)."""
+    try:
+        r = subprocess.run(["node", "esbuild.js"], cwd=str(ROOT / "vscode-extension"),
+                           capture_output=True, text=True, timeout=180)
+        return r.returncode == 0, (r.stderr or r.stdout or "").strip()[-300:]
+    except Exception as e:
+        return False, str(e)
+
+
 def _main_drift_check():
     """One origin/checkout/running comparison pass; fires the SAME banner as the release check (the
     shell's offer() renders the main-drift wording off kind:"main"). Re-fires only when the target sha
@@ -2166,6 +2202,21 @@ def _main_drift_check():
     if _update_mode() == "off":
         return
     kind, target = _main_drift_verdict(_origin_main_sha(), _checkout_sha(), _kernel_sha())
+    if kind == "restart" and target == _REBUILT_FOR[0]:
+        return                                        # already converged in place (UI-only rebuild)
+    if kind == "restart" and not _kernel_code_changed(_kernel_sha(), target):
+        # UI-ONLY drift (the user 2026-08-23): the checkout moved but nothing the running process
+        # executes changed — converge by rebuilding dist in place, in EVERY mode and with no
+        # cool-down (a rebuild cuts no turns, which is the only thing the gates protect). A failed
+        # build falls through to the normal restart path, loudly.
+        ok, err = _rebuild_dist()
+        if ok:
+            _REBUILT_FOR[0] = target
+            _sync_notice("new build served in place (UI-only change; no restart) — reload the "
+                         "dashboard to pick it up")
+            return
+        _sync_notice("UI-only update failed to build in place (%s) — taking the restart path" % err,
+                     ok=False)
     if not kind:
         _MAIN_DRIFT[0] = _MAIN_DRIFT[1] = ""          # in sync: a future drift is new information again
         return
@@ -2217,6 +2268,16 @@ def _run_main_update(kind, immediate=False):
             _sync_notice("main moved at origin, but the pull step failed: %s" % e, ok=False)
             _MAIN_DRIFT[0] = ""
             return
+    if kind == "pull" and not _kernel_code_changed(_kernel_sha(), _checkout_sha()):
+        # the pull only moved UI/dist inputs — same in-place converge as the restart-kind branch
+        ok, err = _rebuild_dist()
+        if ok:
+            _REBUILT_FOR[0] = _checkout_sha()
+            _sync_notice("new build served in place (UI-only change; no restart) — reload the "
+                         "dashboard to pick it up")
+            return
+        _sync_notice("UI-only update failed to build in place (%s) — taking the restart path" % err,
+                     ok=False)
     try:
         import urllib.request
         req = urllib.request.Request("http://127.0.0.1:%d/restart-all%s"
