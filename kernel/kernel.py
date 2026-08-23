@@ -3198,7 +3198,7 @@ def _closer_pending(sid, path, now, store):
     return not _closer_settled(store, lt.get("id"), len(lt.get("atoms") or []))
 
 
-def _auto_nudge_tick(now, tmux):
+def _auto_nudge_tick(now, tmux, run_dead_wait=True):
     """One Auto-Nudge pass (from the periodic pusher). For each ALIVE, IDLE session (its turn ended) that
     isn't awaiting/compacting/api-error, isn't WAITING ON A LIVE PEER (a wait isn't a stall — the human's
     "waiting on a peer isn't needs-you"; a mutual-wait cycle is surfaced by the deadlock chip, not nudged),
@@ -3227,7 +3227,16 @@ def _auto_nudge_tick(now, tmux):
                              % (s.get("sid") or "?", traceback.format_exc()))
     try:
         _debt_backstop_tick(now)                       # reminder outcomes for debtors the walk can't reach
-        _dead_wait_sweep(alive_ids, nudged, now)       # dormant owners' stamped cards → procedural block
+        if run_dead_wait:
+            # THE DEATH TRANSITION HAS ONE OBSERVER: _dead_wait_sweep's prev-swap (_PREV_ALIVE)
+            # is a lock-free read-modify-write, safe only because exactly one caller — the
+            # pusher's periodic tick — ever runs it. setAutoNudge's WS-handler tick passes
+            # run_dead_wait=False: racing the pusher (an unlucky interleave during a listing
+            # collapse), its swap could spend a death transition mid-pass without corroboration,
+            # losing the re-arm until the boot catch-up. That tick exists to re-arm NUDGING
+            # without waiting a cycle; the pusher re-runs the sweep on its own cadence anyway,
+            # so skipping loses nothing.
+            _dead_wait_sweep(alive_ids, nudged, now)   # dormant owners' stamped cards → procedural block
     except Exception:
         sys.stderr.write("debt-backstop: %s\n" % traceback.format_exc())
     try:
@@ -3482,13 +3491,85 @@ def _lift_spent_awaiting(now, tmux):
 _PREV_ALIVE = None                       # last tick's alive sids — a sid LEAVING is the death event
 
 
+def _dead_wait_corroborated(sid, scan=None, stats=None):
+    """May the dead-wait writers (_dead_wait_sweep, _wake_goal's dormant branch) treat this sid as
+    actually DEAD? Their trigger — absence from a raw liveness listing — inherits every collapse
+    that listing has (list_lines' error/timeout→[] empties the tmux half for a cycle; a swallowed
+    SDK live_sessions merge exception empties the other), and the block they file is irreversible
+    bookkeeping the user acts on, with nothing lifting it when the listing returns. So absence
+    alone NEVER files: corroborate with the liveness OWNER first — the same doctrine as
+    _death_sweep_tick / _death_boot_pass (a death is certified only by an affirmative answer,
+    never by silence). Tri-state:
+      True  — corroborated dead: the SDK reg's alive bit is False (the death sweep's partition —
+              alive:True is live/revivable/crash-looped and must never convert; the resume
+              contract owns it), a standing death record postdates the session's last recorded
+              state, or the owner scan answers without the sid.
+      False — the owner says ALIVE: the raw listing blinked, not the session.
+      None  — cannot confirm: a real probe failure, an unreadable reg, or a reg-less sid with no
+              names-registry entry — a session launched by NEITHER backend (both write names/<sid>
+              at creation), whose existence is transcript-derived (the same file walk
+              _alive_sessions falls back to on a tmux-less box) and which no owner here can
+              answer for. The caller stands down for the cycle — the stamp stays, and the sweep
+              keeps the death transition armed so the next tick re-asks.
+    `scan` is a zero-arg owner-scan supplier for a batch pass sharing ONE scan across its probes
+    (_death_sweep_tick's idiom); the default takes its own. `stats` is a batch pass's stand-down
+    tally ({reason: count}): with it, the loud stand-downs increment their tally instead of
+    writing stderr per candidate, and the pass reports ONE line per reason (_death_sweep_tick's
+    idiom — the per-candidate line multiplied by the candidate count under exactly the wedge it
+    reports); without it (a single-probe caller like _wake_goal), the line names the sid inline."""
+    sid = str(sid)
+    reg = jd.SDKDIR / (sid + ".json")
+    if reg.exists():
+        try:
+            return not bool(json.loads(reg.read_text()).get("alive"))
+        except Exception:
+            # unreadable reg — stand down, retried next tick, but LOUDLY (the fail-loudly rule):
+            # a silent stand-down would wedge the conversion behind a corrupt reg forever,
+            # with no trace to act on
+            if stats is not None:
+                stats["reg"] = stats.get("reg", 0) + 1
+            else:
+                sys.stderr.write("dead-wait: unreadable SDK reg for %s — standing down this cycle\n" % sid)
+            return None
+    try:                                         # a corroborated death some writer already stamped,
+        m = json.loads((jd.STATE / "gone" / (sid + ".json")).read_text())   # still standing —
+        if isinstance(m, dict) and int(m.get("t") or 0) >= int((_last_states_row(sid) or {}).get("t") or 0):
+            return True                          # answers without a probe, even under a wedged server
+    except (OSError, ValueError):
+        pass
+    # AUTHORITY FOLLOWS OWNERSHIP (2026-08-23): the owner scan below settles only sids tmux could
+    # have RUN. A reg-less sid with no names-registry entry was launched by neither backend — its
+    # existence is transcript-derived — so no owner here can answer for it, whatever the box has
+    # installed. Keying the stand-down on _TMUX.available() alone would tie authority to the BOX:
+    # the availability probe is live (shutil.which), so tmux APPEARING mid-flight would hand a
+    # fresh, EMPTY server's scan authority over a live file-derived session's death and convert
+    # its card. The tmux-less box falls out of the same rule: a registered sid still stands down
+    # below when there is no server to ask.
+    if not (jd.NAMES / sid).is_file():
+        return None                              # transcript-derived: no owner here — stand down
+    if not _TMUX.available():
+        return None                              # tmux-launched, but no server on this box to ask
+    scan = scan() if scan is not None else _TMUX.alive_sids()
+    if scan is None:
+        if stats is not None:
+            stats["probe"] = stats.get("probe", 0) + 1
+        else:
+            sys.stderr.write("dead-wait: liveness probe failed for %s — standing down this cycle\n" % sid)
+        return None
+    return sid not in scan
+
+
 def _dead_wait_sweep(alive_ids, nudged, now):
     """Find DORMANT sessions whose Working cards still hold a judged awaiting stamp and convert each to
     a procedural block (_dead_wait_block). Event-triggered, never a per-tick poll of every store: the
     trigger is the DEATH TRANSITION (a sid leaving the alive set between ticks), plus one catch-up
     sweep of all dormant stores on the first tick after boot — the same boot-re-audit pattern the
     awaiting stamps already use — for sessions that died under a previous kernel (the two measured
-    cards had been dead 79 hours across many restarts)."""
+    cards had been dead 79 hours across many restarts). The transition is a RAW-listing diff, so
+    every candidate's death is corroborated with the liveness owner (_dead_wait_corroborated)
+    before its store is even walked; a stood-down candidate (owner says alive, or unconfirmable)
+    is kept in _PREV_ALIVE so the transition stays armed and the next tick re-asks — an
+    unconfirmed absence must never spend the one event that triggers this sweep."""
     global _PREV_ALIVE
     prev, _PREV_ALIVE = _PREV_ALIVE, set(alive_ids)
     if prev is None:
@@ -3498,8 +3579,19 @@ def _dead_wait_sweep(alive_ids, nudged, now):
             return
     else:
         cands = prev - set(alive_ids)
+    scan_memo = []                               # one owner scan per pass (_death_sweep_tick's idiom):
+
+    def _pass_scan():                            # under the exact collapse this guard exists for, EVERY
+        if not scan_memo:                        # alive sid is a candidate, and a per-sid probe would
+            scan_memo.append(_TMUX.alive_sids())  # fork a subprocess per session per tick
+        return scan_memo[0]
+
+    stats = {}                                   # loud stand-down tallies → ONE line per reason per pass
     for sid in cands:
         try:
+            if _dead_wait_corroborated(sid, scan=_pass_scan, stats=stats) is not True:
+                _PREV_ALIVE.add(sid)             # not corroborated dead: nothing files, and the death
+                continue                         # transition stays armed for the next tick's re-ask
             store = jd.load_goals(sid)
             nodes = store.get("nodes", {})
             # BRIEF REPAIR (the user 2026-08-23, cards "stuck on Distilling" in Blocked): procedural
@@ -3545,6 +3637,15 @@ def _dead_wait_sweep(alive_ids, nudged, now):
                     _dead_handoff_block(sid, nid, h, nd, nudged, now)
         except Exception:
             sys.stderr.write("dead-wait sweep (%s): %s\n" % (sid, traceback.format_exc()))
+    # The pass's loud stand-downs, collapsed to one line per reason (_death_sweep_tick's idiom):
+    # per-candidate lines multiply by the candidate count under exactly the wedge they report
+    # (a 20-session listing collapse would log every candidate every tick), drowning the signal.
+    if stats.get("probe"):
+        sys.stderr.write("dead-wait: probe failed; %d candidate(s) stood down this pass\n"
+                         % stats["probe"])
+    if stats.get("reg"):
+        sys.stderr.write("dead-wait: unreadable SDK reg; %d candidate(s) stood down this pass\n"
+                         % stats["reg"])
 
 
 def _dead_handoff_block(sid, nid, h, nd, nudged, now):
@@ -3662,7 +3763,12 @@ def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
         # death notice tells the CHAT what happened; nothing ever moved the CARD. Nothing that could
         # answer the wait is running, so convert ONCE per stamp episode to a procedural block naming
         # the dead wait — the same terminal an unanswered wake reaches — and let a revival's reply
-        # lift it like any block.
+        # lift it like any block. But the map's absence is a RAW read (on a tmux-less box this branch
+        # takes every file-derived session _alive_sessions falls back to, alive included), so the
+        # death is corroborated with the liveness owner first; unconfirmable stands down — the stamp
+        # stays and the next walk re-asks.
+        if _dead_wait_corroborated(sid) is not True:
+            return False
         return _dead_wait_block(sid, gid, at, why, nudged, now)
     rec = nudged.get(gid) or {}
     if not rec.get("wake"):
@@ -27112,7 +27218,10 @@ class Handler(BaseHTTPRequestHandler):
                 _mark_views_dirty()
         elif msg and msg.get("type") == "setAutoNudge" and msg.get("enabled") is not None:
             _set_auto_nudge(bool(msg["enabled"]))   # feed gear → server-side Auto Nudge on/off
-            _auto_nudge_tick(int(time.time()), _tmux_sessions())   # act immediately on turn-on (don't wait 4s)
+            # act immediately on turn-on (don't wait 4s) — but skip the dead-wait sweep: the
+            # death transition has ONE observer (the pusher's tick; see _auto_nudge_tick), and
+            # this WS thread racing its prev-swap could spend a transition uncorroborated
+            _auto_nudge_tick(int(time.time()), _tmux_sessions(), run_dead_wait=False)
         elif msg and msg.get("type") == "setUpdateMode" and msg.get("mode") in _UPDATE_MODES:
             _set_update_mode(str(msg["mode"]))      # feed gear → how romp handles new releases at boot
         elif msg and msg.get("type") == "setFileEditing" and msg.get("enabled") is not None:
