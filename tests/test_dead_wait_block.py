@@ -132,6 +132,23 @@ class DeadWaitBlock(unittest.TestCase):
         km._dead_wait_sweep({SID}, self.nudged, STAMP_T + 900)
         self.assertFalse(jd.load_goals(SID)["nodes"][GID].get("blocked"))
 
+    def test_a_post_stamp_peer_ack_does_not_hide_the_wait_from_the_sweep(self):
+        # the 100-hour survivors (2026-08-23): a worker's "starting now" mail seconds after the stamp
+        # made the peer-answered supersede read the wait as met, so the sweep stood down forever while
+        # the chip kept showing awaiting. The sweep reads the RAW stamp: a dormant owner can't process
+        # an answer anyway, so a recorded wait on a Working card converts regardless.
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        saved = km._peer_answered_at
+        km._peer_answered_at = lambda sid: STAMP_T + 110   # an ack landed just after the stamp
+        try:
+            km._PREV_ALIVE = None
+            km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            km._peer_answered_at = saved
+        self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"),
+                        "the supersede must not hide a dormant owner's wait from the sweep")
+
     def test_death_transition_triggers_between_ticks(self):
         _seed_store()
         _write_state("idle", STAMP_T + 50)
