@@ -9064,6 +9064,22 @@ def _known_note(host, trust=None, share=None, attached=None):
     _known_save()
 
 
+def _mark_known_unreachable(host):
+    """The probe corroborated that `host` is really away (ssh fails too, not just romp's dial): the
+    remembered attachment stops claiming the PRESENT (the user 2026-08-23: the Mac was off all day,
+    69 probe timeouts logged, and remotes-known kept attached:true while listings showed its sessions
+    live). attached flips False — lastAttachedAt keeps the history ("was attached, until then") — and
+    the next real attach/check-in re-marks it True through the normal writers. Idempotent and quiet
+    when the host was never marked."""
+    with _known_lock:
+        e = _known.get((host or "").strip())
+        if not e or not e.get("attached"):
+            return
+        e["attached"] = False
+        e["unreachableAt"] = int(time.time())
+    _known_save()
+
+
 def known_trust(host):
     """The trust level remembered for a host from its last attachment, or None if it's new here."""
     with _known_lock:
@@ -10222,6 +10238,16 @@ def _tunnel_supervisor():
                                     "end, not the host's. See tunnel-dials.jsonl." % r["host"])
                             elif why:
                                 _remotes[r["host"]]["detail"] = "cannot reach %s: %s" % (r["host"], why)
+                                # The machine is REALLY away (ssh fails too — the probe's own verdict,
+                                # not a timer): stop serving its remembered sessions as live, and stop
+                                # claiming the attachment in remotes-known (the user 2026-08-23 — the
+                                # off-all-day Mac kept both all day). The stale/lastOk treatment that
+                                # marked kernelSha as remembered never covered sids: _host_for_sid and
+                                # _remote_row kept the last successful poll's list. A reconnect heals
+                                # both: the next poll repopulates sids, the next attach re-marks known.
+                                _remotes[r["host"]]["sids"] = []
+                    if not ok:
+                        _mark_known_unreachable(r["host"])
                 if skip:
                     continue
                 up = _port_open(r["local_port"])              # outside the lock (socket round-trip)
