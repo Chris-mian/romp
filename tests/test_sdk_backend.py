@@ -247,6 +247,21 @@ class LiveTail(unittest.TestCase):
         a = sb.msg_to_atom(m, "s", "f", 5)
         self.assertNotIn("toolUseResult", a)
 
+    def test_an_unconsumed_shape_is_not_carried(self):
+        # The consumed-keys gate: a Read result's dict embeds the WHOLE read file, and nothing
+        # reads it off the atom — carrying every dict held ~a fifth of transcript bytes in the
+        # parse cache by reference. Only the consumed shapes ride (answers, structuredPatch).
+        m = _UserMessage([_ToolResultBlock("t9", "file contents…")],
+                         tool_use_result={"type": "text", "file": {"content": "x" * 512}})
+        a = sb.msg_to_atom(m, "s", "f", 5)
+        self.assertNotIn("toolUseResult", a)
+
+    def test_the_consumed_key_set_cannot_drift_from_the_file_adapter_s(self):
+        # sdk_backend loads standalone (no event-model import), so the set is MIRRORED — this pin
+        # is what keeps the two halves widening together.
+        em2 = SourceFileLoader("romp_event_model_drift", os.path.join(BIN, "romp-event-model")).load_module()
+        self.assertEqual(sb.TUR_CONSUMED_KEYS, em2.TUR_CONSUMED_KEYS)
+
     def test_command_stdout_stream_becomes_a_turn_ENDING_assistant_atom(self):
         # the user 2026-07-02: client.set_model() makes the CLI stream its feedback as a UserMessage
         # wrapped in <local-command-stdout>. As a raw USER atom it opened a turn no reply would ever

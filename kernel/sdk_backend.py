@@ -362,11 +362,18 @@ def msg_to_atom(msg, sid, fsid, t, skill_tool_ids=()):
         # AskUserQuestion rendered via the lossy regex scrape until the disk record was parsed, and
         # Edit's diffRows lagged a parse behind the stream.
         tur = getattr(msg, "tool_use_result", None)
-        if has_tool_result and isinstance(tur, dict):
+        if has_tool_result and isinstance(tur, dict) and (set(tur) & TUR_CONSUMED_KEYS):
+            # same consumed-keys gate as the file adapter: a Read result's dict holds the whole
+            # file — carrying shapes nothing reads only bloats the live tail
             atom["toolUseResult"] = tur
         return atom
     return None
 
+
+# The toolUseResult keys a consumer actually reads — MIRRORS event_model.TUR_CONSUMED_KEYS (this
+# module loads standalone, so it cannot import the event model; a drift pin in test_sdk_backend.py
+# holds the two sets equal). Widen both together when a new consumer appears; never carry-all.
+TUR_CONSUMED_KEYS = frozenset(("answers", "structuredPatch"))
 
 TYPE_SOMETHING = "Type something"   # meta-option label the webview turns into the inline "add your own" field
 
