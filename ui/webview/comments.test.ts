@@ -329,11 +329,14 @@ test("ticks and message notches share ONE scrollbar frame, so they can never dis
   assert.match(UI, /kids\[i\]\.style\.top = t\.y \+ "px";/);
 });
 
-test("while the thread is WRITING the region wears marching ants; the fill lands with the reply", () => {
+test("while the thread is WRITING the region wears marching ants ON TOP of the solid fill", () => {
   assert.match(UI, /m\.classList\.toggle\("busy", threadBusy\(th\.state\) && th\.status === "open"\)/);
   // a dashed outline whose dashes crawl around the box — four gradient strips, animated offsets,
-  // no fill, never a border (it would shift the inline text); solid returns when busy drops
-  assert.match(CSS, /mark\.cmt-hl\.busy \{\s*\n\s*background-color: transparent;\s*\n\s*background-image:\s*\n\s*repeating-linear-gradient/);
+  // the solid tint STAYS under the ants (the user 2026-08-23: no more mixed half-dashed phase, the
+  // only state change is the ants appearing); never a border (it would shift the inline text)
+  assert.match(CSS, /mark\.cmt-hl\.busy \{\s*\n\s*background-color: color-mix\(in srgb, var\(--cmt-hl\) 30%, transparent\);\s*\n\s*background-image:\s*\n\s*repeating-linear-gradient/);
+  assert.match(CSS, /animation: cmt-ants 3\.6s linear infinite;/, "3× slower than the original 1.2s march");
+  assert.doesNotMatch(CSS, /cmt-ants 1\.2s/, "no fast march survives anywhere");
   // each no-repeat strip is oversized by one 12px dash period along its travel axis and starts a
   // period back, and the keyframe travels exactly that period — a strip sized to its edge slid open
   // a gap that snapped shut every cycle, a visible lurch on text-height vertical edges (2026-08-19)
