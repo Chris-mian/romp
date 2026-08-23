@@ -610,10 +610,11 @@ MOCK
 
 # ─── No attach/rename subcommands (use tmux a / tmux rename) ─────────
 
-@test "'a', 'attach', 'rename' are unknown commands, never sessions" {
-    # There is no attach/rename command (plain tmux does both), and round 3 made
-    # every non-command bare word a loud error pointing at `romp new`.
-    for word in a attach rename; do
+@test "'a' and 'attach' are unknown commands, never sessions" {
+    # There is no attach command (plain tmux does that), and round 3 made every
+    # non-command bare word a loud error pointing at `romp new`. (`rename` left
+    # this list when it became a real verb — see the rename tests above.)
+    for word in a attach; do
         : > "$MOCK_LOG"
         run run_romp "$word"
         [ "$status" -eq 2 ]
