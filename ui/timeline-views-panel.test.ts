@@ -1,4 +1,4 @@
-// The timeline's corner control panel (the user 2026-08-18): "Show: <view> ▾ · N more" in the
+// The timeline's corner control panel (the user 2026-08-18; filter-chip form 2026-08-23): "Filter ▾" in the
 // bottom-left corner — the strip under the lane gutter, left of the time labels. The dropdown picks
 // the active VIEW (the default group / named groups), holds New group… / Edit sessions…, and carries the
 // two timeline display toggles (collapse idle gaps, active only) so they finally work in every host.
@@ -65,9 +65,22 @@ test("the lane gate composes the view filter first, and the all-quiet fallback r
 
 test("the trigger sits in the corner strip and opens on pointerdown, like every timeline control", () => {
   assert.match(SRC, /_drawViewsTrigger\(svg, axisY\);/);
-  assert.match(SRC, /lead\.textContent = 'Show: ';/);
+  // named for what it does (the user 2026-08-23): it FILTERS the lanes — "Show:" read as a passive label
+  assert.match(SRC, /lead\.textContent = 'Filter ▾';/);
   assert.match(SRC, /t\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); this\._openViewsMenu\(t\); \}\);/);
   assert.match(SRC, /' · ' \+ more \+ ' more';/, "a filtered-out live session is always one glance away");
+});
+
+test("an active group is a REMOVABLE CHIP: its own colour, an ✕, one click back to default (the user 2026-08-23)", () => {
+  // the chip's own pointerdown clears the filter without a menu trip; stopPropagation keeps the
+  // text element's menu handler out of it (both are pointerdown — the redraw-eats-click rule)
+  assert.match(SRC, /chip\.textContent = name \+ ' ✕';/);
+  assert.match(SRC, /chip\.addEventListener\('pointerdown', \(e\) => \{\n\s*e\.preventDefault\(\); e\.stopPropagation\(\);\n\s*const nv = JSON\.parse\(JSON\.stringify\(v\)\); nv\.active = 'all'; this\._setViews\(nv\);/);
+  // the chip wears the group's identity colour and a hover title saying what the click does
+  assert.match(SRC, /const chip = el\('tspan', \{ fill: g\.color \|\| '#cccccc', 'font-weight': 650 \}\);/);
+  assert.match(SRC, /click to remove the filter \(back to the default view\)/);
+  // no chip on the default view — nothing to remove
+  assert.match(SRC, /const active = !!g && v\.active && v\.active !== 'all';/);
 });
 
 test("the dropdown and dialog wear the shared menu vocabulary and adopt into the menu host", () => {
@@ -116,7 +129,8 @@ test("executed: the dialog's two checkbox mutations, pure", () => {
 });
 
 test("the trigger measures its WHOLE string against the gutter, and the dialog's Escape hook dies on every close", () => {
-  assert.match(SRC, /const fits = \(n\) => this\.labelWidth\('Show: ' \+ n \+ tail\) <= this\.M\.left - PADL - 6;/);
+  assert.match(SRC, /const line = \(n\) => 'Filter ▾' \+ \(active \? ' · ' \+ n \+ ' ✕' : ''\) \+ \(more \? ' · ' \+ more \+ ' more' : ''\);/);
+  assert.match(SRC, /const fits = \(n\) => this\.labelWidth\(line\(n\)\) <= this\.M\.left - PADL - 6;/);
   assert.match(SRC, /this\._viewsDialogKey = \{ doc: h\.doc, fn: onKey \};/);
   assert.match(SRC, /this\._viewsDialogKey\.doc\.removeEventListener\('keydown', this\._viewsDialogKey\.fn\);/);
 });
