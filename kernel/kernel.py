@@ -20742,16 +20742,40 @@ def _edit_trace_sid(path, sid):
     return best
 
 
+# The marker-opening CLASS every downstream reader tolerates: "<!--" then ANY whitespace before
+# "romp-" (the event model's ROMP_INJECT_RE / POSTAL_RE / MSG_TAG_RE and the judge's
+# NUDGE_MARKER_RE are all "<!--\s*romp-"). The neutralizer must break this same class, not one
+# literal spelling — closing only the one-space form would let a no-space "<!--romp-injected-->"
+# sail straight through. tests/test_marker_neutralizer.py imports those regexes verbatim and
+# proves no whitespace variant survives.
+_ROMP_MARKER_OPEN_RE = re.compile(r"<!--(?=\s*romp-)")
+
+
+def _neutralize_romp_markers(text):
+    """Break the marker-OPENING sequence in user- or request-supplied text before it rides an
+    injected body — such as the file path the edit trace embeds, which arrives straight off the
+    save request. Text containing a literal "<!--romp-…" (any whitespace — exactly the tolerance
+    the matchers themselves have, see _ROMP_MARKER_OPEN_RE) would otherwise plant a lookalike
+    marker, and downstream readers key on that comment form (the event model's POSTAL_RE peer
+    detection and ROMP_INJECT_RE author attribution, the judge's NUDGE_MARKER_RE, the SDK echo's
+    romp-injected check) — a forged romp-msg-id reads as a peer delivery that never happened.
+    Minimal, visible escape of the opener alone ("<!--" → "<!- -", whitespace and words
+    untouched): the text stays readable, the comment form can no longer match."""
+    return _ROMP_MARKER_OPEN_RE.sub("<!- -", str(text))
+
+
 def _edit_trace_body(path):
     """The trace's text, alone so tests/test_injected_voice.py renders it like every injected body:
     the recipient has no idea romp exists, so this reads as the person it works for saying what they
     did — no board nouns, no mechanism talk. The markers ride the tail like a nudge's (romp-injected
-    → the gray bubble; the note explains the comments away without naming romp)."""
+    → the gray bubble; the note explains the comments away without naming romp). The path is
+    request-supplied text, so it is marker-neutralized like any untrusted half of an injected body —
+    a marker-shaped filename must not become a live marker downstream readers key on."""
     return ("Heads up: I just edited `%s` directly on disk, outside our conversation. If you have it "
             "open or are mid-change there, re-read it before writing.\n"
             "<!-- romp-injected -->"
             "<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
-            "relevant to your work — ignore them -->" % _tilde(str(path or "")))
+            "relevant to your work — ignore them -->" % _neutralize_romp_markers(_tilde(str(path or ""))))
 
 
 def _edit_trace(path, sid):
