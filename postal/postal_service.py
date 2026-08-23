@@ -150,7 +150,7 @@ def _self_row():
     sid = _self_id()
     if not sid:
         return None
-    agents = local_agents()
+    agents = local_agents(threads=True)   # a comment thread resolves to its OWN row/name (2026-08-22)
     return (next((a for a in agents if a.get("id") == sid), None)
             or next((a for a in agents if a.get("lastSid") == sid), None))
 
@@ -465,6 +465,11 @@ def format_agents(agents, me, me_id=""):
         # the reader most needs to know which row is theirs (see resolve_recipient).
         mine = (a.get("id") == me_id) if me_id else (a["name"] == me)
         tag = " (you)" if mine else (" [remote]" if a.get("remote") else "")
+        if a.get("thread") and not mine:
+            # a comment thread of one of these sessions: addressable for replies, but a minor player —
+            # say whose it is so nobody mistakes it for a full peer (the user 2026-08-22)
+            pn = next((x.get("name") for x in agents if x.get("id") == a.get("parent")), "")
+            tag = " (thread of %s)" % (pn or "a session here")
         br = ("  [%s]" % a["branch"]) if a.get("branch") else ""
         wk = ""
         if a.get("working"):
@@ -509,7 +514,7 @@ HEARTBEATS = {}        # id -> (name, last_seen_epoch)   (remote presence)
 STREAKS = {}           # id -> (count, last_epoch)        (loop guard)
 _lock = threading.Lock()
 
-def _kernel_sessions():
+def _kernel_sessions(threads=False):
     """LIVE romp sessions (tmux + SDK) from the kernel's unified GET /sessions — the kernel owns the backend
     query (TmuxBackend for tmux liveness + the SDK registry), so the bus enumerates sessions WITHOUT shelling
     tmux and WITHOUT reading the SDK registry directly: ONE source. Loopback, authorized with X-Romp-Token
@@ -523,12 +528,16 @@ def _kernel_sessions():
     if seam:
         try:
             data = json.loads(Path(seam).read_text())
-            return data if isinstance(data, list) else []
+            if not isinstance(data, list):
+                return []
+            # the seam mirrors the route: thread rows ride only when asked (the user 2026-08-22)
+            return data if threads else [r for r in data if not (isinstance(r, dict) and r.get("thread"))]
         except Exception:
             return []
     import urllib.request
     try:
-        req = urllib.request.Request(KERNEL_BASE + "/sessions", headers={"X-Romp-Token": SERVE_TOKEN})
+        req = urllib.request.Request(KERNEL_BASE + "/sessions" + ("?threads=1" if threads else ""),
+                                     headers={"X-Romp-Token": SERVE_TOKEN})
         with urllib.request.urlopen(req, timeout=2) as r:
             data = json.loads(r.read().decode("utf-8"))
         return data if isinstance(data, list) else []
@@ -536,19 +545,29 @@ def _kernel_sessions():
         return []
 
 
-def local_agents():
+def local_agents(threads=False):
     """LIVE local sessions (tmux + SDK) as postal agent rows, read from the kernel's unified GET /sessions.
     The kernel merges both backends, so an SDK session is a live agent here too — a send to an open SDK
-    session delivers instead of parking as dead (the user via ui, 2026-06-26)."""
+    session delivers instead of parking as dead (the user via ui, 2026-06-26).
+
+    `threads` (the user 2026-08-22): also include COMMENT-THREAD sessions — real forked sessions the
+    kernel hides from tabs/lanes/cards until promotion. Opt-in per consumer so the default listing and
+    every other reader stay exactly as they were: self-identity, recipient resolution, and the agents
+    listing pass True (a thread mails its parent under its OWN name and is addressable for replies);
+    everything else never sees them."""
     res = []
-    for s in _kernel_sessions():
+    for s in _kernel_sessions(threads=threads):
         sid = s.get("id")
         if not sid:
             continue
-        res.append({"name": s.get("name") or sid[:8], "id": sid, "remote": False,
-                    "working": s.get("working", ""), "dir": s.get("dir", ""),
-                    "lastSid": s.get("lastSid", ""),   # the session's CURRENT transcript fsid (self-identity join)
-                    "state": s.get("state", "")})   # state: working/idle/waiting/... → working-note freshness
+        row = {"name": s.get("name") or sid[:8], "id": sid, "remote": False,
+               "working": s.get("working", ""), "dir": s.get("dir", ""),
+               "lastSid": s.get("lastSid", ""),   # the session's CURRENT transcript fsid (self-identity join)
+               "state": s.get("state", "")}   # state: working/idle/waiting/... → working-note freshness
+        if s.get("thread"):
+            row["thread"] = True
+            row["parent"] = s.get("parent") or ""
+        res.append(row)
     return res
 
 
@@ -598,8 +617,8 @@ def _publish_working(sid, text):
     so an SDK session can publish a note too."""
     return _kernel_post("/working", {"id": str(sid), "text": text}) is not None if sid else False
 
-def all_agents():
-    agents = local_agents()
+def all_agents(threads=False):
+    agents = local_agents(threads=threads)
     local_ids = {a["id"] for a in agents}
     now = time.time()
     for sid, (name, ts) in list(HEARTBEATS.items()):
@@ -690,7 +709,7 @@ def resolve_recipient(to, frm_id=""):
     # Everything this bus can deliver to itself: local sessions plus heartbeating remotes. A
     # host qualifier naming somebody ELSE takes them all out of the running.
     direct_all = ([] if (want_host and want_host != here)
-                  else [a for a in all_agents() if a["name"] == bare])
+                  else [a for a in all_agents(threads=True) if a["name"] == bare])   # threads addressable for replies
 
     if frm_id and any(a["id"] == frm_id for a in direct_all):
         return {"kind": "error", "status": 409,
@@ -1134,7 +1153,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(peers_snapshot())
         if u.path == "/agents":
             me = (q.get("me") or [""])[0]
-            agents = [a for a in all_agents() if not _postal_off(a["id"])]   # isolated sessions are invisible to peers
+            agents = [a for a in all_agents(threads=True) if not _postal_off(a["id"])]   # isolated sessions are invisible to peers
             for a in agents:                       # enrich with branch for display only
                 a["branch"] = _git_branch(a.get("dir", ""))
             if peers_on():

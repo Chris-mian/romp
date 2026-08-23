@@ -10389,6 +10389,33 @@ def _session_rows():
     return out
 
 
+def _thread_rows():
+    """Comment-thread sessions as /sessions rows, served ONLY behind ?threads=1 (the user 2026-08-22:
+    a thread is a real forked session and should mail its parent under its own name — but it stays a
+    minor player, hidden from every default listing until promotion). The name comes from the parent's
+    comments store, the one place a thread's editable name lives; rows carry thread:true + the parent
+    sid so the bus can mark them and resolve replies."""
+    be = _sdk()
+    if not be or not hasattr(be, "thread_sessions"):
+        return []
+    out = []
+    for tsid, meta in be.thread_sessions().items():
+        parent = str(meta.get("threadOf") or "")
+        nm = ""
+        try:
+            for t in (_load_comments(parent).get("threads") or []):
+                if t.get("tid") == tsid:
+                    nm = str(t.get("name") or "")
+                    break
+        except Exception:
+            pass
+        out.append({"id": tsid, "name": nm or tsid[:8], "state": meta.get("state", ""),
+                    "dir": _cwd_of(tsid), "thread": True, "parent": parent,
+                    "lastSid": jd._sdk_last_sid(tsid) or tsid,
+                    "working": "", "backend": "sdk"})
+    return out
+
+
 # ── inbox-socket delivery (Claude Code ≥ 2.1.224) ──
 # The CLI binds a per-session Unix inbox socket and registers it — with its own session id and pid —
 # in ~/.claude/sessions/<pid>.json. One JSON line {"type":"user","message":{"role":"user","content":…}}
@@ -25748,7 +25775,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(_token_analytics(int(time.time()), w)),
                                   "application/json", cache="no-cache")
             if p == "/sessions":                              # unified romp session list (tmux + SDK) for external tools (the Obsidian plugin, the postal bus)
-                return self._send(200, json.dumps(_session_rows()), "application/json", cache="no-cache")
+                rows = _session_rows()
+                if (q.get("threads") or [""])[0] == "1":       # opt-in: comment-thread rows for the postal
+                    rows = rows + _thread_rows()               # bus (the user 2026-08-22); every existing
+                return self._send(200, json.dumps(rows), "application/json", cache="no-cache")   # consumer unchanged
             if p == "/commands":                              # slash-command list for the composer's "/" autocomplete (SDK get_server_info, per-cwd cached)
                 sid = (q.get("sid") or [""])[0]
                 cmds, warming = _commands_for_cwd(_cwd_of(sid) if sid else "")
