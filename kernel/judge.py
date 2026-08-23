@@ -9394,6 +9394,36 @@ def debt_block_why(peer):
 DEAD_WAIT_WHY_PREFIX = "This session ended while still waiting on "
 
 
+def mint_fallback_card(sid, from_model, to_model, ev_t=None):
+    """A COMPLETED card recording a silent mid-turn model swap (the user 2026-08-23, approved
+    08-19 and revived: "it'd be nice to get a model fallback card pop up and just go to
+    completed"). The API swapped the session's model without anyone asking — the card makes the
+    swap visible on the board (it pops into Completed; the distiller writes its takeaway like any
+    completed top). Kernel-authored bookkeeping: minted done, never a question."""
+    try:
+        store = load_goals(sid)
+        nodes = store.setdefault("nodes", {})
+        n = store.get("seq", 0) + 1
+        store["seq"] = n
+        gid = "%s:g%d" % (sid, n)
+        t = int(ev_t or time.time())
+        why = ("The model was swapped mid-turn without a request: %s fell back to %s. Work continued "
+               "on the fallback; switch back from the statusline if that isn't what you want."
+               % (from_model or "the pinned model", to_model))
+        nd = GuardedNode({"id": gid, "text": "Model fallback: %s → %s" % (from_model or "?", to_model),
+                          "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
+                          "trail": [], "promptUuid": "", "quote": "", "t": t, "mt": t,
+                          "why": "kernel-observed API model fallback", "log": []})
+        nodes[gid] = nd
+        record_verdict(store, nd, "romp", "done", t, why=why)
+        rollup_status(store, True)                 # the fold materializes nodeComplete/doneWhy from the diary
+        save_goals(sid, store)
+        return gid
+    except Exception as e:
+        sys.stderr.write("fallback-card mint (%s): %r\n" % (sid[:8], e))
+        return None
+
+
 NUDGE_REDUNDANT_SYS = (
     "You answer one question about a working session, from its own latest message. The user message "
     "gives you <goal>, something the session is working on, and <recent>, the session's most recent "
