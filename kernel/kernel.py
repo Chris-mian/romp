@@ -23695,7 +23695,7 @@ var TIP={up:'Connected: the ssh tunnel is open and that machine\\u2019s romp ker
 authorizing:'Opening an ssh connection and reading that machine\\u2019s access token. Needs `ssh <host>` to work without a prompt.',
 connecting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
 starting:'The ssh tunnel is up; waiting for the remote kernel to answer on its port.',
-'no-kernel':'The tunnel is open but no romp kernel is answering on that machine. Start pushes this machine\\u2019s romp there and boots it.',
+'no-kernel':'The tunnel is open but no romp kernel is answering on that machine. Re-dial re-opens the link in case it is only wedged; Start pushes this machine\\u2019s romp there and boots it.',
 down:'The ssh tunnel is not up. romp keeps retrying on its own, waiting longer between tries the longer it stays down, so a machine that comes back is picked up without you doing anything. Try now dials immediately.',
 error:'The connection failed. Hover the status text for the reason romp got back. romp keeps retrying in the background.'};
 var _timer;function schedule(ms){clearTimeout(_timer);_timer=setTimeout(refresh,ms);}
@@ -23947,7 +23947,12 @@ var again=(t.status==='down'||t.status==='error')?'<span class=rnet-retry title=
 // to carry only Start — "this pushes this machine's romp there and boots its kernel" — so a link that had
 // quietly stopped carrying traffic read as a dead remote, and the only button on offer told you to go
 // restart the far end. That is the path that cost a morning of restarting kernels that were never down.
-var retry=(t.status!=='up'&&t.status!=='starting')?'<button data-ra=\"'+t.host+'\" title=\"Dial '+t.host+' now: drop the current ssh and open a fresh one. Use this when the link looks connected but nothing is coming through.\">Try now</button>':'';
+// The NAME is per state (the user 2026-08-23): on down/error it sits beside the visible countdown and
+// reads as "skip the wait", so it stays Try now there; a no-kernel row has no countdown (the ssh link
+// is up — no backoff is running), where the same name beside Start read as a redundant second attempt
+// button, distinguished only by tooltips. There it is named for what it does: Re-dial.
+var wedged=(t.status==='no-kernel');
+var retry=(t.status!=='up'&&t.status!=='starting')?'<button data-ra=\"'+t.host+'\" title=\"'+(wedged?'Drop the ssh link to '+t.host+' and dial a fresh one. The link reports connected while nothing answers through it \u2014 a wedged tunnel can make a running kernel look absent, so re-dial before restarting anything.':'Dial '+t.host+' now: drop the current ssh and open a fresh one, instead of waiting out the automatic retry.')+'\">'+(wedged?'Re-dial':'Try now')+'</button>':'';
 // The check-in publishes THIS machine TO that host, which is the opposite direction from everything else
 // in the row. Its old label, "keep connected", read as the reconnect setting so plainly that the tooltip
 // had to spend a sentence saying what it was NOT. Name it for what it does instead.
