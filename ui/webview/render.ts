@@ -33,8 +33,8 @@ import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
 import { previewKind, previewFull, canPreview, fileUrl, retryFailedPreviews } from "./preview";
-import { openFileView, setCommentSink } from "./file-view";
-// initFileView rides its OWN line: the import above is pinned verbatim by file-view-comments.test.ts
+import { openFileView } from "./file-view";
+// initFileView rides its OWN line: the import above is pinned verbatim by file-view.test.ts
 import { initFileView } from "./file-view";
 import { pastedFilePath } from "./paste-path";
 import { hostNameNodes, hostPrefix, hostOf, hostIsDown, hostDownNote } from "./host-prefix";
@@ -10470,9 +10470,14 @@ window.addEventListener("message", (e: MessageEvent) => {
     if (owner && owner === activeId) renderComposerFiles(owner);   // the held-send button state clears with the hold
   }
   // an EDITOR highlight (VS Code host, onDidChangeTextEditorSelection — the user 2026-07-13) seeds the
-  // same quote chip a transcript highlight does, labeled + wrapped with its file:lines origin (m.src)
-  else if (m.type === "editorSelection" && typeof m.text === "string" && m.text.trim() && activeId)
-    seedEditorQuote(activeId, m.text, typeof m.src === "string" ? m.src : undefined);
+  // same quote chip a transcript highlight does, labeled + wrapped with its file:lines origin (m.src).
+  // The FILE VIEWER posts this same shape WITH a sid — the session it was opened for — and that wins
+  // over activeId-at-gesture: the modal stays up across a tab switch, and the chip belongs to the
+  // session whose file it quotes (the 2026-08-19 routing rule). Host posts carry no sid.
+  else if (m.type === "editorSelection" && typeof m.text === "string" && m.text.trim()) {
+    const to = typeof m.sid === "string" && m.sid ? m.sid : activeId;
+    if (to) seedEditorQuote(to, m.text, typeof m.src === "string" ? m.src : undefined);
+  }
   // the editor selection collapsed (deselect / click away) — drop the chip that highlight seeded
   else if (m.type === "editorSelectionCleared") clearEditorCitation(activeId);
   // comment threads (the user 2026-08-13): the per-session thread frame — store, prune dead
@@ -11568,34 +11573,6 @@ setupSettings();
 })();
 // right-click a selection in the transcript → Reply (quote it) / Copy
 document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
-// The file viewer's review comments come back here as ONE assembled message (the user 2026-08-14).
-// It is DRAFTED into the composer, never sent: you read what the session will get, add a line if you
-// want, and send it yourself. Appended, so it never clobbers a half-typed draft.
-setCommentSink((sid, text) => {
-  // Routed by the REVIEWED session's sid, never activeId-at-submit (2026-08-19: switching tabs
-  // while the viewer was open drafted session A's review into session B's composer). Active tab →
-  // the live textarea; any other sid → straight into that session's persisted draft, where the
-  // composer restores it on the next visit (or on revival — drafts outlive the tab).
-  if (!sid) return false;
-  if (sid === activeId) {
-    const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-    if (ta) {
-      const sep = !ta.value ? "" : ta.value.endsWith("\n\n") ? "" : ta.value.endsWith("\n") ? "\n" : "\n\n";
-      ta.value = ta.value + sep + text;
-      ta.selectionStart = ta.selectionEnd = ta.value.length;
-      growComposer(ta);
-      ta.focus();
-      drafts.set(sid, ta.value);
-      persistDrafts();
-      return true;
-    }
-  }
-  const prev = drafts.get(sid) || "";
-  const sep = !prev ? "" : prev.endsWith("\n\n") ? "" : prev.endsWith("\n") ? "\n" : "\n\n";
-  drafts.set(sid, prev + sep + text);
-  persistDrafts();
-  return true;
-});
 // The chat document hosts the viewer itself (openPath), so it boots the viewer's listener with the
 // same WS poster the feed hands it: Edit/Save round-trips and the GitHub-link ask ride post(), and
 // the kernel's replies come back as window MessageEvents via the pane shim — either document, one
