@@ -94,6 +94,18 @@ test("the popover keeps the chat renderer but sheds its transcript-coupled hover
     "no rail time-markers on gutterless popover turns");
 });
 
+test("an unread thread wears a NEW-here dot on its last segment and a shouting rail tick", () => {
+  // the user 2026-08-23: the 45% unread tint alone was too subtle — a thread that replied while the
+  // box was closed needs a visible element. One dot per thread (the run's hl-last segment), ringed
+  // in the page bg; the rail tick grows and double-rings. Both clear with the unread flag on open.
+  assert.match(CSS, /mark\.cmt-hl\.unread\.hl-last::after \{\s*\n\s*content: ""; position: absolute; top: -4px; right: -4px; width: 7px; height: 7px;/);
+  assert.match(CSS, /border-radius: 50%; background: var\(--cmt-hl\); box-shadow: 0 0 0 1\.5px var\(--bg\);/);
+  assert.match(CSS, /mark\.cmt-hl \{[^}]*position: relative;/s, "the mark anchors its own dot");
+  assert.match(CSS, /\.cmt-tick\.unread \{ width: 10px; height: 6px; right: 0; opacity: 1;/);
+  // the clearing story is the existing machinery, untouched: optimistic on open + kernel watermark
+  assert.match(UI, /if \(th\) th\.unread = false;\s*\/\/ optimistic; the kernel's watermark reconciles/);
+});
+
 test("busy and stuck are disjoint state families", () => {
   for (const s of ["working", "retrying", "compacting"]) assert.ok(threadBusy(s) && !threadStuck(s));
   for (const s of ["permission", "picker"]) assert.ok(threadStuck(s) && !threadBusy(s));
