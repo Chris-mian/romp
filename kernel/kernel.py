@@ -26372,6 +26372,46 @@ class Handler(BaseHTTPRequestHandler):
                 fsid = _live_names(_tmux_sessions()).get(nm) or ""
                 return self._send(200, json.dumps({"ok": True, "id": fsid, "name": nm}),
                                   "application/json")
+            if u.path == "/rename":
+                # Headless rename (`romp rename`, the user 2026-08-23 via the SynthProbe fleet
+                # restructuring): the renameSession WS op as a one-shot POST, the exact sibling of
+                # /fork — which exists precisely because hand-driving a WS op with the dashboard
+                # token is surgery nobody should repeat. Body: {"target": <live name or sid>,
+                # "name": <new-name>}. Sessions are uuid-keyed with the name as a label, so a rename
+                # never breaks mailboxes/goals/history; the by-name POISONING guard mirrors /fork's
+                # (a second session under one live name breaks every by-name surface). Loud errors.
+                try:
+                    b = json.loads(raw_body or b"{}")
+                except Exception:
+                    b = {}
+                target = str((b or {}).get("target") or "").strip()
+                nm = str((b or {}).get("name") or "").strip()
+                if not target or not nm:
+                    return self._send(400, json.dumps({"ok": False, "error": "target and name required"}),
+                                      "application/json")
+                if not NAME_RE.match(nm):
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        "session names use letters, digits, . _ - only"}), "application/json")
+                live = _live_names(_tmux_sessions())
+                if nm in live:
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        'a session named "%s" is already running — pick another name' % nm}),
+                                      "application/json")
+                tsid = live.get(target) or ""
+                if not tsid and re.fullmatch(r"[0-9a-fA-F-]{32,36}", target):
+                    tsid = target
+                if not tsid:
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        'no live session named "%s" (a dormant one can be renamed by sid)' % target}),
+                                      "application/json")
+                be = Sessions.backend_for(tsid)
+                if not (be and be.rename(tsid, nm)):      # live → backend reg; dead → names file
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        "the rename did not take — is that session known to this kernel?"}),
+                                      "application/json")
+                _mark_views_dirty()
+                return self._send(200, json.dumps({"ok": True, "id": tsid, "name": nm}),
+                                  "application/json")
             if u.path == "/working":
                 # Publish/clear a session's working-note in the backend-agnostic store, so the postal bus's
                 # set_working goes through the kernel (no tmux @romp-working) and an SDK session can publish a
