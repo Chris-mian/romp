@@ -3457,8 +3457,52 @@ def _dead_wait_sweep(alive_ids, nudged, now):
                 stamp = _goal_awaiting_stamp_full(nodes, gid, kids)
                 if stamp:
                     _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)
+            # …and incomplete DELEGATION handoffs (the user 2026-08-23: a dead sender's "↪ delegated
+            # to X" item waits on run_propagate, and if the courier link never landed — or the peer
+            # folded the work without one — nothing can ever check it off; five were 240h old). The
+            # same terminal as a stamped wait: the card needs the user, not more patience.
+            for nid, nd in nodes.items():
+                h = nd.get("handoff") if isinstance(nd, dict) else None
+                if isinstance(h, dict) and not nd.get("nodeComplete") and not nd.get("blocked"):
+                    _dead_handoff_block(sid, nid, h, nd, nudged, now)
         except Exception:
             sys.stderr.write("dead-wait sweep (%s): %s\n" % (sid, traceback.format_exc()))
+
+
+def _dead_handoff_block(sid, nid, h, nd, nudged, now):
+    """A DORMANT sender's incomplete '↪ delegated to <peer>' tracking node converts to a procedural
+    block (the user 2026-08-23) — the sibling of _dead_wait_block for the delegation graph: the
+    completion event is run_propagate following the courier link, and a dead sender can neither chase
+    the peer nor act on the result. Same discipline: once per node (ledger), open-turn stand-down,
+    fresh re-read, evidence-time from recorded events."""
+    rec = nudged.get(nid) or {}
+    anchor = int(nd.get("t") or 0)
+    if rec.get("deadWait") and (rec.get("anchor") or 0) >= anchor:
+        return False
+    last, last_t = _last_state(sid)
+    if last in _PROGRESSING_STATES:
+        return False
+    try:
+        store = jd.load_goals(sid)
+        cur = store.get("nodes", {}).get(nid)
+        if not cur or cur.get("nodeComplete") or cur.get("blocked"):
+            return False
+        peer = _name_of(h.get("peer") or "") or (h.get("peer") or "")[:8] or "a peer"
+        blkwhy = jd.dead_wait_block_why("the delegation to %s (%s)"
+                                        % (peer, (cur.get("text") or "").replace("↪ ", "")[:80]))
+        _ev = int(max(anchor, last_t or 0) or now)
+        if jd.record_verdict(store, cur, "nudge", "block", _ev, why=blkwhy):
+            cur["mt"] = _ev
+            jd.append_block(sid, nid, "nudge", blkwhy, _ev)
+            jd.rollup_status(store, False)
+            jd.save_goals(sid, store)
+            _mark_views_dirty()
+            nudged[nid] = {"deadWait": True, "anchor": anchor, "at": int(now)}
+            _put_nudged(nid, nudged[nid])
+            return True
+    except Exception:
+        sys.stderr.write("dead-handoff block: %s\n" % traceback.format_exc())
+    return False
 
 
 def _dead_wait_block(sid, gid, at, why, nudged, now):
