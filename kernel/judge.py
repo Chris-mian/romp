@@ -10630,6 +10630,45 @@ def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None):
     return nid
 
 
+def _attach_courier_link(store, seg_id, mid):
+    """Attach the courier's completion link to the TOP of the goal a peer-delegate segment was PLACED
+    under (the user 2026-08-23): the courier only minted links for segments it placed itself, so a
+    planner-first placement orphaned the sender's handoff forever. The link rides `links[]` — never
+    `origin`, which means "this goal was BORN from that delegation" and stays truthful — and
+    run_propagate completes the sender's tracking node from either. Idempotent by msgId; a store
+    already carrying the msgId anywhere (origin or links) is left alone. Saves only on change."""
+    nodes = store.get("nodes", {})
+    for nd in nodes.values():
+        o = nd.get("origin")
+        if isinstance(o, dict) and o.get("msgId") == mid:
+            return False
+        if any(isinstance(l, dict) and l.get("msgId") == mid for l in (nd.get("links") or [])):
+            return False
+    tgt = store.get("placements", {}).get(seg_id)
+    if not tgt or tgt not in nodes:
+        return False
+    top = _top_ancestor(nodes, tgt)
+    peer_sid, peer_gid = _handoff_backref(mid)
+    if not (peer_sid and peer_gid):
+        return False
+    nodes[top].setdefault("links", []).append({"peer": peer_sid, "goalId": peer_gid, "msgId": mid})
+    save_goals(store["rompUuid"], store)
+    return True
+
+
+def _handoff_backref(mid):
+    """(sender sid, sender tracking-node id) for a delegate message id — read from the SENDER boards'
+    own handoff nodes (the durable record _plant_handoff_track wrote at send time). '' pair when no
+    sender tracks this message (a delegate from a non-romp source, or the sender's store is gone)."""
+    for fsid, path, anchor, name in discover(int(time.time())):
+        st = load_goals(fsid)
+        for nid, nd in st.get("nodes", {}).items():
+            h = nd.get("handoff")
+            if isinstance(h, dict) and h.get("msgId") == mid and not nd.get("nodeComplete"):
+                return fsid, nid
+    return "", ""
+
+
 def _plant_handoff_track(store, parent_id, text, peer_sid, peer_name, t, mid):
     """Mint a precise '↪ delegated to <peer>' TRACKING node in the SENDER's own tree (the user 2026-06-22):
     the exact item B's completion checks off, so a PARTIAL handoff doesn't over-complete the sender's broader
@@ -10664,10 +10703,14 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
     for fsid, path, anchor, name in discover(now)[:sessions_cap]:
         store = load_goals(fsid)
         for nid, nd in list(store.get("nodes", {}).items()):
+            if not nd.get("nodeComplete"):
+                continue                                # B hasn't finished it yet
             o = nd.get("origin")
-            if not (isinstance(o, dict) and o.get("peer") and o.get("goalId") and nd.get("nodeComplete")):
-                continue                                # not a delegated goal, or B hasn't finished it yet
-            a_sid, a_gid = o["peer"], o["goalId"]
+            refs = ([o] if (isinstance(o, dict) and o.get("peer") and o.get("goalId")) else [])
+            refs += [l for l in (nd.get("links") or [])
+                     if isinstance(l, dict) and l.get("peer") and l.get("goalId")]
+            for ref in refs:
+                a_sid, a_gid = ref["peer"], ref["goalId"]
             a_store = load_goals(a_sid)
             a_node = a_store.get("nodes", {}).get(a_gid)
             if not a_node or a_node.get("nodeComplete"):
@@ -10707,6 +10750,18 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
         for turn in session["turns"]:
             for seg in _segs(turn, cstore):
                 if seg["id"] in placed_ids:
+                    # LINK-ONLY repair (the user 2026-08-23): the planner placed this peer segment
+                    # before the courier saw it, so no courier goal was minted and the SENDER's
+                    # handoff waits on a completion event that can never fire (12 live handoffs, up
+                    # to 240h old). A placed DELEGATE with no courier link gets the link attached to
+                    # the placement's TOP — run_propagate completes the sender's tracking node when
+                    # that goal lands. No model call; idempotent by msgId.
+                    try:
+                        pm0 = _seg_peer(seg)
+                        if pm0 and pm0[0] and pm0[1] and _seg_peer_kind(seg) == "delegate":
+                            _attach_courier_link(cstore, seg["id"], pm0[1])
+                    except Exception:
+                        pass
                     continue
                 if floor and seg["t"] < floor:
                     # pre-episode: conversation the agent can no longer see. The planner retires these
