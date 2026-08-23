@@ -432,6 +432,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   padding: 1px 6px; border-radius: 999px; line-height: 1.4;
   color: #4ec9b0; border: 1px solid rgba(78, 201, 176, 0.6); }
 .fask-waiton-cycle { color: #ff6a6a; border-color: rgba(255, 106, 106, 0.7); }
+/* the chip's elapsed readout (" · 42m") — same size as the chip text, dimmed like a sub-line so the
+   peer name stays the loudest word (the user 2026-08-23) */
+.fask-waiton-dur { opacity: 0.6; font-weight: 400; }
 
 /* ---- ask DAG tree (expanded body) — nodes only; click a node for its history ---- */
 /* width:fit-content hugs the widest row so the right-aligned "(Xm ago)" node times sit just past the

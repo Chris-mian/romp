@@ -31,7 +31,7 @@
 
 /** The card fields the ladder reads. Structural, so the test can pass plain objects. */
 export interface SpinItem {
-  awaiting?: { why?: string | null; kind?: string | null; tasks?: unknown[] | null } | null;
+  awaiting?: { why?: string | null; kind?: string | null; since?: number | null; tasks?: unknown[] | null } | null;   // since = the wait's own event time (kernel or-chain / _session_awaiting; the user 2026-08-23)
   waitingOn?: unknown;
   provisional?: boolean;
   column?: string;
@@ -63,10 +63,18 @@ export const KIND_WORD: Record<string, string> = {
 /** dCompleted/dBlocked come from distillInputs(distillState, column) — the GENUINE resolution state, not
  *  the transient column. distillPending is passed in (rather than recomputed) so the two modules keep one
  *  owner for the "is the distiller still working" rule. */
-/** Compact duration for the working narration: minutes under an hour, then h+m. */
-function workingFor(secs: number): string {
+/** Compact duration for the working narration AND the awaiting box: minutes under an hour, then h+m. */
+export function workingFor(secs: number): string {
   const m = Math.max(0, Math.floor(secs / 60));
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/** " · 42m" for a wait with a known start, "" otherwise — the awaiting counterpart of the working
+ *  narration's duration (the user 2026-08-23: Working says how long it's been running, the awaiting
+ *  states said nothing, so a wait stuck for hours read the same as one seconds old). Kernel-supplied
+ *  event time only — no since, no duration, never a guess. */
+export function waitedSuffix(since: number | null | undefined, nowS: number | undefined): string {
+  return nowS && since && since > 0 ? " · " + workingFor(nowS - since) : "";
 }
 
 
@@ -85,9 +93,12 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     // "waiting on" is shown verbatim (capitalized); the kind word is the fallback frame.
     const why = aw.why || "";
     const word = KIND_WORD[aw.kind || ""] || "agents";   // kindless = the box's historic default
+    // how long the wait has held, from the kernel's event time — the same live readout the working
+    // narration wears, so a stuck wait is visible at a glance (the user 2026-08-23)
+    const waited = waitedSuffix(aw.since, nowS);
     return {
-      caption: /^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
-                                        : "Awaiting " + word,
+      caption: (/^waiting on/i.test(why) ? why.charAt(0).toUpperCase() + why.slice(1)
+                                         : "Awaiting " + word) + waited,
       tip: why ? why + ". Not on you; paused until the background work lands."
                : "Paused, waiting on background work it dispatched (not on you). Clears when the result lands.",
       awaitingBg: true,
