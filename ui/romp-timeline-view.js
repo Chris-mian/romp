@@ -3430,7 +3430,11 @@ class TimelinePanel {
 
     // obstacles for routing — at each event's process-start (a pending event rides `now` via execAt/startAt)
     const obstacles = [];
-    data.messages.forEach((mm) => { if (inWin(execAt(mm)) && vidx[mm.toId] != null) obstacles.push({ x: x(execAt(mm)), lane: vidx[mm.toId] }); });
+    // a THREAD endpoint draws at its comment square's x, not the mail time (fromThreadT/toThreadT,
+    // the user 2026-08-23) — sendX/landX are the drawn positions everywhere below
+    const sendXT = (mm) => mm.fromThreadT || mm.sent;
+    const landXT = (mm) => mm.toThreadT || execAt(mm);
+    data.messages.forEach((mm) => { if (inWin(landXT(mm)) && vidx[mm.toId] != null) obstacles.push({ x: x(landXT(mm)), lane: vidx[mm.toId] }); });
     vis.forEach((s, i) => turnsOf(s.id).forEach((t) => { if (inWin(startAt(t))) obstacles.push({ x: x(startAt(t)), lane: i }); }));
 
     // one connector per directed FLOW (A→B): a single line spanning the flow's first
@@ -3452,7 +3456,7 @@ class TimelinePanel {
     Object.keys(flows).forEach((k) => {
       const f = flows[k];
       const sLane = vidx[f.from], rLane = vidx[f.to];
-      const xs = x(Math.max(f.sent, t0)), ys = laneY(sLane), xe = x(f.exec), ye = laneY(rLane), col = colorOf(f.from);
+      const xs = x(Math.max(f.sent, t0)), ys = laneY(sLane), xe = x(f.exec), ye = laneY(rLane), col = colorOf(f.from);   // flows keep mail times: bands aggregate, squares are per-message
       const dir = (ys < ye) ? 1 : -1;
       const track = ye - dir * MSG_DROP;
       const xc = crossX(sLane, rLane, xs, xe, obstacles);
@@ -3471,10 +3475,10 @@ class TimelinePanel {
     // PASS 1: connector line + highlight (drawn first so the dots sit on top).
     data.messages.forEach((mm, i) => {
       if (vidx[mm.fromId] == null || vidx[mm.toId] == null) return;
-      if (execAt(mm) < t0 || mm.sent > t1) return;
+      if (landXT(mm) < t0 || sendXT(mm) > t1) return;
       const sLane = vidx[mm.fromId], rLane = vidx[mm.toId];
-      const offL = mm.sent < t0;   // sent BEFORE the visible window — only the delivery is in view
-      const xs = x(offL ? t0 : mm.sent), ys = laneY(sLane), xe = x(execAt(mm)), ye = laneY(rLane), col = colorOf(mm.fromId);
+      const offL = sendXT(mm) < t0;   // sent BEFORE the visible window — only the delivery is in view
+      const xs = x(offL ? t0 : sendXT(mm)), ys = laneY(sLane), xe = x(landXT(mm)), ye = laneY(rLane), col = colorOf(mm.fromId);
       const dir = (ys < ye) ? 1 : -1, track = ye - dir * MSG_DROP;
       const xc = crossX(sLane, rLane, xs, xe, obstacles);
       // An off-window send used to CLAMP to the left edge and hug the sender's lane all the way to the
@@ -3532,10 +3536,10 @@ class TimelinePanel {
     // co-highlight and share the click. A dot whose sender lane is off-screen has no connector but
     // is still its own hoverable/clickable target.
     data.messages.forEach((mm, i) => {
-      if (vidx[mm.toId] == null || !inWin(execAt(mm))) return;
+      if (vidx[mm.toId] == null || !inWin(landXT(mm))) return;
       const col = colorOf(mm.fromId), cy = laneY(vidx[mm.toId]);
       const u = msgUI[i];
-      const c = dot(x(execAt(mm)), cy, col, msgHtml(mm), msgNav(mm), u && u.hl, dagOrHoverMsg(mm.id));
+      const c = dot(x(landXT(mm)), cy, col, msgHtml(mm), msgNav(mm), u && u.hl, dagOrHoverMsg(mm.id));
       if (u) u.dot = c;
     });
 

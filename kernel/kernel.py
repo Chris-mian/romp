@@ -18445,11 +18445,15 @@ def _postal_messages(now, alive_sids, id2name):
             execd.pop(o["id"], None)                     # (postal restore) — it never reached the recipient
     cutoff, out = now - TL_HORIZON, []
     msgsum = _msg_summaries()                           # {id: Haiku caption} → the timeline shows it over the raw body
+    tanchors = _thread_anchors(alive_sids)              # {tid: (parent sid, anchorT, name)} — thread mail's home
     for mid, e in sent.items():
         f, t, st = e.get("from_id"), e.get("to_id"), e.get("t")
         # both endpoints must EXIST (bus-origin mail — bounces from the Romp Postal Service itself —
-        # has no sender sid and can never draw), and at least one must be a local lane.
-        if not f or not t or (f not in alive_sids and t not in alive_sids) or f == t or not st or st < cutoff:
+        # has no sender sid and can never draw), and at least one must be a local lane. A comment-THREAD
+        # endpoint counts through its parent's lane (rewritten below) — the raw f == t self-check runs
+        # FIRST, so thread↔parent mail (different raw sids, one lane) survives it by design.
+        local = (f in alive_sids or t in alive_sids or f in tanchors or t in tanchors)
+        if not f or not t or not local or f == t or not st or st < cutoff:
             continue
         ex = execd.get(mid)
         ex_t, ex_dmid = (ex if isinstance(ex, tuple) else (ex, None))
@@ -18461,8 +18465,38 @@ def _postal_messages(now, alive_sids, id2name):
                "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid)}
         if ex_dmid:
             row["dmid"] = ex_dmid   # lets the MERGED view join a relayed connector to the remote turn's mids
+        # A thread has NO lane of its own; its visual home is the comment's anchor square on the
+        # parent's lane (the user 2026-08-23: the connector comes out of the square and lands back in
+        # the lane where the mail arrives — and a reply arcs back into the square). Rewrite the
+        # endpoint to the parent's lane and pin its x to the square via fromThreadT/toThreadT; the
+        # name stays the THREAD's, so the tooltip says who really spoke.
+        if f in tanchors:
+            _p, _at, _nm = tanchors[f]
+            row["fromId"], row["fromThreadT"] = _p, _at
+            row["from"] = _nm or row["from"]
+        if t in tanchors:
+            _p, _at, _nm = tanchors[t]
+            row["toId"], row["toThreadT"] = _p, _at
+            row["to"] = _nm or row["to"]
         out.append(row)
     out.sort(key=lambda m: m["sent"])
+    return out
+
+
+def _thread_anchors(alive_sids):
+    """{thread sid: (parent sid, anchorT, thread name)} across the alive sessions' comment stores —
+    where a comment thread LIVES on the timeline (its anchor square's x on the parent's lane). Only
+    open/live rows matter; a promoted thread has its own lane and never resolves here (its sid left
+    the comments store's live view when it gained a names/ entry)."""
+    out = {}
+    for sid in alive_sids:
+        try:
+            for t in (_load_comments(sid).get("threads") or []):
+                tid, at = t.get("tid"), t.get("anchorT")
+                if tid and at and t.get("status") != "promoted":
+                    out[tid] = (sid, int(at), str(t.get("name") or ""))
+        except Exception:
+            continue
     return out
 
 
