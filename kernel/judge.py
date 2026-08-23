@@ -10794,17 +10794,17 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
                      if isinstance(l, dict) and l.get("peer") and l.get("goalId")]
             for ref in refs:
                 a_sid, a_gid = ref["peer"], ref["goalId"]
-            a_store = load_goals(a_sid)
-            a_node = a_store.get("nodes", {}).get(a_gid)
-            if not a_node or a_node.get("nodeComplete"):
-                continue                                # sender's tracking node gone or already done → idempotent
-            record_verdict(a_store, a_store["nodes"][a_gid], "courier", "done", now,
-                           why="completed by %s (delegated)" % (name or fsid[:8]))
-            _mark_node_done(a_store, a_gid, "completed by %s (delegated)" % (name or fsid[:8]), now,
-                            src="courier")
-            rollup_status(a_store, False)               # sender just had work close → recompute its columns
-            save_goals(a_sid, a_store)
-            n += 1
+                a_store = load_goals(a_sid)
+                a_node = a_store.get("nodes", {}).get(a_gid)
+                if not a_node or a_node.get("nodeComplete"):
+                    continue                            # sender's tracking node gone or already done → idempotent
+                record_verdict(a_store, a_store["nodes"][a_gid], "courier", "done", now,
+                               why="completed by %s (delegated)" % (name or fsid[:8]))
+                _mark_node_done(a_store, a_gid, "completed by %s (delegated)" % (name or fsid[:8]), now,
+                                src="courier")
+                rollup_status(a_store, False)           # sender just had work close → recompute its columns
+                save_goals(a_sid, a_store)
+                n += 1
     if verbose:
         sys.stderr.write("romp-judge: propagated %d delegation completions\n" % n)
     return n

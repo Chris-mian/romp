@@ -89,6 +89,40 @@ class CourierLinkRepair(unittest.TestCase):
         snd = jd.load_goals(SENDER)["nodes"][SENDER + ":g1"]
         self.assertTrue(snd.get("nodeComplete"), "the handoff checks off from the repaired link")
 
+    def test_a_refless_completed_node_never_kills_the_pass(self):
+        # THE 2026-08-23 REGRESSION: the refs loop's body sat OUTSIDE the loop, so the first completed
+        # node with NO origin/links hit an unbound name and the exception killed run_propagate — and
+        # with it every stage after it in the triage pass (grouper, consolidator, distiller), which is
+        # how "everything stuck on Distilling" happened. A plain completed node must be a no-op.
+        st = jd.load_goals(RECIP)
+        st["nodes"][RECIP + ":g0"] = jd.GuardedNode({
+            "id": RECIP + ":g0", "text": "An ordinary finished goal", "parentId": None,
+            "nodeComplete": True, "blocked": False, "cleared": False, "trail": [],
+            "t": T - 100, "mt": T - 100, "log": []})
+        jd.save_goals(RECIP, st)
+        jd.run_propagate(now=T + 200)   # must not raise, and must not touch the sender
+
+    def test_every_ref_completes_its_own_sender_node(self):
+        # Multi-ref: origin AND a repaired link each complete their sender's tracking node — the
+        # mis-indented loop processed only the LAST ref.
+        st = jd.load_goals(SENDER)
+        st["nodes"][SENDER + ":g2"] = jd.GuardedNode({
+            "id": SENDER + ":g2", "text": "↪ delegated to api: second thread of the exporter",
+            "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
+            "trail": [], "t": T, "mt": T, "handoff": {"peer": RECIP, "msgId": "msg-bbbb-2222"}, "log": []})
+        jd.save_goals(SENDER, st)
+        st = jd.load_goals(RECIP)
+        nd = st["nodes"][RECIP + ":g5"]
+        nd["origin"] = {"peer": SENDER, "goalId": SENDER + ":g1", "msgId": MID}
+        nd["links"] = [{"peer": SENDER, "goalId": SENDER + ":g2", "msgId": "msg-bbbb-2222"}]
+        jd.record_verdict(st, nd, "closer", "done", T + 100, why="shipped")
+        jd.rollup_status(st, True)
+        jd.save_goals(RECIP, st)
+        jd.run_propagate(now=T + 200)
+        snd = jd.load_goals(SENDER)
+        self.assertTrue(snd["nodes"][SENDER + ":g1"].get("nodeComplete"), "the origin's sender node completes")
+        self.assertTrue(snd["nodes"][SENDER + ":g2"].get("nodeComplete"), "the link's sender node completes too")
+
     def test_courier_scan_carries_the_repair_branch(self):
         src = open(os.path.join(BIN, "romp-judge")).read()
         self.assertIn("_attach_courier_link(cstore, seg[\"id\"], pm0[1])", src)
