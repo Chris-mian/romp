@@ -200,6 +200,86 @@ MOCK
     [[ "$output" == *"kernel isn't running"* ]]
 }
 
+@test "color: POST /color with target and a literal hex; prints the new color" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    run run_romp color exp-web '#1EA1EB'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'is now #1EA1EB'* ]]
+    grep '/color' "$MOCK_LOG" | grep -q '"target": *"exp-web"'
+    grep '/color' "$MOCK_LOG" | grep -q '"bg": *"#1EA1EB"'
+}
+
+@test "color: a slot digit resolves through the kernel's palette-colors mirror; no mirror is loud" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    # the mirror the kernel writes at boot: bg<TAB>fg per line; slot 3 = line 3's first field
+    mkdir -p "$XDG_STATE_HOME/romp"
+    printf '#AA0000\twhite\n#00BB00\tblack\n#0000CC\twhite\n' > "$XDG_STATE_HOME/romp/palette-colors"
+    run run_romp color exp-api 3
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'is now #0000CC'* ]]
+    grep '/color' "$MOCK_LOG" | grep -q '"target": *"exp-api"'
+    grep '/color' "$MOCK_LOG" | grep -q '"bg": *"#0000CC"'
+    # a missing mirror never falls back to a built-in set — the kernel writes it at boot
+    rm "$XDG_STATE_HOME/romp/palette-colors"
+    run run_romp color exp-api 3
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"palette mirror"* ]]
+}
+
+@test "group: POST /group carries the name and the whole --add list" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    run run_romp group workers --add exp-web exp-api --color '#54B204'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'romp group: "workers"'* ]]
+    grep '/group' "$MOCK_LOG" | grep -q '"name": *"workers"'
+    grep '/group' "$MOCK_LOG" | grep -q '"add": *\["exp-web", *"exp-api"\]'
+    grep '/group' "$MOCK_LOG" | grep -q '"color": *"#54B204"'
+}
+
+@test "group: a bare name reads the group — GET /views, never a POST that could create" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    run run_romp group workers
+    grep -q '/views' "$MOCK_LOG"
+    [ "$(grep -c '/group' "$MOCK_LOG")" -eq 0 ]
+}
+
+@test "color/group: usage errors exit 2" {
+    run run_romp color
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"usage: romp color"* ]]
+    run run_romp color exp-web '#1EA1EB' extra
+    [ "$status" -eq 2 ]
+    run run_romp group workers stray-word
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"usage: romp group"* ]]
+    run run_romp group --add exp-web
+    [ "$status" -eq 2 ]
+    run run_romp group workers --color
+    [ "$status" -eq 2 ]
+    run run_romp group --json workers
+    [ "$status" -eq 2 ]
+}
+
+@test "color/group: no kernel token is a loud exit 1, and no API call is made" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    run run_romp color exp-web '#1EA1EB'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"kernel isn't running"* ]]
+    run run_romp group workers --add exp-web
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"kernel isn't running"* ]]
+    [ "$(grep -Ec '/(color|group)' "$MOCK_LOG")" -eq 0 ]
+}
+
 @test "fork: usage errors exit 2; no kernel token is a loud exit 1" {
     touch "$MOCK_LOG"
     run run_romp fork

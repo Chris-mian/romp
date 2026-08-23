@@ -59,6 +59,8 @@ PY
     # the link.
     [ ! -e "$ROMP_DIR/claude/skills/romp-postal/romp-postal" ]
     [ -L "$HOME/.claude/skills/romp-postal" ]
+    [ ! -e "$ROMP_DIR/claude/skills/manager/manager" ]
+    [ -L "$HOME/.claude/skills/manager" ]
 }
 
 @test "install.sh: upgrading unlinks the retired romp skill, leaving no dangling link" {
