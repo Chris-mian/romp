@@ -230,41 +230,50 @@ MOCK
     [[ "$output" == *"palette mirror"* ]]
 }
 
-@test "group: POST /group carries the name and the whole --add list" {
+@test "tag: POST /tag carries the name and the whole --add list" {
     _stub_curl
     touch "$MOCK_LOG"
     export ROMP_SERVE_TOKEN=testtok
-    run run_romp group workers --add exp-web exp-api --color '#54B204'
+    run run_romp tag workers --add exp-web exp-api --color '#54B204'
     [ "$status" -eq 0 ]
-    [[ "$output" == *'romp group: "workers"'* ]]
-    grep '/group' "$MOCK_LOG" | grep -q '"name": *"workers"'
-    grep '/group' "$MOCK_LOG" | grep -q '"add": *\["exp-web", *"exp-api"\]'
-    grep '/group' "$MOCK_LOG" | grep -q '"color": *"#54B204"'
+    [[ "$output" == *'romp tag: "workers"'* ]]
+    grep '/tag' "$MOCK_LOG" | grep -q '"name": *"workers"'
+    grep '/tag' "$MOCK_LOG" | grep -q '"add": *\["exp-web", *"exp-api"\]'
+    grep '/tag' "$MOCK_LOG" | grep -q '"color": *"#54B204"'
 }
 
-@test "group: a bare name reads the group — GET /views, never a POST that could create" {
+@test "tag: a bare name reads the tag — GET /views, never a POST that could create" {
     _stub_curl
     touch "$MOCK_LOG"
     export ROMP_SERVE_TOKEN=testtok
-    run run_romp group workers
+    run run_romp tag workers
     grep -q '/views' "$MOCK_LOG"
-    [ "$(grep -c '/group' "$MOCK_LOG")" -eq 0 ]
+    [ "$(grep -c '/tag' "$MOCK_LOG")" -eq 0 ]
 }
 
-@test "color/group: usage errors exit 2" {
+@test "tag: the pre-rename group verb still works, posting the new /tag route" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    run run_romp group workers --add exp-web
+    [ "$status" -eq 0 ]
+    grep '/tag' "$MOCK_LOG" | grep -q '"name": *"workers"'
+}
+
+@test "color/tag: usage errors exit 2" {
     run run_romp color
     [ "$status" -eq 2 ]
     [[ "$output" == *"usage: romp color"* ]]
     run run_romp color exp-web '#1EA1EB' extra
     [ "$status" -eq 2 ]
-    run run_romp group workers stray-word
+    run run_romp tag workers stray-word
     [ "$status" -eq 2 ]
-    [[ "$output" == *"usage: romp group"* ]]
-    run run_romp group --add exp-web
+    [[ "$output" == *"usage: romp tag"* ]]
+    run run_romp tag --add exp-web
     [ "$status" -eq 2 ]
-    run run_romp group workers --color
+    run run_romp tag workers --color
     [ "$status" -eq 2 ]
-    run run_romp group --json workers
+    run run_romp tag --json workers
     [ "$status" -eq 2 ]
 }
 

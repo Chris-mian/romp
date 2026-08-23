@@ -1485,7 +1485,7 @@ def _ordered(sessions):
             a = _nm(sid)
             sib = [i for i, n in enumerate(name_at) if a and n == a]   # same-name entries already placed
             if sib:
-                _heal_timeline_views(order[sib[-1]], sid)   # the fork inherits hidden/group state too
+                _heal_timeline_views(order[sib[-1]], sid)   # the fork inherits hidden/tag state too
                 order.insert(sib[-1] + 1, sid)           # a fork inherits its session's slot, not the END
                 name_at.insert(sib[-1] + 1, a)           # keep name_at aligned with order as we splice
             else:
@@ -1521,7 +1521,7 @@ def _ordered_alive(now, tmux):
 # as the viewer sees them (host-prefixed for remote sessions), opaque to this kernel. mtime-cached
 # like _session_flags. Remote-session ids that churn on a REMOTE kernel are not healed here (that
 # kernel cannot reach this blob) — same accepted gap session-flags has; SDK sids are stable anyway.
-_VIEWS_MAX_GROUPS = 32
+_VIEWS_MAX_TAGS = 32
 _VIEWS_MAX_NAME = 40
 _views_lock = threading.Lock()   # read-modify-write on the views blob from handler threads (_comments_lock precedent)
 
@@ -1532,24 +1532,29 @@ def _views_path():
 
 def _norm_timeline_views(d):
     """Validate + normalize a views blob from disk or a client: always returns the full shape, drops
-    junk quietly, clamps sizes, and falls back active→"all" when the named group does not exist."""
+    junk quietly, clamps sizes, and falls back active→"all" when the named tag does not exist.
+    TAGS, not groups (the user 2026-08-23): a tag marks a SPECIALIZED session, excluded from the
+    default view and viewable under its tag — the accurate name for what membership always did.
+    Stored under "tags"; a blob carrying only the legacy "groups" key (a pre-rename file, an
+    un-updated Obsidian panel posting the whole blob) reads as tags, so nothing is lost on upgrade."""
     if not isinstance(d, dict):
         d = {}
     _lst = lambda x: x if isinstance(x, list) else []   # wrong-typed junk (a number, a string) drops, never raises
     hidden = [str(x) for x in _lst(d.get("hidden")) if isinstance(x, str) and x]
-    groups = []
-    for g in _lst(d.get("groups"))[:_VIEWS_MAX_GROUPS]:
+    tags = []
+    raw = d.get("tags") if isinstance(d.get("tags"), list) else d.get("groups")
+    for g in _lst(raw)[:_VIEWS_MAX_TAGS]:
         if not isinstance(g, dict) or not g.get("id") or not isinstance(g.get("id"), str):
             continue
         members = [str(x) for x in _lst(g.get("members")) if isinstance(x, str) and x]
-        groups.append({"id": g["id"][:64],
-                       "name": str(g.get("name") or "group")[:_VIEWS_MAX_NAME],
-                       "color": str(g.get("color") or "")[:16],
-                       "members": sorted(set(members))})
+        tags.append({"id": g["id"][:64],
+                     "name": str(g.get("name") or "tag")[:_VIEWS_MAX_NAME],
+                     "color": str(g.get("color") or "")[:16],
+                     "members": sorted(set(members))})
     active = d.get("active") if isinstance(d.get("active"), str) else "all"
-    if active != "all" and not any(g["id"] == active for g in groups):
+    if active != "all" and not any(t["id"] == active for t in tags):
         active = "all"
-    return {"active": active, "hidden": sorted(set(hidden)), "groups": groups}
+    return {"active": active, "hidden": sorted(set(hidden)), "tags": tags}
 
 
 def _timeline_views():
@@ -1575,23 +1580,26 @@ def _set_timeline_views(blob):
 
 
 def _view_visible(views, sid):
-    """The one visibility decision, kernel-authoritative: mirrored (three lines each) by the chat
-    renderer and the timeline for optimistic feedback — tests pin all three against this shape."""
+    """The one visibility decision, kernel-authoritative: mirrored by the chat renderer and the
+    timeline for optimistic feedback — tests pin all three against this shape. The DEFAULT view
+    shows UNTAGGED sessions (the user 2026-08-23): tagging a session says "specialized — out of the
+    main view, viewable under its tag", so membership itself excludes; `hidden` stays the manual
+    one-off hide for untagged sessions."""
     if views["active"] == "all":
-        return sid not in views["hidden"]
-    for g in views["groups"]:
-        if g["id"] == views["active"]:
-            return sid in g["members"]
+        return sid not in views["hidden"] and not any(sid in t["members"] for t in views["tags"])
+    for t in views["tags"]:
+        if t["id"] == views["active"]:
+            return sid in t["members"]
     return True
 
 
 def _heal_timeline_views(old_sid, new_sid):
     """fsid churn (a /clear, relaunch or revive mints a new transcript fsid for the same logical
-    session): carry the old sid's hidden bit and group memberships to the new one, exactly like the
+    session): carry the old sid's hidden bit and tag memberships to the new one, exactly like the
     order-slot inheritance that detects the churn. Without this a hidden tmux session would pop back
-    visible on every /clear — and worse, a grouped one would silently fall out of its group."""
+    visible on every /clear — and worse, a tagged one would silently fall out of its tag."""
     v = _timeline_views()
-    if old_sid not in v["hidden"] and not any(old_sid in g["members"] for g in v["groups"]):
+    if old_sid not in v["hidden"] and not any(old_sid in t["members"] for t in v["tags"]):
         return
     v = json.loads(json.dumps(v))                    # deep copy: never mutate the cached blob
     # COPY, never move: stripping the old sid un-hid its DEAD lane, which lingers on the timeline for
@@ -1600,15 +1608,15 @@ def _heal_timeline_views(old_sid, new_sid):
     # lists is inert; the normalizer keeps them bounded.
     if old_sid in v["hidden"]:
         v["hidden"] = sorted(set(v["hidden"]) | {new_sid})
-    for g in v["groups"]:
-        if old_sid in g["members"]:
-            g["members"] = sorted(set(g["members"]) | {new_sid})
+    for t in v["tags"]:
+        if old_sid in t["members"]:
+            t["members"] = sorted(set(t["members"]) | {new_sid})
     _set_timeline_views(v)
 
 
 def _b36(n):
-    """Date.now().toString(36) — the id mint the timeline corner panel uses for new groups, so a group
-    gets ONE id shape whether it was born in the dashboard or over POST /group."""
+    """Date.now().toString(36) — the id mint the timeline corner panel uses for new tags, so a tag
+    gets ONE id shape whether it was born in the dashboard or over POST /tag."""
     digits = "0123456789abcdefghijklmnopqrstuvwxyz"
     out, n = "", int(n)
     while n:
@@ -1617,47 +1625,47 @@ def _b36(n):
     return out or "0"
 
 
-def _edit_group(name, add=(), remove=(), color=None, delete=False):
-    """Targeted edit of ONE named group in the views blob — the merge op behind POST /group. The WS
+def _edit_tag(name, add=(), remove=(), color=None, delete=False):
+    """Targeted edit of ONE named tag in the views blob — the merge op behind POST /tag. The WS
     setTimelineViews op replaces the whole blob, which is right for the dashboard (it holds the
     current one) and wrong for an agent: replaying a stale read would clobber the active view and
-    every group it never looked at. So: read, edit the one group, write back through the
-    normalizer. The group is addressed by NAME (the id is a UI-internal mint); two same-named
-    groups refuse rather than guess. Members are stored ids — the route resolves live names before
-    calling. A missing group is created on any edit, never on delete. Returns
-    (group-or-None, error-or-None); the returned row is the post-normalize one."""
+    every tag it never looked at. So: read, edit the one tag, write back through the
+    normalizer. The tag is addressed by NAME (the id is a UI-internal mint); two same-named
+    tags refuse rather than guess. Members are stored ids — the route resolves live names before
+    calling. A missing tag is created on any edit, never on delete. Returns
+    (tag-or-None, error-or-None); the returned row is the post-normalize one."""
     # Clamp the name into the STORED basis before the lookup: the normalizer clamps names to
-    # _VIEWS_MAX_NAME on write, so matching on the raw name would miss the stored group and mint an
+    # _VIEWS_MAX_NAME on write, so matching on the raw name would miss the stored tag and mint an
     # unaddressable same-named duplicate on every subsequent edit.
     name = str(name)[:_VIEWS_MAX_NAME]
     with _views_lock:   # the server is threaded; two unlocked merges would both copy the same pre-state
         v = json.loads(json.dumps(_timeline_views()))     # deep copy: never mutate the cached blob
-        hits = [g for g in v["groups"] if g["name"] == name]
+        hits = [t for t in v["tags"] if t["name"] == name]
         if len(hits) > 1:
-            return None, 'two groups are named "%s" — rename one in the dashboard first' % name
+            return None, 'two tags are named "%s" — rename one in the dashboard first' % name
         if delete:
             if not hits:
-                return None, 'no group named "%s"' % name
-            v["groups"] = [g for g in v["groups"] if g["id"] != hits[0]["id"]]
+                return None, 'no tag named "%s"' % name
+            v["tags"] = [t for t in v["tags"] if t["id"] != hits[0]["id"]]
             _set_timeline_views(v)      # an active pointing at it falls back to "all" in the normalizer
             return None, None
         if hits:
-            g = hits[0]
+            t = hits[0]
         else:
-            if len(v["groups"]) >= _VIEWS_MAX_GROUPS:     # the normalizer would drop the appended 33rd, SILENTLY
-                return None, "the views blob caps at %d groups" % _VIEWS_MAX_GROUPS
+            if len(v["tags"]) >= _VIEWS_MAX_TAGS:     # the normalizer would drop the appended 33rd, SILENTLY
+                return None, "the views blob caps at %d tags" % _VIEWS_MAX_TAGS
             n = int(time.time() * 1000)
-            taken = {g2["id"] for g2 in v["groups"]}
+            taken = {t2["id"] for t2 in v["tags"]}
             while "g" + _b36(n) in taken:   # same-ms creates must not share an id — delete filters by id
                 n += 1
-            g = {"id": "g" + _b36(n), "name": name, "color": "", "members": []}
-            v["groups"].append(g)
-        g["members"] = sorted((set(g["members"]) | set(add)) - set(remove))
+            t = {"id": "g" + _b36(n), "name": name, "color": "", "members": []}
+            v["tags"].append(t)
+        t["members"] = sorted((set(t["members"]) | set(add)) - set(remove))
         if color is not None:
-            g["color"] = color
+            t["color"] = color
         v = _norm_timeline_views(v)
         _set_timeline_views(v)
-        return next(g2 for g2 in v["groups"] if g2["id"] == g["id"]), None
+        return next(t2 for t2 in v["tags"] if t2["id"] == t["id"]), None
 
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
@@ -20266,7 +20274,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     cmap_grad = [list(cm.ramp(v, ctx_stops)) for v in (0.12, 0.34, 0.56, 0.78, 1.0)]
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
             "views": _timeline_views(),
-            "palette": pal.colors(_palette_name()),   # group color choices — the same set sessions draw identity colors from
+            "palette": pal.colors(_palette_name()),   # tag color choices — the same set sessions draw identity colors from
             "messages": messages, "judging": judging,
             "cmapGrad": cmap_grad,
             "activeChat": None, "focus": None, "hover": None, "usage": _usage_for_client()}
@@ -20533,28 +20541,24 @@ def _reveal_chat_for(client, focus_msg):
     revealSelfPane) — which covers every kernel, local included, and makes the shell line a harmless
     duplicate rather than the only mover."""
     wid = (client or {}).get("wid") or ""
-    # The reveal rule (the user 2026-08-18; reshaped 2026-08-19 with the DEFAULT-GROUP model): every
-    # gesture that focuses a session's chat — create, open, revive, a deep link, a feed chip — must
-    # land on a visible tab. Focusing now SWITCHES the active view to one that shows the session and
-    # never mutates membership: peeking at a pool worker must not permanently drag it back into the
-    # default group. Preference order: the default group (active "all" — "everything not removed"),
-    # else the first named group holding it; a session in NO view at all (removed from default,
-    # member of nothing) is re-added to the default group — the one case where visibility requires
-    # a membership edit.
+    # The reveal rule (the user 2026-08-18; reshaped 2026-08-19, re-grounded 2026-08-23 on the TAG
+    # model): every gesture that focuses a session's chat — create, open, revive, a deep link, a
+    # feed chip — must land on a visible tab. Focusing SWITCHES the active view to one that shows
+    # the session and never mutates membership: peeking at a tagged worker must not strip its tag.
+    # Preference order: the first tag holding it (a tagged session's home view — the default never
+    # shows it now); else, untagged: unhide if hidden, and land on the default view.
     sid = focus_msg.get("id") if isinstance(focus_msg, dict) else None
     if sid:
         v = _timeline_views()
         if not _view_visible(v, sid):
             v = json.loads(json.dumps(v))
-            if sid not in v["hidden"]:
-                v["active"] = "all"
+            holder = next((t["id"] for t in v["tags"] if sid in t["members"]), None)
+            if holder:
+                v["active"] = holder
             else:
-                holder = next((g["id"] for g in v["groups"] if sid in g["members"]), None)
-                if holder:
-                    v["active"] = holder
-                else:
+                if sid in v["hidden"]:
                     v["hidden"] = [x for x in v["hidden"] if x != sid]
-                    v["active"] = "all"
+                v["active"] = "all"
             _set_timeline_views(v)
             _mark_views_dirty()
     _send_to_view("chat", focus_msg, wid)
@@ -26398,9 +26402,9 @@ class Handler(BaseHTTPRequestHandler):
                     "palettes": [{"name": k, "label": v["label"], "colors": v["bg"]}
                                  for k, v in pal.PALETTES.items()]}), "application/json", cache="no-cache")
             if p == "/views":                             # the session-views blob (active view, hidden set,
-                # groups) for scripts/agents: the read half of POST /group. The dashboard reads the same
+                # tags) for scripts/agents: the read half of POST /tag. The dashboard reads the same
                 # blob off the tabOrder WS push; this route exists for token-bearing curl consumers
-                # (`romp group` with no args prints it).
+                # (`romp tag` with no args prints it).
                 return self._send(200, json.dumps(_timeline_views()), "application/json", cache="no-cache")
             if p == "/models":                                # the ONE model + effort choice list — chat statusline, timeline lanes, AND judge settings all read it (the user 2026-07-02: no hardcoding in multiple places)
                 # each choice carries its colormap tint (the user 2026-08-17: the new-comment dialog's
@@ -26995,17 +26999,19 @@ class Handler(BaseHTTPRequestHandler):
                 _mark_views_dirty()
                 return self._send(200, json.dumps({"ok": True, "id": tsid, "bg": bg,
                                                    "fg": pal.fg_for(bg)}), "application/json")
-            if u.path == "/group":
-                # Headless group edit (`romp group`, the user 2026-08-23, same manager/worker workflow:
-                # the worker roster IS a session group, so an agent needs to keep one current). NOT the
-                # WS setTimelineViews op re-exposed — that op replaces the whole views blob; this is a
-                # targeted merge on ONE group (_edit_group has the why). Body: {"name": <group>,
-                # "add": [name-or-sid...], "remove": [...], "color": <swatch, optional>,
-                # "delete": true|false}. Member names resolve against live sessions; sids (dead
-                # sessions) and host-prefixed remote SIDs (host:<sid>) pass through verbatim — the
-                # same opaque-id contract the blob keeps. Unknown names — host:NAME included, since
-                # the blob stores ids and a stored name would be a member nothing ever matches —
-                # refuse loudly.
+            if u.path in ("/tag", "/group"):
+                # Headless tag edit (`romp tag`, the user 2026-08-23, the manager/worker workflow:
+                # the worker roster IS a session tag, so an agent needs to keep one current — and can
+                # create the tag, colour it, and fill it programmatically, sessions it just spawned
+                # included). NOT the WS setTimelineViews op re-exposed — that op replaces the whole
+                # views blob; this is a targeted merge on ONE tag (_edit_tag has the why). Body:
+                # {"name": <tag>, "add": [name-or-sid...], "remove": [...],
+                # "color": <swatch, optional>, "delete": true|false}. Member names resolve against
+                # live sessions; sids (dead sessions) and host-prefixed remote SIDs (host:<sid>)
+                # pass through verbatim — the same opaque-id contract the blob keeps. Unknown names
+                # — host:NAME included, since the blob stores ids and a stored name would be a
+                # member nothing ever matches — refuse loudly. /group is the pre-rename alias
+                # (same-day rename; an un-updated remote's bin/romp still posts there).
                 try:
                     b = json.loads(raw_body or b"{}")
                 except Exception:
@@ -27033,16 +27039,17 @@ class Handler(BaseHTTPRequestHandler):
                         "no live session named %s (dead ones go by sid, remote ones by host:<sid>)" %
                         ", ".join('"%s"' % x for x in unknown)}), "application/json")
                 color = b.get("color")
-                g, err = _edit_group(name, add=ids["add"], remove=ids["remove"],
-                                     color=(str(color) if isinstance(color, str) else None),
-                                     delete=bool(b.get("delete")))
+                t, err = _edit_tag(name, add=ids["add"], remove=ids["remove"],
+                                   color=(str(color) if isinstance(color, str) else None),
+                                   delete=bool(b.get("delete")))
                 if err:
                     return self._send(200, json.dumps({"ok": False, "error": err}), "application/json")
                 _mark_views_dirty()
-                if g is None:
+                if t is None:
                     return self._send(200, json.dumps({"ok": True, "deleted": True, "name": name}),
                                       "application/json")
-                return self._send(200, json.dumps({"ok": True, "group": g}), "application/json")
+                # "group" mirrors "tag" for the pre-rename CLI reading the old key
+                return self._send(200, json.dumps({"ok": True, "tag": t, "group": t}), "application/json")
             if u.path == "/working":
                 # Publish/clear a session's working-note in the backend-agnostic store, so the postal bus's
                 # set_working goes through the kernel (no tmux @romp-working) and an SDK session can publish a

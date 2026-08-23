@@ -658,7 +658,7 @@ EOF
     _romp_cmd "romp fork <parent> <name>"  -            "Branch a session into a new parallel one (parent untouched; --at <uuid> picks the cut)"
     _romp_cmd "romp rename <session> <name>" -          "Rename a session (uuid-keyed: mailboxes, goals and history all follow)"
     _romp_cmd "romp color <session> [<#hex|1-9>]" -     "Recolor a session's identity swatch (palette hex or slot 1-9; no color arg reads bg/fg)"
-    _romp_cmd "romp group [<name>] [--add ...]" -       "Session groups: bare lists them; <name> with --add/--remove/--color/--delete merges one"
+    _romp_cmd "romp tag [<name>] [--add ...]" -         "Session tags: bare lists them; <name> with --add/--remove/--color/--delete merges one (a tagged session leaves the default view)"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> [--tag <label>] <text>" - "Hand a session a message; scripts/cron SHOULD pass --tag so it renders machine-sent, not as your typed words"
     _romp_cmd "romp interrupt <session>"   -            "Interrupt a session's current turn"
@@ -932,23 +932,25 @@ for r in rows:
     exit 1
 fi
 
-# Session groups from the CLI (the user 2026-08-23, via the manager/worker session workflow: a
-# manager keeps its worker roster as a session group, all one identity color). Bare / --json READS
+# Session tags from the CLI (the user 2026-08-23; renamed from "group" the same day: a tag marks a
+# SPECIALIZED session, excluded from the default view and shown under its tag — the accurate name.
+# The manager/worker workflow keeps its worker roster as a tag, all one identity color, and an agent
+# can mint/color/fill a tag programmatically, sessions it just spawned included). Bare / --json READS
 # GET /views; bare maps member sids to live names via GET /sessions and prints an unmappable id
-# RAW — a dead member is information, not noise. Everything else is POST /group, the kernel's
-# targeted per-group merge — deliberately NOT the dashboard's setTimelineViews op, which replaces
-# the whole blob and would let a stale read clobber the active view and every group this command
-# never looked at (the kernel's _edit_group comment has the full story). TRAPS: --add/--remove eat
+# RAW — a dead member is information, not noise. Everything else is POST /tag, the kernel's
+# targeted per-tag merge — deliberately NOT the dashboard's setTimelineViews op, which replaces
+# the whole blob and would let a stale read clobber the active view and every tag this command
+# never looked at (the kernel's _edit_tag comment has the full story). TRAPS: --add/--remove eat
 # every following arg up to the next flag, so flag order carries the grouping; members go up as
 # live names or raw sids (a dead session rides by sid) and the kernel refuses an unknown name
 # loudly rather than minting a member nothing will ever match; "color" and "delete" ride the
 # payload only when given — an absent color means keep, "" would mean clear. A bare NAME with no
-# edit flag READS that one group (exit 1 when absent) — creating on a read-shaped call minted
-# phantom groups from typos.
-if [[ "${1:-}" == "group" ]]; then
+# edit flag READS that one tag (exit 1 when absent) — creating on a read-shaped call minted
+# phantoms from typos. "group" is the pre-rename alias, accepted quietly.
+if [[ "${1:-}" == "tag" || "${1:-}" == "group" ]]; then
     shift
-    _gr_usage="usage: romp group [--json]
-       romp group <name> [--add <session>...] [--remove <session>...] [--color <#hex>] [--delete]"
+    _gr_usage="usage: romp tag [--json]
+       romp tag <name> [--add <session>...] [--remove <session>...] [--color <#hex>] [--delete]"
     _gr_name=""; _gr_json=false; _gr_color=""; _gr_cset=0; _gr_del=0
     _gr_add=(); _gr_remove=(); _gr_mode=""; _gr_add_seen=0; _gr_rm_seen=0
     while [[ $# -gt 0 ]]; do
@@ -982,12 +984,12 @@ if [[ "${1:-}" == "group" ]]; then
     _tok="$(_romp_token)"
     _kport="${ROMP_KERNEL_PORT:-29855}"
     if [[ -z "$_tok" ]]; then
-        echo "romp group: the kernel isn't running (no serve token). Start romp (the login service, or \`romp up\`) first." >&2
+        echo "romp tag: the kernel isn't running (no serve token). Start romp (the login service, or \`romp up\`) first." >&2
         exit 1
     fi
     if [[ -z "$_gr_name" ]]; then
         _resp="$(_romp_token_cfg | curl -sf -m 10 --config - "http://127.0.0.1:$_kport/views")" \
-            || { echo "romp group: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+            || { echo "romp tag: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
         if $_gr_json; then
             printf '%s\n' "$_resp"
             exit 0
@@ -1001,7 +1003,7 @@ if not isinstance(v, dict):
 rows = json.loads(sys.argv[2])
 rows = rows.get("sessions", rows) if isinstance(rows, dict) else rows
 names = {r.get("id"): r.get("name") for r in rows if isinstance(r, dict)}
-groups = v.get("groups") or []
+groups = v.get("tags") or v.get("groups") or []   # older kernel: pre-rename key
 act = v.get("active") or "all"
 act = next((g.get("name") for g in groups if g.get("id") == act), act)
 print("active view: %s" % act)
@@ -1017,7 +1019,7 @@ for g in groups:
         # a bare name is a READ of that one group, never a write — POSTing here would CREATE a
         # missing group, so a typo'd "view" would mint a phantom and burn one of the 32 slots
         _resp="$(_romp_token_cfg | curl -sf -m 10 --config - "http://127.0.0.1:$_kport/views")" \
-            || { echo "romp group: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+            || { echo "romp tag: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
         _rows="$(_romp_token_cfg | curl -sf -m 10 --config - "http://127.0.0.1:$_kport/sessions" 2>/dev/null)" || _rows='[]'
         if ! python3 -c '
 import json, sys
@@ -1025,7 +1027,7 @@ v = json.loads(sys.argv[1])
 rows = json.loads(sys.argv[2])
 rows = rows.get("sessions", rows) if isinstance(rows, dict) else rows
 names = {r.get("id"): r.get("name") for r in rows if isinstance(r, dict)}
-g = next((g for g in (v.get("groups") or []) if isinstance(v, dict) and g.get("name") == sys.argv[3]), None)
+g = next((g for g in (v.get("tags") or v.get("groups") or []) if isinstance(v, dict) and g.get("name") == sys.argv[3]), None)
 if g is None:
     sys.exit(3)
 m = [names.get(x) or x for x in (g.get("members") or [])]
@@ -1033,7 +1035,7 @@ print("%s  %s  %d member%s%s" % (g.get("name"), g.get("color") or "(no color)",
                                  len(m), "" if len(m) == 1 else "s",
                                  (": " + ", ".join(m)) if m else ""))
 ' "$_resp" "$_rows" "$_gr_name"; then
-            echo "romp group: no group named \"$_gr_name\" (see: romp group)" >&2
+            echo "romp tag: no tag named \"$_gr_name\" (see: romp tag)" >&2
             exit 1
         fi
         exit 0
@@ -1049,9 +1051,9 @@ if sys.argv[4] == "1":
 print(json.dumps(body))
 ' "$_gr_name" "$_gr_cset" "$_gr_color" "$_gr_del" "${#_gr_add[@]}" \
         "${_gr_add[@]+"${_gr_add[@]}"}" "${_gr_remove[@]+"${_gr_remove[@]}"}")"
-    _resp="$(_romp_token_cfg | curl -sf -m 15 --config - -X POST "http://127.0.0.1:$_kport/group" \
+    _resp="$(_romp_token_cfg | curl -sf -m 15 --config - -X POST "http://127.0.0.1:$_kport/tag" \
                   -H 'Content-Type: application/json' -d "$_payload")" \
-        || { echo "romp group: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
+        || { echo "romp tag: kernel not reachable on :$_kport (is romp running?)" >&2; exit 1; }
     if [[ "$_resp" == *'"ok": true'* || "$_resp" == *'"ok":true'* ]]; then
         _rows="$(_romp_token_cfg | curl -sf -m 10 --config - "http://127.0.0.1:$_kport/sessions" 2>/dev/null)" || _rows='[]'
         python3 -c '
@@ -1061,20 +1063,20 @@ rows = json.loads(sys.argv[2])
 rows = rows.get("sessions", rows) if isinstance(rows, dict) else rows
 names = {r.get("id"): r.get("name") for r in rows if isinstance(r, dict)}
 if resp.get("deleted"):
-    print("romp group: \"%s\" deleted" % (resp.get("name") or sys.argv[3]))
+    print("romp tag: \"%s\" deleted" % (resp.get("name") or sys.argv[3]))
 else:
-    g = resp.get("group") or {}
+    g = resp.get("tag") or resp.get("group") or {}   # older kernel: pre-rename key
     m = [names.get(x) or x for x in (g.get("members") or [])]
     nm = g.get("name") or sys.argv[3]
     if m:
-        print("romp group: \"%s\" now: %s" % (nm, ", ".join(m)))
+        print("romp tag: \"%s\" now: %s" % (nm, ", ".join(m)))
     else:
-        print("romp group: \"%s\" is empty" % nm)
+        print("romp tag: \"%s\" is empty" % nm)
 ' "$_resp" "$_rows" "$_gr_name"
         exit 0
     fi
     _err="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("error") or sys.argv[1])' "$_resp" 2>/dev/null || printf '%s' "$_resp")"
-    echo "romp group: refused — $_err" >&2
+    echo "romp tag: refused — $_err" >&2
     exit 1
 fi
 

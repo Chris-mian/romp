@@ -1,8 +1,10 @@
-// Session views on the chat side (the user 2026-08-18): the kernel's views blob — echoed on every
-// tabOrder push — gates which sessions get TABS. A hidden session is a BACKGROUND session: still
-// running, judged, carded; the + picker lists it under "Hidden — reveal" and the timeline's corner
-// panel counts it, so nothing runs in secret (the 2026-08-11 rule this feature deliberately carves
-// an exception into, keeping its spirit). Executed tests on the pure module + source pins.
+// Session views on the chat side (the user 2026-08-18; TAG model 2026-08-23): the kernel's views
+// blob — echoed on every tabOrder push — gates which sessions get TABS. The default view shows
+// UNTAGGED sessions: a tag marks a specialized session, excluded from the main view and shown
+// under its tag views. A tagged or hidden session is a BACKGROUND session: still running, judged,
+// carded; the + picker lists it under "Hidden — reveal" and the timeline's corner panel counts it,
+// so nothing runs in secret (the 2026-08-11 rule this feature deliberately carves an exception
+// into, keeping its spirit). Executed tests on the pure module + source pins.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -13,43 +15,48 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 
 const G = { id: "g1", name: "pool", color: "#DD42FF", members: ["s2"] };
 
-test("executed: the all-view minus hidden; a group exactly; membership beats hidden", () => {
+test("executed: the default view shows UNTAGGED minus hidden; a tag view its members exactly", () => {
   assert.equal(viewVisible(null, "s1"), true);
   assert.equal(viewVisible({ active: "all", hidden: ["s1"] }, "s1"), false);
-  assert.equal(viewVisible({ active: "g1", hidden: ["s2"], groups: [G] }, "s2"), true);
-  assert.equal(viewVisible({ active: "g1", groups: [G] }, "s1"), false);
-  assert.equal(viewVisible({ active: "gone", groups: [] }, "s1"), true, "an orphaned active fails open");
+  assert.equal(viewVisible({ active: "all", tags: [G] }, "s2"), false, "TAGGED → out of the default view");
+  assert.equal(viewVisible({ active: "all", tags: [G] }, "s1"), true, "untagged → the default view shows it");
+  assert.equal(viewVisible({ active: "g1", hidden: ["s2"], tags: [G] }, "s2"), true, "a tag view shows its members, hidden or not");
+  assert.equal(viewVisible({ active: "g1", tags: [G] }, "s1"), false);
+  assert.equal(viewVisible({ active: "gone", tags: [] }, "s1"), true, "an orphaned active fails open");
+  // the pre-rename key an un-updated kernel still pushes reads identically
+  assert.equal(viewVisible({ active: "all", groups: [G] }, "s2"), false, "legacy `groups` key honored");
+  assert.equal(viewVisible({ active: "g1", groups: [G] }, "s2"), true);
 });
 
-test("executed: hide leaves the default group (and the active group); reveal SWITCHES views", () => {
+test("executed: hide sets the one-off bit (and leaves the active tag); reveal SWITCHES views", () => {
   const hid = hideIn({ active: "all", hidden: [] }, "s1");
-  assert.deepEqual(hid.hidden, ["s1"], "hiding = leaving the default group");
+  assert.deepEqual(hid.hidden, ["s1"], "hiding = the manual one-off hide");
   assert.deepEqual(hideIn(hid, "s1").hidden, ["s1"], "idempotent");
-  // hiding while a group that CONTAINS the session is active must also leave that group — membership
-  // beats hidden, so without this the gesture is a silent no-op
-  const g = hideIn({ active: "g1", hidden: [], groups: [{ id: "g1", members: ["s2", "s3"] }, { id: "g2", members: ["s2"] }] }, "s2");
+  // hiding while a tag that CONTAINS the session is active must also leave that tag — the tag view
+  // shows its members however hidden they are, so without this the gesture is a silent no-op
+  const g = hideIn({ active: "g1", hidden: [], tags: [{ id: "g1", members: ["s2", "s3"] }, { id: "g2", members: ["s2"] }] }, "s2");
   assert.deepEqual(g.hidden, ["s2"]);
-  assert.deepEqual(g.groups![0].members, ["s3"], "dropped from the ACTIVE group");
-  assert.deepEqual(g.groups![1].members, ["s2"], "other groups keep it — multi-membership");
-  // reveal never mutates membership (the user 2026-08-19: peeking at a pool worker must not drag it
-  // back into the default group) — it switches the active view to one that shows the session
-  const rev = revealIn({ active: "g1", hidden: [], groups: [G] }, "s1");
-  assert.equal(rev.active, "all", "still in the default group → switch to it");
+  assert.deepEqual(g.tags![0].members, ["s3"], "dropped from the ACTIVE tag");
+  assert.deepEqual(g.tags![1].members, ["s2"], "other tags keep it — multi-tag membership");
+  // reveal never mutates membership (re-grounded 2026-08-23: peeking at a tagged worker must not
+  // strip its tag) — it switches the active view to one that shows the session
+  const rev = revealIn({ active: "g1", hidden: [], tags: [G] }, "s1");
+  assert.equal(rev.active, "all", "untagged → land on the default view");
   assert.deepEqual(rev.hidden, [], "…and nothing edited");
-  const rev2 = revealIn({ active: "all", hidden: ["s2"], groups: [G] }, "s2");
-  assert.equal(rev2.active, "g1", "out of default but in a group → switch to that group");
-  assert.deepEqual(rev2.hidden, ["s2"], "membership untouched — the peek is temporary");
-  const rev3 = revealIn({ active: "all", hidden: ["sX"], groups: [G] }, "sX");
-  assert.deepEqual(rev3.hidden, [], "in NO view at all → re-added to the default group (the one edit)");
-  const rev4 = revealIn({ active: "g1", hidden: ["s2"], groups: [G] }, "s2");
-  assert.equal(rev4.active, "g1", "already visible in the active group → nothing changes");
+  const rev2 = revealIn({ active: "all", hidden: [], tags: [G] }, "s2");
+  assert.equal(rev2.active, "g1", "tagged → its holder tag is its home view");
+  assert.deepEqual(rev2.tags![0].members, ["s2"], "membership untouched — the peek never strips a tag");
+  const rev3 = revealIn({ active: "all", hidden: ["sX"], tags: [G] }, "sX");
+  assert.deepEqual(rev3.hidden, [], "hidden and untagged → un-hidden onto the default view (the one edit)");
+  const rev4 = revealIn({ active: "g1", hidden: ["s2"], tags: [G] }, "s2");
+  assert.equal(rev4.active, "g1", "already visible in the active tag → nothing changes");
 });
 
-test("executed: the canonical key ignores list order — the kernel normalizer re-sorts", () => {
-  const a = { active: "g1", hidden: ["b", "a"], groups: [{ id: "g1", members: ["y", "x"] }] };
+test("executed: the canonical key ignores list order AND which key the kernel used", () => {
+  const a = { active: "g1", hidden: ["b", "a"], tags: [{ id: "g1", members: ["y", "x"] }] };
   const b = { active: "g1", hidden: ["a", "b"], groups: [{ id: "g1", members: ["x", "y"] }] };
-  assert.equal(viewsKey(a), viewsKey(b));
-  assert.notEqual(viewsKey(a), viewsKey({ active: "all", hidden: ["a", "b"], groups: [] }));
+  assert.equal(viewsKey(a), viewsKey(b), "a legacy-keyed echo still reconciles an optimistic edit");
+  assert.notEqual(viewsKey(a), viewsKey({ active: "all", hidden: ["a", "b"], tags: [] }));
 });
 
 test("the tabOrder frame carries the blob and the strip filters on it, composing with #only", () => {

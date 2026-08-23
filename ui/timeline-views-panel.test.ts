@@ -1,10 +1,11 @@
-// The timeline's corner control panel (the user 2026-08-18; filter-chip form 2026-08-23): "Filter ▾" in the
-// bottom-left corner — the strip under the lane gutter, left of the time labels. The dropdown picks
-// the active VIEW (the default group / named groups), holds New group… / Edit sessions…, and carries the
-// two timeline display toggles (collapse idle gaps, active only) so they finally work in every host.
-// The dialog is one checkbox per session: unchecked in the all-view = hidden from the timeline AND
-// the chat strip (a background session); checked in a group = member. House pattern: execute the
-// pure helpers + reconcile on a bare prototype, regex-pin the SVG/menu wiring.
+// The timeline's corner control panel (the user 2026-08-18; filter-chip form + TAG model
+// 2026-08-23): "Filter ▾" in the bottom-left corner — the strip under the lane gutter, left of the
+// time labels. The dropdown picks the active VIEW (default = UNTAGGED sessions / the named tags),
+// holds New tag… / Sessions & tags…, and carries the two timeline display toggles (collapse idle
+// gaps, active only) so they finally work in every host. The dialog is TAG-CENTRIC: one row per
+// session wearing its tag chips (✕ leaves a tag; [+] joins or mints one) — a tagged session leaves
+// the default view and shows under its tags. House pattern: execute the pure helpers + reconcile
+// on a bare prototype, regex-pin the SVG/menu wiring.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -17,25 +18,26 @@ const SRC = fs.readFileSync(VIEW_PATH, "utf8");
 const { TimelinePanel, viewVisible, viewLabel, viewMoreCount, viewToggleHidden, viewToggleMember } = requireCjs(VIEW_PATH);
 
 const G = { id: "g1", name: "pool", color: "#DD42FF", members: ["s2", "s3"] };
-const V = (active: string, hidden: string[] = [], groups: any[] = [G]) => ({ active, hidden, groups });
+const V = (active: string, hidden: string[] = [], tags: any[] = [G]) => ({ active, hidden, tags });
 
-test("executed: the all-view hides the hidden set; a group shows exactly its members", () => {
+test("executed: the default view shows UNTAGGED minus hidden; a tag view its members exactly", () => {
   assert.equal(viewVisible(null, "s1"), true, "no blob yet → everything shows");
-  assert.equal(viewVisible(V("all", ["s2"]), "s2"), false);
-  assert.equal(viewVisible(V("all", ["s2"]), "s1"), true);
-  assert.equal(viewVisible(V("g1", ["s2"]), "s2"), true, "membership beats the hidden bit");
-  assert.equal(viewVisible(V("g1"), "s1"), false, "a group shows exactly its members");
+  assert.equal(viewVisible(V("all", ["s9"]), "s9"), false, "hidden");
+  assert.equal(viewVisible(V("all"), "s2"), false, "TAGGED → out of the default view (the user 2026-08-23)");
+  assert.equal(viewVisible(V("all"), "s1"), true, "untagged → shown");
+  assert.equal(viewVisible(V("g1", ["s2"]), "s2"), true, "a tag view shows its members, hidden or not");
+  assert.equal(viewVisible(V("g1"), "s1"), false, "a tag view shows exactly its members");
   assert.equal(viewVisible(V("ghost", [], []), "s1"), true, "an orphaned active falls back open");
+  assert.equal(viewVisible({ active: "all", groups: [G] }, "s2"), false,
+    "the legacy `groups` key an un-updated kernel pushes reads identically");
 });
 
 test("executed: the trigger label and the N-more cue (live sessions outside the view)", () => {
-  // the built-in view is the DEFAULT GROUP (the user 2026-08-19), not "All": every session joins it
-  // at birth, and hiding means leaving it
   assert.equal(viewLabel(null), "default");
   assert.equal(viewLabel(V("g1")), "pool");
   const sessions = [{ id: "s1", live: true }, { id: "s2", live: true }, { id: "s4", live: false }];
   assert.equal(viewMoreCount(V("g1"), sessions), 1, "s1 is live and outside; dead s4 never counts");
-  assert.equal(viewMoreCount(V("all", ["s1", "s4"]), sessions), 1, "hidden live s1 counts; hidden dead s4 does not");
+  assert.equal(viewMoreCount(V("all", ["s1"]), sessions), 2, "hidden live s1 AND tagged live s2 count; dead s4 never");
 });
 
 test("executed: an optimistic edit holds until the kernel echoes it — then yields to authority", () => {
@@ -44,12 +46,12 @@ test("executed: an optimistic edit holds until the kernel echoes it — then yie
   p._reconcileViews();
   assert.ok(p._pendingViews, "no echo yet → still pending");
   // the kernel echoes the same shape with re-sorted lists → canonical comparison clears it
-  p._views = { active: "g1", hidden: [], groups: [{ id: "g1", name: "pool", color: "#DD42FF", members: ["s3", "s2"] }] };
+  p._views = { active: "g1", hidden: [], tags: [{ id: "g1", name: "pool", color: "#DD42FF", members: ["s3", "s2"] }] };
   p._reconcileViews();
   assert.equal(p._pendingViews, null, "echo match (order-insensitive) clears the pending edit");
   // a pending edit the kernel never echoes yields after three pushes — the kernel is authoritative
   p._pendingViews = V("g1"); p._pendingViewsAge = 0;
-  p._views = { active: "all", hidden: [], groups: [] };
+  p._views = { active: "all", hidden: [], tags: [] };
   p._reconcileViews(); p._reconcileViews();
   assert.ok(p._pendingViews, "two silent pushes → still holding");
   p._reconcileViews();
@@ -94,15 +96,27 @@ test("the dropdown and dialog wear the shared menu vocabulary and adopt into the
   assert.match(SRC, /const h = this\._menuHost\(anchorEl\.getBoundingClientRect\(\)\);[\s\S]{0,400}this\._viewsMenu = menu;/);
 });
 
-test("the sessions dialog is the pool builder: each live row carries the lane gear's feed toggle", () => {
-  // the user 2026-08-19, from the manager/worker experiment: a background worker wants BOTH edits —
-  // out of the default group AND off the feed — in one visit. Reused machinery, never a new one;
-  // and deliberately NOT auto-coupled to membership (hideFromFeed seals goals + gates the planner).
+test("the sessions dialog is TAG-CENTRIC: chips per row, a [+] to join or mint, the feed toggle rides along", () => {
+  // the user 2026-08-23: multi-tag assignment in one visit — each row wears its tags as removable
+  // chips (the tag's colour, the trigger chip's dress) and a [+] menu of the tags it lacks + a
+  // new-tag input. The menu items say so: New tag… / Sessions & tags…
+  assert.match(SRC, /item\('New tag…', \{ dim: true \}\)/);
+  assert.match(SRC, /item\('Sessions & tags…', \{ dim: true \}\)/);
+  assert.match(SRC, /const ch = chips\.createSpan\(\{ text: t\.name \+ ' ✕' \}\);/);
+  assert.match(SRC, /this\._setViews\(viewToggleMember\(this\._curViews\(\), t\.id, s\.id\)\); build\(\);/,
+    "chip click = leave that tag; [+] option = join — both through the one pure mutation");
+  assert.match(SRC, /ni\.placeholder = 'new tag…';/, "minting a tag right from a session row");
+  assert.match(SRC, /nv\.tags = viewTags\(nv\)\.concat\(\[nt\]\); delete nv\.groups;/,
+    "a write normalizes onto the tags key, never re-emitting the legacy one");
+  // the eye-off appears ONLY on a hidden session, to un-hide it (hiding lives on the chat tab)
+  assert.match(SRC, /if \(\(v\.hidden \|\| \[\]\)\.indexOf\(s\.id\) >= 0\) \{/);
+  // the feed toggle still rides every live row (the user 2026-08-19 pool-builder rule): a
+  // background worker wants BOTH edits — tagged out of the default view AND off the feed — in one
+  // visit. Reused machinery, never a new one; NOT auto-coupled to membership.
   assert.match(SRC, /const ft = LANE_TOGGLES\.find\(\(t\) => t\.flag === 'hideFromFeed'\);/);
   assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.hideFromFeed = next;/,
     "the same optimistic sticky flags the lane gear uses");
   assert.match(SRC, /this\._setSessionFlag\(s, 'hideFromFeed', next\);\s*\n\s*this\._reconcilePendingFlags\(\);/);
-  assert.match(SRC, /e\.stopPropagation\(\);\s*\/\/ the row toggle is membership; this is the feed/);
 });
 
 test("the two display toggles write the host's own romp:settings — reachable in every host now", () => {
@@ -123,12 +137,12 @@ test("_setViews posts through the host hook with a GUARDED, atomic Obsidian fall
 });
 
 test("executed: the dialog's two checkbox mutations, pure", () => {
-  const v = { active: "all", hidden: ["a"], groups: [{ id: "g1", members: ["m"] }] };
+  const v = { active: "all", hidden: ["a"], tags: [{ id: "g1", members: ["m"] }] };
   assert.deepEqual(viewToggleHidden(v, "a").hidden, [], "unhide");
   assert.deepEqual(viewToggleHidden(v, "b").hidden, ["a", "b"], "hide");
-  assert.deepEqual(viewToggleMember(v, "g1", "m").groups[0].members, [], "leave");
-  assert.deepEqual(viewToggleMember(v, "g1", "n").groups[0].members, ["m", "n"], "join");
-  assert.deepEqual(viewToggleMember(v, "ghost", "n"), v, "an unknown group mutates nothing");
+  assert.deepEqual(viewToggleMember(v, "g1", "m").tags[0].members, [], "leave");
+  assert.deepEqual(viewToggleMember(v, "g1", "n").tags[0].members, ["m", "n"], "join");
+  assert.deepEqual(viewToggleMember(v, "ghost", "n"), v, "an unknown tag mutates nothing");
 });
 
 test("the trigger measures its WHOLE string against the gutter, and the dialog's Escape hook dies on every close", () => {
