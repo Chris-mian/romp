@@ -64,9 +64,36 @@ test("AWAITING uses the kernel's why verbatim (capitalized) when it reads 'waiti
 });
 
 test("a peer wait (waitingOn chip) and a bg-TASK wait (pill) both defer — no generic awaiting box", () => {
-  // the "Awaiting <peer>" chip / the "Awaiting task" pill already carry these; the box would double up
+  // the "Awaiting <peer>" chip / the "Awaiting task" pill already carry these; the box would double up.
+  // Carve-out (the user 2026-08-23): ON the working column a task-ful await now captions itself —
+  // deferring there dropped the card to the "Paused" floor directly under the pill. Off-column,
+  // where no floor exists, both still defer.
   assert.equal(spinFor({ awaiting: { why: "x" }, waitingOn: "peer" }, false, false).caption, null);
   assert.equal(spinFor({ awaiting: { why: "x", tasks: ["t1"] } }, false, false).caption, null);
+  const pw = spinFor({ awaiting: { why: "x" }, waitingOn: "peer", column: "working", sessState: "quiet" }, false, false);
+  assert.ok(!pw.awaitingBg, "a peer wait never wears the awaiting box on any column — the chip carries it");
+  assert.ok(!/^Waiting on a background task/.test(pw.caption || ""), "and never the bg-task caption");
+});
+
+// --- the wait's elapsed readout (the user 2026-08-23) -----------------------------------------------
+// Working says how long it has been running; the awaiting states said nothing, so a wait stuck for
+// hours read exactly like one seconds old (the local_misc card sat 2¾ hours with no visible age). The
+// kernel now sends the wait's own event time (`since`) and the box appends the same compact duration
+// the working narration wears.
+test("AWAITING shows how long the wait has held when the kernel supplies its start", () => {
+  const s = spinFor({ awaiting: { why: "", since: 1000 } }, false, false, 1000 + 42 * 60);
+  assert.equal(s.caption, "Awaiting agents · 42m");
+  // a verbatim "waiting on …" why carries it too, and past an hour it reads h+m like the narration
+  const l = spinFor({ awaiting: { why: "waiting on 3 subagents", since: 1000 } }, false, false,
+                    1000 + 3 * 3600 + 5 * 60);
+  assert.equal(l.caption, "Waiting on 3 subagents · 3h 5m");
+});
+
+test("no since (an older kernel, an event-less wait) → no duration, never a guess", () => {
+  assert.equal(spinFor({ awaiting: { why: "" } }, false, false, 5000).caption, "Awaiting agents");
+  assert.equal(spinFor({ awaiting: { why: "", since: null } }, false, false, 5000).caption, "Awaiting agents");
+  // and a caller that passed no clock (nowS) also stays bare — a duration needs both ends
+  assert.equal(spinFor({ awaiting: { why: "", since: 1000 } }, false, false).caption, "Awaiting agents");
 });
 
 test("a PROVISIONAL working card tells the truth about its phase", () => {
@@ -142,7 +169,11 @@ test("a settled card displaced to Working loses its line but never its caption",
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
 test("feed.ts routes the card's swirl through spinFor and keeps no inline copy of the ladder", () => {
-  assert.match(FEED, /import \{ spinFor, KIND_WORD \} from "\.\/spin-caption";/);
+  assert.match(FEED, /import \{ spinFor, KIND_WORD, waitedSuffix \} from "\.\/spin-caption";/);
+  // the elapsed readout reaches the OTHER two awaiting surfaces through the same helper: the
+  // "Awaiting task" pill and the "Awaiting <peer>" chip (the user 2026-08-23)
+  assert.match(FEED, /const pillWaited = waitedSuffix\(it\.awaiting && it\.awaiting\.since, Date\.now\(\) \/ 1000\);/);
+  assert.match(FEED, /const woWaited = waitedSuffix\(wo\.since, Date\.now\(\) \/ 1000\);/);
   assert.match(FEED, /const spin = spinFor\(it, distillPending\(/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
   // the inline ladder is gone — no second, drifting copy of the rule
@@ -222,4 +253,16 @@ test("THE FLOOR IS TOTAL — a working-column card can never be mute (the user 2
               "mute working card: " + JSON.stringify({ judging, recheck, rejudging, provisional, dp,
                                                        working: !!working, sessState, awaiting: !!awaiting }));
           }
+});
+
+
+test("awaiting WITH tracked tasks names the first task — never the paused floor (2026-08-23)", () => {
+  // the screenshot contradiction: an "Awaiting task" pill above a "Paused — nothing is in motion"
+  // caption. With tasks present the caption keeps the awaiting read and names the wait.
+  const s = spinFor({ awaiting: { why: "waiting on 2 background tasks", kind: "task",
+                                  tasks: ["Notify when the release PRs settle", "suite run"] },
+                      column: "working", sessState: "quiet" }, false, false);
+  assert.equal(s.awaitingBg, true);
+  assert.match(s.caption || "", /^Waiting on a background task: Notify when the release PRs settle/);
+  assert.ok(!/Paused/.test(s.caption || ""), "the quiet floor must not fire under an Awaiting-task pill");
 });

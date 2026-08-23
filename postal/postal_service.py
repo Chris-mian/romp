@@ -708,8 +708,14 @@ def resolve_recipient(to, frm_id=""):
     here = self_host()
     # Everything this bus can deliver to itself: local sessions plus heartbeating remotes. A
     # host qualifier naming somebody ELSE takes them all out of the running.
+    # a uuid-shaped `to` addresses the STABLE session id (the user 2026-08-23, via the experiment
+    # machinery's cost-out: names are labels that renames retire; the sid survives them). An id is
+    # unique by construction, so the ambiguity arm below never fires for it; the self-send check
+    # still does — mailing your own sid is the same loopback as mailing your own name.
+    by_id = bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", bare))
     direct_all = ([] if (want_host and want_host != here)
-                  else [a for a in all_agents(threads=True) if a["name"] == bare])   # threads addressable for replies
+                  else [a for a in all_agents(threads=True)
+                        if (a.get("id") == bare if by_id else a["name"] == bare)])   # threads addressable for replies
 
     if frm_id and any(a["id"] == frm_id for a in direct_all):
         return {"kind": "error", "status": 409,
@@ -2543,7 +2549,7 @@ Write so the recipient can act from your first line:
 
 Before editing a shared repo, run list_agents and read peers' branches + working-notes (overlap only collides on the SAME branch), and publish yours with set_working. Resolve ownership by reading that state, never by messaging "do you still own this?": an idle peer's note may be stale, and a peer with no note holds nothing. Declare what you own in your first line. Never wake an idle session just to coordinate.
 
-Addressing is live-only: you can message only currently-live sessions (list_agents). Dead names error, with no parked mail or reviving.
+Addressing is live-only: you can message only currently-live sessions (list_agents). Dead names error, with no parked mail or reviving. A session's stable id (the uuid in list_agents) also works as the recipient — rename-proof, unique by construction.
 
 A name is not guaranteed unique. When more than one live session answers to it the send is refused and the candidates are listed as `host:name`: pick one and resend rather than assuming the first. Your OWN name is refused outright, because a message there lands in your own inbox looking exactly like a reply from someone else. Your row in list_agents is the one marked `(you)`.
 

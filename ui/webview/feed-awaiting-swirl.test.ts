@@ -21,7 +21,7 @@ test("the swirl element is built in the body, right after the distiller line, an
 });
 
 test("the swirl is driven by spinFor's caption — shown when there is one, else hidden", () => {
-  assert.match(FEED, /import \{ spinFor, KIND_WORD \} from "\.\/spin-caption";/);
+  assert.match(FEED, /import \{ spinFor, KIND_WORD, waitedSuffix \} from "\.\/spin-caption";/);
   assert.match(FEED, /const spin = spinFor\(it, distillPending\(dCompleted, dBlocked, it\.summary, it\.blockSummary, !!it\.blocked\),/);
   assert.match(FEED, /const spinCaption = spin\.caption, spinTip = spin\.tip, awaitingBg = spin\.awaitingBg;/);
   assert.match(FEED, /import \{ distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote \} from "\.\/distiller-line";/);
@@ -35,8 +35,10 @@ test("a bg-task wait wears the compact 'Awaiting task' pill that expands the tas
   assert.match(FEED, /"bg" \| "summary" \| "subgoals" \| "tasks" \| "stall" \| "none"/);
   // "Awaiting task", never "Waiting on task": one word per state across every surface — the chat chip
   // and timeline badge already say Awaiting for this exact state (the user 2026-08-13)
-  assert.match(FEED, /taskList\.length === 1 \? "Awaiting " \+ one : "Awaiting " \+ taskList\.length \+ " "/);
+  assert.match(FEED, /taskList\.length === 1 \? "Awaiting " \+ one\s*\n?\s*: "Awaiting " \+ taskList\.length \+ " "/);
   assert.doesNotMatch(FEED, /"Waiting on task"/);
+  // the pill carries the wait's elapsed time, same readout as the awaiting box (the user 2026-08-23)
+  assert.match(FEED, /\+ pillWaited;/);
   assert.match(FEED, /taskBtn\.onclick = pick\("tasks"\);/);
   // expanded rows render in the checklist spot, same view as Sub-goals, the swirl as each row's mark
   assert.match(FEED, /if \(choice === "tasks"\) \{[\s\S]*?el\("div", "fcheck ftask"\)[\s\S]*?ftask-swirl/);
