@@ -182,6 +182,24 @@ MOCK
     grep '/fork' "$MOCK_LOG" | grep -q '"at": *"aaaabbbb-1111-2222-3333-444455556666"'
 }
 
+@test "rename: POST /rename with target and new name; usage and no-token are loud" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    run run_romp rename exp-web cross_model
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'is now "cross_model"'* ]]
+    grep '/rename' "$MOCK_LOG" | grep -q '"target": *"exp-web"'
+    grep '/rename' "$MOCK_LOG" | grep -q '"name": *"cross_model"'
+    run run_romp rename only-one-arg
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"usage: romp rename"* ]]
+    unset ROMP_SERVE_TOKEN
+    run run_romp rename exp-web cross_model
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"kernel isn't running"* ]]
+}
+
 @test "fork: usage errors exit 2; no kernel token is a loud exit 1" {
     touch "$MOCK_LOG"
     run run_romp fork
@@ -592,10 +610,11 @@ MOCK
 
 # ─── No attach/rename subcommands (use tmux a / tmux rename) ─────────
 
-@test "'a', 'attach', 'rename' are unknown commands, never sessions" {
-    # There is no attach/rename command (plain tmux does both), and round 3 made
-    # every non-command bare word a loud error pointing at `romp new`.
-    for word in a attach rename; do
+@test "'a' and 'attach' are unknown commands, never sessions" {
+    # There is no attach command (plain tmux does that), and round 3 made every
+    # non-command bare word a loud error pointing at `romp new`. (`rename` left
+    # this list when it became a real verb — see the rename tests above.)
+    for word in a attach; do
         : > "$MOCK_LOG"
         run run_romp "$word"
         [ "$status" -eq 2 ]
