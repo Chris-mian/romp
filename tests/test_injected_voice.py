@@ -113,6 +113,15 @@ class InjectedBodiesSpeakAsTheUser(unittest.TestCase):
             "continue button": km._followup_body(TOP, None, km.CONTINUE_TEXT),
             "multi-goal bundle": km._nudge_bundle_body([TOP, TOP2], nodes, set()),
             "multi-goal bundle (fork)": km._nudge_bundle_body([TOP, TOP2], nodes, {TOP}),
+            # the Merge handoff (the user 2026-08-23): a comment thread's discussion folded back into
+            # the parent session — the reader has never heard of romp; it must read as the person's
+            # own record of a side discussion
+            "comment-thread merge": km._merge_body(
+                "the caching layer should be write-through",
+                [{"who": "user", "text": "should we make the cache write-through instead?"},
+                 {"who": "assistant", "text": "Yes: write-through avoids the stale-read window and "
+                                              "the extra invalidation pass; the cost is one write "
+                                              "per update, which this workload absorbs."}]),
             "debt reminder (question)": km._debt_reminder_body(
                 [("web", T0, "question", "Which port should the staging server use?")]),
             "debt reminder (handoff)": km._debt_reminder_body(
@@ -181,9 +190,12 @@ class InjectedBodiesSpeakAsTheUser(unittest.TestCase):
             # opener is the user's own comment on a quoted passage — a conversation, never a nudge
             # …and the edit trace is an FYI about something the user already DID (a file changed under
             # the session) — telling, not asking; a status question bolted on would be noise
+            # …and the MERGE handoff is a record handed over with direction ("account for it"),
+            # never a status ask — bolting a progress question onto it would be noise
             if name in ("typed follow-up on a summary",
                         "debt reminder (question)", "debt reminder (handoff)",
-                        "debt reminder (several)", "comment thread opener", "edit trace"):
+                        "debt reminder (several)", "comment thread opener", "edit trace",
+                        "comment-thread merge"):
                 continue
             text = prose(body).lower()
             with self.subTest(message=name):

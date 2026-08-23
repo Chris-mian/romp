@@ -309,7 +309,7 @@ test("the highlight is highlighter-YELLOW — never the selection blue — and o
   assert.match(CSS, /mark\.cmt-hl\.hl-first \{ border-top-left-radius: 2px/);
   // a fully-covered inline-code span tints at the ELEMENT: a mark inside it can't paint the code's
   // padded background, which left an untinted sliver around every code word (the word-island look)
-  assert.match(UI, /host\.classList\.toggle\("cmt-hl-host", th\.status !== "resolved"\)/);
+  assert.match(UI, /host\.classList\.toggle\("cmt-hl-host", th\.status !== "resolved" && th\.status !== "merged"\)/);
   assert.match(UI, /p\.classList\.remove\("cmt-hl-host"\)/);
   assert.match(CSS, /code\.cmt-hl-host \{ background: color-mix\(in srgb, var\(--cmt-hl\) 30%, var\(--code-bg\)\)/);
   assert.match(CSS, /code\.cmt-hl-host > mark\.cmt-hl \{ background: transparent/);

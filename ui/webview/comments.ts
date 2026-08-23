@@ -13,7 +13,7 @@ export type CommentThread = {
   color?: string;             // the comment's identity color — picked distinct from its parent's
   anchorUuid: string;
   exact: string;
-  status: "open" | "resolved" | "promoting" | "promoted";
+  status: "open" | "resolved" | "promoting" | "promoted" | "merging" | "merged";   // merging/merged: folded back into the parent (the user 2026-08-23)
   createdT: number;
   state: string;              // the thread session's live state ("working"/"waiting"/…, "" when dormant)
   error?: string;             // the thread CLI's launch error, when it could not start

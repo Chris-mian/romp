@@ -5196,6 +5196,10 @@ def _comment_status_refusal(prior):
         return "this thread is now its own session; end it like any session."
     if prior == "promoting":
         return "this thread is becoming its own session; give it a moment."
+    if prior == "merging":
+        return "this thread is merging back into the session; give it a moment."
+    if prior == "merged":
+        return "this thread was already merged back into the session."
     return "that thread is gone."
 
 
@@ -5625,6 +5629,67 @@ def _comment_reply(parent_sid, tid, text):
         be.resume(reg.get("name") or ("thread-" + tsid[:8]), tsid)   # alive again; names/ untouched
     if not be.send(tsid, str(text)):
         return "couldn't reach this thread's session; it may have been removed."
+    _push_soon()
+    return None
+
+
+MERGE_BODY_CAP = 6000   # the thread exchange fed back on a merge — keep the most recent tail
+
+
+def _merge_body(exact, msgs):
+    """The MERGE handoff (the user 2026-08-23): fold a side discussion's outcome back into the main
+    conversation. Injected-voice rules apply (repo CLAUDE.md): the agent reading this has never heard
+    of romp, so it reads as the person it works for handing over the record of a discussion they had
+    elsewhere, grounded by the passage it was about. No machinery named, no reply slots."""
+    quote = (exact or "").strip()
+    lines = []
+    for m in msgs or []:
+        t = (m.get("text") or "").strip()
+        if not t:
+            continue
+        lines.append(("Me: " if m.get("who") == "user" else "Them: ") + t)
+    convo = "\n\n".join(lines)
+    if len(convo) > MERGE_BODY_CAP:
+        convo = "… (earlier discussion trimmed)\n\n" + convo[-MERGE_BODY_CAP:]
+    parts = ["I took a side discussion with another assistant about this passage of your earlier work:"]
+    if quote:
+        parts.append("\n".join("> " + ln for ln in quote.splitlines()[:6]))
+    parts.append("Here is how it went:")
+    parts.append(convo)
+    parts.append("Treat what we settled there as my direction: fold it into your understanding and "
+                 "account for it in everything you do on this from here on.")
+    return "\n\n".join(parts)
+
+
+def _comment_merge(parent_sid, tid):
+    """Fold a thread's outcome back into the PARENT session (the user 2026-08-23): the thread's
+    exchange lands in the parent as the person's own handoff (_merge_body), the thread settles to
+    'merged', and its CLI shuts down like a resolve (the reg stays; history intact). With this a
+    thread has its three exits: delete (discard), break out (own session), merge (feed back in).
+    The CAS latch ('merging') keeps a racing resolve/delete from killing the CLI mid-read, exactly
+    the promote latch's rationale."""
+    prior, th = _comment_update_if(parent_sid, tid, ("open", "resolved"), status="merging")
+    if th is None:
+        return _comment_status_refusal(prior)
+
+    def _revert(msg):
+        _comment_update(parent_sid, tid, status=prior)
+        return msg
+    msgs = _thread_messages(th["sid"], th.get("cutUuid") or "", th.get("createdT") or 0)
+    if not any((m.get("text") or "").strip() for m in msgs):
+        return _revert("this thread has no discussion to merge yet.")
+    body = _merge_body(th.get("exact"), msgs)
+    be = Sessions.backend_for(parent_sid)
+    try:
+        be.send(parent_sid, body)
+    except Exception as e:
+        return _revert("the merge message could not be delivered: %s" % e)
+    _comment_update(parent_sid, tid, status="merged")
+    if hasattr(be, "kill"):
+        try:
+            be.kill(th["sid"])                      # its work is folded back; the CLI has nothing left
+        except Exception:
+            pass
     _push_soon()
     return None
 
@@ -6437,7 +6502,8 @@ def _drive(msg, client):
     ID_OPS = ("sendMessage", "rewindSend", "rewindDelete", "interrupt", "compactSession", "dismissDialog", "answerAsk", "navAsk", "toggleAsk", "submitAsk",
               "addCustomAsk", "cancelAsk", "askText", "cancelQueued", "dismissEcho", "apiRetry", "setModel", "setEffort", "setMode", "setFast",
               "setAuth", "endSession", "renameSession", "stopTask", "rewindFiles", "mcpAction", "forkSession",
-              "commentCreate", "commentReply", "commentResolve", "commentDelete", "commentSeen", "commentPromote")
+              "commentCreate", "commentReply", "commentResolve", "commentDelete", "commentSeen", "commentPromote",
+              "commentMerge")
     if t in ID_OPS and msg.get("id"):
         sid = str(msg["id"])
     elif t in ("compact", "sendCommand") and msg.get("name"):
@@ -6722,6 +6788,12 @@ def _drive(msg, client):
             # names no thread, and an unspent pending row reads as 'still thinking' forever
             client["send"](json.dumps({"type": "warn", "text": err}))
             client["send"](json.dumps({"type": "commentSendFailed", "id": sid, "tid": str(msg["tid"])}))
+    elif t == "commentMerge" and msg.get("tid"):
+        # Fold the thread back into the session (the user 2026-08-23). LOUD on refusal; the comments
+        # frame rides the next push and the popover adopts the merged title from it.
+        err = _comment_merge(sid, str(msg["tid"]))
+        if err:
+            client["send"](json.dumps({"type": "warn", "text": err}))
     elif t == "commentResolve" and msg.get("tid"):
         err = _comment_resolve(sid, str(msg["tid"]))
         if err:
