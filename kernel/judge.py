@@ -2437,6 +2437,26 @@ def _rebase_onto_disk(fsid, store):
         # verdict FLAGS need no such care: rollup_status below re-derives them all from the merged log.
         if int(dnd.get("mt") or 0) > int(mnd.get("mt") or 0):
             mnd["mt"] = int(dnd["mt"])
+        # DISTILL-FAMILY fields are STATE, not log events, so the event fold above never carried them:
+        # a writer holding a pre-distill snapshot across its model call erased the freshly-published
+        # takeaway/brief on save, the card flipped back to "Distilling…", and the distiller re-ran —
+        # oscillating for as long as writers overlapped (the user 2026-08-23, three live cards mid
+        # restart-storm). Each family merges by its own due stamp: the side whose stamp is newer
+        # distilled a newer episode, so its whole family (line + parts + counters) is adopted as a
+        # unit — half-merged families would pair one episode's text with another's stamps. An EQUAL
+        # or older disk stamp keeps ours, which also preserves the deliberate blockSummary re-open
+        # (the ""→None null keeps its old briefedMt on purpose).
+        for _stamp, _fields in (("distilledMt", ("summary", "summaryParts", "background",
+                                                 "summaryAnchor", "distillFails")),
+                                ("briefedMt", ("blockSummary", "briefParts", "briefFails")),
+                                ("stalledMt", ("stallSummary", "stallFails"))):
+            if int(dnd.get(_stamp) or 0) > int(mnd.get(_stamp) or 0):
+                mnd[_stamp] = dnd[_stamp]
+                for _f in _fields:
+                    if dnd.get(_f) is None:
+                        mnd.pop(_f, None)
+                    else:
+                        mnd[_f] = dnd[_f]
     store["nodes"] = m_nodes
     pl = dict(disk.get("placements") or {}); pl.update(store.get("placements") or {})
     for k, v in list(pl.items()):                    # a tombstoned target re-points to its survivor —
