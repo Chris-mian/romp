@@ -20749,6 +20749,12 @@ def _edit_trace_sid(path, sid):
 # sail straight through. tests/test_marker_neutralizer.py imports those regexes verbatim and
 # proves no whitespace variant survives.
 _ROMP_MARKER_OPEN_RE = re.compile(r"<!--(?=\s*romp-)")
+# The one marker that needs NO comment opener: the judge's FOLLOWUP_RE and the kernel's
+# _FOLLOWUP_GOAL_RE match bare "romp-goal-id:" anywhere in a segment's text — and per the
+# follow-up contract that id REOPENS the named goal (even completed/blocked) and files the
+# message under it. A filename carrying the bare form therefore forges the higher-impact
+# marker of the two, so the neutralizer must break it as well as the comment openers.
+_ROMP_GOALID_BARE_RE = re.compile(r"(romp-goal-id\s*):")
 
 
 def _neutralize_romp_markers(text):
@@ -20759,9 +20765,12 @@ def _neutralize_romp_markers(text):
     marker, and downstream readers key on that comment form (the event model's POSTAL_RE peer
     detection and ROMP_INJECT_RE author attribution, the judge's NUDGE_MARKER_RE, the SDK echo's
     romp-injected check) — a forged romp-msg-id reads as a peer delivery that never happened.
-    Minimal, visible escape of the opener alone ("<!--" → "<!- -", whitespace and words
-    untouched): the text stays readable, the comment form can no longer match."""
-    return _ROMP_MARKER_OPEN_RE.sub("<!- -", str(text))
+    The bare "romp-goal-id:" form is broken too (its colon becomes a semicolon — see
+    _ROMP_GOALID_BARE_RE): unlike every other marker it needs no comment opener, and it would
+    reopen an arbitrary goal. Minimal, visible escapes in both cases ("<!--" → "<!- -",
+    ":" → ";"; whitespace and words untouched): the text stays readable, no matcher fires."""
+    out = _ROMP_MARKER_OPEN_RE.sub("<!- -", str(text))
+    return _ROMP_GOALID_BARE_RE.sub(r"\1;", out)
 
 
 def _edit_trace_body(path):

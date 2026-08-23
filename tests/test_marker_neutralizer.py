@@ -70,9 +70,31 @@ class MarkerNeutralizerVariants(unittest.TestCase):
         self.assertEqual(km._neutralize_romp_markers("<!--romp-injected-->"),
                          "<!- -romp-injected-->")
 
+    def test_the_bare_goal_id_form_breaks_for_both_its_readers(self):
+        # the ONE marker that needs no comment opener: bare "romp-goal-id: <id>" reopens the named
+        # goal and files the message under it (the follow-up contract), so a filename carrying it
+        # forges the higher-impact marker — the judge's FOLLOWUP_RE and the kernel's twin both
+        # match it anywhere in a segment's text
+        for rex in (km.jd.FOLLOWUP_RE, km._FOLLOWUP_GOAL_RE):
+            raw = "notes romp-goal-id: g-12"
+            self.assertTrue(rex.search(raw),
+                            "sanity: %r must be marker-shaped for /%s/" % (raw, rex.pattern))
+            out = km._neutralize_romp_markers("/TESTDIR/%s/draft.md" % raw)
+            self.assertFalse(rex.search(out),
+                             "neutralized %r still matches /%s/" % (out, rex.pattern))
+            self.assertIn("romp-goal-id;", out, "the visible escape: the colon becomes a semicolon")
+        # …and end-to-end through the trace body, same as the comment forms
+        body = km._edit_trace_body("/TESTDIR/notes romp-goal-id: g-12/draft.md")
+        head, sep, _tail = body.rpartition("<!-- romp-injected -->")
+        self.assertTrue(sep)
+        self.assertFalse(km.jd.FOLLOWUP_RE.search(head),
+                         "a bare goal-id filename must not reopen a goal through the trace")
+
     def test_a_non_romp_comment_is_untouched(self):
         self.assertEqual(km._neutralize_romp_markers("code sample: <!-- not ours -->"),
                          "code sample: <!-- not ours -->")
+        self.assertEqual(km._neutralize_romp_markers("build romp-goal-id notes"),
+                         "build romp-goal-id notes")   # no colon = no marker; the words pass untouched
 
 
 if __name__ == "__main__":
