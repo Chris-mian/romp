@@ -156,6 +156,52 @@ class DeadWaitBlock(unittest.TestCase):
         km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)   # …gone this tick: the death event
         self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"))
 
+    def test_the_block_writer_settles_the_brief_inline(self):
+        # "Stuck on Distilling" (the user 2026-08-23): a dead store falls out of discover's 48h window,
+        # so no distill pass ever writes its brief — the card asked for one forever. The procedural why
+        # IS the decision; the writer settles blockSummary/briefedMt itself.
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        nd = jd.load_goals(SID)["nodes"][GID]
+        self.assertTrue(nd.get("blocked"))
+        self.assertEqual(nd.get("blockSummary"), nd.get("blockWhy"),
+                         "the brief settles at the writer — never left for a pass that will not come")
+        self.assertIsNotNone(nd.get("briefedMt"))
+
+    def test_the_sweep_heals_a_pre_existing_briefless_procedural_block(self):
+        # Blocks written before the writers settled briefs inline: blocked, procedural why, no brief.
+        _seed_store()
+        st = jd.load_goals(SID)
+        nd = st["nodes"][GID]
+        jd.record_verdict(st, nd, "nudge", "block", STAMP_T + 100,
+                          why=jd.dead_wait_block_why("the full test suite it kicked off"))
+        jd.rollup_status(st, False)
+        jd.save_goals(SID, st)
+        self.assertIsNone(jd.load_goals(SID)["nodes"][GID].get("blockSummary"))
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        nd = jd.load_goals(SID)["nodes"][GID]
+        self.assertTrue((nd.get("blockSummary") or "").startswith(jd.DEAD_WAIT_WHY_PREFIX),
+                        "the repair settles the stuck card's brief from its own why")
+
+    def test_a_genuine_block_why_is_never_repaired_over(self):
+        # The repair takes PROCEDURAL whys only: a genuine decision brief stays the briefer's job.
+        _seed_store()
+        st = jd.load_goals(SID)
+        nd = st["nodes"][GID]
+        jd.record_verdict(st, nd, "closer", "block", STAMP_T + 100,
+                          why="pick a database: sqlite or postgres?")
+        jd.rollup_status(st, False)
+        jd.save_goals(SID, st)
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        self.assertIsNone(jd.load_goals(SID)["nodes"][GID].get("blockSummary"),
+                          "a substantive ask keeps waiting for the real briefer")
+
     def test_wake_goal_routes_its_dormant_branch_here(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn("return _dead_wait_block(sid, gid, at, why, nudged, now)", src)

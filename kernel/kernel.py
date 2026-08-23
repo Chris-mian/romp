@@ -3502,6 +3502,23 @@ def _dead_wait_sweep(alive_ids, nudged, now):
         try:
             store = jd.load_goals(sid)
             nodes = store.get("nodes", {})
+            # BRIEF REPAIR (the user 2026-08-23, cards "stuck on Distilling" in Blocked): procedural
+            # blocks written before the writers settled briefs inline left blockSummary None on stores
+            # no distill pass will ever visit (dead / transcript-less sessions are outside discover's
+            # 48h window) — the card asked for a brief forever. The why IS the brief for a procedural
+            # block; settle it in place. Runs BEFORE the block calls below, which reload and save
+            # their own store copy — a later save of this snapshot would clobber their writes.
+            healed = False
+            for nid, nd in nodes.items():
+                if (nd.get("blocked") and nd.get("blockSummary") is None
+                        and jd.procedural_block_why(nd.get("blockWhy"))):
+                    nd["blockSummary"] = nd.get("blockWhy") or ""
+                    nd["briefParts"] = None
+                    nd["briefedMt"] = jd._distill_due_t(store, nid, True)
+                    healed = True
+            if healed:
+                jd.save_goals(sid, store)
+                _mark_views_dirty()
             kids = {}
             for nid, nd in nodes.items():
                 if nd.get("parentId"):
@@ -3555,6 +3572,10 @@ def _dead_handoff_block(sid, nid, h, nd, nudged, now):
         if jd.record_verdict(store, cur, "nudge", "block", _ev, why=blkwhy):
             cur["mt"] = _ev
             jd.append_block(sid, nid, "nudge", blkwhy, _ev)
+            if cur.get("blockSummary") is None:       # settle the brief at the writer — same as
+                cur["blockSummary"] = blkwhy          # _dead_wait_block: no distill pass may ever
+                cur["briefParts"] = None              # visit this store, and the why is the decision
+                cur["briefedMt"] = jd._distill_due_t(store, nid, True)
             jd.rollup_status(store, False)
             jd.save_goals(sid, store)
             _mark_views_dirty()
@@ -3599,6 +3620,11 @@ def _dead_wait_block(sid, gid, at, why, nudged, now):
             jd.append_block(sid, gid, "nudge", blkwhy, _ev)   # journal before the save it protects (a judge
             #                                           pass holding this store across its model call erases
             #                                           the row on save; replay re-records it)
+            if nd.get("blockSummary") is None:        # settle the brief AT THE WRITER (the user 2026-08-23,
+                nd["blockSummary"] = blkwhy           # "stuck on Distilling"): this store may never see a
+                nd["briefParts"] = None               # distill pass — dead sessions fall out of discover's
+                #                                       48h window — and the procedural why IS the decision
+                nd["briefedMt"] = jd._distill_due_t(store, gid, True)
             jd.rollup_status(store, False)
             jd.save_goals(sid, store)
             _mark_views_dirty()
