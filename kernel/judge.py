@@ -3784,7 +3784,6 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
                     # prompt-run's optimistic-echo key it can never orphan (the user 2026-07-10: a goal
                     # whose only trail entry drifted distilled to '' — real work, no summary).
                     nodes[t].setdefault("trail", []).append(seg_id)
-                _eager_done_sample(store, t, seg_t)   # E6: was this eager done on the FOCUS top? (gates P4)
         elif do == "block":
             t = _target(o)
             if t and record_verdict(store, nodes[t], "planner", "block", seg_t, why=o["why"], seg=seg_id):
@@ -3904,27 +3903,11 @@ def _stamp_seam(store, top, now):
     del seams[:-SEAM_CAP]
 
 
-def _eager_done_sample(store, nid, seg_t):
-    """E6 sampler (gates P4, the user 2026-07-06): for each PLANNER-set eager done, record whether the
-    resolved goal's top was the session's ACTIVE FOCUS at verdict time. If it was, the settled gate
-    would have held the card out of Completed until the turn ended anyway — the closer would have
-    delivered identical UX, so the planner's eagerness bought nothing visible. A high focus-held rate
-    over a few weeks green-lights consolidating resolution into the closer (P4); a low one keeps both
-    resolvers. Best-effort; never raises."""
-    try:
-        nodes = store.get("nodes", {})
-        def top(x):
-            seen = set()
-            while x in nodes and nodes[x].get("parentId") is not None and x not in seen:
-                seen.add(x); x = nodes[x]["parentId"]
-            return x
-        focus = store.get("lastNode")
-        with (STATE / "eager-done-samples.jsonl").open("a") as f:
-            f.write(json.dumps({"t": seg_t, "sid": store.get("rompUuid"), "nid": nid,
-                                "focusHeld": bool(focus and top(focus) == top(nid))}) + "\n")
-    except Exception:
-        pass
-
+# (The E6 eager-done sampler lived here 2026-06-10..2026-08-23 — it gated P4, "consolidate goal
+# resolution into the closer". CLOSED without consolidation on the final record: 597 samples, 75%
+# focus-held — high enough that eagerness rarely buys visible UX, but the dual-resolver design costs
+# nothing and keeps the planner's same-turn resolution for the cases where it does. The hook and its
+# state file (~/.local/state/romp/eager-done-samples.jsonl) are retired; the user 2026-08-23.)
 
 
 def rollup_status(store, session_closed, now=None):
