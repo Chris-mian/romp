@@ -239,8 +239,9 @@ test("Quote is the chip, and only the chip — the in-box blockquote form is gon
 test("a VS Code EDITOR highlight seeds the same chip, labeled + wrapped with its file:lines origin (the user 2026-07-13)", () => {
   // the extension host posts editorSelection {text, src} on onDidChangeTextEditorSelection (see
   // vscode-extension/src editor-selection pins); the webview seeds the quote chip from it
-  assert.match(RENDER, /m\.type === "editorSelection" && typeof m\.text === "string" && m\.text\.trim\(\) && activeId/);
-  assert.match(RENDER, /seedEditorQuote\(activeId, m\.text, typeof m\.src === "string" \? m\.src : undefined\);/);
+  assert.match(RENDER, /m\.type === "editorSelection" && typeof m\.text === "string" && m\.text\.trim\(\)/);
+  // the FILE VIEWER posts this shape with a sid, which wins over activeId (file-view.test.ts pins that)
+  assert.match(RENDER, /seedEditorQuote\(to, m\.text, typeof m\.src === "string" \? m\.src : undefined\);/);
   // the editor's highlight owns ONE chip: a cursor move updates it in place, never wiping stacked
   // transcript quotes beside it; absent, it appends below them (the user 2026-08-04)
   assert.match(RENDER, /const i = list\.findIndex\(\(c\) => !!c\.src\);\s*\n\s*if \(i >= 0\) list\[i\] = chip; else list\.push\(chip\);/);
