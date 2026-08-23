@@ -4177,12 +4177,70 @@ class SdkBackend:
                  and a["_echo_text"] not in qs]
         if not newly:
             return
+        # RE-DELIVER, don't just flag (the user 2026-08-23, their strongest point in the restart
+        # audit: "it would be very, very bad if we ever lost stuff because of restarts" — a typed
+        # prompt queued at 11:20 was silently discarded by the 11:25 restart). A HUMAN send whose
+        # loss is proven — and whose text a direct transcript scan confirms never landed as a user
+        # record (the flag path self-corrects on a wrong guess; a re-delivery would DUPLICATE, so it
+        # verifies first) — goes back into the persisted queue in send order: the next spawn feeds
+        # it to the fresh CLI exactly like the surviving queue, recreating the pre-restart state.
+        # romp-authored echoes (nudges) keep the flag path: re-delivering one could double-nudge,
+        # and its content is regenerable machinery, not the user's words.
+        redeliver = []
+        for a in sorted(newly, key=lambda x: x.get("t") or 0):
+            if a.get("author") == "human" and not self._text_landed(sid, a["_echo_text"]):
+                redeliver.append(a)
+        if redeliver:
+            with self._reg_lock:
+                reg = read_reg(self.state_dir, sid)
+                if reg is not None:
+                    have = [t for t in (reg.get("queue") or []) if isinstance(t, str) and t]
+                    add = [a["_echo_text"] for a in redeliver if a["_echo_text"] not in have]
+                    if add:
+                        reg["queue"] = have + add          # behind the surviving queue: original send order
+                        write_reg(self.state_dir, sid, reg)
+                        for a in redeliver:
+                            self._log("%s: re-delivering a typed send the dead CLI was holding: %.80r"
+                                      % (sid[:8], a["_echo_text"]))
+        rekeyed = {a["_echo_text"] for a in redeliver}
         for a in newly:
+            if a["_echo_text"] in rekeyed:
+                continue                                   # now in the queue → renders as queued, prunes on landing
             a["dropped"] = True
             self._log("%s: a send never reached its CLI (the process died holding it) — kept in the chat "
                       "as never-delivered: %.80r" % (sid[:8], a["_echo_text"]), problem=True)
         self._persist_echoes(sid)
         self._wake_push()
+
+    def _text_landed(self, sid: str, text: str) -> bool:
+        """Did `text` land as a USER record in the sid's transcript? The re-delivery guard: the echo
+        prune is lazy (a landed echo may still be un-pruned at boot), so a queue re-add without this
+        scan would duplicate a delivered message. Reads the transcript TAIL (the loss window is recent
+        by construction — the send predates the death that orphaned it); unreadable → True, the safe
+        side: never re-deliver on doubt, the flag path still surfaces the loss for a human call."""
+        try:
+            reg = read_reg(self.state_dir, sid) or {}
+            path = transcript_path(reg.get("cwd") or "", reg.get("lastSid") or sid)
+            want = " ".join(text.split())
+            with open(path, "rb") as f:
+                f.seek(max(0, os.path.getsize(path) - 2_000_000))
+                for line in f.read().decode(errors="replace").splitlines():
+                    if '"user"' not in line or want[:60] not in " ".join(line.split()):
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if rec.get("type") != "user":
+                        continue
+                    c = ((rec.get("message") or {}).get("content"))
+                    txt = c if isinstance(c, str) else " ".join(
+                        b.get("text", "") for b in c if isinstance(b, dict)) if isinstance(c, list) else ""
+                    if want in " ".join(txt.split()):
+                        return True
+            return False
+        except Exception:
+            return True
 
     def dismiss_echo(self, sid: str, uuid: str | None = None, t: int | None = None) -> str | None:
         """✕ on a never-delivered bubble: retire a DROPPED echo the user has acknowledged. Matched by the
