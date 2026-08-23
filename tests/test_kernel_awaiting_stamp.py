@@ -589,6 +589,16 @@ class AwaitingWake(unittest.TestCase):
         # (the user 2026-08-22) a dormant CLI still gets no WAKE — its dispatched work is gone, not
         # asleep — but the branch no longer dead-ends: the stamped Working card converts once to the
         # dead-wait procedural block, so it reaches a terminal column instead of pausing forever.
+        # The conversion is owner-corroborated: the session carries its launch record (the names
+        # entry both backends write — without it no owner here could answer for the sid), and the
+        # owner scan is pinned to an authoritative empty answer rather than this box's real tmux.
+        km.jd.NAMES.mkdir(parents=True, exist_ok=True)
+        (km.jd.NAMES / SID).write_text("web\t~/notes-api\t#3355aa\t#ffffff\n")
+        self.addCleanup(lambda: (km.jd.NAMES / SID).unlink())
+        km._TMUX.available = lambda: True
+        km._TMUX.alive_sids = lambda t=3: set()
+        self.addCleanup(lambda: [km._TMUX.__dict__.pop(nm, None)
+                                 for nm in ("available", "alive_sids")])
         now = 1_000_000
         self._seed(at=now - 7 * 3600)
         (km.jd.STATE / "states").mkdir(parents=True, exist_ok=True)
