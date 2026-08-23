@@ -4273,18 +4273,18 @@ function showSelectionMenu(e: MouseEvent) {
     item.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); fn(); });
     menu.appendChild(item);
   };
-  // "Quote in message", not "Reply" (the user 2026-08-22, who asked if it duplicated the automatic
-  // selection chip): the chip already handles replying — select and just type. This item is the
-  // DIFFERENT thing: it drops the passage INTO the box as an editable markdown blockquote (trim it,
-  // annotate inside it), and the handler below de-duplicates the chip the same selection seeded.
-  mk("Quote in message", () => quoteSelectionIntoComposer(text));
-  // Comment (the user 2026-08-13): open a side thread anchored to this passage. Only when the
-  // selection sits in a real transcript turn (transcriptSelection's uuid) on a real session.
+  // Comment first, Quote second (the user 2026-08-23): Comment is the primary act — a side thread
+  // about the passage — and Quote is the lighter one. Comment only when the selection sits in a real
+  // transcript turn (transcriptSelection's uuid) on a real session.
   const q = transcriptSelection();
   if (q?.uuid && activeId && !isProvisionalId(activeId) && sessions.get(activeId)) {
     const sid = activeId, uuid = q.uuid, qtext = q.text;
     mk("Comment", () => openCommentComposer(sid, uuid, qtext, e.clientX, e.clientY));
   }
+  // "Quote" (renamed from "Quote in message", the user 2026-08-23): drops the passage INTO the box
+  // as an editable markdown blockquote — the automatic selection chip already covers select-and-type,
+  // and the handler below de-duplicates the chip the same selection seeded.
+  mk("Quote", () => quoteSelectionIntoComposer(text));
   mk("Copy", () => copyToClipboard(text));
   document.body.appendChild(menu);
   ctxMenuEl = menu;
