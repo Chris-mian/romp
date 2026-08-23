@@ -8323,6 +8323,26 @@ def _status_report_candidates(store, turn):
     return out
 
 
+def _reply_reopened_ids(menu):
+    """Menu goals whose diary says the USER'S OWN REPLY reopened them with no ruling since (the user
+    2026-08-23, the reopen-orphan): a blocked/completed card the user answered flips to Working on the
+    optimistic reopen, and if this closer then closes the reply turn without speaking to the goal,
+    nothing else ever will — the unblocker only examines still-blocked nodes, and the reply turn is
+    romp-injected so the nudge walk cannot re-arm off it. The audited card sat in Working 2h45m with
+    zero judge calls, until the user themselves noticed. The deciding event is the user's msg-reopen
+    (their assertion "not finished", often carrying the answer the block asked for); a later done/block
+    row means a judge already spoke and the flag stands down. Undo-restore reopens are not that
+    assertion and never flag."""
+    out = set()
+    for nd in menu:
+        rows = [e for e in (nd.get("log") or []) if e.get("kind") in ("done", "block", "reopen")]
+        k = max((i for i, e in enumerate(rows) if e.get("kind") in ("done", "block")), default=-1)
+        if any(e.get("kind") == "reopen" and e.get("src") == "user" and e.get("msg")
+               and not e.get("undo") for e in rows[k + 1:]):
+            out.add(nd["id"])
+    return out
+
+
 def _menu_history_text(store, seg_by_id, menu, char_cap):
     """Each menu goal's own raw work-so-far (see _goal_work_text), labeled by its menu number, for the
     closer's <goal-history> block. subtree=False here (unlike the planner's single-target case): the
@@ -8469,6 +8489,19 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
                          ", ".join("#%d" % i for i in tflagged),
                          "are" if len(tflagged) > 1 else "is",
                          "each" if len(tflagged) > 1 else "it"))
+    ro_ids = _reply_reopened_ids(menu)
+    rflagged = [i for i, nd in enumerate(menu, 1) if nd["id"] in ro_ids]
+    if rflagged:
+        menu_text += ("\n\nGoal%s %s w%s reopened by the user's own reply after an earlier ruling: "
+                      "they are saying it is not finished, and their reply may answer what it was "
+                      "waiting on. Rule %s explicitly from this turn and its goal history — done only "
+                      "where the outcome plainly landed; blocked where the account ends needing the "
+                      "user again; leaving it open is right only if the session is genuinely "
+                      "continuing the work."
+                      % ("s" if len(rflagged) > 1 else "",
+                         ", ".join("#%d" % i for i in rflagged),
+                         "ere" if len(rflagged) > 1 else "as",
+                         "each" if len(rflagged) > 1 else "it"))
     lift_whys = {nd["id"]: why for nd, why in lifted}
     lflagged = [(i, lift_whys[nd["id"]]) for i, nd in enumerate(menu, 1) if nd["id"] in lift_whys]
     for i, _why in lflagged:
