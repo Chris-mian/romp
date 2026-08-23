@@ -2323,6 +2323,26 @@ def _retry_resume_at():
     return min(outs) if outs else None
 
 
+USAGE_POLL_SECS = 900                 # the meters are EXTERNAL state with no event feed — polling is
+_usage_poll_last = [0.0]              # the designed read (the same exception as CI watchers); 15 min
+#                                       keeps history current at ~100 calls/day, far under any budget
+
+
+def _usage_poll_tick(now):
+    """Poll the login account's rate-limit meters on a standing interval (the user 2026-08-23, the
+    standalone-poll variant: "no harm in just checking it"). get_usage rides turn ENDS, so a fleet
+    whose traffic is all API-key ends no login turns and usage.json/usage-history.json froze (stale
+    since 08-19 in the optimizer's audit) — the judge quota gate went blind and the launcher's
+    headroom line lied. The poke reuses the /usage click path (any live login-auth session answers;
+    key-billed sessions are never candidates); when none exists the backend already logs loudly."""
+    if now - _usage_poll_last[0] < USAGE_POLL_SECS:
+        return
+    _usage_poll_last[0] = now
+    be = _sdk()
+    if be and hasattr(be, "refresh_usage"):
+        be.refresh_usage()
+
+
 def _auto_pause_on_limit():
     """Hitting an ACCOUNT-WIDE usage limit (5h Session or 7d Weekly at 100%) auto-engages the global retry-pause
     (the user 2026-07-01): retrying into a rate-limited account just burns failed requests, so stop the
@@ -22118,6 +22138,11 @@ def _pusher_cycle_jobs(now, tmux, any_client):
         _auto_pause_on_limit()
     except Exception:
         sys.stderr.write("auto-pause-on-limit: %s\n" % traceback.format_exc())
+    try:                                  # the login account's rate-limit meters, polled on a standing
+        _usage_poll_tick(now)             # interval (the user 2026-08-23): all-key traffic ends no login
+    except Exception:                     # turns, so the turn-end refresh never fired and usage-history
+        sys.stderr.write("usage-poll: %s\n" % traceback.format_exc())   # sat stale — blinding the judge
+    #                                       quota gate and the headroom line
     try:                                  # a monthly spend cap (no readable reset) also engages it — else it storms forever
         _auto_pause_on_spend_limit(now, tmux)
     except Exception:
