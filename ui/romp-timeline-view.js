@@ -2373,35 +2373,58 @@ class TimelinePanel {
     const g = (v.groups || []).find((x) => x.id === v.active);
     const more = viewMoreCount(v, (this.data && this.data.sessions) || []);
     const active = !!g && v.active && v.active !== 'all';
-    // ellipsize so the WHOLE trigger stays inside the gutter — measured on the full string (the
+    const PADH = 7, GAP = 6;   // the chip's horizontal padding; the space between the line's parts
+    // ellipsize so the WHOLE line stays inside the gutter — measured on the full string (the
     // 650-weight lane font over-measures the plain spans, which is the safe direction), because a
-    // fixed reserve under-counted "· NN more" and let the tail cross into the first time label
+    // fixed reserve under-counted "N more" and let the tail cross into the first time label
     let name = active ? viewLabel(v) : '';
-    const line = (n) => 'Filter ▾' + (active ? ' · ' + n + ' ✕' : '') + (more ? ' · ' + more + ' more' : '');
-    const fits = (n) => this.labelWidth(line(n)) <= this.M.left - PADL - 6;
+    const tailStr = more ? more + ' more' : '';
+    const width = (n) => this.labelWidth('Filter ▾')
+      + (active ? GAP + PADH * 2 + this.labelWidth(n + ' ✕') : 0)
+      + (tailStr ? GAP + this.labelWidth(tailStr) : 0);
+    const fits = (n) => width(n) <= this.M.left - PADL - 6;
     while (active && name.length > 3 && !fits(name)) name = name.slice(0, -2) + '…';
-    const t = el('text', { x: PADL, y: axisY + 14, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG });
-    const lead = el('tspan', {}); lead.textContent = 'Filter ▾'; t.appendChild(lead);
-    if (active) {
-      const sepc = el('tspan', { opacity: 0.7 }); sepc.textContent = ' · '; t.appendChild(sepc);
-      // the active group as a removable filter chip: its own colour, an ✕, ITS OWN pointerdown —
-      // one click back to the default view, no menu trip (the user 2026-08-23)
-      const chip = el('tspan', { fill: g.color || '#cccccc', 'font-weight': 650 });
-      chip.textContent = name + ' ✕';
-      chip.setAttribute('style', 'cursor:pointer;');
-      const tt = el('title', {});
-      tt.textContent = 'showing only ' + (g.name || 'this group') + ' — click to remove the filter (back to the default view)';
-      chip.appendChild(tt);
-      chip.addEventListener('pointerdown', (e) => {
-        e.preventDefault(); e.stopPropagation();
-        const nv = JSON.parse(JSON.stringify(v)); nv.active = 'all'; this._setViews(nv);
-      });
-      t.appendChild(chip);
-    }
-    if (more) { const m = el('tspan', { opacity: 0.7 }); m.textContent = ' · ' + more + ' more'; t.appendChild(m); }
+    const y = axisY + 14;
+    const t = el('text', { x: PADL, y, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG });
+    t.textContent = 'Filter ▾';
     t.setAttribute('style', 'cursor:pointer;user-select:none;');
     t.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(t); });
     svg.appendChild(t);
+    let x = PADL + this.labelWidth('Filter ▾');
+    if (active) {
+      x += GAP;
+      const cw = PADH * 2 + this.labelWidth(name + ' ✕');
+      // the active group as a removable filter chip wearing the composer context chip's dress in
+      // the GROUP's colour (the user 2026-08-23): 18% fill, 1px solid border, pill radius — a
+      // bordered chip reads as removable where bare coloured text read as a label. Its own
+      // pointerdown clears the filter — one click back to the default view, no menu trip.
+      const grp = el('g', {});
+      grp.setAttribute('style', 'cursor:pointer;');
+      const box = el('rect', { x, y: y - 12, width: cw, height: 16, rx: 8,
+        fill: g.color || '#cccccc', 'fill-opacity': 0.18,
+        stroke: g.color || '#cccccc', 'stroke-width': 1 });
+      grp.appendChild(box);
+      const ct = el('text', { x: x + PADH, y, 'font-size': 12, 'font-family': FONT,
+        fill: g.color || '#cccccc', 'font-weight': 650 });
+      ct.textContent = name + ' ✕';
+      ct.setAttribute('style', 'user-select:none;');
+      grp.appendChild(ct);
+      const tt = el('title', {});
+      tt.textContent = 'showing only ' + (g.name || 'this group') + ' — click to remove the filter (back to the default view)';
+      grp.appendChild(tt);
+      grp.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const nv = JSON.parse(JSON.stringify(v)); nv.active = 'all'; this._setViews(nv);
+      });
+      svg.appendChild(grp);
+      x += cw;
+    }
+    if (more) {
+      const m = el('text', { x: x + GAP, y, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG, opacity: 0.7 });
+      m.textContent = tailStr;   // a filtered-out live session is always one glance away
+      m.setAttribute('style', 'user-select:none;');
+      svg.appendChild(m);
+    }
   }
 
   _closeViewsMenu() { if (this._viewsMenu) { this._viewsMenu.remove(); this._viewsMenu = null; } }
