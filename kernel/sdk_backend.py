@@ -4388,6 +4388,22 @@ class SdkBackend:
         self._poke()
         return True
 
+    def thread_sessions(self) -> dict[str, dict]:
+        """{sid: {state, threadOf}} for every alive COMMENT-THREAD session — exactly the rows
+        live_sessions deliberately hides (a thread's surface is the parent chat's comment UI, never a
+        tab). Served only to callers that ask (kernel /sessions?threads=1 → the postal bus), so a
+        thread can mail its PARENT under its own name (the user 2026-08-22) without ever gaining a
+        tab, a lane, or a feed card."""
+        out = {}
+        for reg in list_regs(self.state_dir):
+            if not reg.get("alive") or not reg.get("threadOf"):
+                continue
+            sid = reg["sid"]
+            s = self.sessions.get(sid)
+            st = (s.snapshot() if s and s.thread.is_alive() else {"state": "waiting", "backend": "sdk"})
+            out[sid] = {"state": st.get("state", "waiting"), "threadOf": str(reg.get("threadOf") or "")}
+        return out
+
     def fork_children(self) -> dict:
         """{parent sid: [{sid, name, cut, t}, …]} for every session carrying a durable forkedFrom —
         the parent chat's branch chips. Comment threads are skipped (their anchor is the comment

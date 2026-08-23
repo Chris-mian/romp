@@ -38,7 +38,7 @@ class ResolverBase(unittest.TestCase):
                        ("all_agents", "self_host", "peers_on", "_postal_off")}
         self._agents = []
         self._isolated = set()
-        pm.all_agents = lambda: list(self._agents)
+        pm.all_agents = lambda threads=False: list(self._agents)
         pm.self_host = lambda: "TESTHOST"
         pm.peers_on = lambda: True
         pm._postal_off = lambda sid: sid in self._isolated
