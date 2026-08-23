@@ -14210,12 +14210,45 @@ def _boot_warm():
     threading.Thread(target=go, daemon=True, name="boot-warm").start()
 
 
+def _ask_fill_answers(blocks, answers):
+    """Fill each AskUserQuestion block's `chosen` from the record's STRUCTURED toolUseResult.answers
+    map — the authoritative source (CLAUDE.md: a designed record over a lossy reconstruction). Keys are
+    the EXACT question text; a value is the answer string (an option label, or the free-typed 'Other'
+    text) or, for multiSelect, the LIST of picked labels — taken as-is, never re-joined or split. No
+    parsing, so quotes/equals/commas in questions and answers survive verbatim; the regex scrape below
+    (_ask_fill_chosen, now the old-record fallback) garbled all of those — a double-quote inside a
+    question's text stopped its capture, and the typed answer silently vanished from the answered box
+    (13 of 95 real answers dropped, 1 garbled; the user 2026-08-20).
+
+    Returns the number of blocks ACTUALLY filled — the caller latches askAnswerFilled (which stands
+    the regex fallback down) on it being nonzero, never on the map merely existing: a keying mismatch
+    (a future harness renaming, an empty map) fills nothing, and latching anyway would disarm the
+    safety net while recoverable pairs sit in the flat string."""
+    amap = {str(k).strip(): v for k, v in answers.items()}
+    filled = 0
+    for blk in blocks:
+        ans = amap.get((blk.get("question") or "").strip())
+        if ans is None and blk.get("header"):
+            ans = amap.get(str(blk["header"]).strip())
+        if isinstance(ans, list):
+            if ans:                                   # an empty pick-list fills nothing
+                blk["chosen"] = [str(v) for v in ans]
+                filled += 1
+        elif ans not in (None, ""):
+            blk["chosen"] = [str(ans)]
+            filled += 1
+    return filled
+
+
 def _ask_fill_chosen(blocks, output):
-    """Fill each AskUserQuestion block's `chosen` from the tool_result string, which records the answers
-    as `"<question>"="<answer>"` pairs (a multiSelect answer joins the picked labels as 'A, B, C'; a
-    free-text 'Other' answer is the user's verbatim text and matches NO option label). Single-question
-    calls map the lone pair; multi-question calls match by question (then header). Render highlights a
-    `chosen` value that equals an option label and shows the rest verbatim."""
+    """FALLBACK for old records whose transcript carries no dict toolUseResult (see _ask_fill_answers,
+    the authoritative path): fill each block's `chosen` from the tool_result string, which records the
+    answers as `"<question>"="<answer>"` pairs (a multiSelect answer joins the picked labels as
+    'A, B, C'; a free-text 'Other' answer is the user's verbatim text and matches NO option label).
+    Single-question calls map the lone pair; multi-question calls match by question (then header).
+    Render highlights a `chosen` value that equals an option label and shows the rest verbatim.
+    Known-lossy: a double-quote inside a question or answer breaks the scrape — which is why the
+    authoritative path exists and must never run both."""
     pairs = {}
     for m in re.finditer(r'[“"]([^”"]*)[”"]\s*=\s*[“"]([^”"]*)[”"]', output or ""):
         pairs[m.group(1).strip()] = m.group(2)
@@ -14224,8 +14257,21 @@ def _ask_fill_chosen(blocks, output):
         ans = (vals[0] if len(blocks) == 1 and vals
                else pairs.get((blk.get("question") or "").strip())
                or pairs.get((blk.get("header") or "").strip()) or "")
-        if ans:
-            blk["chosen"] = [s.strip() for s in ans.split(", ")] if blk.get("multiSelect") else [ans]
+        if not ans:
+            continue
+        # The multiSelect split must be EARNED (parseAskRaw's rule in ui/webview/render.ts, ported):
+        # the flat string joins picked labels as 'A, B, C', but a SINGLE picked label may itself
+        # contain ', ' ("Boston, MA") and a free-typed 'Other' answer may carry any commas — split
+        # unconditionally and either one shreds into bogus fragments (wrong Other rows, lost
+        # highlight). So: an answer that IS an option label stays whole; otherwise split, and keep
+        # the split only when at least one part names a label (some(), not every() — a joined pick
+        # can include a free-typed Other alongside real labels); else keep the value whole.
+        labels = {str(o.get("label") or "") for o in (blk.get("options") or [])} - {""}
+        if blk.get("multiSelect") and ans not in labels:
+            parts = [s.strip() for s in re.split(r",\s*", ans) if s.strip()]
+            blk["chosen"] = parts if any(p in labels for p in parts) else [ans]
+        else:
+            blk["chosen"] = [ans]
 
 
 _compact_clicked = {}         # sid -> ts of a compact WE initiated → optimistic cross-surface "compacting"
@@ -15740,6 +15786,20 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                                 pr = _patch_rows(tur["structuredPatch"])
                                 if pr:
                                     ev["diffRows"] = pr
+                            # AskUserQuestion: the SAME record carries the STRUCTURED answers at top
+                            # level — toolUseResult = {"questions": [...], "answers": {question-text:
+                            # answer}} — the authoritative source; fill chosen from it by exact key,
+                            # no parsing (see _ask_fill_answers). askAnswerFilled makes the regex
+                            # fallback at the bottom of this build stand down: run on top of this it
+                            # could overwrite the real answer with a garbled scrape (the single-
+                            # question vals[0] rescue). It latches only when the fill FILLED something
+                            # — a map whose keys match nothing must leave the fallback armed, or the
+                            # whole ask renders pending despite recoverable pairs in the flat string.
+                            # A DISMISSED picker records toolUseResult as a plain string (tur is None
+                            # here) → blocks stay unanswered, exactly as a pending ask renders.
+                            if ev.get("askAnswer") and tur and isinstance(tur.get("answers"), dict):
+                                if _ask_fill_answers(ev["askAnswer"], tur["answers"]):
+                                    ev["askAnswerFilled"] = True
                 else:                                            # a genuine prompt OR a delivered peer message
                     text = " ".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip() \
                            if blocks else (msg.get("content") if isinstance(msg.get("content"), str) else "")
@@ -15898,8 +15958,14 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
                             # structured Q+A for the chat's "answered Claude's question" box (render reads
                             # this instead of regex-parsing the output). chosen is filled below once the
                             # tool_result (the answer) is in. Built from the UNTRUNCATED input.
+                            # multiSelect rides the block: it documents the LIST-valued answers the
+                            # authoritative fill records, and it arms the fallback's label split
+                            # (dead before it was copied — old-record multiSelect picks rendered as
+                            # ONE joined quoted "Other" row instead of highlighted options; the
+                            # split itself is label-guarded, see _ask_fill_chosen).
                             ev["askAnswer"] = [{"question": str(q.get("question") or ""),
                                                 "header": str(q.get("header")) if q.get("header") else None,
+                                                "multiSelect": bool(q.get("multiSelect")),
                                                 "options": [{"label": str(o.get("label") or ""),
                                                              "description": str(o.get("description") or "")}
                                                             for o in (q.get("options") or [])],
@@ -15933,7 +15999,10 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
         anchors = seg_anchors.get(seg)
         is_prompt = ev.get("kind") in ("user", "teammate") or (ev.get("kind") == "postal-service" and ev.get("direction") == "in")
         ev["tlId"] = ((anchors[0] if is_prompt else anchors[1]) or seg) if anchors else seg
-        if ev.get("askAnswer"):                       # AskUserQuestion → fill chosen now the answer's in
+        if ev.get("askAnswer") and not ev.get("askAnswerFilled"):
+            # AskUserQuestion whose record carried NO structured answers map (an old transcript) →
+            # the lossy output-string scrape is all there is. The attach loop's authoritative fill
+            # (askAnswerFilled) already handled every record that has one — never run both.
             _ask_fill_chosen(ev["askAnswer"], ev.get("output") or "")
     if path_override:
         # Historical episode render: the transcript events only — none of the LIVE overlays below (todo,
