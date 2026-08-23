@@ -547,7 +547,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* ── citation chip strip (the user 2026-07-01) ── a click on a feed card summary / sub-goal seeds a
    dismissible pill here, ABOVE the textarea: "you're following up on THIS". Accent-blue, with an ✕ to
    dismiss (Backspace-at-start dismisses too). Reads as attached context, not typed text. */
-#composer-chips { flex: 1 1 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 0 0 6px 2px; }
+#composer-chips { flex: 1 1 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 0 0 6px 2px; position: relative; }   /* anchors the Stage button at its top-right */
 /* attachment thumbnails (the user 2026-08-04): dropped/pasted/picked files sit as little previews above
    the box until send — a row that wraps, unlike the stacked context chips below it */
 #composer-files { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 0 6px 2px; }
@@ -605,6 +605,12 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .staged-head .staged-go { margin-left: auto; background: none; border: 1px solid var(--accent); color: var(--accent);
   border-radius: 5px; font: inherit; padding: 1px 8px; cursor: pointer; }
 .staged-head .staged-go:hover { background: var(--accent); color: var(--accent-fg); }
+/* the chips strip's Stage button (the user 2026-08-23): the staged strip's own button dress, pinned
+   to the RIGHT of the blue context chips; it exists exactly while context is held (the strip
+   renders it, and the strip hides with the chips) */
+.composer-stage-btn { position: absolute; right: 2px; top: 0; background: none; border: 1px solid var(--accent);
+  color: var(--accent); border-radius: 5px; font-size: 0.78em; padding: 1px 8px; cursor: pointer; }
+.composer-stage-btn:hover { background: var(--accent); color: var(--accent-fg); }
 .staged-chip { display: flex; flex-direction: column; gap: 2px; border: 1px dashed rgba(156, 210, 255, 0.45);
   border-left: 2px solid var(--accent); border-radius: 6px; padding: 2px 6px; font-size: 12px; color: var(--fg);
   cursor: pointer; }
