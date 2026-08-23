@@ -221,7 +221,11 @@ test("context stages ALONE, and the chips strip carries the visible Stage button
   assert.match(RENDER, /if \(!typed && !\(composerCitations\.get\(activeId\) \|\| \[\]\)\.some\(\(c\) => c\.quote\)\) return;/,
     "empty box + a quote chip is stageable; empty box + nothing is not");
   assert.match(RENDER, /fireStage = \(\) => stageComposer\(\);/, "the strip's door into the composer closure");
-  assert.match(RENDER, /const st = el\("button", "staged-go composer-stage-btn"\) as HTMLButtonElement;/);
+  assert.match(RENDER, /const st = el\("button", "composer-stage-btn"\) as HTMLButtonElement;/);
+  // neutral at rest (the user 2026-08-23): an accent outline beside the accent-blue chips read as
+  // already-pressed. Rest = the button family's dress; the accent appears only on hover.
+  assert.match(CSS, /\.composer-stage-btn \{ position: absolute; right: 2px; top: 0; background: rgba\(255, 255, 255, 0\.06\);\n\s*border: 1px solid var\(--box-border\); color: var\(--dim\);/);
+  assert.match(CSS, /\.composer-stage-btn:hover \{ background: var\(--accent\); color: var\(--accent-fg\); border-color: var\(--accent\); \}/);
   assert.match(RENDER, /st\.title = "hold this context \(and anything typed\) for one combined send later — ⌘⏎ does the same";/);
   assert.match(CSS, /\.composer-stage-btn \{ position: absolute; right: 2px; top: 0;/,
     "pinned to the RIGHT of the blue context chips");
