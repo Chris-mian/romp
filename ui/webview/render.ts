@@ -9368,7 +9368,7 @@ function renderComposerChips(id: string | null): void {
   // context is held the strip carries its visible face — right of the blue chips, gone with them.
   // Same action as the shortcut: stage the context (and any typed text) and keep going.
   {
-    const st = el("button", "staged-go composer-stage-btn") as HTMLButtonElement;
+    const st = el("button", "composer-stage-btn") as HTMLButtonElement;
     st.type = "button";
     st.textContent = "Stage";
     st.title = "hold this context (and anything typed) for one combined send later — ⌘⏎ does the same";
