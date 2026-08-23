@@ -2517,8 +2517,18 @@ mark.cmt-hl {
   color: inherit;
   border-radius: 0;
   cursor: pointer;
+  position: relative;   /* anchors the unread dot on the run's last segment */
 }
 mark.cmt-hl.unread { background: color-mix(in srgb, var(--cmt-hl) 45%, transparent); }
+/* NEW-here dot (the user 2026-08-23): the 45% unread tint alone was too subtle to read as "something
+   new since you last looked". A thread with messages you haven't seen — it replied while the box was
+   closed, and you haven't opened it since — wears a solid full-strength dot on the top-right corner
+   of its run's LAST segment (one dot per thread), ringed in the page bg so it reads over any text.
+   It clears with the unread flag the moment the popover opens (optimistic + kernel watermark). */
+mark.cmt-hl.unread.hl-last::after {
+  content: ""; position: absolute; top: -4px; right: -4px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--cmt-hl); box-shadow: 0 0 0 1.5px var(--bg);
+}
 mark.cmt-hl:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, transparent); }
 mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.08); }
 /* WRITING (the user 2026-08-17; reshaped 2026-08-23): while the thread is mid-reply the region
@@ -2711,7 +2721,10 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 }
 .cmt-tick:hover { opacity: 1; }
 .cmt-tick.resolved { opacity: 0.3; }
-.cmt-tick.unread { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--cmt-hl) 60%, transparent); opacity: 1; }
+/* an UNREAD thread's tick shouts (the user 2026-08-23): full width, taller, double-ringed — the old
+   faint glow read as a rendering artifact, not as "new here" */
+.cmt-tick.unread { width: 10px; height: 6px; right: 0; opacity: 1;
+  box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 3px color-mix(in srgb, var(--cmt-hl) 85%, transparent); }
 
 /* a fully-covered KaTeX block tints at the ELEMENT (cmt-hl-host, same contract as inline code):
    a mark inside it cannot paint the glyph boxes' spacing, which punched gaps through highlighted
