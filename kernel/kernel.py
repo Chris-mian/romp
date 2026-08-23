@@ -5926,6 +5926,10 @@ def _sdk_locked():
             # ends, so an idle fleet's usage.json goes stale — measured ~15h — and the rate gate is
             # only as good as that file); the backend picks any live login session to ask
             jd._USAGE_REFRESH_FN = getattr(_sdk_backend, "refresh_usage", None)   # best-effort hook (judge guards None)
+            # silent mid-turn model swaps mint a completed card (the user 2026-08-23) — the backend
+            # observes the transition; the judge store owns the card; the kernel wires the two
+            type(_sdk_backend).on_model_fallback = staticmethod(
+                lambda sid, frm, to: (jd.mint_fallback_card(sid, frm, to), _push_soon()))
             # The judge parses the SAME cut world the display parse does (jd._PENDING_CUT_FN): during
             # an armed bare rollback the planner must not see — and mint from — the deleted tail.
             # getattr-guarded like every other backend probe (a test fake without the affordance

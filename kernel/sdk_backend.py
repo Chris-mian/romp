@@ -2155,6 +2155,16 @@ class SdkSession:
             if cleared:
                 self.backend._poke()
             return
+        if self.model and not self._model_pending and not cleared:
+            # A model TRANSITION nobody asked for (no /model pick pending): the API fell back
+            # mid-turn. Surface it as a completed card via the kernel-wired hook (the user
+            # 2026-08-23) — never silently (the swap was invisible before this).
+            fb = getattr(type(self.backend), "on_model_fallback", None)
+            if fb:
+                try:
+                    fb(self.sid, self.model, pm)
+                except Exception as e:
+                    self.backend._log("model-fallback card (%s): %s" % (self.name, e), problem=True)
         self.model = pm
         try:
             self.backend._update_reg(self.sid, liveModel=pm, modelPending=bool(self._model_pending))
