@@ -16317,113 +16317,18 @@ def _clear_all(item_ids):
         for iid in item_ids:
             f.write(json.dumps({"id": iid, "t": t, "op": "clear"}) + "\n")
     _mark_nodes_cleared(item_ids, True)               # durable node flag → no grouper re-wrap, no column bounce
-    _clear_wrap_notify(item_ids)                      # ONE-round wrap-up to live sessions whose OPEN card this
-    #                                                   dismissed (the user 2026-07-24); after the flags land, so
-    #                                                   any response processing sees the cleared state
+    # CLEAR IS SILENT (the user 2026-08-23, reversing the 2026-07-24 wrap-up): the session hears
+    # NOTHING. The wrap's response turn routinely re-minted the very card the user had just cleared —
+    # a discard that answered back — so the gesture now only discards; if anything real remains, the
+    # user asks a follow-up or tells the session themselves. The judge keeps recognizing HISTORICAL
+    # wrap markers in old transcripts; no new ones are ever sent.
 
 
-def _clear_wrap_targets(item_ids):
-    """{sid: [gid, ...]} — which of the just-cleared ids deserve the one-round wrap-up directive: TOP
-    goals that were still OPEN at the clear (not complete, not settled — i.e. cleared out of Working or
-    Needs-You, the user 2026-07-24: clearing a Done card is curation, clearing an open one may be
-    discarding real in-flight work). Skips, each deliberate:
-    - no node / a sub-goal / an empty title: stream items and subtree riders aren't cards;
-    - completed or settled tops: nothing in flight to lose;
-    - pure-delegation tops: the work lives with the PEER, whose linked copy rides the same clear batch
-      (_delegation_linked_ids) and notifies THAT session — telling the sender to stop work it never had
-      is noise;
-    - clearWrap-born decision cards (judge apply_plan stamps them): the ONE-round rule — the wrap-up's
-      own keep-or-discard card, when cleared, is final. No second loop, ever."""
-    out, cache = {}, {}
-    for iid in item_ids:
-        sid = str(iid).rsplit(":", 1)[0]
-        if sid not in cache:
-            try:
-                cache[sid] = jd.load_goals(sid).get("nodes", {})
-            except Exception:
-                cache[sid] = {}
-        nd = cache[sid].get(iid)
-        if nd is None or nd.get("parentId") is not None or not str(nd.get("text") or "").strip():
-            continue
-        if nd.get("nodeComplete") or nd.get("settledDone") or nd.get("clearWrap"):
-            continue
-        if _pure_delegation_top(cache[sid], iid):
-            continue
-        out.setdefault(sid, []).append(iid)
-    return out
-
-
-def _clear_wrap_body(gids, nodes):
-    """The ONE-round wrap-up directive for a clear of still-OPEN card(s) — the safety net for the
-    July-22 lost-prototype post-mortem (a card cleared 3 minutes after its build started; the only copy
-    was uncommitted worktree edits, which evaporated). The user clears cards they distrust, so some
-    clears catch real work: the message tells the session to STOP and park any unfinished work where it
-    won't be lost (the user 2026-07-24).
-
-    It ASKS FOR NOTHING (the user 2026-07-29). It used to demand one keep-or-discard reply, which made
-    every clear cost a second decision: a clear most often means "acknowledged, I am done with this", and
-    a mandatory question turned each one into another blocked card to clear. The reply is the session's to
-    make now, on two grounds only: something here still needs the user, or the clear looks premature. A
-    clear that was simply the user finishing with a thread ends there, silently. That discretion is
-    deliberate, since a clear is sometimes a mistake and the session holds the context to say so.
-
-    The parking ask names no branch or commit (the user
-    2026-07-26: not every session is coding in git) — an agent in a repo parks on a branch anyway, and
-    one writing a doc saves the draft. Deliberately NOT a nudge status check, and it carries
-    NO romp-goal-id markers: a goal-id would make the follow-up judge reopen the cleared goal and file
-    the reply under it — the resurrection the anti-loop design rules out. The judge recognizes the
-    romp-clear-wrap marker instead (plan_units' note): a nothing-pending reply files nothing; a parked-
-    WIP reply mints ONE new decision card, stamped clearWrap so clearing IT is terminal.
-
-    VOICE (the user 2026-07-24): it reads as the user's own short message, because the session does not
-    know it is being tracked by romp. The first draft narrated the goal system at it ("the goal above was
-    cleared off the board", "a dismissal, not a completion") — machinery the agent has no idea exists,
-    which reads as a system notice rather than the person it works for asking for something. Say the ask
-    the way a human would: drop this, park what you have, tell me once. No romp nouns (goal, card, board,
-    clear), no directive register, and short — the whole point survives in about half the words."""
-    quote = []
-    for i, gid in enumerate(gids, 1):
-        nd = nodes.get(str(gid)) or {}
-        head = str(nd.get("text", "")).strip() or "(untitled)"
-        why = str(nd.get("why") or "").strip()
-        quote.append(("%d. %s" % (i, head)) if len(gids) > 1 else head)
-        if why:
-            quote.append(("   " + why) if len(gids) > 1 else why)
-    one = len(gids) == 1
-    body = ("I'm done with %s, so you can stop here.\n\n"
-            "If you have work in progress%s, save it somewhere it won't be lost. No need to reply. "
-            "If %s still needs a decision from me, or I've stopped you too early, say so in one line."
-            % ("this one" if one else "these", "" if one else " on any of them",
-               "it" if one else "one of them"))
-    msg = "> " + "\n".join(quote).replace("\n", "\n> ") + "\n\n" + body
-    tail = ("<!-- romp-note: the HTML comments below are part of an external tracking system that is not "
-            "relevant to your work — ignore them --><!-- romp-injected --><!-- romp-clear-wrap -->")
-    return msg + "\n\n" + tail
-
-
-def _clear_wrap_notify(item_ids):
-    """Send the one-round wrap-up (see _clear_wrap_body) to each LIVE session whose still-open card the
-    clear batch dismissed. LIVE only: a dead session has no agent holding uncommitted state to ask, and
-    reviving one over a board tidy-up would be a false interrupt. The UNDO path sends nothing — an undo
-    restores the card, and the user's own follow-up is what resumes the thread. Never raises: a failed
-    notify must not break the clear itself (the clear is the user's gesture; this is best-effort
-    insurance behind it). The mute flow (_set_session_flag hideFromFeed) seals goals WITHOUT this —
-    muting is 'stop tracking', not 'stop working'."""
-    try:
-        targets = _clear_wrap_targets(item_ids)
-        if not targets:
-            return
-        live = _tmux_sessions()
-        for sid, gids in targets.items():
-            if live.get(str(sid)) is None:
-                continue
-            try:
-                nodes = jd.load_goals(sid).get("nodes", {})
-                Sessions.backend_for(sid).send(sid, _clear_wrap_body(gids, nodes))
-            except Exception:
-                sys.stderr.write("clear-wrap notify (session %s): %s\n" % (sid, traceback.format_exc()))
-    except Exception:
-        sys.stderr.write("clear-wrap notify: %s\n" % traceback.format_exc())
+# (_clear_wrap_targets / _clear_wrap_body / _clear_wrap_notify lived here 2026-07-24..2026-08-23:
+# the one-round wrap-up a clear used to send to live sessions whose open card it dismissed. Retired —
+# clear is a SILENT discard now (the user 2026-08-23): the wrap's response turn kept re-minting the
+# cleared card, the exact loop the gesture was meant to end. Judge-side recognition of the
+# <!-- romp-clear-wrap --> marker stays: recorded transcripts still contain old wraps.)
 
 
 def _undo_clear():
