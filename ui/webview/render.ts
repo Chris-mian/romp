@@ -12,7 +12,6 @@ import markdown from "highlight.js/lib/languages/markdown";
 import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
-import { quoteReply } from "../quote";
 import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
 import { SessionViews, viewVisible, viewsKey, hideIn, revealIn } from "./session-views";
 import { markerLabel, dayContext } from "./time-marker";
@@ -4281,41 +4280,16 @@ function showSelectionMenu(e: MouseEvent) {
     const sid = activeId, uuid = q.uuid, qtext = q.text;
     mk("Comment", () => openCommentComposer(sid, uuid, qtext, e.clientX, e.clientY));
   }
-  // "Quote" (renamed from "Quote in message", the user 2026-08-23): drops the passage INTO the box
-  // as an editable markdown blockquote — the automatic selection chip already covers select-and-type,
-  // and the handler below de-duplicates the chip the same selection seeded.
-  mk("Quote", () => quoteSelectionIntoComposer(text));
+  // "Quote" is the CHIP, and only the chip (the user 2026-08-23, consolidating the three verbs —
+  // Comment / Quote / Stage — by removal): the selection already seeded it (selectionchange), so
+  // the item just puts the caret where the reply goes. The in-box editable-blockquote form is gone.
+  mk("Quote", () => { (document.getElementById("composer-input") as HTMLTextAreaElement | null)?.focus(); });
   mk("Copy", () => copyToClipboard(text));
   document.body.appendChild(menu);
   ctxMenuEl = menu;
   const r = menu.getBoundingClientRect();
   menu.style.left = Math.max(0, Math.min(e.clientX, window.innerWidth - r.width - 4)) + "px";
   menu.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - r.height - 4)) + "px";
-}
-
-// Drop the selection into the composer as a markdown blockquote (quote.ts does the
-// formatting), cursor on the blank line below it, and remember it as the draft.
-function quoteSelectionIntoComposer(text: string) {
-  const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-  if (!ta) return;
-  const { value, caret } = quoteReply(text, ta.value);
-  ta.value = value;
-  ta.selectionStart = ta.selectionEnd = caret;
-  growComposer(ta);
-  ta.focus();
-  if (activeId) {
-    drafts.set(activeId, ta.value);
-    // the selection that opened this menu ALSO seeded the auto quote-chip (selectionchange, the user
-    // 2026-07-13) — the quote now lives IN the composer text, so drop that chip or the send would quote it
-    // twice. Only the NEWEST chip (the one this selection's gesture made) — earlier stacked contexts stay.
-    const list = composerCitations.get(activeId);
-    if (list?.length && list[list.length - 1].quote) {
-      list.pop();
-      if (!list.length) composerCitations.delete(activeId);
-      renderComposerChips(activeId);
-    }
-    persistDrafts();
-  }
 }
 
 function copyToClipboard(text: string) {
@@ -9075,6 +9049,7 @@ const drafts = new Map<string, string>();
 // quotes. Each chip keeps its own ✕; Backspace-at-start eats the newest first.
 interface Citation { itemId?: string; title: string; quote?: string; uuid?: string | null; src?: string }   // src = a VS Code editor highlight's origin, workspace-relative file:lines (the user 2026-07-13)
 const composerCitations = new Map<string, Citation[]>();
+let fireStage: () => void = () => { /* assigned by the composer closure */ };
 
 // FILE ATTACHMENTS for the composer (the user 2026-08-04): a file dragged, pasted, or picked into the
 // chat box becomes a little THUMBNAIL in a strip above the textarea — not a raw path string dumped into
@@ -9206,8 +9181,13 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
   if (!vscodeApi) return;
   const goalCite = cites?.find((c) => c.itemId);
   const quoteCites = cites ? cites.filter((c) => c.quote) : [];
-  if (goalCite?.itemId) vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid });
-  else if (quoteCites.length) vscodeApi.postMessage({ type: "sendMessage", id: sid, text: quoteReplyBody(quoteCites, text) });
+  // EVERY branch echoes optimistically (the user 2026-08-23: quoted and follow-up sends showed
+  // nothing until the kernel round-tripped, while plain sends painted instantly — the exact
+  // inconsistency reported). The quote branch echoes the COMPOSED body, which is byte-identical to
+  // what lands (quoteReplyBody IS the send path), so the reconcile's includes() match is exact; the
+  // follow-up echoes the typed words, a substring of the goal-wrapped landing.
+  if (goalCite?.itemId) { vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid }); registerOptimistic(sid, text); }
+  else if (quoteCites.length) { const body = quoteReplyBody(quoteCites, text); vscodeApi.postMessage({ type: "sendMessage", id: sid, text: body }); registerOptimistic(sid, body); }
   else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text }); registerOptimistic(sid, text); }
 }
 
@@ -9272,7 +9252,7 @@ function renderStagedStrip(id: string | null): void {
     const mark = el("span", "composer-chip-mark");
     mark.textContent = "•";
     const label = el("span", "composer-chip-label");
-    label.textContent = s.text;
+    label.textContent = s.text || "(context only — sends with your message)";
     // one line, ellipsized IN BOUNDS, with a colored "(expand)" that is visibly chrome, not message
     // text; click toggles the full text — the context-fold idiom (the user 2026-08-15, whose staged
     // line ran off the right edge with no ellipsis and no way to read the rest)
@@ -9354,6 +9334,17 @@ function renderComposerChips(id: string | null): void {
   const cites = id ? composerCitations.get(id) : undefined;
   if (!cites || !cites.length) { strip.style.display = "none"; return; }
   strip.style.display = "flex";
+  // The STAGE button (the user 2026-08-23): nobody discovers ⌘⏎ on their own, so whenever quote
+  // context is held the strip carries its visible face — right of the blue chips, gone with them.
+  // Same action as the shortcut: stage the context (and any typed text) and keep going.
+  {
+    const st = el("button", "staged-go composer-stage-btn") as HTMLButtonElement;
+    st.type = "button";
+    st.textContent = "Stage";
+    st.title = "hold this context (and anything typed) for one combined send later — ⌘⏎ does the same";
+    st.addEventListener("click", (e) => { e.stopPropagation(); fireStage(); });
+    strip.appendChild(st);
+  }
   // one chip per held context, in the order they were added — the strip stacks them (flex column)
   cites.forEach((cite, i) => {
     const chip = el("div", "composer-chip");
@@ -9571,7 +9562,7 @@ function quoteReplyBody(cites: { quote?: string; src?: string | null }[], text: 
     const lead = c.src ? "Replying to this highlighted code (" + c.src + "):" : "Replying to this part of the conversation:";
     return lead + "\n" + q;
   });
-  return sections.join("\n\n") + "\n\n" + text;
+  return text ? sections.join("\n\n") + "\n\n" + text : sections.join("\n\n");
 }
 
 // HIGHLIGHT-TO-REPLY (the user 2026-07-13): selecting text in the chat transcript seeds the composer chip
@@ -10589,7 +10580,9 @@ function setupComposer() {
   const stageComposer = () => {
     if (!activeId) return;
     const typed = ta.value.trim();
-    if (!typed) return;
+    // context stages ALONE (the user 2026-08-23): select a passage, ⌘⏎ with an empty box, repeat —
+    // then one typed message flushes the whole run. Nothing at all → nothing to stage.
+    if (!typed && !(composerCitations.get(activeId) || []).some((c) => c.quote)) return;
     if (composerAnswersAsk()) { warnToast("A picker is waiting on this box — answer it, or send normally."); return; }
     if (composerEdits.has(activeId)) { warnToast("An edit replaces a past message — send it normally."); return; }
     if ((composerFiles.get(activeId) || []).length) { warnToast("Attachments can't be staged — send them with a normal message."); return; }
@@ -10770,6 +10763,7 @@ function setupComposer() {
   const sendBtn = document.getElementById("composer-send") as HTMLButtonElement | null;
   sendBtn?.addEventListener("mousedown", (e) => { e.preventDefault(); sendComposer(); if (isCoarsePointer()) ta.blur(); else ta.focus(); });
   fireHeldSend = () => sendComposer();   // the ack handler's door into this closure (see sendOnShip)
+  fireStage = () => stageComposer();     // the chips strip's Stage button's door (renderComposerChips)
 
   // ── drag-to-resize the message box (the user 2026-07-07) ── the #composer-resize handle straddles the
   // top-edge divider; dragging it UP grows the composer (to see a long message in full), DOWN shrinks it.
