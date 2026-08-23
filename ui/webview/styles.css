@@ -2535,55 +2535,32 @@ mark.cmt-hl.unread.hl-last::after {
   content: ""; position: absolute; top: -4px; right: -4px; width: 7px; height: 7px;
   border-radius: 50%; background: var(--cmt-hl); box-shadow: 0 0 0 1.5px var(--bg);
 }
+/* the turn's rail segment shouts an unread thread (the user 2026-08-23): the identity line's own
+   segment tints the comment yellow — wider and fully opaque so it reads from across the pane — and
+   the rail-hit strip over it opens the thread on click. applyCommentMarks clears the class the
+   moment the thread is viewed. */
+.turn.cmt-rail-unread::before { background: var(--cmt-hl); opacity: 1; width: 3px; left: 10px; }
 mark.cmt-hl:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, transparent); }
 mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.08); }
-/* WRITING (the user 2026-08-17; reshaped 2026-08-23): while the thread is mid-reply the region
-   wears MARCHING ANTS — a dashed outline whose dashes crawl slowly around the box — ON TOP of the
-   solid highlight, which never turns off. (It used to: the busy state blanked the tint and showed
-   only the ants, and the equation host flipped on a different rule than the text marks, so a
-   comment spanning text + math passed through a mixed phase — half dashed, half highlighted —
-   before settling. Keeping the tint underneath removes the phase by construction: the only state
-   change is the ants appearing.) Four gradient strips with an animated offset, never a border: an
-   inline border would shift the text it wraps. This rule must stay AFTER :hover — its shorthand
-   would otherwise wipe the strips mid-hover. */
+/* WRITING (the user 2026-08-17; re-reshaped 2026-08-23 — the marching ants left the PROSE: a crawl
+   around the passage read as distraction, not progress): while the thread is mid-reply the region
+   keeps its solid highlight in a PALER blend — visibly "not the final color yet", settling into the
+   full yellow the moment the reply lands. The crawl itself lives on the scroll-rail tick now (see
+   .cmt-tick.busy), where motion informs without sitting inside the text you're reading. */
 mark.cmt-hl.busy {
-  background-color: color-mix(in srgb, var(--cmt-hl) 30%, transparent);
-  background-image:
-    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
-    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
-    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
-    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px);
-  background-size: calc(100% + 12px) 1.5px, calc(100% + 12px) 1.5px, 1.5px calc(100% + 12px), 1.5px calc(100% + 12px);
-  background-position: -12px 0, 0 100%, 0 0, 100% -12px;
-  background-repeat: no-repeat;
-  animation: cmt-ants 3.6s linear infinite;   /* 3× slower (the user 2026-08-23) */
+  background-color: color-mix(in srgb, var(--cmt-hl) 16%, transparent);
 }
 mark.cmt-hl.hl-first { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
 mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
-/* the ants march clockwise: top strip right, bottom left, left edge up, right edge down — exactly
-   one 12px dash cycle per period, so the loop point is invisible. Each no-repeat strip is oversized
-   by that same 12px along its travel axis and starts one period back: a strip sized exactly to its
-   edge slid open a growing gap at its trailing end and snapped shut every cycle — a lurch that on a
-   text-height vertical edge swallowed most of the edge (the user 2026-08-19). */
-@keyframes cmt-ants {
-  to { background-position: 0 0, -12px 100%, 0 -12px, 100% 0; }
+
 }
-/* a code/math HOST whose mark is mid-reply wears the ants too — its element tint would otherwise
-   stay solid and defeat the outline-then-fill cue */
+/* a code/math HOST whose mark is mid-reply pales the same way — its element tint would otherwise
+   stay full-strength and hide the writing state */
 .md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy),
 .md .katex.cmt-hl-host:has(mark.cmt-hl.busy) {
-  background-color: color-mix(in srgb, var(--cmt-hl) 30%, transparent);
-  background-image:
-    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
-    repeating-linear-gradient(90deg, color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
-    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px),
-    repeating-linear-gradient(0deg,  color-mix(in srgb, var(--cmt-hl) 85%, transparent) 0 6px, transparent 6px 12px);
-  background-size: calc(100% + 12px) 1.5px, calc(100% + 12px) 1.5px, 1.5px calc(100% + 12px), 1.5px calc(100% + 12px);
-  background-position: -12px 0, 0 100%, 0 0, 100% -12px;
-  background-repeat: no-repeat;
-  animation: cmt-ants 3.6s linear infinite;   /* 3× slower (the user 2026-08-23) */
+  background-color: color-mix(in srgb, var(--cmt-hl) 16%, transparent);
 }
-.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy) { background-color: color-mix(in srgb, var(--cmt-hl) 30%, var(--code-bg)); }
+.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy) { background-color: color-mix(in srgb, var(--cmt-hl) 16%, var(--code-bg)); }
 .md :not(pre) > code.cmt-hl-host { background: color-mix(in srgb, var(--cmt-hl) 30%, var(--code-bg)); }
 .md :not(pre) > code.cmt-hl-host > mark.cmt-hl { background: transparent; }
 .md :not(pre) > code.cmt-hl-host:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, var(--code-bg)); }
@@ -2731,6 +2708,25 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    faint glow read as a rendering artifact, not as "new here" */
 .cmt-tick.unread { width: 10px; height: 6px; right: 0; opacity: 1;
   box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 3px color-mix(in srgb, var(--cmt-hl) 85%, transparent); }
+/* a WRITING thread's tick carries the crawl (the user 2026-08-23, moving the ants off the prose):
+   the same four-strip march in miniature — 6px dash cycle, strips oversized by one period so the
+   loop point is invisible (the passage ants' 2026-08-19 lesson, scaled down) — around the tick */
+.cmt-tick.busy { overflow: visible; }
+.cmt-tick.busy::after {
+  content: ""; position: absolute; inset: -3px;
+  background-image:
+    repeating-linear-gradient(90deg, var(--cmt-hl) 0 3px, transparent 3px 6px),
+    repeating-linear-gradient(90deg, var(--cmt-hl) 0 3px, transparent 3px 6px),
+    repeating-linear-gradient(0deg,  var(--cmt-hl) 0 3px, transparent 3px 6px),
+    repeating-linear-gradient(0deg,  var(--cmt-hl) 0 3px, transparent 3px 6px);
+  background-size: calc(100% + 6px) 1.5px, calc(100% + 6px) 1.5px, 1.5px calc(100% + 6px), 1.5px calc(100% + 6px);
+  background-position: -6px 0, 0 100%, 0 0, 100% -6px;
+  background-repeat: no-repeat;
+  animation: cmt-tick-ants 1.8s linear infinite;
+}
+@keyframes cmt-tick-ants {
+  to { background-position: 0 0, -6px 100%, 0 -6px, 100% 0; }
+}
 
 /* a fully-covered KaTeX block tints at the ELEMENT (cmt-hl-host, same contract as inline code):
    a mark inside it cannot paint the glyph boxes' spacing, which punched gaps through highlighted
