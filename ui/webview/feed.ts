@@ -102,7 +102,8 @@ interface AskItem {
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null; live?: boolean } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders). live = the sender's linked entry is still OPEN; false → the badge is PROVENANCE, dimmed (the completed-column merge, the user 2026-08-16)
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string; since?: number } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25). since = when the unanswered ask was sent → the chip's elapsed readout (the user 2026-08-23)
-  awaiting?: { why?: string | null; kind?: string | null; since?: number | null; tasks?: string[] | null } | null;   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Awaiting task" pill (expands the list, like Sub-goals) replaces the boxed why. since = the wait's own event time → the box/pill elapsed readout (the user 2026-08-23)
+  awaiting?: { why?: string | null; kind?: string | null; since?: number | null; tasks?: string[] | null;
+               peers?: { name: string; host?: string; sid?: string; color?: { bg: string; fg: string } | null }[] | null } | null;   // peers: delegation wait → the box names them in identity colour (the user 2026-08-23)   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Awaiting task" pill (expands the list, like Sub-goals) replaces the boxed why. since = the wait's own event time → the box/pill elapsed readout (the user 2026-08-23)
   groupTitle?: string;                             // host: this ask shares a typed turn with siblings → the group's title
   groupN?: number;                                 // host: sibling count for that turn (>1 ⇒ fold into one group card)
   provisional?: boolean;                           // a LIVE-PROMPT placeholder (kernel _provisional_card): the session is working an in-progress turn the planner hasn't classified yet. No goal node (empty tree) — dim, non-interactive, no clear/nudge/modal; replaced by the real card once the planner places the segment.
@@ -1674,7 +1675,25 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   // because spin reads as in-flight and nothing is (the user 2026-08-14).
   a._awaitSpin.classList.toggle("await-paused", awaitingBg);
   a._awaitSpin.classList.toggle("await-still", !!spin.still);
-  if (spinCaption) { a._awaitWhy.textContent = spinCaption; a._awaitSpin.title = spinTip || spinCaption; }
+  if (spinCaption) {
+    // a DELEGATION wait names its peers the way the "↪ from" line does (the user 2026-08-23): the
+    // quiet host: prefix + the peer's identity colour, never a colourless "Awaiting peer". The
+    // ladder's caption stays the fallback (older kernel payloads carry no peers).
+    const awPeers = (awaitingBg && it.awaiting && it.awaiting.peers) || [];
+    if (awPeers.length) {
+      a._awaitWhy.replaceChildren();
+      a._awaitWhy.append("Awaiting ");
+      awPeers.forEach((p, i) => {
+        if (i) a._awaitWhy.append(", ");
+        const nm = el("span", "fask-waiton-name");
+        nm.replaceChildren(...hostPartsNodes(p.host, p.name));
+        if (p.color && p.color.bg) nm.style.color = p.color.bg;
+        a._awaitWhy.appendChild(nm);
+      });
+      a._awaitWhy.append(waitedSuffix(it.awaiting && it.awaiting.since, Date.now() / 1000));
+    } else a._awaitWhy.textContent = spinCaption;
+    a._awaitSpin.title = spinTip || spinCaption;
+  }
   // The swirl's "Analyzing…" caption + tooltip REPLACES the separate "↩ re-judging" chip (the user
   // 2026-06-29: don't show both) — drop the chip the recheck branch set above when the swirl is saying it.
   // ("Analyzing…" is the user-facing label for the re-judging spin, the user 2026-07-08.)

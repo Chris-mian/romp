@@ -12,15 +12,19 @@
 //
 // THE CONTRACT (spin-caption.test.ts executes every branch, in order):
 //   1. AWAITING      — held in Working on dispatched/delegated work (no peer chip). With tracked
-//                      tasks the caption NAMES the first one (2026-08-23: the pill-only design let
-//                      the quiet floor say "nothing is in motion" under an Awaiting-task pill)
+//                      tasks there is NO caption at all (2026-08-23): the "Awaiting task" pill and
+//                      its open-by-default list are the one awaiting read, and the quiet/unknown
+//                      floors stand down under them (branch 8) — a caption here said the same wait
+//                      a third time. A wait on PEERS renders their names in identity colour
+//                      (feed.ts reads awaiting.peers; the caption is the colourless fallback).
 //   2. PROVISIONAL   — a dashed live-prompt placeholder the planner hasn't classified yet
 //   3. RE-CHECK      — a soft-block answered with a TARGETED follow-up, pending re-judge
 //   4. RE-JUDGING    — a soft-block + a PLAIN thread reply, with the reply in flight
 //   5. SETTLE GAP    — the turn finished, the closer's verdict hasn't landed
 //   6. DISTILLING    — a resolved card whose takeaway/brief hasn't been written yet
 //   7. NARRATION     — the ordinary working card with its turn open: live tool count + duration
-//   8. THE FLOOR     — any OTHER working-column card, by sessState: "open" (turn running, narration
+//   8. THE FLOOR     — any OTHER working-column card, by sessState — except quiet/unknown under an
+//                      Awaiting-task pill, which return NO caption (see 1): "open" (turn running, narration
 //                      not reported — an older/disconnected kernel) spins a plain Working…; "quiet"
 //                      (between turns) and "unknown" (no signal at all) render a STILLED glyph + a
 //                      line saying exactly that. Total: a working-column card can never be mute
@@ -85,22 +89,12 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
   // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Awaiting task" pill
   // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
   const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
-  // Only the WORKING column carries this caption: elsewhere there is no floor to contradict,
-  // and the 2026-07-13 rule (the pill alone carries a bg-task wait) still holds.
-  if (aw && !it.waitingOn && awTasks.length && it.column === "working") {
-    // AWAITING with TRACKED TASKS (the user 2026-08-23, from a screenshot of the contradiction): the
-    // 2026-07-13 rule handed the why to the "Awaiting task" pill and let this card fall through to
-    // the quiet floor — which then said "Paused — nothing is in motion" DIRECTLY UNDER the pill
-    // saying work is in flight. Two surfaces on one card disagreed. The caption keeps the awaiting
-    // read and NAMES the first awaited task; the pill still expands the full list.
-    const first = String(awTasks[0] || "background work");
-    return {
-      caption: "Waiting on a background task: " + first,
-      tip: (aw.why || "Waiting on background work it dispatched.")
-        + " Not on you; the Awaiting-task list below has each one.",
-      awaitingBg: true,
-    };
-  }
+  // A bg-TASK wait says it ONCE (the user 2026-08-23, second screenshot of the day): the "Awaiting
+  // task" pill + its open-by-default list are the whole read. The first cut of today's fix named the
+  // first task in a caption here — and with the list now open by default, one card said the same
+  // wait three times (pill, caption, list row). No caption, then; the floor guards below keep the
+  // quiet/unknown lines from contradicting the pill instead (that contradiction is what the caption
+  // was for).
   if (aw && !it.waitingOn && !awTasks.length) {
     // AWAITING — the session is held, waiting on work it dispatched. It keeps its own read: a boxed
     // "Awaiting <kind-word>" label, the kind carried as DATA from the kernel (the user 2026-08-15) so
@@ -210,6 +204,11 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     // kernel, a cold parse cache), rendered a MUTE card. Every working-column card now says its
     // state; when nothing is in motion the glyph STILLS (`still`) — a spinning swirl on a quiet
     // card would claim work that isn't happening.
+    // …except under an Awaiting-task pill (the user 2026-08-23): the pill + its open list already
+    // say what this card is doing, and the quiet/unknown lines below would either contradict them
+    // ("Paused — nothing is in motion" under in-flight tasks — the morning's screenshot) or repeat
+    // them. An OPEN turn still narrates: the session working WHILE tasks run is new information.
+    if (awTasks.length && it.sessState !== "open") return NONE;
     if (it.sessState === "open") {
       return {
         caption: "Working…",

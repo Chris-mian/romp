@@ -11878,6 +11878,26 @@ def _session_stamped_tops(sid):
     return _session_stamp_read(sid)[1]
 
 
+def _handoff_peer_identities(nodes, hnodes):
+    """The STRUCTURED peer identities behind a delegation wait — [{name, host, sid, color}] sorted by
+    name, or None. Rides the card's awaiting payload beside the prose why (the user 2026-08-23: an
+    awaiting-a-peer card must NAME the peer the way every other surface does — identity colour, quiet
+    host: prefix), so the feed's awaiting box renders it like the ↪ from line. Same resolution as
+    `origin`: live registry name first (a rename reads fresh), the sid stub when this kernel cannot
+    resolve; a ":" in the recorded sid is federation's own host marker, carried as `host` only when
+    the name did NOT resolve locally (a local resolve means a local peer, no prefix)."""
+    seen = {}
+    for x in hnodes:
+        psid = str((nodes.get(x, {}).get("handoff") or {}).get("peer") or "")
+        if not psid or psid in seen:
+            continue
+        pn = _name_of(psid)
+        seen[psid] = {"name": pn or psid.split(":")[-1][:8],
+                      "host": ("" if pn or ":" not in psid else psid.split(":", 1)[0]),
+                      "sid": psid, "color": _name_color(psid)}
+    return sorted(seen.values(), key=lambda d: d["name"]) or None
+
+
 def _session_delegated_why(sid):
     """The session-scoped DELEGATION wait (or None): every open leaf of some inbox-visible top is a
     courier handoff — the only outstanding work lives with peers. The SAME evidence the feed's per-card
@@ -17962,14 +17982,15 @@ def build_feed(now, tmux=None):
             # _session_awaiting's stamp branch — keep the two in step (the user 2026-08-08).
             _deleg_why = None
             _deleg_since = None
+            _deleg_peers = None
             if col == "working" and not _stamp_why and not _await_ok \
                     and _all_outstanding_delegated(nodes, nid):
                 _hnodes = [x for x in _subtree(nid)
                            if isinstance(nodes[x].get("handoff"), dict)
                            and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")]
-                _peers = sorted({(_name_of((nodes[x].get("handoff") or {}).get("peer")) or "a peer")
-                                 for x in _hnodes})
-                _deleg_why = "delegated to %s; waiting on their result" % (", ".join(_peers) or "a peer")
+                _deleg_peers = _handoff_peer_identities(nodes, _hnodes)
+                _peers = sorted({d["name"] for d in (_deleg_peers or [])} or {"a peer"})
+                _deleg_why = "delegated to %s; waiting on their result" % ", ".join(_peers)
                 # the newest outstanding handoff's mint — the last local act before the wait began
                 _deleg_since = max([nodes[x].get("t") or 0 for x in _hnodes] or [0]) or None
             if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
@@ -18002,12 +18023,14 @@ def build_feed(now, tmux=None):
             await_why = (sess_awaiting_why or _stamp_why or _deleg_why or _owned_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph, then the blocked-yield's owned dispatch (None for the postal-only case → the waitingOn chip names the peer)
             await_kind = None                        # the winning why's KIND and SINCE ride beside it,
             await_since = None                       # mirroring the or-chain exactly (a kindless winner
-            if col == "awaiting":                    # stays kindless; since = the wait's own event time)
-                for _w, _k, _s in ((sess_awaiting_why, sess_awaiting_kind, sess_awaiting_since),
-                                   (_stamp_why, _stamp_kind, _stamp_since),
-                                   (_deleg_why, "peer", _deleg_since), (_owned_why, "task", _owned_since)):
+            await_peers = None                       # stays kindless; since = the wait's own event time).
+            if col == "awaiting":                    # peers = structured identities, delegation arm only
+                for _w, _k, _s, _p in ((sess_awaiting_why, sess_awaiting_kind, sess_awaiting_since, None),
+                                       (_stamp_why, _stamp_kind, _stamp_since, None),
+                                       (_deleg_why, "peer", _deleg_since, _deleg_peers),
+                                       (_owned_why, "task", _owned_since, None)):
                     if _w:
-                        await_kind, await_since = _k, _s
+                        await_kind, await_since, await_peers = _k, _s, _p
                         break
             # The card's TIME reflects its CURRENT STATE, not when the goal was minted: a COMPLETED card
             # shows when it was completed, a BLOCKED card when it was blocked — the mt of the most-recent
@@ -18268,6 +18291,7 @@ def build_feed(now, tmux=None):
                 # when present the card wears the compact "Waiting on task" pill (expands to this list, like
                 # Sub-goals) instead of the boxed why; empty for subagent/overlay flavors, which keep the box.
                 "awaiting": ({"why": await_why, "kind": await_kind, "since": await_since,
+                              "peers": await_peers,   # delegation wait → [{name, host, sid, color}] for the identity-coloured box (the user 2026-08-23)
                               "tasks": _awaiting_task_descs(fsid, s["path"])} if col == "awaiting" else None),
                 "summary": nodes[nid].get("summary"),    # the distiller's key takeaway for a completed goal (modal) — the user 2026-06-17
                 "distillState": distill_state,   # "completed" | "blocked" | null — the GENUINE state the distiller line keys on, so the brief/takeaway doesn't flicker off when recheck/rejudging drops `column` to working (the user 2026-07-21)
