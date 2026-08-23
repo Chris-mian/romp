@@ -6795,6 +6795,14 @@ def _drive(msg, client):
                     _note_user_goal_write(sid)            # …and it shows even mid-judge-pass (_feed_goals)
                     _mark_views_dirty()                   # a reopen pushes the "Followed up" board at once —
                     #                                       the store write is invisible to the fleet sig
+                    # The reply VOIDS a spent nudge episode (the user 2026-08-23, the reopen-orphan):
+                    # a `failed` latch from the pre-block episode assumed a world where the user hadn't
+                    # answered; their reply IS the answer. The reply turn is romp-injected, so it can
+                    # never re-arm the walk — with the latch left standing, the goal fell into the
+                    # already-nudged branch every tick and sat in Working for hours with no nudge, no
+                    # block, nothing to read (the audited case: 2h45m, ended only by the user noticing).
+                    # Same event-voids-episode reasoning as the awaiting lift's call; live records stay.
+                    _drop_auto_nudge_rec(str(iid))
             except Exception:
                 sys.stderr.write("followup reopen: %s\n" % traceback.format_exc())
             _ack_card_move([iid], ok)                     # …and TELL the client, instead of it timing us out
