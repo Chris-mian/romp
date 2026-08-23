@@ -11,7 +11,9 @@
 // aimed at came from keying the LINE on `column`, and distillState already fixed that. Both show now.
 //
 // THE CONTRACT (spin-caption.test.ts executes every branch, in order):
-//   1. AWAITING      — held in Working on dispatched/delegated work (no peer chip, no bg-task pill)
+//   1. AWAITING      — held in Working on dispatched/delegated work (no peer chip). With tracked
+//                      tasks the caption NAMES the first one (2026-08-23: the pill-only design let
+//                      the quiet floor say "nothing is in motion" under an Awaiting-task pill)
 //   2. PROVISIONAL   — a dashed live-prompt placeholder the planner hasn't classified yet
 //   3. RE-CHECK      — a soft-block answered with a TARGETED follow-up, pending re-judge
 //   4. RE-JUDGING    — a soft-block + a PLAIN thread reply, with the reply in flight
@@ -83,6 +85,22 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
   // a bg-TASK wait no longer boxes its why here (the user 2026-07-13): the compact "Awaiting task" pill
   // on the toggles row carries it (with the task list one click away, like Sub-goals) — see applySections
   const awTasks = ((aw && aw.tasks) || []).filter(Boolean);
+  // Only the WORKING column carries this caption: elsewhere there is no floor to contradict,
+  // and the 2026-07-13 rule (the pill alone carries a bg-task wait) still holds.
+  if (aw && !it.waitingOn && awTasks.length && it.column === "working") {
+    // AWAITING with TRACKED TASKS (the user 2026-08-23, from a screenshot of the contradiction): the
+    // 2026-07-13 rule handed the why to the "Awaiting task" pill and let this card fall through to
+    // the quiet floor — which then said "Paused — nothing is in motion" DIRECTLY UNDER the pill
+    // saying work is in flight. Two surfaces on one card disagreed. The caption keeps the awaiting
+    // read and NAMES the first awaited task; the pill still expands the full list.
+    const first = String(awTasks[0] || "background work");
+    return {
+      caption: "Waiting on a background task: " + first,
+      tip: (aw.why || "Waiting on background work it dispatched.")
+        + " Not on you; the Awaiting-task list below has each one.",
+      awaitingBg: true,
+    };
+  }
   if (aw && !it.waitingOn && !awTasks.length) {
     // AWAITING — the session is held, waiting on work it dispatched. It keeps its own read: a boxed
     // "Awaiting <kind-word>" label, the kind carried as DATA from the kernel (the user 2026-08-15) so

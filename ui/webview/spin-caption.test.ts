@@ -64,9 +64,15 @@ test("AWAITING uses the kernel's why verbatim (capitalized) when it reads 'waiti
 });
 
 test("a peer wait (waitingOn chip) and a bg-TASK wait (pill) both defer — no generic awaiting box", () => {
-  // the "Awaiting <peer>" chip / the "Awaiting task" pill already carry these; the box would double up
+  // the "Awaiting <peer>" chip / the "Awaiting task" pill already carry these; the box would double up.
+  // Carve-out (the user 2026-08-23): ON the working column a task-ful await now captions itself —
+  // deferring there dropped the card to the "Paused" floor directly under the pill. Off-column,
+  // where no floor exists, both still defer.
   assert.equal(spinFor({ awaiting: { why: "x" }, waitingOn: "peer" }, false, false).caption, null);
   assert.equal(spinFor({ awaiting: { why: "x", tasks: ["t1"] } }, false, false).caption, null);
+  const pw = spinFor({ awaiting: { why: "x" }, waitingOn: "peer", column: "working", sessState: "quiet" }, false, false);
+  assert.ok(!pw.awaitingBg, "a peer wait never wears the awaiting box on any column — the chip carries it");
+  assert.ok(!/^Waiting on a background task/.test(pw.caption || ""), "and never the bg-task caption");
 });
 
 // --- the wait's elapsed readout (the user 2026-08-23) -----------------------------------------------
@@ -247,4 +253,16 @@ test("THE FLOOR IS TOTAL — a working-column card can never be mute (the user 2
               "mute working card: " + JSON.stringify({ judging, recheck, rejudging, provisional, dp,
                                                        working: !!working, sessState, awaiting: !!awaiting }));
           }
+});
+
+
+test("awaiting WITH tracked tasks names the first task — never the paused floor (2026-08-23)", () => {
+  // the screenshot contradiction: an "Awaiting task" pill above a "Paused — nothing is in motion"
+  // caption. With tasks present the caption keeps the awaiting read and names the wait.
+  const s = spinFor({ awaiting: { why: "waiting on 2 background tasks", kind: "task",
+                                  tasks: ["Notify when the release PRs settle", "suite run"] },
+                      column: "working", sessState: "quiet" }, false, false);
+  assert.equal(s.awaitingBg, true);
+  assert.match(s.caption || "", /^Waiting on a background task: Notify when the release PRs settle/);
+  assert.ok(!/Paused/.test(s.caption || ""), "the quiet floor must not fire under an Awaiting-task pill");
 });

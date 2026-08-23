@@ -1195,8 +1195,10 @@ function makeAskCard(it: AskItem): HTMLElement {
 // "none" (collapsed), so NEW cards arrive collapsed too. Clicking a toggle sets an explicit per-card override
 // (click the open one → off; click another → switch) that survives the mode.
 const secChoice = new Map<string, "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none">();
-function resolveSec(id: string): "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none" {
-  return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : "summary");
+function resolveSec(id: string, hasAwaitTasks = false): "bg" | "summary" | "subgoals" | "tasks" | "stall" | "none" {
+  // an awaiting-on-tasks card OPENS its task list by default (the user 2026-08-23: the wait is the
+  // one thing to read on that card); an explicit user pick and collapsed mode still win
+  return secChoice.get(id) ?? (feedPrefs().collapsed ? "none" : hasAwaitTasks ? "tasks" : "summary");
 }
 // The Stalled body's text: the staller's plain-language note when the judge has written one, else the
 // kernel's own mechanical reason. Never a waiting-on-the-judge placeholder — a stalled card always has
@@ -1309,7 +1311,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   // the stall note (the user 2026-07-23) — shown whenever the kernel says romp is holding this card, with
   // or without a judge-written note, since `why` alone already answers "why is nothing happening"
   const stall = it.stalled && it.stalled.why ? it.stalled : null;
-  let choice = resolveSec(id);
+  let choice = resolveSec(id, hasTasks);
   if (choice === "bg" && !bg) choice = "none";
   if (choice === "summary" && !distillShown) choice = "none";
   if (choice === "subgoals" && !hasSubs) choice = "none";
