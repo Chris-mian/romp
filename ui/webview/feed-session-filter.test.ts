@@ -38,7 +38,8 @@ test("the filter defaults to NOTHING selected and only ever narrows the RENDER, 
   assert.ok(FEED.includes("let feedOnlySid: string | null = null;"));
   assert.ok(FEED.includes('sessionStorage.getItem("romp:feedOnly")'),
     "survives this tab's reloads only — a fresh window always starts unfiltered");
-  assert.ok(FEED.includes("const shown = feedOnlySid ? asks.filter((a) => a.sid === feedOnlySid) : asks;"));
+  assert.ok(FEED.includes("let shown = feedOnlySid ? asks.filter((a) => a.sid === feedOnlySid) : asks;"));
+  // (`let`, since 2026-08-23: the SEARCH filter composes onto the same render-side view — see feed-search.test.ts)
   assert.ok(FEED.includes("for (const a of shown) {"), "the group-fold loop reads the filtered view");
   assert.ok(FEED.includes("for (const a of shown) { if (grouped.has(a.itemId)) continue;"), "…and the singles loop");
   // a filter aimed at a session the tab strip no longer shows clears itself — the deciding EVENT is

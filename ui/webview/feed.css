@@ -1370,3 +1370,19 @@ body.filebrowse-open { overflow: hidden; }
   color: var(--accent); border-color: var(--accent); }
 #feed-foot .feed-modetoggle.forced:hover { opacity: 0.75;
   background: rgba(156, 210, 255, 0.12); }   /* keep the pressed wash — never the action hover's promise */
+
+/* The footer SEARCH box (the user 2026-08-23): a "Search" word-button expanding to an inline input
+   that live-filters the board by session name, host prefix included. The input wears the footer's
+   scale and the shared dark-panel vocabulary; expansion is a width transition, so it "grows" out of
+   the button instead of popping. Active (a live query) keeps the button accented like every .on toggle. */
+#feed-search { display: inline-flex; align-items: center; gap: 5px; }
+#feed-search input { width: 0; padding: 0; border: 0; opacity: 0;
+  transition: width 0.15s ease, opacity 0.15s ease;
+  font-size: 10.5px; font-family: inherit; color: var(--fg, #ccc);
+  background: var(--vscode-editorWidget-background, #252526);
+  border-radius: 3px; outline: none; }
+#feed-search.open input { width: 138px; padding: 1px 7px; opacity: 1;
+  border: 1px solid var(--card-border); }
+#feed-search.open input:focus { border-color: var(--accent); }
+#feed-search input::-webkit-search-cancel-button { -webkit-appearance: none; }   /* the button folds/clears; no double affordance */
+@media (prefers-reduced-motion: reduce) { #feed-search input { transition: none; } }
