@@ -3460,6 +3460,38 @@ def _lift_spent_awaiting(now, tmux):
             for nd in rolled:
                 if jd.record_verdict(store, nd, "romp", "awaiting", _lift_ev_t(nd, now), lift=True):
                     changed = True
+
+            def _top_of(x):
+                seen = set()
+                while x in nodes and nodes[x].get("parentId") is not None and x not in seen:
+                    seen.add(x); x = nodes[x]["parentId"]
+                return x
+            # SUPERSEDED PEER-WAIT LIFT (the user 2026-08-24): a peer's reply at/after a kind=peer (or
+            # kindless) stamp's WRITE time already ends that wait at every read — _goal_awaiting_stamp_full
+            # hides the stamp from the card and the chip, and the nudge walk (which reads the same
+            # predicate) then never arms the 6h wake. But that supersede was read-time only: it filed
+            # NOTHING, so the stamp sat invisibly forever — the closer was never re-nominated (its
+            # filed-since gate needs a diary row newer than closerLookT, and the newest row was the stamp
+            # itself), the plain-nudge fire gate read the RAW fields and vetoed every fire, and a LIVE
+            # session's Working card wore the quiet floor ("Paused — resumes on the session's next turn")
+            # indefinitely — three live specimens on one board, one ~14h, breaking the recorded 2026-08-22
+            # promise that every Working card is nudged/woken until it lands (_dead_wait_block's docstring).
+            # File the lift the readers already act on: the reply is the wait's designed exact ending event
+            # (the reader's own rule), the lift row re-arms the closer's filed-since nomination (a re-audit
+            # can re-stamp a still-real wait with a fresh write time that out-orders the answer — the
+            # designed self-correction the read-only supersede promised but never delivered), and the
+            # ledger drop re-engages the nudge ladder exactly like the dispatch arms below. Peer-scoped
+            # exactly like the reader (job/agents/task/timer stamps stand through mail); DORMANT sessions
+            # never reach here (the sweep's own gate above) — the dead-wait conversion reads the stamp RAW
+            # on purpose (2026-08-23) and owns that ending.
+            answered = _peer_answered_at(sid)
+            for nd in (list(stamped) if answered else ()):
+                if nd.get("awaitingKind") not in (None, "peer") or _stamp_written_at(nd) >= answered:
+                    continue
+                if jd.record_verdict(store, nd, "romp", "awaiting", _lift_ev_t(nd, now), lift=True):
+                    changed = True
+                    stamped.remove(nd)
+                    _drop_auto_nudge_rec(_top_of(nd.get("id")))
             if not stamped:
                 if changed:
                     jd.rollup_status(store, False)
@@ -3498,11 +3530,6 @@ def _lift_spent_awaiting(now, tmux):
             # kind=job: expiry is not a return (see docstring) — only a real terminal record lifts
             running_job = {t.get("id") for t in every if t.get("status") == "running"}
             placed = _bg_placed_tops(sid, s["path"], [t.get("id") for t in every])
-            def _top_of(x):
-                seen = set()
-                while x in nodes and nodes[x].get("parentId") is not None and x not in seen:
-                    seen.add(x); x = nodes[x]["parentId"]
-                return x
             for nd in stamped:
                 born = nd.get("t") or 0
                 top = _top_of(nd.get("id"))
@@ -4807,7 +4834,18 @@ def _nudge_fire_list(fresh, to_fire, arm_t=None, seen_t=None, held=None):
             # this was the only fire path without the re-check. The walk's own stamp screening
             # handles the SNAPSHOT's stamps; this catches one filed since. No `held` record: the
             # stamp itself is the visible why, and its own wake is the backstop.
-            continue
+            # …a STANDING stamp, that is (the user 2026-08-24): a stamp whose write time predates a
+            # peer's answer is SUPERSEDED at every read — the card shows no wait and the walk routed
+            # this goal PAST the wake on the same predicate — so both halves of the veto's
+            # justification ("visible why", "its own wake") are false for exactly this stamp, and
+            # vetoing on the raw fields left a live session's card on the quiet floor with no
+            # reviver at all. Same read as the walk and the wake's own re-check (answered_at,
+            # peer/kindless only): symmetric ends, no flap — and the sweep's superseded-peer lift
+            # retires the raw fields durably a beat later either way.
+            _ans = _peer_answered_at(f[0].rsplit(":", 1)[0])
+            if not (_ans and nd.get("awaitingKind") in (None, "peer")
+                    and _stamp_written_at(nd) < _ans):
+                continue
         keep.append(f)
     return keep
 
