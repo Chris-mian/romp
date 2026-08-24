@@ -970,6 +970,14 @@ def _sweep_orphans():
                     _log("bounce to %s failed: %s" % (s["name"], e))
             try:
                 f.unlink()
+                # the destroy is the message's TERMINAL EVENT — record it on the original mid, the
+                # way _bounce_apply records a peer's refusal (the user 2026-08-24): without this row
+                # the ledger's last word stayed "sent", and the timeline's pending flag had to lean
+                # on an age window / recipient liveness — which a same-sid REVIVAL then flips back
+                # to pending for mail that no longer exists. The ledger is now terminal-complete.
+                _tl_append("messages.jsonl", {"t": int(time.time()), "ev": "bounced", "id": f.name,
+                                              "to": recip or "?",
+                                              "why": "recipient exited; unread mail destroyed by the orphan sweep"})
             except Exception:
                 pass
         _mark_pending(box.name)                         # bounced orphans may have emptied new/
