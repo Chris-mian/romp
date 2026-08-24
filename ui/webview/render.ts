@@ -13,7 +13,7 @@ import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
-import { SessionViews, viewVisible, viewsKey, hideIn, revealIn } from "./session-views";
+import { SessionViews, viewVisible, viewsKey, hideIn, revealIn, viewTagUnion, viewTags, type TagUnion, type SessionTag } from "./session-views";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
@@ -4436,7 +4436,7 @@ function setSessionColor(id: string, bg: string) {
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
-function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder", off: boolean): HTMLElement {
+function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag", off: boolean): HTMLElement {
   const span = el("span", "ctx-icon" + (off ? " off" : ""));
   const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
   const body = kind === "feed"
@@ -4447,6 +4447,8 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder", off: boolea
         ? '<rect x="2" y="4" width="12" height="8" rx="1.5"/><line x1="2" y1="6.8" x2="14" y2="6.8"/><line x1="4.2" y1="9.6" x2="7.4" y2="9.6"/>'  // payment card (billing)
         : kind === "folder"
           ? '<path d="M2 4.5 A1.2 1.2 0 0 1 3.2 3.3 L6.2 3.3 L7.6 4.9 L12.8 4.9 A1.2 1.2 0 0 1 14 6.1 L14 11.5 A1.2 1.2 0 0 1 12.8 12.7 L3.2 12.7 A1.2 1.2 0 0 1 2 11.5 Z"/>'  // folder (browse files)
+        : kind === "tag"
+          ? '<path d="M2 3.4 A1.4 1.4 0 0 1 3.4 2 L7.6 2 A1.4 1.4 0 0 1 8.6 2.4 L13.6 7.4 A1.4 1.4 0 0 1 13.6 9.4 L9.4 13.6 A1.4 1.4 0 0 1 7.4 13.6 L2.4 8.6 A1.4 1.4 0 0 1 2 7.6 Z"/><circle cx="5.4" cy="5.4" r="1.1"/>'  // luggage tag (session tags)
           : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
   span.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" '
     + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + body + slash + "</svg>";
@@ -4558,6 +4560,130 @@ function showTabMenu(e: MouseEvent, id: string) {
       row.appendChild(sw);
     }
     menu.appendChild(row);
+  }
+  // TAGS (the user 2026-08-24, overruling the earlier skip: tag editing belongs everywhere a
+  // session is in front of you — you might not have the timeline open and still want to organize
+  // or dispatch). A compact one-line row — the current tag names as the sub-line — with the
+  // mechanics one click away in a flyout (progressive disclosure; the Billing submenu's chrome).
+  // SAME semantics as the timeline dialog, name-keyed union rules throughout (kernels are plumbing,
+  // no host prefixes): an ADD lands on the local store when the name exists locally, else the
+  // tag's single home over the editTag wire; a REMOVE removes the (name, member) pair from EVERY
+  // store holding it; New tag… creates locally with the next unused palette colour. Local writes
+  // post the whole blob (postViews — pendingSessionViews echoes instantly); remote writes ride the
+  // editTag op and settle on the next push (a refused edit re-appears — the kernel's loud
+  // tagEditFailed lands on the timeline dialog, 628's surface).
+  {
+    menu.appendChild(el("div", "ctx-sep"));
+    const unionFor = () => viewTagUnion(effViews());
+    const holding = () => unionFor().filter((g) => g.members.includes(id));
+    const tagsItem = el("div", "ctx-item ctx-item-toggle ctx-item-tags");
+    tagsItem.appendChild(ctxIcon("tag", false));
+    const bodyEl = el("span", "ctx-item-body");
+    const l = el("span", "ctx-item-label"); l.textContent = "Tags"; bodyEl.appendChild(l);
+    const sb = el("span", "ctx-item-sub");
+    const subText = () => { const names = holding().map((g) => g.name); return names.length ? names.join(" · ") : "none yet — tag it to organize and dispatch"; };
+    sb.textContent = subText();
+    bodyEl.appendChild(sb);
+    tagsItem.appendChild(bodyEl);
+    const caret = el("span", "ctx-caret"); caret.textContent = "▸"; tagsItem.appendChild(caret);
+    const editUnion = (g: TagUnion, edit: { add?: string[]; remove?: string[] }) => {
+      // ONE optimistic blob per gesture: the local store's edit AND the remote entries' mirror both
+      // land in pendingSessionViews so the flyout reads true instantly. Echoed remoteTags are
+      // DERIVED — the kernel drops them from the echo — so mutating the copy is presentation-only;
+      // the remote's own next push is the durable truth (a refused edit re-appears there).
+      const nv = JSON.parse(JSON.stringify(effViews() || {})) as SessionViews;
+      let dirty = false;
+      const nvRemote = (rt: SessionTag) => (nv.remoteTags || []).find((x) => x.id === rt.id);
+      if (edit.add?.length) {
+        if (g.localId) {
+          const t = viewTags(nv).find((x) => x.id === g.localId);
+          if (t) { t.members = Array.from(new Set((t.members || []).concat(edit.add))); dirty = true; }
+        } else if (g.remotes.length) {
+          vscodeApi?.postMessage({ type: "editTag", edit: { host: g.remotes[0].host || "", name: g.name, add: edit.add.slice() } });
+          const mine = nvRemote(g.remotes[0]);
+          if (mine) { mine.members = Array.from(new Set((mine.members || []).concat(edit.add))); dirty = true; }
+        }
+      }
+      if (edit.remove?.length) {
+        if (g.localId) {
+          const t = viewTags(nv).find((x) => x.id === g.localId);
+          if (t && (t.members || []).some((m) => edit.remove!.includes(m))) {
+            t.members = (t.members || []).filter((m) => !edit.remove!.includes(m));
+            dirty = true;
+          }
+        }
+        for (const rt of g.remotes) {
+          if (!(rt.members || []).some((m) => edit.remove!.includes(m))) continue;
+          vscodeApi?.postMessage({ type: "editTag", edit: { host: rt.host || "", name: g.name, remove: edit.remove!.slice() } });
+          const mine = nvRemote(rt);
+          if (mine) { mine.members = (mine.members || []).filter((m) => !edit.remove!.includes(m)); dirty = true; }
+        }
+      }
+      if (dirty) postViews(nv);
+    };
+    tagsItem.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const openFly = menu.querySelector(".ctx-sub-tags");
+      if (openFly) { openFly.remove(); return; }                 // second click folds the flyout
+      menu.querySelector(".ctx-sub")?.remove();                  // one flyout at a time (Billing's rule)
+      const sub = el("div", "ctx-menu ctx-sub ctx-sub-tags");
+      const build = () => {
+        sub.replaceChildren();
+        for (const g of holding()) {                             // one chip per NAME — never a host prefix
+          const row = el("div", "ctx-item ctx-item-toggle");
+          const chip = el("span", "ctx-tag-dot"); chip.style.background = g.color || "var(--dim)"; row.appendChild(chip);
+          const bodyE = el("span", "ctx-item-body");
+          const lb = el("span", "ctx-item-label"); lb.textContent = g.name; bodyE.appendChild(lb);
+          row.appendChild(bodyE);
+          const x = el("button", "ctx-tag-x") as HTMLButtonElement;
+          x.type = "button"; x.textContent = "✕"; x.title = "remove this tag from the session — everywhere it holds it";
+          x.addEventListener("click", (e2) => { e2.stopPropagation(); editUnion(g, { remove: [id] }); build(); sb.textContent = subText(); });
+          row.appendChild(x);
+          sub.appendChild(row);
+        }
+        const others = unionFor().filter((g) => !g.members.includes(id));
+        if (holding().length && others.length) sub.appendChild(el("div", "ctx-sep"));
+        for (const g of others) {
+          const row = el("div", "ctx-item ctx-item-toggle");
+          const chip = el("span", "ctx-tag-dot"); chip.style.background = g.color || "var(--dim)"; row.appendChild(chip);
+          const bodyE = el("span", "ctx-item-body");
+          const lb = el("span", "ctx-item-label"); lb.textContent = "+ " + g.name; bodyE.appendChild(lb);
+          row.appendChild(bodyE);
+          row.addEventListener("click", (e2) => { e2.stopPropagation(); editUnion(g, { add: [id] }); build(); sb.textContent = subText(); });
+          sub.appendChild(row);
+        }
+        if (holding().length || others.length) sub.appendChild(el("div", "ctx-sep"));
+        // New tag… — an inline input, never a native prompt (the menus vocabulary)
+        const nrow = el("div", "ctx-item ctx-item-newtag");
+        const inp = el("input", "ctx-tag-input") as HTMLInputElement;
+        inp.placeholder = "New tag…"; inp.maxLength = 40;
+        inp.addEventListener("click", (e2) => e2.stopPropagation());
+        inp.addEventListener("keydown", (e2) => {
+          if (e2.key !== "Enter") return;
+          const name = inp.value.trim();
+          if (!name) return;
+          const existing = unionFor().find((g) => g.name === name);
+          if (existing) { editUnion(existing, { add: [id] }); build(); sb.textContent = subText(); return; }
+          const nv = JSON.parse(JSON.stringify(effViews() || {})) as SessionViews;
+          const used = new Set(viewTags(nv).map((t) => t.color));
+          const color = paletteColors.find((c) => !used.has(c)) || paletteColors[0] || "#1EA1EB";
+          nv.tags = viewTags(nv).concat([{ id: "g" + Date.now().toString(36), name, color, members: [id] }]);
+          delete nv.groups;
+          postViews(nv);
+          build(); sb.textContent = subText();
+        });
+        nrow.appendChild(inp);
+        sub.appendChild(nrow);
+      };
+      build();
+      menu.appendChild(sub);
+      const ir = tagsItem.getBoundingClientRect();
+      const sr = sub.getBoundingClientRect();
+      sub.style.left = Math.max(0, Math.min(ir.right + 2, window.innerWidth - sr.width - 4)) + "px";
+      sub.style.top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4)) + "px";
+      (sub.querySelector(".ctx-tag-input") as HTMLInputElement | null)?.focus();
+    });
+    menu.appendChild(tagsItem);
   }
   // BROWSE FILES — at the BOTTOM behind its own divider (the user 2026-08-24: it is a different
   // kind of thing from the toggles above), wearing the standard icon + sub-description dress, and

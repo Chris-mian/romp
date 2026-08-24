@@ -300,6 +300,14 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    gray + slashed. So the same blue marks "enabled" in both the menu and the timeline. */
 .ctx-item-toggle .ctx-icon { flex: 0 0 auto; margin-top: 1px; color: var(--accent); display: flex; }
 .ctx-item-toggle .ctx-icon.off { color: var(--dim); }
+/* the tab menu's Tags flyout (the user 2026-08-24): identity dot per union tag, ✕ = remove-
+   everywhere, an inline New tag… input — all in the menu vocabulary, no new font sizes */
+.ctx-tag-dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; }
+.ctx-tag-x { flex: 0 0 auto; background: none; border: none; color: var(--dim); cursor: pointer; font: inherit; padding: 0 2px; }
+.ctx-tag-x:hover { color: var(--fg); }
+.ctx-item-newtag { cursor: default; }
+.ctx-tag-input { width: 100%; background: #1e1e1e; color: #ccc; border: 1px solid #3a3a3a; border-radius: 5px; padding: 3px 6px; font: inherit; }
+.ctx-tag-input:focus { outline: none; border-color: var(--accent); }
 .ctx-item-body { display: flex; flex-direction: column; line-height: 1.25; }
 .ctx-item-sub { font-size: 0.82em; opacity: 0.6; }
 /* identity-color swatches (the user 2026-06-29): the romp palette as circles, the current one ringed. A grid
