@@ -61,6 +61,24 @@ export function threadInFlight(th: CommentThread): boolean {
   return th.status === "open" && !th.error && !threadStuck(th.state)
     && (threadBusy(th.state) || replyOwed(th));
 }
+// SETTLE LATCH (the user 2026-08-24, second report: the passage went green, blipped YELLOW for a
+// second mid-churn, then back to green). At a turn boundary inside a continuing thread, one push can
+// read quiet-state + agent-tail — frame-locally indistinguishable from the true end, so no predicate
+// over a single frame can avoid the flap. The repo rule: transient states latch until the deciding
+// event. Here the deciding evidence is CONSECUTIVE confirming pushes (the pendingSessionViews idiom:
+// pushes are events, never timers): the green holds until TWO pushes in a row read settled; any busy
+// or owed reading resets the count; a status flip (resolved/merged/error) decides IMMEDIATELY — those
+// are real events, never held. The state changes at most once per deciding event by construction.
+export type BusyLatch = { green: boolean; quiet: number };
+export const SETTLE_CONFIRM_PUSHES = 2;
+export function latchBusy(prev: BusyLatch | undefined, th: CommentThread, alsoBusy = false): BusyLatch {
+  if (th.status !== "open" || th.error) return { green: false, quiet: 0 };
+  const raw = alsoBusy || (!threadStuck(th.state) && (threadBusy(th.state) || replyOwed(th)));
+  if (raw) return { green: true, quiet: 0 };
+  if (!prev || !prev.green) return { green: false, quiet: 0 };
+  const quiet = prev.quiet + 1;
+  return quiet >= SETTLE_CONFIRM_PUSHES ? { green: false, quiet: 0 } : { green: true, quiet };
+}
 export function threadStuck(state: string): boolean {
   return state === "permission" || state === "picker";
 }
