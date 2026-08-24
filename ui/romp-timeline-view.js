@@ -47,9 +47,9 @@ function viewVisible(views, id) {
   return t ? (t.members || []).indexOf(id) >= 0 : true;
 }
 function viewLabel(views) {
-  if (!views || !views.active || views.active === 'all') return 'default';
+  if (!views || !views.active || views.active === 'all') return '(untagged)';
   const t = viewTags(views).find((x) => x.id === views.active);
-  return t ? (t.name || 'tag') : 'default';
+  return t ? (t.name || 'tag') : '(untagged)';
 }
 // live sessions the current view is NOT showing — the "N more" cue that keeps a hidden or tagged
 // session exactly one glance away (nothing may run in secret: the 2026-08-11 hidden-tabs rule)
@@ -2440,7 +2440,13 @@ class TimelinePanel {
     if (more) {
       const m = el('text', { x: x + GAP, y, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG, opacity: 0.7 });
       m.textContent = tailStr;   // a filtered-out live session is always one glance away
-      m.setAttribute('style', 'user-select:none;');
+      // …and one CLICK away (the user 2026-08-24): the count opens the same views menu, so "what am
+      // I not seeing?" answers itself with the list of tags to switch to
+      m.setAttribute('style', 'user-select:none;cursor:pointer;');
+      const mt = el('title', {}); mt.textContent = 'live sessions outside this view — click to pick a tag view';
+      m.appendChild(mt);
+      m.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(m); });
+      m.addEventListener('click', (e) => e.stopPropagation());
       svg.appendChild(m);
     }
   }
@@ -2485,7 +2491,7 @@ class TimelinePanel {
     };
     const v = this._curViews();
     const pick = (active) => { const nv = JSON.parse(JSON.stringify(v)); nv.active = active; this._setViews(nv); this._closeViewsMenu(); };
-    item('default', { current: !v.active || v.active === 'all' }).addEventListener('click', () => pick('all'));
+    item('(untagged)', { current: !v.active || v.active === 'all' }).addEventListener('click', () => pick('all'));
     for (const tg of viewTags(v))
       item(tg.name, { dot: tg.color || MODEL_FG, current: v.active === tg.id }).addEventListener('click', () => pick(tg.id));
     sep();
@@ -2528,30 +2534,45 @@ class TimelinePanel {
     this._viewsMenu = menu;
   }
 
-  // The sessions & tags dialog (the user 2026-08-23, replacing the one-checkbox-per-session form):
-  // TAG-CENTRIC — one row per session wearing its tag CHIPS (the tag's colour, ✕ leaves it) and a
-  // [+] menu to join existing tags or mint a new one, so multi-tag assignment happens in one visit.
-  // Opened WITH a tag id (New tag…, or Sessions & tags… while a tag view is active) it adds that
-  // tag's identity header — name input, palette swatches, Delete — on top of the same rows. An
-  // eye-off glyph appears only on a HIDDEN session (the manual one-off hide) to un-hide it; hiding
-  // itself stays where it lives (the chat tab's context menu). A centered card over the usual 0.55
-  // dim, adopted into the topmost same-origin document like every timeline overlay.
+  // The sessions & tags dialog (the user 2026-08-23; table form 2026-08-24, designed to the JLD
+  // display rules): a GRID — one row per session, columns [name | tag chips | + | feed | eye] — so
+  // the [+] column's alignment carries the table structure, and every convention matches the rest
+  // of romp (similarity = same meaning): the session NAME wears its identity colour (never a proxy
+  // dot), the "host:" prefix is quiet lowercase italic, a dead session is struck, interactive
+  // elements change on hover, and the whole card speaks the menu chrome. No instruction caption —
+  // the display explains itself. A SEARCH box (name or host) filters the rows, and the two bulk
+  // controls act on the FILTERED set (tag all, feed all), which is how a batch is selected. Opened
+  // WITH a tag id (New tag…) it adds that tag's identity header — name input, palette swatches,
+  // Delete — on top. An eye-off appears only on a HIDDEN session to un-hide it. A centered card
+  // over the usual 0.55 dim, adopted into the topmost same-origin document.
   _openViewsDialog(gid) {
     this._closeViewsDialog();
     const back = document.body.createDiv();
     back.setAttribute('style', 'position:fixed;inset:0;z-index:1002;background:rgba(0,0,0,0.55);'
       + 'display:flex;align-items:center;justify-content:center;');
     const card = back.createDiv();
-    card.setAttribute('style', 'width:min(470px,92vw);max-height:76vh;overflow:auto;padding:10px 12px;' + MENU_STYLE);
+    card.setAttribute('style', 'width:min(560px,94vw);max-height:78vh;overflow:auto;padding:14px 16px;' + MENU_STYLE);
     card.addEventListener('click', (e) => e.stopPropagation());
-    let addMenuFor = null;                       // the session id whose [+] menu is open (survives repaints)
+    let addMenuFor = null;                 // session id with its [+] menu open, or '*' for the bulk one
+    let query = '';                        // the search filter (name or host), survives repaints
+    const hover = (n, on, off) => {        // the one hover helper: interactive chrome changes colour
+      n.addEventListener('mouseenter', () => n.setAttribute('style', n.getAttribute('style') + on));
+      n.addEventListener('mouseleave', () => n.setAttribute('style', String(n.getAttribute('style')).replace(on, off)));
+    };
+    const nameParts = (s) => {             // ["host:" or null, bare name] — the sid's own colon marks federation
+      const i = String(s.id || '').indexOf(':');
+      const pre = i > 0 ? String(s.id).slice(0, i + 1) : null;
+      if (pre && s.name && s.name.startsWith(pre) && s.name.length > pre.length)
+        return [pre.toLowerCase(), s.name.slice(pre.length)];
+      return [null, s.name || String(s.id || '').slice(0, 8)];
+    };
     const build = () => {
       card.textContent = '';
       const v = this._curViews();
       const tg = gid ? viewTags(v).find((x) => x.id === gid) : null;
       if (gid && !tg) { this._closeViewsDialog(); return; }   // the tag was deleted elsewhere
       const head = card.createDiv();
-      head.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:0 0 4px;');
+      head.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:0 0 8px;');
       if (tg) {
         const nameIn = document.createElement('input');
         nameIn.value = tg.name; nameIn.maxLength = 40;
@@ -2566,6 +2587,7 @@ class TimelinePanel {
         head.appendChild(nameIn);
         const del = head.createSpan({ text: 'Delete' });
         del.setAttribute('style', 'flex:0 0 auto;cursor:pointer;opacity:0.7;color:#F85B5A;');
+        hover(del, 'opacity:1;', 'opacity:0.7;');
         del.addEventListener('click', () => {
           const nv = JSON.parse(JSON.stringify(this._curViews()));
           nv.tags = viewTags(nv).filter((x) => x.id !== gid); delete nv.groups;
@@ -2578,7 +2600,7 @@ class TimelinePanel {
       }
       if (tg) {
         const sw = card.createDiv();
-        sw.setAttribute('style', 'display:flex;gap:6px;margin:2px 0 6px;flex-wrap:wrap;');
+        sw.setAttribute('style', 'display:flex;gap:6px;margin:2px 0 8px;flex-wrap:wrap;');
         for (const c of (this._palette && this._palette.length ? this._palette : [tg.color || '#1EA1EB'])) {
           const d = sw.createSpan();
           d.setAttribute('style', 'width:16px;height:16px;border-radius:50%;cursor:pointer;background:' + c + ';'
@@ -2590,88 +2612,71 @@ class TimelinePanel {
           });
         }
       }
-      const sub = card.createDiv({ text: 'Tags mark specialized sessions: a tagged session leaves the '
-        + 'default view and shows under its tags. A session can wear several. ✕ takes a tag off; + adds one.' });
-      sub.setAttribute('style', 'opacity:0.6;font-size:0.82em;margin:0 0 6px;');
-      for (const s of (this.data && this.data.sessions) || []) {
-        const row = card.createDiv();
-        row.setAttribute('style', 'display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:4px;');
-        const dot = row.createSpan();
-        dot.setAttribute('style', 'width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:' + (s.color || MODEL_FG) + ';');
-        const nm = row.createSpan({ text: s.name || s.id.slice(0, 8) });
-        nm.setAttribute('style', 'flex:0 0 auto;max-width:34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
-          + (s.live ? '' : 'opacity:0.55;'));
-        // the session's tags, each a removable chip in the tag's colour (the trigger chip's dress)
-        const chips = row.createSpan();
-        chips.setAttribute('style', 'display:inline-flex;gap:4px;flex-wrap:wrap;min-width:0;align-items:center;');
-        for (const t of viewTags(v)) {
-          if ((t.members || []).indexOf(s.id) < 0) continue;
-          const tc = t.color || '#cccccc';
-          const ch = chips.createSpan();
-          ch.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;max-width:110px;'
-            + 'padding:2px 7px;border-radius:9px;font-size:0.82em;cursor:pointer;white-space:nowrap;'
-            + 'overflow:hidden;color:' + tc + ';border:1px solid ' + tc + ';');
-          ch.createSpan({ text: t.name });
-          const chx = ch.createSpan({ text: '✕' });
-          chx.setAttribute('style', 'color:' + MODEL_FG + ';opacity:0.75;font-size:0.9em;');
-          ch.setAttribute('title', 'tagged "' + t.name + '" — click to take this tag off');
-          ch.addEventListener('click', () => { this._setViews(viewToggleMember(this._curViews(), t.id, s.id)); build(); });
-        }
-        // [+] joins an existing tag or mints a new one — the mini-menu repaints in place with the row
-        const plus = chips.createSpan({ text: '+' });
-        plus.setAttribute('style', 'display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;'
-          + 'border-radius:50%;border:1px solid rgba(255,255,255,0.25);opacity:0.7;cursor:pointer;font-size:0.85em;');
-        plus.setAttribute('title', 'add a tag');
-        plus.addEventListener('click', () => { addMenuFor = addMenuFor === s.id ? null : s.id; build(); });
-        const st = row.createSpan({ text: s.live ? (s.model || '') : 'gone' });
-        st.setAttribute('style', 'margin-left:auto;flex:0 0 auto;opacity:0.5;font-size:0.82em;');
-        // an eye-off on a HIDDEN session un-hides it; the hide gesture itself lives on the chat tab
-        if ((v.hidden || []).indexOf(s.id) >= 0) {
-          const eye = row.createSpan({ text: '⌀' });
-          eye.setAttribute('style', 'flex:0 0 auto;cursor:pointer;opacity:0.6;');
-          eye.setAttribute('title', 'hidden from the default view — click to show it again');
-          eye.addEventListener('click', () => { this._setViews(viewToggleHidden(this._curViews(), s.id)); build(); });
-        }
-        // The pool-builder's second switch (the user 2026-08-19, from the manager/worker experiment):
-        // a background worker usually wants BOTH edits — tagged out of the default view AND off the
-        // feed — so the same row carries the lane gear's feed toggle. Reused machinery end to end
-        // (icon, optimistic _pendingFlags, _setSessionFlag); deliberately NOT auto-coupled to
-        // membership: hideFromFeed seals goals and gates the planner, an edit made knowingly.
-        const ft = LANE_TOGGLES.find((t) => t.flag === 'hideFromFeed');
-        if (ft && s.live) {
-          const on = ft.enabled(s);
-          const fic = el('svg', { viewBox: '0 0 17 17', width: 14, height: 14 });
-          fic.setAttribute('style', 'flex:0 0 auto;cursor:pointer;' + (on ? '' : 'opacity:0.55;'));
-          fic.appendChild(ft.icon(!on, 8.5, 8.5, on ? ROMP_BLUE : MODEL_FG));
-          fic.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const next = ft.value(!on);
-            s.hideFromFeed = next;
-            (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = next;
-            this._setSessionFlag(s, 'hideFromFeed', next);
-            this._reconcilePendingFlags();
-            build();
-          });
-          const tip = on ? 'its prompts make feed cards — click to mute (a background worker usually wants this off)'
-                         : 'feed-muted: new prompts mint no cards — click to restore';
-          fic.addEventListener('mouseenter', () => { fic.setAttribute('title', tip); });
-          row.appendChild(fic);
-        }
-        row.addEventListener('mouseenter', () => { row.style.background = 'rgba(255,255,255,0.07)'; });
-        row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
-        // the open [+] menu renders under its row: existing tags this session lacks, then New tag…
-        if (addMenuFor === s.id) {
-          const am = card.createDiv();
-          am.setAttribute('style', 'margin:0 0 4px 22px;display:flex;gap:4px;flex-wrap:wrap;align-items:center;');
-          for (const t of viewTags(v)) {
-            if ((t.members || []).indexOf(s.id) >= 0) continue;
-            const opt = am.createSpan({ text: t.name });
+      // search + the bulk controls, one row: the search names the SET, the controls act on it
+      const bar = card.createDiv();
+      bar.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:0 0 8px;');
+      const q = document.createElement('input');
+      q.placeholder = 'search name or host…'; q.value = query;
+      q.setAttribute('style', 'flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;'
+        + 'border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:3px 8px;font:inherit;');
+      q.addEventListener('input', () => { query = q.value; renderRows(); });
+      bar.appendChild(q);
+      const btnStyle = 'flex:0 0 auto;cursor:pointer;padding:2px 8px;border-radius:5px;'
+        + 'border:1px solid rgba(255,255,255,0.25);color:#cccccc;background:transparent;font-size:0.9em;';
+      const tagAll = bar.createSpan({ text: '+ tag all' });
+      tagAll.setAttribute('style', btnStyle);
+      hover(tagAll, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
+      tagAll.setAttribute('title', 'add a tag to every session the search shows');
+      tagAll.addEventListener('click', () => { addMenuFor = addMenuFor === '*' ? null : '*'; renderRows(); });
+      const feedAll = bar.createSpan();
+      feedAll.setAttribute('style', btnStyle);
+      hover(feedAll, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
+      bar.appendChild(feedAll);
+      const gridBox = card.createDiv();
+      const ft = LANE_TOGGLES.find((t) => t.flag === 'hideFromFeed');
+      const renderRows = () => {
+        gridBox.textContent = '';
+        const needle = query.trim().toLowerCase();
+        const rows = ((this.data && this.data.sessions) || []).filter((s) =>
+          !needle || String(s.name || s.id || '').toLowerCase().indexOf(needle) >= 0);
+        // the feed-all control speaks for the FILTERED live set: any card-minting session → mute
+        const liveRows = rows.filter((s) => s.live);
+        const anyOn = !!ft && liveRows.some((s) => ft.enabled(s));
+        feedAll.textContent = anyOn ? 'mute feed for all' : 'restore feed for all';
+        feedAll.setAttribute('title', anyOn
+          ? 'mute feed cards for every live session the search shows'
+          : 'restore feed cards for every live session the search shows');
+        feedAll.onclick = () => {
+          if (!ft) return;
+          const flagVal = ft.value(!anyOn);   // any still minting → mute all; all muted → restore all
+          for (const s of liveRows) {
+            s.hideFromFeed = flagVal;
+            (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = flagVal;
+            this._setSessionFlag(s, 'hideFromFeed', flagVal);
+          }
+          this._reconcilePendingFlags();
+          renderRows();
+        };
+        const grid = gridBox.createDiv();
+        grid.setAttribute('style', 'display:grid;grid-template-columns:max-content 1fr max-content max-content max-content;'
+          + 'column-gap:10px;row-gap:3px;align-items:center;');
+        const addMenu = (rowIds) => {   // the [+] menu, per-row or bulk — spans the grid
+          const am = grid.createDiv();
+          am.setAttribute('style', 'grid-column:1 / -1;margin:2px 0 4px 8px;display:flex;gap:5px;flex-wrap:wrap;align-items:center;');
+          const joinable = viewTags(this._curViews()).filter((t) =>
+            rowIds.some((id) => (t.members || []).indexOf(id) < 0));
+          for (const t of joinable) {
             const tc = t.color || '#cccccc';
-            opt.setAttribute('style', 'padding:0 7px;border-radius:9px;font-size:0.82em;cursor:pointer;'
-              + 'color:' + tc + ';border:1px solid ' + tc + ';opacity:0.85;');
+            const opt = am.createSpan({ text: t.name });
+            opt.setAttribute('style', 'padding:1px 8px;border-radius:9px;font-size:0.82em;cursor:pointer;'
+              + 'color:' + tc + ';border:1px solid ' + tc + ';background:transparent;');
+            hover(opt, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
             opt.addEventListener('click', () => {
+              const nv = JSON.parse(JSON.stringify(this._curViews()));
+              const t2 = viewTags(nv).find((x) => x.id === t.id); if (!t2) return;
+              t2.members = Array.from(new Set((t2.members || []).concat(rowIds)));
               addMenuFor = null;
-              this._setViews(viewToggleMember(this._curViews(), t.id, s.id)); build();
+              this._setViews(nv); build();
             });
           }
           const ni = document.createElement('input');
@@ -2683,16 +2688,92 @@ class TimelinePanel {
             const nv = JSON.parse(JSON.stringify(this._curViews()));
             const used = new Set(viewTags(nv).map((t) => t.color));
             const color = (this._palette || []).find((c) => !used.has(c)) || (this._palette || [])[0] || '#1EA1EB';
-            const nt = { id: 'g' + Date.now().toString(36), name: ni.value.trim().slice(0, 40), color,
-                         members: [s.id] };
-            nv.tags = viewTags(nv).concat([nt]); delete nv.groups;
+            nv.tags = viewTags(nv).concat([{ id: 'g' + Date.now().toString(36),
+              name: ni.value.trim().slice(0, 40), color, members: rowIds.slice() }]);
+            delete nv.groups;
             addMenuFor = null;
             this._setViews(nv); build();
           });
           am.appendChild(ni);
           ni.focus();
+        };
+        if (addMenuFor === '*') addMenu(rows.map((s) => s.id));
+        for (const s of rows) {
+          const vv = this._curViews();
+          // NAME — the session's identity colour on the name itself (never a proxy dot), the
+          // "host:" prefix quiet lowercase italic, a dead session struck: every other surface's read
+          const nameCell = grid.createDiv();
+          nameCell.setAttribute('style', 'white-space:nowrap;' + (s.live ? '' : 'opacity:0.55;'));
+          const [hpre, bare] = nameParts(s);
+          if (hpre) {
+            const hp = nameCell.createSpan({ text: hpre });
+            hp.setAttribute('style', 'color:' + MODEL_FG + ';font-style:italic;font-size:0.88em;');
+          }
+          const nm = nameCell.createSpan({ text: bare });
+          nm.setAttribute('style', 'font-weight:650;color:' + (s.color || '#cccccc') + ';'
+            + (s.live ? '' : 'text-decoration:line-through;'));
+          // TAGS — removable chips, outline in the tag's colour, dim separate ✕
+          const chips = grid.createDiv();
+          chips.setAttribute('style', 'display:flex;gap:5px;flex-wrap:wrap;align-items:center;min-width:0;');
+          for (const t of viewTags(vv)) {
+            if ((t.members || []).indexOf(s.id) < 0) continue;
+            const tc = t.color || '#cccccc';
+            const ch = chips.createSpan();
+            ch.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;'
+              + 'padding:2px 7px;border-radius:9px;font-size:0.82em;cursor:pointer;white-space:nowrap;'
+              + 'color:' + tc + ';border:1px solid ' + tc + ';background:transparent;');
+            hover(ch, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
+            ch.createSpan({ text: t.name });
+            const chx = ch.createSpan({ text: '✕' });
+            chx.setAttribute('style', 'color:' + MODEL_FG + ';opacity:0.75;font-size:0.9em;');
+            ch.setAttribute('title', 'tagged "' + t.name + '" — click to take this tag off');
+            ch.addEventListener('click', () => { this._setViews(viewToggleMember(this._curViews(), t.id, s.id)); build(); });
+          }
+          // [+] — one aligned column, so the table reads as a table
+          const plusCell = grid.createDiv();
+          const plus = plusCell.createSpan({ text: '+' });
+          plus.setAttribute('style', 'display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;'
+            + 'border-radius:50%;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;font-size:0.85em;background:transparent;');
+          hover(plus, 'background:rgba(255,255,255,0.09);opacity:1;', 'background:transparent;opacity:0.7;');
+          plus.setAttribute('title', 'add a tag');
+          plus.addEventListener('click', () => { addMenuFor = addMenuFor === s.id ? null : s.id; renderRows(); });
+          // FEED — the pool-builder switch rides every live row (the user 2026-08-19), aligned
+          const feedCell = grid.createDiv();
+          if (ft && s.live) {
+            const on = ft.enabled(s);
+            const fic = el('svg', { viewBox: '0 0 17 17', width: 14, height: 14 });
+            fic.setAttribute('style', 'cursor:pointer;' + (on ? '' : 'opacity:0.55;'));
+            fic.appendChild(ft.icon(!on, 8.5, 8.5, on ? ROMP_BLUE : MODEL_FG));
+            fic.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const next = ft.value(!on);
+              s.hideFromFeed = next;
+              (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = next;
+              this._setSessionFlag(s, 'hideFromFeed', next);
+              this._reconcilePendingFlags();
+              renderRows();
+            });
+            fic.addEventListener('mouseenter', () => { fic.setAttribute('title', on
+              ? 'its prompts make feed cards — click to mute (a background worker usually wants this off)'
+              : 'feed-muted: new prompts mint no cards — click to restore'); fic.style.opacity = '1'; });
+            fic.addEventListener('mouseleave', () => { fic.style.opacity = on ? '' : '0.55'; });
+            feedCell.appendChild(fic);
+          }
+          // EYE — only on a hidden session, to un-hide (hiding lives on the chat tab)
+          const eyeCell = grid.createDiv();
+          if (((vv.hidden || [])).indexOf(s.id) >= 0) {
+            const eye = eyeCell.createSpan({ text: '⌀' });
+            eye.setAttribute('style', 'cursor:pointer;opacity:0.6;');
+            hover(eye, 'opacity:1;', 'opacity:0.6;');
+            eye.setAttribute('title', 'hidden from the (untagged) view — click to show it again');
+            eye.addEventListener('click', () => { this._setViews(viewToggleHidden(this._curViews(), s.id)); build(); });
+          }
+          if (addMenuFor === s.id) addMenu([s.id]);
         }
-      }
+      };
+      renderRows();
+      // a repaint mid-typing keeps the search box live: re-focus with the caret at the end
+      if (query) { q.focus(); try { q.setSelectionRange(q.value.length, q.value.length); } catch (e) {} }
     };
     build();
     const h = this._menuHost({ left: 0, top: 0, bottom: 0, right: 0 });
