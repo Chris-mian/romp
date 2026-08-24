@@ -18980,6 +18980,10 @@ def build_feed(now, tmux=None):
             # the shared session order (session-order.json — the tab/lane order): grouped mode sorts each
             # column's session runs by it (the user 2026-07-13); federation prefixes + concatenates per host
             "order": _session_order(),
+            # the ACTIVE session view gates the board CLIENT-side (the user 2026-08-24): the same
+            # views blob every tabOrder push carries — feed.ts filters through its client mirror
+            # (session-views.ts viewVisible via feed-view.ts), needs-you cards breaking through
+            "views": _views_client(),
             # the chat tab strip's sessions, name+color resolved exactly as tab_meta resolves them: the
             # feed footer's session-filter menu lists precisely the tabs (the user 2026-08-08) — including
             # a session with no cards on the board, which filters to an empty board rather than being

@@ -319,6 +319,14 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 
 /* drop-point lines on an asks-column card: where the work is currently parked */
 
+/* ↪ BREAKTHROUGH cue (the user 2026-08-24): a needs-you card from a session the active view HIDES
+   still shows (the interrupt rule) — the cue says why it's here. The ↪ provenance family: dim,
+   quiet, the sub-line scale, never a status colour. */
+.fask-viewbreak { color: var(--dim); font-size: 0.82em; font-style: italic; white-space: nowrap; align-self: center; }
+/* "N cards outside this view" (the N-more idiom; the 2026-08-11 rule: filtered is never silent):
+   one dim line after the columns, click switches the view to All. */
+#feed-viewmore { padding: 4px 14px 10px; color: var(--dim); font-size: 0.82em; cursor: pointer; }
+#feed-viewmore:hover { color: var(--accent); text-decoration: underline; }
 /* "↪ from <sender>" — courier handoff provenance beside the owning session: the "↪ from" reads as dim
    gray chrome, the peer name as a bold, identity-coloured session link (the user 2026-06-16). */
 /* a direct child of the WRAPPING name row, kept on one line — .fask-id's flex-grow pushes it to the
