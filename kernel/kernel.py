@@ -18753,6 +18753,10 @@ def _usage():
             ss = _spend_series()          # TOTAL, like the windows above: everything here bills the key
             if ss:
                 out["spendSeries"] = ss   # the hover's money-rate graph (the user 2026-08-13)
+            sa = _spend_recorded_at()
+            if sa:
+                out["spendAt"] = sa       # the spend's OWN freshness (the user 2026-08-24: the windows'
+                                          # stale "updated 9h ago" sat over the spend and read as its age)
             return out
         return None
     # LIMIT REACHED (the user 2026-07-01): a window at 100% whose reset is still in the future = the account is
@@ -18787,6 +18791,9 @@ def _usage():
             ss = _spend_series(keyed_only=True)   # the keyed split, like the windows it graphs
             if ss:
                 out["spendSeries"] = ss
+            sa = _spend_recorded_at()
+            if sa:
+                out["spendAt"] = sa               # same own-freshness stamp as the key-only arm
     # (the winSeries per-window utilization series is gone — the user 2026-08-14, who wanted the one
     # fleet $/h graph and nothing per window. usage-history.json keeps recording — sdk_backend
     # _record_usage_history — so a future graph starts with history instead of a blank.)
@@ -18864,6 +18871,18 @@ def _spend_budgets():
                 if isinstance(d.get(k), (int, float)) and d[k] > 0}
     except Exception:
         return {}
+
+
+def _spend_recorded_at():
+    """spend.json's last-record moment (mtime, epoch seconds), or None. The spend display's OWN
+    freshness stamp (the user 2026-08-24): the hover's "updated Xh ago" belongs to the rate-limit
+    WINDOWS (usage.json's t — which nothing writes under key auth, and which sleeps with the user's
+    login machines overnight), yet it sat directly above the spend section and read as the spend's
+    age. The recorder writes per turn RESULT, so the mtime IS the last charge's event time."""
+    try:
+        return int((jd.STATE / "spend.json").stat().st_mtime)
+    except OSError:
+        return None
 
 
 def _spend_windows(keyed_only=False):
@@ -23807,6 +23826,7 @@ var SPEND_WINS=[['hour','1 hour'],['day','1 day'],['week','1 week'],['month','1 
 // hover scaled each window's bar to the largest window, a shape with no meaning, and the budget-fill
 // tracks die with it): the numbers are the information, so the numbers are the rendering.
 function spendDet(u,det){var sp=u&&u.spend;if(!sp||!det)return;
+if(typeof u.spendAt==='number')det._spendAt=u.spendAt;   // the spend's OWN last-record moment
 SPEND_WINS.forEach(function(w){var seg=sp[w[0]];if(!seg||typeof seg.usd!=='number')return;
 (det._spend=det._spend||{})[w[0]]={label:w[1],usd:seg.usd,tok:seg.tok||0,turns:seg.turns||0};});
 if(u.spendSeries&&u.spendSeries.usd)det._spendSeries=u.spendSeries;}   // $/hour, for the hover graph (the user 2026-08-13)
@@ -24004,6 +24024,10 @@ else{var off=ss.h0-series.h0;   // align on the base hour — hosts' polls may s
 for(var i=0;i<ss.usd.length;i++){var j=i+off;if(j>=0&&j<series.usd.length)series.usd[j]+=ss.usd[i];}}}});
 var ks=SPEND_WINS.map(function(w){return w[0];}).filter(function(k){return sum[k];});
 if(!ks.length)return '';
+// the spend's OWN freshness (the user 2026-08-24, whose windows' "updated 9h 38m ago" sat directly
+// above this section and read as the spend's age): the newest contributing host's last-record
+// moment — the recorder writes per turn result, so this is an event time, not a poll time
+var sAt=0;sets.forEach(function(e){var a=e.det&&e.det._spendAt;if(typeof a==='number'&&a>sAt)sAt=a;});
 var h='<div class="ru-tip-win ru-tip-fleetspend"><div class=ru-tip-name><span>API spend'+(hosts>1?' \u00b7 '+hosts+' machines':'')+'</span></div>'
 +ks.map(function(k){var v=sum[k];
 return '<div class=ru-tip-row><span class=ru-tip-k>'+esc(v.label)+'</span>'
@@ -24023,6 +24047,7 @@ if(series){var st=Math.max(0,series.usd.length-168),wk=series.usd.slice(st),mx=0
 if(mx>0)h+='<div class=ru-tip-row><span class=ru-tip-k>$/h \u00b7 7d</span>'
 +'<span class=ru-tip-v>peak '+fmtUsd(mx)+'/h</span></div>'
 +moneyGraph(wk,'#9cd2ff',series.h0+st);}
+if(sAt)h+='<div class=ru-tip-age>last charge recorded '+fmtAgo(sAt)+'</div>';
 return h+'</div>';}
 function tipHTML(){var sets=LAST||[];if(!sets.length)return '';
 var many=sets.length>1;
@@ -24035,13 +24060,15 @@ var blocks=sets.map(function(e){return setHTML(e,many);}).filter(function(b){ret
 // return on empty blocks left the API cell with an EMPTY hover exactly when spend was all there
 // was to show (the user 2026-08-15).
 var h=blocks.length?(many?('<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'):blocks[0]):'';
+// one quiet line saying WHY some machine shows no bars (the acct line's dim dress): under key auth
+// the windows cannot arrive — absence is the designed state, not a stale read (the user 2026-08-15).
+// It sits with the WINDOWS it explains, ABOVE the spend section (the user 2026-08-24: as the tip's
+// last line it hung under the spend, which must never claim anything about rate limits).
+if(h&&sets.some(function(e){return e.det._telemUnavail;}))h+='<div class=ru-tip-acct>rate-limit telemetry unavailable under API-key auth</div>';
 // no footer hint: refresh is AUTOMATIC (the 60s pull below + the timeline's live forward), and a
 // click-me line misread on a hover surface (the user 2026-08-14) — the click stays as a manual
 // kick, it just doesn't advertise. An OPEN tip follows every data landing via renderRows.
 h+=fleetSpendHTML(sets);
-// one quiet line saying WHY there are no bars (the acct line's dim dress): under key auth the
-// windows cannot arrive — absence is the designed state, not a stale read (the user 2026-08-15)
-if(h&&sets.some(function(e){return e.det._telemUnavail;}))h+='<div class=ru-tip-acct>rate-limit telemetry unavailable under API-key auth</div>';
 return h;}
 // The tip anchors ABOVE the rail, centered on the cursor (the user 2026-08-08: it used to pin to the
 // container's RIGHT edge, nowhere near a hover on the left end of a wide multi-account rail).
@@ -24086,7 +24113,10 @@ notices(local);renderRows(rows,SELF);});}
 function pull(ack){if(_ruBusy)return;_ruBusy=true;
 if(ack){el.style.opacity='0.45';tip.style.display='none';}   // instant ack only on a real click
 var done=function(){_ruBusy=false;el.style.opacity='';};
-pullFleet().then(done,done);}
+// a FAILED pull re-renders from the cached rows (the user 2026-08-24, fail loudly): the age lines
+// are computed at render time, so repainting makes "updated/recorded … ago" keep climbing — a dead
+// kernel route shows visibly aging data, never a frozen "3m ago" that quietly lies for hours
+pullFleet().then(done,function(){if(ROWS.length)renderRows(ROWS,SELF);done();});}
 el.addEventListener('click',function(){pull(true);});
 setInterval(function(){pull(false);},60000);     // backup auto-refresh: re-read usage.json every 60s
 pull(false);                                     // fill on load, independent of the timeline-forward path
