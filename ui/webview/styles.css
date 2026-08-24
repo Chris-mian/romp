@@ -168,6 +168,14 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    outline-offset:-2px insets it where the old shadow sat; Chromium follows the
    border-radius. (For a dash length decoupled from thickness we'd need an SVG
    border — say the word if 2px dashes aren't long enough.) */
+/* EPHEMERAL PEEK TAB (the user 2026-08-24): a session the current view hides, opened temporarily by a
+   focus/click — it breaks the view's rules and dresses accordingly: STRUCTURE, not status, so a neutral
+   ghost (dim short-dash ring + italic faded label), never a status color. Declared BEFORE the state
+   outlines below on purpose: at equal specificity a real state (awaiting/blocked/retrying) must still
+   win the outline — the cascade ORDER is the tiebreak and is pinned in peek-tab.test.ts. The italic
+   label survives a state overlap either way. */
+.tab.tab-peek { outline: 1.5px dashed rgba(255, 255, 255, 0.35); outline-offset: -2px; }
+.tab.tab-peek .tab-label { font-style: italic; opacity: 0.85; }
 .tab.tab-awaiting, .tab.tab-blocked, .tab.tab-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */

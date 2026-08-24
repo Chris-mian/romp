@@ -147,49 +147,33 @@ class TimelineViews(unittest.TestCase):
         self.assertIn("window.__rompTimelineSetViews=function(views)", src)
         self.assertIn('post({type:"setTimelineViews",views:views});', src)
 
-    def test_focus_switches_to_a_view_that_shows_the_session(self):
-        # the reveal rule (re-grounded 2026-08-23 on the TAG model; ALL default 2026-08-24): focusing
-        # lands on a visible tab with the MINIMAL move and never mutates membership. Under All only
-        # the hidden bit can hide a session — unhide and STAY, never kick the user off All. Elsewhere:
-        # the first tag holding it, else unhide if hidden and switch only if still invisible.
+    def test_focus_never_mutates_the_views_blob(self):
+        # A focus is a PEEK, not a view edit (the user 2026-08-24, superseding the 2026-08-18/19/23
+        # reveal rule this test used to pin): the chat opens an out-of-view session as an EPHEMERAL
+        # peek tab client-side, so _reveal_chat_for must leave timeline-views.json byte-identical and
+        # never mark views dirty — for EVERY case the old rule used to rewrite (hidden under All,
+        # tagged from untagged, tagless from a tag view, hidden+tagged, unknown sid), and for the
+        # confirmRevive shape too. The focus/shell send pair itself is pinned by
+        # tests/test_kernel_mobile.py::RevealRouting.
         G = {"id": "g1", "name": "pool", "members": ["s2"]}
-        km._set_timeline_views({"active": "g1", "hidden": [], "tags": [G]})
-        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s9"})
-        v = km._timeline_views()
-        self.assertEqual(v["active"], "all", "tagless session from a tag view → land on All, the default")
-        km._set_timeline_views({"active": "untagged", "hidden": [], "tags": [G]})
-        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
-        v = km._timeline_views()
-        self.assertEqual(v["active"], "g1", "tagged → its holder tag is its home view")
-        self.assertEqual(v["tags"][0]["members"], ["s2"], "membership untouched — the peek never strips a tag")
-        km._set_timeline_views({"active": "all", "hidden": [], "tags": [G]})
-        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
-        self.assertEqual(km._timeline_views()["active"], "all", "tagged is VISIBLE under All → no move at all")
-        km._set_timeline_views({"active": "all", "hidden": ["sX"], "tags": [G]})
-        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "sX"})
-        v = km._timeline_views()
-        self.assertEqual(v["hidden"], [], "hidden under All → un-hidden")
-        self.assertEqual(v["active"], "all", "…and the focus NEVER kicks the user off All")
-        km._set_timeline_views({"active": "all", "hidden": ["s2"], "tags": [G]})
-        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
-        v = km._timeline_views()
-        self.assertEqual(v["hidden"], [], "hidden AND tagged under All → the unhide wins")
-        self.assertEqual(v["active"], "all", "…not a kick to the holder tag")
-        km._set_timeline_views({"active": "untagged", "hidden": ["s9"], "tags": [G]})
-        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s9"})
-        v = km._timeline_views()
-        self.assertEqual(v["hidden"], [], "hidden tagless session under untagged → un-hidden")
-        self.assertEqual(v["active"], "untagged", "…already visible here — no gratuitous switch to All")
-        km._set_timeline_views({"active": "g1", "hidden": ["sX"], "tags": [G]})
-        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "sX"})
-        v = km._timeline_views()
-        self.assertEqual(v["hidden"], [], "hidden AND tagless from a tag view → BOTH edits: un-hidden…")
-        self.assertEqual(v["active"], "all", "…and still invisible after the unhide, so the view switches to All")
-        km._set_timeline_views({"active": "untagged", "hidden": ["s2"], "tags": [G]})
-        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
-        v = km._timeline_views()
-        self.assertEqual(v["active"], "g1", "hidden AND tagged under untagged → the holder tag wins")
-        self.assertEqual(v["hidden"], ["s2"], "…hidden bit untouched — membership beats hidden in a tag view")
-        km._set_timeline_views({"active": "g1", "hidden": [], "tags": [G]})
-        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
-        self.assertEqual(km._timeline_views()["active"], "g1", "a member's focus changes nothing")
+        dirty = []
+        saved = km._mark_views_dirty
+        km._mark_views_dirty = lambda: dirty.append(1)
+        try:
+            for blob, sid in [
+                ({"active": "g1", "hidden": [], "tags": [G]}, "s9"),      # tagless from a tag view
+                ({"active": "untagged", "hidden": [], "tags": [G]}, "s2"),  # tagged from untagged
+                ({"active": "all", "hidden": ["sX"], "tags": [G]}, "sX"),   # hidden under All
+                ({"active": "all", "hidden": ["s2"], "tags": [G]}, "s2"),   # hidden AND tagged
+                ({"active": "g1", "hidden": ["sX"], "tags": [G]}, "sX"),    # hidden tagless, tag view
+                ({"active": "g1", "hidden": [], "tags": [G]}, "s2"),        # already visible member
+            ]:
+                km._set_timeline_views(blob)
+                before = (jd.STATE / "timeline-views.json").read_bytes()
+                km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": sid})
+                km._reveal_chat_for({"wid": "w1"}, {"type": "confirmRevive", "id": sid, "name": "web"})
+                self.assertEqual((jd.STATE / "timeline-views.json").read_bytes(), before,
+                                 "a focus gesture rewrote the views blob (%s → %s)" % (blob, sid))
+            self.assertEqual(dirty, [], "no gratuitous views-dirty wake for a pure focus")
+        finally:
+            km._mark_views_dirty = saved
