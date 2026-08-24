@@ -74,3 +74,21 @@ test("presentation: one chip per NAME, identity dot, ✕ — and never a host pr
   const fly = RENDER.slice(RENDER.indexOf("const sub = el(\"div\", \"ctx-menu ctx-sub ctx-sub-tags\");"));
   assert.doesNotMatch(fly.slice(0, 2500), /host-prefix|hostNameNodes/, "kernels are plumbing — no host chrome in the flyout");
 });
+
+test("Rename leads ONE top section in the standard dress — no divider before the toggles (the user 2026-08-24)", () => {
+  const at = RENDER.indexOf("function showTabMenu");
+  const body = RENDER.slice(at, RENDER.indexOf("document.body.appendChild(menu);", at));
+  const renameAt = body.indexOf('l.textContent = "Rename"');
+  assert.ok(renameAt > 0, "Rename wears the label span like its siblings");
+  assert.match(body.slice(renameAt - 400, renameAt), /ctxIcon\("pencil", false\)/, "…and the pencil icon");
+  assert.match(body, /sb\.textContent = "the name is a label — mail, goals and history follow the session";/,
+    "…and a sub-line saying what a rename preserves (uuid-keyed truth)");
+  // no divider between Rename and the first toggle: the section is ONE
+  const firstToggleAt = body.indexOf('toggle("feed"');
+  const between = body.slice(renameAt, firstToggleAt);
+  assert.ok(!between.includes('el("div", "ctx-sep")'), "one section — the old divider is gone");
+  // and the 642/643 order below stands: colors, Tags, divider, Browse last
+  const tagsAt = body.indexOf('l.textContent = "Tags"');
+  const browseAt = body.indexOf('l.textContent = "Browse files"');
+  assert.ok(renameAt < firstToggleAt && firstToggleAt < tagsAt && tagsAt < browseAt);
+});

@@ -4436,7 +4436,7 @@ function setSessionColor(id: string, bg: string) {
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
-function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag", off: boolean): HTMLElement {
+function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil", off: boolean): HTMLElement {
   const span = el("span", "ctx-icon" + (off ? " off" : ""));
   const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
   const body = kind === "feed"
@@ -4449,6 +4449,8 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag", off
           ? '<path d="M2 4.5 A1.2 1.2 0 0 1 3.2 3.3 L6.2 3.3 L7.6 4.9 L12.8 4.9 A1.2 1.2 0 0 1 14 6.1 L14 11.5 A1.2 1.2 0 0 1 12.8 12.7 L3.2 12.7 A1.2 1.2 0 0 1 2 11.5 Z"/>'  // folder (browse files)
         : kind === "tag"
           ? '<path d="M2 3.4 A1.4 1.4 0 0 1 3.4 2 L7.6 2 A1.4 1.4 0 0 1 8.6 2.4 L13.6 7.4 A1.4 1.4 0 0 1 13.6 9.4 L9.4 13.6 A1.4 1.4 0 0 1 7.4 13.6 L2.4 8.6 A1.4 1.4 0 0 1 2 7.6 Z"/><circle cx="5.4" cy="5.4" r="1.1"/>'  // luggage tag (session tags)
+        : kind === "pencil"
+          ? '<path d="M3 13 L3.6 10.4 L10.8 3.2 A1.3 1.3 0 0 1 12.8 5.2 L5.6 12.4 Z"/><line x1="9.8" y1="4.2" x2="11.8" y2="6.2"/>'  // pencil (rename)
           : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
   span.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" '
     + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + body + slash + "</svg>";
@@ -4458,20 +4460,29 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag", off
 function showTabMenu(e: MouseEvent, id: string) {
   dismissTabMenu();
   const menu = el("div", "ctx-menu");
-  const rename = el("div", "ctx-item");
-  rename.textContent = "Rename";
+  // Rename leads ONE top section with the session controls (the user 2026-08-24: it sat alone and
+  // bare above its own divider) — the standard dress like its siblings: icon + the sub-line, which
+  // says what a rename PRESERVES (sessions are uuid-keyed, the name is a label — mailboxes, goals
+  // and history follow the session, per the /rename route's contract).
   // id only, never the tab node under the cursor: the menu (on document.body) outlives kernel pushes,
   // but the tab it was opened from does not — renderTabs() swaps the strip on every push, so a node
   // captured here is usually DETACHED by the time Rename is clicked (the click-safety rule).
-  rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id); });
-  menu.appendChild(rename);
+  {
+    const rename = el("div", "ctx-item ctx-item-toggle");
+    rename.appendChild(ctxIcon("pencil", false));
+    const bodyEl = el("span", "ctx-item-body");
+    const l = el("span", "ctx-item-label"); l.textContent = "Rename"; bodyEl.appendChild(l);
+    const sb = el("span", "ctx-item-sub"); sb.textContent = "the name is a label — mail, goals and history follow the session"; bodyEl.appendChild(sb);
+    rename.appendChild(bodyEl);
+    rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id); });
+    menu.appendChild(rename);
+  }
   // Feed + Mail per-session toggles (the user 2026-06-26) — the same controls as the timeline lane's feed
   // checkbox + postal mailbox, here as icon + label + a faint "what it does" sub-line. State from the session.
   const s = sessions.get(id);
   const offFeed = !!(s && s.hideFromFeed);
   const offMail = !!(s && s.postalServiceOff);
   const onBell = !!(s && s.notify);
-  menu.appendChild(el("div", "ctx-sep"));
   const toggle = (kind: "feed" | "mail" | "bell", off: boolean, lab: string, sub: string, fn: () => void) => {
     const item = el("div", "ctx-item ctx-item-toggle");
     item.appendChild(ctxIcon(kind, off));
