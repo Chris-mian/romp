@@ -972,7 +972,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   // name — they describe the session's live state, and keeping them OFF the action row stops them shoving
   // the buttons past the card's right edge on a narrow card (the user 2026-06-19; mirrors the ↻ Followed-up
   // chip moved up 2026-06-18). idwrap is flex:1 so the name ellipsizes before the badge is ever clipped.
-  idwrap.append(retryBadge, jauthBadge, blkBadge);
   // COMPACTNESS (the user 2026-07-07): Clear rides the NAME row (right side, after the chips) and the
   // Background/Summary toggles ride the TIME row — freeing a whole action row. So the action row holds only
   // Retry / Revive (rare states); both rows flex-WRAP so nothing overflows or overlaps on a narrow card.
@@ -981,11 +980,14 @@ function makeAskCard(it: AskItem): HTMLElement {
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // (Clear left this row 2026-08-08 — it rides row1's action corner in every mode now, see fask-btns.)
-  // the API-error badge + Retry ride row2 DIRECTLY, badge immediately before its button — one
-  // visual unit in BOTH modes (the user 2026-08-24, screenshot: grouped mode hides idwrap — the
-  // card drops its name there — which hid the badge while the action-row Retry stayed, a lone red
-  // button with no visible reason). Direct children also count toward row2's grouped-mode liveness.
-  row2.append(idwrap, apiBadge, apiRetry, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
+  // EVERY session-state badge rides row2 DIRECTLY — grouped mode hides idwrap wholesale (the card
+  // drops its name into the session header), which silently blanked whatever lived inside it: first
+  // found as the lone red Retry (the user 2026-08-24, screenshot — its ⚠ badge sat hidden in the
+  // wrap), then the same mechanism for ⚠ retrying-since, judge-auth, and the ⏸ approval chip. As
+  // direct children they render in BOTH modes, count toward row2's grouped-mode liveness, and the
+  // API badge stays immediately before its Retry button — one visual unit. idwrap keeps only the
+  // name. Placement only; every badge's mint/retire semantics are untouched.
+  row2.append(idwrap, retryBadge, apiBadge, apiRetry, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
   // the bell BUTTON (the user 2026-07-28): INLINE in row1's metadata cluster, right after the
   // timestamp (the last line's tail), the one spot that never shoves the title — and in-flow, so it
   // cannot overlap the floated Clear. It hides with VISIBILITY, so its slot is reserved whether or
