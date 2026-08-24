@@ -115,6 +115,11 @@ test("the corner line wears the LANE LABELS' typography — inherited family, me
   // can never drift from the rendered glyphs
   assert.match(SRC, /_font\(b\) \{ this\._mc\.font = \(b \? '700 ' \+ BADGE_FS \+ 'px ' : '650 12px '\) \+ this\._fontFace\(\); \}/);
   assert.match(SRC, /getComputedStyle\(this\.wrap\)\.fontFamily\) \|\| FONT;/);
+  // …and EVERY measure goes through it: the only ctx.font writers left are _font/_fontFace-based
+  // (ctxWidth and the two inline 9px/10px axis measures included), so no measure site can drift
+  const MEASURES = SRC.match(/this\._mc\.font = [^;]+;/g) || [];
+  assert.ok(MEASURES.length >= 4, "the known measure sites are present");
+  for (const m of MEASURES) assert.match(m, /this\._fontFace\(\)/, "a measure bypasses _fontFace: " + m);
 });
 
 test("a pointerdown-opened menu survives its OWN opening click (the user 2026-08-24, click-and-hold bug)", () => {

@@ -1037,7 +1037,7 @@ class TimelinePanel {
   _font(b) { this._mc.font = (b ? '700 ' + BADGE_FS + 'px ' : '650 12px ') + this._fontFace(); }
   labelWidth(s) { this._font(false); return this._mc.measureText(s || '').width; }
   badgeWidth(s) { this._font(true); return this._mc.measureText(s || '').width; }
-  ctxWidth(s) { this._mc.font = '600 11px ' + FONT; return this._mc.measureText(s || '').width; }
+  ctxWidth(s) { this._mc.font = '600 11px ' + this._fontFace(); return this._mc.measureText(s || '').width; }
 
   // Number.isFinite (not != null): the min/max clamp passes NaN straight through, and a NaN window
   // makes every x() NaN — the whole plot vanishes. Non-finite → the same default as unset.
@@ -1831,7 +1831,7 @@ class TimelinePanel {
     for (const e of ends) {
       svg.appendChild(el('line', { x1: e[0], y1: top, x2: e[0], y2: axisY, stroke: '#ffffff20', 'stroke-width': 1, 'pointer-events': 'none' }));
       const s = clock(e[1]), lx = e[0] + e[3];
-      this._mc.font = '9px ' + FONT;
+      this._mc.font = '9px ' + this._fontFace();
       const w = this._mc.measureText(s).width;
       if (placeLabel && !placeLabel(e[2] === 'end' ? lx - w : lx, e[2] === 'end' ? lx : lx + w)) continue;
       const tx = el('text', { x: lx, y: axisY + 14, 'text-anchor': e[2], fill: 'var(--text-muted)', 'font-size': 9, 'pointer-events': 'none' }); tx.textContent = s; svg.appendChild(tx);
@@ -3160,7 +3160,7 @@ class TimelinePanel {
     for (let tk = Math.ceil(t0 / step) * step; tk <= t1; tk += step) {
       if (inGap(tk)) continue;
       svg.appendChild(el('line', { x1: x(tk), y1: M.top, x2: x(tk), y2: axisY, stroke: '#ffffff10', 'stroke-width': 1 }));
-      this._mc.font = '10px ' + FONT;
+      this._mc.font = '10px ' + this._fontFace();
       const hw = this._mc.measureText(clock(tk)).width / 2;
       if (!placeLabel(x(tk) - hw, x(tk) + hw)) continue;
       const tx = el('text', { x: x(tk), y: axisY + 14, 'text-anchor': 'middle', fill: 'var(--text-muted)', 'font-size': 10 }); tx.textContent = clock(tk); svg.appendChild(tx);
