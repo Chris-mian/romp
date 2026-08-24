@@ -33,9 +33,13 @@ export function viewVisible(views: SessionViews | null | undefined, id: string):
     if (Array.isArray(views.hidden) && views.hidden.includes(id)) return false;
     return !viewTags(views).some((t) => (t.members || []).includes(id));
   }
-  const t = viewTags(views).find((x) => x.id === views.active)
-    || (views.remoteTags || []).find((x) => x.id === views.active);   // a remote tag is a view too (federation v0)
-  return t ? (t.members || []).includes(id) : true;
+  // a tag view shows the NAME-KEYED UNION (user ruling 2026-08-24: a tag is its NAME; kernels are
+  // plumbing) — whichever store's id is active, membership joins every same-name tag's
+  const act = viewTags(views).find((x) => x.id === views.active)
+    || (views.remoteTags || []).find((x) => x.id === views.active);
+  if (!act) return true;
+  const same = viewTags(views).concat(views.remoteTags || []).filter((x) => x.name === act.name);
+  return same.some((t) => (t.members || []).includes(id));
 }
 
 // one canonical serialization for echo comparison — the kernel normalizer re-sorts lists and may

@@ -41,6 +41,33 @@ function _rompOnlyTag() {
 // `tags`; `groups` is honored as the pre-rename key an un-updated kernel still pushes, in ONE
 // place so every rule reads through it.
 function viewTags(views) { return (views && (views.tags || views.groups)) || []; }
+// A tag IS its NAME, everywhere (user ruling 2026-08-24: "if the UX requires understanding that
+// tags exist across different kernels, it is not good"): one name = one identity, membership the
+// UNION across every kernel defining that name, the LOCAL store's color winning the render. The
+// stored duplicates stay separate under the hood (no automatic store merges — the anti-clobber
+// rule); this is PRESENTATION, and the mirrors (session-views.ts, kernel _view_visible) agree.
+function viewTagUnion(views) {
+  const out = [], byName = {};
+  for (const t of viewTags(views)) {
+    const g = byName[t.name] || (byName[t.name] = { name: t.name || 'tag', color: '', members: [],
+                                                    ids: [], localId: null, homes: [], remotes: [] });
+    if (!g.localId) { g.localId = t.id; g.color = t.color || g.color; }
+    g.ids.push(t.id);
+    for (const m of (t.members || [])) if (g.members.indexOf(m) < 0) g.members.push(m);
+    if (out.indexOf(g) < 0) out.push(g);
+  }
+  for (const rt of ((views && views.remoteTags) || [])) {
+    const g = byName[rt.name] || (byName[rt.name] = { name: rt.name || 'tag', color: '', members: [],
+                                                      ids: [], localId: null, homes: [], remotes: [] });
+    if (!g.localId && !g.color) g.color = rt.color || '';
+    g.ids.push(rt.id);
+    g.homes.push(rt.host || '');
+    g.remotes.push(rt);
+    for (const m of (rt.members || [])) if (g.members.indexOf(m) < 0) g.members.push(m);
+    if (out.indexOf(g) < 0) out.push(g);
+  }
+  return out;
+}
 function viewVisible(views, id) {
   if (!views || !views.active || views.active === 'all') {
     return !(views && Array.isArray(views.hidden) && views.hidden.indexOf(id) >= 0);
@@ -49,17 +76,16 @@ function viewVisible(views, id) {
     if (Array.isArray(views.hidden) && views.hidden.indexOf(id) >= 0) return false;
     return !viewTags(views).some((t) => (t.members || []).indexOf(id) >= 0);
   }
-  const t = viewTags(views).find((x) => x.id === views.active)
-    || ((views && views.remoteTags) || []).find((x) => x.id === views.active);   // remote tags are views too (federation v0)
-  return t ? (t.members || []).indexOf(id) >= 0 : true;
+  // a tag view shows the NAME-KEYED UNION (user ruling 2026-08-24): whichever store's id is
+  // active, the members are every same-name tag's, local and remote joined
+  const g = viewTagUnion(views).find((x) => x.ids.indexOf(views.active) >= 0);
+  return g ? g.members.indexOf(id) >= 0 : true;
 }
 function viewLabel(views) {
   if (!views || !views.active || views.active === 'all') return 'All';
   if (views.active === 'untagged') return '(untagged)';
-  const t = viewTags(views).find((x) => x.id === views.active);
-  if (t) return t.name || 'tag';
-  const rt = ((views && views.remoteTags) || []).find((x) => x.id === views.active);
-  return rt ? ((rt.host ? rt.host + ':' : '') + (rt.name || 'tag')) : 'All';
+  const g = viewTagUnion(views).find((x) => x.ids.indexOf(views.active) >= 0);
+  return g ? g.name : 'All';   // the NAME, never a host prefix — kernels are plumbing
 }
 // live sessions the current view is NOT showing — the "N more" cue that keeps a hidden or tagged
 // session exactly one glance away (nothing may run in secret: the 2026-08-11 hidden-tabs rule)
@@ -2435,6 +2461,107 @@ class TimelinePanel {
     this.draw();
   }
 
+  // ── the NAME-KEYED tag editor (user ruling 2026-08-24), shared by the dialog and the lane gear ──
+  // One union group = one tag identity. Edits stay routed under the hood: an ADD lands on the LOCAL
+  // store when the name exists locally, else the tag's single home; a REMOVE removes the
+  // (name, member) pair from EVERY store holding it — a removal never half-works; rename/recolor/
+  // delete fan out to every home the same way. Local writes post the whole blob (unchanged);
+  // remote writes ride _editRemoteTag (optimistic overlay + loud tagEditFailed, federation v1).
+  _editTagUnion(g, edit) {
+    if (edit.add && edit.add.length) {
+      if (g.localId) {
+        const nv = JSON.parse(JSON.stringify(this._curViews()));
+        const t = viewTags(nv).find((x) => x.id === g.localId);
+        if (t) { t.members = Array.from(new Set((t.members || []).concat(edit.add))); this._setViews(nv); }
+      } else if (g.remotes.length) this._editRemoteTag(g.remotes[0], { add: edit.add.slice() });
+    }
+    if (edit.remove && edit.remove.length) {
+      if (g.localId) {
+        const nv = JSON.parse(JSON.stringify(this._curViews()));
+        const t = viewTags(nv).find((x) => x.id === g.localId);
+        if (t && (t.members || []).some((m) => edit.remove.indexOf(m) >= 0)) {
+          t.members = (t.members || []).filter((m) => edit.remove.indexOf(m) < 0);
+          this._setViews(nv);
+        }
+      }
+      for (const rt of g.remotes)
+        if ((rt.members || []).some((m) => edit.remove.indexOf(m) >= 0))
+          this._editRemoteTag(rt, { remove: edit.remove.slice() });
+    }
+    if (edit.rename || edit.color || edit.delete) {
+      if (g.localId) {
+        const nv = JSON.parse(JSON.stringify(this._curViews()));
+        if (edit.delete) {
+          nv.tags = viewTags(nv).filter((x) => x.id !== g.localId); delete nv.groups;
+          if (nv.active === g.localId) nv.active = 'all';
+        } else {
+          const t = viewTags(nv).find((x) => x.id === g.localId);
+          if (t) { if (edit.rename) t.name = edit.rename; if (edit.color) t.color = edit.color; }
+        }
+        this._setViews(nv);
+      }
+      for (const rt of g.remotes)
+        this._editRemoteTag(rt, { rename: edit.rename, color: edit.color, delete: !!edit.delete });
+    }
+  }
+
+  // the chips for ONE session — one solid chip per union tag holding it, ✕ = remove-everywhere.
+  // Home-kernel detail lives in the tooltip at most (kernels are plumbing).
+  _tagChips(box, s, rebuild) {
+    for (const g of viewTagUnion(this._curViews())) {
+      if (g.members.indexOf(s.id) < 0) continue;
+      const tc = g.color || '#cccccc';
+      const ch = box.createSpan();
+      ch.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;'
+        + 'padding:2px 7px;border-radius:9px;font-size:0.82em;cursor:pointer;white-space:nowrap;'
+        + 'color:' + tc + ';border:1px solid ' + tc + ';background:transparent;');
+      ch.addEventListener('mouseenter', () => { ch.style.background = 'rgba(255,255,255,0.09)'; });
+      ch.addEventListener('mouseleave', () => { ch.style.background = 'transparent'; });
+      ch.createSpan({ text: g.name });
+      const chx = ch.createSpan({ text: '✕' });
+      chx.setAttribute('style', 'color:' + MODEL_FG + ';opacity:0.75;font-size:0.9em;');
+      ch.setAttribute('title', 'tagged "' + g.name + '"'
+        + (g.homes.length ? ' (also defined on ' + g.homes.join(', ') + ')' : '')
+        + ' — click to take this tag off everywhere it holds this session');
+      ch.addEventListener('click', () => { this._editTagUnion(g, { remove: [s.id] }); rebuild(); });
+    }
+  }
+
+  // the join menu for one-or-many sessions: one option per union tag some rowId lacks, plus the
+  // new-tag input (a new tag mints LOCALLY, as always)
+  _tagJoinMenu(box, rowIds, rebuild) {
+    for (const g of viewTagUnion(this._curViews())) {
+      if (!rowIds.some((id) => g.members.indexOf(id) < 0)) continue;
+      const tc = g.color || '#cccccc';
+      const opt = box.createSpan({ text: g.name });
+      opt.setAttribute('style', 'padding:1px 8px;border-radius:9px;font-size:0.82em;cursor:pointer;'
+        + 'color:' + tc + ';border:1px solid ' + tc + ';background:transparent;');
+      opt.addEventListener('mouseenter', () => { opt.style.background = 'rgba(255,255,255,0.09)'; });
+      opt.addEventListener('mouseleave', () => { opt.style.background = 'transparent'; });
+      opt.addEventListener('click', () => {
+        this._tagAddFor = null;
+        this._editTagUnion(g, { add: rowIds.filter((id) => g.members.indexOf(id) < 0) }); rebuild();
+      });
+    }
+    const ni = document.createElement('input');
+    ni.placeholder = 'new tag…'; ni.maxLength = 40;
+    ni.setAttribute('style', 'width:90px;background:#1e1e1e;color:#ccc;border:1px solid rgba(255,255,255,0.12);'
+      + 'border-radius:9px;padding:1px 7px;font:inherit;font-size:0.82em;');
+    ni.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !ni.value.trim()) return;
+      const nv = JSON.parse(JSON.stringify(this._curViews()));
+      const used = new Set(viewTags(nv).map((t) => t.color));
+      const color = (this._palette || []).find((c) => !used.has(c)) || (this._palette || [])[0] || '#1EA1EB';
+      nv.tags = viewTags(nv).concat([{ id: 'g' + Date.now().toString(36),
+        name: ni.value.trim().slice(0, 40), color, members: rowIds.slice() }]);
+      delete nv.groups;
+      this._tagAddFor = null;
+      this._setViews(nv); rebuild();
+    });
+    box.appendChild(ni);
+    ni.focus();
+  }
+
   _reconcileViews() {
     if (!this._pendingViews) return;
     if (this._views && this._viewsKey(this._views) === this._viewsKey(this._pendingViews)) {
@@ -2602,16 +2729,13 @@ class TimelinePanel {
     // meaning under its own sentinel — second; both are built-ins, not rows in the tags dialog
     item('All', { current: !v.active || v.active === 'all' }).addEventListener('click', () => pick('all'));
     item('(untagged)', { current: v.active === 'untagged' }).addEventListener('click', () => pick('untagged'));
-    for (const tg of viewTags(v))
-      item(tg.name, { dot: tg.color || MODEL_FG, current: v.active === tg.id }).addEventListener('click', () => pick(tg.id));
-    // tag federation v0 (the user 2026-08-24): every ATTACHED kernel's tags join the menu, read-only,
-    // wearing the owner's colour and the "host:name" marker (the list_agents idiom) — a same-named
-    // tag on two kernels is two rows, never a silent merge. Picking one filters exactly like a local
-    // tag; editing it goes through its home kernel (romp tag --host <h>), so no edit affordance here.
-    for (const rt of (v.remoteTags || []))
-      item((rt.host ? rt.host + ':' : '') + (rt.name || 'tag'),
-           { dot: rt.color || MODEL_FG, current: v.active === rt.id, dim: true })
-        .addEventListener('click', () => pick(rt.id));
+    // NAME-KEYED (user ruling 2026-08-24, superseding the v0 host-marked two-rows render: "if the
+    // UX requires understanding that tags exist across different kernels, it is not good"): one row
+    // per tag NAME, membership the union across every kernel defining it, the local store's colour
+    // winning. Picking one activates the union view via whichever id is handiest (local first).
+    for (const g of viewTagUnion(v))
+      item(g.name, { dot: g.color || MODEL_FG, current: g.ids.indexOf(v.active) >= 0 })
+        .addEventListener('click', () => pick(g.localId || g.ids[0]));
     sep();
     item('New tag…', { dim: true }).addEventListener('click', () => {
       const nv = JSON.parse(JSON.stringify(v));
@@ -2671,7 +2795,9 @@ class TimelinePanel {
     const card = back.createDiv();
     card.setAttribute('style', 'width:min(560px,94vw);max-height:78vh;overflow:auto;padding:14px 16px;' + MENU_STYLE);
     card.addEventListener('click', (e) => e.stopPropagation());
-    let addMenuFor = null;                 // session id with its [+] menu open, or '*' for the bulk one
+    // the open [+] menu's key rides the INSTANCE (this._tagAddFor: sid, or '*' for the bulk bar)
+    // so the shared join builder can close it from either surface — the dialog or the lane gear
+    if (this._tagAddFor === undefined) this._tagAddFor = null;
     let query = '';                        // the search filter (name or host), survives repaints
     const hover = (n, on, off) => {        // the one hover helper: interactive chrome changes colour
       n.addEventListener('mouseenter', () => n.setAttribute('style', n.getAttribute('style') + on));
@@ -2687,68 +2813,37 @@ class TimelinePanel {
     const build = () => {
       card.textContent = '';
       const v = this._curViews();
-      const tg = gid ? viewTags(v).find((x) => x.id === gid) : null;
-      // a REMOTE tag opens the same header (federation v1): its edits route to the home kernel
-      const rtg = gid && !tg ? ((v.remoteTags || []).find((x) => x.id === gid) || null) : null;
-      if (gid && !tg && !rtg) { this._closeViewsDialog(); return; }   // the tag was deleted elsewhere
+      // NAME-KEYED (user ruling 2026-08-24): whichever store's id opened this, the header is the
+      // tag's ONE identity — rename/recolor/delete fan out to every kernel defining the name
+      // (_editTagUnion), and no host prefix appears; kernels are plumbing.
+      const tg = gid ? (viewTagUnion(v).find((x) => x.ids.indexOf(gid) >= 0) || null) : null;
+      if (gid && !tg) { this._closeViewsDialog(); return; }   // the tag was deleted elsewhere
       const canEdit = typeof window !== 'undefined' && typeof window.__rompTimelineEditTag === 'function';
       const head = card.createDiv();
       head.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:0 0 8px;');
-      if (rtg) {
-        const hp = head.createSpan({ text: (rtg.host || '') + ':' });
-        hp.setAttribute('style', 'flex:0 0 auto;color:' + MODEL_FG + ';font-style:italic;font-size:0.88em;');
+      if (tg) {
         const nameIn = document.createElement('input');
-        nameIn.value = rtg.name || 'tag'; nameIn.maxLength = 40;
-        nameIn.disabled = !canEdit;
+        nameIn.value = tg.name; nameIn.maxLength = 40;
+        nameIn.disabled = !tg.localId && !canEdit;   // remote-only + no bridge (Obsidian) → read-only
         nameIn.setAttribute('style', 'flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;'
           + 'border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:3px 6px;font:inherit;');
         nameIn.addEventListener('change', () => {
           const nv = nameIn.value.slice(0, 40).trim();
-          if (nv && nv !== rtg.name) this._editRemoteTag(rtg, { rename: nv });
+          if (nv && nv !== tg.name) this._editTagUnion(tg, { rename: nv });
           build();
         });
         head.appendChild(nameIn);
         const del = head.createSpan({ text: 'Delete' });
-        del.setAttribute('style', 'flex:0 0 auto;cursor:pointer;opacity:0.7;color:#F85B5A;' + (canEdit ? '' : 'display:none;'));
+        del.setAttribute('style', 'flex:0 0 auto;cursor:pointer;opacity:0.7;color:#F85B5A;'
+          + (tg.localId || canEdit ? '' : 'display:none;'));
         hover(del, 'opacity:1;', 'opacity:0.7;');
         del.addEventListener('click', () => {
-          this._editRemoteTag(rtg, { delete: true });
+          this._editTagUnion(tg, { delete: true });
           this._closeViewsDialog();
-        });
-      } else if (tg) {
-        const nameIn = document.createElement('input');
-        nameIn.value = tg.name; nameIn.maxLength = 40;
-        nameIn.setAttribute('style', 'flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;'
-          + 'border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:3px 6px;font:inherit;');
-        nameIn.addEventListener('change', () => {
-          const nv = JSON.parse(JSON.stringify(this._curViews()));
-          const t2 = viewTags(nv).find((x) => x.id === gid); if (!t2) return;
-          t2.name = nameIn.value.slice(0, 40) || t2.name;
-          this._setViews(nv); build();
-        });
-        head.appendChild(nameIn);
-        const del = head.createSpan({ text: 'Delete' });
-        del.setAttribute('style', 'flex:0 0 auto;cursor:pointer;opacity:0.7;color:#F85B5A;');
-        hover(del, 'opacity:1;', 'opacity:0.7;');
-        del.addEventListener('click', () => {
-          const nv = JSON.parse(JSON.stringify(this._curViews()));
-          nv.tags = viewTags(nv).filter((x) => x.id !== gid); delete nv.groups;
-          if (nv.active === gid) nv.active = 'all';
-          this._setViews(nv); this._closeViewsDialog();
         });
       } else {
         const ttl = head.createDiv({ text: 'Sessions & tags' });
         ttl.setAttribute('style', 'font-weight:650;');
-      }
-      if (rtg && canEdit) {
-        const sw = card.createDiv();
-        sw.setAttribute('style', 'display:flex;gap:6px;margin:2px 0 8px;flex-wrap:wrap;');
-        for (const c of (this._palette && this._palette.length ? this._palette : [rtg.color || '#1EA1EB'])) {
-          const d = sw.createSpan();
-          d.setAttribute('style', 'width:16px;height:16px;border-radius:50%;cursor:pointer;background:' + c + ';'
-            + (c === rtg.color ? 'outline:2px solid #ffffff;outline-offset:1px;' : 'opacity:0.75;'));
-          d.addEventListener('click', () => { this._editRemoteTag(rtg, { color: c }); build(); });
-        }
       }
       // the LOUD failure of the last routed edit (a down owner, a collision there) — dismissible
       if (this._tagEditErr) {
@@ -2760,18 +2855,14 @@ class TimelinePanel {
         ex.setAttribute('style', 'margin-left:auto;cursor:pointer;opacity:0.7;');
         ex.addEventListener('click', () => { this._tagEditErr = null; build(); });
       }
-      if (tg) {
+      if (tg && (tg.localId || canEdit)) {
         const sw = card.createDiv();
         sw.setAttribute('style', 'display:flex;gap:6px;margin:2px 0 8px;flex-wrap:wrap;');
         for (const c of (this._palette && this._palette.length ? this._palette : [tg.color || '#1EA1EB'])) {
           const d = sw.createSpan();
           d.setAttribute('style', 'width:16px;height:16px;border-radius:50%;cursor:pointer;background:' + c + ';'
             + (c === tg.color ? 'outline:2px solid #ffffff;outline-offset:1px;' : 'opacity:0.75;'));
-          d.addEventListener('click', () => {
-            const nv = JSON.parse(JSON.stringify(this._curViews()));
-            const t2 = viewTags(nv).find((x) => x.id === gid); if (!t2) return;
-            t2.color = c; this._setViews(nv); build();
-          });
+          d.addEventListener('click', () => { this._editTagUnion(tg, { color: c }); build(); });
         }
       }
       // search + the bulk controls, one row: the search names the SET, the controls act on it
@@ -2789,7 +2880,7 @@ class TimelinePanel {
       tagAll.setAttribute('style', btnStyle);
       hover(tagAll, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
       tagAll.setAttribute('title', 'add a tag to every session the search shows');
-      tagAll.addEventListener('click', () => { addMenuFor = addMenuFor === '*' ? null : '*'; renderRows(); });
+      tagAll.addEventListener('click', () => { this._tagAddFor = this._tagAddFor === '*' ? null : '*'; renderRows(); });
       const feedAll = bar.createSpan();
       feedAll.setAttribute('style', btnStyle);
       hover(feedAll, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
@@ -2822,58 +2913,12 @@ class TimelinePanel {
         const grid = gridBox.createDiv();
         grid.setAttribute('style', 'display:grid;grid-template-columns:max-content 1fr max-content max-content max-content;'
           + 'column-gap:10px;row-gap:3px;align-items:center;');
-        const addMenu = (rowIds) => {   // the [+] menu, per-row or bulk — spans the grid
+        const addMenu = (rowIds) => {   // the [+] menu, per-row or bulk — the SHARED join builder, grid-spanning
           const am = grid.createDiv();
           am.setAttribute('style', 'grid-column:1 / -1;margin:2px 0 4px 8px;display:flex;gap:5px;flex-wrap:wrap;align-items:center;');
-          const cur = this._curViews();
-          const joinable = viewTags(cur).filter((t) =>
-            rowIds.some((id) => (t.members || []).indexOf(id) < 0));
-          if (canEdit)
-            for (const rt of (cur.remoteTags || []).filter((t) => rowIds.some((id) => (t.members || []).indexOf(id) < 0))) {
-              const rc2 = rt.color || '#cccccc';
-              const ropt = am.createSpan({ text: (rt.host || '') + ':' + (rt.name || 'tag') });
-              ropt.setAttribute('style', 'padding:1px 8px;border-radius:9px;font-size:0.82em;cursor:pointer;'
-                + 'color:' + rc2 + ';border:1px dashed ' + rc2 + ';background:transparent;');
-              hover(ropt, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
-              ropt.setAttribute('title', 'joins ' + (rt.host || '?') + "'s tag — the edit routes there");
-              ropt.addEventListener('click', () => {
-                addMenuFor = null;
-                this._editRemoteTag(rt, { add: rowIds.slice() }); build();
-              });
-            }
-          for (const t of joinable) {
-            const tc = t.color || '#cccccc';
-            const opt = am.createSpan({ text: t.name });
-            opt.setAttribute('style', 'padding:1px 8px;border-radius:9px;font-size:0.82em;cursor:pointer;'
-              + 'color:' + tc + ';border:1px solid ' + tc + ';background:transparent;');
-            hover(opt, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
-            opt.addEventListener('click', () => {
-              const nv = JSON.parse(JSON.stringify(this._curViews()));
-              const t2 = viewTags(nv).find((x) => x.id === t.id); if (!t2) return;
-              t2.members = Array.from(new Set((t2.members || []).concat(rowIds)));
-              addMenuFor = null;
-              this._setViews(nv); build();
-            });
-          }
-          const ni = document.createElement('input');
-          ni.placeholder = 'new tag…'; ni.maxLength = 40;
-          ni.setAttribute('style', 'width:90px;background:#1e1e1e;color:#ccc;border:1px solid rgba(255,255,255,0.12);'
-            + 'border-radius:9px;padding:1px 7px;font:inherit;font-size:0.82em;');
-          ni.addEventListener('keydown', (e) => {
-            if (e.key !== 'Enter' || !ni.value.trim()) return;
-            const nv = JSON.parse(JSON.stringify(this._curViews()));
-            const used = new Set(viewTags(nv).map((t) => t.color));
-            const color = (this._palette || []).find((c) => !used.has(c)) || (this._palette || [])[0] || '#1EA1EB';
-            nv.tags = viewTags(nv).concat([{ id: 'g' + Date.now().toString(36),
-              name: ni.value.trim().slice(0, 40), color, members: rowIds.slice() }]);
-            delete nv.groups;
-            addMenuFor = null;
-            this._setViews(nv); build();
-          });
-          am.appendChild(ni);
-          ni.focus();
+          this._tagJoinMenu(am, rowIds, build);
         };
-        if (addMenuFor === '*') addMenu(rows.map((s) => s.id));
+        if (this._tagAddFor === '*') addMenu(rows.map((s) => s.id));
         for (const s of rows) {
           const vv = this._curViews();
           // NAME — the session's identity colour on the name itself (never a proxy dot), the
@@ -2888,49 +2933,12 @@ class TimelinePanel {
           const nm = nameCell.createSpan({ text: bare });
           nm.setAttribute('style', 'font-weight:650;color:' + (s.color || '#cccccc') + ';'
             + (s.live ? '' : 'text-decoration:line-through;'));
-          // TAGS — removable chips, outline in the tag's colour, dim separate ✕. A REMOTE kernel's
-          // tag holding this session renders too (federation v0) — read-only, host-marked, no ✕:
-          // its home kernel owns it (romp tag --host <h> edits it from here).
+          // TAGS — one solid chip per union tag holding this session (user ruling 2026-08-24:
+          // a tag is its NAME; kernels are plumbing — the twin dashed/solid render is gone), ✕ =
+          // remove-everywhere. The shared builder; the lane gear renders the identical editor.
           const chips = grid.createDiv();
           chips.setAttribute('style', 'display:flex;gap:5px;flex-wrap:wrap;align-items:center;min-width:0;');
-          for (const rt of (vv.remoteTags || [])) {
-            if ((rt.members || []).indexOf(s.id) < 0) continue;
-            const rc = rt.color || '#cccccc';
-            const rch = chips.createSpan();
-            rch.setAttribute('style', 'display:inline-flex;align-items:center;gap:4px;'
-              + 'padding:2px 7px;border-radius:9px;font-size:0.82em;white-space:nowrap;opacity:0.85;'
-              + 'color:' + rc + ';border:1px dashed ' + rc + ';background:transparent;'
-              + (canEdit ? 'cursor:pointer;' : ''));
-            const rh = rch.createSpan({ text: (rt.host || '') + ':' });
-            rh.setAttribute('style', 'color:' + MODEL_FG + ';font-style:italic;font-size:0.88em;');
-            rch.createSpan({ text: rt.name || 'tag' });
-            if (canEdit) {
-              // federation v1: the ✕ routes the removal to the tag's home kernel — same chip
-              // gesture as a local tag, the dashes still saying whose it is
-              const rx = rch.createSpan({ text: '✕' });
-              rx.setAttribute('style', 'color:' + MODEL_FG + ';opacity:0.75;font-size:0.9em;');
-              hover(rch, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
-              rch.setAttribute('title', 'tagged on ' + (rt.host || 'another kernel') + ' — click to take this tag off (routed there)');
-              rch.addEventListener('click', () => { this._editRemoteTag(rt, { remove: [s.id] }); build(); });
-            } else {
-              rch.setAttribute('title', 'tagged on ' + (rt.host || 'another kernel')
-                + ' — read-only here; edit with: romp tag --host ' + (rt.host || '<kernel>'));
-            }
-          }
-          for (const t of viewTags(vv)) {
-            if ((t.members || []).indexOf(s.id) < 0) continue;
-            const tc = t.color || '#cccccc';
-            const ch = chips.createSpan();
-            ch.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;'
-              + 'padding:2px 7px;border-radius:9px;font-size:0.82em;cursor:pointer;white-space:nowrap;'
-              + 'color:' + tc + ';border:1px solid ' + tc + ';background:transparent;');
-            hover(ch, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
-            ch.createSpan({ text: t.name });
-            const chx = ch.createSpan({ text: '✕' });
-            chx.setAttribute('style', 'color:' + MODEL_FG + ';opacity:0.75;font-size:0.9em;');
-            ch.setAttribute('title', 'tagged "' + t.name + '" — click to take this tag off');
-            ch.addEventListener('click', () => { this._setViews(viewToggleMember(this._curViews(), t.id, s.id)); build(); });
-          }
+          this._tagChips(chips, s, build);
           // [+] — one aligned column, so the table reads as a table
           const plusCell = grid.createDiv();
           const plus = plusCell.createSpan({ text: '+' });
@@ -2938,7 +2946,7 @@ class TimelinePanel {
             + 'border-radius:50%;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;font-size:0.85em;background:transparent;');
           hover(plus, 'background:rgba(255,255,255,0.09);opacity:1;', 'background:transparent;opacity:0.7;');
           plus.setAttribute('title', 'add a tag');
-          plus.addEventListener('click', () => { addMenuFor = addMenuFor === s.id ? null : s.id; renderRows(); });
+          plus.addEventListener('click', () => { this._tagAddFor = this._tagAddFor === s.id ? null : s.id; renderRows(); });
           // FEED — the pool-builder switch rides every live row (the user 2026-08-19), aligned
           const feedCell = grid.createDiv();
           if (ft && s.live) {
@@ -2970,7 +2978,7 @@ class TimelinePanel {
             eye.setAttribute('title', 'hidden from the All and (untagged) views — click to show it again');
             eye.addEventListener('click', () => { this._setViews(viewToggleHidden(this._curViews(), s.id)); build(); });
           }
-          if (addMenuFor === s.id) addMenu([s.id]);
+          if (this._tagAddFor === s.id) addMenu([s.id]);
         }
       };
       renderRows();
@@ -3026,6 +3034,32 @@ class TimelinePanel {
           this.draw();
           build();                                   // repaint states in place; the panel stays open
         });
+      }
+      // ── Tags (the user 2026-08-24: taggable from the gear too, not only the filter dialog) ──
+      // The SAME name-keyed editor the dialog rows carry — the shared builders, never a fork:
+      // one solid chip per tag holding this session (✕ = remove-everywhere), [+] to join an
+      // existing tag or mint one. Compact: one section, mechanics inline under it.
+      const div = menu.createDiv();
+      div.setAttribute('style', 'height:1px;margin:4px 6px;background:rgba(255,255,255,0.12);');
+      const trow = menu.createDiv();
+      trow.setAttribute('style', 'display:flex;gap:5px;flex-wrap:wrap;align-items:center;padding:4px 10px;');
+      const tlab = trow.createSpan({ text: 'Tags' });
+      tlab.setAttribute('style', 'opacity:0.6;font-size:0.82em;flex:0 0 auto;margin-right:2px;');
+      this._tagChips(trow, s, build);
+      const plus = trow.createSpan({ text: '+' });
+      plus.setAttribute('style', 'display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;'
+        + 'border-radius:50%;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;font-size:0.85em;background:transparent;');
+      plus.addEventListener('mouseenter', () => { plus.style.background = 'rgba(255,255,255,0.09)'; plus.style.opacity = '1'; });
+      plus.addEventListener('mouseleave', () => { plus.style.background = 'transparent'; plus.style.opacity = '0.7'; });
+      plus.setAttribute('title', 'add a tag');
+      plus.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._tagAddFor = this._tagAddFor === s.id ? null : s.id; build();
+      });
+      if (this._tagAddFor === s.id) {
+        const am = menu.createDiv();
+        am.setAttribute('style', 'display:flex;gap:5px;flex-wrap:wrap;align-items:center;padding:2px 10px 6px 24px;');
+        this._tagJoinMenu(am, [s.id], build);
       }
     };
     build();
@@ -4304,4 +4338,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleHidden, viewToggleMember };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleHidden, viewToggleMember, viewTagUnion };

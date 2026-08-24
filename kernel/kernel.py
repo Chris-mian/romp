@@ -1710,13 +1710,14 @@ def _view_visible(views, sid):
         # LOCAL tags only exclude here (federation v0): a remote kernel's tagging of our session
         # must not flap our untagged view with its poll cadence — remote tags are extra VIEWS
         return sid not in views["hidden"] and not any(sid in t["members"] for t in views["tags"])
-    for t in views["tags"]:
-        if t["id"] == views["active"]:
-            return sid in t["members"]
-    for t in views.get("remoteTags") or []:
-        if t["id"] == views["active"]:
-            return sid in t["members"]
-    return True
+    # a tag view shows the NAME-KEYED UNION (user ruling 2026-08-24: a tag is its NAME; kernels
+    # are plumbing) — whichever store's id is active, membership joins every same-name tag's,
+    # local and remote alike. The stored duplicates stay separate (anti-clobber); this is the read.
+    everything = list(views["tags"]) + list(views.get("remoteTags") or [])
+    act = next((t for t in everything if t["id"] == views["active"]), None)
+    if act is None:
+        return True
+    return any(sid in t["members"] for t in everything if t["name"] == act["name"])
 
 
 def _heal_timeline_views(old_sid, new_sid):

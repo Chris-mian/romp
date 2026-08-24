@@ -142,3 +142,13 @@ test("executed: a REMOTE tag is a view too — resolved, labeled by its host, go
   assert.equal(viewsKey(a), viewsKey(b));
 });
 
+test("executed: a tag view is the NAME-KEYED union (user ruling 2026-08-24) — kernels are plumbing", () => {
+  const both = { active: "gL",
+                 tags: [{ id: "gL", name: "team", members: ["local1"] }],
+                 remoteTags: [{ id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "team", members: ["m1"] }] };
+  assert.equal(viewVisible(both, "local1"), true);
+  assert.equal(viewVisible(both, "m1"), true, "the remote store's member joins the local id's view");
+  assert.equal(viewVisible(both, "other"), false);
+  assert.equal(viewVisible({ ...both, active: "TESTHOST-A:g1" }, "local1"), true, "either id, same union");
+});
+
