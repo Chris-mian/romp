@@ -18962,15 +18962,11 @@ def _usage():
             out = {"apiKey": True, "spend": _spend_windows(),
                    "t": o.get("t") if isinstance(o.get("t"), (int, float)) else None,
                    "acct": _claude_account()}
-            # Under key auth the windows are STRUCTURALLY absent, not late — both usage.json writers
-            # skip keyed sessions — so the payload says why and the rail hover can say it too (fail
-            # loudly, not silence; the user 2026-08-15). Key auth is the reason when the manager env
-            # carries a key (_auth_key_present) or the box declares ROMP_EXPECTED_AUTH=key (the
-            # apiKeyHelper box, where the key never rides service.env). A no-login, no-key machine
-            # showing legacy spend gets no line: its windows could yet arrive with a login.
-            if (_auth_key_present()
-                    or (os.environ.get("ROMP_EXPECTED_AUTH") or "").strip().lower() == "key"):
-                out["telemetryUnavailable"] = True
+            # (The telemetryUnavailable flag + its "rate-limit telemetry unavailable under API-key
+            # auth" hover line are GONE — the user 2026-08-24: they know which machines are
+            # key-only and want the spend without a notice about rate limits that don't apply.
+            # Absence of windows on a keyed host is the designed state and now simply looks like
+            # what it is: no windows.)
             ss = _spend_series()          # TOTAL, like the windows above: everything here bills the key
             if ss:
                 out["spendSeries"] = ss   # the hover's money-rate graph (the user 2026-08-13)
@@ -24143,7 +24139,6 @@ var live=ROWS.filter(function(r){return hasBars(r.usage)||hasSpend(r.usage);});
 if(!live.length){el.innerHTML='';tip.style.display='none';return;}
 shareFreshest(live);
 LAST=live.map(function(r){var det={};det._t=(typeof r.usage.t==='number')?r.usage.t:null;
-if(r.usage.telemetryUnavailable)det._telemUnavail=true;   // key auth: the windows are structurally absent, and the hover says why
 winDet(r.usage,det);spendDet(r.usage,det);
 return {host:r.host||selfHost||'this machine',det:det};});
 el.innerHTML=aggBarsHTML(LAST)+apiCellHTML(LAST);
@@ -24283,11 +24278,6 @@ var blocks=sets.map(function(e){return setHTML(e,many);}).filter(function(b){ret
 // return on empty blocks left the API cell with an EMPTY hover exactly when spend was all there
 // was to show (the user 2026-08-15).
 var h=blocks.length?(many?('<div class=ru-tip-cols>'+blocks.map(function(b){return '<div class=ru-tip-col>'+b+'</div>';}).join('')+'</div>'):blocks[0]):'';
-// one quiet line saying WHY some machine shows no bars (the acct line's dim dress): under key auth
-// the windows cannot arrive — absence is the designed state, not a stale read (the user 2026-08-15).
-// It sits with the WINDOWS it explains, ABOVE the spend section (the user 2026-08-24: as the tip's
-// last line it hung under the spend, which must never claim anything about rate limits).
-if(h&&sets.some(function(e){return e.det._telemUnavail;}))h+='<div class=ru-tip-acct>rate-limit telemetry unavailable under API-key auth</div>';
 // no footer hint: refresh is AUTOMATIC (the 60s pull below + the timeline's live forward), and a
 // click-me line misread on a hover surface (the user 2026-08-14) — the click stays as a manual
 // kick, it just doesn't advertise. An OPEN tip follows every data landing via renderRows.

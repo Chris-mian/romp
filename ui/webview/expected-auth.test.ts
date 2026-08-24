@@ -1,10 +1,10 @@
-// TELEMETRY-UNAVAILABLE surfaces on an all-keyed box (the user 2026-08-15): under API-key auth the
-// usage windows are structurally absent — both usage.json writers skip keyed sessions — so the rail
-// must not read as broken. The kernel's keyed no-window payload carries telemetryUnavailable (the
-// manager env holds a key, or the box declares ROMP_EXPECTED_AUTH=key — the apiKeyHelper machine,
-// where no key ever rides service.env); the hover renders the spend it advertises even when no host
-// has window bars, plus ONE quiet line saying why the bars are absent. No jsdom harness → source
-// pins (the repo convention; rail-spend.test.ts is the pattern).
+// The ALL-KEYED box's rail read (the user 2026-08-15; notice deleted 2026-08-24): under API-key
+// auth the usage windows are structurally absent — both usage.json writers skip keyed sessions —
+// and the rail must not read as broken: the hover renders the spend it advertises even when no
+// host has window bars. The old telemetryUnavailable flag + its "rate-limit telemetry unavailable
+// under API-key auth" hover line were DELETED entirely (the user 2026-08-24: they know which
+// machines are key-only and want the spend without a notice about rate limits that don't apply).
+// No jsdom harness → source pins (the repo convention; rail-spend.test.ts is the pattern).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -25,16 +25,10 @@ test("the hover renders the spend section even when NO host has window bars", ()
     "the return-time append (unreachable on empty blocks) is gone with it");
 });
 
-test("the keyed no-window payload says WHY, and the hover carries one quiet line", () => {
-  // the kernel marks the spend-only payload when the reason is key auth — a manager-env key, or
-  // the ROMP_EXPECTED_AUTH=key declaration (the apiKeyHelper box has no key in the manager env)
-  assert.ok(KERNEL.includes('out["telemetryUnavailable"] = True'));
-  assert.match(KERNEL, /if \(_auth_key_present\(\)\s*\n\s*or \(os\.environ\.get\("ROMP_EXPECTED_AUTH"\) or ""\)\.strip\(\)\.lower\(\) == "key"\):/);
-  // the rail captures the flag per host and renders ONE dim line (the acct line's dress — the
-  // hover's existing quiet-note affordance), never a bar-shaped guess
-  assert.ok(usageJS.includes("if(r.usage.telemetryUnavailable)det._telemUnavail=true;"));
-  assert.ok(usageJS.includes(
-    "<div class=ru-tip-acct>rate-limit telemetry unavailable under API-key auth</div>"));
-  assert.ok(usageJS.includes("sets.some(function(e){return e.det._telemUnavail;})"),
-    "any keyed host's payload is enough — the line renders once, not per host");
+test("the telemetry-unavailable notice is GONE end to end (the user 2026-08-24)", () => {
+  // deleted, not relocated: they know which machines are key-only and want the spend without a
+  // notice about rate limits that don't apply. No flag in the payload, no capture, no hover line.
+  assert.ok(!KERNEL.includes('out["telemetryUnavailable"] = True'));
+  assert.ok(!usageJS.includes("_telemUnavail"));
+  assert.ok(!usageJS.includes("rate-limit telemetry unavailable"));
 });
