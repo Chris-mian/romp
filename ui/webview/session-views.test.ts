@@ -104,9 +104,14 @@ test("a hidden session keeps one visible home: the picker's Hidden section, and 
   assert.match(RENDER, /revealSession\(it\.id\);\s*\/\/ its tab already exists[\s\S]{0,80}setActive\(it\.id\);/);
 });
 
-test("the tab menu's hide gesture posts the same blob the timeline dialog edits", () => {
-  assert.match(RENDER, /l\.textContent = "Hide from chat & timeline";/);
-  assert.match(RENDER, /postViews\(hideIn\(effViews\(\), id\)\);/);
+test("the hide MENU ITEM is gone; the mechanism underneath is intact (the user 2026-08-24)", () => {
+  // the tag/view system covers backgrounding a session, so the tab menu's "Hide from chat &
+  // timeline" affordance retired — but ONLY the affordance: whether to retire the machinery
+  // outright is the user's separate call, so hideIn/revealIn, the picker's reveal, and the views
+  // blob's hidden set all still stand (the executed tests above pin their behavior).
+  assert.doesNotMatch(RENDER, /Hide from chat & timeline/);
+  assert.match(RENDER, /revealSession\(it\.id\);/, "the picker's Hidden — reveal arm still works");
+  assert.match(RENDER, /function revealSession\(id: string\) \{ postViews\(revealIn\(effViews\(\), id\)\); \}/);
 });
 
 test("federation carries the LOCAL kernel's views blob through merged tabOrder re-emits", () => {

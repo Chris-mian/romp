@@ -37,6 +37,7 @@ import { previewKind, previewFull, canPreview, fileUrl, retryFailedPreviews, ref
 import { openFileView } from "./file-view";
 // initFileView rides its OWN line: the import above is pinned verbatim by file-view.test.ts
 import { initFileView } from "./file-view";
+import { initFileBrowse, openFileBrowse } from "./file-browse";   // the browser is pane-local here now (the user 2026-08-24)
 import { pastedFilePath } from "./paste-path";
 import { hostNameNodes, hostPrefix, hostOf, hostIsDown, hostDownNote } from "./host-prefix";
 import { dirStatusHint, nextDirActive, createDirPrompt, type DirStatus } from "./dir-complete";
@@ -786,25 +787,18 @@ function openPath(path: string, sid?: string | null): void {
 // gated off at their call sites (the editor has its own explorer, and the webview can't reach the
 // kernel origin anyway).
 function openBrowse(path: string, sid?: string | null): void {
+  // PANE-LOCAL since 2026-08-24 (the user: it opened over the FEED cards — the wrong pane): the
+  // browser is a modal over the chat that launched it, the same document the viewer already uses —
+  // no shell lift, no pane juggling (the shell's browseClosed restore is a no-op here: it only
+  // fires when the shell itself lifted the feed). Web-only stands — the VS Code webview cannot
+  // reach the kernel origin, and the editor has its own explorer.
   const web = location.protocol === "http:" || location.protocol === "https:";
-  if (!web || window.parent === window) return;
-  try {
-    window.parent.postMessage({ romp: "browseFiles", path: path || ".", sid: sid || activeId || null }, "*");
-  } catch { /* no shell — nothing to surface into */ }
+  if (!web) return;
+  openFileBrowse(path || ".", sid || activeId || null);
 }
-
-// The viewer's directory half asks for the BROWSER by posting {romp:'browseFiles'} to its OWN window
-// (file-view.ts): in the feed document initFileBrowse answers it, but the chat hosts no browser, so
-// this forwarder hands the ask to the shell — openBrowse's exact relay — which brings the feed pane
-// forward and delivers it there. Without it that click is a silent no-op in a chat-opened viewer.
-// openBrowse's own gates apply (web-only, framed-only: standalone /chat has no feed to surface, and
-// a repost to window.parent === window would only echo back here). Own-window messages only — the
-// pane shim redispatches kernel frames through this channel too, and no OTHER window sends this ask.
-window.addEventListener("message", (e: MessageEvent) => {
-  const m = e.data as { romp?: unknown; path?: unknown; sid?: unknown } | null;
-  if (!m || m.romp !== "browseFiles" || e.source !== window) return;
-  openBrowse(typeof m.path === "string" ? m.path : ".", typeof m.sid === "string" ? m.sid : null);
-});
+// (The old forwarder that relayed the viewer's directory-half {romp:'browseFiles'} ask to the shell
+// is gone with the move: initFileBrowse's own listener answers it in THIS document now.)
+initFileBrowse((m) => vscodeApi?.postMessage(m));
 
 // A clickable file name that opens the real file — in the editor (VS Code) or the in-pane viewer
 // modal (web). Shared open/navigate surface; see extension.ts's openFile handler and file-view.ts.
@@ -2474,7 +2468,7 @@ function asFolderLink(elem: HTMLElement, cwd: string, sid?: string): void {
   // the row's right-click menu for the genuinely-local case (the contextmenu delegate below). In
   // VS Code the browser overlay doesn't exist, so the click keeps opening the folder host-side.
   const web = location.protocol === "http:" || location.protocol === "https:";
-  elem.dataset.act = web && window.parent !== window ? "browseFiles" : "openFolder";
+  elem.dataset.act = web ? "browseFiles" : "openFolder";   // pane-local browse needs no shell (2026-08-24)
   elem.dataset.cwd = cwd;
   if (sid) elem.dataset.id = sid;
   elem.classList.add("folder-link");
@@ -4442,7 +4436,7 @@ function setSessionColor(id: string, bg: string) {
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
-function ctxIcon(kind: "feed" | "mail" | "bell" | "bill", off: boolean): HTMLElement {
+function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder", off: boolean): HTMLElement {
   const span = el("span", "ctx-icon" + (off ? " off" : ""));
   const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
   const body = kind === "feed"
@@ -4451,7 +4445,9 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill", off: boolean): HTMLEle
       ? '<rect x="2" y="4" width="12" height="8" rx="1.5"/><path d="M2.5 5 L8 9 L13.5 5"/>'  // envelope (on the postal service)
       : kind === "bill"
         ? '<rect x="2" y="4" width="12" height="8" rx="1.5"/><line x1="2" y1="6.8" x2="14" y2="6.8"/><line x1="4.2" y1="9.6" x2="7.4" y2="9.6"/>'  // payment card (billing)
-        : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
+        : kind === "folder"
+          ? '<path d="M2 4.5 A1.2 1.2 0 0 1 3.2 3.3 L6.2 3.3 L7.6 4.9 L12.8 4.9 A1.2 1.2 0 0 1 14 6.1 L14 11.5 A1.2 1.2 0 0 1 12.8 12.7 L3.2 12.7 A1.2 1.2 0 0 1 2 11.5 Z"/>'  // folder (browse files)
+          : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
   span.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" '
     + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + body + slash + "</svg>";
   return span;
@@ -4492,37 +4488,16 @@ function showTabMenu(e: MouseEvent, id: string) {
     offMail ? "Rejoin mail" : "Mute mail",
     offMail ? "reconnect it to the postal service" : "hide from peers — no messages in or out",
     () => setSessionFlag(id, "postalServiceOff", !offMail));
-  // Browse the session's working tree in the feed pane. Web-only: openBrowse no-ops outside the
-  // shell, and VS Code's editor has its own explorer, so the row only renders where the click can
-  // land.
-  if ((location.protocol === "http:" || location.protocol === "https:") && window.parent !== window) {
-    const browse = el("div", "ctx-item");
-    browse.textContent = "Browse files";
-    browse.addEventListener("click", (ev) => {
-      ev.stopPropagation(); dismissTabMenu();
-      openBrowse(s?.cwd || ".", id);
-    });
-    menu.appendChild(browse);
-  }
   // system-notification bell (the user 2026-07-28) — same flag the timeline lane bell toggles. NOTE the
   // inverted polarity vs the two above: `notify` true is the ENABLED state, so the icon slashes on !onBell.
   toggle("bell", !onBell,
     onBell ? "Stop notifying" : "Notify me",
     onBell ? "no more system notifications for this session" : "system notification when its work blocks on you or completes",
     () => setSessionFlag(id, "notify", !onBell));
-  // Background the session (the user 2026-08-18): out of the tab strip AND the timeline lanes — it
-  // keeps running, judged and carded; the + picker lists it under "Hidden — reveal" and the
-  // timeline's corner panel counts it. Same views blob the timeline dialog edits. A plain item, not
-  // a toggle: its undo lives where the hidden session lives (the picker, the timeline panel).
-  {
-    const hide = el("div", "ctx-item ctx-item-toggle");
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = "Hide from chat & timeline"; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub"); sb.textContent = "background it — the + picker and the feed still surface it"; bodyEl.appendChild(sb);
-    hide.appendChild(bodyEl);
-    hide.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); postViews(hideIn(effViews(), id)); });
-    menu.appendChild(hide);
-  }
+  // (The hide-session item left this menu 2026-08-24 — the user: the tag/view system
+  // covers backgrounding a session. The MECHANISM stands untouched underneath: hideIn/revealIn, the
+  // views blob's hidden set, the timeline dialog's eye, and the + picker's "Hidden — reveal" section
+  // all remain; whether to retire the machinery outright is the user's separate call.)
   // Billing submenu (the user 2026-08-09, who wants the login/API-key switch here rather than as a
   // statusline badge). Only when the machine offers BOTH choices (st.authBoth) — a one-auth machine
   // keeps the fact on the tab hover, never a dead selector — and the key stays labelled plainly
@@ -4583,6 +4558,24 @@ function showTabMenu(e: MouseEvent, id: string) {
       row.appendChild(sw);
     }
     menu.appendChild(row);
+  }
+  // BROWSE FILES — at the BOTTOM behind its own divider (the user 2026-08-24: it is a different
+  // kind of thing from the toggles above), wearing the standard icon + sub-description dress, and
+  // opening PANE-LOCAL over this chat (openBrowse). Web-only: the VS Code webview cannot reach the
+  // kernel origin, and the editor has its own explorer.
+  if (location.protocol === "http:" || location.protocol === "https:") {
+    menu.appendChild(el("div", "ctx-sep"));
+    const browse = el("div", "ctx-item ctx-item-toggle");
+    browse.appendChild(ctxIcon("folder", false));
+    const bodyEl = el("span", "ctx-item-body");
+    const l = el("span", "ctx-item-label"); l.textContent = "Browse files"; bodyEl.appendChild(l);
+    const sb = el("span", "ctx-item-sub"); sb.textContent = "the session's working tree, in a viewer over this chat"; bodyEl.appendChild(sb);
+    browse.appendChild(bodyEl);
+    browse.addEventListener("click", (ev) => {
+      ev.stopPropagation(); dismissTabMenu();
+      openBrowse(s?.cwd || ".", id);
+    });
+    menu.appendChild(browse);
   }
   document.body.appendChild(menu);
   ctxMenuEl = menu;
