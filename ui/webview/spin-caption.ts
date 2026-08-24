@@ -219,9 +219,12 @@ export function spinFor(it: SpinItem, distillPending: boolean, dCompleted: boole
     }
     if (it.sessState === "quiet") {
       return {
-        caption: "Paused — resumes on the session's next turn",
+        // plain truth (the user 2026-08-24): the old line promised the session's NEXT turn, but the
+        // next turn may work another thread entirely — this goal resumes when its own wait ends
+        caption: "Paused — resumes when its wait ends",
         tip: "Nothing is in motion right now: the session is between turns and this goal stays open. "
-           + "It picks back up the next time the session works this thread.",
+           + "It picks back up when the session returns to this thread — not necessarily on its very "
+           + "next turn.",
         awaitingBg: false,
         still: true,
       };

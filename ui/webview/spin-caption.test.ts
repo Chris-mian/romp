@@ -230,7 +230,9 @@ test("THE FLOOR IS TOTAL — a working-column card can never be mute (the user 2
   assert.equal(open.caption, "Working…");
   assert.ok(!open.still, "an open turn spins — it IS in flight");
   const quiet = spinFor({ column: "working", sessState: "quiet" }, false, false, 100);
-  assert.match(quiet.caption || "", /^Paused — resumes/);
+  assert.match(quiet.caption || "", /^Paused — resumes when its wait ends$/);   // plain truth (the user
+  // 2026-08-24): never promise the session's NEXT turn — waits lift on their own ending events, and
+  // the next turn may work another thread entirely
   assert.equal(quiet.still, true, "nothing in motion → the glyph stills (a spin would lie)");
   const unk = spinFor({ column: "working", sessState: "unknown" }, false, false, 100);
   assert.match(unk.caption || "", /unknown — this machine isn't reporting/);

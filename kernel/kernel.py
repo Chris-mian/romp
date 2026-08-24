@@ -3604,7 +3604,7 @@ def _lift_spent_awaiting(now, tmux):
             # NOTHING, so the stamp sat invisibly forever — the closer was never re-nominated (its
             # filed-since gate needs a diary row newer than closerLookT, and the newest row was the stamp
             # itself), the plain-nudge fire gate read the RAW fields and vetoed every fire, and a LIVE
-            # session's Working card wore the quiet floor ("Paused — resumes on the session's next turn")
+            # session's Working card wore the quiet floor ("Paused — resumes when its wait ends")
             # indefinitely — three live specimens on one board, one ~14h, breaking the recorded 2026-08-22
             # promise that every Working card is nudged/woken until it lands (_dead_wait_block's docstring).
             # File the lift the readers already act on: the reply is the wait's designed exact ending event

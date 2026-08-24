@@ -44,7 +44,8 @@ test("identical views count nothing — in-place content edits are not movement"
 
 test("the feed payload path defers while a card is hovered — and ONLY the payload path", () => {
   // the message handler's feed branch gates on the freeze; the newest payload supersedes by overwrite
-  assert.match(FEED, /if \(freezeKey\) \{ pendingFeedPayload = m; paintFreezeBadges\(\); return; \}\s*\n\s*applyFeedPayload\(m\);/);
+  assert.match(FEED, /if \(freezeKey \|\| tabScopeKey\) \{ pendingFeedPayload = m; paintFreezeBadges\(\); return; \}\s*\n\s*applyFeedPayload\(m\);/,
+    "the keyboard scope holds the same gate (the user 2026-08-24) — a card being keyed cannot move either");
   const queues = FEED.match(/pendingFeedPayload = m;/g) || [];
   assert.equal(queues.length, 1, "one queue write, in the payload path — local gestures and render() are never gated");
   assert.doesNotMatch(FEED, /function render\(\) \{\s*\n[^\n]*freezeKey/, "render is not gated — the hovered card's controls stay live");
@@ -54,8 +55,9 @@ test("the feed payload path defers while a card is hovered — and ONLY the payl
 });
 
 test("flush is event-based: card mouseleave, window blur backstop — no timers anywhere in the freeze", () => {
-  assert.match(FEED, /function freezeLeave\(key: string\): void \{\s*\n\s*if \(freezeKey !== key\) return;\s*\n\s*freezeKey = null;\s*\n\s*flushFreeze\(\);/);
-  assert.match(FEED, /window\.addEventListener\("blur", \(\) => \{ freezeKey = null; flushFreeze\(\); \}\);/);
+  assert.match(FEED, /function freezeLeave\(key: string\): void \{\s*\n\s*if \(tabScopeKey === key\) releaseTabScope\(\);[^\n]*\n\s*if \(freezeKey !== key\) return;\s*\n\s*freezeKey = null;\s*\n\s*flushFreeze\(\);/);
+  assert.match(FEED, /window\.addEventListener\("blur", \(\) => \{ releaseTabScope\(\); freezeKey = null; flushFreeze\(\); \}\);/,
+    "blur releases BOTH gate holders — the keyboard scope has no pointer to leave with");
   const block = FEED.slice(FEED.indexOf("// ── HOVER-FREEZE"), FEED.indexOf("function applyFeedPayload"));
   assert.ok(!/setTimeout|setInterval/.test(block), "no timers — mouseleave and blur are the flush events");
   // the flush is a MICROTASK — same gesture, after its handlers finish (found in review 2026-08-24:
