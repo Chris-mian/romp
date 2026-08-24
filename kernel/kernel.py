@@ -12242,6 +12242,69 @@ def _handoff_peer_identities(nodes, hnodes):
 _HANDOFF_LABEL_RE = re.compile(r"^\s*↪\s*delegated to (.+?): (.*)$", re.S)
 
 
+def _parked_rows(nodes, children):
+    """{nid: N} for every OPEN row that newer sibling work has LEAPFROGGED: nothing has happened in
+    nid's own subtree — no delegation edge, no witnessed verdict row — while N (>= 1) YOUNGER siblings
+    under the same parent gained "↪ delegated to" handoff edges in theirs.
+
+    The audit case (the user 2026-08-24): a queued ask sat 40+ minutes with zero rows while the same
+    umbrella's younger items were dispatched one after another. To the judges that sibling traffic
+    reads as an active card, so no nudge horizon applies — and nothing on the surface said "this one
+    was passed over". The sibling's handoff edge is the exact event: the operator DECIDING to spend
+    attention past this node. The threshold is 1 and the signal is handoff-only, both measured (a
+    replay over every live store): the true positives accumulate exactly one leapfrogging sibling
+    before retiring, so any higher K trades recall for nothing, and sibling VERDICT activity is
+    strictly noisier — judges batch-file over a whole store on their own cadence, which is not new
+    information about this node (the cards-move rule). Derived per build from monotone event inputs —
+    a courier-planted handoff node, a diary row — and retired by exactly the deciding events: nid's
+    own subtree gaining a delegation edge, or ANY witnessed verdict row landing under it. Synth rows
+    don't count as history: a migration reconstruction is not a ruling (judge _synth_log). Row chrome
+    only — the cue must never touch the card's column."""
+    hmemo, rmemo = {}, {}
+
+    def _sub_has(x, memo, hit):
+        # any(hit) over x's subtree — ITERATIVE with a seen-set (review 2026-08-24): the recursive
+        # form crashed on a parentId cycle, and a corrupted store (two rebased reparent writers can
+        # compose a cycle neither wrote) must degrade to a wrong-but-terminating answer, never a
+        # RecursionError killing the whole feed build.
+        if x in memo:
+            return memo[x]
+        seen, stack, found = set(), [x], False
+        while stack:
+            y = stack.pop()
+            if y in seen:
+                continue
+            seen.add(y)
+            if hit(nodes.get(y) or {}):
+                found = True
+                break
+            stack.extend(children.get(y, []))
+        memo[x] = found
+        return found
+
+    def _sub_handoff(x):
+        return _sub_has(x, hmemo, lambda nd: isinstance(nd.get("handoff"), dict))
+
+    def _sub_row(x):
+        return _sub_has(x, rmemo, lambda nd: any(not r.get("synth") for r in (nd.get("log") or [])))
+
+    out = {}
+    for kids in children.values():
+        if len(kids) < 2:
+            continue
+        for nid in kids:
+            nd = nodes.get(nid) or {}
+            if nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared") \
+                    or _sub_handoff(nid) or _sub_row(nid):
+                continue
+            t0 = nd.get("t") or 0
+            n = sum(1 for sib in kids
+                    if sib != nid and ((nodes.get(sib) or {}).get("t") or 0) > t0 and _sub_handoff(sib))
+            if n:
+                out[nid] = n
+    return out
+
+
 def _handoff_card_fields(nodes, nid):
     """(handoffTo badge, card title) for a feed card whose ROOT node is a courier handoff tracking
     node — (None, the node's text unchanged) for every other card.
@@ -18107,6 +18170,7 @@ def build_feed(now, tmux=None):
         for nid, nd in nodes.items():
             children.setdefault(nd.get("parentId"), []).append(nid)
         agent_open = _agent_open_set(nodes, children)   # authoritative-open subtree → never rendered 'done' (see helper)
+        parked_rows = _parked_rows(nodes, children)     # leapfrogged open rows → the quiet "parked" row cue (see helper)
 
         def _subtree(root):                          # all node ids at/under root (pre-order)
             stack, acc = [root], []
@@ -18236,6 +18300,11 @@ def build_feed(now, tmux=None):
                         # a rolled-UP question (the block lives in a descendant, not here) — the client's
                         # mark tooltip says "blocked inside", and the actual ask keeps its own ⏸ below
                         "qderived": st == "question" and not nd.get("blocked"),
+                        # LEAPFROGGED row (the user 2026-08-24): open, nothing filed under it, while N
+                        # younger siblings were dispatched past it — the quiet "parked" tag + the card's
+                        # dim sub-goals suffix. Gated on the OPEN render state so a rolled-down or
+                        # closed row can never wear it; mint/retire events live in _parked_rows.
+                        "parked": ({"n": parked_rows[nid]} if (st == "open" and nid in parked_rows) else None),
                         # AUTHORITATIVE tier: this node mirrors an item on the agent's OWN to-do list, so its
                         # open/done is agent-asserted (solidity = authority in the disc render). None = a plain
                         # judge-inferred node. (the user 2026-07-01)

@@ -3961,6 +3961,21 @@ def rollup_status(store, session_closed, now=None):
     nodes = store["nodes"]
     folds = _materialize_from_log(nodes)               # P3.3: history → flags; the log is the authority
     #                                                    (migration is a BOOT sweep now — migrate_all_stores)
+    # DONE-BY-ASSOCIATION GUARD (the user 2026-08-24): before the roll-down loops can fold them, the
+    # OPEN children of every COMPLETED handoff tracking node move up beside it (_lift_handoff_children)
+    # — a delegation's completion is evidence about the delegation, never about the un-ruled asks filed
+    # under it by topical placement (the audited case: the completing report explicitly DECLINED a
+    # child's ask, and the fold sealed it done anyway). Living HERE, in every writer's rollup, the
+    # guard covers every completer alike — the courier link-back, a closer done on the tracking node,
+    # a planner op — and SELF-HEALS the save-rebase race: a concurrent pass that republishes a stale
+    # parentId puts the child back under the completed node, and the very next rollup lifts it again
+    # (the rebase folds diary rows, not parents). rolledUp tracking nodes are skipped on purpose:
+    # their completion rolled down from an ANCESTOR the judges actually ruled — that absorb is the
+    # designed umbrella ending, not an association.
+    for _hid in list(nodes):
+        _hn = nodes[_hid]
+        if isinstance(_hn.get("handoff"), dict) and _hn.get("nodeComplete") and not _hn.get("rolledUp"):
+            _lift_handoff_children(store, _hid)
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
@@ -6224,8 +6239,19 @@ def migrate_store(store):
 def _migrate_node(nd):
     changed = nd.pop("logBorn", None) is not None
     changed = nd.pop("everDone", None) is not None or changed   # retired 2026-07-08: once-done now lives in
-    if not nd.get("log") and (nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared")
-                              or nd.get("followupAt")):         #   the diary (done events), nowhere reads the flag
+    # KEY-PRESENCE, not truthiness (the user 2026-08-24): the diary KEY is the era marker — every
+    # diary-era mint writes "log": [] at birth, and the two sibling guards encoding the same concept
+    # (record_verdict's frozen check, _materialize_node's fail-loud) both test absence. Testing
+    # `not nd.get("log")` also matched a DIARY-ERA node whose flags were set eventlessly — a rollup
+    # roll-down child, whose flags are "tree-derived display cache", never verdicts — and manufactured
+    # a witnessed-looking src=judge done row from that cache. The live case: a delegation completed
+    # while the completing report explicitly DECLINED a child's ask; the roll-down folded the child,
+    # the next boot synthesized its "done", and the reopen un-resolve then re-completed it forever
+    # (the synth fold outranks the popped flags — done by association, unrecoverable). Genuinely
+    # legacy nodes (no log key at all) keep the synth, rolledUp included: pre-diary flags are the
+    # only history they have, so archives render unchanged.
+    if "log" not in nd and (nd.get("nodeComplete") or nd.get("blocked") or nd.get("cleared")
+                            or nd.get("followupAt")):           #   the diary (done events), nowhere reads the flag
         _synth_log(nd)
         changed = True
     if "log" not in nd:
@@ -8013,7 +8039,10 @@ CLOSER_SYS = (
     "No-work-filed rule: a note may instead flag goals that have had no work filed since they were "
     "created while other pieces of the same effort settled. Judge each from goal history and the other "
     "goals' state: done if its outcome was in fact delivered under another goal, or the approach it "
-    "names was replaced by one that shipped — say which in the why; blocked if it genuinely awaits the "
+    "names was replaced by one that shipped — say which in the why, and only where that covering work "
+    "answers this goal's own ask affirmatively (a report that explicitly declines or defers the ask is "
+    "evidence AGAINST closing: leave it open — or blocked, if the decline hands the user a decision — "
+    "and say in the why that the report declined it); blocked if it genuinely awaits the "
     "user; omit it (leave it open) if its work is simply still pending. Never close a flagged goal just "
     "because it is old or quiet: the ruling needs the covering work, named.\n"
     "- awaiting: the turn **ends** with the goal waiting on something the assistant itself set running "
@@ -8613,8 +8642,10 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
                       "elsewhere on the same board: judge %s ONLY from what the reply explicitly says "
                       "about it — done only where the reply plainly reports that goal's outcome "
                       "delivered or nothing left to do on it; block where the reply's account of it "
-                      "ends by asking the user for a decision or go-ahead. A goal the reply does not "
-                      "clearly cover is a considered omission, not a completion."
+                      "ends by asking the user for a decision or go-ahead. A reply that declines or "
+                      "defers a goal's ask is not a completion either: leave that goal open (or block "
+                      "it, if the decline itself asks the user), and say the reply declined it. A goal "
+                      "the reply does not clearly cover is a considered omission, not a completion."
                       % ("s" if len(tflagged) > 1 else "",
                          ", ".join("#%d" % i for i in tflagged),
                          "are" if len(tflagged) > 1 else "is",
@@ -10911,6 +10942,35 @@ def _plant_handoff_track(store, parent_id, text, peer_sid, peer_name, t, mid, tr
                   "nodeComplete": False, "blocked": False, "cleared": False,
                   "trail": [], "t": t, "mt": t, "handoff": handoff, "log": []})
     return nid
+
+
+def _lift_handoff_children(store, hid):
+    """Move a COMPLETED handoff tracking node's OPEN direct children (their subtrees ride along) up
+    beside it — to its own parent, top-level when it is a top — before the roll-down can fold them.
+    Called from rollup_status's pre-pass, i.e. after every writer, for every completer alike.
+
+    The courier's link-back evidence — the recipient finished the DELEGATED work — supports completing
+    the tracking node and nothing else. But completion triggers rollup's roll-down, which folds every
+    open descendant into an eventless done-display cache, seals it out of every judge menu, and renders
+    it a full ✓: done by tree position, never by a ruling (the user 2026-08-24: a delegation's
+    completing report explicitly DECLINED a child's ask, and the child read done anyway). An ask filed
+    under a delegation sits there by topical placement; the delegation shipping WITHOUT it is the exact
+    event proving it is its own outstanding work. Moved up, it stays open, visible, and judgeable — the
+    closer's channels rule it done with the covering work named, or leave it open/blocked per the
+    decline rule (CLOSER_SYS) — while the completed delegation keeps the children that earned their own
+    verdicts. A moved child that is itself a handoff node keeps its own link-back alive: folding it
+    used to mark a live sub-delegation satisfied by association. Idempotent (after the move the node
+    has no open children), and the rollup pre-pass re-runs it on every write, so a stale concurrent
+    republish of the old parent is healed a pass later instead of sealing the child forever.
+    Returns the number moved."""
+    nodes = store.get("nodes", {})
+    dest = (nodes.get(hid) or {}).get("parentId")
+    moved = 0
+    for nd in list(nodes.values()):
+        if nd.get("parentId") == hid and not nd.get("nodeComplete") and not nd.get("cleared"):
+            nd["parentId"] = dest
+            moved += 1
+    return moved
 
 
 def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):

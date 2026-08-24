@@ -53,6 +53,7 @@ interface AskTreeNode {
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
   cleared?: boolean;                                             // user-cleared sub (nodeOverride op:clear) → struck-through faded row + "cleared" chip; the mark stays tied to status (box = done, the user 2026-07-26)
   reviewedEarlier?: boolean;                                     // this done sub predates the top's review boundary (kernel flatten ↔ jd.review_boundary, the distiller's own scoping) → collapsed behind one "N reviewed earlier" row (the user 2026-08-19)
+  parked?: { n: number } | null;                                 // LEAPFROGGED open row (kernel _parked_rows, the user 2026-08-24): nothing filed under it while n younger siblings were dispatched past it → quiet "parked" tag + the card's dim sub-goals suffix; retires on its own delegation edge or any verdict
   log?: NodeLogRow[] | null;                                     // the node's newest verdict rows (kernel _node_log_rows, non-done only) → the modal's per-item story (the user 2026-07-20)
   children: string[];
 }
@@ -1388,6 +1389,28 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
   const subBtn = a._subBtn as HTMLElement;
   subBtn.style.display = hasSubs ? "" : "none";
   subBtn.textContent = subCount === 1 ? "1 sub-goal" : subCount + " sub-goals";
+  // dim " · N parked" suffix (the user 2026-08-24): the card-level gist of the row tags. Counts ONLY
+  // rows the checklist this button toggles can actually reach — the same walk, stopping at handoff
+  // nodes (delegations render in their own section) and at the root (the card head, not a row) — so
+  // the suffix never advertises rows no expansion reveals (review 2026-08-24; a parked ask under a
+  // LIVE delegation is the modal tree's to show).
+  let parkedCount = 0;
+  if (root) {
+    const pseen = new Set<string>([root.id]);
+    const pwalk = (nid: string) => {
+      const n = byId.get(nid);
+      if (!n || n.kind === "handoff" || pseen.has(n.id)) return;
+      pseen.add(n.id);
+      if (n.parked && n.parked.n) parkedCount++;
+      for (const c of n.children || []) pwalk(c);
+    };
+    for (const c of (root.children || [])) pwalk(c);
+  }
+  if (hasSubs && parkedCount) {
+    const pk = el("span", "fask-subparked");
+    pk.textContent = " · " + parkedCount + " parked";
+    subBtn.appendChild(pk);
+  }
   subBtn.classList.toggle("on", choice === "subgoals");
   subBtn.setAttribute("aria-pressed", choice === "subgoals" ? "true" : "false");
   subBtn.title = choice === "subgoals" ? "hide the sub-goals" : "show the sub-goals";
@@ -1491,6 +1514,7 @@ function applySections(a: any, it: AskItem, distillShown: boolean): void {
       const txt = el("span", "fcheck-text"); txt.textContent = s.text;
       row.append(tri, mark, txt);
       if (s.cleared) row.appendChild(clearedTag());   // the strike alone doesn't say WHY — see CLEARED_TIP
+      if (s.parked && s.parked.n && !s.cleared) row.appendChild(parkedTag(s.parked.n));   // leapfrogged — see parkedTag
       // clicks match the modal tree node exactly (text → the message, checkbox → where it resolved) via the
       // SAME wireNodeZones; a dim repeat is display-only (wire=false).
       wireNodeZones(it, s, mark, txt, null, !repeat);
@@ -2326,6 +2350,18 @@ function clearedTag(): HTMLElement {
   return tag;
 }
 
+// The parked row's plain-language story (the user 2026-08-24: a queued ask silently sat 40 minutes
+// while the same card's younger items were dispatched one after another, and nothing said so). One
+// quiet word on the row, the explanation on hover — a hint, never a needs-you alarm; the kernel
+// retires it the instant the row gets its own delegation or any verdict (_parked_rows).
+function parkedTag(n: number): HTMLElement {
+  const tag = el("span", "fparked-tag");
+  tag.textContent = "parked";
+  tag.title = "nothing has happened here yet — " + n + " newer ask" + (n === 1 ? " was" : "s were")
+    + " dispatched past this one; this tag clears on its own dispatch or any ruling";
+  return tag;
+}
+
 function nodeStatusClass(n: AskTreeNode): string {
   if (n.cleared) return "cleared";
   if (n.status === "done") return "done";
@@ -2437,6 +2473,9 @@ function hasQuestionDescendant(node: AskTreeNode, byId: Map<string, AskTreeNode>
 function treeSig(it: AskItem): string {
   return it.tree.map((n) =>
     n.id + n.status + (n.cleared ? "x" : "") + (n.whoWorking ? "W" : "")
+    // parked can mint/retire off a DIFFERENT top's dispatch (tops are siblings), which changes
+    // nothing else in THIS tree — without it in the sig an open group modal kept a stale tag
+    + (n.parked && n.parked.n ? "p" + n.parked.n : "")
     + (collapsedNodes.has(it.itemId + ":" + n.id) ? "c" : "")
     + (nodeLogOpen.has(it.itemId + ":" + n.id) ? "L" : "") + ((n.log || []).length || "")).join("|");
 }
@@ -2613,6 +2652,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
   if (node.status === "question") mark.title = node.qderived ? "a sub-goal inside is blocked — the ⏸ below is the ask" : "blocked — needs you";
   const txt = el("span", "ftree-text"); txt.textContent = node.text || "(node)"; line.appendChild(txt);
   if (node.cleared) line.appendChild(clearedTag());   // same one-word story as the card checklist
+  if (node.parked && node.parked.n && !node.cleared) line.appendChild(parkedTag(node.parked.n));   // and the parked hint
   // (The node's why/blocked/done rationale hover tooltip was removed 2026-06-27 — just the goal text now.)
   if (node.who && node.who !== parentWho) {
     const who = el("a", "ftree-who"); who.title = node.whoWorking ? "open this session (working now)" : "open this session";
