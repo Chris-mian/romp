@@ -8077,7 +8077,7 @@ AWAIT_KINDS = ("agents", "task", "job", "peer", "timer")
 # edge-drop. Dead peers are NOT excluded: the gate asks "does an open ask exist", and a dead peer's
 # wait is the dead-wait sweep's business, not a reason to refuse the stamp.
 _PEER_ASK_RE = re.compile(r"^\s*(?:QUESTION|ASK|Q)\b", re.I)   # legacy pre-`kind` rows only
-_PEER_ASK_CACHE = [None, ({}, {})]   # (mtime_ns, size) , (last_any, last_ask) — one scan per log change
+_PEER_ASK_CACHE = [None, ({}, {}, {})]   # (mtime_ns, size) , (last_any, last_ask, alias) — one scan per log change
 
 
 def _postal_ask_maps():
@@ -8085,7 +8085,7 @@ def _postal_ask_maps():
         st = MESSAGES.stat()
         key = (st.st_mtime_ns, st.st_size)
     except OSError:
-        return {}, {}
+        return {}, {}, {}
     if _PEER_ASK_CACHE[0] == key:
         return _PEER_ASK_CACHE[1]
     last_any, last_ask, rows, alias = {}, {}, [], {}
@@ -8112,8 +8112,8 @@ def _postal_ask_maps():
                 last_ask[(f, t_)] = ts
     except OSError:
         pass
-    _PEER_ASK_CACHE[:] = [key, (last_any, last_ask)]
-    return last_any, last_ask
+    _PEER_ASK_CACHE[:] = [key, (last_any, last_ask, alias)]
+    return last_any, last_ask, alias
 
 
 def _open_ask_peers(sid):
@@ -8122,7 +8122,7 @@ def _open_ask_peers(sid):
     _peer_answered's pair-aware supersede matches these exact keys (sids, or the wait maps' own
     "peer:<host>:<name>" for an unresolved cross-host recipient — both sides derive them from the
     same alias re-key, so they can never disagree)."""
-    last_any, last_ask = _postal_ask_maps()
+    last_any, last_ask, _alias = _postal_ask_maps()
     return sorted(peer for (f, peer), ts in last_ask.items()
                   if f == sid and last_any.get((peer, f), 0) < ts)
 
@@ -10945,6 +10945,41 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
                 rollup_status(a_store, False)           # sender just had work close → recompute its columns
                 save_goals(a_sid, a_store)
                 n += 1
+    # REMOTE recipients (the user 2026-08-24): their goal stores live on another kernel, so the
+    # origin back-link above can never fire for them. The local log still records the exact
+    # report-back event: the recipient's REPLY mail — any kind — at/after the delegate's send, the
+    # same event the stamp machinery has treated as a handoff's ending since the 2026-08-18 audit
+    # ("a delegated peer's reply lifts the awaiting stamp"). `relayed` is deliberately NOT it: that
+    # ack only says the ASK was delivered, and completing on delivery would check off undone work.
+    # Granularity is per-PEER, not per-message — the log carries no reply→delegate join, so one
+    # reply completes every outstanding cross-host handoff to that peer sent at/before it; coarse,
+    # but forward-only and honest, where the alternative was a wait no event could ever end. Keys
+    # re-derive from the stored toName exactly as the wait maps do: the alias when the peer has
+    # spoken (it must have, to reply), else the raw relay key.
+    last_any, _la, alias = _postal_ask_maps()
+    for fsid, path, anchor, name in discover(now)[:sessions_cap]:
+        store = load_goals(fsid)
+        changed = False
+        for nid, nd in list(store.get("nodes", {}).items()):
+            h = nd.get("handoff")
+            if not (isinstance(h, dict) and h.get("peer") and not nd.get("nodeComplete")):
+                continue
+            pk = str(h["peer"])
+            if ":" not in pk:                          # a LOCAL recipient: the origin back-link owns it
+                continue
+            keys = {"peer:" + pk}
+            if alias.get(pk):
+                keys.add(alias[pk])
+            reply = max((last_any.get((k, fsid), 0) for k in keys), default=0)
+            if reply and reply >= (nd.get("t") or 0):
+                why = "reported back by %s (delegated cross-host)" % pk
+                if record_verdict(store, nd, "courier", "done", reply, why=why):
+                    _mark_node_done(store, nid, why, reply, src="courier")
+                    changed = True
+                    n += 1
+        if changed:
+            rollup_status(store, False)
+            save_goals(fsid, store)
     if verbose:
         sys.stderr.write("romp-judge: propagated %d delegation completions\n" % n)
     return n
@@ -11004,8 +11039,47 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
                     continue
                 pending.append((seg["t"], fsid, seg["id"], _unit_text(seg["atoms"]), pm[1], pm[0],
                                 _seg_peer_kind(seg), _seg_anchor(seg), str(path)))
-    pending.sort(key=lambda x: x[0])                  # global cross-session oldest-first
+    # CROSS-HOST delegates plant the SENDER-side tracking node here too (the user 2026-08-24, the
+    # paused-cards investigation): the recipient lives on a remote kernel, so no inbound segment
+    # ever reaches this courier and _plant_handoff_track never ran — the sender's goal waited on a
+    # completion event that could not exist (a live specimen's done-line arrived and was relayed in
+    # 90 seconds; the goal sat paused for hours). The sent row is the authoritative record (to_id
+    # "peer:<host>", toName "<host>:<name>", declared kind): plant from it directly, trusting the
+    # DECLARED kind exactly as the parse give-up path always has — no recipient segment exists to
+    # judge, and the send ack already told the sender "they own it now". Declared-only on purpose:
+    # a kindless legacy row is indistinguishable from a coordinate, and planting from a guess mints
+    # noise. handoff.peer stores toName ("<host>:<name>") — the identity every display resolves
+    # (the quiet host: prefix) and the key run_propagate's remote arm re-derives pair keys from.
+    # `tracked` never rides here: the relay drops the flag by design (a primary/satellite pair
+    # cannot span kernels yet). Horizon-bounded like every courier retry, so old history is never
+    # backfilled; idempotent by msgId, so one plant per message ever.
     placed = 0
+    fleet_ids = {f for f, p, a, nm in fleet}
+    try:
+        xrows = []
+        for line in MESSAGES.read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if (o.get("ev") == "sent" and o.get("kind") == "delegate" and o.get("id")
+                    and o.get("from_id") in fleet_ids and o.get("toName")
+                    and str(o.get("to_id") or "").startswith("peer:")
+                    and now - (o.get("t") or 0) <= COURIER_RETRY_HORIZON):
+                xrows.append(o)
+    except OSError:
+        xrows = []
+    for o in xrows:
+        sstore = load_goals(o["from_id"])
+        if any(isinstance(nd.get("handoff"), dict) and nd["handoff"].get("msgId") == o["id"]
+               for nd in sstore["nodes"].values()):
+            continue
+        head = " ".join(str(o.get("body") or "").split())[:120]
+        _plant_handoff_track(sstore, None, head, str(o["toName"]), str(o["toName"]), int(o["t"]), o["id"])
+        rollup_status(sstore, False)
+        save_goals(o["from_id"], sstore)
+        placed += 1
+    pending.sort(key=lambda x: x[0])                  # global cross-session oldest-first
     for seg_t, fsid, seg_id, text, mid, sender, declared, anchor_uuid, path in pending:
         store = load_goals(fsid)
         if _placed_key(store["placements"], seg_id):  # drift-safe: never re-plant a t-shifted duplicate
