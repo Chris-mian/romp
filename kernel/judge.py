@@ -186,7 +186,16 @@ def _distill_effort():
     if v == "triage":
         return _triage_effort()
     return "" if v == "none" else v
-WINDOW      = 48 * 3600                  # only caption transcripts touched in the last N hours (matches the parse horizon)
+WINDOW      = 48 * 3600                  # discover()'s default reach — a COST horizon, not semantics: it bounds
+#                                          how much history each pass re-walks, never eligibility or correctness
+#                                          (read-side.md: a time window is allowed only as a perf bound on how far
+#                                          back to parse). Liveness owns visibility (kernel _alive_sessions' wide
+#                                          walk), death owns finalization (run_close's DEATH_BACKFILL_WINDOW drain),
+#                                          the picker reaches 30 days; an untouched store is simply not rescanned and
+#                                          re-enters the fleet the moment its transcript is touched again. ONE
+#                                          consumer aliases this value as POLICY: COURIER_RETRY_HORIZON's give-up
+#                                          deadline below — deliberate, and the reason this number is not free to
+#                                          shrink as a pure perf knob.
 COURIER_RETRY_HORIZON = WINDOW           # a usage-limited courier call comes back empty and retries every pass, but a
 #                                          peer message still unsummarized past this many seconds (matches discover()'s
 #                                          48h WINDOW) is abandoned — marked 'fyi' — so a long limit window can't
