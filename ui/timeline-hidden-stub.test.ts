@@ -201,8 +201,35 @@ test("the stub flips dashed→solid on the exec event — hasExec, never the sta
   assert.ok(gs, "the stale stub still draws");
   assert.equal(gs._attrs["stroke-dasharray"], "1 4", "no exec event → still dashed (the timer is not the key)");
   assert.equal(gs._attrs.stroke, BEE, "…and still the sender's color, stale or not");
-  near(gs._attrs.x2, gs._attrs.x1, "with the landing x AT the send, the tick collapses to a point — arithmetic clamp, no clipPath");
+  // the SPAN keys on the same arrival knowledge as the dash (the user 2026-08-24, floating-point
+  // regression): aging pending out collapsed execAt to the exec=sent fallback and the stub drew as
+  // a zero-length point — un-arrived mail spans sent → the LIVE EDGE, however old
+  assert.ok(Math.abs(gs._attrs.x2 - X(stale)(now)) < 0.5, "un-arrived → out to the live edge, not a point");
+  assert.ok(gs._attrs.x2 - gs._attrs.x1 > 13.5, "…a real span (got " + (gs._attrs.x2 - gs._attrs.x1) + ")");
   near(gs._attrs.y2, laneY(stale)(0) + OFF, "still on its outgoing track below the lane");
+});
+
+test("a message to a DEAD counterpart with a REAL exec row spans sent to exec — never a point", () => {
+  // leg (b) of the 2026-08-24 floating-point report: the kernel joins exec rows by id with no
+  // liveness gate (pinned kernel-side in test_kernel.py), so the view gets hasExec + a real exec
+  // even when the counterpart session/thread is dead — the span must render exactly like live mail
+  const now = 1_781_000_000;
+  const panel = draw([{ id: "m14", fromId: "SB", toId: "SX", from: "bee", to: "gone-thread",
+                        sent: now - 300, exec: now - 60, hasExec: true, pending: false, summary: "consumed, then died" }]);
+  const [s] = stubLines(panel);
+  assert.ok(s, "the stub draws");
+  assert.equal(s._attrs["stroke-dasharray"], undefined, "a real exec → solid");
+  assert.ok(Math.abs((s._attrs.x2 - s._attrs.x1) - (X(panel)(now - 60) - X(panel)(now - 300))) < 0.5,
+    "the true sent→exec span, into the counterpart's own work period");
+});
+
+test("a same-instant consume keeps a visible mark — zero-length is impossible by geometry", () => {
+  const now = 1_781_000_000;
+  const panel = draw([{ id: "m15", fromId: "SB", toId: "SX", from: "bee", to: "gone",
+                        sent: now - 200, exec: now - 200, hasExec: true, pending: false, summary: "instant" }]);
+  const [s] = stubLines(panel);
+  assert.ok(s, "the stub draws");
+  assert.ok(s._attrs.x2 - s._attrs.x1 >= 2, "the 2px floor: a real instant consume is a mark, not a floating point");
 });
 
 test("a hidden-sender message draws the mirror stub: horizontal just ABOVE the lane, ending at the arrival dot's x, dot kept on top", () => {
@@ -312,8 +339,11 @@ test("window clamping is arithmetic: an off-window send or landing draws no stub
 // them at the source, the timeline-threadarc.test.ts idiom for exactly this kind of plumbing.
 test("both stub anchors gate on their own endpoint and clamp x to the window by arithmetic (source pins)", () => {
   assert.match(SRC, /if \(!inWin\(sendXT\(mm\)\)\) return;/);
-  assert.match(SRC, /if \(!inWin\(landXT\(mm\)\)\) return;/);
-  assert.match(SRC, /x2 = Math\.max\(x1, x\(Math\.min\(landXT\(mm\), t1\)\)\)/);
+  assert.match(SRC, /if \(!inWin\(landT\)\) return;/, "the incoming gate reads the arrival-keyed landing");
+  assert.match(SRC, /const landT = arrived \? landXT\(mm\) : \(mm\.toThreadT \|\| nowS\);/,
+    "the span's landing keys on arrival knowledge, never the staleness-aged pending");
+  assert.match(SRC, /if \(x2 - x1 < 2\) x2 = x1 \+ 2;/, "zero-length is impossible by geometry");
+  assert.match(SRC, /x2 = Math\.max\(x1, x\(Math\.min\(landT, t1\)\)\)/);
   assert.match(SRC, /x1 = Math\.min\(x2, x\(Math\.max\(sendXT\(mm\), t0\)\)\)/);
   assert.doesNotMatch(SRC, /STUB_DX/, "the run cap is GONE — it bounded a diagonal's rise; flattened it made nubs");
   assert.doesNotMatch(SRC, /el\('clipPath'|clip-path/i, "clipped by arithmetic, never a clipPath element");
