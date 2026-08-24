@@ -2453,6 +2453,16 @@ class SdkSession:
             self.retry_count = 0
             self.retry_info = None
             m = getattr(msg, "model", None)
+            # SIDECHAIN turns never teach the session its model (the user 2026-08-24): a Task/Agent
+            # subagent streams its OWN AssistantMessages tagged parent_tool_use_id, routinely on a
+            # LOWER tier than the parent — learning one filed a false "Model changed automatically"
+            # downgrade card (the subagent's model read as a capacity fallback) and wrote the
+            # subagent's model over the registry's liveModel, which the statusline badge reads,
+            # until _do_refresh_context healed it after the turn. The same drop the chat-atom path
+            # applies to sidechain traffic (msg_to_atom) — the parent stream teaches only the
+            # parent's own turns.
+            if getattr(msg, "parent_tool_use_id", None):
+                m = None
             # Only adopt a REAL model id. Injected / synthetic assistant turns carry model="<synthetic>" (and
             # the CLI writes it to the transcript too); pretty_model passes unrecognised ids through verbatim,
             # so an unguarded assign would CORRUPT the model badge to "<synthetic>". A real id always contains

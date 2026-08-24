@@ -9537,10 +9537,24 @@ def mint_fallback_card(sid, from_model, to_model, ev_t=None):
     08-19 and revived: "it'd be nice to get a model fallback card pop up and just go to
     completed"). The API swapped the session's model without anyone asking — the card makes the
     swap visible on the board (it pops into Completed; the distiller writes its takeaway like any
-    completed top). Kernel-authored bookkeeping: minted done, never a question."""
+    completed top). Kernel-authored bookkeeping: minted done, never a question. Returns None without
+    minting while an identical uncleared card is on the board (existence-keyed dedupe, 2026-08-24)."""
     try:
         store = load_goals(sid)
         nodes = store.setdefault("nodes", {})
+        text = "Model changed automatically: %s → %s" % (from_model or "?", to_model)
+        # Existence-keyed dedupe (the user 2026-08-24): while an identical UNCLEARED card is already
+        # on the board, another observation of the same swap mints nothing — the board already says
+        # exactly this, and a repeat is the same fact, not new information. Clearing the card
+        # re-arms the mint; the deciding event is the user's own dismissal, never a time window.
+        # Both clear shapes count: the verdict flag (a /clear boundary settle) and the feed's
+        # view-clear, which lives in cleared.jsonl — not on the node (_view_cleared).
+        vc = _view_cleared()
+        for prev in nodes.values():
+            if prev.get("why") == "kernel-observed API model fallback" \
+                    and prev.get("text") == text and not prev.get("cleared") \
+                    and prev.get("id") not in vc:
+                return None
         n = store.get("seq", 0) + 1
         store["seq"] = n
         gid = "%s:g%d" % (sid, n)
@@ -9549,7 +9563,7 @@ def mint_fallback_card(sid, from_model, to_model, ev_t=None):
                "capacity fallback, not a pick. Work continued on the fallback; switch back from the "
                "statusline if that isn't what you want."
                % (from_model or "the pinned model", to_model))
-        nd = GuardedNode({"id": gid, "text": "Model changed automatically: %s → %s" % (from_model or "?", to_model),
+        nd = GuardedNode({"id": gid, "text": text,
                           "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
                           "trail": [], "promptUuid": "", "quote": "", "t": t, "mt": t,
                           "why": "kernel-observed API model fallback", "log": []})
