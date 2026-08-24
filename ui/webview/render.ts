@@ -11447,10 +11447,17 @@ function shipFileToHost(f: File, sidAt: string | null = activeId) {
 // ---- settings: the gear + modal live on the TIMELINE now (the user 2026-06-14). The chat just
 // CONSUMES the shared 'romp:settings' (compact mode) — applying a change made there, in a same-origin
 // tab, live via the storage event; and reading it at startup. ----
+// The chat TEXT scheme (the user 2026-08-24) is a body class the tier variables key on
+// (styles.css body.scheme-*) — toggled here so a gear pick recolors live, event-based.
+function applyChatScheme(s: RompSettings): void {
+  document.body.classList.toggle("scheme-high-contrast", s.chatScheme === "high-contrast");
+  document.body.classList.toggle("scheme-solarized-dark", s.chatScheme === "solarized-dark");
+}
 function setupSettings(): void {
+  applyChatScheme(settings);   // the persisted pick applies at startup — it survives reloads
   // renderTabs too: the tab strip reads settings (the context gauge toggle) but rerenderAll only
   // rebuilds the transcript views, so without it a gear change waited for the next kernel push.
-  onExternalSettingsChange((s) => { settings = s; renderTabs(); rerenderAll(); });
+  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); rerenderAll(); });
 }
 
 setupComposer();
