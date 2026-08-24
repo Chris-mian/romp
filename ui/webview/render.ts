@@ -33,7 +33,7 @@ import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional 
 import { onlyTag, matchesOnly } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
 import { parseAgentNotif, type AgentNotif } from "./agent-notif";
-import { previewKind, previewFull, canPreview, fileUrl, retryFailedPreviews } from "./preview";
+import { previewKind, previewFull, canPreview, fileUrl, retryFailedPreviews, refreshSettledPreviews, installMdImgHeal } from "./preview";
 import { openFileView } from "./file-view";
 // initFileView rides its OWN line: the import above is pinned verbatim by file-view.test.ts
 import { initFileView } from "./file-view";
@@ -976,6 +976,30 @@ function onImgData(p: string, url: string | null): void {
     const e = n as HTMLElement; if (e.dataset.imgpath === p) fillPathImg(e, p);
   });
 }
+// RECONNECT-class heal for the path-image chips (the user 2026-08-24): imgFailed was "never retry
+// for the page lifetime", so a figure that failed while the kernel/tunnel was away stayed a dead
+// chip forever. A reconnect un-parks every failed path for ONE fresh host round-trip — the same
+// request flow buildPathImg runs on mint (imgRequested still dedups in-flight asks).
+function healPathImgs(): void {
+  if (!imgFailed.size) return;
+  const failed = Array.from(imgFailed);
+  imgFailed.clear();
+  for (const p of failed) {
+    document.querySelectorAll(".js-pathimg").forEach((n) => {
+      const e = n as HTMLElement;
+      if (e.dataset.imgpath !== p) return;
+      fillPathImg(e, p);                             // back to the pending pulse while the ask is out
+      if (!imgRequested.has(p)) {
+        imgRequested.add(p);
+        if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p, id: activeId });
+      }
+    });
+  }
+}
+// the page shim fires romp:wsup when THIS pane's kernel socket reconnects (kernel.py ws.onopen) —
+// the same kernel-is-back event a hostUp is for a federated tunnel; heal everything on it
+window.addEventListener("romp:wsup", () => { retryFailedPreviews(); refreshSettledPreviews(); healPathImgs(); });
+installMdImgHeal();   // markdown-inline <img> failures register for the per-message heal (capture-phase, once)
 
 // One image of a user turn: the picture (or its hydration chip) plus, when the
 // on-disk path is known, a caption line — the full absolute path (click → open),
@@ -9408,17 +9432,6 @@ function renderComposerChips(id: string | null): void {
   const cites = id ? composerCitations.get(id) : undefined;
   if (!cites || !cites.length) { strip.style.display = "none"; return; }
   strip.style.display = "flex";
-  // The STAGE button (the user 2026-08-23): nobody discovers ⌘⏎ on their own, so whenever quote
-  // context is held the strip carries its visible face — right of the blue chips, gone with them.
-  // Same action as the shortcut: stage the context (and any typed text) and keep going.
-  {
-    const st = el("button", "composer-stage-btn") as HTMLButtonElement;
-    st.type = "button";
-    st.textContent = "Stage";
-    st.title = "hold this context (and anything typed) for one combined send later — ⌘⏎ does the same";
-    st.addEventListener("click", (e) => { e.stopPropagation(); fireStage(); });
-    strip.appendChild(st);
-  }
   // one chip per held context, in the order they were added — the strip stacks them (flex column)
   cites.forEach((cite, i) => {
     const chip = el("div", "composer-chip");
@@ -9435,6 +9448,18 @@ function renderComposerChips(id: string | null): void {
     chip.appendChild(x);
     strip.appendChild(chip);
   });
+  // The STAGE button (the user 2026-08-23; moved 2026-08-24): nobody discovers ⌘⏎ on their own, so
+  // while quote context is held the strip carries its visible face — IMMEDIATELY AFTER the chips it
+  // acts on (right-justified it floated detached, and its meaning didn't read), gone with them.
+  // Same action as the shortcut: stage the context (and any typed text) and keep going.
+  {
+    const st = el("button", "composer-stage-btn") as HTMLButtonElement;
+    st.type = "button";
+    st.textContent = "Stage";
+    st.title = "hold this context (and anything typed) for one combined send later — ⌘⏎ does the same";
+    st.addEventListener("click", (e) => { e.stopPropagation(); fireStage(); });
+    strip.appendChild(st);
+  }
 }
 
 // The attachment strip: one little thumbnail per dropped/pasted/picked file, above the textarea (the
@@ -10293,6 +10318,10 @@ window.addEventListener("message", (e: MessageEvent) => {
   // so relay-failed figures heal the moment the tunnel returns even when no chat traffic flows
   // (idle sessions generated no messages, so figures sat until the user's next send — 2026-08-17)
   retryFailedPreviews();
+  // a RECONNECT-class event goes further: settled chips (budget spent) re-attempt regardless of
+  // their error text, and the path-image chips parked in imgFailed get one fresh host round-trip
+  // (bounded: reconnects are rare events, never a per-push loop)
+  if (m.type === "hostUp") { refreshSettledPreviews(); healPathImgs(); }
   if (m.type === "session") upsert(m);
   else if (m.type === "globalRetryPaused") {
     globalRetryPaused = !!m.value;

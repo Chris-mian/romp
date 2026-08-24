@@ -213,22 +213,28 @@ test("quote chips send a plain message wrapped by quoteReplyBody — never askFo
   assert.match(RENDER, /mark\.textContent = cite\.quote \? "“" : "↩";/);
 });
 
-test("context stages ALONE, and the chips strip carries the visible Stage button", () => {
+test("context stages ALONE, and the chips strip carries the visible Stage button AFTER the chips", () => {
   // the user 2026-08-23: nobody discovers ⌘⏎ on their own. Select a passage → the chip appears with
-  // a Stage button pinned at its right; press it (or ⌘⏎) with an EMPTY box and just the context
-  // stages — repeat, then one typed message flushes the whole run. The button lives in the chips
-  // strip, so it exists exactly while context is held and vanishes with it.
+  // a Stage button; press it (or ⌘⏎) with an EMPTY box and just the context stages — repeat, then
+  // one typed message flushes the whole run. The button lives in the chips strip, so it exists
+  // exactly while context is held and vanishes with it. MOVED 2026-08-24: it now sits immediately
+  // AFTER the context chip(s) it acts on — right-justified it floated detached and its meaning
+  // didn't read — so the DOM appends it after the cites loop and the CSS drops the absolute pin.
   assert.match(RENDER, /if \(!typed && !\(composerCitations\.get\(activeId\) \|\| \[\]\)\.some\(\(c\) => c\.quote\)\) return;/,
     "empty box + a quote chip is stageable; empty box + nothing is not");
   assert.match(RENDER, /fireStage = \(\) => stageComposer\(\);/, "the strip's door into the composer closure");
   assert.match(RENDER, /const st = el\("button", "composer-stage-btn"\) as HTMLButtonElement;/);
+  // DOM order: chips loop first, then the button — adjacency is the point of the move
+  const loop = RENDER.indexOf("cites.forEach((cite, i) => {");
+  const btn = RENDER.indexOf('el("button", "composer-stage-btn")');
+  assert.ok(loop >= 0 && btn > loop, "the Stage button is appended AFTER the context chips");
   // neutral at rest (the user 2026-08-23): an accent outline beside the accent-blue chips read as
   // already-pressed. Rest = the button family's dress; the accent appears only on hover.
-  assert.match(CSS, /\.composer-stage-btn \{ position: absolute; right: 2px; top: 0; background: rgba\(255, 255, 255, 0\.06\);\n\s*border: 1px solid var\(--box-border\); color: var\(--dim\);/);
+  assert.match(CSS, /\.composer-stage-btn \{ background: rgba\(255, 255, 255, 0\.06\);\n\s*border: 1px solid var\(--box-border\); color: var\(--dim\);/);
   assert.match(CSS, /\.composer-stage-btn:hover \{ background: var\(--accent\); color: var\(--accent-fg\); border-color: var\(--accent\); \}/);
+  assert.doesNotMatch(CSS, /\.composer-stage-btn \{ position: absolute/,
+    "no absolute pin — the button flows in the chips column, immediately after what it acts on");
   assert.match(RENDER, /st\.title = "hold this context \(and anything typed\) for one combined send later — ⌘⏎ does the same";/);
-  assert.match(CSS, /\.composer-stage-btn \{ position: absolute; right: 2px; top: 0;/,
-    "pinned to the RIGHT of the blue context chips");
   assert.match(RENDER, /label\.textContent = s\.text \|\| "\(context only — sends with your message\)";/,
     "a context-only staged row says what it is");
 });
