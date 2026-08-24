@@ -74,7 +74,9 @@ function viewVisible(views, id) {
   }
   if (views.active === 'untagged') {
     if (Array.isArray(views.hidden) && views.hidden.indexOf(id) >= 0) return false;
-    return !viewTags(views).some((t) => (t.members || []).indexOf(id) >= 0);
+    // the UNION excludes (the user 2026-08-24): a session held by ANY kernel's tag is tagged —
+    // a remote-homed tag pulls it out of untagged exactly like a local one
+    return !viewTags(views).concat((views && views.remoteTags) || []).some((t) => (t.members || []).indexOf(id) >= 0);
   }
   // a tag view shows the NAME-KEYED UNION (user ruling 2026-08-24): whichever store's id is
   // active, the members are every same-name tag's, local and remote joined

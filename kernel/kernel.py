@@ -1677,8 +1677,13 @@ def _views_client():
         t["members"] = [_member_str(m) for m in t["members"]]
     remote = []
     with _remotes_lock:
+        # every attached host with a CACHED read contributes — down included (the user 2026-08-24):
+        # visibility must not flap with a peer's restart, so the last-known tags keep excluding
+        # from the untagged view and keep their tag views pickable while the link reconnects
+        # (bounded staleness: the auto-reconnect heals within a pass; detach pops the row and its
+        # cache with it — intent-consistent).
         cand = [(r["host"], r.get("views")) for r in _remotes.values()
-                if r.get("status") == "up" and isinstance(r.get("views"), dict)]
+                if isinstance(r.get("views"), dict)]
     for host, rv in sorted(cand):
         for t in (rv.get("tags") or [])[:_VIEWS_MAX_TAGS]:
             if not isinstance(t, dict) or not t.get("id"):
@@ -1707,9 +1712,14 @@ def _view_visible(views, sid):
     if views["active"] == "all":
         return sid not in views["hidden"]
     if views["active"] == "untagged":
-        # LOCAL tags only exclude here (federation v0): a remote kernel's tagging of our session
-        # must not flap our untagged view with its poll cadence — remote tags are extra VIEWS
-        return sid not in views["hidden"] and not any(sid in t["members"] for t in views["tags"])
+        # the union excludes here too (the user 2026-08-24, who tagged a session from the chat and
+        # watched it stay in the untagged view): a tag is its NAME wherever it homes — a session
+        # held by ANY kernel's tag is tagged, period. The v0 flap worry (a remote's poll cadence
+        # toggling untagged membership) is answered by _views_client keeping a down host's CACHED
+        # tags contributing: stability beats freshness for visibility, and the auto-reconnect work
+        # makes the staleness window a pass, not an afternoon.
+        return sid not in views["hidden"] and not any(
+            sid in t["members"] for t in list(views["tags"]) + list(views.get("remoteTags") or []))
     # a tag view shows the NAME-KEYED UNION (user ruling 2026-08-24: a tag is its NAME; kernels
     # are plumbing) — whichever store's id is active, membership joins every same-name tag's,
     # local and remote alike. The stored duplicates stay separate (anti-clobber); this is the read.
