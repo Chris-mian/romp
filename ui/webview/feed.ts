@@ -972,16 +972,20 @@ function makeAskCard(it: AskItem): HTMLElement {
   // name — they describe the session's live state, and keeping them OFF the action row stops them shoving
   // the buttons past the card's right edge on a narrow card (the user 2026-06-19; mirrors the ↻ Followed-up
   // chip moved up 2026-06-18). idwrap is flex:1 so the name ellipsizes before the badge is ever clipped.
-  idwrap.append(retryBadge, apiBadge, jauthBadge, blkBadge);
+  idwrap.append(retryBadge, jauthBadge, blkBadge);
   // COMPACTNESS (the user 2026-07-07): Clear rides the NAME row (right side, after the chips) and the
   // Background/Summary toggles ride the TIME row — freeing a whole action row. So the action row holds only
   // Retry / Revive (rare states); both rows flex-WRAP so nothing overflows or overlaps on a narrow card.
-  actions.append(apiRetry, revive, qApprove, qDeny);
+  actions.append(revive, qApprove, qDeny);
   // "↪ from <peer>" provenance + the "reopened"/"↻ Followed up" chips ride the name row's right side;
   // row2 wraps them onto a new line when there isn't room, so the provenance never overlaps a chip
   // (the user 2026-06-20). origin sits left of the chips, matching the "from … · Followed up" reading order.
   // (Clear left this row 2026-08-08 — it rides row1's action corner in every mode now, see fask-btns.)
-  row2.append(idwrap, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
+  // the API-error badge + Retry ride row2 DIRECTLY, badge immediately before its button — one
+  // visual unit in BOTH modes (the user 2026-08-24, screenshot: grouped mode hides idwrap — the
+  // card drops its name there — which hid the badge while the action-row Retry stayed, a lone red
+  // button with no visible reason). Direct children also count toward row2's grouped-mode liveness.
+  row2.append(idwrap, apiBadge, apiRetry, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
   // the bell BUTTON (the user 2026-07-28): INLINE in row1's metadata cluster, right after the
   // timestamp (the last line's tail), the one spot that never shoves the title — and in-flow, so it
   // cannot overlap the floated Clear. It hides with VISIBILITY, so its slot is reserved whether or
@@ -1863,14 +1867,22 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   const spendLimit = !!(it.blocked && it.blocked.spendLimit);
   const modelLimit = !!(it.blocked && it.blocked.modelLimit);
   const refusal = !!(it.blocked && it.blocked.refusal);
-  a._apiBadge.style.display = isApiErr ? "" : "none";
+  // …and the whole unit RETIRES the moment the session recovers (the user 2026-08-24, screenshot: a
+  // GREEN awaiting dot beside a lone red Retry — the control read as arbitrary): visibility keys on
+  // the session's LIVE state from this very payload — a session working again, or awaiting the
+  // background work it dispatched, has resumed, and there is nothing to resume by hand no matter
+  // what the card's stored block record still says. The same sets the session dot reads
+  // (workingSet/awaitingSet), refreshed on every push — event-keyed, never a timer.
+  const apiRecovered = workingSet.has(it.name) || awaitingSet.has(it.name);
+  const showApiErr = isApiErr && !apiRecovered;
+  a._apiBadge.style.display = showApiErr ? "" : "none";
   // Retry pastes "retry" to resume a stalled turn — useless against a monthly spend cap (retrying can't lift a
   // billing limit), so hide it there and let the badge tell you to raise the cap (the user 2026-07-14).
   // A spent MODEL allowance is the same shape: Retry re-fails until you switch model or top up, and the
   // badge says so (the user 2026-08-01). Its window does reset on its own, which the badge title carries.
   // A safeguards REFUSAL is the same shape again (the user 2026-08-15): deterministic on the same input,
   // so Retry re-collects the same refusal — the badge names the real fix (rewrite it or drop the thread).
-  a._apiRetry.style.display = (isApiErr && !spendLimit && !modelLimit && !refusal) ? "" : "none";
+  a._apiRetry.style.display = (showApiErr && !spendLimit && !modelLimit && !refusal) ? "" : "none";
   // "Continue" shows on a LIVE needs-you card with no live ask attached: the gesture claims "you're not
   // waiting on me", which means nothing in Working/Completed, can't answer a real permission prompt or
   // picker (it.blocked — text sent there would just queue behind the ask), and has no one to tell on a
@@ -1882,7 +1894,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (contBtn.disabled && !it.followupPending && !it.recheck && !it.rejudging) {
     contBtn.disabled = false; contBtn.textContent = "Continue";
   }
-  if (isApiErr && it.blocked) {
+  if (showApiErr && it.blocked) {
     // on-you errors name themselves: a spend cap (raise it), "prompt too long" (compact), or a spent model
     // allowance (switch model); other API errors are transient and auto-retrying (2026-06-29 / 07-14 / 08-01).
     a._apiBadge.textContent = spendLimit ? "⚠ Spend limit"
