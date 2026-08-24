@@ -658,7 +658,7 @@ EOF
     _romp_cmd "romp fork <parent> <name>"  -            "Branch a session into a new parallel one (parent untouched; --at <uuid> picks the cut)"
     _romp_cmd "romp rename <session> <name>" -          "Rename a session (uuid-keyed: mailboxes, goals and history all follow)"
     _romp_cmd "romp color <session> [<#hex|1-9>]" -     "Recolor a session's identity swatch (palette hex or slot 1-9; no color arg reads bg/fg)"
-    _romp_cmd "romp tag [<name>] [--add ...]" -         "Session tags: bare lists them; <name> with --add/--remove/--color/--delete merges one (a tagged session leaves the untagged view); --host <kernel> edits an attached kernel's tag"
+    _romp_cmd "romp tag [<name>] [--add ...]" -         "Session tags: bare lists them; <name> with --add/--remove/--color/--delete merges one (a tagged session leaves the untagged view); --host <kernel> edits an attached kernel's tag; --rename renames"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> [--tag <label>] <text>" - "Hand a session a message; scripts/cron SHOULD pass --tag so it renders machine-sent, not as your typed words"
     _romp_cmd "romp interrupt <session>"   -            "Interrupt a session's current turn"
@@ -950,8 +950,8 @@ fi
 if [[ "${1:-}" == "tag" || "${1:-}" == "group" ]]; then
     shift
     _gr_usage="usage: romp tag [--json]
-       romp tag <name> [--host <kernel>] [--add <session>...] [--remove <session>...] [--color <#hex>] [--delete]"
-    _gr_name=""; _gr_json=false; _gr_color=""; _gr_cset=0; _gr_del=0; _gr_host=""
+       romp tag <name> [--host <kernel>] [--add <session>...] [--remove <session>...] [--color <#hex>] [--rename <new>] [--delete]"
+    _gr_name=""; _gr_json=false; _gr_color=""; _gr_cset=0; _gr_del=0; _gr_host=""; _gr_rename=""
     _gr_add=(); _gr_remove=(); _gr_mode=""; _gr_add_seen=0; _gr_rm_seen=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -961,6 +961,9 @@ if [[ "${1:-}" == "tag" || "${1:-}" == "group" ]]; then
             --color)  shift
                       if [[ $# -eq 0 || -z "$1" || "$1" == -* ]]; then echo "$_gr_usage" >&2; exit 2; fi
                       _gr_color="$1"; _gr_cset=1; _gr_mode=""; shift ;;
+            --rename) shift
+                      if [[ $# -eq 0 || -z "$1" || "$1" == -* ]]; then echo "$_gr_usage" >&2; exit 2; fi
+                      _gr_rename="$1"; _gr_mode=""; shift ;;
             --host)   shift
                       if [[ $# -eq 0 || -z "$1" || "$1" == -* ]]; then echo "$_gr_usage" >&2; exit 2; fi
                       _gr_host="$1"; _gr_mode=""; shift ;;
@@ -978,10 +981,10 @@ if [[ "${1:-}" == "tag" || "${1:-}" == "group" ]]; then
     if $_gr_json && [[ -n "$_gr_name" || $_gr_add_seen -eq 1 || $_gr_rm_seen -eq 1 || $_gr_cset -eq 1 || $_gr_del -eq 1 ]]; then
         echo "$_gr_usage" >&2; exit 2
     fi
-    if [[ -z "$_gr_name" && ( $_gr_add_seen -eq 1 || $_gr_rm_seen -eq 1 || $_gr_cset -eq 1 || $_gr_del -eq 1 ) ]]; then
+    if [[ -z "$_gr_name" && ( $_gr_add_seen -eq 1 || $_gr_rm_seen -eq 1 || $_gr_cset -eq 1 || $_gr_del -eq 1 || -n "$_gr_rename" ) ]]; then
         echo "$_gr_usage" >&2; exit 2
     fi
-    if [[ -n "$_gr_host" && $_gr_add_seen -eq 0 && $_gr_rm_seen -eq 0 && $_gr_cset -eq 0 && $_gr_del -eq 0 ]]; then
+    if [[ -n "$_gr_host" && $_gr_add_seen -eq 0 && $_gr_rm_seen -eq 0 && $_gr_cset -eq 0 && $_gr_del -eq 0 && -z "$_gr_rename" ]]; then
         # v0: --host modifies an EDIT (the target kernel's store, through the tunnel). Reads stay
         # local — the dashboard's view menu already shows the union.
         echo "romp tag: --host goes with an edit (--add/--remove/--color/--delete)" >&2; exit 2
@@ -1029,7 +1032,7 @@ for g in groups:
 ' "$_resp" "$_rows"
         exit 0
     fi
-    if [[ $_gr_add_seen -eq 0 && $_gr_rm_seen -eq 0 && $_gr_cset -eq 0 && $_gr_del -eq 0 ]]; then
+    if [[ $_gr_add_seen -eq 0 && $_gr_rm_seen -eq 0 && $_gr_cset -eq 0 && $_gr_del -eq 0 && -z "$_gr_rename" ]]; then
         # a bare name is a READ of that one group, never a write — POSTing here would CREATE a
         # missing group, so a typo'd "view" would mint a phantom and burn one of the 32 slots
         _resp="$(_romp_token_cfg | curl -sf -m 10 --config - "http://127.0.0.1:$_kport/views")" \
@@ -1061,16 +1064,18 @@ print("%s  %s  %d member%s%s" % (g.get("name"), g.get("color") or "(no color)",
     fi
     _payload="$(python3 -c '
 import json, sys
-n = int(sys.argv[6])
-body = {"name": sys.argv[1], "add": sys.argv[7:7 + n], "remove": sys.argv[7 + n:]}
+n = int(sys.argv[7])
+body = {"name": sys.argv[1], "add": sys.argv[8:8 + n], "remove": sys.argv[8 + n:]}
 if sys.argv[2] == "1":
     body["color"] = sys.argv[3]
 if sys.argv[4] == "1":
     body["delete"] = True
 if sys.argv[5]:
     body["host"] = sys.argv[5]
+if sys.argv[6]:
+    body["rename"] = sys.argv[6]
 print(json.dumps(body))
-' "$_gr_name" "$_gr_cset" "$_gr_color" "$_gr_del" "$_gr_host" "${#_gr_add[@]}" \
+' "$_gr_name" "$_gr_cset" "$_gr_color" "$_gr_del" "$_gr_host" "$_gr_rename" "${#_gr_add[@]}" \
         "${_gr_add[@]+"${_gr_add[@]}"}" "${_gr_remove[@]+"${_gr_remove[@]}"}")"
     _resp="$(_romp_token_cfg | curl -sf -m 15 --config - -X POST "http://127.0.0.1:$_kport/tag" \
                   -H 'Content-Type: application/json' -d "$_payload")" \

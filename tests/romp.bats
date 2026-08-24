@@ -264,6 +264,18 @@ MOCK
     [[ "$output" == *"--host goes with an edit"* ]]
 }
 
+@test "tag: --rename rides the payload and counts as an edit" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    run run_romp tag team --rename crew
+    [ "$status" -eq 0 ]
+    grep '/tag' "$MOCK_LOG" | grep -q '"rename": *"crew"'
+    run run_romp tag team --host alpha --rename crew
+    [ "$status" -eq 0 ]
+    grep '/tag' "$MOCK_LOG" | grep -q '"host": *"alpha"'
+}
+
 @test "tag: the pre-rename group verb still works, posting the new /tag route" {
     _stub_curl
     touch "$MOCK_LOG"
