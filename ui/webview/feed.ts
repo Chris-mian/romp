@@ -103,6 +103,7 @@ interface AskItem {
   nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
   origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null; live?: boolean } | null;
+  handoffTo?: { peer: string; peerSid: string; peerHost?: string; color?: { bg: string; fg: string } | null } | null;  // sender-side handoff provenance (the user 2026-08-24): this card IS a top-level "↪ delegated to <peer>" tracking node — the kernel titles it with the WORK and ships the delegation here, the mirror of origin's "↪ from"; click opens the recipient
   satellite?: boolean | null;                        // tracked delegation (the user 2026-08-24): this card is the recipient-side copy of a delegator-homed primary — off the default board; the session filter still reaches it (nothing runs in secret)
   delegTracked?: { name: string; host?: string; sid: string; color?: { bg: string; fg: string } | null }[] | null;  // tracked delegation PRIMARY: the recipient identities whose live status this one card carries  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders). live = the sender's linked entry is still OPEN; false → the badge is PROVENANCE, dimmed (the completed-column merge, the user 2026-08-16)
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string; since?: number } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25). since = when the unanswered ask was sent → the chip's elapsed readout (the user 2026-08-23)
@@ -1590,6 +1591,29 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
     og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.origin!.peerSid }); };
   } else {
     og.style.display = "none";
+  }
+  // ↪ sender-side handoff provenance (the user 2026-08-24): a TOP-LEVEL "↪ delegated to <peer>"
+  // tracking node wore its provenance as the card TITLE, arrow and all. The kernel now titles the
+  // card with the WORK and ships the delegation here — the mirror of ↪ from above: identity color,
+  // quiet host: prefix for a federated recipient, click opens the recipient session. STACKS after
+  // an ↪ from badge rather than replacing it (origin and this are different facts about one card —
+  // the same rule the 2026-08-24 review pinned on this slot).
+  if (it.handoffTo && it.handoffTo.peerSid) {
+    const hadOrigin = !!(it.origin && it.origin.peer);
+    og.style.display = "";
+    if (!hadOrigin) {
+      og.replaceChildren(); og.style.color = ""; og.classList.remove("fask-origin-absorbed");
+      og.title = "delegated to " + it.handoffTo.peer + "; their result checks this card off · click opens the session";
+      og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.handoffTo!.peerSid }); };
+    }
+    const pre = el("span", "fask-origin-pre"); pre.textContent = (hadOrigin ? " · " : "") + "↪ delegated to ";
+    const peer = el("span", "fask-origin-peer");
+    peer.replaceChildren(...hostPartsNodes(it.handoffTo.peerHost, it.handoffTo.peer));
+    if (it.handoffTo.color) peer.style.color = it.handoffTo.color.bg;
+    peer.title = "delegated to " + it.handoffTo.peer + "; their result checks this card off · click opens the session";
+    peer.style.cursor = "pointer";
+    peer.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.handoffTo!.peerSid }); };
+    og.append(pre, peer);
   }
   // tracked delegation PRIMARY (the user 2026-08-24): the ONE card, homed here under the delegator —
   // it names the recipient(s) in their identity colors with the board's own live dot
