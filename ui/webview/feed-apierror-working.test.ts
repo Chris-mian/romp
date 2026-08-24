@@ -32,7 +32,7 @@ test("Retry renders WITH its explaining badge as one visual unit — never alone
   // badge immediately before its button, as DIRECT row2 children: grouped mode hides idwrap (the
   // card drops its name there), which is exactly how the screenshot got a lone Retry with no badge —
   // the badge sat in the hidden wrap while the action-row button stayed visible
-  assert.match(FEED, /row2\.append\(idwrap, apiBadge, apiRetry, origin,/);
+  assert.match(FEED, /row2\.append\(idwrap, retryBadge, apiBadge, apiRetry, jauthBadge, blkBadge, origin,/);
   assert.match(FEED, /actions\.append\(revive, qApprove, qDeny\);/);
   assert.doesNotMatch(FEED, /actions\.append\(apiRetry/, "no lone Retry detached from its badge");
   assert.doesNotMatch(FEED, /idwrap\.append\([^)]*apiBadge/, "…and never inside the grouped-mode-hidden idwrap");
