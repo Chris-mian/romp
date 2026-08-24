@@ -256,6 +256,97 @@ class HostForward(TagRoute):
         self.assertFalse(r["ok"]); self.assertIn("never landed", r["error"])
 
 
+class RenameAndHomeFrame(TagRoute):
+    """Federation v1: /tag gains rename (collision-refusing), and a bare sid routed here from a
+    THIRD kernel resolves into THIS kernel's own frame — viewer C adding kernel-B's session to our
+    tag cannot know our name for B, but sids are global, so we look the sid up in our remotes'
+    cached session lists and store the canonical pair ourselves."""
+
+    def test_rename_lands_and_a_collision_refuses(self):
+        self._post({"name": "alpha", "add": []})
+        self._post({"name": "beta", "add": []})
+        st, r = self._post({"name": "alpha", "rename": "gamma"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["tag"]["name"], "gamma")
+        self.assertEqual(sorted(t["name"] for t in km._timeline_views()["tags"]), ["beta", "gamma"])
+        st, r = self._post({"name": "gamma", "rename": "beta"})
+        self.assertFalse(r["ok"])
+        self.assertIn('a tag named "beta" already exists', r["error"])
+
+    def test_a_third_kernels_bare_sid_lands_in_OUR_frame(self):
+        # TESTHOST-A (this kernel) holds the tag; TESTHOST-B owns the session; viewer TESTHOST-C
+        # routed the edit here with the bare sid tail — we know that sid as TESTHOST-B's
+        bsid = "44444444-5555-6666-7777-888888888888"
+        saved = dict(km._remotes)
+        try:
+            km._remotes.clear()
+            km._remotes["TESTHOST-B"] = {"host": "TESTHOST-B", "status": "up", "sids": [bsid]}
+            st, r = self._post({"name": "team", "add": [bsid]})
+            self.assertTrue(r["ok"])
+            self.assertEqual(km._timeline_views()["tags"][0]["members"],
+                             [{"host": "TESTHOST-B", "sid": bsid}],
+                             "the canonical pair carries OUR label for B — never the viewer's")
+            # …while a sid nobody knows stays bare (legacy behavior: inert until known)
+            ghost = "99999999-aaaa-bbbb-cccc-dddddddddddd"
+            self._post({"name": "team", "add": [ghost]})
+            self.assertIn({"host": "", "sid": ghost}, km._timeline_views()["tags"][0]["members"])
+        finally:
+            km._remotes.clear(); km._remotes.update(saved)
+
+
+class EditTagOpPins(unittest.TestCase):
+    """The WS op the dialog rides (federation v1) — source pins: only the BARE sid tail crosses
+    kernels (this viewer's host labels mean nothing on the owner), the failure pushes a LOUD
+    tagEditFailed to the asking dashboard, and a landed edit marks views dirty either way."""
+
+    def test_the_op_tails_ids_forwards_and_fails_loudly(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn('msg.get("type") == "editTag"', src)
+        self.assertIn('tail = lambda x: x.rsplit(":", 1)[-1]', src)
+        self.assertIn('ans, err = _forward_tag_edit(host, body)', src)
+        self.assertIn('{"type": "tagEditFailed", "host": host, "name": nm,', src)
+        self.assertIn('(client or {}).get("wid") or ""', src, "the refusal goes to the ASKING dashboard")
+
+
+class ForwardHelper(TagRoute):
+    """_forward_tag_edit — the one channel every remote edit rides (romp tag --host, the dialog's
+    editTag op): loud refusals, response passthrough, and the FAST ECHO (a landed edit drops the
+    owner's poll gate and refreshes its cached views inline, so the optimistic copy reconciles
+    within a push, not a poll period)."""
+
+    def setUp(self):
+        super().setUp()
+        self._saved = (dict(km._remotes), km._remote_forward, km._poll_remote_views)
+        km._remotes.clear()
+        km._remotes["alpha"] = {"host": "alpha", "status": "up", "_views_at": 12345.0,
+                                "views": {"tags": []}}
+        self.polled = []
+        km._remote_forward = lambda r, path, body: {"ok": True, "tag": {"name": body.get("name")}}
+        km._poll_remote_views = lambda r: (self.polled.append(r["host"]) or {"tags": [{"id": "g1", "name": "team", "members": []}]})
+
+    def tearDown(self):
+        km._remotes.clear(); km._remotes.update(self._saved[0])
+        km._remote_forward, km._poll_remote_views = self._saved[1], self._saved[2]
+        super().tearDown()
+
+    def test_a_landed_edit_echoes_fast(self):
+        ans, err = km._forward_tag_edit("alpha", {"name": "team", "add": []})
+        self.assertIsNone(err)
+        self.assertTrue(ans["ok"])
+        self.assertEqual(self.polled, ["alpha"], "the owner's views re-poll inline — the fast echo")
+        self.assertNotIn("_views_at", km._remotes["alpha"], "…and the poll gate stays dropped for the loop")
+        self.assertEqual(km._remotes["alpha"]["views"]["tags"][0]["name"], "team")
+
+    def test_refusals_stay_loud(self):
+        self.assertEqual(km._forward_tag_edit("ghost", {"name": "t"})[1],
+                         'no attached kernel named "ghost" (see the network panel)')
+        km._remotes["alpha"]["status"] = "down"
+        self.assertIn("not reachable", km._forward_tag_edit("alpha", {"name": "t"})[1])
+        km._remotes["alpha"]["status"] = "up"
+        km._remote_forward = lambda r, path, body: None
+        self.assertIn("never landed", km._forward_tag_edit("alpha", {"name": "t"})[1])
+
+
 class GroupAliasSurvives(TagRoute):
     """The pre-rename surface (same-day rename, 2026-08-23): an un-updated remote's bin/romp still
     POSTs /group and reads the "group" response key — both stay as quiet aliases of /tag."""

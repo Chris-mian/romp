@@ -1636,6 +1636,34 @@ def _remote_tag_member_str(owner_host, m):
     return h + ":" + sid
 
 
+def _forward_tag_edit(host, body):
+    """Route a tag edit to its HOME kernel through the tunnel this kernel already holds (tag
+    federation: v0 gave `romp tag --host` this arm; v1 routes the dialog/menu edits through it too,
+    so a remote tag just works). Returns (answer, error): answer is the home kernel's own /tag reply
+    passed through verbatim; error is the LOUD refusal when the edit cannot land — an unreachable
+    kernel must never silently no-op an edit (the fail-loudly rule)."""
+    with _remotes_lock:
+        r = next((x for x in _remotes.values() if x.get("host") == host), None)
+        r_up = bool(r and r.get("status") == "up")
+    if not r:
+        return None, 'no attached kernel named "%s" (see the network panel)' % host
+    if not r_up:
+        return None, '"%s" is attached but not reachable right now' % host
+    ans = _remote_forward(r, "/tag", body)
+    if ans is None:
+        return None, 'the edit never landed on "%s" (tunnel hiccup — try again)' % host
+    # a landed edit should ECHO fast: drop the poll gate so the next supervisor pass re-reads the
+    # owner's store, and try an inline refresh now (best-effort — the poll loop is the backstop)
+    r.pop("_views_at", None)
+    try:
+        rv = _poll_remote_views(r)
+        if rv is not None:
+            r["views"] = rv
+    except Exception:
+        pass
+    return ans, None
+
+
 def _views_client():
     """The views blob every client renders and matches against — the RENDERING of the canonical
     store (federation v0, the user 2026-08-24): local tags with members as viewer-relative strings
@@ -1725,7 +1753,7 @@ def _b36(n):
     return out or "0"
 
 
-def _edit_tag(name, add=(), remove=(), color=None, delete=False):
+def _edit_tag(name, add=(), remove=(), color=None, delete=False, rename=None):
     """Targeted edit of ONE named tag in the views blob — the merge op behind POST /tag. The WS
     setTimelineViews op replaces the whole blob, which is right for the dashboard (it holds the
     current one) and wrong for an agent: replaying a stale read would clobber the active view and
@@ -1760,6 +1788,13 @@ def _edit_tag(name, add=(), remove=(), color=None, delete=False):
                 n += 1
             t = {"id": "g" + _b36(n), "name": name, "color": "", "members": []}
             v["tags"].append(t)
+        if rename is not None:
+            rn = str(rename)[:_VIEWS_MAX_NAME].strip()
+            if not rn:
+                return None, "the new name is empty"
+            if any(t2["name"] == rn and t2["id"] != (hits[0]["id"] if hits else None) for t2 in v["tags"]):
+                return None, 'a tag named "%s" already exists' % rn   # names address edits — no twins
+            t["name"] = rn
         # add/remove arrive as viewer-relative id strings (the route's contract); the store is
         # canonical pairs — convert on the way in, match removals by pair (federation v0)
         addp = [m for m in (_member_pair(x) for x in add) if m]
@@ -23503,7 +23538,8 @@ else if(m.type==="hover"&&panel.setHover)panel.setHover(m);
 // chat rail CLICK -> pan + pulse (the user 2026-07-23). Must mirror timeline-boot.ts's dispatchFrame:
 // this inline copy serves the browser, that one the VS Code webview. net-popover-known.test.ts's sibling
 // timeline-boot.test.ts pins the pair.
-else if(m.type==="revealEvent"&&panel.revealEvent)panel.revealEvent(m.sid,m.t,m.id);});
+else if(m.type==="revealEvent"&&panel.revealEvent)panel.revealEvent(m.sid,m.t,m.id);
+else if(m.type==="tagEditFailed"&&panel.tagEditFailed)panel.tagEditFailed(m);});
 window.__rompTimelineOpenExternal=function(url){try{var u=new URL(url);if(u.protocol==="vscode:"){var q=u.searchParams;
 post({type:"deepLink",session:q.get("session"),anchor:q.get("anchor")||undefined,anchorT:Number(q.get("anchorT"))||undefined,anchorKind:q.get("anchorKind")||undefined,compose:q.get("compose")==="1"});
 if(window.parent!==window)window.parent.postMessage({romp:"reveal",pane:"chat"},"*");return;}}catch(e){}window.open(url,"_blank");};
@@ -23512,6 +23548,7 @@ window.__rompTimelineCompact=function(name){post({type:"compact",name:name});};
 window.__rompTimelineSendCommand=function(name,cmd){post({type:"sendCommand",name:name,cmd:cmd});};
 window.__rompTimelineSetFlag=function(id,flag,value){post({type:"setSessionFlag",id:id,flag:flag,value:!!value});};
 window.__rompTimelineSetViews=function(views){post({type:"setTimelineViews",views:views});};
+window.__rompTimelineEditTag=function(edit){post({type:"editTag",edit:edit});};
 window.__rompTimelineDismiss=function(id){post({type:"dismissLane",id:id});};
 window.__rompTimelineHover=function(sid,segIds,t0,t1){post(sid?{type:"timelineHover",sid:sid,segIds:segIds||[],t0:t0,t1:t1}:{type:"timelineHover",off:true});};
 window.__rompConnectTimeline=function(p){panel=p;post({type:"ready"});};})();
@@ -27243,24 +27280,20 @@ class Handler(BaseHTTPRequestHandler):
                 # refuses loudly: an unreachable kernel must never silently no-op an edit.
                 th = str((b or {}).get("host") or "").strip()
                 if th:
-                    with _remotes_lock:
-                        r = next((x for x in _remotes.values() if x.get("host") == th), None)
-                        r_up = bool(r and r.get("status") == "up")
-                    if not r:
-                        return self._send(200, json.dumps({"ok": False, "error":
-                            'no attached kernel named "%s" (see the network panel)' % th}),
-                            "application/json")
-                    if not r_up:
-                        return self._send(200, json.dumps({"ok": False, "error":
-                            '"%s" is attached but not reachable right now' % th}), "application/json")
-                    fwd = {k: v for k, v in b.items() if k != "host"}
-                    ans = _remote_forward(r, "/tag", fwd)
-                    if ans is None:
-                        return self._send(200, json.dumps({"ok": False, "error":
-                            'the edit never landed on "%s" (tunnel hiccup — try again)' % th}),
-                            "application/json")
+                    ans, err = _forward_tag_edit(th, {k: v for k, v in b.items() if k != "host"})
+                    if err:
+                        return self._send(200, json.dumps({"ok": False, "error": err}),
+                                          "application/json")
+                    _mark_views_dirty()
                     return self._send(200, json.dumps(ans), "application/json")
                 live = _live_names(_tmux_sessions())
+                # this kernel's own label for each attached kernel's sids — the HOME-frame
+                # resolution of a bare sid an edit routed here from a third kernel (federation v1:
+                # viewer C adds kernel-B's session to THIS kernel's tag; C cannot know our name for
+                # B, but sids are global — we resolve them into OUR frame ourselves)
+                with _remotes_lock:
+                    rsids = {s: r["host"] for r in _remotes.values()
+                             for s in (r.get("sids") or []) if r.get("host")}
                 ids, unknown = {"add": [], "remove": []}, []
                 for k in ("add", "remove"):
                     for x in (b.get(k) if isinstance(b.get(k), list) else []):
@@ -27269,9 +27302,17 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         if x in live:
                             ids[k].append(live[x])
-                        elif re.fullmatch(r"[0-9a-fA-F-]{32,36}", x) or \
-                                re.fullmatch(r"[^:]+:[0-9a-fA-F-]{32,36}", x):
-                            ids[k].append(x)          # a sid, or a host-prefixed remote SID, verbatim
+                        elif re.fullmatch(r"[0-9a-fA-F-]{32,36}", x):
+                            local = False
+                            try:
+                                local = (jd.STATE / "names" / x).exists()
+                            except OSError:
+                                pass
+                            # a bare sid we know as a REMOTE's lands in our frame for it; local or
+                            # unknown stays bare (unknown = legacy behavior — inert until known)
+                            ids[k].append(x if (local or x not in rsids) else rsids[x] + ":" + x)
+                        elif re.fullmatch(r"[^:]+:[0-9a-fA-F-]{32,36}", x):
+                            ids[k].append(x)          # a host-prefixed remote SID, verbatim
                         else:
                             unknown.append(x)
                 if unknown:
@@ -27279,9 +27320,11 @@ class Handler(BaseHTTPRequestHandler):
                         "no live session named %s (dead ones go by sid, remote ones by host:<sid>)" %
                         ", ".join('"%s"' % x for x in unknown)}), "application/json")
                 color = b.get("color")
+                rn = b.get("rename")
                 t, err = _edit_tag(name, add=ids["add"], remove=ids["remove"],
                                    color=(str(color) if isinstance(color, str) else None),
-                                   delete=bool(b.get("delete")))
+                                   delete=bool(b.get("delete")),
+                                   rename=(str(rn) if isinstance(rn, str) else None))
                 if err:
                     return self._send(200, json.dumps({"ok": False, "error": err}), "application/json")
                 _mark_views_dirty()
@@ -27740,6 +27783,36 @@ class Handler(BaseHTTPRequestHandler):
             # dashboards, like colormap). Validation/normalization happens in the setter.
             _set_timeline_views(msg["views"])
             _mark_views_dirty()
+        elif msg and msg.get("type") == "editTag" and isinstance(msg.get("edit"), dict):
+            # tag federation v1 (the user 2026-08-24): a REMOTE tag edited in the dialog/menu routes
+            # to its HOME kernel through the same channel `romp tag --host` uses — the tag's host
+            # stamp says where. Ids arrive as the viewer's spellings; only the BARE sid tail crosses
+            # (sids are global) and the home kernel resolves each into ITS OWN frame — this kernel's
+            # labels mean nothing there (the federation counter rule). A failure pushes a LOUD
+            # tagEditFailed to the asking dashboard's timeline: a down owner visibly refuses, never
+            # a silent queue. Local tags never come through here — the dialog still posts the whole
+            # blob for them (zero behavior change).
+            e = msg["edit"]
+            host = str(e.get("host") or "").strip()
+            nm = str(e.get("name") or "").strip()
+            if host and nm:
+                tail = lambda x: x.rsplit(":", 1)[-1]
+                body = {"name": nm}
+                for k in ("add", "remove"):
+                    if isinstance(e.get(k), list):
+                        body[k] = [tail(str(x)) for x in e[k] if str(x).strip()]
+                if isinstance(e.get("color"), str):
+                    body["color"] = e["color"]
+                if isinstance(e.get("rename"), str):
+                    body["rename"] = e["rename"]
+                if e.get("delete"):
+                    body["delete"] = True
+                ans, err = _forward_tag_edit(host, body)
+                if err or not (ans or {}).get("ok", False):
+                    _send_to_view("timeline", {"type": "tagEditFailed", "host": host, "name": nm,
+                                               "error": err or (ans or {}).get("error") or "refused"},
+                                  (client or {}).get("wid") or "")
+                _mark_views_dirty()
         elif msg and msg.get("type") == "cardNotify" and msg.get("itemId"):
             # feed card right-click → per-card bell (OS notification when THIS card blocks on you /
             # completes). Persisted to notify-cards.json; build_feed echoes it back as ask.notify.

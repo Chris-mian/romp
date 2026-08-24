@@ -252,3 +252,56 @@ test("the views menu closes with its siblings on outside click / Escape / pagehi
   assert.match(SRC, /if \(e\.key === 'Escape'\) \{ this\._closeMetaMenu\(\); this\._closeLaneMenu\(\); this\._closeViewsMenu\(\); \}/);
   assert.match(SRC, /this\._closeViewsMenu\(\); this\._closeViewsDialog\(\);/, "pagehide drops both overlays");
 });
+
+test("executed: a remote-tag edit renders optimistically, echoes on the poll, yields after three silences", () => {
+  // the sessionViews reconcile precedent, per remote tag (federation v1)
+  const p: any = Object.create(TimelinePanel.prototype);
+  p._pendingViews = null; p._pendingTagEdits = {}; p._views = { active: "all", hidden: [], tags: [],
+    remoteTags: [{ id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "team", color: "#DD42FF", members: ["m1"] }] };
+  // the optimistic overlay: a member add renders immediately
+  p._pendingTagEdits["TESTHOST-A:g1"] = { tag: { id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "team",
+    color: "#DD42FF", members: ["m1", "m2"] }, age: 0 };
+  assert.deepEqual(p._curViews().remoteTags[0].members, ["m1", "m2"], "pending copy renders");
+  // the owner's poll echoes (order-insensitive) → the pending clears
+  p._views = { active: "all", hidden: [], tags: [], remoteTags: [{ id: "TESTHOST-A:g1", host: "TESTHOST-A",
+    name: "team", color: "#DD42FF", members: ["m2", "m1"] }] };
+  p._reconcileTagEdits();
+  assert.deepEqual(p._pendingTagEdits, {}, "echo match clears the pending edit");
+  // never echoed → three silent pushes yield to the polled truth
+  p._pendingTagEdits["TESTHOST-A:g1"] = { tag: { id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "renamed",
+    color: "#DD42FF", members: [] }, age: 0 };
+  p._reconcileTagEdits(); p._reconcileTagEdits();
+  assert.ok(p._pendingTagEdits["TESTHOST-A:g1"], "two silences → still holding");
+  p._reconcileTagEdits();
+  assert.deepEqual(p._pendingTagEdits, {}, "the third yields — the owner refused or another dashboard won");
+  // a pending DELETE hides the tag meanwhile
+  p._pendingTagEdits["TESTHOST-A:g1"] = { tag: null, age: 0 };
+  assert.equal((p._curViews().remoteTags || []).length, 0, "a pending delete renders as gone");
+});
+
+test("executed: tagEditFailed reverts the optimistic copy and keeps the reason for the dialog", () => {
+  const p: any = Object.create(TimelinePanel.prototype);
+  p._pendingViews = null; p._views = { active: "all", hidden: [], tags: [] };
+  p._pendingTagEdits = { "TESTHOST-A:g1": { tag: null, age: 0 }, "TESTHOST-B:g2": { tag: null, age: 0 } };
+  p._viewsDialog = null; p._viewsDialogBuild = null; p.draw = () => {};
+  p.tagEditFailed({ host: "TESTHOST-A", name: "team", error: "not reachable" });
+  assert.deepEqual(Object.keys(p._pendingTagEdits), ["TESTHOST-B:g2"],
+    "only the failing owner's pendings revert — B's edit is still in flight");
+  assert.equal(p._tagEditErr.error, "not reachable");
+});
+
+test("federation v1 source pins: the dialog edits remote tags in place, routed home, loudly on failure", () => {
+  // the remote header (rename/recolor/delete) and chip ✕ dispatch through ONE method
+  assert.match(SRC, /this\._editRemoteTag\(rtg, \{ rename: nv \}\);/);
+  assert.match(SRC, /this\._editRemoteTag\(rtg, \{ color: c \}\); build\(\);/);
+  assert.match(SRC, /this\._editRemoteTag\(rtg, \{ delete: true \}\);/);
+  assert.match(SRC, /this\._editRemoteTag\(rt, \{ remove: \[s\.id\] \}\); build\(\);/);
+  assert.match(SRC, /this\._editRemoteTag\(rt, \{ add: rowIds\.slice\(\) \}\); build\(\);/);
+  // no hook (the Obsidian panel) → read-only stays, refusal immediate and visible
+  assert.match(SRC, /typeof window\.__rompTimelineEditTag !== 'function'/);
+  // the error line is dismissible and names the owner
+  assert.match(SRC, /er\.createSpan\(\{ text: '⚠ ' \+ \(this\._tagEditErr\.host \? this\._tagEditErr\.host \+ ': ' : ''\) \+ this\._tagEditErr\.error \}\);/);
+  // local tags still post the whole blob — zero behavior change (the editTag op is remote-only)
+  assert.match(SRC, /nv\.tags = viewTags\(nv\)\.concat/);
+});
+

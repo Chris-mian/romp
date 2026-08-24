@@ -617,6 +617,8 @@ class TimelinePanel {
     this._dismissed = new Set(); // sids cleared via the dead-lane Clear pill, held STICKY the same way (see _reconcileDismissed)
     this._views = null;          // the kernel-echoed views blob (data.views); null until the first push
     this._pendingViews = null;   // an optimistic edit held sticky until a push echoes it (see _reconcileViews)
+    this._pendingTagEdits = {};  // remote-tag edits held optimistically until the owner's poll echoes (federation v1): id → {tag: shape|null(=deleted), age}
+    this._tagEditErr = null;     // the LOUD failure of the last remote-tag edit ({host, name, error}), shown in the dialog until dismissed
     this._pendingViewsAge = 0;   // pushes since the edit — the kernel is authoritative, so a stale pending yields
     this._viewsMenu = null;      // the Show-dropdown element, when open
     this._viewsDialog = null;    // the sessions/group dialog backdrop, when open
@@ -1475,6 +1477,7 @@ class TimelinePanel {
     this._reconcilePendingFlags();   // hold an optimistic eye-toggle sticky until THIS push (or a later one) confirms it
     this._reconcileDismissed();      // ...and a Cleared dead lane, so a stale/merged push can't pop it back
     this._reconcileViews();          // ...and an optimistic view edit, until the kernel echoes it
+    this._reconcileTagEdits();       // ...and any remote-tag edits, until the owner's poll echoes them
     this._signalReady();             // first lanes are about to paint → let the shell drop the boot splash
     // Live-edge baseline: the edge free-runs off a FIXED anchor and each poll rebases it MONOTONICALLY
     // (reanchorEdge) — it catches up forward when behind but NEVER moves backward, so bursty/jittery/
@@ -2352,7 +2355,24 @@ class TimelinePanel {
   // disclosure: the trigger is the one-line version; the dropdown holds the views and the two
   // timeline display toggles; the dialog holds the per-session checkboxes. All pointerdown-based
   // (the redraw-eats-click rule) and rebuilt per draw like the gear/lock.
-  _curViews() { return this._pendingViews || this._views || { active: 'all', hidden: [], tags: [] }; }
+  _curViews() {
+    const base = this._pendingViews || this._views || { active: 'all', hidden: [], tags: [] };
+    const ids = Object.keys(this._pendingTagEdits || {});
+    if (!ids.length) return base;
+    // remote-tag edits render optimistically (federation v1): the pending shape overlays the polled
+    // one until the owner's next poll echoes it (or the 3-cycle yield in _reconcileTagEdits)
+    const v = {}; for (const k in base) v[k] = base[k];
+    let rt = (base.remoteTags || []).slice();
+    for (const id of ids) {
+      const pend = this._pendingTagEdits[id];
+      const i = rt.findIndex((t) => t.id === id);
+      if (pend.tag === null) { if (i >= 0) rt.splice(i, 1); }
+      else if (i >= 0) rt[i] = pend.tag;
+      else rt.push(pend.tag);
+    }
+    if (rt.length) v.remoteTags = rt; else delete v.remoteTags;
+    return v;
+  }
 
   // one canonical serialization for echo comparison: the kernel normalizer sorts hidden/members and
   // may clamp names, so compare shapes, not object identity
@@ -2361,6 +2381,58 @@ class TimelinePanel {
       hidden: (v.hidden || []).slice().sort(),
       tags: viewTags(v).map((t) => ({ id: t.id, name: t.name, color: t.color,
                                       members: (t.members || []).slice().sort() })) });
+  }
+
+  _reconcileTagEdits() {
+    // the sessionViews precedent, per REMOTE tag (federation v1): a pending edit clears when the
+    // owner's polled copy matches it (canonical compare — the poll re-sorts members), and yields to
+    // the polled truth after three silent pushes (the owner rejected it, or another dashboard won)
+    const ids = Object.keys(this._pendingTagEdits || {});
+    if (!ids.length) return;
+    const polled = ((this._views && this._views.remoteTags) || []);
+    const canon = (t) => t ? JSON.stringify({ n: t.name, c: t.color, m: (t.members || []).slice().sort() }) : null;
+    for (const id of ids) {
+      const pend = this._pendingTagEdits[id];
+      const seen = polled.find((t) => t.id === id) || null;
+      if (canon(seen) === canon(pend.tag)) { delete this._pendingTagEdits[id]; continue; }
+      if (++pend.age >= 3) delete this._pendingTagEdits[id];
+    }
+  }
+
+  // one remote-tag edit, dispatched to its HOME kernel and rendered optimistically meanwhile.
+  // Ids ride viewer-relative; the kernel sends only the bare sid tails (sids are global) and the
+  // owner resolves them into ITS frame. No hook (the Obsidian panel) → the tag stays read-only
+  // and the refusal is immediate and visible, never a silent drop.
+  _editRemoteTag(rt, edit) {
+    if (typeof window === 'undefined' || typeof window.__rompTimelineEditTag !== 'function') {
+      this._tagEditErr = { host: rt.host, name: rt.name,
+                           error: 'this panel cannot reach ' + (rt.host || 'the owner') + " — edit with: romp tag --host " + (rt.host || '<kernel>') };
+      this.draw();
+      return false;
+    }
+    let next = null;
+    if (!edit.delete) {
+      next = { id: rt.id, host: rt.host, name: edit.rename || rt.name, color: edit.color || rt.color,
+               members: (rt.members || []).slice() };
+      for (const x of (edit.add || [])) if (next.members.indexOf(x) < 0) next.members.push(x);
+      if (edit.remove) next.members = next.members.filter((x) => edit.remove.indexOf(x) < 0);
+    }
+    this._pendingTagEdits[rt.id] = { tag: next, age: 0 };
+    window.__rompTimelineEditTag({ host: rt.host, name: rt.name, rename: edit.rename,
+                                   color: edit.color, add: edit.add, remove: edit.remove,
+                                   delete: !!edit.delete });
+    this.draw();
+    return true;
+  }
+
+  // the kernel's LOUD refusal (a down owner, a name collision there): the optimistic copy reverts
+  // and the reason shows in the dialog (rebuilt in place if open) until dismissed
+  tagEditFailed(m) {
+    for (const id of Object.keys(this._pendingTagEdits || {}))
+      if (id.split(':')[0] === m.host) delete this._pendingTagEdits[id];   // edits are name-addressed per host — revert them all
+    this._tagEditErr = { host: m.host || '', name: m.name || '', error: m.error || 'refused' };
+    if (this._viewsDialog && this._viewsDialogBuild) this._viewsDialogBuild();
+    this.draw();
   }
 
   _reconcileViews() {
@@ -2489,7 +2561,7 @@ class TimelinePanel {
   _closeViewsMenu() { if (this._viewsMenu) { this._viewsMenu.remove(); this._viewsMenu = null; } }
   _closeViewsDialog() {
     if (!this._viewsDialog) return;
-    this._viewsDialog.remove(); this._viewsDialog = null;
+    this._viewsDialog.remove(); this._viewsDialog = null; this._viewsDialogBuild = null;
     if (this._viewsDialogKey) {   // the Escape hook dies with the dialog on EVERY close path, not just Escape
       try { this._viewsDialogKey.doc.removeEventListener('keydown', this._viewsDialogKey.fn); } catch (e) {}
       this._viewsDialogKey = null;
@@ -2616,10 +2688,34 @@ class TimelinePanel {
       card.textContent = '';
       const v = this._curViews();
       const tg = gid ? viewTags(v).find((x) => x.id === gid) : null;
-      if (gid && !tg) { this._closeViewsDialog(); return; }   // the tag was deleted elsewhere
+      // a REMOTE tag opens the same header (federation v1): its edits route to the home kernel
+      const rtg = gid && !tg ? ((v.remoteTags || []).find((x) => x.id === gid) || null) : null;
+      if (gid && !tg && !rtg) { this._closeViewsDialog(); return; }   // the tag was deleted elsewhere
+      const canEdit = typeof window !== 'undefined' && typeof window.__rompTimelineEditTag === 'function';
       const head = card.createDiv();
       head.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:0 0 8px;');
-      if (tg) {
+      if (rtg) {
+        const hp = head.createSpan({ text: (rtg.host || '') + ':' });
+        hp.setAttribute('style', 'flex:0 0 auto;color:' + MODEL_FG + ';font-style:italic;font-size:0.88em;');
+        const nameIn = document.createElement('input');
+        nameIn.value = rtg.name || 'tag'; nameIn.maxLength = 40;
+        nameIn.disabled = !canEdit;
+        nameIn.setAttribute('style', 'flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;'
+          + 'border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:3px 6px;font:inherit;');
+        nameIn.addEventListener('change', () => {
+          const nv = nameIn.value.slice(0, 40).trim();
+          if (nv && nv !== rtg.name) this._editRemoteTag(rtg, { rename: nv });
+          build();
+        });
+        head.appendChild(nameIn);
+        const del = head.createSpan({ text: 'Delete' });
+        del.setAttribute('style', 'flex:0 0 auto;cursor:pointer;opacity:0.7;color:#F85B5A;' + (canEdit ? '' : 'display:none;'));
+        hover(del, 'opacity:1;', 'opacity:0.7;');
+        del.addEventListener('click', () => {
+          this._editRemoteTag(rtg, { delete: true });
+          this._closeViewsDialog();
+        });
+      } else if (tg) {
         const nameIn = document.createElement('input');
         nameIn.value = tg.name; nameIn.maxLength = 40;
         nameIn.setAttribute('style', 'flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;'
@@ -2643,6 +2739,26 @@ class TimelinePanel {
       } else {
         const ttl = head.createDiv({ text: 'Sessions & tags' });
         ttl.setAttribute('style', 'font-weight:650;');
+      }
+      if (rtg && canEdit) {
+        const sw = card.createDiv();
+        sw.setAttribute('style', 'display:flex;gap:6px;margin:2px 0 8px;flex-wrap:wrap;');
+        for (const c of (this._palette && this._palette.length ? this._palette : [rtg.color || '#1EA1EB'])) {
+          const d = sw.createSpan();
+          d.setAttribute('style', 'width:16px;height:16px;border-radius:50%;cursor:pointer;background:' + c + ';'
+            + (c === rtg.color ? 'outline:2px solid #ffffff;outline-offset:1px;' : 'opacity:0.75;'));
+          d.addEventListener('click', () => { this._editRemoteTag(rtg, { color: c }); build(); });
+        }
+      }
+      // the LOUD failure of the last routed edit (a down owner, a collision there) — dismissible
+      if (this._tagEditErr) {
+        const er = card.createDiv();
+        er.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:0 0 8px;padding:4px 8px;'
+          + 'border:1px solid #F85B5A;border-radius:5px;color:#F85B5A;font-size:0.88em;');
+        er.createSpan({ text: '⚠ ' + (this._tagEditErr.host ? this._tagEditErr.host + ': ' : '') + this._tagEditErr.error });
+        const ex = er.createSpan({ text: '✕' });
+        ex.setAttribute('style', 'margin-left:auto;cursor:pointer;opacity:0.7;');
+        ex.addEventListener('click', () => { this._tagEditErr = null; build(); });
       }
       if (tg) {
         const sw = card.createDiv();
@@ -2709,8 +2825,22 @@ class TimelinePanel {
         const addMenu = (rowIds) => {   // the [+] menu, per-row or bulk — spans the grid
           const am = grid.createDiv();
           am.setAttribute('style', 'grid-column:1 / -1;margin:2px 0 4px 8px;display:flex;gap:5px;flex-wrap:wrap;align-items:center;');
-          const joinable = viewTags(this._curViews()).filter((t) =>
+          const cur = this._curViews();
+          const joinable = viewTags(cur).filter((t) =>
             rowIds.some((id) => (t.members || []).indexOf(id) < 0));
+          if (canEdit)
+            for (const rt of (cur.remoteTags || []).filter((t) => rowIds.some((id) => (t.members || []).indexOf(id) < 0))) {
+              const rc2 = rt.color || '#cccccc';
+              const ropt = am.createSpan({ text: (rt.host || '') + ':' + (rt.name || 'tag') });
+              ropt.setAttribute('style', 'padding:1px 8px;border-radius:9px;font-size:0.82em;cursor:pointer;'
+                + 'color:' + rc2 + ';border:1px dashed ' + rc2 + ';background:transparent;');
+              hover(ropt, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
+              ropt.setAttribute('title', 'joins ' + (rt.host || '?') + "'s tag — the edit routes there");
+              ropt.addEventListener('click', () => {
+                addMenuFor = null;
+                this._editRemoteTag(rt, { add: rowIds.slice() }); build();
+              });
+            }
           for (const t of joinable) {
             const tc = t.color || '#cccccc';
             const opt = am.createSpan({ text: t.name });
@@ -2769,12 +2899,23 @@ class TimelinePanel {
             const rch = chips.createSpan();
             rch.setAttribute('style', 'display:inline-flex;align-items:center;gap:4px;'
               + 'padding:2px 7px;border-radius:9px;font-size:0.82em;white-space:nowrap;opacity:0.85;'
-              + 'color:' + rc + ';border:1px dashed ' + rc + ';background:transparent;');
+              + 'color:' + rc + ';border:1px dashed ' + rc + ';background:transparent;'
+              + (canEdit ? 'cursor:pointer;' : ''));
             const rh = rch.createSpan({ text: (rt.host || '') + ':' });
             rh.setAttribute('style', 'color:' + MODEL_FG + ';font-style:italic;font-size:0.88em;');
             rch.createSpan({ text: rt.name || 'tag' });
-            rch.setAttribute('title', 'tagged on ' + (rt.host || 'another kernel')
-              + ' — read-only here; edit with: romp tag --host ' + (rt.host || '<kernel>'));
+            if (canEdit) {
+              // federation v1: the ✕ routes the removal to the tag's home kernel — same chip
+              // gesture as a local tag, the dashes still saying whose it is
+              const rx = rch.createSpan({ text: '✕' });
+              rx.setAttribute('style', 'color:' + MODEL_FG + ';opacity:0.75;font-size:0.9em;');
+              hover(rch, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
+              rch.setAttribute('title', 'tagged on ' + (rt.host || 'another kernel') + ' — click to take this tag off (routed there)');
+              rch.addEventListener('click', () => { this._editRemoteTag(rt, { remove: [s.id] }); build(); });
+            } else {
+              rch.setAttribute('title', 'tagged on ' + (rt.host || 'another kernel')
+                + ' — read-only here; edit with: romp tag --host ' + (rt.host || '<kernel>'));
+            }
           }
           for (const t of viewTags(vv)) {
             if ((t.members || []).indexOf(s.id) < 0) continue;
@@ -2837,6 +2978,7 @@ class TimelinePanel {
       if (query) { q.focus(); try { q.setSelectionRange(q.value.length, q.value.length); } catch (e) {} }
     };
     build();
+    this._viewsDialogBuild = build;   // tagEditFailed repaints the open dialog with the refusal
     const h = this._menuHost({ left: 0, top: 0, bottom: 0, right: 0 });
     back.addEventListener('pointerdown', (e) => { if (e.target === back) this._closeViewsDialog(); });
     const onKey = (e) => { if (e.key === 'Escape') this._closeViewsDialog(); };
