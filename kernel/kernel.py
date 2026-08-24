@@ -9148,6 +9148,31 @@ def _checkin_payload(r):
             "token": _load_token()}
 
 
+def _handshake_due(r, ssh_pid, now):
+    """Whether the check-in handshake should fire this pass (the user 2026-08-24, auto-reconnect):
+    the old key was the ssh pid alone — "once per tunnel incarnation" — which made a HUB kernel
+    restart invisible: the mobile's ssh survives (sshd holds it), the pid never changes, and the
+    freshly-booted hub, having lost or never restored the peer row, waits forever for a handshake
+    that never comes. Caught live: the reverse forward standing, remotes.json on the hub empty, the
+    panel saying disconnected until a manual re-dial minted a new pid. Due when:
+      - never handshaken this ssh incarnation (the original rule), or
+      - the HUB's kernel incarnation changed (its /version pid, polled every pass — the restart IS
+        the event), or
+      - the last handshake is older than the slow refresh floor (the bounded steady re-announce:
+        idempotent on the hub, and the healer of any row loss no event announces).
+    """
+    hk = r.get("_handshook")
+    if not isinstance(hk, dict) or hk.get("ssh") != ssh_pid:
+        return True
+    hub = r.get("hub_pid")
+    if hub and hk.get("hub") and hk.get("hub") != hub:
+        return True
+    return (now - float(hk.get("at") or 0)) >= CHECKIN_REFRESH_S
+
+
+CHECKIN_REFRESH_S = 300      # the slow steady re-announce floor while checked in (5 min; idempotent)
+
+
 def _checkin_handshake(r):
     """Tell the hub (through our own -L to its kernel) where our reverse forwards landed and hand it
     our token — the PUSH that replaces the hub ever fetching credentials. Authorizes with the HUB's
@@ -11044,6 +11069,8 @@ def _tunnel_supervisor():
                         # _start_remote wrote it (the user 2026-07-11)
                     if sids is not None:
                         r["sids"] = sids
+                    if rver and rver.get("pid"):
+                        r["hub_pid"] = rver["pid"]   # the peer kernel's incarnation — a restart changes it (auto-reconnect 2026-08-24)
                     if rsha is not None:
                         r["kernel_sha"] = rsha
                         r["kernel_ver"] = (rver or {}).get("ver") or ""
@@ -11083,14 +11110,17 @@ def _tunnel_supervisor():
                             if r["host"] in _remotes:
                                 r["_peer_notified"] = want
                 if _postal_peers_on() and r.get("checkin") and peer_up:
-                    # CHECK-IN handshake, once per tunnel incarnation (keyed on the ssh pid): the hub
-                    # learns our reverse-forward ports + token the moment our tunnel answers. A failed
-                    # handshake retries every pass while the tunnel is up — the hub may be restarting.
+                    # CHECK-IN handshake (re-keyed 2026-08-24, auto-reconnect): fires on a new ssh
+                    # incarnation, on a HUB kernel restart (its /version pid, polled every pass —
+                    # the restart is the event), and on the slow refresh floor — so the hub re-learns
+                    # us within a pass of coming back, with zero user action, and any hub-side row
+                    # loss heals within CHECKIN_REFRESH_S. A failed handshake retries every pass
+                    # while the tunnel is up — the hub may be mid-boot.
                     pid = r["proc"].pid if r.get("proc") else 0
-                    if r.get("_handshook") != pid and _checkin_handshake(r):
+                    if _handshake_due(r, pid, now) and _checkin_handshake(r):
                         with _remotes_lock:
                             if r["host"] in _remotes:
-                                r["_handshook"] = pid
+                                r["_handshook"] = {"ssh": pid, "hub": r.get("hub_pid"), "at": now}
             if _postal_peers_on():
                 # Trust-by-origin (the user 2026-07-25): remembered-but-unattached hosts carry a
                 # tier too — their mail arrives relayed through a hub and is judged by true origin.
@@ -24594,7 +24624,7 @@ function fillHosts(){if(!dl)return;var hs=[];
 dl.innerHTML=hs.map(function(h){return '<option value=\"'+h+'\"></option>';}).join('');}
 function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
 _cfg=(d&&d.hosts)||[];fillHosts();}).catch(function(){});}
-var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'disconnected',error:'error'};
+var LBL={up:'connected',authorizing:'authorizing\\u2026',connecting:'connecting\\u2026',starting:'connecting\\u2026','no-kernel':'kernel not answering',down:'reconnecting\\u2026',error:'error'};
 // Every status explains itself on hover (the user 2026-07-22: learn it from tooltips, not the CLI).
 var TIP={up:'Connected: the ssh tunnel is open and that machine\\u2019s romp kernel is answering through it. Its sessions appear in your tabs and timeline.',
 authorizing:'Opening an ssh connection and reading that machine\\u2019s access token. Needs `ssh <host>` to work without a prompt.',
