@@ -44,7 +44,7 @@ import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 import { apiErrorReason } from "./api-error-reason";
 import { mathBlock, mathInline } from "./math";
-import { threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, type CommentThread } from "./comments";
+import { threadInFlight, threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, type CommentThread } from "./comments";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -5722,6 +5722,10 @@ function showForkPrompt(sid: string, uuid: string): void {
 // re-render (the transcript rebuilds constantly) reapplies it — the openFolds pattern.
 const commentThreads = new Map<string, CommentThread[]>();          // parent sid → last frame's threads
 const commentPending = new Map<string, { text: string; t: number }[]>(); // tid → optimistic sends
+// the one busy answer for the mark + rail tick: the pure predicate, plus this pane's own optimistic
+// sends (a reply just typed, frame echo still in flight) — see comments.ts replyOwed for the why
+const commentInFlight = (th: CommentThread): boolean =>
+  threadInFlight(th) || (th.status === "open" && !!(commentPending.get(th.tid) || []).length);
 const commentDrafts = new Map<string, string>();                    // draft key → unsent popover text
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
 let pendingCommentAnchor: { sid: string; uuid: string; exact: string;
@@ -5895,7 +5899,7 @@ function updateCommentRail(): void {
   }
   const sig = activeId + "|" + Math.round(r.top) + "," + Math.round(r.right) + "," + Math.round(r.height)
     + "|" + ticks.map((t) => t.th.tid + ":" + t.y + ":" + t.th.status + ":" + (t.th.unread ? 1 : 0)
-                            + ":" + (threadBusy(t.th.state) ? 1 : 0)).join(",");
+                            + ":" + (commentInFlight(t.th) ? 1 : 0)).join(",");
   if (sig === cmtRailSig && rail) return;
   cmtRailSig = sig;
   if (!rail) { rail = el("div", "cmt-rail"); rail.id = "cmt-rail"; document.body.appendChild(rail); }
@@ -5904,7 +5908,7 @@ function updateCommentRail(): void {
   rail.style.height = r.height + "px";
   const cls = (th: CommentThread) => "cmt-tick" + (th.status === "resolved" || th.status === "merged" ? " resolved" : "")
     + (th.unread && th.status === "open" ? " unread" : "")
-    + (threadBusy(th.state) && th.status === "open" ? " busy" : "");   // the crawl rides the tick (2026-08-23)
+    + (commentInFlight(th) ? " busy" : "");   // green while working OR a reply is owed (2026-08-24)
   const kids = Array.from(rail.children) as HTMLElement[];
   if (kids.length === ticks.length && kids.every((k, i) => k.dataset.tid === ticks[i].th.tid)) {
     ticks.forEach((t, i) => { kids[i].style.top = t.y + "px"; kids[i].className = cls(t.th); });
@@ -5990,7 +5994,7 @@ function ensureCommentMark(turn: HTMLElement, th: CommentThread): void {
 function styleCommentMark(m: HTMLElement, th: CommentThread): void {
   m.classList.toggle("resolved", th.status === "resolved" || th.status === "merged");
   m.classList.toggle("unread", !!th.unread && th.status === "open");
-  m.classList.toggle("busy", threadBusy(th.state) && th.status === "open");
+  m.classList.toggle("busy", commentInFlight(th));
   m.title = th.status === "promoted" ? "thread, now the session '" + th.promotedName + "'"
     : th.status === "merged" ? "merged thread: its outcome was folded back into the session"
     : th.status === "resolved" ? "resolved thread: click to read or reopen"
