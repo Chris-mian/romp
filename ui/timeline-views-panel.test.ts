@@ -99,6 +99,29 @@ test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separ
   assert.match(SRC, /bottom: 27 \}/);
 });
 
+test("the corner line wears the LANE LABELS' typography — inherited family, measured as rendered", () => {
+  // the user 2026-08-24, who read the chip as the wrong font: the corner texts carried an explicit
+  // 'font-family: FONT' while the lane names inherit the host's UI font, so at the same nominal
+  // 12px the chip rendered visibly bigger. The whole corner line now inherits like the lanes do —
+  // no family override anywhere in the trigger drawing…
+  const TRIG = SRC.slice(SRC.indexOf("_drawViewsTrigger(svg, axisY) {"), SRC.indexOf("_closeViewsMenu() {"));
+  assert.doesNotMatch(TRIG, /font-family/, "corner texts inherit the host font exactly like lane labels");
+  // …at the lane-label scale: trigger and N-more at the lane 12px, the chip name at the lane-name 650
+  assert.match(TRIG, /const t = el\('text', \{ x: PADL, y, 'font-size': 12, fill: MODEL_FG \}\);/);
+  assert.match(TRIG, /'font-size': 12, fill: gcol, 'font-weight': 650/);
+  assert.match(SRC, /'font-weight': 650, 'font-size': 12, fill: F\(s\.color\)/, "the lane-name reference the line matches");
+  // …and the width/ellipsis math measures in the SAME family the text renders in: _font resolves
+  // the wrap's computed family (FONT is only the unstyled/bare-node fallback), so box and ellipsis
+  // can never drift from the rendered glyphs
+  assert.match(SRC, /_font\(b\) \{ this\._mc\.font = \(b \? '700 ' \+ BADGE_FS \+ 'px ' : '650 12px '\) \+ this\._fontFace\(\); \}/);
+  assert.match(SRC, /getComputedStyle\(this\.wrap\)\.fontFamily\) \|\| FONT;/);
+  // …and EVERY measure goes through it: the only ctx.font writers left are _font/_fontFace-based
+  // (ctxWidth and the two inline 9px/10px axis measures included), so no measure site can drift
+  const MEASURES = SRC.match(/this\._mc\.font = [^;]+;/g) || [];
+  assert.ok(MEASURES.length >= 4, "the known measure sites are present");
+  for (const m of MEASURES) assert.match(m, /this\._fontFace\(\)/, "a measure bypasses _fontFace: " + m);
+});
+
 test("a pointerdown-opened menu survives its OWN opening click (the user 2026-08-24, click-and-hold bug)", () => {
   // the browser fires a click after pointerup; unstopped it bubbles to the document's menu-closer
   // and shuts the menu the instant it opened — only a mid-press redraw (element swapped, no click

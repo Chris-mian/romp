@@ -1019,10 +1019,25 @@ class TimelinePanel {
     return [24, 24, 24];
   }
 
-  _font(b) { this._mc.font = (b ? '700 ' + BADGE_FS + 'px ' : '650 12px ') + FONT; }
+  // the family the svg's text ACTUALLY renders in — inherited from the host (VS Code, Obsidian and
+  // the web page each set their own UI font; svg text carries no family of its own). Measuring with
+  // the hardcoded FONT stack drifted from rendered widths wherever the host font differs — the
+  // gutter width and the corner chip's box/ellipsis are sized from these measures. Resolved once
+  // per panel: a host's UI font does not change under a live pane. FONT stays the fallback for a
+  // measure before the wrap is styled (and for bare-node tests, where getComputedStyle is absent).
+  _fontFace() {
+    if (!this._fontFaceCache) {
+      try {
+        this._fontFaceCache = (this.wrap && typeof getComputedStyle === 'function'
+          && getComputedStyle(this.wrap).fontFamily) || FONT;
+      } catch (e) { this._fontFaceCache = FONT; }
+    }
+    return this._fontFaceCache;
+  }
+  _font(b) { this._mc.font = (b ? '700 ' + BADGE_FS + 'px ' : '650 12px ') + this._fontFace(); }
   labelWidth(s) { this._font(false); return this._mc.measureText(s || '').width; }
   badgeWidth(s) { this._font(true); return this._mc.measureText(s || '').width; }
-  ctxWidth(s) { this._mc.font = '600 11px ' + FONT; return this._mc.measureText(s || '').width; }
+  ctxWidth(s) { this._mc.font = '600 11px ' + this._fontFace(); return this._mc.measureText(s || '').width; }
 
   // Number.isFinite (not != null): the min/max clamp passes NaN straight through, and a NaN window
   // makes every x() NaN — the whole plot vanishes. Non-finite → the same default as unset.
@@ -1816,7 +1831,7 @@ class TimelinePanel {
     for (const e of ends) {
       svg.appendChild(el('line', { x1: e[0], y1: top, x2: e[0], y2: axisY, stroke: '#ffffff20', 'stroke-width': 1, 'pointer-events': 'none' }));
       const s = clock(e[1]), lx = e[0] + e[3];
-      this._mc.font = '9px ' + FONT;
+      this._mc.font = '9px ' + this._fontFace();
       const w = this._mc.measureText(s).width;
       if (placeLabel && !placeLabel(e[2] === 'end' ? lx - w : lx, e[2] === 'end' ? lx : lx + w)) continue;
       const tx = el('text', { x: lx, y: axisY + 14, 'text-anchor': e[2], fill: 'var(--text-muted)', 'font-size': 9, 'pointer-events': 'none' }); tx.textContent = s; svg.appendChild(tx);
@@ -2402,7 +2417,14 @@ class TimelinePanel {
     const fits = (n) => width(n) <= this.M.left - PADL - 6;
     while (active && name.length > 3 && !fits(name)) name = name.slice(0, -2) + '…';
     const y = axisY + 14;
-    const t = el('text', { x: PADL, y, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG });
+    // the whole corner line wears the LANE LABELS' typography (the user 2026-08-24, who read the
+    // chip as the wrong font): no explicit family — inherit the host font exactly like the lane
+    // names above, which carry none. The old explicit FONT override rendered the line in the
+    // fallback stack while the lanes wore the host's UI font, so at the same nominal 12px the chip
+    // read visibly bigger. Sizes/weights already match the lanes (12px; chip name at the lane-name
+    // 650), and labelWidth measures in the same inherited family (_fontFace), so the box/ellipsis
+    // math stays in step with what renders.
+    const t = el('text', { x: PADL, y, 'font-size': 12, fill: MODEL_FG });
     t.textContent = 'Filter ▾';
     t.setAttribute('style', 'cursor:pointer;user-select:none;');
     t.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(t); });
@@ -2426,13 +2448,12 @@ class TimelinePanel {
         fill: 'transparent',
         stroke: gcol, 'stroke-width': 1 });
       grp.appendChild(box);
-      const ct = el('text', { x: x + PADH, y, 'font-size': 12, 'font-family': FONT,
-        fill: gcol, 'font-weight': 650 });
+      const ct = el('text', { x: x + PADH, y, 'font-size': 12, fill: gcol, 'font-weight': 650 });
       ct.textContent = name;
       ct.setAttribute('style', 'user-select:none;');
       grp.appendChild(ct);
       const cx = el('text', { x: x + PADH + this.labelWidth(name) + XGAP, y, 'font-size': 11,
-        'font-family': FONT, fill: MODEL_FG, opacity: 0.75 });
+        fill: MODEL_FG, opacity: 0.75 });
       cx.textContent = '✕';
       cx.setAttribute('style', 'user-select:none;');
       grp.appendChild(cx);
@@ -2448,7 +2469,7 @@ class TimelinePanel {
       x += cw;
     }
     if (more) {
-      const m = el('text', { x: x + GAP, y, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG, opacity: 0.7 });
+      const m = el('text', { x: x + GAP, y, 'font-size': 12, fill: MODEL_FG, opacity: 0.7 });
       m.textContent = tailStr;   // a filtered-out live session is always one glance away
       // …and one CLICK away (the user 2026-08-24): the count opens the same views menu, so "what am
       // I not seeing?" answers itself with the list of tags to switch to
@@ -3139,7 +3160,7 @@ class TimelinePanel {
     for (let tk = Math.ceil(t0 / step) * step; tk <= t1; tk += step) {
       if (inGap(tk)) continue;
       svg.appendChild(el('line', { x1: x(tk), y1: M.top, x2: x(tk), y2: axisY, stroke: '#ffffff10', 'stroke-width': 1 }));
-      this._mc.font = '10px ' + FONT;
+      this._mc.font = '10px ' + this._fontFace();
       const hw = this._mc.measureText(clock(tk)).width / 2;
       if (!placeLabel(x(tk) - hw, x(tk) + hw)) continue;
       const tx = el('text', { x: x(tk), y: axisY + 14, 'text-anchor': 'middle', fill: 'var(--text-muted)', 'font-size': 10 }); tx.textContent = clock(tk); svg.appendChild(tx);
@@ -3694,18 +3715,18 @@ class TimelinePanel {
     // the stub points down (+1); sorted before → up (-1). A counterpart absent from data.sessions
     // entirely (dismissed, #only= filtered, or a foreign session) has no would-be slot: fixed
     // convention, down (+1, toward the axis), so unknowable counterparts always read one way.
-    // TWO-STATE COLOR, keyed on the exec EVENT, never a timer: mm.pending folds in the kernel's
+    // TWO-STATE STROKE, keyed on the exec EVENT, never a timer: mm.pending folds in the kernel's
     // in-flight staleness window (MSG_INFLIGHT_MAX), so it is NOT the key. Exec knowledge is:
     // hasExec (the logged exec event — kernel serialization, the federation upgrade, or the
     // midStart join above) OR exec moved off its sent-time fallback (the kernel serializes
     // exec = sent until a binder writes a real landing; _bind_message_execs' text-heuristic path
     // binds exec without ever logging an event, so hasExec alone would miss it — and federation
     // shifts sent and a fallback exec by the same offset, so the comparison survives rebasing).
-    // No exec known → await-green; exec known → working-yellow — both faded, the awaitingBg
-    // stretch's treatment. This file cannot load ui/webview/styles.css (it also runs inside
-    // Obsidian), so the two tokens are inlined with their names — the MENU_STYLE precedent:
-    const STUB_GREEN = '#54B204';    // --st-awaitbg-bg (await-green)
-    const STUB_YELLOW = '#e0b020';   // --st-working-bg (working-yellow)
+    // Exec known → SOLID, it arrived; none → DASHED, still in flight — the pending-connector
+    // idiom. The stroke COLOR is the sender's identity color, the full connectors' own resolution
+    // (the user 2026-08-24: the old state colors at stub alpha read as mud beside sender-colored
+    // connectors — working-yellow at 0.45 was a muddy orange). The faded 0.45 stays, keeping
+    // stubs subordinate to the work bars.
     const STUB_W = 3;                // a hair over MSG_W0 — a ~15px stroke needs the weight to read
     const STUB_DX = LANE_GAP / 2;    // full-height run → 45° in the lane grid; a nearer landing steepens it
     const stub = (mm, i, senderVisible) => {
@@ -3726,9 +3747,12 @@ class TimelinePanel {
         x2 = x(landXT(mm)); y2 = ly;
         x1 = Math.min(x2, Math.max(x(Math.max(sendXT(mm), t0)), x2 - STUB_DX)); y1 = ly + dir * LANE_GAP / 2;
       }
-      const col = (mm.hasExec || mm.exec !== mm.sent) ? STUB_YELLOW : STUB_GREEN;
-      svg.appendChild(el('line', { x1, y1, x2, y2, stroke: col, 'stroke-width': STUB_W, opacity: 0.45,
-                                   'stroke-linecap': 'round', 'pointer-events': 'none' }));
+      const col = colorOf(mm.fromId);   // the SENDER's color — the full connectors' own resolution
+      const arrived = mm.hasExec || mm.exec !== mm.sent;
+      const attrs = { x1, y1, x2, y2, stroke: col, 'stroke-width': STUB_W, opacity: 0.45,
+                      'stroke-linecap': 'round', 'pointer-events': 'none' };
+      if (!arrived) attrs['stroke-dasharray'] = '1 4';   // in flight — the pending-connector dash
+      svg.appendChild(el('line', attrs));
       // same affordances as a full connector: own-color highlight overlay + wide transparent hit,
       // co-lit with the arrival dot (PASS 2 links via msgUI), tooltip + click → where it landed
       const msgLit = dagOrHoverMsg(mm.id);

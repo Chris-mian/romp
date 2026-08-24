@@ -1,9 +1,10 @@
 // Hidden-counterpart message STUBS (the user 2026-08-24): a postal message whose OTHER endpoint has
 // no visible lane must still show on the lane it touches — a short diagonal stub through the lane's
 // band edge (exiting when the recipient is hidden, entering when the sender is), clipped to the band
-// by arithmetic (no clipPath), sloped toward where the hidden lane would sort, and colored by the
-// exec EVENT: await-green (--st-awaitbg-bg #54B204) until the exec binds, working-yellow
-// (--st-working-bg #e0b020) after — never a timer. Headless draw() over the render test's DOM shim,
+// by arithmetic (no clipPath), sloped toward where the hidden lane would sort, in the SENDER's
+// identity color like every full connector (the user 2026-08-24: state colors at stub alpha read as
+// mud), with the arrived/in-flight state on the STROKE STYLE — dashed until the exec binds, solid
+// after, keyed on the exec EVENT, never a timer. Headless draw() over the render test's DOM shim,
 // asserting on the SVG child tree.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -54,8 +55,7 @@ const viewPath = path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"
 const { TimelinePanel } = createRequire(__filename)(viewPath);
 const SRC = fs.readFileSync(viewPath, "utf8");
 
-const GREEN = "#54B204";    // --st-awaitbg-bg (await-green): exec not yet bound
-const YELLOW = "#e0b020";   // --st-working-bg (working-yellow): exec bound
+const ADA = "#f7768e", BEE = "#7aa2f7";   // sender identity colors (synthData below) — a stub wears its SENDER's
 const HALF = 13;            // LANE_GAP/2 — the band-edge clip distance AND the 45° stub run
 
 // Four sessions in a FIXED sort order — ada/cee view-hidden, bee/dee visible. The hidden ones
@@ -94,7 +94,8 @@ function nodes(panel: any): any[] {
   return out;
 }
 const stubLines = (panel: any, hex?: string) =>
-  nodes(panel).filter((n) => n.tag === "line" && (hex ? n._attrs.stroke === hex : (n._attrs.stroke === GREEN || n._attrs.stroke === YELLOW)) && n._attrs["stroke-width"] === 3);
+  nodes(panel).filter((n) => n.tag === "line" && n._attrs["stroke-width"] === 3 && n._attrs.opacity === 0.45
+    && (!hex || n._attrs.stroke === hex));
 const connPaths = (panel: any, color: string) =>
   nodes(panel).filter((n) => n.tag === "path" && n._attrs.fill === "none" && n._attrs.stroke === color && (n._attrs.opacity === 0.5 || n._attrs.opacity === 0.4));
 // expected coordinates from the SAME geometry draw() used (compress map included)
@@ -102,23 +103,25 @@ const X = (panel: any) => (t: number) => { const gm = panel._geom; return gm.ml 
 const laneY = (panel: any) => (i: number) => panel._geom.top + i * 26 + 13;
 const near = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) < 1e-6, msg + " (got " + a + ", want " + b + ")");
 
-test("a hidden-recipient message draws an outgoing stub: send-anchored, sloped toward the hidden lane, clipped at the band edge, await-green while pending", () => {
+test("a hidden-recipient message draws an outgoing stub: send-anchored, sloped toward the hidden lane, clipped at the band edge, sender-colored and dashed while pending", () => {
   const now = 1_781_000_000;
   const panel = draw([{ id: "m1", fromId: "SB", toId: "SC", from: "bee", to: "cee",
                         sent: now - 300, exec: now - 300, hasExec: false, pending: true, summary: "on its way" }]);
   const [s, ...rest] = stubLines(panel);
   assert.ok(s, "the stub line draws");
   assert.equal(rest.length, 0, "exactly one stub");
-  assert.equal(s._attrs.stroke, GREEN, "pending (no exec yet) wears await-green");
-  assert.ok(s._attrs.opacity < 1, "faded, the awaitingBg treatment");
+  assert.equal(s._attrs.stroke, BEE, "the stub wears its SENDER's identity color — the connector language");
+  assert.equal(s._attrs["stroke-dasharray"], "1 4", "no exec yet → dashed, the pending-connector idiom");
+  assert.ok(s._attrs.opacity < 1, "faded — subordinate to the work bars");
   near(s._attrs.x1, X(panel)(now - 300), "anchored at the send x");
   near(s._attrs.y1, laneY(panel)(0), "starts on the sender's lane center");
   near(s._attrs.y2, laneY(panel)(0) + HALF, "clipped AT the band edge — cee sorts after bee, so it exits downward");
   near(s._attrs.x2, s._attrs.x1 + HALF, "the 45° run toward the live edge, capped");
-  assert.equal(s._attrs.opacity, 0.45, "the awaitingBg fade level exactly — not invisible, not solid");
+  assert.equal(s._attrs.opacity, 0.45, "the stub fade level exactly — not invisible, not full-strength");
   assert.equal(s._attrs["pointer-events"], "none", "the visible mark never eats the hover — the hit target owns it");
-  const hl = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === GREEN && n._attrs["stroke-width"] === 6);
+  const hl = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === BEE && n._attrs["stroke-width"] === 6);
   assert.ok(hl && hl._attrs.opacity === 0, "the own-color highlight overlay rides the stub, dark until hover/DAG");
+  assert.equal(hl._attrs["stroke-dasharray"], undefined, "the highlight stays solid — the full-connector hl idiom");
   assert.equal(hl._attrs["pointer-events"], "none", "the highlight overlay is inert too");
   const hit = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
   assert.ok(hit, "a wide transparent hit target covers the stub");
@@ -143,7 +146,7 @@ test("a hidden-recipient message draws an outgoing stub: send-anchored, sloped t
   assert.equal(connPaths(panel, "#7aa2f7").length, 0, "no full connector is drawn for a half-hidden message");
 });
 
-test("the stub turns yellow for a heuristic-bound exec too — exec moved off its sent fallback, hasExec never logged", () => {
+test("the stub goes solid for a heuristic-bound exec too — exec moved off its sent fallback, hasExec never logged", () => {
   const now = 1_781_000_000;
   // the kernel's _bind_message_execs text-heuristic path writes exec/pending but no exec event is
   // ever logged, so the row ships hasExec:false with a REAL landing time — that is exec knowledge
@@ -151,13 +154,14 @@ test("the stub turns yellow for a heuristic-bound exec too — exec moved off it
                         sent: now - 200, exec: now - 50, hasExec: false, pending: false, summary: "heuristic-bound" }]);
   const [s] = stubLines(panel);
   assert.ok(s, "the stub draws");
-  assert.equal(s._attrs.stroke, YELLOW, "a bound exec is exec knowledge, with or without the logged event");
+  assert.equal(s._attrs["stroke-dasharray"], undefined, "a bound exec is exec knowledge, with or without the logged event — solid");
+  assert.equal(s._attrs.stroke, BEE, "…still the sender's color: state never recolors a stub");
 });
 
-test("the midStart join upgrades the stub to yellow — the join IS exec knowledge (hasExec set)", () => {
+test("the midStart join upgrades the stub to solid — the join IS exec knowledge (hasExec set)", () => {
   const now = 1_781_000_000;
   // recipient turn's mids carry the message id and its start EQUALS the sent time, so the ONLY
-  // yellow source is the join setting hasExec — pins the mm.hasExec = true half of this change
+  // solid source is the join setting hasExec — pins the mm.hasExec = true half of this change
   const panel: any = new TimelinePanel(makeNode("div"));
   const d = synthData();
   d.turns.SC = [{ id: "SC:1:cc", promptId: "SC:1:cc#p", workId: "SC:1:cc#w", start: now - 300, end: now - 200,
@@ -169,23 +173,24 @@ test("the midStart join upgrades the stub to yellow — the join IS exec knowled
   assert.equal(panel.data.messages[0].hasExec, true, "the join marks the exec as known");
   const [s] = stubLines(panel);
   assert.ok(s, "the stub draws");
-  assert.equal(s._attrs.stroke, YELLOW, "joined landing → working-yellow even with exec equal to sent");
+  assert.equal(s._attrs["stroke-dasharray"], undefined, "joined landing → solid even with exec equal to sent");
 });
 
-test("the stub flips to working-yellow on the exec event — hasExec, never the staleness timer", () => {
+test("the stub flips dashed→solid on the exec event — hasExec, never the staleness timer", () => {
   const now = 1_781_000_000;
   const landed = draw([{ id: "m2", fromId: "SB", toId: "SC", from: "bee", to: "cee",
                          sent: now - 300, exec: now - 30, hasExec: true, pending: false, summary: "landed" }]);
   const [ys] = stubLines(landed);
   assert.ok(ys, "the arrived stub draws");
-  assert.equal(ys._attrs.stroke, YELLOW, "exec bound → working-yellow");
+  assert.equal(ys._attrs["stroke-dasharray"], undefined, "exec bound → solid, it arrived");
   // a STALE in-flight message (kernel: pending aged out by MSG_INFLIGHT_MAX, still no exec) must NOT
-  // flip yellow — the color keys on the exec event, and no exec event ever happened here
+  // go solid — the stroke keys on the exec event, and no exec event ever happened here
   const stale = draw([{ id: "m3", fromId: "SB", toId: "SC", from: "bee", to: "cee",
                         sent: now - 400, exec: now - 400, hasExec: false, pending: false, summary: "never seen landing" }]);
   const [gs] = stubLines(stale);
   assert.ok(gs, "the stale stub still draws");
-  assert.equal(gs._attrs.stroke, GREEN, "no exec event → still await-green (the timer is not the key)");
+  assert.equal(gs._attrs["stroke-dasharray"], "1 4", "no exec event → still dashed (the timer is not the key)");
+  assert.equal(gs._attrs.stroke, BEE, "…and still the sender's color, stale or not");
   near(gs._attrs.x2, gs._attrs.x1, "with the landing x AT the send, the stub steepens to vertical — arithmetic clamp, no clipPath");
   near(gs._attrs.y2, laneY(stale)(0) + HALF, "still exits through the band edge");
 });
@@ -196,7 +201,8 @@ test("a hidden-sender message draws the mirror stub: entering from the band edge
                         sent: now - 400, exec: now - 100, hasExec: true, pending: false, summary: "delivered" }]);
   const [s] = stubLines(panel);
   assert.ok(s, "the incoming stub draws");
-  assert.equal(s._attrs.stroke, YELLOW, "already executed → working-yellow");
+  assert.equal(s._attrs.stroke, ADA, "the HIDDEN sender's color paints the incoming stub — sender, both directions");
+  assert.equal(s._attrs["stroke-dasharray"], undefined, "already executed → solid");
   near(s._attrs.x2, X(panel)(now - 100), "arrives at the exec x");
   near(s._attrs.y2, laneY(panel)(0), "arrives on the recipient's lane center");
   near(s._attrs.y1, laneY(panel)(0) - HALF, "enters from the TOP band edge — ada sorts before bee");
@@ -233,7 +239,7 @@ test("two visible lanes keep today's full connector — no stub elements", () =>
   const panel = draw([{ id: "m7", fromId: "SB", toId: "SD", from: "bee", to: "dee",
                         sent: now - 200, exec: now - 50, hasExec: true, pending: false, summary: "visible to visible" }]);
   assert.equal(connPaths(panel, "#7aa2f7").length, 1, "the full elbow connector draws exactly as before");
-  assert.equal(stubLines(panel).length, 0, "no stub-colored lines anywhere");
+  assert.equal(stubLines(panel).length, 0, "no stub lines anywhere");
 });
 
 test("window clamping is arithmetic: an off-window send or landing draws no stub", () => {
@@ -262,4 +268,11 @@ test("both stub anchors gate on their own endpoint and clamp x to the window by 
   assert.match(SRC, /x2 = Math\.max\(x1, Math\.min\(x\(Math\.min\(landXT\(mm\), t1\)\), x1 \+ STUB_DX\)\)/);
   assert.match(SRC, /x1 = Math\.min\(x2, Math\.max\(x\(Math\.max\(sendXT\(mm\), t0\)\), x2 - STUB_DX\)\)/);
   assert.doesNotMatch(SRC, /el\('clipPath'|clip-path/i, "clipped by arithmetic, never a clipPath element");
+  // the sender-color + dash retarget (the user 2026-08-24): color from the full connectors' own
+  // lookup, arrived/in-flight on the stroke style, and the old state-color tokens are GONE
+  assert.match(SRC, /const col = colorOf\(mm\.fromId\);\s*\/\/ the SENDER's color/);
+  assert.match(SRC, /const arrived = mm\.hasExec \|\| mm\.exec !== mm\.sent;/);
+  assert.match(SRC, /if \(!arrived\) attrs\['stroke-dasharray'\] = '1 4';/);
+  assert.doesNotMatch(SRC, /STUB_GREEN|STUB_YELLOW/, "the state-color tokens are deleted with their comments"
+    + " (their hexes live on legitimately in the badges/gauges — only the stub tokens die)");
 });
