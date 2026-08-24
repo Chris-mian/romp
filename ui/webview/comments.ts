@@ -44,6 +44,23 @@ export function threadBusy(state: string): boolean {
 
 /** The thread session is stuck on an interactive prompt the popover can't answer — say so, and point
  *  at Break out (a full session can). */
+// A reply is OWED the moment the user's message is the thread's newest with no agent reply landed
+// since (the user 2026-08-24, second report: the mark flashed green on create, dropped to YELLOW
+// while the thread CLI was still booting — its live state read idle, a flapping boot-time proxy —
+// then went green again once generation started). The in-flight color keys on the EXCHANGE's own
+// events: user message in → green until the reply message lands, however the worker session's state
+// wobbles on the way. The find-the-event rule, applied to a color.
+export function replyOwed(th: CommentThread): boolean {
+  const last = th.msgs.length ? th.msgs[th.msgs.length - 1] : null;
+  return !!last && last.who === "you";
+}
+// The ONE in-flight predicate every busy surface reads (the passage mark, the rail tick): live work
+// OR an owed reply, on an open, non-errored thread that isn't blocked on the user — a stuck thread's
+// reply is NOT on the way, and green would lie.
+export function threadInFlight(th: CommentThread): boolean {
+  return th.status === "open" && !th.error && !threadStuck(th.state)
+    && (threadBusy(th.state) || replyOwed(th));
+}
 export function threadStuck(state: string): boolean {
   return state === "permission" || state === "picker";
 }

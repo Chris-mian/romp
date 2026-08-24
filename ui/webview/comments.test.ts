@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { threadsByAnchor, threadBusy, threadStuck, findExact, findAnchorRange, sliceRanges, prunePending,
+import { threadsByAnchor, threadBusy, threadStuck, threadInFlight, replyOwed, findExact, findAnchorRange, sliceRanges, prunePending,
          type CommentThread } from "./comments";
 
 const th = (over: Partial<CommentThread>): CommentThread => ({
@@ -373,12 +373,12 @@ test("while the thread is WRITING the passage holds the await-green tint and NOT
   // the user 2026-08-24 (superseding 2026-08-23's tick-crawl compromise): the in-flight cue is the
   // await-green STATE COLOR on the passage itself — its own new-test block below pins the colors;
   // this one keeps the class wiring and holds the line on motion: no strips, no keyframes, anywhere.
-  assert.match(UI, /m\.classList\.toggle\("busy", threadBusy\(th\.state\) && th\.status === "open"\)/);
+  assert.match(UI, /m\.classList\.toggle\("busy", commentInFlight\(th\)\);/);
   assert.doesNotMatch(CSS, /mark\.cmt-hl\.busy \{[^}]*repeating-linear-gradient/s, "no strips on prose");
   assert.doesNotMatch(CSS, /@keyframes cmt-ants /, "the passage keyframes stay gone");
   assert.doesNotMatch(CSS, /@keyframes cmt-tick-ants/, "…and the tick's miniature march followed them out");
-  assert.match(UI, /\+ \(threadBusy\(th\.state\) && th\.status === "open" \? " busy" : ""\);/);
-  assert.match(UI, /\+ ":" \+ \(threadBusy\(t\.th\.state\) \? 1 : 0\)\)/, "a state flip re-renders the tick");
+  assert.match(UI, /\+ \(commentInFlight\(th\) \? " busy" : ""\);/);
+  assert.match(UI, /\+ ":" \+ \(commentInFlight\(t\.th\) \? 1 : 0\)\)/, "an in-flight flip re-renders the tick");
 });
 
 test("the popover renders the thread with the CHAT's own renderer from the branch point", () => {
@@ -458,4 +458,27 @@ test("the popover's typing dots are retired — the green highlight is the only 
   assert.doesNotMatch(UI, /cmt-dots/);
   assert.doesNotMatch(CSS, /cmt-dots|cmt-dot-pulse/);
   assert.match(UI, /the pending bubble IS the acknowledgement/);
+});
+
+// ── the in-flight color keys on the EXCHANGE, not the worker session's state (the user 2026-08-24,
+// second report): create → green for a second → YELLOW while the thread CLI booted (its live state
+// read idle) → green once generation started. The exact reported sequence, executed: ─────────────
+test("the mark stays green from send to landed reply, through the CLI-boot state wobble", () => {
+  const msg = (who: "you" | "agent") => ({ who, text: "x", t: 1 });
+  // 1) optimistic create: a synthetic working thread — green
+  assert.ok(threadInFlight(th({ state: "working", msgs: [] })), "optimistic create reads in-flight");
+  // 2) the kernel's frame replaces it mid-boot: state idle/empty, the comment is the newest message —
+  //    the reply is OWED, so STILL green (this is the wobble that flashed yellow)
+  assert.ok(threadInFlight(th({ state: "", msgs: [msg("you")] })), "boot window: owed reply keeps it green");
+  // 3) the reply lands: agent message newest, state settled — yellow
+  assert.ok(!threadInFlight(th({ state: "", msgs: [msg("you"), msg("agent")] })), "landed reply settles to yellow");
+  // 4) a follow-up from the user re-arms it
+  assert.ok(threadInFlight(th({ state: "", msgs: [msg("you"), msg("agent"), msg("you")] })), "a follow-up re-owes");
+  // live work still counts even with the agent's message newest (a continuing turn)
+  assert.ok(threadInFlight(th({ state: "working", msgs: [msg("you"), msg("agent")] })));
+  // …but never on a blocked, errored, or closed thread — green must not lie
+  assert.ok(!threadInFlight(th({ state: "permission", msgs: [msg("you")] })), "a stuck reply is NOT on the way");
+  assert.ok(!threadInFlight(th({ state: "", msgs: [msg("you")], error: "spawn failed" } as any)), "errored: the note speaks, not the green");
+  assert.ok(!threadInFlight(th({ state: "", msgs: [msg("you")], status: "resolved" })), "resolved threads are done");
+  assert.equal(replyOwed(th({ msgs: [] })), false, "an empty thread owes nothing");
 });
