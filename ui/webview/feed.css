@@ -826,13 +826,13 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the expand toggle is a compact square showing "+" (collapsed) / "−" (open) */
 .fdismiss { padding: 2px 10px; }
 /* One accent hover for every action button (the user 2026-07-21): Clear, Move to Working, Follow up,
-   Clear all, UndoClear all share it — no red on any action, only on error/blocked STATUS. */
+   Clear all, Undo all share it — no red on any action, only on error/blocked STATUS. */
 .fdismiss:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
-/* UndoClear — restorative, so it hovers BLUE like Follow up, not Clear's red. */
+/* Undo — restorative, so it hovers BLUE like Follow up, not Clear's red. */
 /* The feed's DOCKED control bar (the user 2026-06-29): its own dedicated rectangle in normal flow at the
    bottom of the pane, NOT a floating overlay. The body is a column flex, so #feed-list flexes to fill above
-   it and the bar sits below without overlapping a card. Layout (the user 2026-07-13): the VIEW toggles
-   (Newest first · Collapsed · Group) sit left; the ACTIONS (Clear all, then Undo clear) dock right — flex
+   it and the bar sits below without overlapping a card. Layout (the user 2026-07-13): the VIEW controls
+   (the view-menu icon · Session ▴ · Search) sit left; the ACTIONS (Clear all, then Undo) dock right — flex
    `order` + margin-left:auto, so the split holds whatever order the ensure* calls appended the buttons in. */
 #feed-foot { flex: 0 0 auto; z-index: 5;
   display: flex; align-items: center; gap: 8px; padding: 6px 12px;
@@ -843,7 +843,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 #feed-undoclear { order: 11; }                     /* restorative — far right */
 #feed-foot .fdismiss { font-size: 10.5px; padding: 1px 9px; opacity: 0.95; }
 
-/* Undo clear, WORKING (the user 2026-07-31): when the cleared batch isn't in this page's cache the
+/* Undo, WORKING (the user 2026-07-31): when the cleared batch isn't in this page's cache the
    restore is a full kernel round-trip and the button read dead for a beat. Accent border + three
    pulsing accent dots say "on it" — WITHOUT disabling: each further click keeps popping older
    batches. Cleared by the next feed payload (feed.ts clearUndoBusy — event-based, timeout backstop). */
@@ -855,8 +855,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 #feed-undoclear .undo-dots i:nth-child(3) { animation-delay: 0.36s; }
 @keyframes undo-dot { 0%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { #feed-undoclear .undo-dots i { animation: none; opacity: 0.8; } }
-/* the "Newest first" / "Collapsed" MODE toggles: pressed (.on) wears the accent language (blue text + border
-   + faint wash), the same selected-state look the card section toggles use (the user 2026-07-07) */
+/* the footer MODE buttons (Session filter, Search): active (.on) wears the accent language (blue text +
+   border + faint wash), the same selected-state look the card section toggles use (the user 2026-07-07) */
 #feed-foot .feed-modetoggle.on { color: var(--accent); border-color: var(--accent);
   background: rgba(156, 210, 255, 0.12); opacity: 1; }
 /* the SESSION FILTER (the user 2026-08-08): the footer button quotes the picked session; its menu
@@ -874,6 +874,34 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   border-radius: 4px; cursor: pointer; font-size: 11.5px; white-space: nowrap; }
 .feed-sessmenu .fsm-row:hover { background: rgba(255, 255, 255, 0.07); }
 .feed-sessmenu .fsm-row.on { background: rgba(156, 210, 255, 0.12); }
+/* the VIEW MENU (the user 2026-08-24): the sort + layout controls live behind one monochrome ordering
+   glyph now (NOT a gear — the strip's ⛭ sits right below this footer on the kernel page). The popup
+   wears the shared .ctx-menu vocabulary (chrome defined with the card menus below); these rules add
+   the ✓-in-circle current mark every romp menu uses (ported from styles.css — the feed page loads
+   only this sheet) and the forced row's inert fade. */
+/* two ids, deliberately: #feed-foot .fdismiss's (1,1,0) padding beats a bare #feed-viewbtn — the
+   repo's recurring cascade trap (the 2026-08-19 forced-fade bug class) */
+#feed-foot #feed-viewbtn { display: inline-flex; align-items: center; padding: 2px 7px; }
+#feed-viewbtn svg { display: block; }
+.feed-viewmenu { min-width: 178px; }
+/* rows are real <button>s (keyboard operability) — strip the UA chrome and re-inherit the menu's
+   font/colour (a button that doesn't inherit is exactly how a menu drifts onto the host font, the
+   2026-08-09 timeline-gear bug). Same (0,2,0) specificity as .ctx-item:hover, which sits LATER in
+   this file — so the hover wash still wins the background tie on hover, by order, deliberately. */
+.feed-viewmenu .ctx-item { position: relative; padding-right: 30px; display: block; width: 100%;
+  text-align: left; background: none; border: 0; font: inherit; color: inherit; }
+.feed-viewmenu .ctx-item:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.feed-viewmenu .ctx-item.current::after {
+  content: "✓"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  background: var(--check-bg); color: #fff; border-radius: 50%;
+  width: 13px; height: 13px; font-size: 9px; font-weight: 900;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+}
+/* the Single-column row while the narrow container query FORCES stacking (2026-08-19): stacking IS on,
+   so the row keeps its ✓ — faded and inert, never stripped of its checked state (the user 2026-08-19,
+   who wanted the then-button grayed but still blue). No hover promise on an inert row. */
+.feed-viewmenu .ctx-item.forced { opacity: 0.55; cursor: default; }
+.feed-viewmenu .ctx-item.forced:hover { background: transparent; color: inherit; }   /* .ctx-item:hover also recolours */
 /* downstream sessions an ask is waiting on (drop points) — experiment
    2026-06-10; live working dot + age per session, newest first */
 /* active downstream sessions (the user's handoff spec, 2026-06-10): one line per
@@ -1358,31 +1386,33 @@ body.filebrowse-open { overflow: hidden; }
 .judge-limit-banner .jl-switch:hover { background: #3c3c3c; }
 .judge-limit-banner .jl-switch:disabled { opacity: 0.6; cursor: default; }
 
-/* the Stack toggle while the narrow container query FORCES stacking (2026-08-19): stacking IS on,
-   so the button keeps the pressed accent — grayed by opacity, never stripped of its on-state (the
-   user 2026-08-19, who wanted it grayed but still blue). Hover stays responsive (a gentle brighten,
-   not the action-blue that promises a click); the tooltip names the way out. The selector MUST tie
-   the .on rule's (1,2,0) specificity and sit LATER in this file: the first two cuts keyed the
-   rule on the button id alone at (1,1,0), so `.on { opacity: 1 }` silently won the cascade and the
-   fade never painted while the button was pressed — which forced stacking always implies (the user's
-   third report, 2026-08-19). */
-#feed-foot .feed-modetoggle.forced { opacity: 0.5; cursor: default;
-  color: var(--accent); border-color: var(--accent); }
-#feed-foot .feed-modetoggle.forced:hover { opacity: 0.75;
-  background: rgba(156, 210, 255, 0.12); }   /* keep the pressed wash — never the action hover's promise */
-
-/* The footer SEARCH box (the user 2026-08-23): a "Search" word-button expanding to an inline input
-   that live-filters the board by session name, host prefix included. The input wears the footer's
-   scale and the shared dark-panel vocabulary; expansion is a width transition, so it "grows" out of
-   the button instead of popping. Active (a live query) keeps the button accented like every .on toggle. */
-#feed-search { display: inline-flex; align-items: center; gap: 5px; }
-#feed-search input { width: 0; padding: 0; border: 0; opacity: 0;
-  transition: width 0.15s ease, opacity 0.15s ease;
-  font-size: 10.5px; font-family: inherit; color: var(--fg, #ccc);
-  background: var(--vscode-editorWidget-background, #252526);
-  border-radius: 3px; outline: none; }
-#feed-search.open input { width: 138px; padding: 1px 7px; opacity: 1;
-  border: 1px solid var(--card-border); }
+/* The footer SEARCH box (the user 2026-08-23; restyled 2026-08-24): a "Search" word-button expanding
+   to an inline input that live-filters the board by session name, host prefix included. The expanded
+   bar wears the TOP search bar's look (the outline pane's "Search sessions and tasks…" input: rounded,
+   input-background field, inner ✕ clear) scaled to the footer's 10.5px rhythm — never its 12.5px verbatim —
+   and FLEXES into the row's spare space with a floor instead of a fixed width; a too-narrow row wraps
+   it whole (the footer wraps) rather than overflowing. Expansion animates max-width, so it still
+   "grows" out of the button instead of popping. Active (a live query) keeps the button accented like
+   every .on toggle. */
+#feed-search { display: inline-flex; align-items: center; gap: 5px; position: relative; }
+#feed-search.open { flex: 1 1 150px; min-width: 110px; max-width: 340px; }
+#feed-search input { flex: 1 1 auto; min-width: 0; max-width: 0; padding: 0; border: 0; opacity: 0;
+  transition: max-width 0.15s ease, opacity 0.15s ease;
+  font-size: 10.5px; font-family: inherit; color: var(--vscode-input-foreground, var(--fg, #ccc));
+  background: var(--vscode-input-background, #3c3c3c);
+  border-radius: 6px; outline: none; }
+#feed-search.open input { max-width: 340px; padding: 2px 22px 2px 8px; opacity: 1;
+  border: 1px solid var(--vscode-input-border, var(--card-border)); }
 #feed-search.open input:focus { border-color: var(--accent); }
-#feed-search input::-webkit-search-cancel-button { -webkit-appearance: none; }   /* the button folds/clears; no double affordance */
+#feed-search input::placeholder { color: var(--vscode-descriptionForeground, #9a9a9a); }
+#feed-search input::-webkit-search-cancel-button { -webkit-appearance: none; }   /* we draw our own ✕ */
+/* the inner ✕ (the top bar's clear button, footer-scaled): shown only with text to clear; clearing
+   REFOCUSES the input — the user is mid-search, never fold under them */
+#feed-search-clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center; width: 15px; height: 15px; padding: 0;
+  border: 0; border-radius: 50%; background: transparent;
+  color: var(--vscode-descriptionForeground, #9a9a9a); font-size: 13px; line-height: 1; cursor: pointer; }
+#feed-search-clear:hover { color: var(--fg); background: rgba(255, 255, 255, 0.10); }
+#feed-search-clear[hidden] { display: none; }
+#feed-search:not(.open) #feed-search-clear { display: none; }   /* the ✕ exists only on an open box — a folded control can never wear a stray × */
 @media (prefers-reduced-motion: reduce) { #feed-search input { transition: none; } }

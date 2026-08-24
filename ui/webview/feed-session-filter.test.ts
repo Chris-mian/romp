@@ -47,8 +47,8 @@ test("the filter defaults to NOTHING selected and only ever narrows the RENDER, 
   assert.ok(FEED.includes("if (feedOnlySid && !sessionsMeta.some((s) => s.sid === feedOnlySid)) setFeedOnly(null);"));
 });
 
-test("the menu sits right of Group, lists sessions in tab order, canonical form, click-safe", () => {
-  assert.match(FEED, /ensureGroupToggle\(\)\.style\.display = showCA \? "" : "none";[^\n]*\n\s*ensureSessionFilter\(\)\.style\.display = showCA \? "" : "none";/);
+test("the menu sits right of the view-menu icon, lists sessions in tab order, canonical form, click-safe", () => {
+  assert.match(FEED, /ensureViewMenuBtn\(\)\.style\.display = showCA \? "" : "none";[^\n]*\n\s*ensureSessionFilter\(\)\.style\.display = showCA \? "" : "none";/);
   // tab order: ranked by the kernel's session-order list — the same rank grouped mode sorts by
   assert.ok(FEED.includes("const rows = sessionsMeta.slice().sort((a, b) => (rank.get(a.sid) ?? 1e9) - (rank.get(b.sid) ?? 1e9));"));
   // the menu lives on document.body — outside render()'s reconcile, so a push can't rebuild it mid-press
