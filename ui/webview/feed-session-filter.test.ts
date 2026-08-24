@@ -39,8 +39,10 @@ test("the filter defaults to NOTHING selected and only ever narrows the RENDER, 
   assert.ok(FEED.includes('sessionStorage.getItem("romp:feedOnly")'),
     "survives this tab's reloads only — a fresh window always starts unfiltered");
   // the filter chain lives in viewFiltered now (hover-freeze 2026-08-24: the deferred-churn badge
-  // painter must count exactly what the user sees, so render and the painter share one view)
-  assert.ok(FEED.includes("let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list;"));
+  // painter must count exactly what the user sees, so render and the painter share one view) — and
+  // the tracked-delegation satellite exclusion lives INSIDE it for the same reason (2026-08-24):
+  // the unfiltered board hides only satellites; a picked session still renders ALL its cards
+  assert.ok(FEED.includes("let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list.filter((a) => !a.satellite);"));
   assert.ok(FEED.includes("let shown = viewFiltered(asks);"), "render reads the shared view");
   // (`let`, since 2026-08-23: the SEARCH filter composes onto the same render-side view — see feed-search.test.ts)
   assert.ok(FEED.includes("for (const a of shown) {"), "the group-fold loop reads the filtered view");

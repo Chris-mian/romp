@@ -102,7 +102,9 @@ interface AskItem {
   failLog?: { t: number; line: string; model: string; note: string }[] | null;   // the summarizer's failed ATTEMPTS on this card (judge _fail_log): when, which line, which MODEL, the literal error — the chip's hover history + the modal's "What was tried" (the user 2026-08-18, who needed to SEE "tried opus — 529" ×3 to know switching the model would fix it)
   nudged?: { count: number; times: number[] } | null;   // auto-nudge HISTORY (kernel _nudge_times): how many times romp followed up + when — the stalled chip's evidence (tooltip + modal line, the user 2026-07-02)
   warnRows?: { t: number; judge: string; err: string; note?: string; debug?: { input?: string; reply?: string } }[] | null;   // DEBUG MODE only (romp debug on): every judge failure touching this card (kernel _card_warn_rows) → "Warnings (debug)" modal section; rows captured in debug carry the failing call's input + reply (the user 2026-07-09)
-  origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null; live?: boolean } | null;  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders). live = the sender's linked entry is still OPEN; false → the badge is PROVENANCE, dimmed (the completed-column merge, the user 2026-08-16)
+  origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null; live?: boolean } | null;
+  satellite?: boolean | null;                        // tracked delegation (the user 2026-08-24): this card is the recipient-side copy of a delegator-homed primary — off the default board; the session filter still reaches it (nothing runs in secret)
+  delegTracked?: { name: string; host?: string; sid: string; color?: { bg: string; fg: string } | null }[] | null;  // tracked delegation PRIMARY: the recipient identities whose live status this one card carries  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders). live = the sender's linked entry is still OPEN; false → the badge is PROVENANCE, dimmed (the completed-column merge, the user 2026-08-16)
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string; since?: number } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25). since = when the unanswered ask was sent → the chip's elapsed readout (the user 2026-08-23)
   awaiting?: { why?: string | null; kind?: string | null; since?: number | null; tasks?: string[] | null;
                peers?: { name: string; host?: string; sid?: string; color?: { bg: string; fg: string } | null }[] | null } | null;   // peers: delegation wait → the box names them in identity colour (the user 2026-08-23)   // AWAITING flavor: held in Working, ⏳ awaiting badge — waiting on dispatched/delegated work (agents/subagents/a build), NOT on you (kernel build_feed; the user 2026-06-22). The peer case rides waitingOn; this carries the generic "why". `tasks` = live bg-task descriptions (the user 2026-07-13): present → the compact "Awaiting task" pill (expands the list, like Sub-goals) replaces the boxed why. since = the wait's own event time → the box/pill elapsed readout (the user 2026-08-23)
@@ -1566,6 +1568,28 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       : "delegated by " + it.origin.peer + " — clearing this card also clears their linked entry")
       + " · click opens the session";
     og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.origin!.peerSid }); };
+  } else if (it.delegTracked && it.delegTracked.length) {
+    // tracked delegation PRIMARY (the user 2026-08-24): the ONE card, homed here under the
+    // delegator — it names the recipient(s) in their identity colors with the board's own live dot
+    // (working/awaiting/idle), so the manager reads the worker's state without leaving this card.
+    // Rides the origin slot with the mirrored arrow: same row, same vocabulary as "↪ from".
+    og.style.display = "";
+    og.replaceChildren();
+    og.style.color = "";
+    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ delegated to ";
+    og.append(pre);
+    it.delegTracked.forEach((d, i) => {
+      if (i) og.append(", ");
+      const peer = el("span", "fask-origin-peer");
+      peer.replaceChildren(...hostPartsNodes(d.host, d.name));
+      if (d.color && d.color.bg) peer.style.color = d.color.bg;
+      setWorkDot(peer, dotFor(d.name));
+      og.append(peer);
+    });
+    og.classList.remove("fask-origin-absorbed");
+    og.title = "a tracked handoff: the work runs with " + it.delegTracked.map((d) => d.name).join(", ")
+      + " and reports back to this card · click opens the session";
+    og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.delegTracked![0].sid }); };
   } else {
     og.style.display = "none";
   }
@@ -3812,7 +3836,11 @@ function paintJudgeLimit(): void {
 // Shared by render() and the hover-freeze badge painter, so the deferred-churn hint counts exactly
 // what the user would see move.
 function viewFiltered(list: AskItem[]): AskItem[] {
-  let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list;
+  // A tracked delegation's satellite lives under its delegator's PRIMARY card: the default board
+  // hides it, and picking its session in the filter is the one-click path back. INSIDE this helper
+  // on purpose — the hover-freeze churn badges count through it, so they see exactly what the
+  // board shows (a filter outside would paint +N for cards that never appear).
+  let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list.filter((a) => !a.satellite);
   const sMatch = searchSids(feedSearchQ, sessionsMeta);
   if (sMatch) shown = shown.filter((a) => sMatch.has(a.sid) || searchMatches(feedSearchQ, (a as { name?: string }).name));
   return shown;
