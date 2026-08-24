@@ -11894,10 +11894,16 @@ def _session_stamp_read(sid):
             if nd.get("awaitingWhy") and not nd.get("rolledUp"):
                 at = nd.get("awaitingAt") or 0
                 kind = nd.get("awaitingKind")
-                if at and answered and at < answered and kind in (None, "peer"):
+                if at and answered and _stamp_written_at(nd) < answered and kind in (None, "peer"):
                     continue                           # peer-scoped (the user 2026-08-15): a reply can only
                 #                                        end a wait that was ON a peer; kindless keeps the
-                #                                        legacy trade — see _goal_awaiting_stamp_full
+                #                                        legacy trade. Keyed on the stamp's WRITE time like
+                #                                        its twin _goal_awaiting_stamp_full — the 2026-08-19
+                #                                        audit fixed only one of the two readers, so a
+                #                                        re-stamp filed AFTER the reply (anchor before it)
+                #                                        was superseded HERE the instant it was filed: the
+                #                                        chip/lane/pip said ready while the card said
+                #                                        awaiting — one fact, two answers (found 2026-08-24)
                 top, seen = nid, set()                 # stamped node → its TOP ancestor (cycle-guarded)
                 while top in nodes and nodes[top].get("parentId") is not None and top not in seen:
                     seen.add(top)
