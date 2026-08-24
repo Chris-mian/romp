@@ -27053,6 +27053,54 @@ class Handler(BaseHTTPRequestHandler):
                     "colors": pal.colors(_pn), "active": _pn,
                     "palettes": [{"name": k, "label": v["label"], "colors": v["bg"]}
                                  for k, v in pal.PALETTES.items()]}), "application/json", cache="no-cache")
+            if p == "/feed.json":
+                # The feed's card payload as JSON, for scripts/agents diagnosing card state (both
+                # teams' surveys, 2026-08-24): EXACTLY what build_feed ships to the board — served
+                # from the pusher's warmed build (the connect semantics: never triggers a rebuild;
+                # a cold kernel builds once, a read like any client connect). Token-gated like its
+                # stateful siblings; read-only, no side effects.
+                return self._send(200, json.dumps(_cached_feed(time.time(), _tmux_sessions(), None,
+                                                               connect=True)),
+                                  "application/json", cache="no-cache")
+            if p == "/classify":
+                # One session's LIVE classification as the kernel derives it right now (both teams'
+                # surveys, 2026-08-24 — diagnosing this meant hand-replicating kernel predicates): a
+                # read-only JOIN over reads that already exist — _last_state, _session_awaiting with
+                # the durable-stamp arm on, the wait-for edge, the reply-expecting asks this session
+                # OWES, and the nudge ledger (walkGates journal + deadWait flags ride the records).
+                # Never a second predicate implementation (the mirrors-drift lesson); the one input
+                # this route must CHOOSE is `idle`, and it borrows the nudge gate's own rule (state
+                # not in _PROGRESSING_STATES) — the chat chip's event-model open_now needs a full
+                # transcript parse this debug route deliberately avoids, a noted input divergence,
+                # not a rival derivation.
+                sid = (q.get("id") or [""])[0].strip()
+                if not sid:
+                    return self._send(400, json.dumps({"ok": False, "error": "id required"}),
+                                      "application/json")
+                now = time.time()
+                tm = _tmux_sessions()
+                alive = set(tm)
+                snap = tm.get(sid)
+                st, st_t = _last_state(sid)
+                idle = st not in _PROGRESSING_STATES
+                nd = _auto_nudge_data()
+                mine = lambda k: k == sid or k.startswith(sid + ":")
+                return self._send(200, json.dumps({
+                    "id": sid, "t": now, "live": sid in tm,
+                    "snapshot": ({"state": snap.get("state"), "since": snap.get("since")}
+                                 if isinstance(snap, dict) else None),
+                    "state": {"value": st, "t": st_t},
+                    "idle": idle,
+                    "idleRule": "state not in _PROGRESSING_STATES (the nudge gate's read)",
+                    "awaiting": _session_awaiting(sid, (snap or {}).get("path") or _path_of(sid) or "",
+                                                  idle, stamp=True),
+                    "waitingOn": _wait_for_graph(now, alive).get(sid),
+                    "owesAsks": [{"from": f, "name": n, "t": ts, "kind": k, "head": h}
+                                 for f, n, ts, k, h in _debt_asks(sid, alive)],
+                    "nudge": {"enabled": bool(nd.get("enabled", True)),
+                              "records": {k: v for k, v in (nd.get("nudged") or {}).items() if mine(k)},
+                              "walkGates": {k: v for k, v in (nd.get("walkGates") or {}).items() if mine(k)}},
+                }), "application/json", cache="no-cache")
             if p == "/views":                             # the session-views blob (active view, hidden set,
                 # tags) for scripts/agents: the read half of POST /tag, AND the remote-poll source of
                 # tag federation v0. CANONICAL shape (member pairs), remoteTags absent on purpose:
