@@ -4500,7 +4500,18 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault(); e.stopPropagation();
     let i = ae ? els.indexOf(ae) : -1;
     i = e.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1);   // WRAP at the ends
+    //                                                     (Shift+Tab = the same cycle, reversed)
     tabScopeFocus(card, els, i);
+    // SELECT-ON-FOCUS for the view pills (the user 2026-08-24): landing on a SELECTOR applies it at
+    // once, no Enter — radio-group semantics. The split: .fask-secbtn (Background/Summary/Sub-goals,
+    // which switch what the card SHOWS) are selectors; everything else — Clear, retries, the bell,
+    // follow-up, session names, sub-goal links — is an ACTION and must never fire from mere focus
+    // (action is the default for anything ambiguous). The click lives HERE, in the Tab gesture, and
+    // NOT in tabScopeFocus: the render-tail focus restore calls tabScopeFocus too, and a click there
+    // would re-apply per re-render — one application per user gesture. The already-selected pill is
+    // a no-op (focus keeps, nothing toggles), so cycling through it never flips the card's view off.
+    const landed = els[i];
+    if (landed && landed.matches(".fask-secbtn") && !landed.classList.contains("on")) landed.click();
     return;
   }
   if ((e.key === "Enter" || e.key === " ") && tabScopeKey) {
