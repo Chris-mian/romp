@@ -1193,7 +1193,7 @@ def _debt_backstop_tick(now):
     """The reminder-outcome sweep for debtors the per-session walk can't reach — dead sessions, or one
     idling forever on its reminder: past the same backstop the awaiting/deferral machinery uses, an
     unanswered reminder escalates (or, if answered meanwhile, retires) regardless. Mirrors
-    AWAITING_BACKSTOP_SECS' rationale: a missing event, surfaced rather than waited on forever."""
+    AWAITING_DEADMAN_SECS' rationale: a missing event, surfaced rather than waited on forever."""
     d = _auto_nudge_data()
     dn = dict(d.get("debtNudged") or {})
     if not dn:
@@ -3487,7 +3487,16 @@ def _auto_nudge_tick(now, tmux, run_dead_wait=True):
 # the stamp also stood down the whole nudge ladder (the ui session, 2026-08-11). Episodes re-arm on the
 # ANSWER (a judged response), not the anchor, so a genuinely long wait is re-checked every window and a
 # dead one surfaces after exactly one unanswered wake.
-AWAITING_BACKSTOP_SECS = 6 * 3600
+# W1a (the user 2026-08-24): the flat 6h "patience" decomposed per stamp KIND. Every kind whose
+# ending event romp can observe never reaches this clock — the lift sweep retires agents/task waits
+# on notification pairing, the restart epoch, and the tool's own declared deadline; peer waits end
+# on the pair-aware answer supersede (+ its durable lift) or the awaited peer's DEATH transition
+# (the conversion arm in _dead_wait_sweep). What remains is a DEAD-MAN'S SWITCH for waits whose
+# ending genuinely cannot be observed, with exactly these residents: kind=job (external compute —
+# romp sees only the carrier, never the job), cross-host peer waits (no local death owner), legacy
+# kindless stamps (zero live at the rename; archives only), hung-forever agents/tasks under a live
+# registry, and prose-declared timer check-backs (a Monitor-backed timer lifts at its own deadline).
+AWAITING_DEADMAN_SECS = 6 * 3600
 # The TEXT reads as the person checking in (the user 2026-08-11): the first version said "goal" twice and
 # announced itself "(Automated re-check…)" — romp vocabulary plus an automated-origin disclosure, both
 # banned by the injected-voice rule — and sat outside tests/test_injected_voice.py's index, which is how it
@@ -3948,6 +3957,39 @@ def _dead_wait_sweep(alive_ids, nudged, now):
                 stamp = _goal_awaiting_stamp_full(nodes, gid, kids)
                 if stamp:
                     _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)
+            # PEER-DEATH CONVERSION (the user 2026-08-24, W1a): this corroborated death is ALSO the
+            # ending event for every LIVE session's kind=peer wait ON this sid — the asked session
+            # can never answer now. Convert each to a procedural block naming the death (liftable by
+            # a revival's reply like any block), the same once-per-episode ledger discipline as the
+            # dormant-owner arm above. A holder mid-turn stands down inside _dead_wait_block
+            # (progressing-state gate); its residue keeps the wake's dead-man — the awake path
+            # requires awaited peers ALIVE to stand down, so a missed conversion still surfaces.
+            _dead_name = _name_of(sid) or sid[:8]
+            for _lsid in alive_ids:
+                try:
+                    _ls = jd.load_goals(_lsid)
+                    _ln = _ls.get("nodes", {})
+                    if not any(sid in (nd.get("awaitingPeers") or ()) for nd in _ln.values()):
+                        continue
+                    _lk = {}
+                    for _nid, _nd in _ln.items():
+                        if _nd.get("parentId"):
+                            _lk.setdefault(_nd["parentId"], []).append(_nid)
+                    for _gid, _st in (_ls.get("status") or {}).items():
+                        if _st != "working":
+                            continue
+                        _sf = _goal_awaiting_stamp_full(_ln, _gid, _lk)
+                        if not _sf or _sf[2] != "peer":
+                            continue
+                        _sn = next((n for n in _ln.values()
+                                    if n.get("awaitingWhy") and n.get("awaitingAt") == _sf[0]), None)
+                        if not _sn or sid not in (_sn.get("awaitingPeers") or ()):
+                            continue
+                        _dead_wait_block(_lsid, _gid, _sf[0], _sf[1], nudged, now,
+                                         blk_why=jd.dead_peer_block_why(_dead_name, _sf[1]))
+                except Exception:
+                    sys.stderr.write("peer-death conversion (%s->%s): %s\n"
+                                     % (sid[:8], _lsid[:8], traceback.format_exc()))
             # …and incomplete DELEGATION handoffs (the user 2026-08-23: a dead sender's "↪ delegated
             # to X" item waits on run_propagate, and if the courier link never landed — or the peer
             # folded the work without one — nothing can ever check it off; five were 240h old). The
@@ -4009,7 +4051,7 @@ def _dead_handoff_block(sid, nid, h, nd, nudged, now):
     return False
 
 
-def _dead_wait_block(sid, gid, at, why, nudged, now):
+def _dead_wait_block(sid, gid, at, why, nudged, now, blk_why=None):
     """Convert a DORMANT session's stamped-awaiting Working card to a procedural block, once per stamp
     episode (the user 2026-08-22, who expected every Working card nudged until it lands in Completed or
     Blocked). Once-only rides the shared nudge ledger ({deadWait, anchor}; a genuinely NEW stamp episode
@@ -4035,7 +4077,7 @@ def _dead_wait_block(sid, gid, at, why, nudged, now):
         if (not nd or store.get("status", {}).get(gid, "working") != "working"
                 or not _goal_awaiting_stamp(store.get("nodes", {}), gid)):   # raw: see the sweep's note
             return False                              # lifted or resolved since the walk read its snapshot
-        blkwhy = jd.dead_wait_block_why(nd.get("awaitingWhy") or why or "")
+        blkwhy = blk_why or jd.dead_wait_block_why(nd.get("awaitingWhy") or why or "")
         _ev = int(max(at or 0, last_t or 0) or now)
         if jd.record_verdict(store, nd, "nudge", "block", _ev, why=blkwhy):
             nd["mt"] = _ev                            # the event materialized blocked + blockWhy
@@ -4064,7 +4106,7 @@ def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
     (the user 2026-08-11): fire the check-in past the backstop, track its outcome through the same record
     + response gates as a nudge, and escalate a wake nobody answered. Returns True when something fired or
     a failure stamped (the tick pushes once at the end). Episodes:
-      due       now - max(anchor, last ANSWERED wake) >= AWAITING_BACKSTOP_SECS → send AWAITING_BACKSTOP_TEXT,
+      due       now - max(anchor, last ANSWERED wake) >= AWAITING_DEADMAN_SECS → send AWAITING_BACKSTOP_TEXT,
                 record {wake, anchor, count, lastTurnId, armAtoms, at} in the shared `nudged` ledger.
                 lastTurnId is the NEWEST turn (romp-injected or not) — the wake isn't arm-keyed like a
                 nudge; the record only needs the growth yardstick _nudge_response_ready reads.
@@ -4077,6 +4119,7 @@ def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
                 the block rides the normal ladder to Needs-you. A failed/moot record re-arms only on a
                 genuinely NEW stamp episode (anchor newer than the one that failed)."""
     at, why = stamp[0], stamp[1]
+    kind = stamp[2] if len(stamp) > 2 else None
     if tmux.get(sid) is None:
         # DORMANT owner (the user 2026-08-22): the CLI died while this judged wait still stood — and a
         # stamped Working card on a dead session was exempt from the WHOLE ladder (this wake, the plain
@@ -4124,9 +4167,22 @@ def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
             return False                             # this episode already escalated / was superseded —
             #                                          the anti-loop rule; a user reply unblocks as usual
         rec = {}                                     # a genuinely NEW wait (fresh anchor) re-arms the wake
+    if kind == "peer":
+        # A LOCAL peer wait's endings are all EVENTS now (W1a): the pair-aware answer supersede and
+        # its durable lift, the awaited peer's death conversion (_dead_wait_sweep's arm), and the
+        # debtor-side debt ladder — so it takes NO wake at all while every awaited peer is local and
+        # ALIVE. The dead-man below survives for exactly the unobservable residue: a cross-host peer
+        # (no local death owner), a legacy stamp with no recorded identity, or a dead local peer
+        # whose conversion the sweep missed (its holder was mid-turn when the transition fired).
+        _pn = next((n for n in store.get("nodes", {}).values()
+                    if n.get("awaitingWhy") and n.get("awaitingAt") == at), None)
+        _peers = (_pn or {}).get("awaitingPeers") or ()
+        if _peers and all(":" not in str(p) for p in _peers) \
+                and all(tmux.get(str(p)) is not None for p in _peers):
+            return False                             # every ending is an observable event — no clock
     since = max(at, rec.get("answeredAt") or 0, rec.get("at") or 0)
-    if now - since < AWAITING_BACKSTOP_SECS:
-        return False                                 # still patient
+    if now - since < AWAITING_DEADMAN_SECS:
+        return False                                 # still patient (the dead-man for unobservable waits)
     _defer = _revivers_pending(sid, store, turns, gid)
     if _defer and not _nudge_deferred_ok(gid, _defer, now, sid):
         return False
@@ -4262,7 +4318,7 @@ def _backend_rewind_pending(sid):
 # suppression here is temporary by construction — the nudge is deferred, never lost. The one time
 # threshold is the backstop below, and only for the reason the awaiting backstop already admits: a
 # WEDGED reviver is a MISSING event, and no event announces it.
-NUDGE_DEFER_BACKSTOP_SECS = 6 * 3600     # mirrors AWAITING_BACKSTOP_SECS, and for the same reason
+NUDGE_DEFER_BACKSTOP_SECS = 6 * 3600     # mirrors AWAITING_DEADMAN_SECS, and for the same reason
 _task_plan_cache = {}                    # fsid -> ((mtime, count), plan | None)
 
 
