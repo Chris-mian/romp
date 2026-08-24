@@ -1142,6 +1142,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     // never fires and the timeline/chat highlight stuck until you moved the mouse (the user 2026-07-03). The
     // synthetic mouseleave runs the exact leave logic (clears the highlight, or restores a pinned card's).
     card.dispatchEvent(new MouseEvent("mouseleave"));
+    dressHeaderIfLast(card, it.sid);   // the run's last card takes its header with it — one motion (2026-08-24)
     pendingCleared.add(it.itemId);   // suppress from incoming pushes until the kernel confirms the clear
     clearedStack.push([it]);         // cache for an instant optimistic Undo
     card.classList.add("dismissing");
@@ -2247,6 +2248,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     ev.stopPropagation();
     card.dispatchEvent(new MouseEvent("mouseleave"));   // flush the group's stuck hover highlight (see the ask card's clear)
     const cur = (card as any)._g as AskGroup;
+    dressHeaderIfLast(card, cur.sid);   // a group is one session's turn — same one-motion rule (2026-08-24)
     card.classList.add("dismissing");
     clearedStack.push(cur.members.slice());   // cache the whole batch for an instant optimistic Undo
     for (const m of cur.members) { pendingCleared.add(m.itemId); vscodeApi?.postMessage({ type: "askClear", itemId: m.itemId, sid: m.sid }); }   // clear every member
@@ -3848,6 +3850,44 @@ function ensureCols(list: HTMLElement) {
 // Keyed in-place reconcile of ONE column (mixes ask + standalone cards; a card
 // whose column changed is MOVED, not rebuilt — no hover flicker). Records each key
 // in `globalDesired` for the cross-column cache cleanup the caller runs after.
+// A grouped session header leaves as ONE MOTION with its run's last card (the user 2026-08-24,
+// whose recording showed the header popping out a frame after the card finished fading): the exit
+// wears the card-dismiss family (fade + slight shrink + height collapse) instead of vanishing at
+// the next render. The element is UN-KEYED first — dropped from sessHeadEls and re-keyed to a
+// tombstone — so a reappearing run mints a FRESH header while the ghost finishes; DOM removal keys
+// on animationend (the event), with a backstop timeout so a lost event can never trap the ghost,
+// and reduced motion removes at once (no animation ever plays there).
+let sessGhostSeq = 0;
+function startSessHeadExit(key: string, head: HTMLElement): void {
+  if (sessHeadEls.get(key) === head) sessHeadEls.delete(key);
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    head.remove();
+    return;
+  }
+  head.dataset.key = "x:" + (++sessGhostSeq);   // keyed-but-never-desired: survives the unkeyed-child sweep
+  head.classList.add("sess-exit");
+  const done = () => head.remove();
+  head.addEventListener("animationend", done, { once: true });
+  window.setTimeout(done, 600);                 // backstop — a lost event can never trap the ghost
+}
+// The CONJUNCTION half: when a dismissing card is its run's LAST, the header starts its exit at the
+// same moment (the same click), not at the post-dismiss render. Grouped mode only; a run with other
+// live cards keeps its header rock-steady. The walk reads the CURRENT DOM: back to the run's own
+// header, then across the run for any member that is neither the leaving card nor already dismissing.
+function dressHeaderIfLast(card: HTMLElement, sid: string): void {
+  if (!feedPrefs().grouped) return;
+  let head: HTMLElement | null = null;
+  for (let p = card.previousElementSibling as HTMLElement | null; p; p = p.previousElementSibling as HTMLElement | null) {
+    if (p.classList.contains("feed-sess-head")) { head = p; break; }
+  }
+  if (!head || head.getAttribute("data-fsid") !== sid || head.classList.contains("sess-exit")) return;
+  for (let n = head.nextElementSibling as HTMLElement | null; n && !n.classList.contains("feed-sess-head"); n = n.nextElementSibling as HTMLElement | null) {
+    if (n !== card && n.classList.contains("fitem") && !n.classList.contains("dismissing")) return;   // the run lives on
+  }
+  const key = head.dataset.key || "";
+  startSessHeadExit(key, head);
+}
+
 function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<string>) {
   const existing = new Map<string, HTMLElement>();
   for (const c of Array.from(listEl.children) as HTMLElement[]) {
@@ -3879,7 +3919,12 @@ function reconcileCol(listEl: HTMLElement, entries: Entry[], globalDesired: Set<
     globalDesired.add(key); colDesired.add(key);
     ordered.push(card);
   }
-  for (const [k, c] of existing) if (!colDesired.has(k)) c.remove();
+  for (const [k, c] of existing) {
+    if (colDesired.has(k)) continue;
+    if (c.classList.contains("sess-exit")) continue;             // a ghost mid-exit — its end event removes it
+    if (k.startsWith("s:")) startSessHeadExit(k, c);             // headers leave as one motion (2026-08-24)
+    else c.remove();
+  }
   let cur: ChildNode | null = listEl.firstChild;
   for (const node of ordered) {
     if (cur === node) { cur = cur.nextSibling; continue; }
