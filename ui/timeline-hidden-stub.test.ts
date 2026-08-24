@@ -77,7 +77,7 @@ function synthData(): any {
     now,
     sessions: [sess("SA", "ada", "#f7768e"), sess("SB", "bee", "#7aa2f7"), sess("SC", "cee", "#9ece6a"), sess("SD", "dee", "#bb9af7")],
     turns: { SB: [turn("SB:1:aa", 300, 60)], SD: [turn("SD:1:bb", 250, 40)] },
-    views: { active: "all", hidden: ["SA", "SC"], tags: [] },
+    views: { active: "untagged", hidden: [], tags: [{ id: "gx", name: "pool", color: "", members: ["SA", "SC"] }] },   // tag-hidden (the hidden set retired 2026-08-24)
     messages: [], activeChat: null, focus: null, hover: null, usage: null,
   };
 }

@@ -26,20 +26,18 @@ function _rompOnlyTag() {
 }
 // <tag> may be a comma-separated LIST (`#only=api,tests,web`) so demo sessions need no shared
 // on-camera prefix (the user 2026-07-16). Mirrors ui/webview/only-filter.ts's matchesOnly.
-// ── session VIEWS (the user 2026-08-18): which sessions the lanes — and the chat tab strip — show.
-// {active:"all"|"untagged"|gid, hidden:[id...], tags:[{id,name,color,members:[id...]}]},
+// ── session VIEWS (the user 2026-08-18; the hidden set RETIRED outright 2026-08-24 — the tag
+// system covers backgrounding, and the kernel migrated existing hidden entries into an "archived"
+// tag once): {active:"all"|"untagged"|gid, tags:[{id,name,color,members:[id...]}]},
 // kernel-persisted (timeline-views.json) and echoed on every payload as data.views. TWO built-in
-// sentinels, not tags: "all" — the DEFAULT (the user 2026-08-24) — shows every session minus the
-// `hidden` set (hiding is a deliberate gesture, so All respects it); "untagged" keeps the old
-// default's meaning under its own honest name — a TAG marks a SPECIALIZED session (the user
-// 2026-08-23), excluded from the untagged view and shown under its tag views (independent member
-// lists, multi-membership by construction). "all" used to MEAN untagged, so reinterpreting it as
-// truly-all lands every legacy persisted blob on the new All default with no migration. A tag view
-// shows exactly its members — membership beats the hidden bit. A hidden session is a BACKGROUND
-// session — still judged and carded, surfaced by the feed and the pickers. The kernel's
-// _view_visible is the decision of record; this is its mirror for the lanes. The kernel emits
-// `tags`; `groups` is honored as the pre-rename key an un-updated kernel still pushes, in ONE
-// place so every rule reads through it.
+// sentinels, not tags: "all" — the DEFAULT — shows LITERALLY EVERYTHING (that is All's meaning
+// now; nothing can hide from it); "untagged" keeps the old default's meaning under its own honest
+// name — a TAG marks a SPECIALIZED session (the user 2026-08-23), excluded from the untagged view
+// and shown under its tag views (independent member lists, multi-membership by construction). A
+// tag view shows exactly its members. A tagged session is a BACKGROUND session — still judged and
+// carded, surfaced by the feed and the pickers. The kernel's _view_visible is the decision of
+// record; this is its mirror for the lanes. The kernel emits `tags`; `groups` is honored as the
+// pre-rename key an un-updated kernel still pushes, in ONE place so every rule reads through it.
 function viewTags(views) { return (views && (views.tags || views.groups)) || []; }
 // A tag IS its NAME, everywhere (user ruling 2026-08-24: "if the UX requires understanding that
 // tags exist across different kernels, it is not good"): one name = one identity, membership the
@@ -70,10 +68,9 @@ function viewTagUnion(views) {
 }
 function viewVisible(views, id) {
   if (!views || !views.active || views.active === 'all') {
-    return !(views && Array.isArray(views.hidden) && views.hidden.indexOf(id) >= 0);
+    return true;                                   // All = literally everything (hidden retired 2026-08-24)
   }
   if (views.active === 'untagged') {
-    if (Array.isArray(views.hidden) && views.hidden.indexOf(id) >= 0) return false;
     // the UNION excludes (the user 2026-08-24): a session held by ANY kernel's tag is tagged —
     // a remote-homed tag pulls it out of untagged exactly like a local one
     return !viewTags(views).concat((views && views.remoteTags) || []).some((t) => (t.members || []).indexOf(id) >= 0);
@@ -89,19 +86,13 @@ function viewLabel(views) {
   const g = viewTagUnion(views).find((x) => x.ids.indexOf(views.active) >= 0);
   return g ? g.name : 'All';   // the NAME, never a host prefix — kernels are plumbing
 }
-// live sessions the current view is NOT showing — the "N more" cue that keeps a hidden or tagged
-// session exactly one glance away (nothing may run in secret: the 2026-08-11 hidden-tabs rule)
+// live sessions the current view is NOT showing (tag-filtered) — the "N more" cue that keeps a
+// backgrounded session exactly one glance away (nothing may run in secret: the 2026-08-11 rule)
 function viewMoreCount(views, sessions) {
   return (sessions || []).filter((s) => s.live && !viewVisible(views, s.id)).length;
 }
-// the dialog's two pure mutations (executed by tests; the dialog itself only wires DOM):
-// the hidden bit (the manual one-off hide), and membership in one tag alone
-function viewToggleHidden(views, id) {
-  const v = JSON.parse(JSON.stringify(views || {}));
-  const i = (v.hidden || []).indexOf(id);
-  if (i >= 0) v.hidden.splice(i, 1); else (v.hidden = v.hidden || []).push(id);
-  return v;
-}
+// the dialog's pure mutation (executed by tests; the dialog itself only wires DOM): membership in
+// one tag alone. (the hide toggle retired with the hidden set, the user 2026-08-24.)
 function viewToggleMember(views, gid, id) {
   const v = JSON.parse(JSON.stringify(views || {}));
   const g = viewTags(v).find((x) => x.id === gid);
@@ -2971,15 +2962,9 @@ class TimelinePanel {
             fic.addEventListener('mouseleave', () => { fic.style.opacity = on ? '' : '0.55'; });
             feedCell.appendChild(fic);
           }
-          // EYE — only on a hidden session, to un-hide (hiding lives on the chat tab)
-          const eyeCell = grid.createDiv();
-          if (((vv.hidden || [])).indexOf(s.id) >= 0) {
-            const eye = eyeCell.createSpan({ text: '⌀' });
-            eye.setAttribute('style', 'cursor:pointer;opacity:0.6;');
-            hover(eye, 'opacity:1;', 'opacity:0.6;');
-            eye.setAttribute('title', 'hidden from the All and (untagged) views — click to show it again');
-            eye.addEventListener('click', () => { this._setViews(viewToggleHidden(this._curViews(), s.id)); build(); });
-          }
+          // (the un-hide EYE retired with the hidden set, the user 2026-08-24 — tags cover
+          // backgrounding, and the kernel migrated existing hidden entries into "archived")
+          grid.createDiv();
           if (this._tagAddFor === s.id) addMenu([s.id]);
         }
       };
@@ -4406,4 +4391,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleHidden, viewToggleMember, viewTagUnion };
+module.exports = { TimelinePanel, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion };
