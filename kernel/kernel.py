@@ -3467,16 +3467,34 @@ def _lift_spent_awaiting(now, tmux):
                     _mark_views_dirty()
                 continue
             every = _bg_scan_all_cached(s["path"])
-            if not every:
+            # the backend's lifecycle set (present-but-empty is AUTHORITATIVE — _bg_live_norm's own
+            # rule) and the CLI epoch it (re)started at: the restart-orphan reconciliation evidence
+            snap = tmux.get(sid) or {}
+            reg_ids = ({str(t.get("toolUseId") or "") for t in snap.get("bgTasks") or []
+                        if isinstance(t, dict)} if "bgTasks" in snap else None)
+            sp = _sdk_spawned_at(sid) or 0
+            if not every and reg_ids is None:
                 if changed:
                     jd.rollup_status(store, False)
                     jd.save_goals(sid, store)
                     _mark_views_dirty()
                 continue
+            # RESTART-ORPHAN reconciliation (the user 2026-08-24): a kernel/backend restart kills
+            # tracked subagents and workflows WITH the claude process — the terminal record never
+            # lands, the transcript pairing shows them "running" forever, and the stamp orphaned
+            # (16h of "awaiting agents" over an empty registry, nothing reconciling). A
+            # transcript-"running" task ABSENT from a PRESENT lifecycle set died with its process;
+            # its return event IS the backend's (re)spawn — an exact event, not a timer. kind=job
+            # stays registry-blind below: the watcher dying is the carrier going, not the job
+            # returning.
+            dead = (set() if reg_ids is None else
+                    {t.get("id") for t in every
+                     if t.get("status") == "running" and t.get("id") and str(t.get("id")) not in reg_ids})
             # a monitor past its recorded lifetime ceiling counts as RETURNED even with no terminal
             # record (its CLI died mid-watch; the notification can never arrive) — see em._bg_expired
             running = {t.get("id") for t in every
-                       if t.get("status") == "running" and not em._bg_expired(t, now)}
+                       if t.get("status") == "running" and not em._bg_expired(t, now)
+                       and t.get("id") not in dead}
             # kind=job: expiry is not a return (see docstring) — only a real terminal record lifts
             running_job = {t.get("id") for t in every if t.get("status") == "running"}
             placed = _bg_placed_tops(sid, s["path"], [t.get("id") for t in every])
@@ -3506,6 +3524,19 @@ def _lift_spent_awaiting(now, tmux):
                     elif born <= (t.get("t") or 0) <= horizon:
                         own.append(t)
                 if not own:                           # nothing dispatched → not a background wait; leave it
+                    # …EXCEPT a kind=agents stamp standing over an authoritatively EMPTY lifecycle
+                    # set with no live subagents and nothing running in the transcript (the user
+                    # 2026-08-24): an agents-kind wait ends with task notifications, and with no
+                    # dispatch recorded ANYWHERE no such event can ever arrive — the shape a closer
+                    # mints when it misreads peer sessions as agents, orphaned for good the moment a
+                    # restart clears the world it described. Same evidence-postdates-anchor rule as
+                    # every lift: the (re)spawn must be newer than the stamp's anchor.
+                    if (nd.get("awaitingKind") == "agents" and reg_ids is not None and not reg_ids
+                            and not snap.get("subagents") and not running
+                            and sp > (nd.get("awaitingAt") or 0)):
+                        if jd.record_verdict(store, nd, "romp", "awaiting", _lift_ev_t(nd, now), lift=True):
+                            changed = True
+                            _drop_auto_nudge_rec(top)
                     continue
                 live_set = running_job if nd.get("awaitingKind") == "job" else running
                 if any(t.get("id") in live_set for t in own):
@@ -3526,7 +3557,8 @@ def _lift_spent_awaiting(now, tmux):
                 _anchor = nd.get("awaitingAt") or 0
                 def _returned_after(t):
                     return ((t.get("endT") or 0) > _anchor or (t.get("t") or 0) > _anchor
-                            or (t.get("status") == "running" and (t.get("deadline") or 0) > _anchor))
+                            or (t.get("status") == "running" and (t.get("deadline") or 0) > _anchor)
+                            or (t.get("id") in dead and sp > _anchor))
                 if not any(_returned_after(t) for t in own):
                     continue
                 # THE STAND-DOWN RULE, joined (the 2026-08-19 audit): a writer whose evidence
@@ -3541,7 +3573,8 @@ def _lift_spent_awaiting(now, tmux):
                 _aw = [e for e in (nd.get("log") or []) if e.get("kind") == "awaiting"]
                 _last_lift = max((e.get("at") or e.get("ev_t") or 0 for e in _aw if e.get("lift")), default=0)
                 _last_assert = max((e.get("at") or e.get("ev_t") or 0 for e in _aw if not e.get("lift")), default=0)
-                _evidence = max((max(t.get("endT") or 0, t.get("t") or 0, t.get("deadline") or 0)
+                _evidence = max((max(t.get("endT") or 0, t.get("t") or 0, t.get("deadline") or 0,
+                                     sp if t.get("id") in dead else 0)
                                  for t in own), default=0)
                 if _last_lift and _last_assert > _last_lift and _stamp_written_at(nd) > _evidence:
                     continue

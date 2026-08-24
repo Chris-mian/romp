@@ -431,6 +431,7 @@ class RecallAndReceipts(unittest.TestCase):
         # outbox residency alone is not unreachability (the user 2026-08-24): the receipt row now
         # rides the authoritative dial state the send path already branches on, so the client can
         # say "queued for relay" on a healthy link and "unreachable" only on a real dial failure
+        self.addCleanup(lambda: pm.PEERS.pop("srv", None))   # a mid-test failure must not leak link state
         pm.outbox_put("srv", {"mid": "q9", "to": "beta", "frm": "alpha", "frm_id": "sid-a",
                               "body": "hi", "kind": "", "t": 1})
         pm._tl_append("messages.jsonl", {"t": 10, "ev": "sent", "id": "q9", "from": "alpha",
