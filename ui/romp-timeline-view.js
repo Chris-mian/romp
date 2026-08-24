@@ -49,14 +49,17 @@ function viewVisible(views, id) {
     if (Array.isArray(views.hidden) && views.hidden.indexOf(id) >= 0) return false;
     return !viewTags(views).some((t) => (t.members || []).indexOf(id) >= 0);
   }
-  const t = viewTags(views).find((x) => x.id === views.active);
+  const t = viewTags(views).find((x) => x.id === views.active)
+    || ((views && views.remoteTags) || []).find((x) => x.id === views.active);   // remote tags are views too (federation v0)
   return t ? (t.members || []).indexOf(id) >= 0 : true;
 }
 function viewLabel(views) {
   if (!views || !views.active || views.active === 'all') return 'All';
   if (views.active === 'untagged') return '(untagged)';
   const t = viewTags(views).find((x) => x.id === views.active);
-  return t ? (t.name || 'tag') : 'All';
+  if (t) return t.name || 'tag';
+  const rt = ((views && views.remoteTags) || []).find((x) => x.id === views.active);
+  return rt ? ((rt.host ? rt.host + ':' : '') + (rt.name || 'tag')) : 'All';
 }
 // live sessions the current view is NOT showing — the "N more" cue that keeps a hidden or tagged
 // session exactly one glance away (nothing may run in secret: the 2026-08-11 hidden-tabs rule)
@@ -2529,6 +2532,14 @@ class TimelinePanel {
     item('(untagged)', { current: v.active === 'untagged' }).addEventListener('click', () => pick('untagged'));
     for (const tg of viewTags(v))
       item(tg.name, { dot: tg.color || MODEL_FG, current: v.active === tg.id }).addEventListener('click', () => pick(tg.id));
+    // tag federation v0 (the user 2026-08-24): every ATTACHED kernel's tags join the menu, read-only,
+    // wearing the owner's colour and the "host:name" marker (the list_agents idiom) — a same-named
+    // tag on two kernels is two rows, never a silent merge. Picking one filters exactly like a local
+    // tag; editing it goes through its home kernel (romp tag --host <h>), so no edit affordance here.
+    for (const rt of (v.remoteTags || []))
+      item((rt.host ? rt.host + ':' : '') + (rt.name || 'tag'),
+           { dot: rt.color || MODEL_FG, current: v.active === rt.id, dim: true })
+        .addEventListener('click', () => pick(rt.id));
     sep();
     item('New tag…', { dim: true }).addEventListener('click', () => {
       const nv = JSON.parse(JSON.stringify(v));
@@ -2747,9 +2758,24 @@ class TimelinePanel {
           const nm = nameCell.createSpan({ text: bare });
           nm.setAttribute('style', 'font-weight:650;color:' + (s.color || '#cccccc') + ';'
             + (s.live ? '' : 'text-decoration:line-through;'));
-          // TAGS — removable chips, outline in the tag's colour, dim separate ✕
+          // TAGS — removable chips, outline in the tag's colour, dim separate ✕. A REMOTE kernel's
+          // tag holding this session renders too (federation v0) — read-only, host-marked, no ✕:
+          // its home kernel owns it (romp tag --host <h> edits it from here).
           const chips = grid.createDiv();
           chips.setAttribute('style', 'display:flex;gap:5px;flex-wrap:wrap;align-items:center;min-width:0;');
+          for (const rt of (vv.remoteTags || [])) {
+            if ((rt.members || []).indexOf(s.id) < 0) continue;
+            const rc = rt.color || '#cccccc';
+            const rch = chips.createSpan();
+            rch.setAttribute('style', 'display:inline-flex;align-items:center;gap:4px;'
+              + 'padding:2px 7px;border-radius:9px;font-size:0.82em;white-space:nowrap;opacity:0.85;'
+              + 'color:' + rc + ';border:1px dashed ' + rc + ';background:transparent;');
+            const rh = rch.createSpan({ text: (rt.host || '') + ':' });
+            rh.setAttribute('style', 'color:' + MODEL_FG + ';font-style:italic;font-size:0.88em;');
+            rch.createSpan({ text: rt.name || 'tag' });
+            rch.setAttribute('title', 'tagged on ' + (rt.host || 'another kernel')
+              + ' — read-only here; edit with: romp tag --host ' + (rt.host || '<kernel>'));
+          }
           for (const t of viewTags(vv)) {
             if ((t.members || []).indexOf(s.id) < 0) continue;
             const tc = t.color || '#cccccc';
@@ -3038,7 +3064,20 @@ class TimelinePanel {
     // LANE IDENTITY IS THE SID (data.turns + vidx + connectors all key by session.id, since two
     // live sessions can share a name and a rename keeps the id). `name` is display-only.
     const turnsOf = (sid) => data.turns[sid] || [];
-    const colorOf = (sid) => { const s = data.sessions.find((x) => x.id === sid); return s ? s.color : '#888'; };
+    // Owner-authoritative color (the user 2026-08-24, the gray-glyph fix): each session row rides
+    // its OWNER kernel's frame with the owner's color, but a message endpoint can spell the same
+    // session differently — bare on its home kernel's frame, host-prefixed after the merge, or
+    // prefixed with a THIRD kernel's name for it. Sids are uuids (globally unique), so on an exact
+    // miss the join retries by the bare sid tail — the one spelling every variant shares.
+    const colorOf = (sid) => {
+      let s = data.sessions.find((x) => x.id === sid);
+      if (!s && sid) {
+        const i = String(sid).indexOf(':');
+        const bare = i > 0 ? String(sid).slice(i + 1) : String(sid);
+        s = data.sessions.find((x) => x.id === bare || String(x.id).endsWith(':' + bare));
+      }
+      return s ? s.color : '#888';
+    };
 
     // A lane shows when it has activity intersecting THIS window — a turn bar or a message endpoint.
     // Normally a live session ALSO always gets a lane (even idle, so you can see who's running); with

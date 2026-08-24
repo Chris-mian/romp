@@ -11,8 +11,14 @@
 // of record; this is its client mirror (the timeline carries its own copy — it cannot import TS).
 // Pure, split out of render.ts for tests (the time-marker.ts pattern). The kernel emits `tags`;
 // `groups` survives in the type as the pre-rename key an un-updated kernel still pushes.
-export interface SessionTag { id: string; name?: string; color?: string; members?: string[] }
-export interface SessionViews { active?: string; hidden?: string[]; tags?: SessionTag[]; groups?: SessionTag[] }
+export interface SessionTag { id: string; name?: string; color?: string; members?: string[]; host?: string }
+export interface SessionViews {
+  active?: string; hidden?: string[]; tags?: SessionTag[]; groups?: SessionTag[];
+  // tag federation v0 (the user 2026-08-24): each ATTACHED kernel's own tags, read-only, joined by
+  // the kernel per host (id = "host:tagid", members already respelled viewer-relative). Derived —
+  // never an edit target, excluded from the echo key, dropped by the kernel if echoed back.
+  remoteTags?: SessionTag[];
+}
 
 // the one place the legacy key is honored, so every rule below reads through it
 export function viewTags(views: SessionViews | null | undefined): SessionTag[] {
@@ -27,7 +33,8 @@ export function viewVisible(views: SessionViews | null | undefined, id: string):
     if (Array.isArray(views.hidden) && views.hidden.includes(id)) return false;
     return !viewTags(views).some((t) => (t.members || []).includes(id));
   }
-  const t = viewTags(views).find((x) => x.id === views.active);
+  const t = viewTags(views).find((x) => x.id === views.active)
+    || (views.remoteTags || []).find((x) => x.id === views.active);   // a remote tag is a view too (federation v0)
   return t ? (t.members || []).includes(id) : true;
 }
 

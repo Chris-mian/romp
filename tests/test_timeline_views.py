@@ -52,7 +52,7 @@ class TimelineViews(unittest.TestCase):
         # a deliberate gesture, so All respects it, but a tag no longer excludes a session there
         km._set_timeline_views({"active": "all", "hidden": ["s9"], "tags": [G1]})
         km._flags_cache.clear()
-        v = km._timeline_views()
+        v = km._views_client()   # _view_visible reads the RENDERED shape (string members + remoteTags)
         self.assertFalse(km._view_visible(v, "s9"), "hidden — All respects the deliberate hide")
         self.assertTrue(km._view_visible(v, "s2"), "TAGGED → All still shows it")
         self.assertTrue(km._view_visible(v, "s1"), "untagged → shown")
@@ -60,14 +60,14 @@ class TimelineViews(unittest.TestCase):
         # 2026-08-23 TAG rule: tagging says "specialized — out of the main view")
         km._set_timeline_views({"active": "untagged", "hidden": ["s9"], "tags": [G1]})
         km._flags_cache.clear()
-        v = km._timeline_views()
+        v = km._views_client()
         self.assertEqual(v["active"], "untagged", "the sentinel survives the normalizer round-trip")
         self.assertFalse(km._view_visible(v, "s9"), "hidden hides in the untagged view too")
         self.assertFalse(km._view_visible(v, "s2"), "TAGGED → out of the untagged view")
         self.assertTrue(km._view_visible(v, "s1"), "tagless, not hidden → shown")
         km._set_timeline_views({"active": "g1", "hidden": ["s2"], "tags": [G1]})
         km._flags_cache.clear()
-        v = km._timeline_views()
+        v = km._views_client()
         self.assertTrue(km._view_visible(v, "s2"), "a tag view shows exactly its members — hidden or not")
         self.assertFalse(km._view_visible(v, "s1"), "…and nothing else")
 
@@ -75,7 +75,8 @@ class TimelineViews(unittest.TestCase):
         # a pre-rename timeline-views.json (or an un-updated Obsidian panel posting the whole blob)
         # must lose nothing on upgrade; when BOTH keys appear, "tags" is the authoritative one
         v = km._norm_timeline_views({"active": "g1", "hidden": [], "groups": [G1]})
-        self.assertEqual(v["tags"], [G1], "the legacy key migrates in")
+        want = dict(G1, members=[{"host": "", "sid": "s2"}, {"host": "", "sid": "s3"}])
+        self.assertEqual(v["tags"], [want], "the legacy key migrates in — string members become pairs")
         self.assertEqual(v["active"], "g1", "…and its active tag survives the read")
         self.assertNotIn("groups", v, "the normalized shape carries tags only")
         both = km._norm_timeline_views({"tags": [G1], "groups": [{"id": "gX", "name": "stale"}]})
@@ -97,7 +98,7 @@ class TimelineViews(unittest.TestCase):
         self.assertEqual(v["hidden"], ["a"], "junk and duplicates dropped")
         self.assertEqual(len(v["tags"]), 1)
         self.assertEqual(len(v["tags"][0]["name"]), km._VIEWS_MAX_NAME)
-        self.assertEqual(v["tags"][0]["members"], ["m"])
+        self.assertEqual(v["tags"][0]["members"], [{"host": "", "sid": "m"}])
 
     def test_cache_invalidates_on_write(self):
         self.assertEqual(km._timeline_views()["hidden"], [])
@@ -112,7 +113,9 @@ class TimelineViews(unittest.TestCase):
         km._heal_timeline_views("old", "new")
         v = km._timeline_views()
         self.assertEqual(v["hidden"], ["new", "old"], "the fork inherits the hidden bit; the old sid keeps it")
-        self.assertEqual(v["tags"][0]["members"], ["new", "old", "other"], "membership copies the same way")
+        self.assertEqual(v["tags"][0]["members"],
+                         [{"host": "", "sid": x} for x in ("new", "old", "other")],
+                         "membership copies the same way")
         before = json.loads((jd.STATE / "timeline-views.json").read_text())
         km._heal_timeline_views("stranger", "new2")   # untouched sid → no write at all
         self.assertEqual(json.loads((jd.STATE / "timeline-views.json").read_text()), before)
@@ -137,15 +140,90 @@ class TimelineViews(unittest.TestCase):
 
     def test_payloads_echo_the_views_blob(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
-        self.assertIn('"views": _timeline_views(),', src, "the timeline payload carries it")
+        self.assertIn('"views": _views_client(),', src, "the timeline payload carries the RENDERED shape")
         self.assertIn('"palette": pal.colors(_palette_name()),', src, "and the palette, for tag colors in every host")
-        self.assertIn('"tabs": tab_meta, "views": _timeline_views()', src, "tabOrder pushes carry it")
-        self.assertIn('"tabs": _tabs, "views": _timeline_views()', src, "the connect-time tabOrder carries it")
+        self.assertIn('"tabs": tab_meta, "views": _views_client()', src, "tabOrder pushes carry it")
+        self.assertIn('"tabs": _tabs, "views": _views_client()', src, "the connect-time tabOrder carries it")
 
     def test_web_boot_exposes_the_set_views_hook(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn("window.__rompTimelineSetViews=function(views)", src)
         self.assertIn('post({type:"setTimelineViews",views:views});', src)
+
+    # ── tag federation v0 (the user 2026-08-24): canonical pairs, the rendered union, remote views ──
+
+    def test_member_pairs_round_trip_all_three_spellings(self):
+        # strings ("sid", "host:sid") and pair dicts all land as canonical pairs; the rendered
+        # client shape respells them viewer-relative — a lossless round trip either way
+        km._set_timeline_views({"active": "all", "hidden": [], "tags": [
+            {"id": "g1", "name": "mixed", "members": ["s1", "alpha:s2", {"host": "beta", "sid": "s3"}]}]})
+        km._flags_cache.clear()
+        stored = km._timeline_views()["tags"][0]["members"]
+        self.assertEqual(stored, [{"host": "", "sid": "s1"}, {"host": "alpha", "sid": "s2"},
+                                  {"host": "beta", "sid": "s3"}])
+        rendered = km._views_client()["tags"][0]["members"]
+        self.assertEqual(rendered, ["s1", "alpha:s2", "beta:s3"],
+                         "the rendering spelling is exactly the pre-pairs client contract")
+
+    def _attach(self, host, views, status="up"):
+        km._remotes[host] = {"host": host, "status": status, "views": views}
+
+    def test_remote_tags_join_the_client_shape_read_only_and_host_stamped(self):
+        # a tag created on kernel alpha, with a member of its own, one of beta's, and one of OURS —
+        # the sid-first respelling: alpha's home member wears alpha's host here, beta's keeps
+        # alpha's label for beta (it joins whenever beta is attached here too), and OUR session
+        # (known locally by sid — uuids are global) renders bare, so the lane join lands
+        (jd.STATE / "names").mkdir(parents=True, exist_ok=True)
+        (jd.STATE / "names" / "00000000-aaaa-bbbb-cccc-000000000001").write_text("web\t/tmp\t#123456\twhite\n")
+        saved = dict(km._remotes)
+        try:
+            km._remotes.clear()
+            self._attach("alpha", {"active": "all", "hidden": [], "tags": [
+                {"id": "g9", "name": "team", "color": "#DD42FF",
+                 "members": [{"host": "", "sid": "rs1"}, {"host": "beta", "sid": "rs2"},
+                             {"host": "snape", "sid": "00000000-aaaa-bbbb-cccc-000000000001"}]}]})
+            v = km._views_client()
+            self.assertEqual(v["remoteTags"], [{
+                "id": "alpha:g9", "host": "alpha", "name": "team", "color": "#DD42FF",
+                "members": ["alpha:rs1", "beta:rs2", "00000000-aaaa-bbbb-cccc-000000000001"]}])
+            # …and picking it filters exactly like a local tag, falling OPEN when the kernel detaches
+            v["active"] = "alpha:g9"
+            self.assertTrue(km._view_visible(v, "alpha:rs1"))
+            self.assertFalse(km._view_visible(v, "somebody-else"))
+            gone = {"active": "alpha:g9", "hidden": [], "tags": []}
+            self.assertTrue(km._view_visible(gone, "somebody-else"),
+                            "a vanished remote tag falls open, never trapping the viewer in an empty view")
+        finally:
+            km._remotes.clear(); km._remotes.update(saved)
+
+    def test_same_name_tags_on_two_kernels_stay_two_entries(self):
+        saved = dict(km._remotes)
+        try:
+            km._remotes.clear()
+            self._attach("alpha", {"tags": [{"id": "g1", "name": "team", "members": []}]})
+            self._attach("beta", {"tags": [{"id": "g1", "name": "team", "members": []}]})
+            ids = [t["id"] for t in km._views_client()["remoteTags"]]
+            self.assertEqual(ids, ["alpha:g1", "beta:g1"], "host-disambiguated — never a silent merge")
+        finally:
+            km._remotes.clear(); km._remotes.update(saved)
+
+    def test_a_down_kernel_contributes_nothing_and_active_hidden_stay_local(self):
+        saved = dict(km._remotes)
+        try:
+            km._remotes.clear()
+            self._attach("alpha", {"tags": [{"id": "g1", "name": "team", "members": []}]}, status="down")
+            v = km._views_client()
+            self.assertNotIn("remoteTags", v, "a down kernel's cached tags never join the union")
+            # a remote-tag ACTIVE survives normalization (validated at read time, ":" is the marker);
+            # hidden stays exactly the viewer-local list — neither is federated state
+            n = km._norm_timeline_views({"active": "alpha:g1", "hidden": ["h1"], "tags": []})
+            self.assertEqual(n["active"], "alpha:g1")
+            self.assertEqual(n["hidden"], ["h1"])
+            # a client echoing the derived remoteTags back never persists it
+            n2 = km._norm_timeline_views({"active": "all", "remoteTags": [{"id": "x"}], "tags": []})
+            self.assertNotIn("remoteTags", n2)
+        finally:
+            km._remotes.clear(); km._remotes.update(saved)
 
     def test_focus_never_mutates_the_views_blob(self):
         # A focus is a PEEK, not a view edit (the user 2026-08-24, superseding the 2026-08-18/19/23

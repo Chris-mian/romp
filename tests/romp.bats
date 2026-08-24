@@ -251,6 +251,19 @@ MOCK
     [ "$(grep -c '/tag' "$MOCK_LOG")" -eq 0 ]
 }
 
+@test "tag: --host rides the payload (an edit on an attached kernel's store)" {
+    _stub_curl
+    touch "$MOCK_LOG"
+    export ROMP_SERVE_TOKEN=testtok
+    run run_romp tag team --host alpha --add exp-web
+    [ "$status" -eq 0 ]
+    grep '/tag' "$MOCK_LOG" | grep -q '"host": *"alpha"'
+    # …and --host with no edit flag is a usage error: v0 reads stay local (the menu shows the union)
+    run run_romp tag team --host alpha
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"--host goes with an edit"* ]]
+}
+
 @test "tag: the pre-rename group verb still works, posting the new /tag route" {
     _stub_curl
     touch "$MOCK_LOG"
