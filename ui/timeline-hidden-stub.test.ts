@@ -135,6 +135,8 @@ test("a hidden-recipient message draws an outgoing stub: send-anchored, sloped t
   hit._listeners.mouseenter({ clientX: 200, clientY: 30, currentTarget: hit });
   assert.equal(hl._attrs.opacity, "0.95", "hover lights the highlight overlay");
   assert.ok(panel.tip.classList.contains("show"), "hover shows the tooltip (showTip)");
+  assert.ok(String(panel.tip.innerHTML).includes(">bee<") && String(panel.tip.innerHTML).includes(">cee<"),
+    "the tooltip names BOTH endpoints — the hidden counterpart resolves from the row, not the lanes");
   hit._listeners.mouseleave({});
   assert.equal(hl._attrs.opacity, "0", "leave restores the dark overlay");
   const calls: any[] = [];
@@ -221,6 +223,23 @@ test("a counterpart absent from data.sessions slopes by the fixed convention: do
   const [s] = stubLines(panel);
   assert.ok(s, "the stub draws even with no would-be lane to lean toward");
   near(s._attrs.y2, s._attrs.y1 + HALF, "fixed convention: down, toward the axis");
+  // the tooltip must name BOTH endpoints even with no counterpart row in data.sessions at all
+  // (the user 2026-08-24): the names come from the message ROW itself, never from visible lanes
+  const hit = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
+  hit._listeners.mouseenter({ clientX: 200, clientY: 30, currentTarget: hit });
+  assert.ok(String(panel.tip.innerHTML).includes(">bee<"), "the visible sender is named");
+  assert.ok(String(panel.tip.innerHTML).includes(">gone<"), "…and the ABSENT counterpart is named, from the row");
+});
+
+test("a nameless row still names both ends — the raw id backstops a missing display name", () => {
+  const now = 1_781_000_000;
+  // a row the kernel could not resolve a display name for (cleared/foreign session) must not
+  // render an empty who-span: the raw id is information, not noise
+  const panel = draw([{ id: "m13", fromId: "SB", toId: "SX", from: "bee", to: "",
+                        sent: now - 200, exec: now - 50, hasExec: true, pending: false, summary: "to a nameless one" }]);
+  const hit = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
+  hit._listeners.mouseenter({ clientX: 200, clientY: 30, currentTarget: hit });
+  assert.ok(String(panel.tip.innerHTML).includes(">SX<"), "the raw id names the endpoint — never an empty span");
 });
 
 test("both endpoints hidden → no stub, no connector", () => {
