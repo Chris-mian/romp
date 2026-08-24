@@ -160,7 +160,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fcol-fold { display: none; }
 
 @container (max-width: 540px) or style(--romp-stack: on) {
-  .feed-cols { flex-direction: column; }
+  /* stretch, explicitly: the row layout's align-items: flex-start rides in from the base rule, and in
+     COLUMN direction that same declaration content-sizes each section horizontally — a section was
+     only as wide as its widest card's text, so a long Completed card spanned the pane while short
+     Working cards hugged their titles (the user 2026-08-24, second width-inconsistency report). */
+  .feed-cols { flex-direction: column; align-items: stretch; }
   /* Folding exists ONLY here, so the fold BITING lives here too (the user 2026-08-18): this rule used
      to sit outside the query, so a section collapsed while stacked stayed hidden after the feed
      widened to side-by-side — an empty column with no caret to reopen it (the caret is stacked-only).
