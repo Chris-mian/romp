@@ -3447,23 +3447,17 @@ function openViewMenu(btn: HTMLElement): void {
   document.addEventListener("pointerdown", viewMenuAway, true);
   document.addEventListener("keydown", viewMenuKey, true);
 }
-// The icon: an ordering glyph — three shortening bars + a direction arrow — drawn inline so
-// currentColor keeps it monochrome in every state. NOT a gear: the kernel page's strip shows its
-// ⛭ right below this footer, and two gears would read as the same control (the user 2026-08-24).
-function viewMenuGlyph(): string {
-  return '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" '
-    + 'stroke-width="1.6" stroke-linecap="round" aria-hidden="true">'
-    + '<path d="M2.5 4h8"/><path d="M2.5 8h5.5"/><path d="M2.5 12h3"/>'
-    + '<path d="M12.5 5.5v5.8"/><path d="M10.6 9.6l1.9 2 1.9-2"/></svg>';
-}
+// A WORD, not an icon (the user 2026-08-24, round two: the ordering glyph beside "Sessions ▴" read
+// as "not what I would expect for what to show"): "View ▴" says exactly what clicking does — the
+// footer's own word-button vocabulary, the same upward caret its Sessions neighbour wears. The
+// original glyph existed to be compact; one short word costs a few px and buys first-look legibility.
 function ensureViewMenuBtn(): HTMLElement {
   let b = document.getElementById("feed-viewbtn") as HTMLElement | null;
   if (!b) {
     b = el("button", "fdismiss ffollow feed-modetoggle");
     b.id = "feed-viewbtn";
-    b.innerHTML = viewMenuGlyph();
+    b.textContent = "View \u25b4";
     b.title = "view options — sort direction, single column, group by session";
-    b.setAttribute("aria-label", "view options");
     b.setAttribute("aria-haspopup", "menu");
     b.onclick = (ev) => {   // opening the menu IS the acknowledgement (same as the session filter)
       ev.stopPropagation();

@@ -927,10 +927,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    wears the shared .ctx-menu vocabulary (chrome defined with the card menus below); these rules add
    the ✓-in-circle current mark every romp menu uses (ported from styles.css — the feed page loads
    only this sheet) and the forced row's inert fade. */
-/* two ids, deliberately: #feed-foot .fdismiss's (1,1,0) padding beats a bare #feed-viewbtn — the
-   repo's recurring cascade trap (the 2026-08-19 forced-fade bug class) */
-#feed-foot #feed-viewbtn { display: inline-flex; align-items: center; padding: 2px 7px; }
-#feed-viewbtn svg { display: block; }
+/* ("View ▴" is a word-button since 2026-08-24 round two — the shared #feed-foot .fdismiss metrics
+   cover it, so the old icon-button's bespoke two-id padding rule went with the icon.) */
 .feed-viewmenu { min-width: 178px; }
 /* rows are real <button>s (keyboard operability) — strip the UA chrome and re-inherit the menu's
    font/colour (a button that doesn't inherit is exactly how a menu drifts onto the host font, the
