@@ -157,3 +157,12 @@ test("executed: a tag view is the NAME-KEYED union (user ruling 2026-08-24) — 
   assert.equal(viewVisible({ ...both, active: "TESTHOST-A:g1" }, "local1"), true, "either id, same union");
 });
 
+test("executed: untagged excludes by the UNION — a remote-homed tag counts (the user 2026-08-24)", () => {
+  // the reported bug: tagging from the chat left the session in the untagged view, because only
+  // LOCAL tags excluded there. Held by any kernel's tag = tagged, on every surface.
+  const v = { active: "untagged", hidden: [], tags: [],
+              remoteTags: [{ id: "alpha:g1", host: "alpha", name: "workers", members: ["cards1"] }] };
+  assert.equal(viewVisible(v, "cards1"), false, "remote-homed tag → out of untagged");
+  assert.equal(viewVisible(v, "other"), true);
+});
+

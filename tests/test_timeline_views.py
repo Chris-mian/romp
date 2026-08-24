@@ -230,13 +230,18 @@ class TimelineViews(unittest.TestCase):
         finally:
             km._remotes.clear(); km._remotes.update(saved)
 
-    def test_a_down_kernel_contributes_nothing_and_active_hidden_stay_local(self):
+    def test_a_down_kernels_CACHE_keeps_contributing_and_active_hidden_stay_local(self):
+        # REVERSED from v0 (the user 2026-08-24, the untagged-view bug): visibility must not flap
+        # with a peer's restart, so the last-known tags keep excluding from untagged and keep their
+        # views pickable while the link reconnects. Bounded staleness — the auto-reconnect heals
+        # within a pass, and detach pops the row and its cache with it.
         saved = dict(km._remotes)
         try:
             km._remotes.clear()
             self._attach("alpha", {"tags": [{"id": "g1", "name": "team", "members": []}]}, status="down")
             v = km._views_client()
-            self.assertNotIn("remoteTags", v, "a down kernel's cached tags never join the union")
+            self.assertEqual([t["id"] for t in v.get("remoteTags") or []], ["alpha:g1"],
+                             "the cached read stands while the kernel reconnects")
             # a remote-tag ACTIVE survives normalization (validated at read time, ":" is the marker);
             # hidden stays exactly the viewer-local list — neither is federated state
             n = km._norm_timeline_views({"active": "alpha:g1", "hidden": ["h1"], "tags": []})
@@ -245,6 +250,37 @@ class TimelineViews(unittest.TestCase):
             # a client echoing the derived remoteTags back never persists it
             n2 = km._norm_timeline_views({"active": "all", "remoteTags": [{"id": "x"}], "tags": []})
             self.assertNotIn("remoteTags", n2)
+        finally:
+            km._remotes.clear(); km._remotes.update(saved)
+
+    def test_untagged_excludes_by_the_UNION_both_tag_homes(self):
+        # the user's repro (2026-08-24): they tagged a session from the chat while showing only
+        # untagged, and it STAYED — the untagged branch counted local tags only, so a REMOTE-homed
+        # tag never excluded. A tag is its NAME wherever it homes: held by any kernel's tag = tagged.
+        saved = dict(km._remotes)
+        try:
+            km._remotes.clear()
+            # remote-homed: the viewer's kernel holds no tag at all; alpha's tag holds two sessions —
+            # one of alpha's own, and one of OURS (the local sid, known here)
+            (jd.STATE / "names").mkdir(parents=True, exist_ok=True)
+            (jd.STATE / "names" / "00000000-aaaa-bbbb-cccc-000000000002").write_text("cards\t/tmp\t#123456\twhite\n")
+            self._attach("alpha", {"tags": [{"id": "g1", "name": "workers", "color": "#DD42FF",
+                                             "members": [{"host": "", "sid": "rsid1"},
+                                                         {"host": "viewer", "sid": "00000000-aaaa-bbbb-cccc-000000000002"}]}]})
+            km._set_timeline_views({"active": "untagged", "hidden": [], "tags": []})
+            km._flags_cache.clear()
+            v = km._views_client()
+            self.assertFalse(km._view_visible(v, "alpha:rsid1"),
+                             "a remote-homed tag excludes its member from untagged")
+            self.assertFalse(km._view_visible(v, "00000000-aaaa-bbbb-cccc-000000000002"),
+                             "…including OUR OWN session it holds — the exact reported case")
+            self.assertTrue(km._view_visible(v, "someone-else"))
+            # local-homed: unchanged behavior, pinned beside it
+            km._set_timeline_views({"active": "untagged", "hidden": [],
+                                    "tags": [{"id": "gL", "name": "local", "members": ["locsid"]}]})
+            km._flags_cache.clear()
+            v = km._views_client()
+            self.assertFalse(km._view_visible(v, "locsid"))
         finally:
             km._remotes.clear(); km._remotes.update(saved)
 
