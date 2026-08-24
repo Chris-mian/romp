@@ -954,28 +954,36 @@ function renderAgentNotif(a: AgentNotif, outputs?: TaskOutputs, key?: string): H
 // path; until/unless it returns a dataURL we show a "🖼 filename" chip, then swap in
 // the real thumbnail when the host answers. Re-renders rebuild the element from these
 // caches, so a thumbnail already fetched stays a thumbnail.
-const imgUrlCache = new Map<string, string>();   // path → dataURL (loaded)
-const imgFailed = new Set<string>();             // path → keep the chip, never retry
-const imgRequested = new Set<string>();          // path → request in flight
-function fillPathImg(wrap: HTMLElement, p: string): void {
+// EVERYTHING on this ride is keyed by (session, path), never the bare path: the same RELATIVE path
+// string in two sessions names two different files (each cwd its own), and a bare-path cache let the
+// FIRST asker's answer fill every session's chips — wrong pixels shown silently, and a first-ask
+// failure parked every session's chip (found adversarially reviewing the owner-sid fix, 2026-08-24).
+// The chip carries its sid in data-imgsid so refills and heals match on both halves.
+const imgKey = (sid: string | null, p: string): string => (sid || "") + "\u0000" + p;
+const imgUrlCache = new Map<string, string>();   // (sid,path) → dataURL (loaded)
+const imgFailed = new Set<string>();             // (sid,path) → keep the chip until a reconnect heal
+const imgRequested = new Set<string>();          // (sid,path) → request in flight
+function fillPathImg(wrap: HTMLElement, p: string, sid: string | null): void {
   wrap.textContent = "";
-  const url = imgUrlCache.get(p);
+  const url = imgUrlCache.get(imgKey(sid, p));
   if (url) {
     const img = document.createElement("img"); img.className = "user-img"; img.src = url; img.loading = "lazy"; img.title = p;
     wrap.appendChild(img);
   } else {
     // still waiting on the host round-trip → pulsing-dots loading cue (pure CSS — the sandbox can't
     // fetch the swirl asset); a FAILED path drops the pulse and reads as the plain chip it is
-    const chip = el("div", "user-img-path" + (imgFailed.has(p) ? "" : " img-pending"));
+    const chip = el("div", "user-img-path" + (imgFailed.has(imgKey(sid, p)) ? "" : " img-pending"));
     chip.textContent = "🖼 " + (p.split("/").pop() || p); chip.title = p;
     wrap.appendChild(chip);
   }
 }
 function buildPathImg(p: string, sid: string | null): HTMLElement {
   const wrap = el("span", "js-pathimg"); wrap.dataset.imgpath = p;
-  fillPathImg(wrap, p);
-  if (!imgUrlCache.has(p) && !imgFailed.has(p) && !imgRequested.has(p)) {
-    imgRequested.add(p);
+  wrap.dataset.imgsid = sid || "";
+  fillPathImg(wrap, p, sid);
+  const k = imgKey(sid, p);
+  if (!imgUrlCache.has(k) && !imgFailed.has(k) && !imgRequested.has(k)) {
+    imgRequested.add(k);
     // id → the kernel resolves a RELATIVE path against this session's cwd (assistant-mentioned
     // "plots/out.png" renders too, not just absolute user-attachment paths — the user 2026-07-20).
     // The OWNING session's id, passed by the caller: a background build must never send activeId here.
@@ -983,11 +991,23 @@ function buildPathImg(p: string, sid: string | null): HTMLElement {
   }
   return wrap;
 }
-function onImgData(p: string, url: string | null): void {
-  imgRequested.delete(p);
-  if (url) imgUrlCache.set(p, url); else imgFailed.add(p);
+function onImgData(p: string, url: string | null, sid: string | null): void {
+  // A kernel that echoes the sid answers exactly the chips that asked; an OLDER kernel's reply
+  // (no sid echo) falls back to path-only matching — at worst the old sharing, never a dead chip.
+  const bySid = typeof sid === "string";
+  const keys = bySid ? [imgKey(sid, p)]
+    : Array.from(document.querySelectorAll(".js-pathimg"))
+        .filter((n) => (n as HTMLElement).dataset.imgpath === p)
+        .map((n) => imgKey((n as HTMLElement).dataset.imgsid || null, p));
+  for (const k of keys) {
+    imgRequested.delete(k);
+    if (url) imgUrlCache.set(k, url); else imgFailed.add(k);
+  }
   document.querySelectorAll(".js-pathimg").forEach((n) => {
-    const e = n as HTMLElement; if (e.dataset.imgpath === p) fillPathImg(e, p);
+    const e = n as HTMLElement;
+    if (e.dataset.imgpath !== p) return;
+    if (bySid && (e.dataset.imgsid || "") !== (sid || "")) return;
+    fillPathImg(e, p, e.dataset.imgsid || null);
   });
 }
 // RECONNECT-class heal for the path-image chips (the user 2026-08-24): imgFailed was "never retry
@@ -996,22 +1016,22 @@ function onImgData(p: string, url: string | null): void {
 // request flow buildPathImg runs on mint (imgRequested still dedups in-flight asks).
 function healPathImgs(): void {
   if (!imgFailed.size) return;
-  const failed = Array.from(imgFailed);
+  const failed = new Set(imgFailed);
   imgFailed.clear();
-  for (const p of failed) {
-    document.querySelectorAll(".js-pathimg").forEach((n) => {
-      const e = n as HTMLElement;
-      if (e.dataset.imgpath !== p) return;
-      fillPathImg(e, p);                             // back to the pending pulse while the ask is out
-      if (!imgRequested.has(p)) {
-        imgRequested.add(p);
-        // the OWNING view's session, read off the thread root the chip lives in — a heal fired while
-        // another tab is active must re-ask for the right session, not the one being looked at
-        const own = (e.closest("[data-session]") as HTMLElement | null)?.dataset.session || activeId;
-        if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p, id: own });
-      }
-    });
-  }
+  document.querySelectorAll(".js-pathimg").forEach((n) => {
+    const e = n as HTMLElement;
+    const p = e.dataset.imgpath;
+    // the chip's own minted sid — a heal fired while another tab is active must re-ask for the
+    // OWNING session, not the one being looked at (and the popover's chips carry theirs too)
+    const own = e.dataset.imgsid || activeId;
+    const k = p ? imgKey(own, p) : "";
+    if (!p || !failed.has(k)) return;
+    fillPathImg(e, p, own);                          // back to the pending pulse while the ask is out
+    if (!imgRequested.has(k)) {
+      imgRequested.add(k);
+      if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p, id: own });
+    }
+  });
 }
 // the page shim fires romp:wsup when THIS pane's kernel socket reconnects (kernel.py ws.onopen) —
 // the same kernel-is-back event a hostUp is for a federated tunnel; heal everything on it
@@ -10807,7 +10827,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "clipboardText") insertClipboardText(String(m.text ?? ""));
   else if (m.type === "ledger") setLedger(m.id, m.ledger ?? null);
   else if (m.type === "working") { workingSet = new Set(Array.isArray(m.names) ? m.names : []); refreshPostalDots(); }
-  else if (m.type === "imgData" && typeof m.path === "string") onImgData(m.path, typeof m.url === "string" ? m.url : null);
+  else if (m.type === "imgData" && typeof m.path === "string") onImgData(m.path, typeof m.url === "string" ? m.url : null, typeof m.sid === "string" ? m.sid : null);
   else if (m.type === "tabOrder") { captureViews(m.views || null); applyTabOrder(m.order, m.tabs); }
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
     notePendingMeta(pendingTabMeta, m.id, { name: m.name });   // kernel truth — hold it against a push built pre-rename

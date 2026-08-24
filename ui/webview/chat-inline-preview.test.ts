@@ -109,7 +109,7 @@ test("figures render AT their mention: after the block naming them; same-block f
 });
 
 test("VS Code's pending image chip pulses while the host round-trip is in flight; a failed one doesn't", () => {
-  assert.match(RENDER, /"user-img-path" \+ \(imgFailed\.has\(p\) \? "" : " img-pending"\)/);
+  assert.match(RENDER, /"user-img-path" \+ \(imgFailed\.has\(imgKey\(sid, p\)\) \? "" : " img-pending"\)/);
   assert.match(CSS, /\.user-img-path\.img-pending::after \{ content: " ···";/);
   assert.match(CSS, /prefers-reduced-motion: reduce\) \{ \.user-img-path\.img-pending::after \{ animation: none;/);
 });

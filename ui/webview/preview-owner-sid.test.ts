@@ -42,6 +42,20 @@ test("the baked URLs and host image asks carry the owner, never the active tab",
   assert.match(RENDER, /buildPathImg\(im\.src\.slice\(5\), renderingOwnerSid \?\? activeId\)/);
   // buildPathImg itself sends the sid it was handed
   assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "imgRequest", path: p, id: sid \}\);/);
-  // …and the reconnect heal re-asks for the OWNING view's session, read off the thread root
-  assert.match(RENDER, /closest\("\[data-session\]"\) as HTMLElement \| null\)\?\.dataset\.session \|\| activeId;/);
+  // …and the reconnect heal re-asks for the OWNING session, read off the chip's own minted sid
+  assert.match(RENDER, /const own = e\.dataset\.imgsid \|\| activeId;/);
+});
+
+test("the whole imgRequest ride is keyed by (session, path), never the bare path", () => {
+  // the same relative path string in two sessions names two different files (each cwd its own): a
+  // bare-path cache let the FIRST asker's answer fill every session's chips, and a first-ask failure
+  // parked them all (the adversarial review of this fix, 2026-08-24)
+  assert.match(RENDER, /const imgKey = \(sid: string \| null, p: string\): string => \(sid \|\| ""\) \+ "\\u0000" \+ p;/);
+  assert.match(RENDER, /const imgUrlCache = new Map<string, string>\(\); {3}\/\/ \(sid,path\) → dataURL/);
+  assert.match(RENDER, /wrap\.dataset\.imgsid = sid \|\| "";/);
+  // …and the kernel echoes the asking session on the reply, so answers land only on their session's chips
+  const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.match(KERNEL, /\{"type": "imgData", "path": p, "sid": str\(msg\.get\("id"\) or ""\),/);
+  // an older kernel's sid-less reply still fills by path alone — sharing at worst, never a dead chip
+  assert.match(RENDER, /const bySid = typeof sid === "string";/);
 });
