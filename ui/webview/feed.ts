@@ -165,7 +165,7 @@ const askEls = new Map<string, HTMLElement>();
 // lists them), so a stale push can't resurrect a card mid-dismiss (the user 2026-06-19).
 const pendingCleared = new Set<string>();
 // A LIFO of recently-cleared card batches, holding the AskItem data itself (a single Clear pushes [it]; a
-// Clear-all pushes the whole batch). "Undo clear" pops the latest and re-inserts those cards IMMEDIATELY —
+// Clear-all pushes the whole batch). "Undo" pops the latest and re-inserts those cards IMMEDIATELY —
 // optimistic restore — so the card reappears on click instead of waiting on the kernel round-trip + next feed
 // build. Mirrors the kernel's _undo_clear (restores the most-recent clear batch). (the user 2026-06-27.)
 const clearedStack: AskItem[][] = [];
@@ -1104,7 +1104,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     // synthetic mouseleave runs the exact leave logic (clears the highlight, or restores a pinned card's).
     card.dispatchEvent(new MouseEvent("mouseleave"));
     pendingCleared.add(it.itemId);   // suppress from incoming pushes until the kernel confirms the clear
-    clearedStack.push([it]);         // cache for an instant optimistic Undo clear
+    clearedStack.push([it]);         // cache for an instant optimistic Undo
     card.classList.add("dismissing");
     vscodeApi?.postMessage({ type: "askClear", itemId: it.itemId, sid: it.sid });
     setTimeout(() => { if (askEls.get(it.itemId) === card && card.classList.contains("dismissing")) { card.remove(); askEls.delete(it.itemId); dropDismissed([it.itemId]); } }, 180);
@@ -2115,7 +2115,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     card.dispatchEvent(new MouseEvent("mouseleave"));   // flush the group's stuck hover highlight (see the ask card's clear)
     const cur = (card as any)._g as AskGroup;
     card.classList.add("dismissing");
-    clearedStack.push(cur.members.slice());   // cache the whole batch for an instant optimistic Undo clear
+    clearedStack.push(cur.members.slice());   // cache the whole batch for an instant optimistic Undo
     for (const m of cur.members) { pendingCleared.add(m.itemId); vscodeApi?.postMessage({ type: "askClear", itemId: m.itemId, sid: m.sid }); }   // clear every member
     // only finalize if a render in the 180ms window didn't revive (re-render clears
     // .dismissing) or replace this card — else a stale timeout yanks the wrong one
@@ -3081,14 +3081,15 @@ function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
   }));
 }
 
-// UndoClear (top right): restore the most recently cleared card — the host pops
+// Undo (top right): restore the most recently cleared card — the host pops
 // the newest cleared.jsonl row. Built fresh wherever the top strip renders: on
 // the legend row when columns exist, and on the empty state too (clearing the
-// LAST card is exactly when undo is wanted).
+// LAST card is exactly when undo is wanted). One word (the user 2026-08-24,
+// dropping "Undo clear"): it sits right beside Clear all — context enough.
 function makeUndoClearBtn(): HTMLElement {
   const b = el("button", "fdismiss ffollow");   // restorative → blue hover (.ffollow), not Clear's red
   b.id = "feed-undoclear";
-  b.textContent = "Undo clear";
+  b.textContent = "Undo";
   b.title = "restore the most recently cleared card";
   b.onclick = (ev) => {
     ev.stopPropagation();
@@ -3144,12 +3145,12 @@ function ensureUndoClear(): HTMLElement {
 }
 
 // Clear all: inbox-zero every open card at once. Destructive, so it hovers RED (.fdismiss); the single
-// UndoClear restores the whole batch (the host clears them as one cleared.jsonl batch).
+// Undo restores the whole batch (the host clears them as one cleared.jsonl batch).
 function makeClearAllBtn(): HTMLElement {
   const b = el("button", "fdismiss");
   b.id = "feed-clearall";
   b.textContent = "Clear all";
-  b.title = "clear every open card (inbox-zero) — UndoClear restores them";
+  b.title = "clear every open card (inbox-zero) — Undo restores them";
   b.onclick = (ev) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "clearAll" }); };
   return b;
 }
@@ -3160,89 +3161,163 @@ function ensureClearAll(): HTMLElement {
   return b;
 }
 
-// A persisted toggle-button helper for the footer (the user 2026-07-07): a small pressed-state button that
-// writes a boolean into the shared romp:settings and re-renders. Used for "Newest first" and "Collapsed".
-// `after` runs BEFORE the re-render (e.g. drop per-card overrides), on the NEW value.
-function makeFeedToggle(id: string, label: string, get: () => boolean, key: string, after?: (on: boolean) => void): HTMLElement {
-  const b = el("button", "fdismiss ffollow feed-modetoggle");   // view action → blue hover; .on = accent (pressed)
-  b.id = id; b.textContent = label;
-  b.onclick = (ev) => {
-    ev.stopPropagation();
-    if (b.classList.contains("forced")) return;   // stacking is automatic at this width — a no-op toggle lies
-    const on = !get();
-    try {
-      const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
-      s[key] = on;
-      localStorage.setItem("romp:settings", JSON.stringify(s));
-    } catch { /* ignore */ }
-    after?.(on);
-    window.dispatchEvent(new Event("romp:settings"));   // same-doc signal → re-render (order / default section)
-  };
-  return b;
+// The footer VIEW MENU (the user 2026-08-24): the three view controls — sort direction, single-column
+// layout, by-session grouping — live behind ONE monochrome icon button now, a popup wearing the shared
+// .ctx-menu vocabulary, where three word-buttons crowded the footer and the labels can breathe.
+// Prefs still write the shared romp:settings (the ⛭ gear's watcher and other panes read the same keys).
+// The button is ensure-once; the menu lives on document.body outside render()'s reconcile, opening
+// upward like the session menu (click-safety: a push can never rebuild it mid-press).
+function setViewPref(key: string, on: boolean, after?: (on: boolean) => void): void {
+  try {
+    const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
+    s[key] = on;
+    localStorage.setItem("romp:settings", JSON.stringify(s));
+  } catch { /* ignore */ }
+  after?.(on);   // runs BEFORE the re-render (e.g. apply the stack style var), on the NEW value
+  window.dispatchEvent(new Event("romp:settings"));   // same-doc signal -> re-render (order / layout / grouping)
 }
-function ensureFeedToggle(id: string, label: string, get: () => boolean, key: string, onTitle: string, offTitle: string, after?: (on: boolean) => void): HTMLElement {
-  let b = document.getElementById(id) as HTMLElement | null;
-  if (!b) { b = makeFeedToggle(id, label, get, key, after); (document.getElementById("feed-foot") || document.body).appendChild(b); }
-  const on = get();
-  b.classList.toggle("on", on);
-  b.setAttribute("aria-pressed", on ? "true" : "false");
-  b.title = on ? onTitle : offTitle;
-  return b;
-}
-// "Modified ↑/↓" — the sort control (the user 2026-08-18, renamed from the "Newest first" toggle): cards
-// sort by modified time, the arrow shows the direction, and a click reverses it. Both directions are
-// valid sorts, so the button never wears the pressed accent — the arrow IS the state.
-function ensureNewestFirst(): HTMLElement {
-  const b = ensureFeedToggle("feed-newestfirst", "Modified", () => feedPrefs().newestFirst, "newestFirst",
-    "newest at the top — click for oldest first",
-    "oldest at the top — click for newest first");
-  b.textContent = "Modified " + (feedPrefs().newestFirst ? "\u2193" : "\u2191");
-  b.classList.remove("on");
-  return b;
-}
-// "Stack" — force the one-column layout at ANY width (the user 2026-08-18): the same stacked view the
-// narrow container query produces, as a standing choice. The pref drives a style() container condition
-// on #feed-list (see feed.css), so the CSS stays the single owner of what stacking means; the narrow
-// query still stacks regardless.
+// "Single column view" (the user 2026-08-18, the footer "Stack" button then): force the one-column
+// layout at ANY width — the same stacked view the narrow container query produces, as a standing
+// choice. The pref drives a style() container condition on #feed-list (see feed.css), so the CSS
+// stays the single owner of what stacking means; the narrow query still stacks regardless.
 function applyStacked(on: boolean) {
   document.getElementById("feed-list")?.style.setProperty("--romp-stack", on ? "on" : "off");
 }
 // FORCED stacking (the user 2026-08-19): at or under the container query's own 540px the layout
-// stacks regardless of the pref, so the toggle is a no-op there — unclicking it would change
-// nothing. The button says so instead of lying: faded, unclickable, tooltip naming the way out
-// (more width). Width changes are the event — a ResizeObserver on #feed-list, installed once.
+// stacks regardless of the pref, so the toggle is a no-op there — the menu row says so instead of
+// lying: still ✓-checked (stacking IS on), faded, inert, tooltip naming the way out (more width).
+// Width changes are the event — a ResizeObserver on #feed-list, installed once.
 const STACK_FORCED_W = 540;   // MUST match feed.css's @container (max-width: 540px) stack query
 let stackResizeWatch: ResizeObserver | null = null;
-function refreshStackForced(b: HTMLElement): void {
+let stackForced = false;
+function refreshStackForced(): void {
   const list = document.getElementById("feed-list");
   const forced = !!list && list.clientWidth > 0 && list.clientWidth <= STACK_FORCED_W;
-  b.classList.toggle("forced", forced);
-  b.setAttribute("aria-disabled", forced ? "true" : "false");
-  if (forced) b.title = "stacked automatically at this width — widen the feed to unstack into three columns";
-}
-function ensureStackToggle(): HTMLElement {
-  const b = ensureFeedToggle("feed-stacked", "Stack", () => feedPrefs().stacked, "stacked",
-    "one-column layout at any width — click for side-by-side columns when the feed is wide",
-    "stack the columns into one, whatever the width",
-    (on) => applyStacked(on));
-  refreshStackForced(b);                      // per render: the ensure title above just overwrote ours
-  const list = document.getElementById("feed-list");
-  if (!stackResizeWatch && list && typeof ResizeObserver !== "undefined") {
-    stackResizeWatch = new ResizeObserver(() => refreshStackForced(b));
-    stackResizeWatch.observe(list);
-  }
-  return b;
+  if (forced === stackForced) return;
+  stackForced = forced;
+  if (viewMenuEl) paintViewMenu(viewMenuEl);   // an open menu repaints on the deciding event
 }
 // (The "Collapsed" default-section toggle moved into the settings modal, 2026-08-18 — a set-and-forget
 // preference, not a per-glance view action. The pref and its behavior are unchanged; the gear writes
 // romp:settings.collapsed and the settings watcher below drops the per-card overrides on change.)
 
-// "Group" — organize each column BY SESSION (the user 2026-07-13): kernel tab/lane order, a name+dot header
-// on the backdrop opening each session's run, per-card names dropped (the header carries the identity).
-function ensureGroupToggle(): HTMLElement {
-  return ensureFeedToggle("feed-grouped", "Group", () => feedPrefs().grouped, "grouped",
-    "grouped by session — click for the flat column order",
-    "group each column's cards by session (tab order), a session header between runs");
+let viewMenuEl: HTMLElement | null = null;
+function closeViewMenu(): void {
+  if (viewMenuEl?.contains(document.activeElement)) document.getElementById("feed-viewbtn")?.focus();
+  viewMenuEl?.remove(); viewMenuEl = null;
+  document.removeEventListener("pointerdown", viewMenuAway, true);
+  document.removeEventListener("keydown", viewMenuKey, true);
+}
+function viewMenuAway(ev: Event): void {
+  const t = ev.target as Node;
+  if (viewMenuEl && !viewMenuEl.contains(t) && !(document.getElementById("feed-viewbtn")?.contains(t))) closeViewMenu();
+}
+function viewMenuKey(ev: KeyboardEvent): void { if (ev.key === "Escape") closeViewMenu(); }
+// The rows: "Sort by most recent ↓/↑" keeps the Modified button's rule (the user 2026-08-18) — both
+// directions are valid sorts, so the arrow IS the state and the row never wears the ✓; "Single column
+// view" and "Group by session" are ✓ rows over the same prefs the old Stack/Group buttons wrote
+// ("Group" organizes each column BY SESSION, the user 2026-07-13 — kernel tab/lane order, a name+dot
+// header opening each session's run; grouped still defaults ON via feedPrefs' !== false, so the ✓
+// reads exactly the way the pressed button did). Rows are real <button>s — Tab-reachable and
+// Enter/Space-activatable, the operability the replaced footer buttons had — built ONCE per open and
+// then synced IN PLACE (paintViewMenu below), so a live repaint (a settings change from another pane,
+// the width crossing 540px) never swaps a row out from under a pressed pointer (click-safety), and a
+// click always acts on the prefs AS OF the click, not as of the last paint.
+function buildViewMenu(menu: HTMLElement): void {
+  const mk = (check: boolean, act: () => void): HTMLElement => {
+    const r = el("button", "ctx-item");
+    (r as HTMLButtonElement).type = "button";
+    r.setAttribute("role", check ? "menuitemcheckbox" : "menuitem");
+    r.onclick = (ev) => {
+      ev.stopPropagation();
+      if (r.classList.contains("forced")) return;   // stacking is automatic at this width — a no-op toggle lies
+      act();
+      closeViewMenu();
+    };
+    menu.appendChild(r);
+    return r;
+  };
+  mk(false, () => setViewPref("newestFirst", !feedPrefs().newestFirst));
+  mk(true, () => setViewPref("stacked", !feedPrefs().stacked, applyStacked));
+  mk(true, () => setViewPref("grouped", !feedPrefs().grouped));
+}
+// Sync the three rows to the CURRENT prefs — labels, ✓s, the forced state — without rebuilding them.
+function paintViewMenu(menu: HTMLElement): void {
+  const p = feedPrefs();
+  const rows = menu.querySelectorAll(".ctx-item");
+  if (rows.length !== 3) return;
+  const set = (i: number, label: string, opts: { current: boolean; forced?: boolean; title: string }) => {
+    const r = rows[i] as HTMLElement;
+    r.textContent = label;
+    r.title = opts.title;
+    r.classList.toggle("current", opts.current);
+    r.classList.toggle("forced", !!opts.forced);
+    if (r.getAttribute("role") === "menuitemcheckbox") r.setAttribute("aria-checked", opts.current ? "true" : "false");
+    if (opts.forced) r.setAttribute("aria-disabled", "true"); else r.removeAttribute("aria-disabled");
+  };
+  set(0, "Sort by most recent " + (p.newestFirst ? "\u2193" : "\u2191"), {
+    current: false,   // a DIRECTION row — never the ✓-current mark
+    title: p.newestFirst ? "newest at the top — click for oldest first" : "oldest at the top — click for newest first",
+  });
+  set(1, "Single column view", {
+    current: p.stacked || stackForced, forced: stackForced,
+    title: stackForced ? "stacked automatically at this width — widen the feed to unstack into three columns"
+      : p.stacked ? "one-column layout at any width — click for side-by-side columns when the feed is wide"
+      : "stack the columns into one, whatever the width",
+  });
+  set(2, "Group by session", {
+    current: p.grouped,
+    title: p.grouped ? "grouped by session — click for the flat column order"
+      : "group each column's cards by session (tab order), a session header between runs",
+  });
+}
+function openViewMenu(btn: HTMLElement): void {
+  closeSessMenu();   // one menu at a time: a keyboard open fires no pointerdown, so the away-closers never ran
+  const menu = el("div", "ctx-menu feed-viewmenu");
+  menu.setAttribute("role", "menu");
+  refreshStackForced();   // decide the forced row from the CURRENT width, not the last observed one
+  buildViewMenu(menu);
+  paintViewMenu(menu);
+  document.body.appendChild(menu);
+  // above the footer, left-aligned to the button, clamped into the viewport (the session menu's placement)
+  const r = btn.getBoundingClientRect();
+  menu.style.bottom = Math.round(window.innerHeight - r.top + 6) + "px";
+  menu.style.left = Math.round(Math.max(6, Math.min(r.left, window.innerWidth - menu.offsetWidth - 6))) + "px";
+  viewMenuEl = menu;
+  (menu.querySelector(".ctx-item") as HTMLElement | null)?.focus();   // a keyboard open lands on the first row
+  document.addEventListener("pointerdown", viewMenuAway, true);
+  document.addEventListener("keydown", viewMenuKey, true);
+}
+// The icon: an ordering glyph — three shortening bars + a direction arrow — drawn inline so
+// currentColor keeps it monochrome in every state. NOT a gear: the kernel page's strip shows its
+// ⛭ right below this footer, and two gears would read as the same control (the user 2026-08-24).
+function viewMenuGlyph(): string {
+  return '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" '
+    + 'stroke-width="1.6" stroke-linecap="round" aria-hidden="true">'
+    + '<path d="M2.5 4h8"/><path d="M2.5 8h5.5"/><path d="M2.5 12h3"/>'
+    + '<path d="M12.5 5.5v5.8"/><path d="M10.6 9.6l1.9 2 1.9-2"/></svg>';
+}
+function ensureViewMenuBtn(): HTMLElement {
+  let b = document.getElementById("feed-viewbtn") as HTMLElement | null;
+  if (!b) {
+    b = el("button", "fdismiss ffollow feed-modetoggle");
+    b.id = "feed-viewbtn";
+    b.innerHTML = viewMenuGlyph();
+    b.title = "view options — sort direction, single column, group by session";
+    b.setAttribute("aria-label", "view options");
+    b.setAttribute("aria-haspopup", "menu");
+    b.onclick = (ev) => {   // opening the menu IS the acknowledgement (same as the session filter)
+      ev.stopPropagation();
+      if (viewMenuEl) closeViewMenu(); else openViewMenu(b!);
+    };
+    (document.getElementById("feed-foot") || document.body).appendChild(b);
+  }
+  const list = document.getElementById("feed-list");
+  if (!stackResizeWatch && list && typeof ResizeObserver !== "undefined") {
+    stackResizeWatch = new ResizeObserver(() => refreshStackForced());
+    stackResizeWatch.observe(list);
+  }
+  return b;
 }
 
 // The SESSION FILTER (the user 2026-08-08): a footer menu listing every session the chat tab strip
@@ -3274,6 +3349,7 @@ function sessMenuName(s: { sid: string; name: string; color: { bg: string; fg: s
   return nm;
 }
 function openSessMenu(btn: HTMLElement): void {
+  closeViewMenu();   // one menu at a time: a keyboard open fires no pointerdown, so the away-closers never ran
   const menu = el("div", "feed-sessmenu");
   const row = (on: boolean, pick: string | null, label: HTMLElement, dotName?: string) => {
     const r = el("div", "fsm-row" + (on ? " on" : ""));
@@ -3305,6 +3381,9 @@ function openSessMenu(btn: HTMLElement): void {
 // control — render() never rebuilds it, so focus and the caret survive pushes (the click-safety rule).
 // An ACTIVE query keeps the input open and the control accented; Escape (or emptying + blur) folds it
 // back to the button — a compact state can never hide a live filter (progressive disclosure's no-dead-end).
+// The expanded bar wears the TOP search bar's look scaled to the footer (the user 2026-08-24): rounded
+// input-background field, an inner ✕ that clears and REFOCUSES, flexing into the row's spare space
+// instead of a fixed width (feed.css owns the metrics).
 function ensureSearchBox(): HTMLElement {
   let wrap = document.getElementById("feed-search") as HTMLElement | null;
   if (!wrap) {
@@ -3328,11 +3407,24 @@ function ensureSearchBox(): HTMLElement {
     inp.oninput = () => { setFeedSearch(inp.value); render(); };   // live: the keyed render reuses every card
     inp.onkeydown = (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); foldBox(); } };
     inp.onblur = () => { if (!inp.value.trim()) wrap!.classList.remove("open"); };
-    wrap.appendChild(btn); wrap.appendChild(inp);
+    const clr = el("button", "");
+    clr.id = "feed-search-clear";
+    (clr as HTMLButtonElement).type = "button";
+    clr.setAttribute("aria-label", "Clear search");
+    clr.title = "Clear search";
+    clr.hidden = true;   // shown only with text to clear (the top bar's semantics); render() below syncs it
+    clr.textContent = "\u00d7";
+    clr.onclick = (ev) => {   // clear + REFOCUS — the user is mid-search, never fold under them
+      ev.stopPropagation();
+      inp.value = ""; setFeedSearch(""); inp.focus(); render();
+    };
+    wrap.appendChild(btn); wrap.appendChild(inp); wrap.appendChild(clr);
     (document.getElementById("feed-foot") || document.body).appendChild(wrap);
   }
   const inp = wrap.querySelector("input") as HTMLInputElement;
   if (inp && inp.value !== feedSearchQ && document.activeElement !== inp) inp.value = feedSearchQ;
+  const clrBtn = document.getElementById("feed-search-clear");
+  if (clrBtn && inp) clrBtn.hidden = !inp.value.trim();   // trimmed, like the fold + the filter — whitespace is no query
   const active = !!feedSearchQ.trim();
   if (active) wrap.classList.add("open");
   const btn = document.getElementById("feed-search-btn");
@@ -3714,11 +3806,9 @@ function render() {
   paintJudgeLimit();   // the usage-limit banner above the columns (build-once; hidden when unlatched)
   auditShownColumns(asks); // tripwire: what this render SHOWS is the record a bounce report needs
   const prevScroll = list.scrollTop;
-  // footer pane (below the cards, no overlap): Newest first · Collapsed · Clear all · UndoClear
+  // footer pane (below the cards, no overlap): view menu · Session filter · Search | Clear all · Undo
   const showCA = !!asks.length;
-  ensureNewestFirst().style.display = showCA ? "" : "none";       // Modified ↑/↓ — the sort direction
-  ensureStackToggle().style.display = showCA ? "" : "none";       // force one-column at any width (the user 2026-08-18)
-  ensureGroupToggle().style.display = showCA ? "" : "none";       // by-session grouping (the user 2026-07-13)
+  ensureViewMenuBtn().style.display = showCA ? "" : "none";       // sort + layout menu (the user 2026-08-24)
   ensureSessionFilter().style.display = showCA ? "" : "none";     // one-session filter menu (the user 2026-08-08)
   ensureSearchBox().style.display = showCA ? "" : "none";          // type-to-filter by name/host (the user 2026-08-23)
   ensureClearAll().style.display = showCA ? "" : "none";
@@ -3996,6 +4086,7 @@ function onSettingsChanged(): void {
   const p = feedPrefs();
   if (p.collapsed !== lastCollapsedPref) { lastCollapsedPref = p.collapsed; secChoice.clear(); }
   applyStacked(p.stacked);
+  if (viewMenuEl) paintViewMenu(viewMenuEl);   // an open view menu re-reads the prefs it shows
   render();
 }
 window.addEventListener("storage", (e) => { if (e.key === "romp:settings") onSettingsChanged(); });
@@ -4094,7 +4185,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       ? m.buildIds as Record<string, number> : undefined;
     reconcileFollowMove(incomingAsks, lastPayloadBuildId, perHostBuildIds);
     reconcilePendingDone(incomingAsks);   // retire an optimistic tick once the real tree carries it
-    // An optimistic Undo clear is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
+    // An optimistic Undo is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
     // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
     if (pendingRestored.size) {
       for (const id of Array.from(pendingRestored.keys())) if (incomingAsks.some((a) => a.itemId === id)) pendingRestored.delete(id);

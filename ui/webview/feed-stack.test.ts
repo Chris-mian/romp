@@ -18,11 +18,13 @@ test("one stacked block, two triggers: the narrow size query OR the forced style
   assert.equal(count, 1, "still exactly one container query — no duplicated stacked rules");
 });
 
-test("the footer Stack button writes the pref and applies the style var; boot applies a persisted one", () => {
+test("the view menu's Single-column row writes the pref and applies the style var; boot applies a persisted one", () => {
   assert.match(FEED, /stacked: s\.stacked === true/);
-  assert.match(FEED, /ensureFeedToggle\("feed-stacked", "Stack", \(\) => feedPrefs\(\)\.stacked, "stacked"/);
+  // the footer "Stack" word-button folded into the view menu (the user 2026-08-24) — same pref, same var
+  assert.match(FEED, /set\(1, "Single column view", \{/);
+  assert.match(FEED, /mk\(true, \(\) => setViewPref\("stacked", !feedPrefs\(\)\.stacked, applyStacked\)\)/);
   assert.match(FEED, /\.style\.setProperty\("--romp-stack", on \? "on" : "off"\)/);
   assert.match(FEED, /applyStacked\(feedPrefs\(\)\.stacked\);\s*\/\/ boot/);
   assert.match(FEED, /applyStacked\(p\.stacked\);/, "a settings change from any surface re-applies it");
-  assert.match(FEED, /ensureStackToggle\(\)\.style\.display = showCA \? "" : "none";/, "docked in the footer row");
+  assert.match(FEED, /ensureViewMenuBtn\(\)\.style\.display = showCA \? "" : "none";/, "docked in the footer row");
 });
