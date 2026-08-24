@@ -20552,33 +20552,14 @@ def _reveal_chat_for(client, focus_msg):
     revealSelfPane) — which covers every kernel, local included, and makes the shell line a harmless
     duplicate rather than the only mover."""
     wid = (client or {}).get("wid") or ""
-    # The reveal rule (the user 2026-08-18; reshaped 2026-08-19, re-grounded 2026-08-23 on the TAG
-    # model; ALL default 2026-08-24): every gesture that focuses a session's chat — create, open,
-    # revive, a deep link, a feed chip — must land on a visible tab, with the MINIMAL move. Under
-    # All only the hidden bit can hide a session, so a focus unhides it and STAYS — it never kicks
-    # the user off the all-sessions view. Elsewhere focusing SWITCHES the active view to one that
-    # shows the session and never mutates membership: peeking at a tagged worker must not strip its
-    # tag. Preference order: the first tag holding it (a tagged session's home view); else unhide
-    # if hidden, then switch to All only if the session is STILL invisible (an unhidden tagless
-    # session already shows in the untagged view — no gratuitous view change).
-    sid = focus_msg.get("id") if isinstance(focus_msg, dict) else None
-    if sid:
-        v = _timeline_views()
-        if not _view_visible(v, sid):
-            v = json.loads(json.dumps(v))
-            if v["active"] == "all":
-                v["hidden"] = [x for x in v["hidden"] if x != sid]
-            else:
-                holder = next((t["id"] for t in v["tags"] if sid in t["members"]), None)
-                if holder:
-                    v["active"] = holder
-                else:
-                    if sid in v["hidden"]:
-                        v["hidden"] = [x for x in v["hidden"] if x != sid]
-                    if not _view_visible(v, sid):
-                        v["active"] = "all"
-            _set_timeline_views(v)
-            _mark_views_dirty()
+    # A focus is a PEEK, not a view edit (the user 2026-08-24, superseding the 2026-08-18/19/23
+    # reveal rule, which unhid / switched views here): the chat now opens an out-of-view session as
+    # an EPHEMERAL PEEK TAB client-side — real and scrollable, dressed as outside the view, dropped
+    # the moment another tab is activated — so the kernel never rewrites the views blob for a focus
+    # gesture. No unhide, no view switch; timeline-views.json is untouched and nothing here marks
+    # views dirty. The picker's explicit "Hidden — reveal" row keeps the real unhide (a deliberate
+    # choice from the hidden list, via setTimelineViews), and the dead-session confirmRevive path
+    # below this call is unchanged. tests/test_timeline_views.py pins the no-mutation contract.
     _send_to_view("chat", focus_msg, wid)
     _send_to_view("shell", {"type": "reveal", "pane": "chat"}, wid)
 

@@ -472,7 +472,22 @@ function postViews(v: SessionViews) {
   if (vscodeApi) vscodeApi.postMessage({ type: "setTimelineViews", views: v });
   renderTabs();
 }
-function tabInView(id: string): boolean { return viewVisible(effViews(), id); }
+// ── EPHEMERAL PEEK TAB (the user 2026-08-24, superseding the kernel's reveal-rule view mutation):
+// activating a session the current view HIDES opens it as a TEMPORARY tab — real and scrollable,
+// dressed .tab-peek ("breaks the view's rules") — and auto-closing: activating any other tab drops
+// it, no explicit close. Per-dashboard client state like the pending-views copy above: never
+// persisted, never federated, never written to timeline-views.json — a click is a peek, not a view
+// edit (the picker's "Hidden — reveal" row keeps the real unhide). Sending a message from a peeked
+// session does NOT pin it: the peek still drops on click-away, and the session stays reachable via
+// the feed and the nav trail. Nav history stores only the sid — back/forward lands in setActive
+// like every activation, which re-derives peek-vs-normal from the CURRENT views (a since-revealed
+// session re-pops as a normal tab, a since-hidden one as a peek).
+let peekId: string | null = null;
+function assertPeekFor(id: string): void {
+  const next = viewVisible(effViews(), id) ? null : id;
+  if (next !== peekId) { peekId = next; renderTabs(); }
+}
+function tabInView(id: string): boolean { return id === peekId || viewVisible(effViews(), id); }
 function visibleOrder(): string[] { return order.filter(tabInView); }
 function revealSession(id: string) { postViews(revealIn(effViews(), id)); }
 
@@ -4122,7 +4137,10 @@ function renderTabs() {
   // setActive is a no-op once activeId is visible, so this settles in one pass.
   if (activeId && ids.includes(activeId) && !visibleIds.includes(activeId) && visibleIds.length) {
     const next = visibleIds[0];
-    setTimeout(() => { if (activeId !== next) setActive(next); }, 0);
+    // re-validate at FIRE time, not schedule time: an activation between the two (a feed click
+    // opening an ephemeral peek, a reveal landing) can have made the active tab visible — bouncing
+    // then would kick the user off the very tab they just opened (the no-flap rule)
+    setTimeout(() => { if (activeId !== next && activeId && !tabInView(activeId)) setActive(next); }, 0);
   }
   for (const id of visibleIds) {
     const s = sessions.get(id);
@@ -4157,6 +4175,7 @@ function renderTabs() {
       tab.style.setProperty("--chip-fg", s.color.fg);
       tab.classList.add("colored");
     }
+    if (id === peekId) tab.classList.add("tab-peek");   // ephemeral peek — ghost/dashed dress (styles.css)
     const st = s.status.state;
     if (st === "working") tab.classList.add("tab-working");
     // "blocked" is an API error. An on-YOU one — "prompt is too long" (compact), a monthly spend cap (raise it,
@@ -9833,6 +9852,10 @@ const navHist = new NavHistory({
 
 function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: string) {
   noteMru(id);
+  // EPHEMERAL PEEK (see peekId): an out-of-view target opens as the peek; activating anything else
+  // drops it. Before the already-active early-return, so a re-focus of a hidden session re-asserts
+  // its peek even when nothing else changes.
+  assertPeekFor(id);
   if (activeId === id && anchor == null && anchorT == null) return; // already active, nothing to do
   navHist.record();   // every real navigation records the spot being LEFT (the user 2026-08-14: Ctrl+M / Ctrl+, walk the trail)
   closeMetaMenu(); // an open model/effort menu targets the tab we're leaving
@@ -10208,6 +10231,7 @@ function closeTabLocally(id: string): void {
 // close) and wrong under federation, where a `closed` ack can predate stale merged frames that still list
 // the id: the moment nothing suppresses it, the strip re-draws the swirl placeholder.
 function dismissSession(id: string): void {
+  if (peekId === id) peekId = null;   // its tab is going — the peek goes with it
   sessions.delete(id);
   liveAsks.delete(id);
   ledgers.delete(id);
@@ -10293,6 +10317,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     closingTabs.delete(m.id);   // an explicit reveal outranks a pending close-suppression: closing a tab and
     //                             reopening it from the picker inside the ack window must show it at once
     if (revivePending && m.id === revivePending) clearReviveLoader();   // the revive landed — the loader's success event
+    assertPeekFor(m.id);   // an out-of-view focus peeks even on the already-active fast path below (setActive is skipped there)
     // `live` (the user 2026-07-08): land on the LIVE TAIL. A blocked card's picker/permission prompt IS the
     // live bottom of the chat, so its feed chip drops the user right on it. Stick the target view to bottom so
     // showActive scrolls there; and cover the ALREADY-ACTIVE case, where setActive early-returns (activeId ===
