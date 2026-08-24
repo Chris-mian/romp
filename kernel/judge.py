@@ -9668,6 +9668,18 @@ def dead_wait_block_why(why):
             "card drops the wait." % (DEAD_WAIT_WHY_PREFIX, tail or "background work"))
 
 
+def dead_peer_block_why(peer_name, why):
+    """The block why for a kind=peer wait whose AWAITED PEER died with the ask unanswered (the user
+    2026-08-24, W1a): the asked session can never answer now — its death, observed at the leave
+    transition, is the wait's own ending event, so the card converts to the user's call instead of
+    idling toward a wake on a clock. Same exact-shape rationale as dead_wait_block_why above; the
+    shared prefix keeps it procedural for every reader."""
+    tail = (why or "").strip().rstrip(".")
+    return ("%sthe session it was waiting on ('%s') has exited with the ask unanswered — %s. "
+            "Reviving that session (or re-asking another) picks it back up; replying here or "
+            "clearing the card drops the wait." % (DEAD_WAIT_WHY_PREFIX, peer_name, tail or "a peer reply"))
+
+
 def procedural_block_why(why):
     """True if `why` is romp's own procedural block bookkeeping rather than a decision the user was asked
     for. EXACT match on the kernel-authored constants — plus the TWO prefix-recognized shapes above (their
