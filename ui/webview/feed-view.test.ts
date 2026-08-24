@@ -26,12 +26,14 @@ test("no views blob (an older kernel) → today's behavior, byte-identical: noth
   assert.equal(outsideViewCount(null, [{ sid: U, needsYou: false }]), 0);
 });
 
-test("the All view shows everything except the manual hidden set — and hidden still breaks through", () => {
-  const views: SessionViews = { active: "all", hidden: [V] };
-  assert.equal(cardInView(views, U, false), true);
-  assert.equal(cardInView(views, V, false), false, "manually hidden — off the board");
-  assert.equal(cardInView(views, V, true), true, "…until it needs the human (the interrupt rule)");
-  assert.equal(outsideView(views, V), true, "and then it wears the outside-view cue");
+test("All shows literally everything (hidden retired 2026-08-24); a tag-filtered card still breaks through", () => {
+  // a legacy hidden entry no longer hides anywhere — the tag system covers backgrounding
+  assert.equal(cardInView({ active: "all", hidden: [V] }, V, false), true, "legacy hidden ignored under All");
+  const tagged: SessionViews = { active: "untagged", tags: [{ id: "t9", name: "pool", members: [V] }] };
+  assert.equal(cardInView(tagged, U, false), true);
+  assert.equal(cardInView(tagged, V, false), false, "tagged — out of the untagged board");
+  assert.equal(cardInView(tagged, V, true), true, "…until it needs the human (the interrupt rule)");
+  assert.equal(outsideView(tagged, V), true, "and then it wears the outside-view cue");
 });
 
 test("untagged view: BOTH tag homes exclude — a local tag and a remote-homed tag alike (the union fix)", () => {

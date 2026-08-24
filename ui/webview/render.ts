@@ -13,7 +13,7 @@ import diff from "highlight.js/lib/languages/diff";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
-import { SessionViews, viewVisible, viewsKey, hideIn, revealIn, viewTagUnion, viewTags, type TagUnion, type SessionTag } from "./session-views";
+import { SessionViews, viewVisible, viewsKey, revealIn, viewTagUnion, viewTags, type TagUnion, type SessionTag } from "./session-views";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
@@ -488,7 +488,7 @@ function postViews(v: SessionViews) {
 // dressed .tab-peek ("breaks the view's rules") — and auto-closing: activating any other tab drops
 // it, no explicit close. Per-dashboard client state like the pending-views copy above: never
 // persisted, never federated, never written to timeline-views.json — a click is a peek, not a view
-// edit (the picker's "Hidden — reveal" row keeps the real unhide). Sending a message from a peeked
+// edit (the picker's other-view row jumps views instead — the hidden set retired 2026-08-24). Sending a message from a peeked
 // session does NOT pin it: the peek still drops on click-away, and the session stays reachable via
 // the feed and the nav trail. Nav history stores only the sid — back/forward lands in setActive
 // like every activation, which re-derives peek-vs-normal from the CURRENT views (a since-revealed
@@ -4526,10 +4526,9 @@ function showTabMenu(e: MouseEvent, id: string) {
     onBell ? "Stop notifying" : "Notify me",
     onBell ? "no more system notifications for this session" : "system notification when its work blocks on you or completes",
     () => setSessionFlag(id, "notify", !onBell));
-  // (The hide-session item left this menu 2026-08-24 — the user: the tag/view system
-  // covers backgrounding a session. The MECHANISM stands untouched underneath: hideIn/revealIn, the
-  // views blob's hidden set, the timeline dialog's eye, and the + picker's "Hidden — reveal" section
-  // all remain; whether to retire the machinery outright is the user's separate call.)
+  // (The hide-session mechanism is fully RETIRED, the user 2026-08-24 — the tag system covers
+  // backgrounding; the kernel migrated existing hidden entries into the "archived" tag. revealIn
+  // survives for the picker's tagged-session jump.)
   // Billing submenu (the user 2026-08-09, who wants the login/API-key switch here rather than as a
   // statusline badge). Only when the machine offers BOTH choices (st.authBoth) — a one-auth machine
   // keeps the fact on the tab hover, never a dead selector — and the key stays labelled plainly
@@ -6940,8 +6939,8 @@ function renderPicker(items: any[]) {
     name.replaceChildren(...hostNameNodes(it.name, it.id));
     if (it.color && it.color.bg) name.style.color = it.color.bg;
     const time = el("span", "picker-time");
-    if (it.hiddenTab) {   // open as a tab but view-hidden (a background session) → picking reveals it
-      time.textContent = "hidden";
+    if (it.hiddenTab) {   // open as a tab but filtered out of the CURRENT view (tagged) → picking jumps to its view
+      time.textContent = "other view";
       time.style.opacity = "0.7";
     } else if (it.running) {   // a live session (SDK/tmux backend) whose tab is closed → a green "running" badge
       time.classList.add("picker-running-badge");
@@ -6962,7 +6961,7 @@ function renderPicker(items: any[]) {
         if (vscodeApi) vscodeApi.postMessage({ type: "pickResult", id: it.id, name: it.name });
         pickMode = false; // so closePicker doesn't also post a cancel
       } else if (it.hiddenTab) {
-        revealSession(it.id);   // its tab already exists — un-hide it and switch to it
+        revealSession(it.id);   // its tab already exists — switch to a view that shows it (revealIn, post-retirement)
         setActive(it.id);
       } else if (vscodeApi) {
         vscodeApi.postMessage({ type: "openSession", id: it.id });
@@ -6980,15 +6979,16 @@ function renderPicker(items: any[]) {
     for (const it of items) list.appendChild(mkRow(it));
   } else {
     const avail = items.filter((it) => !isOpenTab(it.id));
-    // open-as-tab but view-HIDDEN sessions still list (the user 2026-08-18): a background session's
-    // one visible home on the chat side — omitting them here plus hiding the tab would recreate the
-    // secret-running-session state abolished 2026-08-11
+    // open-as-tab but filtered out of the CURRENT view (tagged; the hidden set retired 2026-08-24)
+    // still list (the user 2026-08-18): a background session's one visible home on the chat side —
+    // omitting them here plus the tab being out of view would recreate the secret-running-session
+    // state abolished 2026-08-11
     const hidden = items.filter((it) => isOpenTab(it.id) && !tabInView(it.id))
                         .map((it) => Object.assign({}, it, { hiddenTab: true }));
     const running = avail.filter((it) => it.running);
     const rest = avail.filter((it) => !it.running);
     if (running.length) { list.appendChild(label("Running — reopen")); for (const it of running) list.appendChild(mkRow(it)); }
-    if (hidden.length) { list.appendChild(label("Hidden — reveal")); for (const it of hidden) list.appendChild(mkRow(it)); }
+    if (hidden.length) { list.appendChild(label("In another view — open")); for (const it of hidden) list.appendChild(mkRow(it)); }
     if (rest.length) { if (running.length || hidden.length) list.appendChild(label("Recent")); for (const it of rest) list.appendChild(mkRow(it)); }
   }
   if (!list.children.length && pickerListHost) {

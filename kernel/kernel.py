@@ -1511,7 +1511,7 @@ def _ordered_alive(now, tmux):
 
 # ── session VIEWS: which sessions the user is looking at (the user 2026-08-18) ────────────────────
 # One blob under STATE (timeline-views.json), shared by every dashboard this kernel serves (browser,
-# VS Code, Obsidian): {"active": "all"|"untagged"|tag-id, "hidden": [id...], "tags": [{"id","name",
+# VS Code, Obsidian): {"active": "all"|"untagged"|tag-id, "tags": [{"id","name",   (hidden retired 2026-08-24)
 # "color", "members": [id...]}]}. TWO built-in sentinels, not tags: "all" — the DEFAULT (the user
 # 2026-08-24) — shows every session EXCEPT the hidden set; "untagged" shows the sessions no tag
 # holds, minus hidden. "all" used to MEAN untagged, so reinterpreting the sentinel as truly-all
@@ -1577,7 +1577,9 @@ def _norm_timeline_views(d):
     if not isinstance(d, dict):
         d = {}
     _lst = lambda x: x if isinstance(x, list) else []   # wrong-typed junk (a number, a string) drops, never raises
-    hidden = [str(x) for x in _lst(d.get("hidden")) if isinstance(x, str) and x]
+    # (`hidden` RETIRED, the user 2026-08-24: the tag system covers backgrounding — a stored or
+    # echoed hidden array is tolerated and dropped; _timeline_views migrated existing entries into
+    # the "archived" tag once. Nothing hides from All anymore: that is All's meaning now.)
     tags = []
     raw = d.get("tags") if isinstance(d.get("tags"), list) else d.get("groups")
     for g in _lst(raw)[:_VIEWS_MAX_TAGS]:
@@ -1593,7 +1595,7 @@ def _norm_timeline_views(d):
     if active not in ("all", "untagged") and ":" not in active \
             and not any(t["id"] == active for t in tags):
         active = "all"
-    return {"active": active, "hidden": sorted(set(hidden)), "tags": tags}
+    return {"active": active, "tags": tags}
 
 
 def _timeline_views():
@@ -1609,6 +1611,24 @@ def _timeline_views():
         d = json.loads(p.read_text())
     except Exception:
         d = {}
+    # ONE-TIME MIGRATION (the user 2026-08-24, retiring hide-from-chat outright: "we want to get
+    # rid of that hide from chat thing"): a stored blob still carrying hidden entries maps them
+    # into an "archived" TAG on THIS kernel — preserving the user's intent record and keeping them
+    # out of the untagged view. They WILL show under All: nothing can hide from All
+    # post-retirement — that is All's meaning now, and the feed's needs-you machinery carries
+    # anything that matters. Minted only when hidden entries exist; idempotent (the write drops the
+    # hidden key, so the next read has nothing to migrate).
+    hid = [str(x) for x in (d.get("hidden") or []) if isinstance(x, str) and x] if isinstance(d, dict) else []
+    if hid:
+        raw = d.get("tags") if isinstance(d.get("tags"), list) else (d.get("groups") if isinstance(d.get("groups"), list) else [])
+        tags = [t for t in raw if isinstance(t, dict)]
+        arch = next((t for t in tags if t.get("name") == "archived"), None)
+        if arch is None:
+            arch = {"id": "archived", "name": "archived", "color": "#6b7280", "members": []}   # muted slate — never a status color
+            tags = tags + [arch]
+        arch["members"] = [m for m in (arch.get("members") or []) if m] + hid
+        d = dict(d); d["tags"] = tags; d.pop("groups", None); d.pop("hidden", None)
+        _set_timeline_views(d)                       # persist the mapping; the fresh mtime re-keys the cache
     d = _norm_timeline_views(d)
     _flags_cache[str(p)] = (key, d)
     return d
@@ -1703,14 +1723,14 @@ def _view_visible(views, sid):
     timeline for optimistic feedback — tests pin all three against this shape. Operates on the
     RENDERED blob (_views_client: string members + remoteTags) — the shape every client holds; a
     remote-tag active ("host:tagid") resolves in remoteTags and falls OPEN when the remote tag is
-    gone (its kernel detached), never trapping the viewer in an empty view. ALL — the default
-    (the user 2026-08-24) — shows every session minus the `hidden` set: hiding is a deliberate user
-    gesture, so All respects it (the dialog's eye stays the un-hide affordance). UNTAGGED keeps the
-    old default's meaning (the user 2026-08-23): tagging a session says "specialized — out of the
-    untagged view, viewable under its tag", so membership itself excludes there; `hidden` hides in
-    both sentinel views. A tag view shows exactly its members — membership beats the hidden bit."""
+    gone (its kernel detached), never trapping the viewer in an empty view. ALL — the default —
+    shows LITERALLY EVERYTHING (the user 2026-08-24, retiring the hidden set outright: the tag
+    system covers backgrounding, and existing hidden entries migrated into the "archived" tag).
+    UNTAGGED keeps its meaning (the user 2026-08-23): tagging a session says "specialized — out of
+    the untagged view, viewable under its tag", so membership itself excludes there. A tag view
+    shows exactly its members."""
     if views["active"] == "all":
-        return sid not in views["hidden"]
+        return True                                  # All = literally everything (hidden retired 2026-08-24)
     if views["active"] == "untagged":
         # the union excludes here too (the user 2026-08-24, who tagged a session from the chat and
         # watched it stay in the untagged view): a tag is its NAME wherever it homes — a session
@@ -1718,7 +1738,7 @@ def _view_visible(views, sid):
         # toggling untagged membership) is answered by _views_client keeping a down host's CACHED
         # tags contributing: stability beats freshness for visibility, and the auto-reconnect work
         # makes the staleness window a pass, not an afternoon.
-        return sid not in views["hidden"] and not any(
+        return not any(
             sid in t["members"] for t in list(views["tags"]) + list(views.get("remoteTags") or []))
     # a tag view shows the NAME-KEYED UNION (user ruling 2026-08-24: a tag is its NAME; kernels
     # are plumbing) — whichever store's id is active, membership joins every same-name tag's,
@@ -1732,21 +1752,19 @@ def _view_visible(views, sid):
 
 def _heal_timeline_views(old_sid, new_sid):
     """fsid churn (a /clear, relaunch or revive mints a new transcript fsid for the same logical
-    session): carry the old sid's hidden bit and tag memberships to the new one, exactly like the
-    order-slot inheritance that detects the churn. Without this a hidden tmux session would pop back
-    visible on every /clear — and worse, a tagged one would silently fall out of its tag."""
+    session): carry the old sid's tag memberships to the new one, exactly like the order-slot
+    inheritance that detects the churn. Without this a tagged session would silently fall out of
+    its tag on every /clear. (The hidden half retired with the set, 2026-08-24.)"""
     v = _timeline_views()
     def _has(t):
         return any(m["host"] == "" and m["sid"] == old_sid for m in t["members"])
-    if old_sid not in v["hidden"] and not any(_has(t) for t in v["tags"]):
+    if not any(_has(t) for t in v["tags"]):
         return
     v = json.loads(json.dumps(v))                    # deep copy: never mutate the cached blob
     # COPY, never move: stripping the old sid un-hid its DEAD lane, which lingers on the timeline for
     # hours — and when the old sid is still alive (a fork beside a living parent, or an unrelated new
     # session reusing a name), moving would steal the living session's state. A dead sid left in the
     # lists is inert; the normalizer keeps them bounded.
-    if old_sid in v["hidden"]:
-        v["hidden"] = sorted(set(v["hidden"]) | {new_sid})
     for t in v["tags"]:
         if _has(t):
             t["members"] = t["members"] + [{"host": "", "sid": new_sid}]   # normalizer dedups + re-sorts
