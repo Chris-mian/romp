@@ -508,6 +508,15 @@ fetch(kernelUrl("/palette"), { cache: "no-store" }).then((r) => r.json())
 const mru: string[] = [];             // recency stack, front = most-recently-active (close → return to previous)
 let activeId: string | null = null;
 let renderingSid: string | null = null;   // the session id syncView is currently building (for per-session fold keys)
+// The SESSION whose transcript DOM is being built — the id preview/image URLs must bake in, host prefix
+// included. Distinct from renderingSid, which is a fold KEY the comment popover retargets to its thread id.
+// Baking activeId instead routed a background build's file fetches at whatever session the user was READING:
+// the idle prebuild renders hidden tabs' new turns, so a federated session's figures asked the WRONG host's
+// kernel, whose truthful 404 looped "fetching → not found" on files that exist — and every retry/heal
+// re-fetches the closure's captured URL, so only the next send's tail re-render ever fixed it (the user
+// 2026-08-24, the recurring inline-preview failure). Same class for relative paths across LOCAL sessions:
+// they resolved against the active session's cwd, not the owning session's.
+let renderingOwnerSid: string | null = null;
 // TRUE while fillCommentMsgs renders into the comment popover (the user 2026-08-23): the thread uses
 // the chat's own renderer deliberately — but the transcript-COUPLED hover machinery must stay out.
 // wireTurnHover's glow band appends to turn.parentElement (the .cmt-msgs list, positioned nowhere the
@@ -962,14 +971,15 @@ function fillPathImg(wrap: HTMLElement, p: string): void {
     wrap.appendChild(chip);
   }
 }
-function buildPathImg(p: string): HTMLElement {
+function buildPathImg(p: string, sid: string | null): HTMLElement {
   const wrap = el("span", "js-pathimg"); wrap.dataset.imgpath = p;
   fillPathImg(wrap, p);
   if (!imgUrlCache.has(p) && !imgFailed.has(p) && !imgRequested.has(p)) {
     imgRequested.add(p);
     // id → the kernel resolves a RELATIVE path against this session's cwd (assistant-mentioned
-    // "plots/out.png" renders too, not just absolute user-attachment paths — the user 2026-07-20)
-    if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p, id: activeId });
+    // "plots/out.png" renders too, not just absolute user-attachment paths — the user 2026-07-20).
+    // The OWNING session's id, passed by the caller: a background build must never send activeId here.
+    if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p, id: sid });
   }
   return wrap;
 }
@@ -995,7 +1005,10 @@ function healPathImgs(): void {
       fillPathImg(e, p);                             // back to the pending pulse while the ask is out
       if (!imgRequested.has(p)) {
         imgRequested.add(p);
-        if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p, id: activeId });
+        // the OWNING view's session, read off the thread root the chip lives in — a heal fired while
+        // another tab is active must re-ask for the right session, not the one being looked at
+        const own = (e.closest("[data-session]") as HTMLElement | null)?.dataset.session || activeId;
+        if (vscodeApi) vscodeApi.postMessage({ type: "imgRequest", path: p, id: own });
       }
     });
   }
@@ -1015,7 +1028,7 @@ installMdImgHeal();   // markdown-inline <img> failures register for the per-mes
 function userImage(im: { src: string; path?: string }, pathInText = false): HTMLElement {
   const fig = el("span", "user-img-wrap");
   if (im.src.startsWith("path:")) {
-    fig.appendChild(buildPathImg(im.src.slice(5)));   // host reads it → real thumbnail; chip until then / on failure
+    fig.appendChild(buildPathImg(im.src.slice(5), renderingOwnerSid ?? activeId));   // host reads it → real thumbnail; chip until then / on failure
   } else {
     const img = document.createElement("img"); img.className = "user-img"; img.src = im.src; img.loading = "lazy";
     fig.appendChild(img);
@@ -1243,8 +1256,8 @@ function linkifyFileUris(root: HTMLElement, skipThumbs?: string[], spacePaths?: 
     const BLOCK_SEL = "p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th";
     const strips = new Map<HTMLElement, HTMLElement>();   // figure anchor → its strip (same block shares one)
     for (const p of previewable.slice(0, 4)) {
-      const full = canPreview() ? previewFull(p, activeId, kernelVerified.has(p), (pathPins || {})[p])
-        : previewKind(p) === "img" ? buildPathImg(p) : null;
+      const full = canPreview() ? previewFull(p, renderingOwnerSid ?? activeId, kernelVerified.has(p), (pathPins || {})[p])
+        : previewKind(p) === "img" ? buildPathImg(p, renderingOwnerSid ?? activeId) : null;
       if (!full) continue;
       const block = mentionAt.get(p)?.closest(BLOCK_SEL) as HTMLElement | null;
       const anchor = block && root.contains(block) && block !== root ? block : root;
@@ -2833,9 +2846,21 @@ function chatEpisode(m: any): void {
   const got = { events: (m.events || []) as ChatEvent[], truncated: m.truncated || 0,
                 error: m.error ? String(m.error) : undefined };
   episodeCache.set(key, got);
-  document.querySelectorAll<HTMLElement>(".clear-body").forEach((b) => {
-    if (b.dataset.clearKey === key) fillClearBody(b, got);
-  });
+  // This fill runs in the MESSAGE handler, outside any syncView — renderingSid/renderingOwnerSid still
+  // hold whatever was built last. Pin both to the episode's own session so fold keys and file/preview
+  // URLs belong to it, then restore.
+  const savedKey = renderingSid;
+  const savedOwner = renderingOwnerSid;
+  renderingSid = sid;
+  renderingOwnerSid = sid;
+  try {
+    document.querySelectorAll<HTMLElement>(".clear-body").forEach((b) => {
+      if (b.dataset.clearKey === key) fillClearBody(b, got);
+    });
+  } finally {
+    renderingSid = savedKey;
+    renderingOwnerSid = savedOwner;
+  }
 }
 
 // LIVE /clear in progress (the user 2026-07-27): an animated inline element between the /clear delivery
@@ -6212,7 +6237,7 @@ function openCommentThread(): { sid: string; th: CommentThread } | null {
 
 /** The popover's conversation area, (re)filled in place — shared by the full build and the
  *  frame-driven refresh so an update never rebuilds the composer under the user's caret. */
-function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
+function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): void {
   const prevScroll = list.scrollTop;
   const atTail = list.scrollTop >= list.scrollHeight - list.clientHeight - 8;
   list.replaceChildren();
@@ -6224,7 +6249,9 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
     // rail dots, markdown, tool folds, notice cards — never a simplified twin). renderingSid keys
     // the folds per thread, exactly as a chat tab would.
     const saved = renderingSid;
+    const savedOwner = renderingOwnerSid;
     renderingSid = th.tid;
+    renderingOwnerSid = sid;   // fold keys are per-thread; file/preview URLs belong to the thread's SESSION
     renderingIntoThread = true;   // same renderer, minus the transcript-coupled hover chrome (see the flag)
     let prev: number | null = null;
     let quoteHost: HTMLElement | null = null;   // the thread's OPENING message — the quote's home
@@ -6264,6 +6291,7 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
     }
     renderingIntoThread = false;
     renderingSid = saved;
+    renderingOwnerSid = savedOwner;
     // The quoted passage renders as CONTEXT attached to the thread's opening message (the user
     // 2026-08-24): it used to sit as a standalone block ABOVE the whole list — above the branch
     // divider too, misreading chronology, since the branch happened before the quote. Same idiom
@@ -6308,7 +6336,7 @@ function refillOpenCommentPop(): void {
   if (!openCommentKey) return;
   const th = (commentThreads.get(openCommentKey.sid) || []).find((t) => t.tid === openCommentKey!.tid);
   const list = document.querySelector(".cmt-pop .cmt-msgs") as HTMLElement | null;
-  if (th && list) fillCommentMsgs(list, th);
+  if (th && list) fillCommentMsgs(list, th, openCommentKey.sid);
 }
 
 function commentPopTitle(create: boolean, th: CommentThread | null | undefined): string {
@@ -6360,7 +6388,7 @@ function commentSendFromPop(pop: HTMLElement): void {
   commentDrafts.delete(cur.th.tid);
   box.value = "";
   const list = pop.querySelector(".cmt-msgs") as HTMLElement | null;
-  if (list) fillCommentMsgs(list, cur.th);      // the pending bubble IS the acknowledgement
+  if (list) fillCommentMsgs(list, cur.th, cur.sid);      // the pending bubble IS the acknowledgement
 }
 
 /** A live thread's model/effort chip label: the frame's value, tinted from the shared /models
@@ -6394,7 +6422,7 @@ function renderCommentPopover(): void {
     const t = prev.querySelector(".cmt-title") as HTMLElement | null;
     if (t) t.textContent = commentPopTitle(!!create, th);
     const list = prev.querySelector(".cmt-msgs") as HTMLElement | null;
-    if (th && list) fillCommentMsgs(list, th);
+    if (th && list) fillCommentMsgs(list, th, sid);
     if (th) for (const b of Array.from(prev.querySelectorAll(".meta-btn[data-kind]")) as HTMLElement[]) {
       const lbl = b.querySelector(".meta-label") as HTMLElement | null;
       if (lbl) liveMetaLabel(lbl, b.dataset.kind === "model" ? "model" : "effort", th);
@@ -6483,7 +6511,7 @@ function renderCommentPopover(): void {
   }
   if (th) {
     const list = el("div", "cmt-msgs");
-    fillCommentMsgs(list, th);
+    fillCommentMsgs(list, th, sid);
     pop.appendChild(list);
   }
   let metaRowPending: HTMLElement | null = null;   // appended under the composer row — the statusline position
@@ -7277,6 +7305,7 @@ function syncViewInner(id: string, atBottom?: boolean): View {
   // content above is unchanged. true/undefined ⇒ free to evict the top (we're at the bottom, or it's a
   // non-append sync).
   renderingSid = id;          // so renderSystem can key the pinned card's persisted open-state by session
+  renderingOwnerSid = id;     // preview/image URLs bake THIS session's id (host prefix included), never activeId's
   const v = ensureView(id);
   const s = sessions.get(id);
   if (!s) return v;
@@ -7684,6 +7713,7 @@ function runPrebuild(deadline: IdleDeadline): void {
     };
   };
   const savedRenderingSid = renderingSid; // syncView sets this; restore it so nothing keys off a pre-built tab
+  const savedOwnerSid = renderingOwnerSid;
   for (const id of prebuildPlan(activeId, mru, order, viewState)) {
     if (!sessions.has(id)) continue;
     try {
@@ -7693,6 +7723,7 @@ function runPrebuild(deadline: IdleDeadline): void {
     if (deadline.timeRemaining() < 3) { schedulePrebuild(); break; } // out of idle budget → resume next idle
   }
   renderingSid = savedRenderingSid;
+  renderingOwnerSid = savedOwnerSid;
 }
 
 function showActive() {
@@ -9766,7 +9797,7 @@ function renderComposerFiles(id: string | null): void {
         img.addEventListener("load", () => doc.replaceWith(img));
         img.src = fileUrl(p, id);
       } else {
-        const w = buildPathImg(p);                 // VS Code: host-read data URL fills in; chip until then
+        const w = buildPathImg(p, id);             // VS Code: host-read data URL fills in; chip until then
         w.classList.add("composer-file-hostimg");
         box.appendChild(w);
       }
