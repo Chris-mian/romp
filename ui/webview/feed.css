@@ -122,6 +122,15 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   color: var(--dim); background: var(--bg);
 }
 .feed-col-count { font-weight: 600; opacity: 0.7; }
+/* HOVER-FREEZE badges (the user 2026-08-24): while the pointer holds a card still, the deferred
+   adds/removes hint beside the column pill and (grouped mode) the session header — +N in the romp
+   accent, -N in the block red (--err, the board's existing red), at the count's own scale and
+   weight (no new font sizes; the badge inherits the head's size like .feed-col-count does).
+   A hint, not a shout: same 0.7 opacity as the counts. */
+.freeze-badge { font-weight: 600; opacity: 0.7; margin-left: 6px; white-space: nowrap; }
+.freeze-badge i { font-style: normal; }
+.freeze-badge .fz-add { color: var(--accent); }
+.freeze-badge .fz-del { color: var(--err); }
 /* margin-top, NOT header padding: the liveness rings are outlines drawn ~2.5px
    OUTSIDE the first card's top edge, and the sticky header paints its padding as
    opaque background over them — only unpainted margin space lets them show */

@@ -10,6 +10,7 @@ import { distillText, distillInputs, applyDistillLine, distillPending, distillSt
 import { spinFor, KIND_WORD, waitedSuffix } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { searchMatches, searchSids } from "./feed-search";
+import { freezeDiff } from "./feed-freeze";
 import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
@@ -1124,6 +1125,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // clear if none pinned.
   let hoverTimer: number | undefined;
   card.addEventListener("mouseenter", () => {
+    freezeEnter(it.itemId);                            // hover-freeze: pointer truth, no debounce
     if (it.provisional) return;                        // no timeline path for a placeholder
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined;
@@ -1132,6 +1134,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     }, 120);
   });
   card.addEventListener("mouseleave", () => {
+    freezeLeave(it.itemId);                            // hover-freeze: leaving the card flushes queued payloads
     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = undefined; }
     if (hoverAskId === it.itemId) {
       hoverAskId = null; applyFocus();
@@ -2125,6 +2128,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   // (first member). leave → restore the pin (ask OR group) or clear.
   let hoverTimer: number | undefined;
   card.addEventListener("mouseenter", () => {
+    freezeEnter(fkey);                                 // hover-freeze: pointer truth, no debounce
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined;
       hoverAskId = fkey; applyFocus();
@@ -2132,6 +2136,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     }, 120);
   });
   card.addEventListener("mouseleave", () => {
+    freezeLeave(fkey);                                 // hover-freeze: leaving the card flushes queued payloads
     if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = undefined; }
     if (hoverAskId === fkey) {
       hoverAskId = null; applyFocus();
@@ -3041,6 +3046,7 @@ function makeSessHead(): HTMLElement {
   return h;
 }
 function updateSessHead(h: HTMLElement, e: Entry & { kind: "sess" }): void {
+  h.setAttribute("data-fsid", e.sid);   // the hover-freeze badge painter finds headers by sid
   const nm = (h as any)._name as HTMLElement;
   nm.replaceChildren(...hostNameNodes(e.name, e.sid));
   if (e.color) nm.style.color = e.color.bg;
@@ -3799,6 +3805,19 @@ function paintJudgeLimit(): void {
   b.style.display = "";
 }
 
+// The render's display-side view: the footer session filter (the user 2026-08-08 — display-side
+// only, `asks` stays complete so flipping it needs no kernel round-trip) composed with the search
+// query (the user 2026-08-23 — a card passes when its session's meta name matches OR its own
+// per-card label does, so a just-died session's cards keep matching after the meta list drops it).
+// Shared by render() and the hover-freeze badge painter, so the deferred-churn hint counts exactly
+// what the user would see move.
+function viewFiltered(list: AskItem[]): AskItem[] {
+  let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list;
+  const sMatch = searchSids(feedSearchQ, sessionsMeta);
+  if (sMatch) shown = shown.filter((a) => sMatch.has(a.sid) || searchMatches(feedSearchQ, (a as { name?: string }).name));
+  return shown;
+}
+
 function render() {
   const list = document.getElementById("feed-list")!;
   pruneAgeTip();   // drop the tip only if the render tore its hovered stamp out (see pruneAgeTip)
@@ -3837,15 +3856,9 @@ function render() {
 
   const cols = ensureCols(list);
   const buckets: Record<Column, Entry[]> = { asks: [], needsInput: [], completed: [] };
-  // The footer session filter (the user 2026-08-08): with a session picked, the board draws ONLY its
-  // cards. Display-side only — `asks` stays complete, so flipping the filter needs no kernel round-trip
-  // and everything else (the modal, optimistic moves, the empty check above) still sees the whole board.
-  let shown = feedOnlySid ? asks.filter((a) => a.sid === feedOnlySid) : asks;
-  // The search query composes with the session filter, display-side like it: a card passes when its
-  // session's meta name matches OR its own per-card label does (a just-died session's cards keep
-  // matching by label after the meta list drops it).
-  const sMatch = searchSids(feedSearchQ, sessionsMeta);
-  if (sMatch) shown = shown.filter((a) => sMatch.has(a.sid) || searchMatches(feedSearchQ, (a as { name?: string }).name));
+  // The display-side view filters (session filter + search), shared with the hover-freeze badge
+  // painter so the deferred-churn hint counts exactly what the user would see move (viewFiltered).
+  let shown = viewFiltered(asks);
   // Derive sibling GROUPS at render time, keyed by the shared typed turn (turnId).
   // Only host-flagged asks (groupTitle) participate, and a turn needs ≥2 current
   // members to fold — a lone survivor (siblings cleared) renders as a single card.
@@ -3954,6 +3967,18 @@ function render() {
   for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid) && undismissed(groupEls.get(tid))) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
 
   list.scrollTop = prevScroll;
+  // Stale-freeze heal (hover-freeze): a LOCAL render can detach or re-key the hovered element with
+  // no mouseleave — a removed element never fires leave events (typing in search filters the card
+  // out; toggling Group swaps the ask card for a group card in place). :hover is live pointer
+  // truth, checked per render (event-based, never a timer): no card under the pointer → the freeze
+  // is stale, clear it and flush the queue; a DIFFERENT card under the pointer (re-keyed in place,
+  // so no enter event ever fired) → re-arm to the element actually being hovered.
+  if (freezeKey) {
+    const hov = document.querySelector<HTMLElement>(".feed-cols .fitem:hover");
+    if (!hov) { freezeKey = null; flushFreeze(); }
+    else { const k = kbHoverId(hov); if (k && k !== freezeKey) freezeKey = k; }
+  }
+  paintFreezeBadges();   // hover-freeze: local renders while frozen re-sync the +N/-N hints (no-op unfrozen)
   // FLIP-across-identity: a card whose KEY is new this render (group→solo, solo→group, umbrella absorb) has no
   // First rect of its own, so the normal FLIP can't slide it. Alias it to its PREDECESSOR's rect — the card
   // key that covered one of its goals LAST render — so it glides in from where that predecessor sat instead of
@@ -4136,6 +4161,163 @@ function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNotice
   try { localStorage.setItem(BADGE_SEEN_KEY, JSON.stringify(Array.from(active))); } catch { /* storage full */ }
 }
 
+// ── HOVER-FREEZE (the user 2026-08-24) ──────────────────────────────────────────────────────────
+// While the pointer rests on a card, the board must not move under it: incoming feed payloads QUEUE
+// (newest wins — intermediate states were never on screen, so nothing owes them an animation)
+// instead of rendering, and the deferred churn shows as a subtle +N/-N beside the column pills and,
+// in grouped mode, the session headers. Only the PAYLOAD path defers: the hovered card's own
+// controls and every local gesture still render live from the displayed model. Flush is event-based
+// (repo rule, no timers): the hovered card's mouseleave applies everything at once — a card CLEARED
+// under the pointer flushes too, via its synthetic mouseleave — and window blur is the backstop.
+let freezeKey: string | null = null;     // the hovered card's focus key, or null — pointer truth, no debounce
+let pendingFeedPayload: any = null;      // newest queued payload; older ones are superseded unseen
+function freezeEnter(key: string): void { freezeKey = key; }
+function freezeLeave(key: string): void {
+  if (freezeKey !== key) return;
+  freezeKey = null;
+  flushFreeze();
+}
+let flushQueued = false;
+function flushFreeze(): void {
+  if (flushQueued) return;
+  flushQueued = true;
+  queueMicrotask(() => {   // after the CURRENT gesture's handlers finish — a synthetic mouseleave
+    flushQueued = false;   // dispatched mid-click (the clear path) must not re-render the board under
+    //                        the rest of its own handler (pendingCleared.add, .dismissing come after
+    //                        the dispatch). Gesture-ordering, not a timer: no time window anywhere.
+    if (freezeKey) return; // re-armed before the tick ended → keep the queue for the next leave
+    const m = pendingFeedPayload;
+    pendingFeedPayload = null;
+    if (m) applyFeedPayload(m);          // render() repaints the badges away (nothing pending)
+  });
+}
+window.addEventListener("blur", () => { freezeKey = null; flushFreeze(); });   // backstop: focus left the pane
+
+// The queued payload's would-be card list — the same pre-filters applyFeedPayload will apply,
+// WITHOUT its bookkeeping side effects (a hint must never mutate pendingCleared or the disclosure
+// state; the flush re-runs the real thing).
+function payloadView(m: any): AskItem[] {
+  const incoming: AskItem[] = Array.isArray(m.asks) ? m.asks : [];
+  const only = onlyTag();
+  const vis = only ? incoming.filter((a) => matchesOnly(a.name, only)) : incoming;
+  let out = pendingCleared.size ? vis.filter((a) => !pendingCleared.has(a.itemId)) : vis;
+  // mirror the optimistic-restore overlay applyFeedPayload keeps (read-only): a restored card the
+  // flush will push right back must not hint as a departure
+  if (pendingRestored.size) {
+    const present = new Set(out.map((a) => a.itemId));
+    const inIncoming = new Set(incoming.map((a) => a.itemId));   // carried by the payload → the flush DROPS
+    out = out.slice();                                            // its overlay entry; it rides (or is filtered
+    //                                                               with) the normal path, so no re-add here
+    for (const it of pendingRestored.values()) if (!present.has(it.itemId) && !inIncoming.has(it.itemId)) out.push(it);
+  }
+  return out;
+}
+// Paint (or clear) the deferred-churn badges: +N accent / -N block-red beside each column pill, and
+// beside each on-board session header in grouped mode. Ensure-once spans on the build-once column
+// heads; session badges ride the reconciled headers (found by the data-fsid stamp) and are re-synced
+// at every render tail, so a local re-render while frozen can never strand a stale count.
+function paintFreezeParts(b: HTMLElement, c: { add: number; del: number }): void {
+  b.replaceChildren();
+  if (c.add) { const i = el("i", "fz-add"); i.textContent = "+" + c.add; b.appendChild(i); }
+  if (c.add && c.del) b.appendChild(document.createTextNode("/"));
+  if (c.del) { const i = el("i", "fz-del"); i.textContent = "-" + c.del; b.appendChild(i); }
+  b.title = "updates waiting while you hover — they apply when the pointer leaves the card";
+}
+function paintFreezeBadges(): void {
+  if (!pendingFeedPayload) {
+    document.querySelectorAll(".freeze-badge").forEach((n) => n.remove());
+    return;
+  }
+  const toItems = (list: AskItem[]) => viewFiltered(list).map((a) => ({ id: a.itemId, col: askColumn(a) as string, sid: a.sid }));
+  const d = freezeDiff(toItems(asks), toItems(payloadView(pendingFeedPayload)));
+  const put = (host: Element | null, c: { add: number; del: number } | undefined) => {
+    if (!host) return;
+    let b = host.querySelector(":scope > .freeze-badge") as HTMLElement | null;
+    if (!c || (!c.add && !c.del)) { b?.remove(); return; }
+    if (!b) { b = el("span", "freeze-badge"); host.appendChild(b); }
+    paintFreezeParts(b, c);
+  };
+  for (const key of ["asks", "needsInput", "completed"]) {
+    put(document.querySelector(".feed-col.col-" + key + " .feed-col-head"), d.cols[key]);
+  }
+  const groupedNow = feedPrefs().grouped;
+  document.querySelectorAll<HTMLElement>(".feed-sess-head").forEach((h) => {
+    put(h, groupedNow ? d.sess[h.getAttribute("data-fsid") || ""] : undefined);
+  });
+}
+
+// The feed payload's full application — model swap, bookkeeping, render. One body, two callers:
+// the message handler applies live when no card is hovered; flushFreeze applies the newest queued
+// payload when the pointer leaves (hover-freeze above).
+function applyFeedPayload(m: any): void {
+  judgeLimit = m.judgeLimit && typeof m.judgeLimit === "object"
+    ? m.judgeLimit as { bucket?: string; resets_at?: number; model?: string } : null;
+  const incomingAsks: AskItem[] = Array.isArray(m.asks) ? m.asks : [];
+  // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
+  // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
+  for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
+  // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name cards; the
+  // clear/follow bookkeeping above still runs against the FULL payload, so hidden cards stay consistent.
+  // Self-clean the persisted disclosure state against the AUTHORITATIVE live set (the user 2026-07-24).
+  // incomingAsks, deliberately — not `visible` below: `#only=` hides cards without ending them, and
+  // pruning against the filtered list would throw away the hidden cards' sections. Event-based: a card
+  // leaving the payload (cleared, archived) IS the signal, so nothing ages out on a timer.
+  pruneViewStateTo(new Set(incomingAsks.map((a) => a.itemId)));
+  const only = onlyTag();
+  const visible = only ? incomingAsks.filter((a) => matchesOnly(a.name, only)) : incomingAsks;
+  asks = pendingCleared.size ? visible.filter((a) => !pendingCleared.has(a.itemId)) : visible;
+  // confirm/clear optimistic follow-up moves against the authoritative payload. buildId says WHEN this
+  // payload read the store, which is what makes "the kernel has answered my click" an event and not a
+  // guess (see reconcileFollowMove); a kernel too old to send one reads as 0 and simply never confirms
+  // an acked prediction early, leaving the backstop to retire it.
+  lastFeedEvent = "payload";                         // tripwire: this render's inputs are the fresh payload
+  lastPayloadBuildId = typeof m.buildId === "number" ? m.buildId : 0;
+  // per-host counters when this is a merged multi-kernel payload (mergeHostFeeds.buildIds);
+  // absent on a single-kernel payload, where the top-level buildId is the one counter there is
+  const perHostBuildIds = m.buildIds && typeof m.buildIds === "object" && !Array.isArray(m.buildIds)
+    ? m.buildIds as Record<string, number> : undefined;
+  reconcileFollowMove(incomingAsks, lastPayloadBuildId, perHostBuildIds);
+  reconcilePendingDone(incomingAsks);   // retire an optimistic tick once the real tree carries it
+  // An optimistic Undo is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
+  // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
+  if (pendingRestored.size) {
+    for (const id of Array.from(pendingRestored.keys())) if (incomingAsks.some((a) => a.itemId === id)) pendingRestored.delete(id);
+    const present = new Set(asks.map((a) => a.itemId));
+    for (const it of pendingRestored.values()) if (!present.has(it.itemId)) asks.push(it);
+  }
+  workingSet = new Set(Array.isArray(m.working) ? m.working : []);
+  if (typeof m.selfHost === "string" && m.selfHost) feedSelfHost = m.selfHost;
+  // Index every session's colour by the name a peer would address it by. Federation merges the hosts'
+  // payloads, so one pass over the merged asks covers the whole fleet; a card whose session has no
+  // cards of its own simply gets no colour, which is honest rather than invented.
+  for (const a of incomingAsks) {
+    if (!a.color || !a.name) continue;
+    sessionColors.set(a.name, a.color.bg);
+    const c = a.sid ? a.sid.indexOf(":") : -1;             // remote sid → also index the bare name under its host
+    if (c > 0 && !a.name.includes(":")) sessionColors.set(a.sid.slice(0, c) + ":" + a.name, a.color.bg);
+  }
+  awaitingSet = new Set(Array.isArray(m.awaiting) ? m.awaiting : []);   // await-green awaiting dots (the user 2026-07-13)
+  unknownSet = new Set(Array.isArray(m.stateUnknown) ? m.stateUnknown : []);   // listed-but-unreadable → gray ring, never a blank
+  bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
+  if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
+  if (Array.isArray(m.sessions)) {
+    sessionsMeta = m.sessions.filter((s: any) => s && typeof s.sid === "string" && typeof s.name === "string");
+    // a filter aimed at a session the tab strip no longer shows is moot — clear it (the deciding
+    // event: the session left the tab list), rather than leaving the board silently pinned to nothing
+    if (feedOnlySid && !sessionsMeta.some((s) => s.sid === feedOnlySid)) setFeedOnly(null);
+  }
+  hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
+  mirrorBadges(incomingAsks, Array.isArray(m.clearNotices) ? m.clearNotices : [],
+    Array.isArray(m.sdkNotices) ? m.sdkNotices : [],
+    Array.isArray(m.syncNotices) ? m.syncNotices : []);   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
+  if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
+  clearUndoBusy();   // the push the undo was waiting on has landed (or any fresher one) — cue off
+  if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
+  if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
+  render();
+}
+
+
 window.addEventListener("message", (e: MessageEvent) => {
   const m = e.data;
   if (!m) return;
@@ -4157,71 +4339,10 @@ window.addEventListener("message", (e: MessageEvent) => {
     return;
   }
   if (m.type === "feed") {
-    judgeLimit = m.judgeLimit && typeof m.judgeLimit === "object"
-      ? m.judgeLimit as { bucket?: string; resets_at?: number; model?: string } : null;
-    const incomingAsks: AskItem[] = Array.isArray(m.asks) ? m.asks : [];
-    // A clear is CONFIRMED once the kernel's payload no longer lists it → stop suppressing it. Then drop
-    // any still-pending (kernel hasn't caught up) from this payload so a stale push can't resurrect them.
-    for (const id of Array.from(pendingCleared)) if (!incomingAsks.some((a) => a.itemId === id)) pendingCleared.delete(id);
-    // demo/recording view filter (the user 2026-07-14): `#only=<tag>` shows only matching-name cards; the
-    // clear/follow bookkeeping above still runs against the FULL payload, so hidden cards stay consistent.
-    // Self-clean the persisted disclosure state against the AUTHORITATIVE live set (the user 2026-07-24).
-    // incomingAsks, deliberately — not `visible` below: `#only=` hides cards without ending them, and
-    // pruning against the filtered list would throw away the hidden cards' sections. Event-based: a card
-    // leaving the payload (cleared, archived) IS the signal, so nothing ages out on a timer.
-    pruneViewStateTo(new Set(incomingAsks.map((a) => a.itemId)));
-    const only = onlyTag();
-    const visible = only ? incomingAsks.filter((a) => matchesOnly(a.name, only)) : incomingAsks;
-    asks = pendingCleared.size ? visible.filter((a) => !pendingCleared.has(a.itemId)) : visible;
-    // confirm/clear optimistic follow-up moves against the authoritative payload. buildId says WHEN this
-    // payload read the store, which is what makes "the kernel has answered my click" an event and not a
-    // guess (see reconcileFollowMove); a kernel too old to send one reads as 0 and simply never confirms
-    // an acked prediction early, leaving the backstop to retire it.
-    lastFeedEvent = "payload";                         // tripwire: this render's inputs are the fresh payload
-    lastPayloadBuildId = typeof m.buildId === "number" ? m.buildId : 0;
-    // per-host counters when this is a merged multi-kernel payload (mergeHostFeeds.buildIds);
-    // absent on a single-kernel payload, where the top-level buildId is the one counter there is
-    const perHostBuildIds = m.buildIds && typeof m.buildIds === "object" && !Array.isArray(m.buildIds)
-      ? m.buildIds as Record<string, number> : undefined;
-    reconcileFollowMove(incomingAsks, lastPayloadBuildId, perHostBuildIds);
-    reconcilePendingDone(incomingAsks);   // retire an optimistic tick once the real tree carries it
-    // An optimistic Undo is CONFIRMED once the kernel's payload carries the id again → stop forcing it.
-    // Until then, keep the cached card in `asks` so the replace above can't drop the just-restored card (flicker).
-    if (pendingRestored.size) {
-      for (const id of Array.from(pendingRestored.keys())) if (incomingAsks.some((a) => a.itemId === id)) pendingRestored.delete(id);
-      const present = new Set(asks.map((a) => a.itemId));
-      for (const it of pendingRestored.values()) if (!present.has(it.itemId)) asks.push(it);
-    }
-    workingSet = new Set(Array.isArray(m.working) ? m.working : []);
-    if (typeof m.selfHost === "string" && m.selfHost) feedSelfHost = m.selfHost;
-    // Index every session's colour by the name a peer would address it by. Federation merges the hosts'
-    // payloads, so one pass over the merged asks covers the whole fleet; a card whose session has no
-    // cards of its own simply gets no colour, which is honest rather than invented.
-    for (const a of incomingAsks) {
-      if (!a.color || !a.name) continue;
-      sessionColors.set(a.name, a.color.bg);
-      const c = a.sid ? a.sid.indexOf(":") : -1;             // remote sid → also index the bare name under its host
-      if (c > 0 && !a.name.includes(":")) sessionColors.set(a.sid.slice(0, c) + ":" + a.name, a.color.bg);
-    }
-    awaitingSet = new Set(Array.isArray(m.awaiting) ? m.awaiting : []);   // await-green awaiting dots (the user 2026-07-13)
-    unknownSet = new Set(Array.isArray(m.stateUnknown) ? m.stateUnknown : []);   // listed-but-unreadable → gray ring, never a blank
-    bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
-    if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
-    if (Array.isArray(m.sessions)) {
-      sessionsMeta = m.sessions.filter((s: any) => s && typeof s.sid === "string" && typeof s.name === "string");
-      // a filter aimed at a session the tab strip no longer shows is moot — clear it (the deciding
-      // event: the session left the tab list), rather than leaving the board silently pinned to nothing
-      if (feedOnlySid && !sessionsMeta.some((s) => s.sid === feedOnlySid)) setFeedOnly(null);
-    }
-    hostNow = typeof m.now === "number" ? m.now : Math.floor(Date.now() / 1000);
-    mirrorBadges(incomingAsks, Array.isArray(m.clearNotices) ? m.clearNotices : [],
-      Array.isArray(m.sdkNotices) ? m.sdkNotices : [],
-      Array.isArray(m.syncNotices) ? m.syncNotices : []);   // card trouble chips + /clear drops + SDK failures + fleet syncs also log in the shell's bell (chips stay on the cards)
-    if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
-    clearUndoBusy();   // the push the undo was waiting on has landed (or any fresher one) — cue off
-    if (typeof m.showDismissed === "boolean") showDismissed = m.showDismissed;
-    if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
-    render();
+    // HOVER-FREEZE: a hovered card must not move on screen — queue the payload (newest wins) and
+    // hint the deferred churn on the headers instead; mouseleave/blur flush it (see freezeEnter).
+    if (freezeKey) { pendingFeedPayload = m; paintFreezeBadges(); return; }
+    applyFeedPayload(m);
   } else if (m.type === "hoverCards") {
     // rail-dot hover in the CHAT panel → white-outline the card(s) built from
     // that turn, plus the matching ROWS inside an open modal (eid). The host
