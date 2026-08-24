@@ -3976,27 +3976,61 @@ class TimelinePanel {
       }
       if (x2 - x1 < 2) x2 = x1 + 2;   // a same-instant consume is real but must never render as a
       //                                 floating point — two px keeps the mark a mark
+      // the RISER (the user 2026-08-24, third stub round): the vertical limb tying the track to the
+      // WORK BAR itself — the full connectors' elbow grammar as a half-elbow; without it the
+      // horizontal stubs read as floating lines. OUTGOING: bar → track at the SEND x (the early
+      // return above guarantees the true, unclamped x — the message visibly leaves the work).
+      // INCOMING: track → bar at the ARRIVAL x, meeting the arrival dot — only when the message
+      // actually ARRIVED: an un-arrived stub has no arrival to tie to, and a clamped/live-edge x
+      // would tie it to a false one, so the riser is skipped rather than drawn at a lie.
+      const riser = senderVisible ? { x: x1, yA: ly, yB: y1 }
+                                  : (arrived ? { x: x2, yA: y2, yB: ly } : null);
       const col = colorOf(mm.fromId);   // the SENDER's color — the full connectors' own resolution
       const attrs = { x1, y1, x2, y2, stroke: col, 'stroke-width': STUB_W, opacity: 0.45,
                       'stroke-linecap': 'round', 'pointer-events': 'none' };
       if (!arrived) attrs['stroke-dasharray'] = '1 4';   // in flight — the pending-connector dash (same key as the span)
       svg.appendChild(el('line', attrs));
+      if (riser) {
+        const rattrs = { x1: riser.x, y1: riser.yA, x2: riser.x, y2: riser.yB, stroke: col,
+                         'stroke-width': STUB_W, opacity: 0.45, 'stroke-linecap': 'round',
+                         'pointer-events': 'none' };   // the stub's own stroke, dash and fade — one mark
+        if (!arrived) rattrs['stroke-dasharray'] = '1 4';
+        svg.appendChild(el('line', rattrs));
+      }
       // same affordances as a full connector: own-color highlight overlay + wide transparent hit,
       // co-lit with the arrival dot (PASS 2 links via msgUI), tooltip + click → where it landed
       const msgLit = dagOrHoverMsg(mm.id);
       const hl = el('line', { x1, y1, x2, y2, stroke: col, 'stroke-width': STUB_W + 3, opacity: msgLit ? 0.95 : 0,
                               'stroke-linecap': 'round', 'pointer-events': 'none' });
       svg.appendChild(hl);
+      const rhl = riser ? el('line', { x1: riser.x, y1: riser.yA, x2: riser.x, y2: riser.yB, stroke: col,
+                                       'stroke-width': STUB_W + 3, opacity: msgLit ? 0.95 : 0,
+                                       'stroke-linecap': 'round', 'pointer-events': 'none' }) : null;
+      if (rhl) svg.appendChild(rhl);
       const u = (msgUI[i] = { hl, dot: null, lit: msgLit });
       const hit = el('line', { x1, y1, x2, y2, stroke: 'transparent', 'stroke-width': MSG_HIT_W, 'stroke-linecap': 'round' });
       hit.style.cursor = 'pointer';
-      const mEnter = (e) => { hl.setAttribute('opacity', '0.95'); if (u.dot) u.dot.setAttribute('r', DOT_R + 2); this.showTip(msgHtml(mm)(), e); };
+      const mEnter = (e) => { hl.setAttribute('opacity', '0.95'); if (rhl) rhl.setAttribute('opacity', '0.95'); if (u.dot) u.dot.setAttribute('r', DOT_R + 2); this.showTip(msgHtml(mm)(), e); };
+      const mLeave = () => { hl.setAttribute('opacity', msgLit ? '0.95' : '0'); if (rhl) rhl.setAttribute('opacity', msgLit ? '0.95' : '0'); if (u.dot) u.dot.setAttribute('r', msgLit ? DOT_R + 2 : DOT_R); this.hideTip(); };
       hit.__tlHoverIn = mEnter;                    // re-armable after a redraw rebuilds this stub (_rehover)
       hit.addEventListener('mouseenter', mEnter);
       hit.addEventListener('mousemove', (e) => this.moveTip(e));
-      hit.addEventListener('mouseleave', () => { hl.setAttribute('opacity', msgLit ? '0.95' : '0'); if (u.dot) u.dot.setAttribute('r', msgLit ? DOT_R + 2 : DOT_R); this.hideTip(); });
+      hit.addEventListener('mouseleave', mLeave);
       hit.addEventListener('click', msgNav(mm));
       u.hit = hit;   // appended in PASS 3 with the connector hits, over the dots
+      if (riser) {
+        // the riser is part of the stub's one interactive unit: its own hit strip shares the
+        // handlers, so hovering the limb lights the whole half-elbow and the same tooltip
+        const rhit = el('line', { x1: riser.x, y1: riser.yA, x2: riser.x, y2: riser.yB,
+                                  stroke: 'transparent', 'stroke-width': MSG_HIT_W, 'stroke-linecap': 'round' });
+        rhit.style.cursor = 'pointer';
+        rhit.__tlHoverIn = mEnter;
+        rhit.addEventListener('mouseenter', mEnter);
+        rhit.addEventListener('mousemove', (e) => this.moveTip(e));
+        rhit.addEventListener('mouseleave', mLeave);
+        rhit.addEventListener('click', msgNav(mm));
+        u.rhit = rhit;                              // appended beside `hit` in PASS 3
+      }
     };
     // PASS 1: connector line + highlight (drawn first so the dots sit on top).
     data.messages.forEach((mm, i) => {
@@ -4082,7 +4116,7 @@ class TimelinePanel {
     // Nothing is lost by sitting over a message dot: the dot's tooltip, growth and click are the same
     // message's, and mEnter grows the linked dot too. Prompt dots are drawn after this pass, so they
     // keep their own hover.
-    Object.keys(msgUI).forEach((k) => { const u = msgUI[k]; if (u && u.hit) svg.appendChild(u.hit); });
+    Object.keys(msgUI).forEach((k) => { const u = msgUI[k]; if (u && u.hit) svg.appendChild(u.hit); if (u && u.rhit) svg.appendChild(u.rhit); });
 
     // turn process-start (prompt) dots — at startAt; CLICKABLE → jump to the prompt that started
     // the period. Skipped where a PROCESSED message dot coincides (the message dot stands in).

@@ -96,7 +96,10 @@ function nodes(panel: any): any[] {
 }
 const stubLines = (panel: any, hex?: string) =>
   nodes(panel).filter((n) => n.tag === "line" && n._attrs["stroke-width"] === 3 && n._attrs.opacity === 0.45
-    && (!hex || n._attrs.stroke === hex));
+    && n._attrs.y1 === n._attrs.y2 && (!hex || n._attrs.stroke === hex));
+const riserLines = (panel: any) =>
+  nodes(panel).filter((n) => n.tag === "line" && n._attrs["stroke-width"] === 3 && n._attrs.opacity === 0.45
+    && n._attrs.x1 === n._attrs.x2);
 const connPaths = (panel: any, color: string) =>
   nodes(panel).filter((n) => n.tag === "path" && n._attrs.fill === "none" && n._attrs.stroke === color && (n._attrs.opacity === 0.5 || n._attrs.opacity === 0.4));
 // expected coordinates from the SAME geometry draw() used (compress map included)
@@ -125,6 +128,15 @@ test("a hidden-recipient message draws an outgoing stub: send-anchored, horizont
   assert.ok(s._attrs.x2 - s._attrs.x1 > 13.5, "…and it beats the old 13px cap on this fixture");
   assert.ok(!nodes(panel).some((n) => n.tag === "circle" && Math.abs(n._attrs.cx - s._attrs.x2) < 1e-6),
     "an outgoing stub has NO dot — the dot is the ARRIVAL mark, and the arrival is off-view");
+  // the RISER (third stub round): the half-elbow limb tying the track to the work bar at the SEND x
+  const [r, ...rrest] = riserLines(panel);
+  assert.ok(r, "the riser draws");
+  assert.equal(rrest.length, 0, "exactly one riser");
+  near(r._attrs.x1, s._attrs.x1, "…at the send x — the message visibly leaves the work");
+  near(r._attrs.y1, laneY(panel)(0), "…from the bar");
+  near(r._attrs.y2, s._attrs.y1, "…down to the track");
+  assert.equal(r._attrs["stroke-dasharray"], "1 4", "the riser wears the stub's own dash");
+  assert.equal(r._attrs.stroke, BEE, "…and its color");
   assert.equal(s._attrs.opacity, 0.45, "the stub fade level exactly — not invisible, not full-strength");
   assert.equal(s._attrs["pointer-events"], "none", "the visible mark never eats the hover — the hit target owns it");
   const hl = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === BEE && n._attrs["stroke-width"] === 6);
@@ -244,11 +256,27 @@ test("a hidden-sender message draws the mirror stub: horizontal just ABOVE the l
   near(s._attrs.y2, laneY(panel)(0) - OFF, "INCOMING rides just ABOVE the lane line — the fixed convention");
   near(s._attrs.y1, s._attrs.y2, "…and stays horizontal");
   near(s._attrs.x1, X(panel)(now - 400), "the FULL span back to the send x — no run cap");
+  const [r] = riserLines(panel);
+  assert.ok(r, "the incoming riser draws — the message visibly enters the work");
+  near(r._attrs.x1, s._attrs.x2, "…at the arrival x");
+  near(r._attrs.y1, s._attrs.y2, "…from the track");
+  near(r._attrs.y2, laneY(panel)(0), "…down to the bar, meeting the arrival dot");
+  assert.equal(r._attrs["stroke-dasharray"], undefined, "solid, like its arrived stub");
   const kids = panel.svg.children;
   const dotI = kids.findIndex((n: any) => n.tag === "circle" && Math.abs(n._attrs.cx - X(panel)(now - 100)) < 1e-6);
   assert.ok(dotI >= 0, "the arrival dot still draws on the recipient lane");
   const hitI = kids.findIndex((n: any) => n.tag === "line" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
   assert.ok(hitI > dotI, "the stub's hit target is appended after the dots (PASS 3), so the line wins the hover");
+});
+
+test("an un-arrived INCOMING stub has no riser — nothing entered the work, and its live-edge x is not a real arrival", () => {
+  const now = 1_781_000_000;
+  const panel = draw([{ id: "m16", fromId: "SA", toId: "SB", from: "ada", to: "bee",
+                        sent: now - 120, exec: now - 120, hasExec: false, pending: true, summary: "still coming" }]);
+  const [s] = stubLines(panel);
+  assert.ok(s, "the un-arrived incoming stub itself draws (dashed, to the live edge)");
+  assert.equal(riserLines(panel).length, 0,
+    "…but no riser: a limb at a clamped/live-edge x would tie the work to a false arrival");
 });
 
 test("a counterpart absent from data.sessions rides the same fixed track: outgoing = below", () => {
