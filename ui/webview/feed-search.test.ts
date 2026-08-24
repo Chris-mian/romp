@@ -39,14 +39,27 @@ test("the feed composes search WITH the session filter, and cards fall back to t
                "a just-died session's cards keep matching by their per-card label");
 });
 
-test("the footer control is ensure-once, expandable, and an active query can never be hidden", () => {
-  assert.match(FEED, /function ensureSearchBox\(\): HTMLElement/);
+test("the footer control is ensure-once, expandable, and an active filter can never be hidden", () => {
+  // merged into the session COMBOBOX (the user 2026-08-24): one control, both filters, same rules
+  assert.match(FEED, /function ensureSessionBox\(\): HTMLElement/);
+  assert.match(FEED, /const active = !!feedSearchQ\.trim\(\) \|\| !!feedOnlySid;/,
+               "EITHER live filter counts as active");
   assert.match(FEED, /if \(active\) wrap\.classList\.add\("open"\);/,
-               "a live query forces the input open — the compact state never hides an active filter");
-  assert.match(FEED, /if \(inp\.value\.trim\(\)\) \{ inp\.value = ""; setFeedSearch\(""\); render\(\); \}/,
-               "folding with a live query clears it, never hides it");
+               "an active filter forces the bar open — the compact state never hides a live filter");
+  // folding with anything live CLEARS it (both kinds), never hides it
+  assert.match(FEED, /if \(feedSearchQ\.trim\(\)\) \{ setFeedSearch\(""\); changed = true; \}/);
+  assert.match(FEED, /if \(feedOnlySid\) \{ setFeedOnly\(null\); changed = true; \}/);
   assert.match(FEED, /sessionStorage\.getItem\("romp:feedSearch"\)/,
                "same storage lifetime as the session filter: reload-proof, never a fresh window");
+  // typing narrows the open list AND applies the live board filter in the same keystroke
+  assert.match(FEED, /inp\.oninput = \(\) => \{ setFeedSearch\(inp\.value\); filterSessList\(inp\.value\); render\(\); \};/);
+  // an away-click closes the LIST only — clicking a card must never wipe a live filter; the
+  // clear-on-fold rule belongs to EXPLICIT folds (Escape, the button)
+  assert.match(FEED, /if \(!feedSearchQ\.trim\(\) && !feedOnlySid\) document\.getElementById\("feed-search"\)\?\.classList\.remove\("open"\);/);
+  const away = FEED.slice(FEED.indexOf("function sessListAway"), FEED.indexOf("function sessListKey"));
+  assert.ok(!away.includes("foldSessBox"), "away never routes through the clearing fold");
+  // an idle empty bar folds quietly on blur once the list is gone (the parent search box's rule)
+  assert.match(FEED, /if \(!sessListEl && !inp\.value\.trim\(\) && !feedOnlySid\) wrap!\.classList\.remove\("open"\);/);
 });
 
 test("the expanded bar wears the top search bar's look, footer-scaled, and FLEXES instead of a fixed width", () => {
@@ -61,7 +74,7 @@ test("the expanded bar wears the top search bar's look, footer-scaled, and FLEXE
   assert.match(CSS, /#feed-search\.open input:focus \{ border-color: var\(--accent\); \}/);
   // the inner ✕ clear: hidden while empty, clearing REFOCUSES (the top bar's semantics)
   assert.match(FEED, /clr\.id = "feed-search-clear";/);
-  assert.match(FEED, /inp\.value = ""; setFeedSearch\(""\); inp\.focus\(\); render\(\);/);
+  assert.match(FEED, /inp\.value = ""; setFeedSearch\(""\); filterSessList\(""\); inp\.focus\(\); render\(\);/);
   assert.match(FEED, /clrBtn\.hidden = !inp\.value\.trim\(\);/,
     "trimmed, like the fold and the filter — a whitespace-only value must not strand a floating ✕");
   assert.match(CSS, /#feed-search-clear\[hidden\] \{ display: none; \}/);
