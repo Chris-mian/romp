@@ -6097,7 +6097,34 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
     renderingIntoThread = true;   // same renderer, minus the transcript-coupled hover chrome (see the flag)
     let prev: number | null = null;
     let quoteHost: HTMLElement | null = null;   // the thread's OPENING message — the quote's home
-    for (const ev of evs) {
+    // the SAME display units the chat renders (the user 2026-08-24, leg C: the popover ignored the
+    // compact/hide-thinking setting — thinking blocks and raw tool runs showed regardless of the
+    // gear): thinking dropped, consecutive tools folded to the chat's own renderToolGroup line,
+    // expansion keyed by the SHARED expandedGroups store so a toggle survives refills. The group
+    // toggle and a settings flip both refill the open popover live (toggleToolGroup / setupSettings
+    // → refillOpenCommentPop).
+    const items: DisplayItem[] = settings.compact
+      ? compactDisplay(evs.map((e) => e.kind), evs.map((e) => e.kind === "tool" ? e.name : undefined))
+      : evs.map((_, i) => ({ kind: "event", index: i } as DisplayItem));
+    for (const it of items) {
+      if (it.kind === "toolgroup") {
+        const tools = it.indices.map((ix) => evs[ix]) as Extract<ChatEvent, { kind: "tool" }>[];
+        const key = toolGroupKey(tools[0]);
+        const open = expandedGroups.has(key);
+        list.appendChild(renderToolGroup(tools, prev, key, open));
+        if (open) {
+          it.indices.forEach((ix, j) => {   // the tools only — it.indices already excludes thinking
+            const child = renderEvent(evs[ix], prev, null);
+            child.classList.add("tg-child"); if (j === it.indices.length - 1) child.classList.add("tg-last");
+            list.appendChild(child);
+            const ep = eventEpoch(evs[ix]); if (ep != null) prev = ep;
+          });
+        } else {
+          const ep = eventEpoch(tools[tools.length - 1]); if (ep != null) prev = ep;
+        }
+        continue;
+      }
+      const ev = evs[it.index];
       const node = renderEvent(ev, prev, null);
       list.appendChild(node);
       if (!quoteHost && ev.kind === "user") quoteHost = node;
@@ -6140,6 +6167,17 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
     list.appendChild(note);
   }
   list.scrollTop = atTail ? list.scrollHeight : prevScroll;
+}
+
+// Refill the OPEN popover's conversation in place (leg C, the user 2026-08-24): the popover renders
+// the chat's display units, so everything that re-renders the chat's units — a tool-group toggle, a
+// compact/settings flip — must refill the popover too, or it holds the stale shape until the next
+// comments frame.
+function refillOpenCommentPop(): void {
+  if (!openCommentKey) return;
+  const th = (commentThreads.get(openCommentKey.sid) || []).find((t) => t.tid === openCommentKey!.tid);
+  const list = document.querySelector(".cmt-pop .cmt-msgs") as HTMLElement | null;
+  if (th && list) fillCommentMsgs(list, th);
 }
 
 function commentPopTitle(create: boolean, th: CommentThread | null | undefined): string {
@@ -7390,6 +7428,7 @@ function toggleToolGroup(key: string): void {
   // the compact rebuild past the cache guard (a plain tab switch leaves stale false → reuses the cache).
   if (activeId) { const v = views.get(activeId); if (v) v.stale = true; syncView(activeId); }
   if (content) content.scrollTop = top;
+  refillOpenCommentPop();   // the popover renders the same units — its copy of this run must flip too
   scheduleRailSticky();
 }
 
@@ -11489,7 +11528,7 @@ function setupSettings(): void {
   applyChatScheme(settings);   // the persisted pick applies at startup — it survives reloads
   // renderTabs too: the tab strip reads settings (the context gauge toggle) but rerenderAll only
   // rebuilds the transcript views, so without it a gear change waited for the next kernel push.
-  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); rerenderAll(); });
+  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); rerenderAll(); refillOpenCommentPop(); });
 }
 
 // The feed's click echo (feed.ts focusEcho — the user 2026-08-24, "clicking into a not-shown
