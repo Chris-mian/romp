@@ -10199,6 +10199,162 @@ def _poll_remote_views(r):
         return r.get("views")
 
 
+# ── first-class PR-landing watches (the user 2026-08-24, both teams' surveys: every landing watch
+# was a mortal shell loop that died with kernel restarts) ─────────────────────────────────────────
+# A session registers interest in a PR; the KERNEL polls gh for the terminal state and delivers the
+# outcome as one [romp] notice to the registering session. Registrations persist (pr-watches.json)
+# and re-arm on boot exactly like the reconnect intent — a kernel restart moves the watch, never
+# kills it. Polling an external system is the legitimate acquisition of an unobservable event (the
+# USAGE_POLL precedent): modest cadence, a touch slower while checks visibly run. Terminal means
+# MERGED, CLOSED, or a FAILED check — both ends of the standing watcher rule — and a gh failure is
+# LOUD: three consecutive errors deliver a failure notice and retire the watch, never a silent dead
+# loop the worker discovers hours later.
+
+PR_WATCH_FILE = jd.STATE / "pr-watches.json"
+PR_WATCH_EVERY = 60          # the base poll cadence (seconds)
+PR_WATCH_BUSY_EVERY = 90     # …relaxed while checks are visibly still running
+PR_WATCH_MAX_FAILS = 3       # consecutive gh failures before the loud retire
+_pr_watches = []             # [{pr, repo, sid, at} + runtime {_next, _fails, _busy}]
+_pr_watch_lock = threading.Lock()
+
+
+def _pr_watches_load():
+    try:
+        rows = json.loads(PR_WATCH_FILE.read_text())
+    except Exception:
+        return
+    if not isinstance(rows, list):
+        return
+    with _pr_watch_lock:
+        _pr_watches[:] = [dict(r) for r in rows
+                          if isinstance(r, dict) and r.get("pr") and r.get("repo") and r.get("sid")]
+        # boot re-arm (the reconnect-intent precedent): fresh counters, poll immediately
+        for r in _pr_watches:
+            r["_next"], r["_fails"], r["_busy"] = 0, 0, False
+
+
+def _pr_watches_save():
+    with _pr_watch_lock:
+        rows = [{k: r[k] for k in ("pr", "repo", "sid", "at")} for r in _pr_watches]
+    try:
+        _atomic_write(PR_WATCH_FILE, json.dumps(rows))
+    except Exception:
+        sys.stderr.write("pr-watches save: %s\n" % traceback.format_exc())
+
+
+def add_pr_watch(pr, repo, sid, now=None):
+    """Register (idempotently) a landing watch: one mail to `sid` when repo#pr reaches a terminal
+    state. Returns the row."""
+    pr, repo, sid = int(pr), str(repo).strip(), str(sid).strip()
+    with _pr_watch_lock:
+        for r in _pr_watches:
+            if r["pr"] == pr and r["repo"] == repo and r["sid"] == sid:
+                return {k: r[k] for k in ("pr", "repo", "sid", "at")}
+        row = {"pr": pr, "repo": repo, "sid": sid, "at": int(now if now is not None else time.time()),
+               "_next": 0, "_fails": 0, "_busy": False}
+        _pr_watches.append(row)
+    _pr_watches_save()
+    return {k: row[k] for k in ("pr", "repo", "sid", "at")}
+
+
+def _pr_watch_verdict(d):
+    """(verdict, detail) from a `gh pr view --json state,statusCheckRollup` payload, PURE for tests:
+    ("merged"|"closed"|"failed"|None, detail). A FAILURE/TIMED_OUT check conclusion is terminal —
+    in this repo every check is required, so a red check means the auto-merge will never fire (the
+    approximation is named here: gh's rollup does not mark required-ness). None = still in flight;
+    detail then says whether checks are visibly running (the cadence hint)."""
+    state = str((d or {}).get("state") or "").upper()
+    if state == "MERGED":
+        return "merged", ""
+    if state == "CLOSED":
+        return "closed", ""
+    busy = False
+    for c in (d or {}).get("statusCheckRollup") or []:
+        if not isinstance(c, dict):
+            continue
+        con = str(c.get("conclusion") or "").upper()
+        if con in ("FAILURE", "TIMED_OUT"):
+            return "failed", str(c.get("name") or c.get("context") or "a check")
+        if str(c.get("status") or "").upper() in ("IN_PROGRESS", "QUEUED", "PENDING") or con == "":
+            busy = True
+    return None, ("busy" if busy else "")
+
+
+def _pr_watch_notice(verdict, repo, pr, detail=""):
+    """The one mail a landing watch sends — the [romp] mechanics-notice family (it is ABOUT romp's
+    own watch service, like the restart notice): plain, practical, no reply expected. PURE for the
+    voice test."""
+    ref = "%s#%s" % (repo, pr)
+    if verdict == "merged":
+        body = "[romp] The pull request you asked romp to watch has MERGED: %s. This watch is done." % ref
+    elif verdict == "closed":
+        body = ("[romp] The pull request you asked romp to watch was CLOSED without merging: %s. "
+                "This watch is done." % ref)
+    elif verdict == "failed":
+        body = ("[romp] The pull request you asked romp to watch has a FAILED check (%s): %s. "
+                "It will not land on its own — it needs your attention. This watch is done."
+                % (detail or "a check", ref))
+    else:   # the loud gh-failure retire
+        body = ("[romp] romp could not read %s (gh said: %s) after several tries, so this watch was "
+                "dropped — check `gh auth status` on this machine and re-register with `romp watch-pr` "
+                "if you still need it." % (ref, detail or "an unknown error"))
+    return body + "\n\n<!-- romp-tag: pr-watch -->"
+
+
+def _pr_watch_read(pr, repo):
+    """One gh read → (verdict, detail) or ("error", why). Subprocess, bounded."""
+    try:
+        r = subprocess.run(["gh", "pr", "view", str(pr), "--repo", repo,
+                            "--json", "state,statusCheckRollup"],
+                           capture_output=True, text=True, timeout=25)
+        if r.returncode != 0:
+            return "error", (r.stderr or r.stdout or "gh failed").strip()[:200]
+        return _pr_watch_verdict(json.loads(r.stdout or "{}"))
+    except Exception as e:
+        return "error", str(e)[:200]
+
+
+def _pr_watch_deliver(sid, text):
+    """The landing mail, through the same park-aware injection /send uses (a rate-limited or
+    compacting session gets it when it can take it). Best-effort by design: a dead session's mail
+    has no recipient, and the watch is already done."""
+    try:
+        _send_or_park(Sessions.backend_for(sid), sid, text)
+        return True
+    except Exception:
+        return False
+
+
+def _pr_watch_tick(now):
+    """One supervisor-pass sweep over the registered watches (rate-gated per row)."""
+    with _pr_watch_lock:
+        rows = list(_pr_watches)
+    done = []
+    for r in rows:
+        if now < r.get("_next", 0):
+            continue
+        verdict, detail = _pr_watch_read(r["pr"], r["repo"])
+        if verdict == "error":
+            r["_fails"] = int(r.get("_fails") or 0) + 1
+            r["_next"] = now + PR_WATCH_EVERY
+            if r["_fails"] >= PR_WATCH_MAX_FAILS:
+                _pr_watch_deliver(r["sid"], _pr_watch_notice("error", r["repo"], r["pr"], detail))
+                done.append(r)
+            continue
+        r["_fails"] = 0
+        if verdict is None:
+            r["_next"] = now + (PR_WATCH_BUSY_EVERY if detail == "busy" else PR_WATCH_EVERY)
+            continue
+        _pr_watch_deliver(r["sid"], _pr_watch_notice(verdict, r["repo"], r["pr"], detail))
+        done.append(r)
+    if done:
+        with _pr_watch_lock:
+            for r in done:
+                if r in _pr_watches:
+                    _pr_watches.remove(r)
+        _pr_watches_save()
+
+
 def _fleet_usage():
     """One row per HOST whose usage is known — local always first (the notices read off it), each row
     {host, acct, usage}.
@@ -11290,6 +11446,7 @@ def _tunnel_supervisor():
                 # tier too — their mail arrives relayed through a hub and is judged by true origin.
                 # Once per (host, level); a failed push retries next pass.
                 _push_origin_trust_rows()
+            _pr_watch_tick(now)          # PR-landing watches (rate-gated per row; loud on gh failure)
             # Everything above is the supervisor's own state (status, fails, next_try, kernel_sha, detail).
             # None of it used to reach disk — only the act routes saved — so the file could sit frozen on a
             # failure long after the row recovered. Signature-gated: a steady fleet writes nothing.
@@ -27700,6 +27857,33 @@ class Handler(BaseHTTPRequestHandler):
                 _mark_views_dirty()
                 return self._send(200, json.dumps({"ok": True, "id": tsid, "bg": bg,
                                                    "fg": pal.fg_for(bg)}), "application/json")
+            if u.path == "/watch-pr":
+                # Register a PR-landing watch (the user 2026-08-24, both teams' surveys): one [romp]
+                # mail to the registering session when the PR reaches a terminal state — MERGED,
+                # CLOSED, or a failed check — with the watch owned by the KERNEL, so it survives the
+                # restarts that killed every shell loop it replaces. Body: {"pr": <n>,
+                # "repo": "owner/name", "id"|"name": <session>}. Repo is explicit here (the CLI
+                # infers it from the caller's checkout); the session resolves like /send's.
+                try:
+                    b = json.loads(raw_body or b"{}")
+                except Exception:
+                    b = {}
+                try:
+                    prn = int(b.get("pr"))
+                except Exception:
+                    prn = 0
+                repo = str(b.get("repo") or "").strip()
+                who = str(b.get("id") or b.get("name") or "").strip()
+                if prn <= 0 or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) or not who:
+                    return self._send(400, json.dumps({"ok": False, "error":
+                        "pr (number), repo (owner/name) and id|name (the session to mail) required"}),
+                        "application/json")
+                tsid = _sid_of(who)
+                if not tsid:
+                    return self._send(200, json.dumps({"ok": False, "error":
+                        'no session answers to "%s"' % who}), "application/json")
+                row = add_pr_watch(prn, repo, tsid)
+                return self._send(200, json.dumps({"ok": True, "watch": row}), "application/json")
             if u.path in ("/tag", "/group"):
                 # Headless tag edit (`romp tag`, the user 2026-08-23, the manager/worker workflow:
                 # the worker roster IS a session tag, so an agent needs to keep one current — and can
@@ -29206,6 +29390,7 @@ def main():
     threading.Thread(target=_parent_watch, daemon=True).start()
     _known_load()                                              # remembered past hosts (popover's re-attach rows)
     _remotes_load()                                            # re-attach remote kernels from a prior run
+    _pr_watches_load()                                         # re-arm PR-landing watches (same intent rule)
     _consume_update_report()                                   # last self-update's outcome → the Log, once
     threading.Thread(target=_update_check_loop, daemon=True).start()   # newer release? boot + every 6h (mode-gated inside)
     threading.Thread(target=_ensure_postal_bus, daemon=True).start()   # a sessionless machine still needs its bus
