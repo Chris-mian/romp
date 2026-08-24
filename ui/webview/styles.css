@@ -2608,8 +2608,10 @@ mark.cmt-hl.busy {
 }
 mark.cmt-hl.hl-first { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
 mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
-
-}
+/* (an unmatched stray `}` sat here from 7f0c9b8c's block removal, 2026-08-23→24: Chromium's error
+   recovery EATS the rule that follows one, which silently killed the combined code/katex busy rule
+   below — math never greened while prose did (the user 2026-08-24, screenshot). A brace-balance
+   test guards the whole class now.) */
 /* a code/math HOST whose mark is mid-reply greens the same way — its element tint would otherwise
    stay full-strength yellow and hide the writing state */
 .md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy),

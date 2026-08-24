@@ -44,7 +44,7 @@ import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 import { apiErrorReason } from "./api-error-reason";
 import { mathBlock, mathInline } from "./math";
-import { threadInFlight, threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, type CommentThread } from "./comments";
+import { threadInFlight, latchBusy, type BusyLatch, threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, type CommentThread } from "./comments";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -5732,10 +5732,16 @@ function showForkPrompt(sid: string, uuid: string): void {
 // re-render (the transcript rebuilds constantly) reapplies it — the openFolds pattern.
 const commentThreads = new Map<string, CommentThread[]>();          // parent sid → last frame's threads
 const commentPending = new Map<string, { text: string; t: number }[]>(); // tid → optimistic sends
-// the one busy answer for the mark + rail tick: the pure predicate, plus this pane's own optimistic
-// sends (a reply just typed, frame echo still in flight) — see comments.ts replyOwed for the why
-const commentInFlight = (th: CommentThread): boolean =>
-  threadInFlight(th) || (th.status === "open" && !!(commentPending.get(th.tid) || []).length);
+// the one busy answer for the mark + rail tick: the LIVE reading (the pure predicate plus this
+// pane's own optimistic sends) OR the settle latch — a turn boundary inside a continuing thread can
+// read settled for one push, and the green must not blip yellow on it (the user 2026-08-24, second
+// report; comments.ts latchBusy has the rule). The latch advances once per comments FRAME (the
+// event); the live OR keeps optimistic sends instant between frames.
+const commentBusyLatch = new Map<string, BusyLatch>();
+const commentInFlight = (th: CommentThread): boolean => {
+  const raw = threadInFlight(th) || (th.status === "open" && !!(commentPending.get(th.tid) || []).length);
+  return raw || !!commentBusyLatch.get(th.tid)?.green;
+};
 const commentDrafts = new Map<string, string>();                    // draft key → unsent popover text
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
 let pendingCommentAnchor: { sid: string; uuid: string; exact: string;
@@ -10656,6 +10662,9 @@ window.addEventListener("message", (e: MessageEvent) => {
     const sid = String(m.id);
     const threads = (m.threads || []) as CommentThread[];
     commentThreads.set(sid, threads);
+    // the settle latch steps ONCE per frame — the deciding events are pushes (see comments.ts)
+    for (const t of threads) commentBusyLatch.set(t.tid, latchBusy(commentBusyLatch.get(t.tid), t, !!(commentPending.get(t.tid) || []).length));
+    for (const k of Array.from(commentBusyLatch.keys())) if (!threads.some((t) => t.tid === k)) commentBusyLatch.delete(k);
     const live = new Set(threads.filter((t) => t.status !== "promoted").map((t) => t.tid));
     for (const k of Array.from(commentPending.keys())) if (!live.has(k)) commentPending.delete(k);
     for (const k of Array.from(commentDrafts.keys())) if (!k.startsWith("new:") && !live.has(k)) commentDrafts.delete(k);

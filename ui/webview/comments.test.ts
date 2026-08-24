@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { threadsByAnchor, threadBusy, threadStuck, threadInFlight, replyOwed, findExact, findAnchorRange, sliceRanges, prunePending,
+import { threadsByAnchor, threadBusy, threadStuck, threadInFlight, replyOwed, latchBusy, type BusyLatch, SETTLE_CONFIRM_PUSHES, findExact, findAnchorRange, sliceRanges, prunePending,
          type CommentThread } from "./comments";
 
 const th = (over: Partial<CommentThread>): CommentThread => ({
@@ -481,4 +481,36 @@ test("the mark stays green from send to landed reply, through the CLI-boot state
   assert.ok(!threadInFlight(th({ state: "", msgs: [msg("you")], error: "spawn failed" } as any)), "errored: the note speaks, not the green");
   assert.ok(!threadInFlight(th({ state: "", msgs: [msg("you")], status: "resolved" })), "resolved threads are done");
   assert.equal(replyOwed(th({ msgs: [] })), false, "an empty thread owes nothing");
+});
+
+// ── the SETTLE LATCH (the user 2026-08-24, third report: green → a ~1s YELLOW blip mid-churn →
+// green → correct settle). At a turn boundary inside a continuing thread one push reads
+// quiet-state + agent-tail — frame-locally identical to the true end — so the green now holds until
+// TWO consecutive pushes confirm the settle (pushes are events; the pendingSessionViews idiom).
+// The user's exact sequence, executed: the state changes at most ONCE across it. ────────────────
+test("the mark never blips: the user's churn sequence yields exactly one green→yellow transition", () => {
+  const msg = (who: "you" | "agent") => ({ who, text: "x", t: 1 });
+  const frames = [
+    th({ state: "working", msgs: [msg("you")] }),                    // churn
+    th({ state: "", msgs: [msg("you"), msg("agent")] }),             // the boundary frame that blipped
+    th({ state: "working", msgs: [msg("you"), msg("agent")] }),      // churn resumes
+    th({ state: "", msgs: [msg("you"), msg("agent")] }),             // quiet 1
+    th({ state: "", msgs: [msg("you"), msg("agent")] }),             // quiet 2 → settle
+  ];
+  let l: BusyLatch | undefined;
+  const seen: boolean[] = [];
+  for (const f of frames) { l = latchBusy(l, f); seen.push(l.green); }
+  assert.deepEqual(seen, [true, true, true, true, false], "green held through the boundary, settled on confirmation");
+  assert.equal(seen.filter((s, i) => i && s !== seen[i - 1]).length, 1, "at most one change per deciding event");
+  assert.equal(SETTLE_CONFIRM_PUSHES, 2, "two consecutive confirming pushes decide the settle");
+});
+
+test("status flips decide IMMEDIATELY — resolve/merge/error never wait out the confirmation window", () => {
+  const msg = (who: "you" | "agent") => ({ who, text: "x", t: 1 });
+  let l = latchBusy(undefined, th({ state: "working", msgs: [msg("you")] }));
+  assert.equal(l.green, true);
+  assert.equal(latchBusy(l, th({ state: "working", msgs: [msg("you")], status: "resolved" })).green, false, "resolved drops the green on ITS event");
+  assert.equal(latchBusy(l, th({ state: "", msgs: [msg("you")], error: "spawn failed" } as any)).green, false, "an errored thread is never green");
+  // an optimistic pending send (alsoBusy) arms the latch like any busy reading
+  assert.equal(latchBusy(undefined, th({ state: "", msgs: [] }), true).green, true, "a just-typed reply reads busy immediately");
 });
