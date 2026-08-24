@@ -510,6 +510,17 @@ window.addEventListener("storage", (e) => {
 });
 // names of sessions currently WORKING → a working dot before that name everywhere
 // it renders (card titles, modal title, group name). Pushed in each feed message.
+// INSTANT chat acknowledgment for a card click (the user 2026-08-24: clicking into a not-shown
+// session felt slow): the felt latency is the kernel ROUND-TRIP — click → WS → _reveal_chat_for →
+// focus frame — and a busy kernel holds its WS handler behind push builds, while the chat already
+// HOLDS every session's data (measured: the chat's own first render of a 6000-event hidden
+// transcript is ~25ms). So the click also drops a same-origin echo the chat hears in milliseconds
+// (the storage event; the romp:color-echo precedent), activating the tab/peek and the loader
+// immediately; the kernel's focus frame follows and lands the anchor idempotently. VS Code webviews
+// don't share localStorage — there the kernel path stands alone, unchanged.
+function focusEcho(sid: string): void {
+  try { localStorage.setItem("romp:focus-echo", JSON.stringify({ sid, t: Date.now() })); } catch { /* storage blocked */ }
+}
 let workingSet = new Set<string>();
 // This machine's own name (kernel _self_host, on every feed payload) and the identity colour of every
 // session the feed knows, keyed "host:name" for a remote one and plain for a local one. Held mail names
@@ -1102,7 +1113,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   if (titleAnchor === "prompt" && !titleUuid && cardAnchorUuid) { titleAnchor = "work"; titleUuid = cardAnchorUuid; }
   // A PROVISIONAL placeholder has no goal node / timeline anchor — clicking anywhere just opens the live
   // session (go see what it's working on); the modal, timeline deep-link, and path-hover are all skipped.
-  title.onclick = (ev) => { ev.stopPropagation(); if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
+  title.onclick = (ev) => { ev.stopPropagation(); if (it.provisional) { openOrReviveSession(it.sid, it.live, it.name); return; } focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: titleAnchor, anchorUuid: titleUuid }); };
   // (The auto-line is plain text now — no deep-link — so no onclick here; its hover tooltip = the planner's
   // why, set in updateAskCard. The inline sub-goal checkmarks remain clickable via wireNodeZones.)
   name.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(it.sid, it.live, it.name); };
@@ -1835,7 +1846,7 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   if (distillShown && it.summaryAnchorUuid) {
     dl.classList.add("fask-distill-link");
     dl.title = "jump to where this was written";
-    dl.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: it.summaryAnchorUuid }); };
+    dl.onclick = (ev: Event) => { ev.stopPropagation(); focusEcho(it.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: it.itemId, sid: it.sid, t: it.t, anchor: "work", anchorUuid: it.summaryAnchorUuid }); };
   } else if (distillShown) {
     // No anchor recorded (a card minted from a postal delegate, a completion turn not yet landed) — the
     // line must still ACKNOWLEDGE the click instead of rendering as silently dead text (the user
@@ -2505,13 +2516,13 @@ function wireNodeZones(it: AskItem, node: AskTreeNode, mark: HTMLElement, txt: H
   // anchorUuid can arrive null for a beat (the kernel's cache-only parse goes cold on every transcript
   // write); fall to the stored promptAnchorUuid rather than dispatch a null the chat can only toast on
   // (the user 2026-07-20: three dead clicks on a blocked sub's ⏸ mark in one cold beat).
-  const goWork = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? node.promptAnchorUuid ?? null }); };
+  const goWork = (ev: Event) => { ev.stopPropagation(); focusEcho(navSid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: resolveT, anchor: "work", anchorUuid: node.anchorUuid ?? node.promptAnchorUuid ?? null }); };
   // prompt-intent: jump to the minting user message. But a node with no opener (an autonomous note, or an
   // opener compacted off-path) has no promptAnchorUuid, so the jump would honest-fail with "couldn't locate".
   // Fall back to goWork — where the work actually happened — rather than toast (the user 2026-06-30).
   const goMsg = (ev: Event) => {
     if (!node.promptAnchorUuid && node.anchorUuid) { goWork(ev); return; }
-    ev.stopPropagation(); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: node.promptAnchorUuid ?? null });
+    ev.stopPropagation(); focusEcho(navSid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: navId, sid: navSid, t: node.t, anchor: "prompt", anchorUuid: node.promptAnchorUuid ?? null });
   };
   if (!wire) return goWork;
   // tooltip names the destination by status: a blocked node was "marked blocked", a done node "checked off"
@@ -2755,6 +2766,7 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
         row.title = "jump to this moment in the chat";
         row.onclick = (ev) => {
           ev.stopPropagation();
+          focusEcho(navSidOf(it, node));
           vscodeApi?.postMessage({ type: "showOnTimeline", itemId: node.id, sid: navSidOf(it, node),
                                    t: r.evT || rt, anchor: "work", anchorUuid: r.anchorUuid ?? null });
         };
@@ -2972,7 +2984,7 @@ function renderModal() {
     titleHoverId = grp.turnId;
     const gm0 = grp.members[0];   // prompt-intent title → the first member's MINTING message (resolves by id, kernel 92e23ff)
     const gm0Prompt = gm0.tree?.find((n) => n.id === gm0.itemId)?.promptAnchorUuid ?? null;
-    ttlEl.onclick = () => vscodeApi?.postMessage({ type: "showOnTimeline", itemId: gm0.itemId, sid: grp.sid, t: grp.t, anchor: "prompt", anchorUuid: gm0Prompt });
+    ttlEl.onclick = () => focusEcho(grp.sid); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: gm0.itemId, sid: grp.sid, t: grp.t, anchor: "prompt", anchorUuid: gm0Prompt });
     agent.replaceChildren(...hostNameNodes(grp.name, grp.sid)); if (grp.color) agent.style.color = grp.color.bg; setWorkDot(agent, dotFor(grp.name)); agent.classList.toggle("dead", !grp.live);
     agent.onclick = () => vscodeApi?.postMessage({ type: "openSession", id: grp.sid });
     ageEl.textContent = relAge(hostNow - grp.t);

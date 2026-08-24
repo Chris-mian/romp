@@ -385,7 +385,18 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .empty-state { color: var(--dim); text-align: center; padding: 40px; }
 /* brief hint while a first-visited tab's transcript builds on the next frame (the deferred build keeps the
    switch itself instant — the user 2026-06-17); the build replaces it. */
-.tx-loading { color: var(--dim); text-align: center; padding: 28px; font-size: 0.9em; }
+.tx-loading { color: var(--dim); text-align: center; padding: 28px; font-size: 0.9em;
+  display: flex; align-items: center; justify-content: center; gap: 8px; }
+/* the standing romp loader treatment (swirl reverse-spin + wordmark + pulsing accent dots) for the
+   first-visit transcript build — the boot splash / pane loader language, never a bare text hint */
+.tx-loading-swirl { width: 18px; height: 18px; animation: tx-swirl-spin 1.6s linear infinite reverse; }
+.tx-loading-wordmark { font-weight: 650; color: var(--fg); }
+.tx-loading-dots i { display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); margin-left: 4px; animation: tx-dot-pulse 1.2s ease-in-out infinite; }
+.tx-loading-dots i:nth-child(2) { animation-delay: 0.2s; }
+.tx-loading-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes tx-swirl-spin { to { transform: rotate(-360deg); } }
+@keyframes tx-dot-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 /* a genuinely empty transcript (a session with no turns yet) — shown instead of "Loading transcript…",
    which would be a lie since the full events payload already arrived (the user 2026-06-19). */
 .tx-empty { color: var(--dim); text-align: center; padding: 28px; font-size: 0.9em; }
