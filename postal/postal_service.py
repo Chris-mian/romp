@@ -499,8 +499,15 @@ def format_receipts(recs):
             st = "recalled %s" % _hhmm_epoch(r["recalled"])
         elif r.get("bounced"):
             st = "bounced %s — undeliverable, returned to you" % _hhmm_epoch(r["bounced"])
-        elif r.get("parked"):                  # cross-host, link down: waiting in the outbox
-            st = "parked for %s (unreachable) · id %s" % (r["parked"], r.get("id", "?"))
+        elif r.get("parked"):                  # cross-host, still in the outbox awaiting relay
+            # "(unreachable)" ONLY when the link is actually down (the user 2026-08-24): a healthy
+            # queue is normal transit, not a failure. An older bus omits parkedUp — claim nothing.
+            if r.get("parkedUp"):
+                st = "queued for relay to %s · id %s" % (r["parked"], r.get("id", "?"))
+            elif "parkedUp" in r:
+                st = "parked for %s (unreachable) — delivers on reconnect · id %s" % (r["parked"], r.get("id", "?"))
+            else:
+                st = "parked for %s · id %s" % (r["parked"], r.get("id", "?"))
         elif r.get("relayed"):                 # landed on the peer host; its read receipt hasn't come back
             st = "delivered %s (not read yet) · id %s" % (_hhmm_epoch(r["relayed"]), r.get("id", "?"))
         else:                                  # still unread -> recallable; show the id to target it
@@ -859,10 +866,20 @@ def _sent_receipts(mid):
                 return h
         return None
 
-    out = [{"to": e.get("toName") or _name_for_id(e.get("to_id", "")), "id": i, "sent": e["t"],
-            "exec": execs.get(i), "recalled": recalls.get(i),
-            "relayed": relays.get(i), "bounced": bounced.get(i), "parked": _parked(i, e)}
-           for i, e in sent.items()]
+    def _row(i, e):
+        h = _parked(i, e)
+        r = {"to": e.get("toName") or _name_for_id(e.get("to_id", "")), "id": i, "sent": e["t"],
+             "exec": execs.get(i), "recalled": recalls.get(i),
+             "relayed": relays.get(i), "bounced": bounced.get(i), "parked": h}
+        if h:
+            # the LINK state rides along (the user 2026-08-24): outbox residency alone is not
+            # unreachability — a message queued ahead of the next exchange on a healthy link is
+            # just in transit, and labeling it "(unreachable)" cried wolf on every normal relay.
+            # PEERS is the authoritative dial state the send path already branches on.
+            r["parkedUp"] = bool((PEERS.get(h) or {}).get("up"))
+        return r
+
+    out = [_row(i, e) for i, e in sent.items()]
     return sorted(out, key=lambda r: r["sent"])
 
 def _drain(sid):

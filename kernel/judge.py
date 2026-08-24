@@ -3822,8 +3822,17 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             # path and _mark_nudge_failed's own escape, so recording it suppresses the false interrupt
             # through machinery that already exists. Lifted by the closer's next audit of the goal.
             t = _target(o)
+            k = o.get("kind")
+            if k == "peer" and t and not _open_peer_asks(nodes[t]["id"].rsplit(":", 1)[0]):
+                # the peer-kind write gate (the user 2026-08-24, same rule as apply_close): no open
+                # sent-question, no peer wait. DEMOTED to kindless rather than dropped — this op's
+                # whole job is marking "progressing, nothing owed to the user" so the nudge-failed
+                # path does not convert silence into a false needs-you block; the why survives, the
+                # false "peer" classification does not (a kindless stamp retires on the legacy
+                # any-answer supersede and the closer's next lift).
+                k = None
             if t and record_verdict(store, nodes[t], "planner", "awaiting", seg_t, why=o["why"], seg=seg_id,
-                                    await_kind=o.get("kind")):
+                                    await_kind=k):
                 touched = t                           # mt deliberately NOT bumped: an annotation, not work
         elif do == "extend":
             # A queued-fragment landing (the opener's sibling <note>, the user 2026-07-11): this message
@@ -4447,9 +4456,11 @@ def plan_llm(segment_text, menu_text, model=None, effort=None, human=False, nudg
                  "done/block; and in that case say so explicitly with **awaiting** on #1, the why naming what "
                  "it is waiting on or working through (a long run, a watcher it armed, a background task, a "
                  "step still in progress), plus a \"kind\" naming what the wait is on when one fits — exactly "
-                 "one of \"agents\" (agents it dispatched), \"task\" (a background command or watcher), "
-                 "\"job\" (a computation outside the session: a cluster/CI job, a build), \"peer\" (another "
-                 "session), \"timer\" (a check-back it scheduled); omit kind if none fits. "
+                 "one of \"agents\" (agents it dispatched — a peer session is never an agent), "
+                 "\"task\" (a background command or watcher), "
+                 "\"job\" (a computation outside the session: a cluster/CI job, a build), \"peer\" (a question it "
+                 "sent another session, answer still outstanding), \"timer\" (a check-back it "
+                 "scheduled); omit kind if none fits. "
                  "Emit awaiting whenever the reply shows the agent is progressing "
                  "and needs **nothing** from the user — silence is not enough, because an unresolved nudge "
                  "with no verdict is read as needing the user's direction. When the nudge enumerated the goal's unfinished pieces and the reply reports on "
@@ -7972,8 +7983,10 @@ CLOSER_SYS = (
     "by the user), **not** done, even though the phase itself got completed. The mirror image is NOT "
     "blocked: work handed to another session or process that will report back on its own (\"launched "
     "with kickoff instructions and will present results\", \"engage it when ready\") owes the user "
-    "nothing yet — that is awaiting (kind \"peer\" or \"job\"), never blocked; filing it blocked "
-    "parks a card on the user for a wait only the other side can end.\n"
+    "nothing yet — never blocked: an external process still running is awaiting (kind \"job\"); "
+    "work a peer session now owns is the peer's own (omit it — the handoff is tracked on its own); "
+    "\"peer\" is only for a question this session sent and still needs answered. Filing these "
+    "blocked parks a card on the user for a wait only the other side can end.\n"
     "- otherwise omit it, and it stays working. When in doubt, omit.\n"
     "Steps-finished rule: a note under the goal list may flag goals whose every recorded step is "
     "finished. Judge each flagged goal from its goal history rather than this turn alone: done only if "
@@ -7989,7 +8002,9 @@ CLOSER_SYS = (
     "because it is old or quiet: the ruling needs the covering work, named.\n"
     "- awaiting: the turn **ends** with the goal waiting on something the assistant itself set running "
     "asynchronously and plans to act on when it completes: a background task or agent it launched, a "
-    "long job or CI run it kicked off, a check-back it scheduled, work it handed to a peer session. "
+    "long job or CI run it kicked off, a check-back it scheduled, a question it sent a peer session "
+    "and still needs answered. Work handed OFF to a peer is the peer's own — ownership transferred, "
+    "not a wait; omit it. "
     "The turn must show **both** halves: the async work in flight (dispatched this turn, or re-checked "
     "and found still running) and the stated or clear intent to take action again when its result "
     "arrives. Waiting on the user is blocked, never awaiting. Async work whose result already came "
@@ -8012,9 +8027,12 @@ CLOSER_SYS = (
     "e.g. \"Approve the staged commit? Nothing is committed yet.\" For awaiting, why is one short line "
     "naming what it waits on and what happens when that lands, e.g. \"a fleet-wide test run it "
     "launched; merges when green\", and kind names WHAT it waits on, exactly one of: \"agents\" (agents "
-    "or subagents it dispatched), \"task\" (a background command or watcher it started), \"job\" (a "
+    "or subagents it dispatched in-harness — a peer SESSION is never an agent, see \"peer\"), "
+    "\"task\" (a background command or watcher it started), \"job\" (a "
     "computation outside this session — a cluster/CI job, a build, a long run on another machine), "
-    "\"peer\" (another session it handed work to or asked), \"timer\" (a check-back it scheduled). "
+    "\"peer\" (another session whose ANSWER it awaits: a question this session itself sent, not yet "
+    "answered — work handed OFF is ownership transferred, not a wait, and reporting results to a "
+    "peer waits on nothing), \"timer\" (a check-back it scheduled). "
     "All lists may be empty: "
     "{\"done\": [], \"block\": [], \"awaiting\": []}.\n"
     "Write each \"why\" plainly, from the user's vantage: only what they need to know, not a "
@@ -8032,6 +8050,63 @@ CLOSER_SYS = (
 # The judge files one per awaiting verdict; a stamp without one (older judges, legacy stores) is
 # kindless and behaves exactly as before the enum existed.
 AWAIT_KINDS = ("agents", "task", "job", "peer", "timer")
+
+# The PEER-kind write gate's evidence (the user 2026-08-24, after three reports of idle sessions
+# reading "awaiting a peer"): a kind=peer stamp requires an un-answered kind=question THIS session
+# itself sent — the wait-map's post-2026-08-15 semantics (a DELEGATE transfers ownership and a
+# COORDINATE requests nothing, so neither is a dependency), which the judge writers used to widen.
+# This mirrors the kernel's _postal_wait_maps read of the SAME authoritative log (messages.jsonl),
+# cross-host alias re-key included; tests pin the two readers against one fixture so they cannot
+# drift. Reply detection is any-kind (a coordinate answers a question), matching the wait graph's
+# edge-drop. Dead peers are NOT excluded: the gate asks "does an open ask exist", and a dead peer's
+# wait is the dead-wait sweep's business, not a reason to refuse the stamp.
+_PEER_ASK_RE = re.compile(r"^\s*(?:QUESTION|ASK|Q)\b", re.I)   # legacy pre-`kind` rows only
+_PEER_ASK_CACHE = [None, ({}, {})]   # (mtime_ns, size) , (last_any, last_ask) — one scan per log change
+
+
+def _postal_ask_maps():
+    try:
+        st = MESSAGES.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}, {}
+    if _PEER_ASK_CACHE[0] == key:
+        return _PEER_ASK_CACHE[1]
+    last_any, last_ask, rows, alias = {}, {}, [], {}
+    try:
+        for line in MESSAGES.read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            rows.append(o)
+            if o.get("from_host") and o.get("from") and o.get("from_id"):
+                alias[str(o["from_host"]) + ":" + str(o["from"])] = str(o["from_id"])
+        for o in rows:
+            f, t_, ts = o.get("from_id"), o.get("to_id"), o.get("t")
+            if not (f and t_ and ts):
+                continue
+            if isinstance(t_, str) and t_.startswith("peer:") and o.get("toName"):
+                t_ = alias.get(str(o["toName"]), "peer:" + str(o["toName"]))
+            ts = int(ts)
+            last_any[(f, t_)] = max(last_any.get((f, t_), 0), ts)
+            k = o.get("kind")
+            is_ask = (k == "question") if k else bool(_PEER_ASK_RE.match(o.get("body") or ""))
+            if is_ask and ts >= last_ask.get((f, t_), 0):
+                last_ask[(f, t_)] = ts
+    except OSError:
+        pass
+    _PEER_ASK_CACHE[:] = [key, (last_any, last_ask)]
+    return last_any, last_ask
+
+
+def _open_peer_asks(sid):
+    """True iff `sid` itself sent a kind=question no reply of any kind has come back for."""
+    last_any, last_ask = _postal_ask_maps()
+    for (f, peer), ts in last_ask.items():
+        if f == sid and last_any.get((peer, f), 0) < ts:
+            return True
+    return False
 
 
 def _parse_close(raw, menu_len):
@@ -8422,6 +8497,16 @@ def apply_close(store, menu, verdicts, t=None, touched=None, t_overrides=None):
         elif i in awaiting:
             aw_why = (awaiting[i] or {}).get("why") or None
             aw_kind = (awaiting[i] or {}).get("kind")
+            if aw_kind == "peer" and not _open_peer_asks(nd["id"].rsplit(":", 1)[0]):
+                # the peer-kind write gate (the user 2026-08-24): awaiting-a-peer requires an
+                # outstanding kind=question this session ITSELF sent. A delegate transferred
+                # ownership (the courier handoff graph carries that visibility, with the peer's
+                # completion as its exact ending event); a coordinate/report requests nothing; an
+                # idle recipient is idle. With no open ask there is NO event that could ever end
+                # this wait — the design rule's own tell that it is the wrong trigger — so the
+                # closer's claim stands down at the write moment: nothing is filed, no lift either
+                # (a stand-down is not new information in either direction).
+                continue
             if nd.get("awaitingWhy") != aw_why:
                 # a changed why is a real event → new row, new anchor (as ever)
                 record_verdict(store, nd, "closer", "awaiting", t, why=aw_why, await_kind=aw_kind)
