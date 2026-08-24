@@ -9460,10 +9460,11 @@ def mint_fallback_card(sid, from_model, to_model, ev_t=None):
         store["seq"] = n
         gid = "%s:g%d" % (sid, n)
         t = int(ev_t or time.time())
-        why = ("The model was swapped mid-turn without a request: %s fell back to %s. Work continued "
-               "on the fallback; switch back from the statusline if that isn't what you want."
+        why = ("The model changed mid-turn without a request: %s fell back to %s — an API-side "
+               "capacity fallback, not a pick. Work continued on the fallback; switch back from the "
+               "statusline if that isn't what you want."
                % (from_model or "the pinned model", to_model))
-        nd = GuardedNode({"id": gid, "text": "Model fallback: %s → %s" % (from_model or "?", to_model),
+        nd = GuardedNode({"id": gid, "text": "Model changed automatically: %s → %s" % (from_model or "?", to_model),
                           "parentId": None, "nodeComplete": False, "blocked": False, "cleared": False,
                           "trail": [], "promptUuid": "", "quote": "", "t": t, "mt": t,
                           "why": "kernel-observed API model fallback", "log": []})

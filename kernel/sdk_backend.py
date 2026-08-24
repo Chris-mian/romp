@@ -1291,6 +1291,29 @@ class _AskCancelled(Exception):
     pass
 
 
+
+_MODEL_TIERS = ("haiku", "sonnet", "opus", "fable", "mythos")   # rank = index; fable/mythos share the top in
+#                                                                 practice but a swap between them is lateral,
+#                                                                 not a fallback, so distinct ranks are fine
+
+
+def _model_rank(name):
+    """The model FAMILY rank of a model id/display name, or None when no family matches — substring
+    match, so 'claude-sonnet-5', 'Sonnet 5' and 'us.anthropic.claude-sonnet-…' all rank the same."""
+    low = str(name or "").lower()
+    for i, fam in enumerate(_MODEL_TIERS):
+        if fam in low:
+            return i
+    return None
+
+
+def _model_downgrade(frm, to):
+    """True only for a KNOWN down-tier transition — the shape of an API capacity fallback. Unknown
+    names never qualify: a mint on a user's own exotic pick is worse than a missed exotic fallback."""
+    a, b = _model_rank(frm), _model_rank(to)
+    return a is not None and b is not None and b < a
+
+
 class SdkSession:
     """One long-lived SDK client running in its own thread + asyncio loop."""
 
@@ -2196,10 +2219,16 @@ class SdkSession:
             if cleared:
                 self.backend._poke()
             return
-        if self.model and not self._model_pending and not cleared:
-            # A model TRANSITION nobody asked for (no /model pick pending): the API fell back
+        if self.model and not self._model_pending and not cleared \
+                and _model_downgrade(self.model, pm):
+            # A DOWN-TIER transition nobody asked for (no /model pick pending): the API fell back
             # mid-turn. Surface it as a completed card via the kernel-wired hook (the user
-            # 2026-08-23) — never silently (the swap was invisible before this).
+            # 2026-08-23) — never silently (the swap was invisible before this). DOWNGRADES ONLY
+            # (the user 2026-08-23, from a card reading "fallback" on their own upgrade): romp only
+            # sees ITS OWN picks pending — a /model typed inside the CLI, or any user-side switch,
+            # arrives here as an unrequested transition too, and a capacity fallback never moves a
+            # session UP-tier. An up-tier, lateral, or unknown-name change is treated as the user's
+            # doing and just updates the badge, exactly as before the card existed.
             fb = getattr(type(self.backend), "on_model_fallback", None)
             if fb:
                 try:

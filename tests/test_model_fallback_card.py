@@ -33,7 +33,7 @@ class FallbackCard(unittest.TestCase):
         nd = store["nodes"][gid]
         self.assertTrue(nd["nodeComplete"])
         self.assertIn("fell back to claude-sonnet-5", nd["doneWhy"])
-        self.assertIn("Model fallback: claude-fable-5 → claude-sonnet-5", nd["text"])
+        self.assertIn("Model changed automatically: claude-fable-5 → claude-sonnet-5", nd["text"])
         self.assertEqual(store["status"].get(gid), "completed", "pops straight into Completed")
         dones = [e for e in nd["log"] if e.get("kind") == "done"]
         self.assertEqual(len(dones), 1)
@@ -41,11 +41,38 @@ class FallbackCard(unittest.TestCase):
 
     def test_the_backend_transition_gates_are_pinned(self):
         src = open(os.path.join(HERE, "..", "kernel", "sdk_backend.py")).read()
-        self.assertIn("if self.model and not self._model_pending and not cleared:", src,
+        self.assertIn("if self.model and not self._model_pending and not cleared \\", src,
                       "first learns and user-driven picks never mint")
         self.assertIn('on_model_fallback', src)
         ksrc = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn("jd.mint_fallback_card(sid, frm, to)", ksrc, "the kernel wires the hook at boot")
+
+
+class DowngradeOnlyGate(unittest.TestCase):
+    """The card mints ONLY on a known down-tier transition (the user 2026-08-23, whose own upgrade
+    to a bigger model wore a "fallback" card): romp only sees its own picks pending, so a /model
+    typed inside the CLI arrives as an unrequested transition too — and a capacity fallback never
+    moves a session up-tier."""
+
+    def test_rank_and_downgrade_shapes(self):
+        # exec just the pure helper block: loading the whole backend pulls the live SDK dependency
+        src = open(os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py")).read()
+        i = src.index("_MODEL_TIERS")
+        j = src.index("\nclass SdkSession", i)
+        sb = type("NS", (), {})
+        ns = {}
+        exec(src[i:j], ns)
+        sb._model_downgrade = staticmethod(ns["_model_downgrade"])
+        self.assertTrue(sb._model_downgrade("claude-fable-5", "claude-sonnet-5"))
+        self.assertTrue(sb._model_downgrade("Opus 5", "claude-haiku-4-5"))
+        self.assertFalse(sb._model_downgrade("claude-opus-5", "claude-fable-5"), "an upgrade is the user's doing")
+        self.assertFalse(sb._model_downgrade("claude-sonnet-5", "claude-sonnet-4-5"), "lateral within a family: no card")
+        self.assertFalse(sb._model_downgrade("claude-opus-5", "some-experimental-model"), "unknown target: no card")
+        self.assertFalse(sb._model_downgrade("", "claude-haiku-4-5"), "unknown source: no card")
+
+    def test_the_learn_path_wires_the_gate(self):
+        src = open(os.path.join(os.path.dirname(HERE), "kernel", "sdk_backend.py")).read()
+        self.assertIn("and _model_downgrade(self.model, pm):", src)
 
 
 if __name__ == "__main__":
