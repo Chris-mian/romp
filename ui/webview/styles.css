@@ -1619,6 +1619,13 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .todo-card-error .todo-head { color: var(--err); }
 .todo-error-msg { color: var(--err); font-size: 0.86em; line-height: 1.4; }
 .todo-item { display: flex; gap: 8px; align-items: baseline; padding: 1px 0; line-height: 1.45; }
+/* the completed bulk's fold (the user 2026-08-24): a quiet row where the finished items live —
+   on-deck stays visible, the bulk is one click away; the box holds the rows when expanded */
+.todo-fold { display: block; background: none; border: none; color: var(--dim); font: inherit;
+  padding: 1px 0; cursor: pointer; text-align: left; }
+.todo-fold:hover { color: var(--fg); }
+.todo-done { display: none; }
+.todo-done.todo-open { display: block; }
 .todo-mark { flex: 0 0 auto; width: 1.1em; text-align: center; font-weight: 700; }
 .todo-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .todo-completed .todo-mark {
@@ -2636,14 +2643,6 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 .cmt-msg.agent > *:first-child { margin-top: 0; }
 .cmt-msg.agent > *:last-child { margin-bottom: 0; }
 .cmt-msg.pending { opacity: 0.55; }
-.cmt-dots { display: flex; gap: 4px; padding: 2px 6px; }
-.cmt-dots span {
-  width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
-  animation: cmt-dot-pulse 1.2s ease-in-out infinite;
-}
-.cmt-dots span:nth-child(2) { animation-delay: 0.2s; }
-.cmt-dots span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes cmt-dot-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 .cmt-note { font-size: 0.92em; opacity: 0.7; padding: 2px 6px; }
 /* the popover's message row mirrors the CHAT composer (the user 2026-08-17): clip left, ➤ right,
    pill input — the attach/send buttons share the chat's own selectors above, so they stay in sync */
