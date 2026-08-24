@@ -112,6 +112,18 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    paints behind EVERY column's cards (true back layer, any direction) yet above the feed background. */
 .feed-cols { display: flex; align-items: flex-start; gap: 12px; position: relative; z-index: 0; }
 .feed-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+/* ONE dragged order, two renderings (the user 2026-08-24): a custom --col-order (set inline by
+   applyColStack once the user drags, either layout) re-sequences the columns HERE too; without it
+   the build order stands (Working → Blocked → Completed). The stacked container query's own rules
+   below override these fallbacks with its Completed-first default — same var, later in the file. */
+.feed-col.col-asks       { order: var(--col-order, 1); }
+.feed-col.col-needsInput { order: var(--col-order, 2); }
+.feed-col.col-completed  { order: var(--col-order, 3); }
+/* the chip drags in BOTH layouts (the user 2026-08-24, reversing the 2026-08-16 stacked-only
+   exclusion): grab cursor as the affordance, the section lifted over its siblings while it follows. */
+.feed-col-head .fcol-chip { cursor: grab; touch-action: none; user-select: none; }
+.feed-col.col-dragging { position: relative; z-index: 5; opacity: 0.9; }
+.feed-col.col-dragging .fcol-chip { cursor: grabbing; }
 .feed-col-head {
   position: sticky; top: -12px; z-index: 3;
   display: flex; align-items: baseline; gap: 7px;
@@ -174,12 +186,12 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   /* stacked, the columns read TOP-DOWN as Completed → Blocked (needs you) → Working by default (the
      user 2026-07-30, moving Completed up from the middle; supersedes the 2026-07-08 Blocked-first
      order): what finished first, then what needs you, then what's still running. DOM order stays
-     Working/Blocked/Completed (unchanged for the side-by-side layout); `order` only re-sequences the
-     stacked case — and a dragged section (feed.ts applyColStack) overrides via --stack-order, so the
-     user's arrangement wins and survives reloads with the rest of the view state. */
-  .feed-col.col-completed  { order: var(--stack-order, 1); }
-  .feed-col.col-needsInput { order: var(--stack-order, 2); }
-  .feed-col.col-asks       { order: var(--stack-order, 3); }
+     Working/Blocked/Completed; these rules override the base layout's fallbacks for the stacked
+     case — and a dragged order (feed.ts applyColStack, EITHER layout since 2026-08-24) overrides
+     both via --col-order, so the user's arrangement wins everywhere and survives reloads. */
+  .feed-col.col-completed  { order: var(--col-order, 1); }
+  .feed-col.col-needsInput { order: var(--col-order, 2); }
+  .feed-col.col-asks       { order: var(--col-order, 3); }
   /* the SAME caret the session headers wear (.feed-sess-fold): same glyphs, same side (right of
      the label), same rendered size — the header's 0.72em is compensated explicitly so the glyph
      paints at the feed's base size instead of shrinking with the label (the user 2026-08-16) */
@@ -187,9 +199,6 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
     background: transparent; border: 0; font: inherit; font-size: 1.389em; font-weight: 400;
     line-height: 1; cursor: pointer; transition: color 0.12s ease; }
   .fcol-fold:hover, .fcol-fold:focus-visible { color: var(--fg); }
-  .feed-col-head .fcol-chip { cursor: grab; touch-action: none; user-select: none; }
-  .feed-col.col-dragging { position: relative; z-index: 5; opacity: 0.9; }   /* lifted over its siblings while it follows the pointer */
-  .feed-col.col-dragging .fcol-chip { cursor: grabbing; }
 }
 
 /* ---------- ask card (the inbox unit): three rows (the user 2026-06-14) ---------- */

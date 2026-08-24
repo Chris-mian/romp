@@ -38,8 +38,8 @@ test("when the feed stacks (narrow), the columns read Completed → Blocked → 
   // re-sequences ONLY the stacked case: done first (moved up from the middle, superseding the 2026-07-08
   // Blocked-first order), then needs-you, then still-running.
   assert.match(CSS, /@container \(max-width: 540px\) or style\(--romp-stack: on\) \{[\s\S]*?\.feed-cols \{ flex-direction: column; align-items: stretch; \}/);
-  assert.match(CSS, /\.feed-col\.col-completed\s+\{ order: var\(--stack-order, 1\); \}/);   // the DEFAULT — a
-  // dragged section overrides via --stack-order (feed-col-fold.test.ts owns that rule)
-  assert.match(CSS, /\.feed-col\.col-needsInput \{ order: var\(--stack-order, 2\); \}/);
-  assert.match(CSS, /\.feed-col\.col-asks\s+\{ order: var\(--stack-order, 3\); \}/);
+  assert.match(CSS, /\.feed-col\.col-completed\s+\{ order: var\(--col-order, 1\); \}/);   // the DEFAULT — a
+  // dragged section overrides via --col-order (feed-col-fold.test.ts owns that rule)
+  assert.match(CSS, /\.feed-col\.col-needsInput \{ order: var\(--col-order, 2\); \}/);
+  assert.match(CSS, /\.feed-col\.col-asks\s+\{ order: var\(--col-order, 3\); \}/);
 });

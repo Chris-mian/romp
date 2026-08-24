@@ -1243,10 +1243,13 @@ const cardTreeExpanded = new Set<string>();
 // above are exactly the state worth carrying: what the USER chose to open. Everything else module-level here
 // is a DOM cache or an in-flight optimistic record, and restoring those would resurrect predictions made
 // against a kernel that no longer exists — see feed-view-state.ts.
-// Stacked-layout column state (the user 2026-08-16): which categories are folded to their header, and
-// the dragged top-down order. Layout state, not card state — prune-exempt, persisted with the rest.
+// Column-layout state (the user 2026-08-16; drag extended to BOTH layouts 2026-08-24): which
+// categories are folded to their header, and the dragged column order — ONE order, two renderings
+// (the user thinks of the two layouts as one arrangement): a drag in either layout re-sequences both. Layout
+// state, not card state — prune-exempt, persisted with the rest (the key stays `order`, so an
+// arrangement dragged before the merge survives it).
 const collapsedCols = new Set<string>();
-let stackOrder: string[] = [];                       // [] = the CSS default (Completed, Blocked, Working)
+let colOrder: string[] = [];                         // [] = each layout's own CSS default
 
 (function hydrateViewState() {
   let st;
@@ -1258,7 +1261,7 @@ let stackOrder: string[] = [];                       // [] = the CSS default (Co
   for (const k of st.asks) expandedAsks.add(k);
   for (const k of st.threads) collapsedThreads.add(k);
   for (const k of st.cols) collapsedCols.add(k);
-  stackOrder = st.order.slice();
+  colOrder = st.order.slice();
 })();
 
 function currentViewState(): FeedViewState {
@@ -1266,7 +1269,7 @@ function currentViewState(): FeedViewState {
   secChoice.forEach((v, k) => { sec[k] = v; });
   return { v: 1, sec, tree: [...cardTreeExpanded], nodes: [...collapsedNodes], logs: [...nodeLogOpen],
            asks: [...expandedAsks], threads: [...collapsedThreads], cols: [...collapsedCols],
-           order: stackOrder.slice() };
+           order: colOrder.slice() };
 }
 
 // Written at the END of every render rather than from each toggle handler: the feed re-renders on every
@@ -3576,19 +3579,23 @@ function ensureSessionBox(): HTMLElement {
 // rebuild if torn down (empty state). "Awaiting" (the user's ruling 2026-06-10):
 // matches the session-chip vocabulary — anything here awaits HIM (a question,
 // an action like reload, an idea), red like the awaiting chip.
-const STACK_DEFAULT = ["completed", "needsInput", "asks"];   // the CSS default top-down stacking
+const STACK_DEFAULT = ["completed", "needsInput", "asks"];   // the stacked CSS default, top-down (2026-07-30)
+const ROW_DEFAULT = ["asks", "needsInput", "completed"];     // the side-by-side CSS default — the build order
 
-// Paint the stacked-column state: each section's fold (list hidden, caret pointed) and its top-down
-// slot (a --stack-order var the container query applies — the side-by-side layout ignores it, so a
-// drag in the narrow view never rearranges the wide one). Idempotent; runs at build and per toggle.
+// Paint the column-order state (ONE order, two renderings — the user 2026-08-24): each column's
+// --col-order var feeds BOTH layouts' `order:` rules; with no custom order the var comes OFF, so
+// each layout keeps its own default (stacked: Completed→Blocked→Working, the user 2026-07-30; side
+// by side: Working→Blocked→Completed, the build order). Also each section's fold (stacked-only CSS).
+// Idempotent; runs at build, per toggle, and per drag re-slot.
 function applyColStack(): void {
-  const order = stackOrder.length === 3 ? stackOrder : STACK_DEFAULT;
+  const custom = colOrder.length === 3 ? colOrder : null;
   for (const key of ["asks", "needsInput", "completed"]) {
     const col = document.querySelector<HTMLElement>(".feed-col.col-" + key);
     if (!col) continue;
     const folded = collapsedCols.has(key);
     col.classList.toggle("col-collapsed", folded);
-    col.style.setProperty("--stack-order", String(order.indexOf(key) + 1));
+    if (custom) col.style.setProperty("--col-order", String(custom.indexOf(key) + 1));
+    else col.style.removeProperty("--col-order");
     const fold = col.querySelector<HTMLElement>(".fcol-fold");
     if (fold) {
       fold.textContent = folded ? "▸" : "▾";
@@ -3597,24 +3604,30 @@ function applyColStack(): void {
   }
 }
 
-// Drag a section header by its grip to re-slot the category in the STACK (pointer events, capture on
-// the grip so the drag survives leaving it). Only the stacked layout listens: in the side-by-side
-// layout the grip is display:none. The order updates live while dragging (flex `order` reflows), and
-// the drop persists it.
-// Drag a section by its CATEGORY CHIP (the user 2026-08-16, dropping the earlier grip handle): the
-// grab cursor on the chip is the affordance. While dragging, the grabbed section FOLLOWS the pointer
-// (a transform, so nothing reflows under the hand) and the displaced sections FLIP-animate into their
-// provisional slots — the arrangement you see mid-drag is the arrangement you get. Only the stacked
-// layout listens: side by side the chip keeps its normal cursor and this returns before capturing.
+// Drag a section by its CATEGORY CHIP — in BOTH layouts now (the user 2026-08-24, reversing the
+// 2026-08-16 stacked-only exclusion with their own ask: the columns should drag around in
+// three-column view just as the sections already do stacked): stacked, the drag re-slots the section vertically;
+// side by side, it reorders the three columns horizontally. ONE persisted order feeds both
+// renderings (colOrder). The grab cursor on the chip is the affordance. While dragging, the grabbed
+// section FOLLOWS the pointer along the drag axis (a transform, so nothing reflows under the hand)
+// and the displaced sections FLIP-animate into their provisional slots — the arrangement you see
+// mid-drag is the arrangement you get on drop.
 function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
   chip.addEventListener("pointerdown", (down) => {
     const colsEl = document.getElementById("feed-cols");
-    if (!colsEl || getComputedStyle(colsEl).flexDirection !== "column") return;
+    if (!colsEl) return;
+    const vertical = getComputedStyle(colsEl).flexDirection === "column";   // the drag AXIS, per layout
     down.preventDefault();
     down.stopPropagation();
     chip.setPointerCapture(down.pointerId);
     col.classList.add("col-dragging");
-    const startY = down.clientY;
+    const pos = (ev: PointerEvent) => (vertical ? ev.clientY : ev.clientX);
+    const edge = (r: DOMRect) => (vertical ? r.top : r.left);
+    const midOf = (r: DOMRect) => (vertical ? r.top + r.height / 2 : r.left + r.width / 2);
+    const translate = (d: number) => (vertical ? "translateY(" + d + "px)" : "translateX(" + d + "px)");
+    const fallback = vertical ? STACK_DEFAULT : ROW_DEFAULT;
+    const hadCustom = colOrder.length === 3;   // for the no-trace rule in up()
+    const start = pos(down);
     let slotShift = 0;   // the dragged section's own accumulated slot movement — folded into its
     //                      follow-transform so a re-slot never yanks it out from under the pointer
     const applyOrderFlip = (order: string[]) => {
@@ -3623,38 +3636,37 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
         const e = document.querySelector<HTMLElement>(".feed-col.col-" + k);
         if (e) els.push([k, e]);
       }
-      const before = new Map(els.map(([k, e]) => [k, e.getBoundingClientRect().top]));
-      stackOrder = order;
+      const before = new Map(els.map(([k, e]) => [k, edge(e.getBoundingClientRect())]));
+      colOrder = order;
       applyColStack();
       for (const [k, e] of els) {
-        const d = (before.get(k) || 0) - e.getBoundingClientRect().top;
+        const d = (before.get(k) || 0) - edge(e.getBoundingClientRect());
         if (!d) continue;
         if (k === key) { slotShift -= d; continue; }   // both rects carry the follow-transform, so d is pure slot delta
-        e.animate([{ transform: "translateY(" + d + "px)" }, { transform: "translateY(0)" }],
+        e.animate([{ transform: translate(d) }, { transform: translate(0) }],
                   { duration: 150, easing: "ease" });
       }
     };
     const move = (ev: PointerEvent) => {
-      const order = (stackOrder.length === 3 ? stackOrder : STACK_DEFAULT).slice();
+      const order = (colOrder.length === 3 ? colOrder : fallback).slice();
       const from = order.indexOf(key);
-      // the slot whose vertical midpoint the pointer is past — walk the OTHER two sections' rects
+      // the slot whose axis midpoint the pointer is past — walk the OTHER two sections' rects
       let to = from;
       for (const other of order) {
         if (other === key) continue;
         const oc = document.querySelector<HTMLElement>(".feed-col.col-" + other);
         if (!oc) continue;
-        const r = oc.getBoundingClientRect();
-        const mid = r.top + r.height / 2;
+        const m = midOf(oc.getBoundingClientRect());
         const oi = order.indexOf(other);
-        if (oi < from && ev.clientY < mid) { to = Math.min(to, oi); }
-        if (oi > from && ev.clientY > mid) { to = Math.max(to, oi); }
+        if (oi < from && pos(ev) < m) { to = Math.min(to, oi); }
+        if (oi > from && pos(ev) > m) { to = Math.max(to, oi); }
       }
       if (to !== from) {
         order.splice(from, 1);
         order.splice(to, 0, key);
         applyOrderFlip(order);
       }
-      col.style.transform = "translateY(" + (ev.clientY - startY - slotShift) + "px)";
+      col.style.transform = translate(pos(ev) - start - slotShift);
     };
     const up = () => {
       chip.removeEventListener("pointermove", move);
@@ -3663,11 +3675,18 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string): void {
       // settle: animate from wherever the hand left it into its slot, then drop the transform
       const hang = col.style.transform;
       col.style.transform = "";
-      if (hang && hang !== "translateY(0px)") {
-        col.animate([{ transform: hang }, { transform: "translateY(0)" }],
+      if (hang && hang !== translate(0)) {
+        col.animate([{ transform: hang }, { transform: translate(0) }],
                     { duration: 150, easing: "ease" });
       }
       col.classList.remove("col-dragging");
+      // a drag dropped back where it started leaves NO trace (review 2026-08-24): without a
+      // pre-existing custom order, ending on this layout's own default must not mint an EXPLICIT
+      // order — that would silently re-arrange the OTHER layout, which keeps a different default
+      if (!hadCustom && colOrder.length === 3 && colOrder.join() === fallback.join()) {
+        colOrder = [];
+        applyColStack();
+      }
       persistViewState();
     };
     chip.addEventListener("pointermove", move);
@@ -3687,10 +3706,10 @@ function ensureCols(list: HTMLElement) {
     for (const [key, label, chip] of [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]] as const) {
       const col = el("div", "feed-col col-" + key);
       const head = el("div", "feed-col-head");
-      // stacked-layout furniture (the user 2026-08-16), both hidden in the side-by-side layout by CSS:
-      // a caret LEFT of the chip folds the whole category to its header, and a grip (hover-revealed on
-      // pointer devices, faintly visible on touch) drags the section to a new spot in the stack. These
-      // live on the build-once header, so they are click-safe across the feed's constant re-renders.
+      // header furniture (the user 2026-08-16): a caret LEFT of the chip folds the whole category to
+      // its header (stacked-only, hidden side by side by CSS), and the CHIP ITSELF drags the section
+      // to a new slot — in BOTH layouts since 2026-08-24 (see wireColDrag). These live on the
+      // build-once header, so they are click-safe across the feed's constant re-renders.
       const fold = el("button", "fcol-fold");
       fold.setAttribute("aria-label", "Collapse " + label);
       fold.addEventListener("click", (ev) => {
@@ -4145,7 +4164,18 @@ window.addEventListener("click", (e) => {
 // hover) and Enter calls the element's own click() — so the keyboard can never drift from the mouse.
 const KB_EL_SEL = ".fcard-title.nav,.fask-distill-link,.fname,.fask-apiRetry,.fask-revive,.fdismiss,.fcheck .lz-nav,.fask-delegation";
 function kbCardEls(): HTMLElement[] {
-  return Array.from(document.querySelectorAll<HTMLElement>(".feed-cols .fitem:not(.dismissing)"));
+  // VISUAL order, not DOM order (review 2026-08-24): the columns re-sequence via --col-order — in
+  // both layouts since the drag extended — so the arrow cursor sorts cards by their column's
+  // effective `order` (getComputedStyle resolves the var), DOM order within a column.
+  const els = Array.from(document.querySelectorAll<HTMLElement>(".feed-cols .fitem:not(.dismissing)"));
+  const slot = new Map<HTMLElement, number>();
+  for (const e of els) {
+    const col = e.closest<HTMLElement>(".feed-col");
+    slot.set(e, col ? parseInt(getComputedStyle(col).order || "0", 10) || 0 : 0);
+  }
+  return els.map((e, i) => ({ e, i, s: slot.get(e) || 0 }))
+    .sort((a, b) => a.s - b.s || a.i - b.i)
+    .map((x) => x.e);
 }
 function kbHoverId(el: HTMLElement): string {
   const key = el.dataset.key || "";
