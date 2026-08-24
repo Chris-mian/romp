@@ -82,7 +82,7 @@ test("the scheme applies live as a body class, at startup and on every settings 
   assert.match(UI, /classList\.toggle\("scheme-high-contrast", s\.chatScheme === "high-contrast"\);/);
   assert.match(UI, /classList\.toggle\("scheme-solarized-dark", s\.chatScheme === "solarized-dark"\);/);
   assert.match(UI, /applyChatScheme\(settings\);   \/\/ the persisted pick applies at startup — it survives reloads/);
-  assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\); \}\);/);
+  assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\);/);
 });
 
 test("the gear picker is PREVIEW CARDS: each row painted with its own tiers, current \u2713-marked, click applies", () => {

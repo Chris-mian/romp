@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { threadsByAnchor, threadBusy, threadStuck, threadInFlight, replyOwed, latchBusy, type BusyLatch, SETTLE_CONFIRM_PUSHES, findExact, findAnchorRange, sliceRanges, prunePending,
          type CommentThread } from "./comments";
+import { compactDisplay } from "./compact";
 
 const th = (over: Partial<CommentThread>): CommentThread => ({
   tid: "t1", anchorUuid: "a1", exact: "the passage", status: "open", createdT: 0,
@@ -513,4 +514,38 @@ test("status flips decide IMMEDIATELY — resolve/merge/error never wait out the
   assert.equal(latchBusy(l, th({ state: "", msgs: [msg("you")], error: "spawn failed" } as any)).green, false, "an errored thread is never green");
   // an optimistic pending send (alsoBusy) arms the latch like any busy reading
   assert.equal(latchBusy(undefined, th({ state: "", msgs: [] }), true).green, true, "a just-typed reply reads busy immediately");
+});
+
+// ── LEG C (the user 2026-08-24): the popover ignored the chat's display settings — thinking blocks
+// and raw tool runs rendered regardless of the gear's compact option. The popover now renders the
+// chat's OWN display units. Audit (setting → chat honors → popover before/after): compact/hide-
+// thinking ✓chat / showed→hidden; compact/fold-tools ✓chat / raw cards→folded (shared expand keys);
+// chatScheme ✓both already (body-class CSS, popover in scope); colormap/subgoals/collapsed/grouped
+// (feed), judge toggles (timeline), backend/defaultDir (create), showBranch (statusline), tabCtx
+// (tab strip) — not transcript-rendering settings, N/A both before and after. ───────────────────
+test("the popover renders the chat's display units — thinking hidden, tool runs folded, per the gear", () => {
+  const at = UI.indexOf("renderingIntoThread = true;");
+  const block = UI.slice(at, at + 2200);
+  assert.ok(block.includes("? compactDisplay(evs.map((e) => e.kind), evs.map((e) => e.kind === \"tool\" ? e.name : undefined))"),
+    "the SAME unit builder the chat uses, gated on the SAME settings.compact");
+  assert.ok(block.includes("const key = toolGroupKey(tools[0]);"), "the chat's group identity — expands survive refills");
+  assert.ok(block.includes("list.appendChild(renderToolGroup(tools, prev, key, open));"), "the chat's own folded line");
+  assert.ok(block.includes('child.classList.add("tg-child");'), "expanded children wear the chat's classes");
+});
+
+test("executable, real thinking fixture: the unit stream drops thinking and folds the tool run", () => {
+  // the exact shape the popover receives (a thread that thought, ran two tools, then replied)
+  const kinds = ["user", "thinking", "tool", "tool", "assistant"];
+  const units = compactDisplay(kinds, [undefined, undefined, "Read", "Edit", undefined]);
+  assert.deepEqual(units, [
+    { kind: "event", index: 0 },
+    { kind: "toolgroup", indices: [2, 3] },
+    { kind: "event", index: 4 },
+  ], "no unit for the thinking block; the consecutive tools fold to one group");
+});
+
+test("everything that re-renders the chat's units refills the open popover live", () => {
+  assert.match(UI, /function refillOpenCommentPop\(\): void \{/);
+  assert.match(UI, /refillOpenCommentPop\(\);   \/\/ the popover renders the same units — its copy of this run must flip too/);
+  assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\);/);
 });
