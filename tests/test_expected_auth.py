@@ -14,7 +14,7 @@ the per-init apiKeySource mismatch line was a permanent false alarm. The mechani
     rate-limit events landed in the login's usage.json between a kernel restart and its next init.
   * An all-keyed box fails loudly, not silently: refresh_usage says "no session can poll" once per
     episode (the rail timer calls it every 60s), as a problem only when no declaration explains it;
-    kernel _usage() marks the keyed no-window payload telemetryUnavailable so the hover can say why
+    the keyed no-window payload carries spend and nothing about rate limits (the notice was deleted 2026-08-24)
     the bars are absent.
 
 Synthetic sids/paths only; no real key material or session data.
@@ -383,42 +383,28 @@ class UsageTelemetryUnavailable(unittest.TestCase):
         if self._exp_before is not None:
             os.environ["ROMP_EXPECTED_AUTH"] = self._exp_before
 
-    def test_the_marker_arm_with_a_manager_key_carries_the_flag(self):
+    def test_no_payload_carries_the_retired_telemetry_flag(self):
+        # the flag and its "rate-limit telemetry unavailable under API-key auth" hover line were
+        # DELETED (the user 2026-08-24: they know which machines are key-only and want the spend
+        # without a notice about rate limits that don't apply). A keyed host's payload carries
+        # spend and NOTHING about rate limits; a login host's windows are untouched.
         (Path(self.d) / "usage.json").write_text(json.dumps({"t": 1000, "apiKey": True}))
         km._auth_key_present = lambda: True
         km._claude_account = lambda: ""
         u = km._usage()
         self.assertTrue(u.get("apiKey"))
-        self.assertIs(u.get("telemetryUnavailable"), True)
-
-    def test_the_helper_box_reaches_the_flag_through_the_declaration(self):
-        # no usage.json at all, no manager key — the apiKeyHelper box: the no-login spend arm plus
-        # ROMP_EXPECTED_AUTH=key is what marks the absence as designed
-        (Path(self.d) / "spend.json").write_text(json.dumps({"days": {}, "hours": {}}))
-        km._auth_key_present = lambda: False
-        km._claude_account = lambda: ""
-        os.environ["ROMP_EXPECTED_AUTH"] = "key"
-        u = km._usage()
-        self.assertTrue(u.get("apiKey"))
-        self.assertIs(u.get("telemetryUnavailable"), True)
-
-    def test_no_key_reason_no_flag(self):
-        # the same spend-only arm on a keyless, undeclared machine (a login could yet arrive):
-        # absence stays unexplained rather than blamed on key auth
-        (Path(self.d) / "spend.json").write_text(json.dumps({"days": {}, "hours": {}}))
-        km._auth_key_present = lambda: False
-        km._claude_account = lambda: ""
-        u = km._usage()
-        self.assertTrue(u.get("apiKey"))
         self.assertNotIn("telemetryUnavailable", u)
+        os.environ["ROMP_EXPECTED_AUTH"] = "key"    # the apiKeyHelper declaration marks nothing either
+        (Path(self.d) / "spend.json").write_text(json.dumps({"days": {}, "hours": {}}))
+        self.assertNotIn("telemetryUnavailable", km._usage())
 
-    def test_the_bars_arm_never_carries_it(self):
+    def test_login_windows_stay_untouched_by_the_deletion(self):
         (Path(self.d) / "usage.json").write_text(json.dumps(
             {"t": 1000, "five_hour": {"pct": 40, "resets_at": None}}))   # unstamped legacy keeps bars
         km._auth_key_present = lambda: True
         km._claude_account = lambda: ""
         u = km._usage()
-        self.assertTrue(u.get("fiveHour"), "the windows exist — telemetry IS available")
+        self.assertTrue(u.get("fiveHour"), "rate-limit windows render exactly as before")
         self.assertNotIn("telemetryUnavailable", u)
 
 
