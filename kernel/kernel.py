@@ -3436,7 +3436,14 @@ def _auto_nudge_tick(now, tmux, run_dead_wait=True):
         # ticks over two days before anyone noticed; every session after the bad one in the
         # iteration lost its nudges. The failure still logs loudly, per session.
         try:
-            fired = _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids) or fired
+            r = _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids)
+            fired = (r is True) or fired
+            # the walk->sweep handoff journal (the user 2026-08-24): a session gate names itself as
+            # the return value; the sweep owns gate-held records by the GATE'S CLASS, never by age
+            if isinstance(r, str):
+                _put_walk_gate(s["sid"], r, now)
+            else:
+                _pop_walk_gate(s["sid"])
         except Exception:
             sys.stderr.write("auto-nudge (session %s): %s\n"
                              % (s.get("sid") or "?", traceback.format_exc()))
@@ -3455,7 +3462,7 @@ def _auto_nudge_tick(now, tmux, run_dead_wait=True):
     except Exception:
         sys.stderr.write("debt-backstop: %s\n" % traceback.format_exc())
     try:
-        fired = _awaiting_wake_outcomes(now) or fired  # wake outcomes for sessions the walk can't reach
+        fired = _awaiting_wake_outcomes(now, alive_ids) or fired   # wake outcomes for records the walk can't reach
     except Exception:
         sys.stderr.write("awaiting-wake outcomes: %s\n" % traceback.format_exc())
     if fired:
@@ -3504,6 +3511,45 @@ def _put_nudged(gid, rec):
         nudged[gid] = rec
         d["nudged"] = nudged
         _write_auto_nudge(d)
+
+
+# The walk→sweep handoff journal (the user 2026-08-24, retiring the 6h ownership window): the walk
+# records WHICH gate it returned on — per session (key=sid) or per skipped goal (key=gid) — and the
+# sweep owns exactly the gate-held and unwalked records, keyed on the GATE'S CLASS, never on age.
+# Classes: WEDGE gates have no session-produced ending event while a wake is dead (an api-error tail
+# clears only on a new turn a dead wake never produces — the 2026-08-11 incident that created the
+# sweep), so the sweep acts as soon as the outcome is determinable; TRANSIENT gates end on events
+# that re-run the walk itself (compaction end, queue drain, the user's next message), so the walk
+# keeps those; the muted OPT-OUT stands the sweep down entirely (a nudge is a feed feature the user
+# opted out of); judge-owned gates end on the judges' own passes. Per-goal skips (all-delegated /
+# awaiting-peer) strand a record BEFORE the wake evaluator runs, so they journal by gid and the
+# sweep evaluates those records' outcomes too.
+WALK_GATES_WEDGE = ("api-error", "parse-failed", "empty-parse", "all-delegated", "awaiting-peer")
+
+
+def _put_walk_gate(key, gate, now):
+    """Journal the gate the nudge walk returned on for `key` (a sid, or a gid for per-goal skips).
+    Write-on-change only, and the FIRST gate's `at` is kept when only the name flaps (the deferral
+    map's precedent), so a flapping compacting bit can't churn the file at the 0.5-3s tick."""
+    with _NUDGE_LOCK:
+        d = dict(_auto_nudge_data())
+        gates = dict(d.get("walkGates", {}))
+        cur = gates.get(key)
+        if isinstance(cur, dict) and cur.get("gate") == gate:
+            return
+        gates[key] = {"gate": gate, "at": int((cur or {}).get("at") or now)}
+        d["walkGates"] = gates
+        _write_auto_nudge(d)
+
+
+def _pop_walk_gate(key):
+    """The walk got PAST the gate for `key` — the entry's own retirement event."""
+    with _NUDGE_LOCK:
+        d = dict(_auto_nudge_data())
+        gates = dict(d.get("walkGates", {}))
+        if gates.pop(key, None) is not None:
+            d["walkGates"] = gates
+            _write_auto_nudge(d)
 
 
 def _last_awaiting_is_lift(nd):
@@ -4103,24 +4149,41 @@ def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
     return True
 
 
-def _awaiting_wake_outcomes(now):
+def _awaiting_wake_outcomes(now, walked=None):
     """Outcome sweep for wake records whose sessions the per-goal walk can't reach — mirrors
     _debt_backstop_tick. The walk's own outcome leg is gentler (it waits for the judges), but it runs only
     for sessions that pass the session gates, and a dead wake leaves its session in EXACTLY a gated state:
     the ui case's response turn died on an API error, so the _api_error gate skipped the whole session
-    forever and no mechanism ever looked at the spent wake again (2026-08-11). Here: a wake past the
-    window with no ruled response escalates regardless of session state; an answered/ruled one is left to
-    the walk. Returns True when a failure stamped (the tick pushes)."""
+    forever and no mechanism ever looked at the spent wake again (2026-08-11). Ownership is the JOURNALED
+    GATE's class (the user 2026-08-24, retiring the 6h handoff window): wedge-held and unwalked records
+    are the sweep's; transient/judge-owned gates leave the record with the walk, whose own re-run IS
+    those gates' ending event; muted stands the sweep down. `walked` = the sids the walk visited this
+    tick (None = legacy caller: gate entries alone decide). Returns True when a failure stamped."""
     fired = False
-    nudged = _auto_nudge_data().get("nudged", {})
+    d = _auto_nudge_data()
+    nudged = d.get("nudged", {})
+    gates = d.get("walkGates", {})
     for gid, rec in list(nudged.items()):
         try:
             if not (isinstance(rec, dict) and rec.get("wake")) or rec.get("failed") \
                     or rec.get("moot") or rec.get("answeredAt"):
                 continue
-            if now - (rec.get("at") or 0) <= AWAITING_BACKSTOP_SECS:
-                continue                             # the walk still owns this one
             sid = gid.rsplit(":", 1)[0]
+            # OWNERSHIP BY GATE CLASS, not age (the user 2026-08-24, retiring the 6h handoff window):
+            # the walk journals which gate it returned on (walkGates, per sid or per skipped gid).
+            # WEDGE gates have no session-produced ending event while a wake is dead — the 2026-08-11
+            # api-error incident this sweep was built for — so the sweep acts on those NOW instead of
+            # at hour six. A TRANSIENT/judge-owned gate's ending event re-runs the walk itself, so
+            # the walk keeps those records; the muted opt-out stands the sweep down entirely (the
+            # user's own gesture); and a sid the walk never visits (not alive this tick) is unwalked
+            # by construction — the sweep's original constituency, dead sessions' spent wakes.
+            _gate = ((gates.get(gid) or gates.get(sid) or {}).get("gate")
+                     if isinstance(gates, dict) else None)
+            if _gate == "muted":
+                continue                             # the user opted this session out — stand down
+            if (walked is not None and sid in walked) and _gate not in WALK_GATES_WEDGE:
+                continue                             # the walk owns it: no gate, or one whose ending
+                #                                      event re-runs the walk (transient/judge-owned)
             store = jd.load_goals(sid)
             nd = store.get("nodes", {}).get(gid)
             if (nd is None or store.get("status", {}).get(gid, "working") != "working"
@@ -4577,16 +4640,16 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
     fired = False
     sid = s["sid"]
     if _session_flag(sid, "hideFromFeed"):           # muted from the feed → no auto-nudges either; a nudge IS a
-        return False                                # feed feature, so opting out of the feed opts out of nudges (the user)
+        return "muted"                              # feed feature, so opting out of the feed opts out of nudges (the user)
     st = (tmux.get(sid) or {}).get("state", "")
     # awaiting your input/approval / compacting → not orphaned. The tmux `st` is EMPTY for SDK sessions
     # (no tmux), so the raw-state "compacting" check MISSES them — corroborate with _compacting_now (the
     # same signal the chip/timeline/chat use), or a /compact on an SDK session gets nudged mid-compaction
     # ("nudge got called after compact" — the user 2026-07-06).
     if st in _NEEDS_INPUT_STATES or st == "compacting" or _compacting_now(sid):
-        return False
+        return "needs-input"
     if _api_error(s["path"]):                        # stopped on an API error → not orphaned
-        return False
+        return "api-error"
     try:
         # Parse WITH states (idle atoms), exactly as the closer does — so this turn's id MATCHES what the
         # closer wrote to closedTurns. A states-less parse (_parse) gives an idle-LED turn a different id
@@ -4594,21 +4657,21 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
         # match and the nudge was blocked forever (the user 2026-06-22, obsidian).
         turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
     except Exception:
-        return False
+        return "parse-failed"
     if not turns:
-        return False
+        return "empty-parse"
     lt = turns[-1]
     if _session_working(turns):                      # still actively working (event model) → not orphaned
-        return False
+        return "working"
     if _interrupt_suppresses_nudge(turns, sid):      # the user's LAST action was a GENUINE interrupt → they're
-        return False                                # driving; suppressed until their NEXT message. The stopped
+        return "user-interrupt"                                # driving; suppressed until their NEXT message. The stopped
         #                                              focus goal's BLOCKED-on-you flip is owned by the always-on
         #                                              _interrupt_block_tick (a needs-you rule, not a nudge feature).
     if _pending_ops.get(str(sid)) or _backend_queued(sid):   # the user has messages queued — parked drive ops OR the
-        return False                                         # backend's own queue (SDK _pending, where composer sends now
+        return "queued-input"                                         # backend's own queue (SDK _pending, where composer sends now
         #                                                      wait) → queued intent; a nudge would jump it (the user 2026-07-05)
     if _backend_rewind_pending(sid):     # an ARMED, unconsumed bare rollback: the tail is about to be rewritten,
-        return False                     # but the delete writes NOTHING to the transcript, so the parse still shows
+        return "rewind-pending"                     # but the delete writes NOTHING to the transcript, so the parse still shows
         #                                  the deleted turn and the goals minted from it. A nudge here quotes rolled-
         #                                  back content back into the thread and spends the branch cut as the new
         #                                  branch's first turn (the network g14 resurrection, the user 2026-07-20).
@@ -4629,9 +4692,9 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
         # ResultMessage handler) → the record is STALE and must NOT block the nudge forever (repro: bugsdk2
         # finished its turn at 20:13:18 but its state log was stuck at 'working' 20:12:20, so its working card
         # never got nudged). Two real-event timestamps, not a time window.
-        return False
+        return "progressing"
     if _session_awaiting(sid, s["path"], True):      # AWAITING dispatched AGENT work (subagents / SDK overlay) →
-        return False                                # in flight, not stalled (the user 2026-06-22); idle is True here
+        return "awaiting-dispatch"                                # in flight, not stalled (the user 2026-06-22); idle is True here
     lt_id = lt.get("id")
     # ARMING TURN (the user 2026-07-06, business): arm/dedup off the newest ended turn with a GENUINE
     # trigger (human/sdk/peer). A romp-injected turn — a nudge's own response, a kernel-restart resume
@@ -4652,7 +4715,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
     # blocked; nudging there is pointless (it's waiting on YOU) and churns. _closer_settled mirrors the
     # closer's own closedSig freshness check; no-op when the closer is off (2026-06-21, hardened 2026-06-27).
     if not _closer_settled(store, lt_id, len(lt.get("atoms") or [])):
-        return False
+        return "closer-unsettled"
     # PLANNER-PLACEMENT GATE (the user 2026-07-15, the 11:35/11:40 restatement nudges): closer-settled
     # alone is NOT "the judges have ruled". _turn_menu derives from PLACEMENTS, so a turn the planner
     # hasn't processed yet no-op-closes on an EMPTY menu — the closer gate passes minutes before the
@@ -4672,7 +4735,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
                          % (sid, traceback.format_exc()))                 #  2026-07-21: a mute gate error
         #                                                                    would wave nudges through)
     if _unplanned:
-        return False
+        return "planner-queue"
     nodes, status = store.get("nodes", {}), store.get("status", {})
     cleared = _cleared_ids()
     _kids = {}                                       # child map for the FORK-stalled check below
@@ -4693,9 +4756,12 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
         if status.get(gid, "working") != "working":
             continue                                 # blocked/completed → the session resolved it; not orphaned
         if _all_outstanding_delegated(nodes, gid):
+            _put_walk_gate(gid, "all-delegated", now)   # a wake record here is walk-unreachable → the sweep owns it
             continue                                 # all open work handed to peers → nothing for THIS session
         if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
+            _put_walk_gate(gid, "awaiting-peer", now)   # same: journaled so the sweep can evaluate its outcome
             continue                                 # awaiting a live peer's reply to a question this goal predates
+        _pop_walk_gate(gid)                          # the walk reaches this goal — any per-goal hold is over
         _stamp = _goal_awaiting_stamp_full(nodes, gid, _kids, answered_at=_peer_answered(sid))
         if _stamp:
             # The judge's durable ⏳ stamp (closer awaiting verdict): the goal's latest audited turn ended
