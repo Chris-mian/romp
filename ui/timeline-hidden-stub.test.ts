@@ -94,12 +94,27 @@ function nodes(panel: any): any[] {
   (function walk(n: any) { for (const c of n.children || []) { out.push(c); walk(c); } })(panel.svg);
   return out;
 }
-const stubLines = (panel: any, hex?: string) =>
-  nodes(panel).filter((n) => n.tag === "line" && n._attrs["stroke-width"] === 3 && n._attrs.opacity === 0.45
-    && n._attrs.y1 === n._attrs.y2 && (!hex || n._attrs.stroke === hex));
-const riserLines = (panel: any) =>
-  nodes(panel).filter((n) => n.tag === "line" && n._attrs["stroke-width"] === 3 && n._attrs.opacity === 0.45
-    && n._attrs.x1 === n._attrs.x2);
+// ONE PATH per stub since round 4 (two <line>s double-painted the elbow corner at 0.45 alpha):
+// the helpers parse the path's segments back into the line-shaped views the geometry pins read —
+// stubLines yields the HORIZONTAL track segment, riserLines the VERTICAL limb, of the same element.
+const pathPts = (n: any) => (String(n._attrs.d).match(/-?[\d.]+/g) || []).map(Number);
+const stubPathEls = (panel: any, hex?: string) =>
+  nodes(panel).filter((n) => n.tag === "path" && n._attrs["stroke-width"] === 3 && n._attrs.opacity === 0.45
+    && (!hex || n._attrs.stroke === hex));
+const segView = (n: any, i: number, p: number[]) =>
+  ({ _attrs: { ...n._attrs, x1: p[i], y1: p[i + 1], x2: p[i + 2], y2: p[i + 3] } });
+const stubLines = (panel: any, hex?: string) => stubPathEls(panel, hex).map((n) => {
+  const p = pathPts(n);
+  for (let i = 0; i + 3 < p.length; i += 2) if (p[i + 1] === p[i + 3]) return segView(n, i, p);
+  return segView(n, 0, p);
+});
+const riserLines = (panel: any) => stubPathEls(panel).flatMap((n) => {
+  const p = pathPts(n);
+  const out: any[] = [];
+  for (let i = 0; i + 3 < p.length; i += 2)
+    if (p[i] === p[i + 2] && p[i + 1] !== p[i + 3]) out.push(segView(n, i, p));
+  return out;
+});
 const connPaths = (panel: any, color: string) =>
   nodes(panel).filter((n) => n.tag === "path" && n._attrs.fill === "none" && n._attrs.stroke === color && (n._attrs.opacity === 0.5 || n._attrs.opacity === 0.4));
 // expected coordinates from the SAME geometry draw() used (compress map included)
@@ -139,11 +154,11 @@ test("a hidden-recipient message draws an outgoing stub: send-anchored, horizont
   assert.equal(r._attrs.stroke, BEE, "…and its color");
   assert.equal(s._attrs.opacity, 0.45, "the stub fade level exactly — not invisible, not full-strength");
   assert.equal(s._attrs["pointer-events"], "none", "the visible mark never eats the hover — the hit target owns it");
-  const hl = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === BEE && n._attrs["stroke-width"] === 6);
+  const hl = nodes(panel).find((n) => n.tag === "path" && n._attrs.stroke === BEE && n._attrs["stroke-width"] === 6);
   assert.ok(hl && hl._attrs.opacity === 0, "the own-color highlight overlay rides the stub, dark until hover/DAG");
   assert.equal(hl._attrs["stroke-dasharray"], undefined, "the highlight stays solid — the full-connector hl idiom");
   assert.equal(hl._attrs["pointer-events"], "none", "the highlight overlay is inert too");
-  const hit = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
+  const hit = nodes(panel).find((n) => n.tag === "path" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
   assert.ok(hit, "a wide transparent hit target covers the stub");
   // spec item 4: the SAME affordances as a full connector — tooltip via showTip/moveTip/hideTip,
   // the __tlHoverIn re-arm (a kernel-push redraw rebuilds the node; _rehover re-enters through it),
@@ -265,8 +280,22 @@ test("a hidden-sender message draws the mirror stub: horizontal just ABOVE the l
   const kids = panel.svg.children;
   const dotI = kids.findIndex((n: any) => n.tag === "circle" && Math.abs(n._attrs.cx - X(panel)(now - 100)) < 1e-6);
   assert.ok(dotI >= 0, "the arrival dot still draws on the recipient lane");
-  const hitI = kids.findIndex((n: any) => n.tag === "line" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
+  const hitI = kids.findIndex((n: any) => n.tag === "path" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
   assert.ok(hitI > dotI, "the stub's hit target is appended after the dots (PASS 3), so the line wins the hover");
+});
+
+test("a stub is ONE path — riser and track share a single stroke, so the corner never double-paints", () => {
+  // round 4 (the user 2026-08-24): two <line>s overlapped at the elbow and the 0.45 alpha stacked
+  // to a darker joint; the connectors' own elbow-path idiom draws it contiguous
+  const now = 1_781_000_000;
+  const panel = draw([{ id: "m17", fromId: "SB", toId: "SC", from: "bee", to: "cee",
+                        sent: now - 300, exec: now - 300, hasExec: false, pending: true, summary: "one stroke" }]);
+  assert.equal(stubPathEls(panel).length, 1, "one path element per stub");
+  assert.ok(!nodes(panel).some((n) => n.tag === "line" && n._attrs["stroke-width"] === 3 && n._attrs.opacity === 0.45),
+    "…and no separate stub/riser <line> elements remain");
+  const STUBFN = SRC.slice(SRC.indexOf("const stub = (mm, i, senderVisible)"), SRC.indexOf("// PASS 1:"));
+  assert.doesNotMatch(STUBFN, /el\('line'/, "the stub function draws paths only");
+  assert.match(STUBFN, /'stroke-linejoin': 'round'/, "the connectors' own round joint");
 });
 
 test("an un-arrived INCOMING stub has no riser — nothing entered the work, and its live-edge x is not a real arrival", () => {
@@ -289,7 +318,7 @@ test("a counterpart absent from data.sessions rides the same fixed track: outgoi
   near(s._attrs.y2, s._attrs.y1, "horizontal — the direction convention carries the meaning, not a slope");
   // the tooltip must name BOTH endpoints even with no counterpart row in data.sessions at all
   // (the user 2026-08-24): the names come from the message ROW itself, never from visible lanes
-  const hit = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
+  const hit = nodes(panel).find((n) => n.tag === "path" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
   hit._listeners.mouseenter({ clientX: 200, clientY: 30, currentTarget: hit });
   assert.ok(String(panel.tip.innerHTML).includes(">bee<"), "the visible sender is named");
   assert.ok(String(panel.tip.innerHTML).includes(">gone<"), "…and the ABSENT counterpart is named, from the row");
@@ -301,7 +330,7 @@ test("a nameless row still names both ends — the raw id backstops a missing di
   // render an empty who-span: the raw id is information, not noise
   const panel = draw([{ id: "m13", fromId: "SB", toId: "SX", from: "bee", to: "",
                         sent: now - 200, exec: now - 50, hasExec: true, pending: false, summary: "to a nameless one" }]);
-  const hit = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
+  const hit = nodes(panel).find((n) => n.tag === "path" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
   hit._listeners.mouseenter({ clientX: 200, clientY: 30, currentTarget: hit });
   assert.ok(String(panel.tip.innerHTML).includes(">SX<"), "the raw id names the endpoint — never an empty span");
 });
