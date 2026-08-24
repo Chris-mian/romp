@@ -12,6 +12,24 @@
 /* A wide display formula scrolls inside its own box instead of stretching the bubble. */
 .katex-display { overflow-x: auto; overflow-y: hidden; }
 
+/* ── chat TEXT schemes (the user 2026-08-24) ─────────────────────────────────────────────────────
+   The chat's text runs on THREE tiers, all variables: --fg (prose), --dim (tool heads / commands /
+   meta — always dimmer than prose), --code-fg (inline/block code). A scheme is JUST a tier set on a
+   body class, applied live by render.ts from the gear's romp:settings pick. No body class = the
+   Default scheme = the :root values below, byte-identical to before this block existed. Text only:
+   backgrounds, status colors, and the accent are never a scheme's to change. Solarized LIGHT is
+   deliberately absent — its tiers are made for a paper-light ground and invert into mud here. */
+body.scheme-high-contrast {
+  --fg: #e8e8e8;        /* prose lifted from #cccccc… */
+  --dim: #b8b8b8;       /* …and the dim tier lifted with it, still clearly dimmer than prose */
+  --code-fg: #ecd9ae;   /* the warm code tone, brightened in step */
+}
+body.scheme-solarized-dark {
+  --fg: #839496;        /* solarized base0 — the canonical body text */
+  --dim: #586e75;       /* solarized base01 — its secondary/comment tier */
+  --code-fg: #b58900;   /* solarized yellow — an accent it uses for emphasis/code */
+}
+
 :root {
   /* Chat reading-column width. 100% = fill the pane and grow with it (the user 2026-06-15);
      set a px value (e.g. 980px) to re-cap for prose readability. Shared by the transcript,
