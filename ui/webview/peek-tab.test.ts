@@ -30,6 +30,22 @@ test("peek AUTO-CLOSE: activating any other tab drops it — same derivation, no
   const writers = RENDER.match(/peekId = /g) || [];
   assert.equal(writers.length, 2, "peekId writers: assertPeekFor and dismissSession — nothing else (send never pins; the typed declaration matches separately)");
   assert.match(RENDER, /let peekId: string \| null = null;/);
+  // …and the DERIVATION call sites, each named (the census, extended 2026-08-24 with the two
+  // views-arrival paths): setActive (every activation), the focus fast path (already-active),
+  // captureViews (kernel-pushed views), postViews (local optimistic edit). Nothing else derives.
+  const sites = RENDER.match(/assertPeekFor\(/g) || [];
+  assert.equal(sites.length, 5, "definition + 4 call sites: setActive, focus fast path, captureViews, postViews");
+});
+
+test("a view change that excludes the ACTIVE session converts it into the peek — never a bounce (the user 2026-08-24)", () => {
+  // both views-arrival paths re-derive the active session's peek: the kernel-pushed blob…
+  assert.match(RENDER, /pendingSessionViews = null; pendingViewsAge = 0;\s*\n\s*\}[\s\S]{0,700}?if \(activeId\) assertPeekFor\(activeId\);\s*\n\}/);
+  // …and the local optimistic edit, BEFORE its renderTabs so the repaint sees the fresh peek state
+  assert.match(RENDER, /pendingSessionViews = v; pendingViewsAge = 0;\s*\n\s*if \(activeId\) assertPeekFor\(activeId\);[\s\S]{0,200}?renderTabs\(\);/);
+  // the derivation is symmetric, so a view that now INCLUDES the active peek sheds the dress — the
+  // same next-null branch the auto-close pin above holds; and the fallback's fire-time revalidation
+  // (below) re-checks tabInView, so a converted peek can never be bounced by an in-flight timeout
+  assert.match(RENDER, /setTimeout\(\(\) => \{ if \(activeId !== next && activeId && !tabInView\(activeId\)\) setActive\(next\); \}, 0\);/);
 });
 
 test("peek is FIRST-CLASS in nav history by storing only the sid — apply lands in setActive, re-deriving peek", () => {

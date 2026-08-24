@@ -466,9 +466,19 @@ function captureViews(v: SessionViews | null) {
   if (pendingSessionViews && ((v && viewsKey(v) === viewsKey(pendingSessionViews)) || ++pendingViewsAge >= 3)) {
     pendingSessionViews = null; pendingViewsAge = 0;
   }
+  // A VIEW CHANGE that excludes the ACTIVE session converts it into the peek instead of bouncing
+  // (the user 2026-08-24: open All, pick a session, re-apply the tag filter — keep reading it in
+  // the ghost dress, and it evaporates on the next tab switch). The same derivation setActive runs
+  // on activation, run here on every views arrival; symmetric, so a view that now INCLUDES the
+  // active peek sheds the dress for free. With the active session counted by tabInView as the peek,
+  // the deferred first-tab bounce never fires (its fire-time revalidation re-checks tabInView).
+  if (activeId) assertPeekFor(activeId);
 }
+// (postViews below runs the same re-derivation for the LOCAL optimistic edit — both views-arrival
+// paths keep the active session's peek state current.)
 function postViews(v: SessionViews) {
   pendingSessionViews = v; pendingViewsAge = 0;
+  if (activeId) assertPeekFor(activeId);   // the optimistic edit re-derives the active session's peek too
   if (vscodeApi) vscodeApi.postMessage({ type: "setTimelineViews", views: v });
   renderTabs();
 }
