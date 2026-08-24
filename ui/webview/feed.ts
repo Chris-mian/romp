@@ -4380,7 +4380,10 @@ function flushFreeze(): void {
     flushQueued = false;   // dispatched mid-click (the clear path) must not re-render the board under
     //                        the rest of its own handler (pendingCleared.add, .dismissing come after
     //                        the dispatch). Gesture-ordering, not a timer: no time window anywhere.
-    if (freezeKey) return; // re-armed before the tick ended → keep the queue for the next leave
+    // EITHER holder keeps the queue (post-merge audit 2026-08-24): with the keyboard scope on card
+    // A and the pointer merely visiting card B, B's mouseleave queues this flush — running it would
+    // apply the payload and move the card being keyed. The scope's own release paths all flush.
+    if (freezeKey || tabScopeKey) return;
     const m = pendingFeedPayload;
     pendingFeedPayload = null;
     if (m) applyFeedPayload(m);          // render() repaints the badges away (nothing pending)
