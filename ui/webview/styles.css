@@ -2557,24 +2557,25 @@ mark.cmt-hl.unread.hl-last::after {
 mark.cmt-hl:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, transparent); }
 mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.08); }
 /* WRITING (the user 2026-08-17; re-reshaped 2026-08-23 — the marching ants left the PROSE: a crawl
-   around the passage read as distraction, not progress): while the thread is mid-reply the region
-   keeps its solid highlight in a PALER blend — visibly "not the final color yet", settling into the
-   full yellow the moment the reply lands. The crawl itself lives on the scroll-rail tick now (see
-   .cmt-tick.busy), where motion informs without sitting inside the text you're reading. */
+   around the passage read as distraction, not progress; the tick's marching ants followed it out
+   2026-08-24 — the user wanted no crawling cue at all): while the thread is mid-reply the region
+   wears a faded AWAIT-GREEN blend — the awaitbg state color, "a reply is being worked on here" —
+   settling into the full yellow the moment the reply lands. The color IS the in-flight signal now;
+   nothing moves. */
 mark.cmt-hl.busy {
-  background-color: color-mix(in srgb, var(--cmt-hl) 16%, transparent);
+  background-color: color-mix(in srgb, var(--st-awaitbg-bg) 24%, transparent);
 }
 mark.cmt-hl.hl-first { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
 mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
 
 }
-/* a code/math HOST whose mark is mid-reply pales the same way — its element tint would otherwise
-   stay full-strength and hide the writing state */
+/* a code/math HOST whose mark is mid-reply greens the same way — its element tint would otherwise
+   stay full-strength yellow and hide the writing state */
 .md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy),
 .md .katex.cmt-hl-host:has(mark.cmt-hl.busy) {
-  background-color: color-mix(in srgb, var(--cmt-hl) 16%, transparent);
+  background-color: color-mix(in srgb, var(--st-awaitbg-bg) 24%, transparent);
 }
-.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy) { background-color: color-mix(in srgb, var(--cmt-hl) 16%, var(--code-bg)); }
+.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy) { background-color: color-mix(in srgb, var(--st-awaitbg-bg) 24%, var(--code-bg)); }
 .md :not(pre) > code.cmt-hl-host { background: color-mix(in srgb, var(--cmt-hl) 30%, var(--code-bg)); }
 .md :not(pre) > code.cmt-hl-host > mark.cmt-hl { background: transparent; }
 .md :not(pre) > code.cmt-hl-host:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, var(--code-bg)); }
@@ -2620,6 +2621,15 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 /* chat-parity turns inside the popover (the user 2026-08-17): the chat's own .turn nodes, given a
    little rail room; the popover's card is the backdrop, so no extra chrome */
 .cmt-msgs .turn { max-width: 100%; box-sizing: border-box; }
+/* the identity rail runs CONTINUOUS through the thread (the user 2026-08-24, who saw holes): each
+   turn's ::before segment spans only its own box, and the list's 6px flex gap sat unpainted between
+   them — so every turn AFTER another turn stretches its segment up across the gap. Non-turn items
+   (pending bubbles, dots, notes) come after the turns, so the + combinator never misses a pair;
+   keep the -6px paired with .cmt-msgs' gap above. */
+.cmt-msgs .turn + .turn::before { top: -6px; }
+/* the quoted passage as CONTEXT on the thread's opening message (the user 2026-08-24) — the
+   .cmt-quote dress, sitting inside the turn above its bubble, the chat's citation-as-context shape */
+.cmt-quote-ctx { margin: 0 0 4px; }
 .cmt-msg { padding: 5px 8px; border-radius: 6px; line-height: 1.35; overflow-wrap: anywhere; }
 .cmt-msg.you { background: color-mix(in srgb, var(--accent) 14%, transparent); align-self: flex-end; max-width: 92%; white-space: pre-wrap; }
 .cmt-msg.agent { background: rgba(255, 255, 255, 0.05); align-self: flex-start; max-width: 96%; }
@@ -2722,25 +2732,10 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    faint glow read as a rendering artifact, not as "new here" */
 .cmt-tick.unread { width: 10px; height: 6px; right: 0; opacity: 1;
   box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 3px color-mix(in srgb, var(--cmt-hl) 85%, transparent); }
-/* a WRITING thread's tick carries the crawl (the user 2026-08-23, moving the ants off the prose):
-   the same four-strip march in miniature — 6px dash cycle, strips oversized by one period so the
-   loop point is invisible (the passage ants' 2026-08-19 lesson, scaled down) — around the tick */
-.cmt-tick.busy { overflow: visible; }
-.cmt-tick.busy::after {
-  content: ""; position: absolute; inset: -3px;
-  background-image:
-    repeating-linear-gradient(90deg, var(--cmt-hl) 0 3px, transparent 3px 6px),
-    repeating-linear-gradient(90deg, var(--cmt-hl) 0 3px, transparent 3px 6px),
-    repeating-linear-gradient(0deg,  var(--cmt-hl) 0 3px, transparent 3px 6px),
-    repeating-linear-gradient(0deg,  var(--cmt-hl) 0 3px, transparent 3px 6px);
-  background-size: calc(100% + 6px) 1.5px, calc(100% + 6px) 1.5px, 1.5px calc(100% + 6px), 1.5px calc(100% + 6px);
-  background-position: -6px 0, 0 100%, 0 0, 100% -6px;
-  background-repeat: no-repeat;
-  animation: cmt-tick-ants 1.8s linear infinite;
-}
-@keyframes cmt-tick-ants {
-  to { background-position: 0 0, -6px 100%, 0 -6px, 100% 0; }
-}
+/* a WRITING thread's tick wears the same await-green as the passage (the user 2026-08-24: the
+   marching-ants crawl — the "spinning dots" — is retired; the state COLOR is the in-flight cue,
+   here as everywhere on the rail) */
+.cmt-tick.busy { background: var(--st-awaitbg-bg); }
 
 /* a fully-covered KaTeX block tints at the ELEMENT (cmt-hl-host, same contract as inline code):
    a mark inside it cannot paint the glyph boxes' spacing, which punched gaps through highlighted
