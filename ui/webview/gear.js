@@ -105,7 +105,7 @@ var GEAR_HTML =
   '<span><b>Collapse cards by default</b>' +
   '<span class=rs-sub>Every card arrives collapsed to its one-line gist; expanding one is a per-card override. Moved here from the feed footer — a set-and-forget default, not a per-glance action.</span>' +
   '</span></label>' +
-  '<div class=rs-sec>Timeline</div>' +
+  '<div class=rs-sec>Sessions pane</div>' +   // the pane's label (renamed from Timeline, the user 2026-08-24); "pane" disambiguates from the session-defaults section above
   '<label class=rs-row><input type=checkbox id=rs-activeonly checked>' +
   '<span><b>Show active sessions only</b>' +
   '<span class=rs-sub>Only draw lanes for sessions with work in the visible time range, so idle sessions do not take up room. They stay in the chat, and a lane reappears the moment you zoom or pan to a stretch where it did something.</span>' +

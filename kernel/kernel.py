@@ -23633,7 +23633,7 @@ if(m&&m.romp==='notify'&&m.text)window.__rompNotify(m.kind||'error',m.text,
 var st={};
 function shown(k){return document.body.classList.contains('po-'+k);}
 function liveDown(){for(var k in st){if(st[k]==='down'&&shown(k))return true;}return false;}
-var PN={chat:'Chat',feed:'Feed',timeline:'Timeline',fleet:'Outline'};
+var PN={chat:'Chat',feed:'Feed',timeline:'Sessions',fleet:'Outline'};   // timeline key stays internal; the pane outgrew the name (filter, tags, lane controls — the user 2026-08-24)
 window.addEventListener('message',function(e){var m=e&&e.data;if(!m||m.romp!=='wsState')return;
 var s=(m.state==='up')?'up':'down',prev=st[m.app];st[m.app]=s;
 if(s==='down'&&prev!=='down'&&shown(m.app))
@@ -25808,7 +25808,7 @@ def _landing():
             "<div class=pane-rail>"
             "<div class=rail-scroll>"
             "<div class=rail-btn data-pane=chat>Chat</div>"
-            "<div class=rail-btn data-pane=timeline>Timeline</div>"
+            "<div class=rail-btn data-pane=timeline>Sessions</div>"   # data-pane key stays 'timeline' (internal); the pane outgrew the label (the user 2026-08-24)
             "<div class=rail-btn data-pane=fleet>Outline</div>"   # data-pane key stays 'fleet' (internal); the user-facing label is Outline
             "<div class=rail-btn data-pane=feed>Feed</div>"
             # the Claude /usage rate-limit bars (Pro/Max): three compact vertical bar-pairs (used % colored +
@@ -25861,7 +25861,7 @@ def _landing():
             "<button data-pane=chat class=on>Chat</button>"
             "<button data-pane=fleet>Outline</button>"   # data-pane key stays 'fleet' (internal), label Outline
             "<button data-pane=feed>Feed</button>"
-            "<button data-pane=timeline>Timeline</button>"
+            "<button data-pane=timeline>Sessions</button>"   # same rename on the phone tabs
             # the rail's ACTIONS, reachable on mobile too (the user 2026-07-11): settings + the network
             # panel + a usage panel showing the desktop tooltip's window bars. data-act (not data-pane) —
             # they fire, they don't switch the shown pane.

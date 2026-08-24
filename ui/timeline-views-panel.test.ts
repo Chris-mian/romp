@@ -33,7 +33,9 @@ test("executed: the default view shows UNTAGGED minus hidden; a tag view its mem
 });
 
 test("executed: the trigger label and the N-more cue (live sessions outside the view)", () => {
-  assert.equal(viewLabel(null), "default");
+  // the default view is named for what it shows (the user 2026-08-24): "(untagged)", parenthesized
+  // as the built-in it is — "default" said nothing about the rule
+  assert.equal(viewLabel(null), "(untagged)");
   assert.equal(viewLabel(V("g1")), "pool");
   const sessions = [{ id: "s1", live: true }, { id: "s2", live: true }, { id: "s4", live: false }];
   assert.equal(viewMoreCount(V("g1"), sessions), 1, "s1 is live and outside; dead s4 never counts");
@@ -108,29 +110,50 @@ test("the dropdown and dialog wear the shared menu vocabulary and adopt into the
   assert.match(SRC, /const h = this\._menuHost\(anchorEl\.getBoundingClientRect\(\)\);[\s\S]{0,400}this\._viewsMenu = menu;/);
 });
 
-test("the sessions dialog is TAG-CENTRIC: chips per row, a [+] to join or mint, the feed toggle rides along", () => {
-  // the user 2026-08-23: multi-tag assignment in one visit — each row wears its tags as removable
-  // chips (the tag's colour, the trigger chip's dress) and a [+] menu of the tags it lacks + a
-  // new-tag input. The menu items say so: New tag… / Sessions & tags…
-  assert.match(SRC, /item\('New tag…', \{ dim: true \}\)/);
-  assert.match(SRC, /item\('Sessions & tags…', \{ dim: true \}\)/);
+test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2026-08-24, JLD-designed)", () => {
+  // one grid, columns [name | chips | + | feed | eye] — the [+] column's ALIGNMENT carries the
+  // table structure (JLD: sequence in space suggests structure)
+  assert.match(SRC, /grid-template-columns:max-content 1fr max-content max-content max-content;/);
+  // the session NAME wears its identity colour directly (JLD: label directly, never a legend-like
+  // proxy dot), the host: prefix is quiet lowercase italic, a dead session is struck — the same
+  // read as the lanes and the feed. No model column, no instruction caption, no ellipsized names.
+  assert.match(SRC, /font-weight:650;color:' \+ \(s\.color \|\| '#cccccc'\)/);
+  assert.match(SRC, /font-style:italic;font-size:0\.88em;/);
+  assert.match(SRC, /text-decoration:line-through;/);
+  const DLG = SRC.slice(SRC.indexOf('_openViewsDialog'), SRC.indexOf('_openLaneMenu('));
+  assert.doesNotMatch(DLG, /s\.model/, "no model column");
+  assert.doesNotMatch(SRC, /Tags mark specialized sessions/, "the display explains itself");
+  // SEARCH (name or host — one string, the host prefix rides the name) + the bulk controls that
+  // act on the FILTERED set: search is how a batch is selected (the user 2026-08-24)
+  assert.match(SRC, /q\.placeholder = 'search name or host…';/);
+  assert.match(SRC, /const tagAll = bar\.createSpan\(\{ text: '\+ tag all' \}\);/);
+  assert.match(SRC, /anyOn \? 'mute feed for all' : 'restore feed for all'/);
+  assert.match(SRC, /const flagVal = ft\.value\(!anyOn\);/, "any still minting → mute all; all muted → restore");
+  // chips: outline in the tag's colour, dim separate ✕, hover changes colour (menu chrome)
   assert.match(SRC, /ch\.createSpan\(\{ text: t\.name \}\);/);
   assert.match(SRC, /const chx = ch\.createSpan\(\{ text: '✕' \}\);/, "the ✕ is its own dim span — the composer chip's read");
   assert.doesNotMatch(SRC, /background:color-mix/, "no tinted chip grounds anywhere in the dialog");
+  assert.match(SRC, /hover\(ch, 'background:rgba\(255,255,255,0\.09\);', 'background:transparent;'\);/);
   assert.match(SRC, /this\._setViews\(viewToggleMember\(this\._curViews\(\), t\.id, s\.id\)\); build\(\);/,
     "chip click = leave that tag; [+] option = join — both through the one pure mutation");
-  assert.match(SRC, /ni\.placeholder = 'new tag…';/, "minting a tag right from a session row");
-  assert.match(SRC, /nv\.tags = viewTags\(nv\)\.concat\(\[nt\]\); delete nv\.groups;/,
-    "a write normalizes onto the tags key, never re-emitting the legacy one");
+  assert.match(SRC, /ni\.placeholder = 'new tag…';/, "minting a tag right from a row or the bulk bar");
+  assert.match(SRC, /delete nv\.groups;/, "a write normalizes onto the tags key, never re-emitting the legacy one");
   // the eye-off appears ONLY on a hidden session, to un-hide it (hiding lives on the chat tab)
-  assert.match(SRC, /if \(\(v\.hidden \|\| \[\]\)\.indexOf\(s\.id\) >= 0\) \{/);
-  // the feed toggle still rides every live row (the user 2026-08-19 pool-builder rule): a
-  // background worker wants BOTH edits — tagged out of the default view AND off the feed — in one
-  // visit. Reused machinery, never a new one; NOT auto-coupled to membership.
+  assert.match(SRC, /if \(\(\(vv\.hidden \|\| \[\]\)\)\.indexOf\(s\.id\) >= 0\) \{/);
+  // the feed toggle still rides every live row (the user 2026-08-19 pool-builder rule), aligned in
+  // its own column; NOT auto-coupled to membership.
   assert.match(SRC, /const ft = LANE_TOGGLES\.find\(\(t\) => t\.flag === 'hideFromFeed'\);/);
   assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.hideFromFeed = next;/,
     "the same optimistic sticky flags the lane gear uses");
-  assert.match(SRC, /this\._setSessionFlag\(s, 'hideFromFeed', next\);\s*\n\s*this\._reconcilePendingFlags\(\);/);
+  // the menu items say so: New tag… / Sessions & tags… / the (untagged) default
+  assert.match(SRC, /item\('New tag…', \{ dim: true \}\)/);
+  assert.match(SRC, /item\('Sessions & tags…', \{ dim: true \}\)/);
+  assert.match(SRC, /item\('\(untagged\)', \{ current: !v\.active \|\| v\.active === 'all' \}\)/);
+});
+
+test("the N-more count opens the views menu — what am I not seeing answers itself (the user 2026-08-24)", () => {
+  assert.match(SRC, /m\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); this\._openViewsMenu\(m\); \}\);/);
+  assert.match(SRC, /m\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/, "and survives its own opening click");
 });
 
 test("the two display toggles write the host's own romp:settings — reachable in every host now", () => {
