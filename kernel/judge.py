@@ -3688,9 +3688,12 @@ def _mark_node_done(store, nid, why, t, src="planner"):
     kids = {}
     for x, nd in nodes.items():
         kids.setdefault(nd.get("parentId"), []).append(x)
-    stack = [nid]
-    while stack:
-        x = stack.pop()
+    stack, seen = [nid], set()
+    while stack:                                       # seen-set: a parentId cycle (two rebased reparent
+        x = stack.pop()                                # writers can compose one neither wrote) must degrade,
+        if x in seen:                                  # never spin the judge forever (the 2026-08-24 review's
+            continue                                   # verified crash class, guarded here like _parked_rows)
+        seen.add(x)
         if x != nid and nodes[x].get("blocked"):
             record_verdict(store, nodes[x], src, "unblock", t,
                            why="discharged with the completed parent")
@@ -10612,7 +10615,11 @@ COURIER_SYS = (
     "prose, no markdown fences):\n"
     '{\"verdict\": \"delegating\" | \"coordinating\", \"goal\": <n>, \"text\": \"...\"}\n'
     "- \"delegating\": B now owns a concrete piece of work. text = the outcome B owns, ≤8 words. goal = "
-    "which of A's open goals #N this work carries forward, or 0 if none or unclear.\n"
+    "which of A's open goals #N this work carries forward, or 0 if none or unclear. When SEVERAL open "
+    "goals ask for this same work (an original and a later restatement), pick the OLDEST — completion "
+    "must land on the original ask, or it resurfaces demanding status on finished work. Only a goal "
+    "this work would genuinely discharge counts: a merely-adjacent goal is 0, never a guess — a wrong "
+    "link closes the wrong card, which is worse than none.\n"
     "- \"coordinating\": no work is transferred, just confirming, aligning, acknowledging, a heads-up, "
     "or a question to answer. goal = 0, text = empty string.\n"
     "The sender's lead word is a hint, not the verdict: DELEGATE:/HANDOFF: usually means delegating; "
@@ -11220,7 +11227,11 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             placed += 1
             continue
         sender_store = load_goals(sender)
-        menu = open_menu(sender_store)
+        # cap 40 for the LINK menu (the user 2026-08-24, the resurfaced-ask specimen): open_menu is
+        # oldest-first, and a busy sender holds >20 open nodes — the default cap starved exactly the
+        # candidates a dispatch usually serves (the fresh ask AND its older original), so the courier
+        # could not even SEE the goal it should link. Bounded: the courier scans one list per plant.
+        menu = open_menu(sender_store, cap=40)
         _judge_ctx.fsid = fsid                        # usage logging: attribute to the recipient session
         raw = courier_llm(text, _menu_text(sender_store, menu), declared=declared)
         edit = _parse_courier(raw, len(menu))
