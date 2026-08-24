@@ -4319,6 +4319,12 @@ def _backend_rewind_pending(sid):
 # threshold is the backstop below, and only for the reason the awaiting backstop already admits: a
 # WEDGED reviver is a MISSING event, and no event announces it.
 NUDGE_DEFER_BACKSTOP_SECS = 6 * 3600     # mirrors AWAITING_DEADMAN_SECS, and for the same reason
+# W2d (the user 2026-08-24): the nudge-silence clock is retired for the LOST-SEND EVENT — a turn of
+# the target that ENDS after the fire carrying no goal-id marker, with the backend queue no longer
+# holding the message, proves the send never reached the transcript (the _debt_reminder_outcomes
+# precedent). This dead-man survives for the one silence with no event at all: a session that never
+# ends another turn after the fire.
+LOST_SEND_DEADMAN_SECS = 6 * 3600
 _task_plan_cache = {}                    # fsid -> ((mtime, count), plan | None)
 
 
@@ -4629,6 +4635,17 @@ def _last_assistant_text(path, cap=4000):
         return ""
 
 
+def _nudge_send_queued(sid, gid):
+    """True while a nudge's own injected message still sits in the backend queue (an SDK send parked
+    behind a running turn): in flight, not lost — the lost-send event must not fire on it. Guarded:
+    a backend hiccup reads as 'not queued' so the dead-man (not a crash) owns the ambiguity."""
+    try:
+        be = Sessions.backend_for(str(sid))
+        return bool(be) and any("romp-goal-id: " + str(gid) in str(t) for t in be.pending_queued(str(sid)))
+    except Exception:
+        return False
+
+
 def _nudge_response_ready(turns, store, rec, gid, now):
     """The nudge-failed stamp's structural gates, as one testable decision: (ready, resp_seg).
     ready False → skip this tick; ready True → every gate passed and the stamp may proceed
@@ -4660,9 +4677,10 @@ def _nudge_response_ready(turns, store, rec, gid, now):
     with the goal-id marker by construction, so its response segment WILL become visible — a
     missing segment means the parse hasn't caught up (2026-07-23: the stamp ran while a second
     nudge turn was still landing, saw no segment for its goal, and blocked it via the old
-    stamp-now fallback). Not ready until the segment shows, bounded by the 6h deferral backstop
-    from the fire time (rec["at"]) so a genuinely lost send still surfaces as needs-you instead
-    of hiding forever. Legacy records (no armAtoms / no at) keep the stamp-now behavior."""
+    stamp-now fallback). Not ready until the segment shows — or until the LOST-SEND EVENT (W2d):
+    a target turn ending after the fire with no marker and nothing queued proves the send never
+    landed, surfacing it as needs-you NOW; only a session that never turns again keeps a clock
+    (LOST_SEND_DEADMAN_SECS). Legacy records (no armAtoms / no at) keep the stamp-now behavior."""
     _arm_atoms = rec.get("armAtoms")
     _ai = next((i for i in range(len(turns) - 1, -1, -1)
                 if turns[i].get("id") == rec.get("lastTurnId")), None)
@@ -4675,9 +4693,23 @@ def _nudge_response_ready(turns, store, rec, gid, now):
                      if jd._seg_nudge(s2) and gid in jd._seg_followup_all(s2)), None)
     except Exception:
         resp = None                                    # minimal/legacy turn shapes → stamp-now, as before
-    if resp is None and isinstance(_arm_atoms, int) \
-            and (now - (rec.get("at") or 0)) <= NUDGE_DEFER_BACKSTOP_SECS:
-        return False, None                             # modern fire, segment not visible yet → parse lag
+    if resp is None and isinstance(_arm_atoms, int):
+        # LOST-SEND EVENT (W2d, the user 2026-08-24, replacing the 6h silence clock): a modern fire
+        # wrote the goal-id marker by construction, so once ANY turn of the target ENDS after the
+        # fire with no marker segment visible — and the backend queue no longer holds the message
+        # (an SDK send parked behind a running turn is in flight, not lost) — the send never reached
+        # the transcript. That turn's end is the exact moment "the parse hasn't caught up" stops
+        # being a possible story (_debt_reminder_outcomes' shape): ready NOW, and the caller stamps
+        # the failure. A restart that dropped an in-memory pending send surfaces within minutes (the
+        # post-boot resume notice opens and ends a turn); before, it hid until hour six. A session
+        # that never ends a turn after the fire emits no event at all — the one residue that keeps
+        # a clock, the named dead-man.
+        _fire_t = rec.get("at") or 0
+        if any((tn.get("end") or 0) > _fire_t for tn in turns) \
+                and not _nudge_send_queued(gid.rsplit(":", 1)[0], gid):
+            return True, None                          # the lost-send event: stamp on real information
+        if (now - _fire_t) <= LOST_SEND_DEADMAN_SECS:
+            return False, None                         # no event yet (parse lag / queued / no turn) → wait
     if resp is not None and not jd._placed_key(store["placements"], resp["id"]):
         return False, resp                             # the planner hasn't ruled on the response yet
     return True, resp
