@@ -38,7 +38,10 @@ test("the filter defaults to NOTHING selected and only ever narrows the RENDER, 
   assert.ok(FEED.includes("let feedOnlySid: string | null = null;"));
   assert.ok(FEED.includes('sessionStorage.getItem("romp:feedOnly")'),
     "survives this tab's reloads only — a fresh window always starts unfiltered");
-  assert.ok(FEED.includes("let shown = feedOnlySid ? asks.filter((a) => a.sid === feedOnlySid) : asks;"));
+  // the filter chain lives in viewFiltered now (hover-freeze 2026-08-24: the deferred-churn badge
+  // painter must count exactly what the user sees, so render and the painter share one view)
+  assert.ok(FEED.includes("let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list;"));
+  assert.ok(FEED.includes("let shown = viewFiltered(asks);"), "render reads the shared view");
   // (`let`, since 2026-08-23: the SEARCH filter composes onto the same render-side view — see feed-search.test.ts)
   assert.ok(FEED.includes("for (const a of shown) {"), "the group-fold loop reads the filtered view");
   assert.ok(FEED.includes("for (const a of shown) { if (grouped.has(a.itemId)) continue;"), "…and the singles loop");
