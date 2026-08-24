@@ -19004,7 +19004,11 @@ def build_feed(now, tmux=None):
 TL_HORIZON = 48 * 3600                        # how far back stripes/connectors are read (slider max)
 WIN_5H   = 5 * 3600                            # token-usage windows: the two Claude meters — 5h "session" + 7d "week".
 WIN_WEEK = 7 * 86400                           # The footer shows tokens per window so the count lines up with the /usage %.
-MSG_INFLIGHT_MAX = 1800                        # a message older than this isn't "in flight" (30 min)
+# (MSG_INFLIGHT_MAX retired 2026-08-24: "in flight" was a 30-minute age window approximating four
+# distinct OBSERVABLE endings — read (exec row), recalled (recall row), refused/destroyed (bounced
+# row, which the orphan sweep now also writes when it destroys a dead recipient's unread mail), and
+# the recipient dying (the live set). _postal_messages keys pending on those events; an unread
+# message to a live recipient is honestly pending at any age the draw horizon shows.)
 
 
 def _state_intervals(sid, want, now):
@@ -19425,19 +19429,20 @@ def _msg_summaries():
     return _msg_sum_cache["map"]
 
 
-def _postal_messages(now, alive_sids, id2name):
+def _postal_messages(now, alive_sids, id2name, live_sids=None):
     """Inter-session connectors for the timeline, from the postal log (timeline/messages.jsonl): each
     'sent' row joined to its 'exec' by id → a [sent,exec] arrow between two lanes. File-based (the old
     romp-timeline-data.readMessages, trimmed): recent only, no self-messages, and AT LEAST ONE end a
     local lane. A CROSS-MACHINE message has its other end on a federated peer this kernel has never
     heard of — emit it anyway (one-sided): the browser's merge stitches the foreign endpoint onto that
     host's lane by bare sid, and a connector whose far end matches nothing is dropped by the view's
-    lane lookup, exactly like before."""
+    lane lookup, exactly like before. `live_sids` = the TRUE live set for the pending flag's
+    recipient-liveness leg (alive_sids is the broader LANE set); None skips that leg."""
     try:
         lines = (jd.STATE / "timeline" / "messages.jsonl").read_text(errors="replace").splitlines()
     except OSError:
         return []
-    sent, execd = {}, {}
+    sent, execd, ended = {}, {}, set()
     for ln in lines:
         try:
             o = json.loads(ln)
@@ -19449,6 +19454,9 @@ def _postal_messages(now, alive_sids, id2name):
             execd[o["id"]] = (o.get("t"), o.get("dmid"))   # dmid: the recipient-side delivery mid (relayed mail)
         elif o.get("ev") == "unexec" and o.get("id"):    # a drain that CLAIMED the mail then rolled back
             execd.pop(o["id"], None)                     # (postal restore) — it never reached the recipient
+        elif o.get("ev") in ("recall", "bounced") and o.get("id"):
+            ended.add(o["id"])                           # terminally ended: recalled by the sender, or the
+            #                                              bus refused/destroyed it — it can never land now
     cutoff, out = now - TL_HORIZON, []
     msgsum = _msg_summaries()                           # {id: Haiku caption} → the timeline shows it over the raw body
     tanchors = _thread_anchors(alive_sids)              # {tid: (parent sid, anchorT, name)} — thread mail's home
@@ -19467,7 +19475,17 @@ def _postal_messages(now, alive_sids, id2name):
                "from": id2name.get(f, e.get("from", "")), "to": id2name.get(t, ""),
                "fromOrig": e.get("from", id2name.get(f, f)),
                "sent": st, "exec": ex_t if ex_t else st, "hasExec": ex_t is not None,
-               "pending": ex_t is None and (now - st) < MSG_INFLIGHT_MAX,
+               # pending = the deciding events say it can still land: never read (no exec), never
+               # recalled/bounced, and the recipient can still read it — alive (live_sids, the TRUE
+               # live set, not the lane set), a thread whose parent lane is alive, or a cross-host
+               # relay whose far end this kernel cannot see (honesty over a guess: it stays pending
+               # until the far host's exec/bounce receipt lands). Replaced the 30-min age window
+               # (retired MSG_INFLIGHT_MAX): an unread message to a live recipient is pending at ANY
+               # age — the age said nothing the events don't.
+               "pending": (ex_t is None and mid not in ended
+                           and (live_sids is None or t in live_sids
+                                or (t in tanchors and tanchors[t][0] in live_sids)
+                                or (isinstance(t, str) and t.startswith("peer:")))),
                "text": (e.get("body", "") or "").strip()[:240], "summary": msgsum.get(mid)}
         if ex_dmid:
             row["dmid"] = ex_dmid   # lets the MERGED view join a relayed connector to the remote turn's mids
@@ -20724,7 +20742,11 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
         # shipped, so every live lane painted bar-less with only a "push build:" stderr line as
         # evidence. A band that fails now costs THAT band, loudly, never the frame.
         try:
-            messages = _postal_messages(now, set(id2name), id2name)
+            # alive_sids here is the LANE set (live + dead-within-12h) — right for "draws at all",
+            # wrong for the pending flag's liveness leg, which needs the TRUE live set (a dead
+            # recipient can never read its mail; a dead-lane sender still draws its old arrows)
+            messages = _postal_messages(now, set(id2name), id2name,
+                                        {s for s in id2name if tmux.get(s) is not None})
             _bind_message_execs(messages, turns)         # connector exec → the recipient's process-start (real transit)
             # mids STAY on the wire (2026-08-17): the merged-view dmid join (romp-timeline-view.js) re-binds
             # a relayed connector's exec to the recipient turn by bar mids — the 2026-07-07 payload-audit pop
