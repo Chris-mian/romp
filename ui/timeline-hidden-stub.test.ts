@@ -1,7 +1,8 @@
-// Hidden-counterpart message STUBS (the user 2026-08-24): a postal message whose OTHER endpoint has
-// no visible lane must still show on the lane it touches — a short diagonal stub through the lane's
-// band edge (exiting when the recipient is hidden, entering when the sender is), clipped to the band
-// by arithmetic (no clipPath), sloped toward where the hidden lane would sort, in the SENDER's
+// Hidden-counterpart message STUBS (the user 2026-08-24; HORIZONTAL form later the same day — the
+// angled diagonals fanned out of a lane like a starburst): a postal message whose OTHER endpoint
+// has no visible lane must still show on the lane it touches — a short HORIZONTAL tick on the
+// connectors' own MSG_DROP track offset, incoming ABOVE the lane (ending at the arrival dot ON the
+// lane), outgoing BELOW it with no dot, clipped by arithmetic (no clipPath), in the SENDER's
 // identity color like every full connector (the user 2026-08-24: state colors at stub alpha read as
 // mud), with the arrived/in-flight state on the STROKE STYLE — dashed until the exec binds, solid
 // after, keyed on the exec EVENT, never a timer. Headless draw() over the render test's DOM shim,
@@ -56,7 +57,8 @@ const { TimelinePanel } = createRequire(__filename)(viewPath);
 const SRC = fs.readFileSync(viewPath, "utf8");
 
 const ADA = "#f7768e", BEE = "#7aa2f7";   // sender identity colors (synthData below) — a stub wears its SENDER's
-const HALF = 13;            // LANE_GAP/2 — the band-edge clip distance AND the 45° stub run
+const HALF = 13;            // LANE_GAP/2 — the tick's max x-run
+const OFF = 10;             // MSG_DROP — the stub's track offset, the connectors' own approach height
 
 // Four sessions in a FIXED sort order — ada/cee view-hidden, bee/dee visible. The hidden ones
 // bracket bee so both slope directions (toward-above and toward-below) are exercised.
@@ -103,7 +105,7 @@ const X = (panel: any) => (t: number) => { const gm = panel._geom; return gm.ml 
 const laneY = (panel: any) => (i: number) => panel._geom.top + i * 26 + 13;
 const near = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) < 1e-6, msg + " (got " + a + ", want " + b + ")");
 
-test("a hidden-recipient message draws an outgoing stub: send-anchored, sloped toward the hidden lane, clipped at the band edge, sender-colored and dashed while pending", () => {
+test("a hidden-recipient message draws an outgoing stub: send-anchored, horizontal just BELOW the lane, sender-colored and dashed while pending, no dot", () => {
   const now = 1_781_000_000;
   const panel = draw([{ id: "m1", fromId: "SB", toId: "SC", from: "bee", to: "cee",
                         sent: now - 300, exec: now - 300, hasExec: false, pending: true, summary: "on its way" }]);
@@ -114,9 +116,11 @@ test("a hidden-recipient message draws an outgoing stub: send-anchored, sloped t
   assert.equal(s._attrs["stroke-dasharray"], "1 4", "no exec yet → dashed, the pending-connector idiom");
   assert.ok(s._attrs.opacity < 1, "faded — subordinate to the work bars");
   near(s._attrs.x1, X(panel)(now - 300), "anchored at the send x");
-  near(s._attrs.y1, laneY(panel)(0), "starts on the sender's lane center");
-  near(s._attrs.y2, laneY(panel)(0) + HALF, "clipped AT the band edge — cee sorts after bee, so it exits downward");
-  near(s._attrs.x2, s._attrs.x1 + HALF, "the 45° run toward the live edge, capped");
+  near(s._attrs.y1, laneY(panel)(0) + OFF, "OUTGOING rides just BELOW the lane line — the fixed convention");
+  near(s._attrs.y2, s._attrs.y1, "…and stays horizontal: no angles (the starburst read)");
+  near(s._attrs.x2, s._attrs.x1 + HALF, "the short run toward the live edge, capped");
+  assert.ok(!nodes(panel).some((n) => n.tag === "circle" && Math.abs(n._attrs.cx - s._attrs.x2) < 1e-6),
+    "an outgoing stub has NO dot — the dot is the ARRIVAL mark, and the arrival is off-view");
   assert.equal(s._attrs.opacity, 0.45, "the stub fade level exactly — not invisible, not full-strength");
   assert.equal(s._attrs["pointer-events"], "none", "the visible mark never eats the hover — the hit target owns it");
   const hl = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === BEE && n._attrs["stroke-width"] === 6);
@@ -193,11 +197,11 @@ test("the stub flips dashed→solid on the exec event — hasExec, never the sta
   assert.ok(gs, "the stale stub still draws");
   assert.equal(gs._attrs["stroke-dasharray"], "1 4", "no exec event → still dashed (the timer is not the key)");
   assert.equal(gs._attrs.stroke, BEE, "…and still the sender's color, stale or not");
-  near(gs._attrs.x2, gs._attrs.x1, "with the landing x AT the send, the stub steepens to vertical — arithmetic clamp, no clipPath");
-  near(gs._attrs.y2, laneY(stale)(0) + HALF, "still exits through the band edge");
+  near(gs._attrs.x2, gs._attrs.x1, "with the landing x AT the send, the tick collapses to a point — arithmetic clamp, no clipPath");
+  near(gs._attrs.y2, laneY(stale)(0) + OFF, "still on its outgoing track below the lane");
 });
 
-test("a hidden-sender message draws the mirror stub: entering from the band edge, arriving at the exec point, dot kept on top", () => {
+test("a hidden-sender message draws the mirror stub: horizontal just ABOVE the lane, ending at the arrival dot's x, dot kept on top", () => {
   const now = 1_781_000_000;
   const panel = draw([{ id: "m4", fromId: "SA", toId: "SB", from: "ada", to: "bee",
                         sent: now - 400, exec: now - 100, hasExec: true, pending: false, summary: "delivered" }]);
@@ -205,10 +209,10 @@ test("a hidden-sender message draws the mirror stub: entering from the band edge
   assert.ok(s, "the incoming stub draws");
   assert.equal(s._attrs.stroke, ADA, "the HIDDEN sender's color paints the incoming stub — sender, both directions");
   assert.equal(s._attrs["stroke-dasharray"], undefined, "already executed → solid");
-  near(s._attrs.x2, X(panel)(now - 100), "arrives at the exec x");
-  near(s._attrs.y2, laneY(panel)(0), "arrives on the recipient's lane center");
-  near(s._attrs.y1, laneY(panel)(0) - HALF, "enters from the TOP band edge — ada sorts before bee");
-  near(s._attrs.x1, s._attrs.x2 - HALF, "the 45° entry run");
+  near(s._attrs.x2, X(panel)(now - 100), "ends at the exec x — where the arrival dot sits on the lane");
+  near(s._attrs.y2, laneY(panel)(0) - OFF, "INCOMING rides just ABOVE the lane line — the fixed convention");
+  near(s._attrs.y1, s._attrs.y2, "…and stays horizontal");
+  near(s._attrs.x1, s._attrs.x2 - HALF, "the short entry run");
   const kids = panel.svg.children;
   const dotI = kids.findIndex((n: any) => n.tag === "circle" && Math.abs(n._attrs.cx - X(panel)(now - 100)) < 1e-6);
   assert.ok(dotI >= 0, "the arrival dot still draws on the recipient lane");
@@ -216,13 +220,14 @@ test("a hidden-sender message draws the mirror stub: entering from the band edge
   assert.ok(hitI > dotI, "the stub's hit target is appended after the dots (PASS 3), so the line wins the hover");
 });
 
-test("a counterpart absent from data.sessions slopes by the fixed convention: down", () => {
+test("a counterpart absent from data.sessions rides the same fixed track: outgoing = below", () => {
   const now = 1_781_000_000;
   const panel = draw([{ id: "m5", fromId: "SB", toId: "SX", from: "bee", to: "gone",
                         sent: now - 200, exec: now - 50, hasExec: true, pending: false, summary: "to a cleared session" }]);
   const [s] = stubLines(panel);
-  assert.ok(s, "the stub draws even with no would-be lane to lean toward");
-  near(s._attrs.y2, s._attrs.y1 + HALF, "fixed convention: down, toward the axis");
+  assert.ok(s, "the stub draws even for a counterpart nowhere in data.sessions");
+  near(s._attrs.y1, laneY(panel)(0) + OFF, "outgoing = below the lane, whoever the counterpart is");
+  near(s._attrs.y2, s._attrs.y1, "horizontal — the direction convention carries the meaning, not a slope");
   // the tooltip must name BOTH endpoints even with no counterpart row in data.sessions at all
   // (the user 2026-08-24): the names come from the message ROW itself, never from visible lanes
   const hit = nodes(panel).find((n) => n.tag === "line" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
@@ -261,6 +266,26 @@ test("two visible lanes keep today's full connector — no stub elements", () =>
   assert.equal(stubLines(panel).length, 0, "no stub lines anywhere");
 });
 
+test("the full connector's dash keys on exec knowledge — the stubs' event key, never the staleness flag", () => {
+  // the user 2026-08-24: the connector dashed on the kernel's staleness-aged mm.pending, so the
+  // same stale message flipped solid/dashed when a lane filter toggled it between forms
+  const now = 1_781_000_000;
+  const landed = draw([{ id: "m20", fromId: "SB", toId: "SD", from: "bee", to: "dee",
+                         sent: now - 200, exec: now - 50, hasExec: true, pending: false, summary: "landed" }]);
+  const [pl] = connPaths(landed, "#7aa2f7");
+  assert.equal(pl._attrs["stroke-dasharray"], undefined, "exec known -> solid");
+  assert.equal(pl._attrs.opacity, 0.5, "…at the arrived weight");
+  const stale = draw([{ id: "m21", fromId: "SB", toId: "SD", from: "bee", to: "dee",
+                        sent: now - 400, exec: now - 400, hasExec: false, pending: false, summary: "aged out, never seen landing" }]);
+  const [ps] = connPaths(stale, "#7aa2f7");
+  assert.equal(ps._attrs["stroke-dasharray"], "1 4", "no exec knowledge -> dashed, however old (the timer is not the key)");
+  assert.equal(ps._attrs.opacity, 0.4, "…at the in-flight weight");
+  const pending = draw([{ id: "m22", fromId: "SB", toId: "SD", from: "bee", to: "dee",
+                          sent: now - 60, exec: now - 60, hasExec: false, pending: true, summary: "on its way" }]);
+  const [pp] = connPaths(pending, "#7aa2f7");
+  assert.equal(pp._attrs["stroke-dasharray"], "1 4", "a genuinely in-flight message stays dashed — same render as before");
+});
+
 test("window clamping is arithmetic: an off-window send or landing draws no stub", () => {
   const now = 1_781_000_000;
   const out = draw([{ id: "m8", fromId: "SB", toId: "SC", from: "bee", to: "cee",
@@ -276,7 +301,7 @@ test("window clamping is arithmetic: an off-window send or landing draws no stub
   const [s] = stubLines(old);
   assert.ok(s, "an off-window send with an in-window landing still draws the incoming stub");
   near(s._attrs.x2, X(old)(now - 100), "arriving at the exec x");
-  near(s._attrs.y1, laneY(old)(0) - HALF, "entering from the band edge");
+  near(s._attrs.y1, laneY(old)(0) - OFF, "riding its incoming track above the lane");
 });
 
 // The window clamps only bind within ~13px of a window edge — hard to pin behaviorally — so pin

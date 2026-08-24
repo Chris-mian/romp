@@ -87,11 +87,15 @@ test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separ
   assert.match(SRC, /grp\.addEventListener\('pointerdown', \(e\) => \{\n\s*e\.preventDefault\(\); e\.stopPropagation\(\);\n\s*const nv = JSON\.parse\(JSON\.stringify\(v\)\); nv\.active = 'all'; this\._setViews\(nv\);/);
   // OUTLINE only on the page's own ground (the tinted fill was too much — the user 2026-08-24),
   // and the ✕ is dim and SEPARATE, the composer context chip's read — never baked into the name
-  assert.match(SRC, /fill: 'transparent',\n\s*stroke: gcol, 'stroke-width': 1/);
+  assert.match(SRC, /fill: 'transparent',\n\s*stroke: gcol, 'stroke-width': 1, opacity: gdim/);
+  // a SENTINEL view's chip dims to the corner line's own gray at the N-more opacity (the user
+  // 2026-08-24: at #cccccc it read bright as a tag) — real tag chips keep their tag colors, full strength
+  assert.match(SRC, /const gcol = \(g && g\.color\) \|\| MODEL_FG;/);
+  assert.match(SRC, /const gdim = g \? 1 : 0\.7;/);
   assert.match(SRC, /y: y - 13, width: cw, height: 18, rx: 9,/, "taller chip");
   assert.match(SRC, /cx\.textContent = '✕';/);
   assert.match(SRC, /fill: MODEL_FG, opacity: 0\.75/);
-  assert.match(SRC, /fill: gcol, 'font-weight': 650/);
+  assert.match(SRC, /fill: gcol, 'font-weight': 650, opacity: gdim/);
   assert.match(SRC, /click to remove the filter \(back to the default view\)/);
   // no chip on All — the unfiltered default; the untagged view IS a filter now, so it wears one
   assert.match(SRC, /const active = !!v\.active && v\.active !== 'all' && \(!!g \|\| v\.active === 'untagged'\);/);

@@ -2403,7 +2403,8 @@ class TimelinePanel {
     // any non-All view is a FILTER now, the untagged view included (it excludes tagged sessions),
     // so the chip shows for untagged and tag views alike; its ✕ resets to All, the unfiltered default
     const active = !!v.active && v.active !== 'all' && (!!g || v.active === 'untagged');
-    const gcol = (g && g.color) || '#cccccc';
+    const gcol = (g && g.color) || MODEL_FG;   // a sentinel view (untagged) wears the corner line's own gray
+    const gdim = g ? 1 : 0.7;                  // …at the N-more's opacity: it reads as a FILTER, not a tag
     const PADH = 7, GAP = 6;   // the chip's horizontal padding; the space between the line's parts
     // ellipsize so the WHOLE line stays inside the gutter — measured on the full string (the
     // 650-weight lane font over-measures the plain spans, which is the safe direction), because a
@@ -2446,9 +2447,9 @@ class TimelinePanel {
       grp.setAttribute('style', 'cursor:pointer;');
       const box = el('rect', { x, y: y - 13, width: cw, height: 18, rx: 9,
         fill: 'transparent',
-        stroke: gcol, 'stroke-width': 1 });
+        stroke: gcol, 'stroke-width': 1, opacity: gdim });
       grp.appendChild(box);
-      const ct = el('text', { x: x + PADH, y, 'font-size': 12, fill: gcol, 'font-weight': 650 });
+      const ct = el('text', { x: x + PADH, y, 'font-size': 12, fill: gcol, 'font-weight': 650, opacity: gdim });
       ct.textContent = name;
       ct.setAttribute('style', 'user-select:none;');
       grp.appendChild(ct);
@@ -3708,17 +3709,16 @@ class TimelinePanel {
     // (the CLI's unmappable-member precedent).
     const msgHtml = (mm) => () => { const col = colorOf(mm.fromId); return '<div class="r"><span class="chip" style="background:' + col + '"></span><span class="who" style="color:' + col + '">' + esc(mm.from || mm.fromId) + '</span><span class="ar">→</span><span class="who" style="color:' + colorOf(mm.toId) + '">' + esc(mm.to || mm.toId) + '</span>' + (mm.pending ? ' <span class="k">pending</span>' : '') + '<span class="t">' + clock(mm.sent) + (mm.pending ? ' → …' : ' → ' + clock(mm.exec)) + '</span></div>' + this.body(esc(mm.summary || mm.text || '')); };
     const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); this._select(mm.toId); this.openChat((an && an.tid) || mm.toId, mm.id || (an && (an.uuid || an.replyUuid)), false, false, execAt(mm)); };   // land on the message's OWN postal card BY ID — the chat matches mm.id to the card's data-mid (the user 2026-06-20); nearest-turn uuid / time only as fallback
-    // ── HIDDEN-COUNTERPART STUBS (the user 2026-08-24): a message whose OTHER endpoint has no
-    // visible lane still shows on the lane it does touch — a short diagonal stub through the band
-    // edge, exiting (recipient hidden) or entering (sender hidden), clipped BY ARITHMETIC to the
-    // lane's own band (y stays within laneY(i) ± LANE_GAP/2; this file has no clipPath — keep it
-    // that way), so it visibly leaves for / arrives from somewhere off-view without entering other
-    // lanes' space.
-    // SLOPE: toward where the hidden lane WOULD sit — lanes render in data.sessions order (vis
-    // filters, never reorders), so a counterpart sorted AFTER the shown session would sit below →
-    // the stub points down (+1); sorted before → up (-1). A counterpart absent from data.sessions
-    // entirely (dismissed, #only= filtered, or a foreign session) has no would-be slot: fixed
-    // convention, down (+1, toward the axis), so unknowable counterparts always read one way.
+    // ── HIDDEN-COUNTERPART STUBS (the user 2026-08-24; HORIZONTAL form later the same day — the
+    // angled diagonals fanned out of a busy lane like a starburst and read as noise): a message
+    // whose OTHER endpoint has no visible lane still shows on the lane it does touch, as a short
+    // HORIZONTAL tick on a fixed offset inside the band (clipped BY ARITHMETIC — this file has no
+    // clipPath, keep it that way). The CONVENTION carries the direction, not a slope: an INCOMING
+    // stub rides just ABOVE the lane line and ends at the arrival x, where the dot pass puts the
+    // arrival dot ON the lane — the dot IS the arrival mark; an OUTGOING stub rides just BELOW,
+    // and has NO dot (its recipient's lane is not here to land on — the dot pass never draws for a
+    // hidden recipient by construction). The offset is MSG_DROP, the same track height the full
+    // connectors approach a lane on, so a stub reads as a truncated connector, not a new mark.
     // TWO-STATE STROKE, keyed on the exec EVENT, never a timer: mm.pending folds in the kernel's
     // in-flight staleness window (MSG_INFLIGHT_MAX), so it is NOT the key. Exec knowledge is:
     // hasExec (the logged exec event — kernel serialization, the federation upgrade, or the
@@ -3732,24 +3732,23 @@ class TimelinePanel {
     // connectors — working-yellow at 0.45 was a muddy orange). The faded 0.45 stays, keeping
     // stubs subordinate to the work bars.
     const STUB_W = 3;                // a hair over MSG_W0 — a ~15px stroke needs the weight to read
-    const STUB_DX = LANE_GAP / 2;    // full-height run → 45° in the lane grid; a nearer landing steepens it
+    const STUB_DX = LANE_GAP / 2;    // the tick's max run — short on purpose; the tooltip carries the true span
     const stub = (mm, i, senderVisible) => {
-      const sid = senderVisible ? mm.fromId : mm.toId, hid = senderVisible ? mm.toId : mm.fromId;
+      const sid = senderVisible ? mm.fromId : mm.toId;
       const ly = laneY(vidx[sid]);
-      const oi = data.sessions.findIndex((s) => s.id === sid), hi = data.sessions.findIndex((s) => s.id === hid);
-      const dir = (hi < 0 || hi > oi) ? 1 : -1;   // toward the hidden lane's would-be slot (see SLOPE above)
       let x1, y1, x2, y2;
       if (senderVisible) {
-        // outgoing: anchored at the send, exits through the band edge toward the landing x (the
-        // live edge while pending, via execAt inside landXT) — never past it, never past the window
+        // outgoing: BELOW the lane, anchored at the send, running toward the landing x (the live
+        // edge while pending, via execAt inside landXT) — never past it, never past the window
         if (!inWin(sendXT(mm))) return;
-        x1 = x(sendXT(mm)); y1 = ly;
-        x2 = Math.max(x1, Math.min(x(Math.min(landXT(mm), t1)), x1 + STUB_DX)); y2 = ly + dir * LANE_GAP / 2;
+        x1 = x(sendXT(mm)); y1 = ly + MSG_DROP;
+        x2 = Math.max(x1, Math.min(x(Math.min(landXT(mm), t1)), x1 + STUB_DX)); y2 = y1;
       } else {
-        // incoming: the mirror — enters from the band edge, arrives at the landing point
+        // incoming: ABOVE the lane, the mirror — ending at the landing x, the arrival dot on the
+        // lane just beneath it
         if (!inWin(landXT(mm))) return;
-        x2 = x(landXT(mm)); y2 = ly;
-        x1 = Math.min(x2, Math.max(x(Math.max(sendXT(mm), t0)), x2 - STUB_DX)); y1 = ly + dir * LANE_GAP / 2;
+        x2 = x(landXT(mm)); y2 = ly - MSG_DROP;
+        x1 = Math.min(x2, Math.max(x(Math.max(sendXT(mm), t0)), x2 - STUB_DX)); y1 = y2;
       }
       const col = colorOf(mm.fromId);   // the SENDER's color — the full connectors' own resolution
       const arrived = mm.hasExec || mm.exec !== mm.sent;
@@ -3793,8 +3792,14 @@ class TimelinePanel {
                 : (xc > xs + 0.5) ? [{ x: xs, y: ys }, { x: xc, y: ys }, { x: xc, y: track }, { x: xe, y: track }, { x: xe, y: ye }]
                                   : [{ x: xs, y: ys }, { x: xs, y: track }, { x: xe, y: track }, { x: xe, y: ye }];
       const d = roundedPath(pts, CORNER);
-      const lineAttr = { d, fill: 'none', stroke: col, 'stroke-width': MSG_W0, opacity: mm.pending ? 0.4 : 0.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
-      if (mm.pending) lineAttr['stroke-dasharray'] = '1 4';
+      // dash + fade key on EXEC KNOWLEDGE — the stubs' exact event key (the user 2026-08-24: the
+      // connector dashed on the kernel's staleness-aged mm.pending, so the same stale message
+      // flipped solid/dashed whenever a lane filter toggled it between connector and stub form;
+      // exact events over time heuristics). mm.pending stays for what it truthfully says: execAt's
+      // live-edge x and the tooltip's "pending → …" wording.
+      const arrived = mm.hasExec || mm.exec !== mm.sent;
+      const lineAttr = { d, fill: 'none', stroke: col, 'stroke-width': MSG_W0, opacity: arrived ? 0.5 : 0.4, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
+      if (!arrived) lineAttr['stroke-dasharray'] = '1 4';
       svg.appendChild(el('path', lineAttr));
       // A connector in the focused journey (DAG card hover) or the hovered subtree's delegation messages
       // lights EXACTLY like its native hover: the own-color highlight overlay at full strength — no white
