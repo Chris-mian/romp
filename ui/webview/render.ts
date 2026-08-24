@@ -4477,6 +4477,25 @@ function showTabMenu(e: MouseEvent, id: string) {
     rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id); });
     menu.appendChild(rename);
   }
+  // Colors join Rename in the AESTHETIC section (the user 2026-08-24, the final by-kind grouping:
+  // [Rename + colors] / [feed, mail, bell, billing, Tags] / [Browse]). The swatch row itself is
+  // unchanged (the user 2026-06-29): the identity palette as circles, the current one ringed,
+  // omitted until /palette has loaded.
+  if (paletteColors.length) {
+    const sNow = sessions.get(id);
+    const cur = (sNow && sNow.color ? sNow.color.bg : "").toLowerCase();
+    const row = el("div", "ctx-colors");
+    for (const bg of paletteColors) {
+      const sw = el("button", "ctx-swatch" + (bg.toLowerCase() === cur ? " sel" : ""));
+      sw.style.background = bg;
+      sw.title = bg;
+      sw.setAttribute("aria-label", "Set color " + bg);
+      sw.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); setSessionColor(id, bg); });
+      row.appendChild(sw);
+    }
+    menu.appendChild(row);
+  }
+  menu.appendChild(el("div", "ctx-sep"));
   // Feed + Mail per-session toggles (the user 2026-06-26) — the same controls as the timeline lane's feed
   // checkbox + postal mailbox, here as icon + label + a faint "what it does" sub-line. State from the session.
   const s = sessions.get(id);
@@ -4519,7 +4538,7 @@ function showTabMenu(e: MouseEvent, id: string) {
   // reconnects to apply, so the sub-line says "applying…" while st.authPending rides the status).
   const st = s ? s.status : null;
   if (st && st.auth && st.authBoth) {
-    menu.appendChild(el("div", "ctx-sep"));
+    // (no divider: billing sits in the behavior section with the toggles — the by-kind grouping)
     const item = el("div", "ctx-item ctx-item-toggle ctx-item-billing");
     item.appendChild(ctxIcon("bill", false));
     const bodyEl = el("span", "ctx-item-body");
@@ -4556,22 +4575,6 @@ function showTabMenu(e: MouseEvent, id: string) {
     });
     menu.appendChild(item);
   }
-  // Color swatches (the user 2026-06-29): the romp identity palette as circles, the session's current one
-  // ringed. Click one to recolor the session. Omitted until /palette has loaded (paletteColors empty).
-  if (paletteColors.length) {
-    menu.appendChild(el("div", "ctx-sep"));
-    const cur = (s && s.color ? s.color.bg : "").toLowerCase();
-    const row = el("div", "ctx-colors");
-    for (const bg of paletteColors) {
-      const sw = el("button", "ctx-swatch" + (bg.toLowerCase() === cur ? " sel" : ""));
-      sw.style.background = bg;
-      sw.title = bg;
-      sw.setAttribute("aria-label", "Set color " + bg);
-      sw.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); setSessionColor(id, bg); });
-      row.appendChild(sw);
-    }
-    menu.appendChild(row);
-  }
   // TAGS (the user 2026-08-24, overruling the earlier skip: tag editing belongs everywhere a
   // session is in front of you — you might not have the timeline open and still want to organize
   // or dispatch). A compact one-line row — the current tag names as the sub-line — with the
@@ -4584,7 +4587,6 @@ function showTabMenu(e: MouseEvent, id: string) {
   // editTag op and settle on the next push (a refused edit re-appears — the kernel's loud
   // tagEditFailed lands on the timeline dialog, 628's surface).
   {
-    menu.appendChild(el("div", "ctx-sep"));
     const unionFor = () => viewTagUnion(effViews());
     const holding = () => unionFor().filter((g) => g.members.includes(id));
     const tagsItem = el("div", "ctx-item ctx-item-toggle ctx-item-tags");
