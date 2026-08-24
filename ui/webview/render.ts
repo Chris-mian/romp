@@ -7582,8 +7582,17 @@ function showActive() {
   // `length > 0` guard is what stops a zero-event session from flashing (or sticking on) "Loading…".
   const heavy = s.events.length > 0 && (v.el.childNodes.length === 0 || (settings.compact && (v.rendered !== s.events.length || v.stale)));
   if (!heavy) { syncView(activeId!); landActive(content, v); return; }
-  if (v.el.childNodes.length === 0) {   // truly empty → a light loading hint (a stale view keeps its old content visible)
-    const ld = el("div", "tx-loading"); ld.textContent = "Loading transcript…"; v.el.appendChild(ld);
+  if (v.el.childNodes.length === 0) {   // truly empty → the ROMP LOADER holds the spot (the standing
+    // wait-state rule: swirl + wordmark + pulsing accent dots — never a bare hint). Removed by the
+    // deferred build replacing this view's children — the content event — and that build always
+    // runs (or the next syncView rebuilds), so the loader cannot trap.
+    const ld = el("div", "tx-loading");
+    const sw = document.createElement("img"); sw.className = "tx-loading-swirl";
+    sw.src = mediaSrc("romp-swirl-glyph.svg"); sw.alt = ""; sw.onerror = () => sw.remove();
+    const wm = el("span", "tx-loading-wordmark"); wm.textContent = "romp";
+    const dots = el("span", "tx-loading-dots"); dots.append(el("i"), el("i"), el("i"));
+    ld.append(sw, wm, dots);
+    v.el.appendChild(ld);
   }
   if (pendingBuildRaf != null) cancelAnimationFrame(pendingBuildRaf);
   const target = activeId!;
@@ -11474,6 +11483,22 @@ function setupSettings(): void {
   onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); rerenderAll(); });
 }
 
+// The feed's click echo (feed.ts focusEcho — the user 2026-08-24, "clicking into a not-shown
+// session is slow"): activate NOW, before any kernel round-trip — the tab/peek + loader are the
+// instant acknowledgment, and the kernel's focus frame follows with the anchor, re-deriving the
+// peek idempotently. Unknown sids fall through to the kernel (it may route a revive/confirm).
+window.addEventListener("storage", (e) => {
+  if (e.key !== "romp:focus-echo" || !e.newValue) return;
+  try {
+    const v = JSON.parse(e.newValue);
+    const sid = typeof v.sid === "string" ? v.sid : "";
+    if (!sid || (!sessions.has(sid) && !tabMeta.has(sid))) return;
+    revealSelfPane();
+    closingTabs.delete(sid);
+    assertPeekFor(sid);
+    setActive(sid);
+  } catch { /* malformed echo — the kernel frame corrects momentarily */ }
+});
 setupComposer();
 setupSettings();
 // Tab-bar clicks are DELEGATED to the stable #tabs container (installed once), not hung on the per-tab nodes

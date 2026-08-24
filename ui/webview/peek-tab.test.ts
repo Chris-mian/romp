@@ -34,7 +34,7 @@ test("peek AUTO-CLOSE: activating any other tab drops it — same derivation, no
   // views-arrival paths): setActive (every activation), the focus fast path (already-active),
   // captureViews (kernel-pushed views), postViews (local optimistic edit). Nothing else derives.
   const sites = RENDER.match(/assertPeekFor\(/g) || [];
-  assert.equal(sites.length, 5, "definition + 4 call sites: setActive, focus fast path, captureViews, postViews");
+  assert.equal(sites.length, 6, "definition + 5 call sites: setActive, focus fast path, captureViews, postViews, and the feed click echo (2026-08-24 — the instant ack derives the peek before the kernel frame)");
 });
 
 test("a view change that excludes the ACTIVE session converts it into the peek — never a bounce (the user 2026-08-24)", () => {
