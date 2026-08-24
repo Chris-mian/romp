@@ -1,7 +1,7 @@
 // Hidden-counterpart message STUBS (the user 2026-08-24; HORIZONTAL form later the same day — the
 // angled diagonals fanned out of a lane like a starburst): a postal message whose OTHER endpoint
-// has no visible lane must still show on the lane it touches — a short HORIZONTAL tick on the
-// connectors' own MSG_DROP track offset, incoming ABOVE the lane (ending at the arrival dot ON the
+// has no visible lane must still show on the lane it touches — a HORIZONTAL line spanning the
+// whole flight, x(sent) → x(exec), on the connectors' own MSG_DROP track offset, incoming ABOVE the lane (ending at the arrival dot ON the
 // lane), outgoing BELOW it with no dot, clipped by arithmetic (no clipPath), in the SENDER's
 // identity color like every full connector (the user 2026-08-24: state colors at stub alpha read as
 // mud), with the arrived/in-flight state on the STROKE STYLE — dashed until the exec binds, solid
@@ -57,7 +57,6 @@ const { TimelinePanel } = createRequire(__filename)(viewPath);
 const SRC = fs.readFileSync(viewPath, "utf8");
 
 const ADA = "#f7768e", BEE = "#7aa2f7";   // sender identity colors (synthData below) — a stub wears its SENDER's
-const HALF = 13;            // LANE_GAP/2 — the tick's max x-run
 const OFF = 10;             // MSG_DROP — the stub's track offset, the connectors' own approach height
 
 // Four sessions in a FIXED sort order — ada/cee view-hidden, bee/dee visible. The hidden ones
@@ -118,7 +117,12 @@ test("a hidden-recipient message draws an outgoing stub: send-anchored, horizont
   near(s._attrs.x1, X(panel)(now - 300), "anchored at the send x");
   near(s._attrs.y1, laneY(panel)(0) + OFF, "OUTGOING rides just BELOW the lane line — the fixed convention");
   near(s._attrs.y2, s._attrs.y1, "…and stays horizontal: no angles (the starburst read)");
-  near(s._attrs.x2, s._attrs.x1 + HALF, "the short run toward the live edge, capped");
+  // full span, not the old 13px nub (the user 2026-08-24 regression): out to the live edge while
+  // pending — sub-pixel slack because the panel's live edge interpolates a hair off the fixture now
+  assert.ok(Math.abs(s._attrs.x2 - X(panel)(now)) < 0.5, "ends at the live edge (got " + s._attrs.x2 + ")");
+  assert.ok(Math.abs((s._attrs.x2 - s._attrs.x1) - (X(panel)(now) - X(panel)(now - 300))) < 0.5,
+    "…the span IS the flight: send to live edge, however long — the run cap is gone");
+  assert.ok(s._attrs.x2 - s._attrs.x1 > 13.5, "…and it beats the old 13px cap on this fixture");
   assert.ok(!nodes(panel).some((n) => n.tag === "circle" && Math.abs(n._attrs.cx - s._attrs.x2) < 1e-6),
     "an outgoing stub has NO dot — the dot is the ARRIVAL mark, and the arrival is off-view");
   assert.equal(s._attrs.opacity, 0.45, "the stub fade level exactly — not invisible, not full-strength");
@@ -212,7 +216,7 @@ test("a hidden-sender message draws the mirror stub: horizontal just ABOVE the l
   near(s._attrs.x2, X(panel)(now - 100), "ends at the exec x — where the arrival dot sits on the lane");
   near(s._attrs.y2, laneY(panel)(0) - OFF, "INCOMING rides just ABOVE the lane line — the fixed convention");
   near(s._attrs.y1, s._attrs.y2, "…and stays horizontal");
-  near(s._attrs.x1, s._attrs.x2 - HALF, "the short entry run");
+  near(s._attrs.x1, X(panel)(now - 400), "the FULL span back to the send x — no run cap");
   const kids = panel.svg.children;
   const dotI = kids.findIndex((n: any) => n.tag === "circle" && Math.abs(n._attrs.cx - X(panel)(now - 100)) < 1e-6);
   assert.ok(dotI >= 0, "the arrival dot still draws on the recipient lane");
@@ -309,8 +313,9 @@ test("window clamping is arithmetic: an off-window send or landing draws no stub
 test("both stub anchors gate on their own endpoint and clamp x to the window by arithmetic (source pins)", () => {
   assert.match(SRC, /if \(!inWin\(sendXT\(mm\)\)\) return;/);
   assert.match(SRC, /if \(!inWin\(landXT\(mm\)\)\) return;/);
-  assert.match(SRC, /x2 = Math\.max\(x1, Math\.min\(x\(Math\.min\(landXT\(mm\), t1\)\), x1 \+ STUB_DX\)\)/);
-  assert.match(SRC, /x1 = Math\.min\(x2, Math\.max\(x\(Math\.max\(sendXT\(mm\), t0\)\), x2 - STUB_DX\)\)/);
+  assert.match(SRC, /x2 = Math\.max\(x1, x\(Math\.min\(landXT\(mm\), t1\)\)\)/);
+  assert.match(SRC, /x1 = Math\.min\(x2, x\(Math\.max\(sendXT\(mm\), t0\)\)\)/);
+  assert.doesNotMatch(SRC, /STUB_DX/, "the run cap is GONE — it bounded a diagonal's rise; flattened it made nubs");
   assert.doesNotMatch(SRC, /el\('clipPath'|clip-path/i, "clipped by arithmetic, never a clipPath element");
   // the sender-color + dash retarget (the user 2026-08-24): color from the full connectors' own
   // lookup, arrived/in-flight on the stroke style, and the old state-color tokens are GONE

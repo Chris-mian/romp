@@ -3711,8 +3711,9 @@ class TimelinePanel {
     const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); this._select(mm.toId); this.openChat((an && an.tid) || mm.toId, mm.id || (an && (an.uuid || an.replyUuid)), false, false, execAt(mm)); };   // land on the message's OWN postal card BY ID — the chat matches mm.id to the card's data-mid (the user 2026-06-20); nearest-turn uuid / time only as fallback
     // ── HIDDEN-COUNTERPART STUBS (the user 2026-08-24; HORIZONTAL form later the same day — the
     // angled diagonals fanned out of a busy lane like a starburst and read as noise): a message
-    // whose OTHER endpoint has no visible lane still shows on the lane it does touch, as a short
-    // HORIZONTAL tick on a fixed offset inside the band (clipped BY ARITHMETIC — this file has no
+    // whose OTHER endpoint has no visible lane still shows on the lane it does touch, as a
+    // HORIZONTAL line spanning the message's whole flight, x(sent) → x(exec), on a fixed offset
+    // inside the band (clipped BY ARITHMETIC — this file has no
     // clipPath, keep it that way). The CONVENTION carries the direction, not a slope: an INCOMING
     // stub rides just ABOVE the lane line and ends at the arrival x, where the dot pass puts the
     // arrival dot ON the lane — the dot IS the arrival mark; an OUTGOING stub rides just BELOW,
@@ -3731,24 +3732,25 @@ class TimelinePanel {
     // (the user 2026-08-24: the old state colors at stub alpha read as mud beside sender-colored
     // connectors — working-yellow at 0.45 was a muddy orange). The faded 0.45 stays, keeping
     // stubs subordinate to the work bars.
-    const STUB_W = 3;                // a hair over MSG_W0 — a ~15px stroke needs the weight to read
-    const STUB_DX = LANE_GAP / 2;    // the tick's max run — short on purpose; the tooltip carries the true span
+    const STUB_W = 3;                // a hair over MSG_W0 — a band-edge stroke needs the weight to read
     const stub = (mm, i, senderVisible) => {
       const sid = senderVisible ? mm.fromId : mm.toId;
       const ly = laneY(vidx[sid]);
       let x1, y1, x2, y2;
       if (senderVisible) {
-        // outgoing: BELOW the lane, anchored at the send, running toward the landing x (the live
-        // edge while pending, via execAt inside landXT) — never past it, never past the window
+        // outgoing: BELOW the lane, the FULL flight span — send x to the landing x (the live edge
+        // while pending, via execAt inside landXT), clamped to the window by arithmetic. The old
+        // run cap bounded a 45° diagonal's rise; flattened it shrank every stub to a ~13px nub
+        // (the user 2026-08-24) — the span IS the feature: how long the message was in flight.
         if (!inWin(sendXT(mm))) return;
         x1 = x(sendXT(mm)); y1 = ly + MSG_DROP;
-        x2 = Math.max(x1, Math.min(x(Math.min(landXT(mm), t1)), x1 + STUB_DX)); y2 = y1;
+        x2 = Math.max(x1, x(Math.min(landXT(mm), t1))); y2 = y1;
       } else {
-        // incoming: ABOVE the lane, the mirror — ending at the landing x, the arrival dot on the
-        // lane just beneath it
+        // incoming: ABOVE the lane, the mirror — the full span into the landing x, the arrival dot
+        // on the lane just beneath it; an off-window send clamps to the window edge
         if (!inWin(landXT(mm))) return;
         x2 = x(landXT(mm)); y2 = ly - MSG_DROP;
-        x1 = Math.min(x2, Math.max(x(Math.max(sendXT(mm), t0)), x2 - STUB_DX)); y1 = y2;
+        x1 = Math.min(x2, x(Math.max(sendXT(mm), t0))); y1 = y2;
       }
       const col = colorOf(mm.fromId);   // the SENDER's color — the full connectors' own resolution
       const arrived = mm.hasExec || mm.exec !== mm.sent;
