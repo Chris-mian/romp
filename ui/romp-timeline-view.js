@@ -15,7 +15,9 @@ const LANE_GAP = 26, BAR_H = 8, CORNER = 6, MSG_DROP = 10, DOT_R = 6, CLEAR = DO
 // Demo/recording VIEW filter (the user 2026-07-14): the dashboard loaded at `#only=<tag>` scopes every
 // pane to sessions whose name starts with <tag>. The timeline reads the SHELL's URL (window.top) so one
 // tag on the dashboard URL filters the lanes here too; a cross-origin top falls back to our own URL.
-// Filtering data.sessions is enough — cross-session flows already skip when a lane is absent (vidx guard).
+// Filtering data.sessions is enough for FULL connectors — those skip when a lane is absent (vidx
+// guard). A message with exactly ONE endpoint on-camera still draws its band-edge stub (the stub
+// pass in draw()), whose tooltip names the off-camera counterpart — mind that when recording.
 function _rompOnlyTag() {
   const read = (loc) => { try { const hay = (loc.hash || "") + " " + (loc.search || ""); const m = hay.match(/only=([^&\s]+)/i); return m ? (decodeURIComponent(m[1]).trim().toLowerCase() || null) : null; } catch (e) { return null; } };
   if (typeof window === "undefined") return null;   // no DOM (a test/headless context) → no filter
@@ -2996,7 +2998,7 @@ class TimelinePanel {
       data.messages.forEach((mm) => {
         const s1 = midStart[mm.toId + '|' + (mm.id || '')], s2 = midStart[mm.toId + '|' + (mm.dmid || '')];
         const st = (s1 != null && s2 != null) ? Math.min(s1, s2) : (s1 != null ? s1 : s2);
-        if (st != null) { mm.exec = st; mm.pending = false; }
+        if (st != null) { mm.exec = st; mm.pending = false; mm.hasExec = true; }   // a join IS exec knowledge — the hidden-counterpart stub color keys on hasExec
       });
     }
     const startAt = (t) => t.pending ? nowS : t.start;
@@ -3670,9 +3672,74 @@ class TimelinePanel {
     const msgUI = {};   // message index → { hl, dot }, shared across the line + dot passes
     const msgHtml = (mm) => () => { const col = colorOf(mm.fromId); return '<div class="r"><span class="chip" style="background:' + col + '"></span><span class="who" style="color:' + col + '">' + esc(mm.from) + '</span><span class="ar">→</span><span class="who" style="color:' + colorOf(mm.toId) + '">' + esc(mm.to) + '</span>' + (mm.pending ? ' <span class="k">pending</span>' : '') + '<span class="t">' + clock(mm.sent) + (mm.pending ? ' → …' : ' → ' + clock(mm.exec)) + '</span></div>' + this.body(esc(mm.summary || mm.text || '')); };
     const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); this._select(mm.toId); this.openChat((an && an.tid) || mm.toId, mm.id || (an && (an.uuid || an.replyUuid)), false, false, execAt(mm)); };   // land on the message's OWN postal card BY ID — the chat matches mm.id to the card's data-mid (the user 2026-06-20); nearest-turn uuid / time only as fallback
+    // ── HIDDEN-COUNTERPART STUBS (the user 2026-08-24): a message whose OTHER endpoint has no
+    // visible lane still shows on the lane it does touch — a short diagonal stub through the band
+    // edge, exiting (recipient hidden) or entering (sender hidden), clipped BY ARITHMETIC to the
+    // lane's own band (y stays within laneY(i) ± LANE_GAP/2; this file has no clipPath — keep it
+    // that way), so it visibly leaves for / arrives from somewhere off-view without entering other
+    // lanes' space.
+    // SLOPE: toward where the hidden lane WOULD sit — lanes render in data.sessions order (vis
+    // filters, never reorders), so a counterpart sorted AFTER the shown session would sit below →
+    // the stub points down (+1); sorted before → up (-1). A counterpart absent from data.sessions
+    // entirely (dismissed, #only= filtered, or a foreign session) has no would-be slot: fixed
+    // convention, down (+1, toward the axis), so unknowable counterparts always read one way.
+    // TWO-STATE COLOR, keyed on the exec EVENT, never a timer: mm.pending folds in the kernel's
+    // in-flight staleness window (MSG_INFLIGHT_MAX), so it is NOT the key. Exec knowledge is:
+    // hasExec (the logged exec event — kernel serialization, the federation upgrade, or the
+    // midStart join above) OR exec moved off its sent-time fallback (the kernel serializes
+    // exec = sent until a binder writes a real landing; _bind_message_execs' text-heuristic path
+    // binds exec without ever logging an event, so hasExec alone would miss it — and federation
+    // shifts sent and a fallback exec by the same offset, so the comparison survives rebasing).
+    // No exec known → await-green; exec known → working-yellow — both faded, the awaitingBg
+    // stretch's treatment. This file cannot load ui/webview/styles.css (it also runs inside
+    // Obsidian), so the two tokens are inlined with their names — the MENU_STYLE precedent:
+    const STUB_GREEN = '#54B204';    // --st-awaitbg-bg (await-green)
+    const STUB_YELLOW = '#e0b020';   // --st-working-bg (working-yellow)
+    const STUB_W = 3;                // a hair over MSG_W0 — a ~15px stroke needs the weight to read
+    const STUB_DX = LANE_GAP / 2;    // full-height run → 45° in the lane grid; a nearer landing steepens it
+    const stub = (mm, i, senderVisible) => {
+      const sid = senderVisible ? mm.fromId : mm.toId, hid = senderVisible ? mm.toId : mm.fromId;
+      const ly = laneY(vidx[sid]);
+      const oi = data.sessions.findIndex((s) => s.id === sid), hi = data.sessions.findIndex((s) => s.id === hid);
+      const dir = (hi < 0 || hi > oi) ? 1 : -1;   // toward the hidden lane's would-be slot (see SLOPE above)
+      let x1, y1, x2, y2;
+      if (senderVisible) {
+        // outgoing: anchored at the send, exits through the band edge toward the landing x (the
+        // live edge while pending, via execAt inside landXT) — never past it, never past the window
+        if (!inWin(sendXT(mm))) return;
+        x1 = x(sendXT(mm)); y1 = ly;
+        x2 = Math.max(x1, Math.min(x(Math.min(landXT(mm), t1)), x1 + STUB_DX)); y2 = ly + dir * LANE_GAP / 2;
+      } else {
+        // incoming: the mirror — enters from the band edge, arrives at the landing point
+        if (!inWin(landXT(mm))) return;
+        x2 = x(landXT(mm)); y2 = ly;
+        x1 = Math.min(x2, Math.max(x(Math.max(sendXT(mm), t0)), x2 - STUB_DX)); y1 = ly + dir * LANE_GAP / 2;
+      }
+      const col = (mm.hasExec || mm.exec !== mm.sent) ? STUB_YELLOW : STUB_GREEN;
+      svg.appendChild(el('line', { x1, y1, x2, y2, stroke: col, 'stroke-width': STUB_W, opacity: 0.45,
+                                   'stroke-linecap': 'round', 'pointer-events': 'none' }));
+      // same affordances as a full connector: own-color highlight overlay + wide transparent hit,
+      // co-lit with the arrival dot (PASS 2 links via msgUI), tooltip + click → where it landed
+      const msgLit = dagOrHoverMsg(mm.id);
+      const hl = el('line', { x1, y1, x2, y2, stroke: col, 'stroke-width': STUB_W + 3, opacity: msgLit ? 0.95 : 0,
+                              'stroke-linecap': 'round', 'pointer-events': 'none' });
+      svg.appendChild(hl);
+      const u = (msgUI[i] = { hl, dot: null, lit: msgLit });
+      const hit = el('line', { x1, y1, x2, y2, stroke: 'transparent', 'stroke-width': MSG_HIT_W, 'stroke-linecap': 'round' });
+      hit.style.cursor = 'pointer';
+      const mEnter = (e) => { hl.setAttribute('opacity', '0.95'); if (u.dot) u.dot.setAttribute('r', DOT_R + 2); this.showTip(msgHtml(mm)(), e); };
+      hit.__tlHoverIn = mEnter;                    // re-armable after a redraw rebuilds this stub (_rehover)
+      hit.addEventListener('mouseenter', mEnter);
+      hit.addEventListener('mousemove', (e) => this.moveTip(e));
+      hit.addEventListener('mouseleave', () => { hl.setAttribute('opacity', msgLit ? '0.95' : '0'); if (u.dot) u.dot.setAttribute('r', msgLit ? DOT_R + 2 : DOT_R); this.hideTip(); });
+      hit.addEventListener('click', msgNav(mm));
+      u.hit = hit;   // appended in PASS 3 with the connector hits, over the dots
+    };
     // PASS 1: connector line + highlight (drawn first so the dots sit on top).
     data.messages.forEach((mm, i) => {
-      if (vidx[mm.fromId] == null || vidx[mm.toId] == null) return;
+      const sVis = vidx[mm.fromId] != null, rVis = vidx[mm.toId] != null;
+      if (sVis !== rVis) { stub(mm, i, sVis); return; }   // exactly one endpoint visible → a band-edge stub
+      if (!sVis) return;                                  // both endpoints hidden → nothing to draw
       if (landXT(mm) < t0 || sendXT(mm) > t1) return;
       const sLane = vidx[mm.fromId], rLane = vidx[mm.toId];
       const offL = sendXT(mm) < t0;   // sent BEFORE the visible window — only the delivery is in view
