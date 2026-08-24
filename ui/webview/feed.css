@@ -457,6 +457,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the chip's elapsed readout (" · 42m") — same size as the chip text, dimmed like a sub-line so the
    peer name stays the loudest word (the user 2026-08-23) */
 .fask-waiton-dur { opacity: 0.6; font-weight: 400; }
+/* the sub-goals button's dim " · N parked" suffix (the user 2026-08-24) — same quiet sub-line
+   treatment as the waiting-chip's elapsed readout; the loud word stays the sub-goal count */
+.fask-subparked { opacity: 0.6; font-weight: 400; }
 
 /* ---- ask DAG tree (expanded body) — nodes only; click a node for its history ---- */
 /* width:fit-content hugs the widest row so the right-aligned "(Xm ago)" node times sit just past the
@@ -568,6 +571,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* the one-word "cleared" chip on a cleared row (the user 2026-07-25: the strike alone read as
    unexplained machinery) — dim, outside the strikethrough, same small-tag size as .ftree-who */
 .fcleared-tag { flex: 0 0 auto; font-size: 0.92em; color: var(--dim);
+  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 4px; padding: 0 5px; line-height: 1.5; }
+/* the one-word "parked" hint on a leapfrogged open row (the user 2026-08-24: a queued ask sat
+   silently while newer siblings were dispatched past it) — the cleared tag's exact metrics, dim by
+   design: a hint to glance at, never the trouble-chip family's yellow/red */
+.fparked-tag { flex: 0 0 auto; font-size: 0.92em; color: var(--dim);
   border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 4px; padding: 0 5px; line-height: 1.5; }
 .ftree-node.st-cleared .ftree-text { text-decoration: line-through; text-decoration-color: var(--dim); }
 .ftree-node.st-cleared .ftree-mark { color: var(--dim); }
