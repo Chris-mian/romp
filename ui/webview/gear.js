@@ -101,11 +101,9 @@ var GEAR_HTML =
   '<option value=over50>When above 50%</option><option value=always>Always</option><option value=never>Never</option>' +
   '</select></span></div>' +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Text scheme</b>" +
-  "<span class=rs-sub>Chat text colors only. High contrast lifts prose and the dimmer tool text together; Solarized Dark wears its text tiers on romp's dark ground. (Solarized Light is omitted — its tiers are made for a light page and turn muddy here.)</span>" +
-  "<select id=rs-chatscheme style='margin-top:5px;width:100%;background:#1e1e1e;color:#ccc;" +
-  "border:1px solid #3a3a3a;border-radius:5px;padding:3px 4px;cursor:pointer'>" +
-  '<option value=default>Default</option><option value=high-contrast>High contrast</option><option value=solarized-dark>Solarized Dark</option>' +
-  '</select></span></div>' +
+  "<span class=rs-sub>Chat text colors only. Each row previews its own tiers — prose, the dimmer tool text, code. (Solarized Light is omitted — its tiers are made for a light page and turn muddy here.)</span>" +
+  "<div id=rs-chatscheme style='margin-top:5px;display:flex;flex-direction:column;gap:4px'></div>" +
+  '</span></div>' +
   '<div class=rs-sec>Feed</div>' +
   '<label class=rs-row><input type=checkbox id=rs-feedcollapsed>' +
   '<span><b>Collapse cards by default</b>' +
@@ -204,8 +202,35 @@ function initGear(post) {
   cc.addEventListener('change', function () { var s = load(); s.compact = cc.checked; save(s); });
   if (gb) gb.addEventListener('change', function () { var s = load(); s.showBranch = gb.checked; save(s); });
   if (tc) tc.addEventListener('change', function () { var s = load(); s.tabCtx = tc.value; save(s); });
-  // mirrors settings.ts chatScheme (this file can't import the TS module): unknown → default
-  if (cs) cs.addEventListener('change', function () { var s = load(); s.chatScheme = cs.value; save(s); });
+  // The scheme PREVIEW CARDS (the user 2026-08-24, on the live check: "I need to see a preview").
+  // Tier hexes MIRROR styles.css body.scheme-* (this file can't read the sheet across webviews);
+  // chat-scheme.test.ts pins the two byte-equal so they cannot drift. Default previews the stock
+  // tiers. Each card paints ITS OWN tiers on the chat's dark ground; the current pick wears the
+  // menu vocabulary's ✓-in-circle. Clicking applies live (save() dispatches romp:settings).
+  var SCHEMES = [
+    { id: 'default', name: 'Default', fg: '#cccccc', dim: '#9a9a9a', code: '#e1c08d' },
+    { id: 'high-contrast', name: 'High contrast', fg: '#e8e8e8', dim: '#b8b8b8', code: '#ecd9ae' },
+    { id: 'solarized-dark', name: 'Solarized Dark', fg: '#eee8d5', dim: '#93a1a1', code: '#d5b02d' }
+  ];
+  function csPaint() {
+    if (!cs) return;
+    var cur = load().chatScheme; cur = (cur === 'high-contrast' || cur === 'solarized-dark') ? cur : 'default';
+    cs.innerHTML = '';
+    SCHEMES.forEach(function (sc) {
+      var row = document.createElement('button');
+      row.type = 'button'; row.dataset.scheme = sc.id;
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;text-align:left;background:#1e1e1e;' +
+        'border:1px solid ' + (sc.id === cur ? '#1EA1EB' : '#3a3a3a') + ';border-radius:5px;padding:5px 8px;cursor:pointer;font:inherit;color:#ccc';
+      row.innerHTML = '<span style="flex:0 0 auto;width:15px;color:#1EA1EB">' + (sc.id === cur ? '\u2713' : '') + '</span>' +
+        '<span style="flex:0 0 auto;min-width:96px;color:#ccc">' + sc.name + '</span>' +
+        '<span style="flex:1 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+        '<span style="color:' + sc.fg + '">Prose text</span> \u00b7 ' +
+        '<span style="color:' + sc.dim + '">tool / meta</span> \u00b7 ' +
+        '<span style="color:' + sc.code + ';font-family:monospace">code()</span></span>';
+      row.addEventListener('click', function () { var s = load(); s.chatScheme = sc.id; save(s); csPaint(); });
+      cs.appendChild(row);
+    });
+  }
   jix.addEventListener('change', function () { var s = load(); s.showIndexJudges = jix.checked; save(s); });
   jtr.addEventListener('change', function () { var s = load(); s.showTriageJudges = jtr.checked; save(s); });
   if (cg) cg.addEventListener('change', function () { var s = load(); s.collapseGaps = cg.checked; save(s); });
@@ -418,7 +443,7 @@ function initGear(post) {
     // settings-open, which is what un-hides #feed-pane when the feed is toggled off — measuring first
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (tc) tc.value = tabCtxMode(s.tabCtx); if (cs) cs.value = (s.chatScheme === 'high-contrast' || s.chatScheme === 'solarized-dark') ? s.chatScheme : 'default'; if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'sdk'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (tc) tc.value = tabCtxMode(s.tabCtx); csPaint(); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) bk.value = s.backend || 'sdk'; if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(); });
   // The shortcuts row: the web shell (same-origin parent) gets the customize link — it opens the

@@ -25,9 +25,14 @@ body.scheme-high-contrast {
   --code-fg: #ecd9ae;   /* the warm code tone, brightened in step */
 }
 body.scheme-solarized-dark {
-  --fg: #839496;        /* solarized base0 — the canonical body text */
-  --dim: #586e75;       /* solarized base01 — its secondary/comment tier */
-  --code-fg: #b58900;   /* solarized yellow — an accent it uses for emphasis/code */
+  /* REBUILT on the user's live check (2026-08-24): the first cut used base0/base01 — solarized's
+     canonical body tiers on its OWN canvas — which sit far BELOW our default's luminance
+     (#839496 ≈ 0.28 vs #cccccc ≈ 0.60), so picking the scheme DARKENED the chat: the exact opposite
+     of the contrast-raising ask. On romp's dark ground the bright solarized content tones are the
+     text tiers: a scheme here must never drop prose below the default (pinned by luminance test). */
+  --fg: #eee8d5;        /* solarized base2 — its bright content tone; ≈0.81 luminance, above default */
+  --dim: #93a1a1;       /* solarized base1 — clearly dimmer than prose, a shade above default dim */
+  --code-fg: #d5b02d;   /* solarized yellow, lifted for the dark ground (#b58900 reads muddy here) */
 }
 
 :root {
