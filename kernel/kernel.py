@@ -12211,6 +12211,46 @@ def _handoff_peer_identities(nodes, hnodes):
     return sorted(seen.values(), key=lambda d: d["name"]) or None
 
 
+_HANDOFF_LABEL_RE = re.compile(r"^\s*↪\s*delegated to (.+?): (.*)$", re.S)
+
+
+def _handoff_card_fields(nodes, nid):
+    """(handoffTo badge, card title) for a feed card whose ROOT node is a courier handoff tracking
+    node — (None, the node's text unchanged) for every other card.
+
+    _plant_handoff_track parents its "↪ delegated to <peer>: <work>" tracking node under the sender's
+    related open goal when one exists, else TOP-LEVEL — a designed fallback that showed its seams: a
+    top-level node's text is the card TITLE, so the card read arrow-and-all as its name (the user
+    2026-08-24, screenshot). Presentation only, mint/retire/propagate untouched: the card titles the
+    WORK and wears the delegation as a provenance badge — the exact mirror of the recipient's
+    "↪ from <peer>" (origin): identity color, quiet host: prefix for a recipient this kernel can't
+    resolve, click opens the recipient session. Identity resolves through the chain origin uses —
+    the live registry first (a rename reads fresh, via _handoff_peer_identities, the same resolver
+    the awaiting box trusts), then the courier's plant-time label (the only human name source for a
+    federated recipient), then the sid stub. The title falls back through the node's own why/summary
+    before keeping the de-arrowed label, so a label-only node still reads as work, not provenance.
+    NESTED handoff rows are untouched: they render as identity rows in the delegations section under
+    a real title, where the label never was the problem."""
+    nd = nodes.get(nid) or {}
+    txt = nd.get("text") or ""
+    if not (isinstance(nd.get("handoff"), dict) and nd["handoff"].get("peer")):
+        return None, txt
+    ident = (_handoff_peer_identities(nodes, [nid]) or [{}])[0]
+    badge = {"peer": ident.get("name") or "", "peerHost": ident.get("host") or "",
+             "peerSid": ident.get("sid") or str(nd["handoff"]["peer"]), "color": ident.get("color")}
+    m = _HANDOFF_LABEL_RE.match(txt)
+    if m and not _name_of(badge["peerSid"]):
+        # registry miss → the plant-time label names the recipient better than a sid stub
+        lh, _, ln = m.group(1).strip().rpartition(":")
+        if ln:
+            badge.update({"peer": ln, "peerHost": lh or badge["peerHost"]})
+    work = (m.group(2).strip() if m else "")
+    if not work or work == "(work)":
+        work = ((nd.get("why") or "").strip() or (nd.get("summary") or "").strip()
+                or txt.replace("↪ ", "", 1).strip() or txt)
+    return badge, work
+
+
 def _session_delegated_why(sid):
     """The session-scoped DELEGATION wait (or None): every open leaf of some inbox-visible top is a
     courier handoff — the only outstanding work lives with peers. The SAME evidence the feed's per-card
@@ -18345,6 +18385,11 @@ def build_feed(now, tmux=None):
                 origin = {"peer": pname or o.get("peerName") or psid[:8],
                           "peerHost": ("" if pname else o.get("peerHost") or ""),
                           "peerSid": psid, "color": _name_color(psid), "live": live}
+            # SENDER-SIDE handoff provenance (the user 2026-08-24): a TOP-LEVEL "↪ delegated to
+            # <peer>" tracking node wore its provenance as the card TITLE, arrow and all. The card
+            # now titles the WORK and ships the delegation as the badge mirroring origin above —
+            # see _handoff_card_fields. Every other card keeps its text untouched.
+            handoff_to, card_text = _handoff_card_fields(nodes, nid)
             await_why = (sess_awaiting_why or _stamp_why or _deleg_why or _owned_why) if col == "awaiting" else None   # the ⏳ awaiting badge's "why": live snapshot, then the judge's durable stamp, then the delegation graph, then the blocked-yield's owned dispatch (None for the postal-only case → the waitingOn chip names the peer)
             await_kind = None                        # the winning why's KIND and SINCE ride beside it,
             await_since = None                       # mirroring the or-chain exactly (a kindless winner
@@ -18599,10 +18644,11 @@ def build_feed(now, tmux=None):
                 # honestly, and the validated tiers take back over on the first warm push.
                 _sa_u = _cited
             asks.append({
-                "itemId": nid, "sid": fsid, "name": name, "color": color, "text": nodes[nid]["text"],
+                "itemId": nid, "sid": fsid, "name": name, "color": color, "text": card_text,
                 "t": disp_t, "live": live,
                 "trgb": list(cm.age_rgb(now - disp_t, _colormap())),
                 "turnId": nid, "origin": origin,
+                **({"handoffTo": handoff_to} if handoff_to else {}),
                 **({"delegTracked": _tracked_peers} if _tracked_peers else {}),
                 # the satellite hides ONLY while the pair is INTACT and the work runs its normal
                 # course: a needs-you block always surfaces (interrupt only when the human is the
