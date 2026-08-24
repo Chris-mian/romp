@@ -284,6 +284,38 @@ test("a hidden-sender message draws the mirror stub: horizontal just ABOVE the l
   assert.ok(hitI > dotI, "the stub's hit target is appended after the dots (PASS 3), so the line wins the hover");
 });
 
+test("overlapping message marks hover as ONE modal listing them all, every unit lit together", () => {
+  // the user 2026-08-24: stacked marks (several exchanges on one pair, a stub riding another's
+  // track) let the topmost hit swallow the hover — the modal named one message where the cursor
+  // covered several. elementsFromPoint resolves the whole paint stack; hosts without it (this
+  // shim's default) keep the old single-message read, which the earlier tooltip tests still pin.
+  const now = 1_781_000_000;
+  const panel = draw([
+    { id: "m18", fromId: "SB", toId: "SC", from: "bee", to: "cee",
+      sent: now - 300, exec: now - 240, hasExec: true, pending: false, summary: "first of the pile" },
+    { id: "m19", fromId: "SB", toId: "SC", from: "bee", to: "cee",
+      sent: now - 200, exec: now - 140, hasExec: true, pending: false, summary: "second of the pile" },
+  ]);
+  const hits = nodes(panel).filter((n) => n.tag === "path" && n._attrs.stroke === "transparent" && n._attrs["stroke-width"] === 18);
+  const hls = nodes(panel).filter((n) => n.tag === "path" && n._attrs["stroke-width"] === 6);
+  assert.equal(hits.length, 2); assert.equal(hls.length, 2);
+  (globalThis as any).document.elementsFromPoint = () => hits;   // both marks under the cursor
+  try {
+    hits[0]._listeners.mouseenter({ clientX: 200, clientY: 30, currentTarget: hits[0] });
+    const tip = String(panel.tip.innerHTML);
+    assert.ok(tip.includes("first of the pile") && tip.includes("second of the pile"),
+      "the modal lists ALL messages under the point, oldest first");
+    assert.ok(tip.indexOf("first of the pile") < tip.indexOf("second of the pile"), "…oldest first");
+    assert.equal(hls[0]._attrs.opacity, "0.95", "every covered unit lights");
+    assert.equal(hls[1]._attrs.opacity, "0.95");
+    hits[0]._listeners.mouseleave({});
+    assert.equal(hls[0]._attrs.opacity, "0", "…and every one restores on leave");
+    assert.equal(hls[1]._attrs.opacity, "0");
+  } finally {
+    delete (globalThis as any).document.elementsFromPoint;
+  }
+});
+
 test("a stub is ONE path — riser and track share a single stroke, so the corner never double-paints", () => {
   // round 4 (the user 2026-08-24): two <line>s overlapped at the elbow and the 0.45 alpha stacked
   // to a darker joint; the connectors' own elbow-path idiom draws it contiguous
