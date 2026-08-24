@@ -86,6 +86,24 @@ class RailUsage(unittest.TestCase):
         # and drops the old explanatory prose ("...rate-limit window") — no extra stuff
         self.assertNotIn("rate-limit window", self.html, "no explanatory prose, just the bars + %")
 
+    def test_the_spend_section_owns_its_age_and_never_speaks_for_rate_limits(self):
+        # Three pins from one screenshot (the user 2026-08-24, "updated 9h 38m ago" over the spend):
+        # 1. the telemetry-unavailable note sits with the WINDOWS it explains, ABOVE the spend
+        #    section — the spend section never claims anything about rate limits;
+        # 2. the spend section ends with its OWN age line, from the newest contributor's
+        #    last-record moment (event time, not a poll time);
+        # 3. a FAILED fleet pull re-renders from the cached rows, so every age line keeps climbing
+        #    instead of freezing at a quietly lying "3m ago".
+        note = self.html.index("rate-limit telemetry unavailable under API-key auth")
+        self.assertLess(note, self.html.index("h+=fleetSpendHTML(sets);"),
+                        "the note renders BEFORE the spend section, in the windows area")
+        self.assertIn("if(sAt)h+='<div class=ru-tip-age>last charge recorded '+fmtAgo(sAt)+'</div>';", self.html)
+        self.assertIn("if(typeof u.spendAt==='number')det._spendAt=u.spendAt;", self.html)
+        self.assertIn("pullFleet().then(done,function(){if(ROWS.length)renderRows(ROWS,SELF);done();});", self.html)
+        # the kernel side: the payload stamps spend.json's own mtime on both spend-attaching arms
+        ksrc = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertEqual(ksrc.count('out["spendAt"] = sa'), 2, "the key-only arm and the mixed-host arm")
+
     def test_the_tooltip_shows_the_snapshots_age(self):
         # "updated ... ago" (the user 2026-07-02): the bars lagged the CLI's own /usage with no cue the reading
         # was old — usage.json refreshes only when a statusline render or a rate-limit event produces a NEW
