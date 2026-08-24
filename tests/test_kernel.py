@@ -5319,6 +5319,22 @@ class ViewBuilder(unittest.TestCase):
         self.assertEqual(msgs["m2"]["toId"], "foreignsid")
         self.assertEqual(msgs["m2"]["to"], "", "foreign recipient: no local name — the merge fills it")
 
+    def test_postal_exec_joins_regardless_of_recipient_liveness(self):
+        # the 2026-08-24 floating-point report's leg (b), verified CLEAN and pinned: a message
+        # consumed by a session/thread that later DIED keeps its real exec — the join is by id,
+        # never gated on alive_sids, so the view can draw the true sent→exec span for dead-thread
+        # mail instead of an un-arrived point
+        md = jd.STATE / "timeline"; md.mkdir(parents=True, exist_ok=True)
+        a = "aaaa1111"
+        (md / "messages.jsonl").write_text(
+            json.dumps({"ev": "sent", "id": "m9", "from_id": a, "to_id": "dead-thread-sid",
+                        "t": NOW - 300, "from": "alpha", "body": "do the piece"}) + "\n"
+            + json.dumps({"ev": "exec", "id": "m9", "t": NOW - 60}) + "\n")
+        m = km._postal_messages(NOW, {a}, {a: "alpha"})[0]
+        self.assertTrue(m["hasExec"], "the exec joined although the recipient is in no alive set")
+        self.assertEqual(m["exec"], NOW - 60)
+        self.assertFalse(m["pending"])
+
     def test_postal_connector_ships_no_dead_goal_binding(self):
         # toGoal (the courier-planted goal id) shipped on every connector but no view ever rendered it —
         # dropped (2026-07-07 payload audit), along with the hardcoded-False `parked`.

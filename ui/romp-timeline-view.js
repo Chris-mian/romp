@@ -3917,27 +3917,35 @@ class TimelinePanel {
     const stub = (mm, i, senderVisible) => {
       const sid = senderVisible ? mm.fromId : mm.toId;
       const ly = laneY(vidx[sid]);
+      // the LANDING x keys on arrival knowledge — the dash/fade's own event key — never the
+      // kernel's staleness-aged mm.pending: once the aging window flipped pending off, execAt
+      // collapsed to the exec=sent fallback and an un-arrived stub rendered as a ZERO-LENGTH
+      // floating point at the lane offset (the user 2026-08-24, dead-thread mail). Un-arrived
+      // mail spans sent → the LIVE EDGE, dashed, however old; a thread-anchor override is a real
+      // drawn position and keeps priority.
+      const arrived = mm.hasExec || mm.exec !== mm.sent;
+      const landT = arrived ? landXT(mm) : (mm.toThreadT || nowS);
       let x1, y1, x2, y2;
       if (senderVisible) {
-        // outgoing: BELOW the lane, the FULL flight span — send x to the landing x (the live edge
-        // while pending, via execAt inside landXT), clamped to the window by arithmetic. The old
-        // run cap bounded a 45° diagonal's rise; flattened it shrank every stub to a ~13px nub
-        // (the user 2026-08-24) — the span IS the feature: how long the message was in flight.
+        // outgoing: BELOW the lane, the FULL flight span — send x to the landing x, clamped to the
+        // window by arithmetic. The old run cap bounded a 45° diagonal's rise; flattened it shrank
+        // every stub to a ~13px nub (the user 2026-08-24) — the span IS the feature.
         if (!inWin(sendXT(mm))) return;
         x1 = x(sendXT(mm)); y1 = ly + MSG_DROP;
-        x2 = Math.max(x1, x(Math.min(landXT(mm), t1))); y2 = y1;
+        x2 = Math.max(x1, x(Math.min(landT, t1))); y2 = y1;
       } else {
         // incoming: ABOVE the lane, the mirror — the full span into the landing x, the arrival dot
         // on the lane just beneath it; an off-window send clamps to the window edge
-        if (!inWin(landXT(mm))) return;
-        x2 = x(landXT(mm)); y2 = ly - MSG_DROP;
+        if (!inWin(landT)) return;
+        x2 = x(landT); y2 = ly - MSG_DROP;
         x1 = Math.min(x2, x(Math.max(sendXT(mm), t0))); y1 = y2;
       }
+      if (x2 - x1 < 2) x2 = x1 + 2;   // a same-instant consume is real but must never render as a
+      //                                 floating point — two px keeps the mark a mark
       const col = colorOf(mm.fromId);   // the SENDER's color — the full connectors' own resolution
-      const arrived = mm.hasExec || mm.exec !== mm.sent;
       const attrs = { x1, y1, x2, y2, stroke: col, 'stroke-width': STUB_W, opacity: 0.45,
                       'stroke-linecap': 'round', 'pointer-events': 'none' };
-      if (!arrived) attrs['stroke-dasharray'] = '1 4';   // in flight — the pending-connector dash
+      if (!arrived) attrs['stroke-dasharray'] = '1 4';   // in flight — the pending-connector dash (same key as the span)
       svg.appendChild(el('line', attrs));
       // same affordances as a full connector: own-color highlight overlay + wide transparent hit,
       // co-lit with the arrival dot (PASS 2 links via msgUI), tooltip + click → where it landed
