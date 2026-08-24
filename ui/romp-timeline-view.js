@@ -3715,18 +3715,18 @@ class TimelinePanel {
     // the stub points down (+1); sorted before → up (-1). A counterpart absent from data.sessions
     // entirely (dismissed, #only= filtered, or a foreign session) has no would-be slot: fixed
     // convention, down (+1, toward the axis), so unknowable counterparts always read one way.
-    // TWO-STATE COLOR, keyed on the exec EVENT, never a timer: mm.pending folds in the kernel's
+    // TWO-STATE STROKE, keyed on the exec EVENT, never a timer: mm.pending folds in the kernel's
     // in-flight staleness window (MSG_INFLIGHT_MAX), so it is NOT the key. Exec knowledge is:
     // hasExec (the logged exec event — kernel serialization, the federation upgrade, or the
     // midStart join above) OR exec moved off its sent-time fallback (the kernel serializes
     // exec = sent until a binder writes a real landing; _bind_message_execs' text-heuristic path
     // binds exec without ever logging an event, so hasExec alone would miss it — and federation
     // shifts sent and a fallback exec by the same offset, so the comparison survives rebasing).
-    // No exec known → await-green; exec known → working-yellow — both faded, the awaitingBg
-    // stretch's treatment. This file cannot load ui/webview/styles.css (it also runs inside
-    // Obsidian), so the two tokens are inlined with their names — the MENU_STYLE precedent:
-    const STUB_GREEN = '#54B204';    // --st-awaitbg-bg (await-green)
-    const STUB_YELLOW = '#e0b020';   // --st-working-bg (working-yellow)
+    // Exec known → SOLID, it arrived; none → DASHED, still in flight — the pending-connector
+    // idiom. The stroke COLOR is the sender's identity color, the full connectors' own resolution
+    // (the user 2026-08-24: the old state colors at stub alpha read as mud beside sender-colored
+    // connectors — working-yellow at 0.45 was a muddy orange). The faded 0.45 stays, keeping
+    // stubs subordinate to the work bars.
     const STUB_W = 3;                // a hair over MSG_W0 — a ~15px stroke needs the weight to read
     const STUB_DX = LANE_GAP / 2;    // full-height run → 45° in the lane grid; a nearer landing steepens it
     const stub = (mm, i, senderVisible) => {
@@ -3747,9 +3747,12 @@ class TimelinePanel {
         x2 = x(landXT(mm)); y2 = ly;
         x1 = Math.min(x2, Math.max(x(Math.max(sendXT(mm), t0)), x2 - STUB_DX)); y1 = ly + dir * LANE_GAP / 2;
       }
-      const col = (mm.hasExec || mm.exec !== mm.sent) ? STUB_YELLOW : STUB_GREEN;
-      svg.appendChild(el('line', { x1, y1, x2, y2, stroke: col, 'stroke-width': STUB_W, opacity: 0.45,
-                                   'stroke-linecap': 'round', 'pointer-events': 'none' }));
+      const col = colorOf(mm.fromId);   // the SENDER's color — the full connectors' own resolution
+      const arrived = mm.hasExec || mm.exec !== mm.sent;
+      const attrs = { x1, y1, x2, y2, stroke: col, 'stroke-width': STUB_W, opacity: 0.45,
+                      'stroke-linecap': 'round', 'pointer-events': 'none' };
+      if (!arrived) attrs['stroke-dasharray'] = '1 4';   // in flight — the pending-connector dash
+      svg.appendChild(el('line', attrs));
       // same affordances as a full connector: own-color highlight overlay + wide transparent hit,
       // co-lit with the arrival dot (PASS 2 links via msgUI), tooltip + click → where it landed
       const msgLit = dagOrHoverMsg(mm.id);
