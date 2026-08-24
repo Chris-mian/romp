@@ -73,19 +73,31 @@ test("the trigger sits in the corner strip and opens on pointerdown, like every 
   assert.match(SRC, /const tailStr = more \? more \+ ' more' : '';/, "a filtered-out live session is always one glance away");
 });
 
-test("an active group is a REMOVABLE CHIP in the composer chip's dress: border + faded fill in the group's colour (the user 2026-08-23)", () => {
+test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separate ✕, air below (the user 2026-08-24)", () => {
   // the chip's own pointerdown clears the filter without a menu trip; stopPropagation keeps the
   // text element's menu handler out of it (both are pointerdown — the redraw-eats-click rule)
-  assert.match(SRC, /ct\.textContent = name \+ ' ✕';/);
   assert.match(SRC, /grp\.addEventListener\('pointerdown', \(e\) => \{\n\s*e\.preventDefault\(\); e\.stopPropagation\(\);\n\s*const nv = JSON\.parse\(JSON\.stringify\(v\)\); nv\.active = 'all'; this\._setViews\(nv\);/);
-  // the composer context chip's treatment in the GROUP's colour (styles.css .composer-chip: 18%
-  // fill + 1px solid border + pill radius) — a bordered chip reads as removable, loose text didn't
-  assert.match(SRC, /fill: g\.color \|\| '#cccccc', 'fill-opacity': 0\.18,\n\s*stroke: g\.color \|\| '#cccccc', 'stroke-width': 1/);
-  assert.match(SRC, /rx: 8,/);
+  // OUTLINE only on the page's own ground (the tinted fill was too much — the user 2026-08-24),
+  // and the ✕ is dim and SEPARATE, the composer context chip's read — never baked into the name
+  assert.match(SRC, /fill: 'transparent',\n\s*stroke: g\.color \|\| '#cccccc', 'stroke-width': 1/);
+  assert.match(SRC, /y: y - 13, width: cw, height: 18, rx: 9,/, "taller chip");
+  assert.match(SRC, /cx\.textContent = '✕';/);
+  assert.match(SRC, /fill: MODEL_FG, opacity: 0\.75/);
   assert.match(SRC, /fill: g\.color \|\| '#cccccc', 'font-weight': 650/);
   assert.match(SRC, /click to remove the filter \(back to the default view\)/);
   // no chip on the default view — nothing to remove
   assert.match(SRC, /const active = !!g && v\.active && v\.active !== 'all';/);
+  // …and the bottom strip grew so the taller chip has air
+  assert.match(SRC, /bottom: 27 \}/);
+});
+
+test("a pointerdown-opened menu survives its OWN opening click (the user 2026-08-24, click-and-hold bug)", () => {
+  // the browser fires a click after pointerup; unstopped it bubbles to the document's menu-closer
+  // and shuts the menu the instant it opened — only a mid-press redraw (element swapped, no click
+  // at all) let it survive, which read as "hold to open". Every pointerdown anchor swallows it.
+  assert.match(SRC, /this\._openViewsMenu\(t\); \}\);[\s\S]{0,400}t\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
+  assert.match(SRC, /this\._openLaneMenu\(s, ghit\);\n\s*\}\);[\s\S]{0,300}ghit\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
+  assert.match(SRC, /grp\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
 });
 
 test("the dropdown and dialog wear the shared menu vocabulary and adopt into the menu host", () => {
@@ -102,7 +114,9 @@ test("the sessions dialog is TAG-CENTRIC: chips per row, a [+] to join or mint, 
   // new-tag input. The menu items say so: New tag… / Sessions & tags…
   assert.match(SRC, /item\('New tag…', \{ dim: true \}\)/);
   assert.match(SRC, /item\('Sessions & tags…', \{ dim: true \}\)/);
-  assert.match(SRC, /const ch = chips\.createSpan\(\{ text: t\.name \+ ' ✕' \}\);/);
+  assert.match(SRC, /ch\.createSpan\(\{ text: t\.name \}\);/);
+  assert.match(SRC, /const chx = ch\.createSpan\(\{ text: '✕' \}\);/, "the ✕ is its own dim span — the composer chip's read");
+  assert.doesNotMatch(SRC, /background:color-mix/, "no tinted chip grounds anywhere in the dialog");
   assert.match(SRC, /this\._setViews\(viewToggleMember\(this\._curViews\(\), t\.id, s\.id\)\); build\(\);/,
     "chip click = leave that tag; [+] option = join — both through the one pure mutation");
   assert.match(SRC, /ni\.placeholder = 'new tag…';/, "minting a tag right from a session row");
@@ -147,7 +161,7 @@ test("executed: the dialog's two checkbox mutations, pure", () => {
 
 test("the trigger measures its WHOLE string against the gutter, and the dialog's Escape hook dies on every close", () => {
   // the fit measures the whole line as LAID OUT: trigger + gap + padded chip + gap + tail
-  assert.match(SRC, /const width = \(n\) => this\.labelWidth\('Filter ▾'\)\n\s*\+ \(active \? GAP \+ PADH \* 2 \+ this\.labelWidth\(n \+ ' ✕'\) : 0\)\n\s*\+ \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
+  assert.match(SRC, /const width = \(n\) => this\.labelWidth\('Filter ▾'\)\n\s*\+ \(active \? GAP \+ PADH \* 2 \+ this\.labelWidth\(n\) \+ XGAP \+ this\.labelWidth\('✕'\) : 0\)\n\s*\+ \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
   assert.match(SRC, /const fits = \(n\) => width\(n\) <= this\.M\.left - PADL - 6;/);
   assert.match(SRC, /this\._viewsDialogKey = \{ doc: h\.doc, fn: onKey \};/);
   assert.match(SRC, /this\._viewsDialogKey\.doc\.removeEventListener\('keydown', this\._viewsDialogKey\.fn\);/);

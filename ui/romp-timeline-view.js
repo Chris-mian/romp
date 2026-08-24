@@ -578,7 +578,7 @@ class TimelinePanel {
     // evidence arrived" event — until then the active filter must not judge it.
     this._barsSeen = new Set();
     this._loaderBackstop = null;   // timer id: force the loader done if a warming build never brings content
-    this.M = { left: 130, right: 16, top: 8, bottom: 22 };   // axis labels live in the bottom margin
+    this.M = { left: 130, right: 16, top: 8, bottom: 27 };   // axis labels + the corner filter chip live in the bottom margin (27: the taller chip breathes — the user 2026-08-24)
     this._mc = document.createElement('canvas').getContext('2d');
 
     // No on-screen controls: window width + offset are driven entirely by trackpad gestures
@@ -2385,8 +2385,9 @@ class TimelinePanel {
     // fixed reserve under-counted "N more" and let the tail cross into the first time label
     let name = active ? viewLabel(v) : '';
     const tailStr = more ? more + ' more' : '';
+    const XGAP = 6;                                  // between the name and its dim ✕ (the composer chip's read)
     const width = (n) => this.labelWidth('Filter ▾')
-      + (active ? GAP + PADH * 2 + this.labelWidth(n + ' ✕') : 0)
+      + (active ? GAP + PADH * 2 + this.labelWidth(n) + XGAP + this.labelWidth('✕') : 0)
       + (tailStr ? GAP + this.labelWidth(tailStr) : 0);
     const fits = (n) => width(n) <= this.M.left - PADL - 6;
     while (active && name.length > 3 && !fits(name)) name = name.slice(0, -2) + '…';
@@ -2395,26 +2396,36 @@ class TimelinePanel {
     t.textContent = 'Filter ▾';
     t.setAttribute('style', 'cursor:pointer;user-select:none;');
     t.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(t); });
+    // the follow-up click would bubble to the document's menu-closer and shut the menu the same
+    // instant it opened (the user 2026-08-24, who had to click-and-hold: only a mid-press redraw —
+    // swapping the element so no click fires — let the menu survive). Swallow it here.
+    t.addEventListener('click', (e) => e.stopPropagation());
     svg.appendChild(t);
     let x = PADL + this.labelWidth('Filter ▾');
     if (active) {
       x += GAP;
-      const cw = PADH * 2 + this.labelWidth(name + ' ✕');
-      // the active group as a removable filter chip wearing the composer context chip's dress in
-      // the GROUP's colour (the user 2026-08-23): 18% fill, 1px solid border, pill radius — a
-      // bordered chip reads as removable where bare coloured text read as a label. Its own
+      const cw = PADH * 2 + this.labelWidth(name) + XGAP + this.labelWidth('✕');
+      // the active tag as a removable filter chip (the user 2026-08-23; re-dressed 2026-08-24):
+      // OUTLINE only in the tag's colour on the page's own dark ground — the tinted fill was too
+      // much — with the ✕ dim and SEPARATE, the way the composer context chip draws its ✕. Taller
+      // than the text line so the chip breathes (the bottom margin grew with it). Its own
       // pointerdown clears the filter — one click back to the default view, no menu trip.
       const grp = el('g', {});
       grp.setAttribute('style', 'cursor:pointer;');
-      const box = el('rect', { x, y: y - 12, width: cw, height: 16, rx: 8,
-        fill: g.color || '#cccccc', 'fill-opacity': 0.18,
+      const box = el('rect', { x, y: y - 13, width: cw, height: 18, rx: 9,
+        fill: 'transparent',
         stroke: g.color || '#cccccc', 'stroke-width': 1 });
       grp.appendChild(box);
       const ct = el('text', { x: x + PADH, y, 'font-size': 12, 'font-family': FONT,
         fill: g.color || '#cccccc', 'font-weight': 650 });
-      ct.textContent = name + ' ✕';
+      ct.textContent = name;
       ct.setAttribute('style', 'user-select:none;');
       grp.appendChild(ct);
+      const cx = el('text', { x: x + PADH + this.labelWidth(name) + XGAP, y, 'font-size': 11,
+        'font-family': FONT, fill: MODEL_FG, opacity: 0.75 });
+      cx.textContent = '✕';
+      cx.setAttribute('style', 'user-select:none;');
+      grp.appendChild(cx);
       const tt = el('title', {});
       tt.textContent = 'showing only ' + (g.name || 'this group') + ' — click to remove the filter (back to the default view)';
       grp.appendChild(tt);
@@ -2422,6 +2433,7 @@ class TimelinePanel {
         e.preventDefault(); e.stopPropagation();
         const nv = JSON.parse(JSON.stringify(v)); nv.active = 'all'; this._setViews(nv);
       });
+      grp.addEventListener('click', (e) => e.stopPropagation());
       svg.appendChild(grp);
       x += cw;
     }
@@ -2595,11 +2607,13 @@ class TimelinePanel {
         for (const t of viewTags(v)) {
           if ((t.members || []).indexOf(s.id) < 0) continue;
           const tc = t.color || '#cccccc';
-          const ch = chips.createSpan({ text: t.name + ' ✕' });
-          ch.setAttribute('style', 'display:inline-flex;align-items:center;gap:3px;max-width:110px;'
-            + 'padding:0 6px;border-radius:9px;font-size:0.82em;cursor:pointer;white-space:nowrap;'
-            + 'overflow:hidden;color:' + tc + ';border:1px solid ' + tc + ';'
-            + 'background:color-mix(in srgb, ' + tc + ' 18%, transparent);');
+          const ch = chips.createSpan();
+          ch.setAttribute('style', 'display:inline-flex;align-items:center;gap:5px;max-width:110px;'
+            + 'padding:2px 7px;border-radius:9px;font-size:0.82em;cursor:pointer;white-space:nowrap;'
+            + 'overflow:hidden;color:' + tc + ';border:1px solid ' + tc + ';');
+          ch.createSpan({ text: t.name });
+          const chx = ch.createSpan({ text: '✕' });
+          chx.setAttribute('style', 'color:' + MODEL_FG + ';opacity:0.75;font-size:0.9em;');
           ch.setAttribute('title', 'tagged "' + t.name + '" — click to take this tag off');
           ch.addEventListener('click', () => { this._setViews(viewToggleMember(this._curViews(), t.id, s.id)); build(); });
         }
@@ -3336,6 +3350,9 @@ class TimelinePanel {
           this.hideTip();
           this._openLaneMenu(s, ghit);
         });
+        // same latent close-on-own-click as the views trigger (see _drawViewsTrigger): the gear's
+        // follow-up click must not reach the document's menu-closer
+        ghit.addEventListener('click', (e) => e.stopPropagation());
       }
       // DEAD lane → a "Clear" pill just right of the struck name (the user 2026-07-02). A dead session lingers
       // as a faded/struck lane while it's still in the activity window, with NONE of the live controls (no
