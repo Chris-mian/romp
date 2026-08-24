@@ -16,7 +16,7 @@ import { createRequire } from "node:module";
 const requireCjs = createRequire(__filename);
 const VIEW_PATH = path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js");
 const SRC = fs.readFileSync(VIEW_PATH, "utf8");
-const { TimelinePanel, viewVisible, viewLabel, viewMoreCount, viewToggleHidden, viewToggleMember } = requireCjs(VIEW_PATH);
+const { TimelinePanel, viewVisible, viewLabel, viewMoreCount, viewToggleHidden, viewToggleMember, viewTagUnion } = requireCjs(VIEW_PATH);
 
 const G = { id: "g1", name: "pool", color: "#DD42FF", members: ["s2", "s3"] };
 const V = (active: string, hidden: string[] = [], tags: any[] = [G]) => ({ active, hidden, tags });
@@ -163,12 +163,13 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   assert.match(SRC, /anyOn \? 'mute feed for all' : 'restore feed for all'/);
   assert.match(SRC, /const flagVal = ft\.value\(!anyOn\);/, "any still minting → mute all; all muted → restore");
   // chips: outline in the tag's colour, dim separate ✕, hover changes colour (menu chrome)
-  assert.match(SRC, /ch\.createSpan\(\{ text: t\.name \}\);/);
+  // the chips live in the SHARED name-keyed builder now (user ruling 2026-08-24): one chip per
+  // tag NAME, ✕ = remove-everywhere via the union dispatcher — the dialog and the gear both call it
+  assert.match(SRC, /ch\.createSpan\(\{ text: g\.name \}\);/);
   assert.match(SRC, /const chx = ch\.createSpan\(\{ text: '✕' \}\);/, "the ✕ is its own dim span — the composer chip's read");
   assert.doesNotMatch(SRC, /background:color-mix/, "no tinted chip grounds anywhere in the dialog");
-  assert.match(SRC, /hover\(ch, 'background:rgba\(255,255,255,0\.09\);', 'background:transparent;'\);/);
-  assert.match(SRC, /this\._setViews\(viewToggleMember\(this\._curViews\(\), t\.id, s\.id\)\); build\(\);/,
-    "chip click = leave that tag; [+] option = join — both through the one pure mutation");
+  assert.match(SRC, /this\._editTagUnion\(g, \{ remove: \[s\.id\] \}\); rebuild\(\);/,
+    "chip ✕ = remove-everywhere, through the one dispatcher");
   assert.match(SRC, /ni\.placeholder = 'new tag…';/, "minting a tag right from a row or the bulk bar");
   assert.match(SRC, /delete nv\.groups;/, "a write normalizes onto the tags key, never re-emitting the legacy one");
   // the eye-off appears ONLY on a hidden session, to un-hide it (hiding lives on the chat tab)
@@ -184,27 +185,30 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   assert.match(SRC, /item\('All', \{ current: !v\.active \|\| v\.active === 'all' \}\)/);
   assert.match(SRC, /item\('\(untagged\)', \{ current: v\.active === 'untagged' \}\)/);
   assert.match(SRC, /item\('All',[\s\S]{0,300}item\('\(untagged\)',/, "All sits ABOVE (untagged) in the menu");
-  assert.match(SRC, /item\('\(untagged\)',[\s\S]{0,200}for \(const tg of viewTags\(v\)\)/,
-    "…and the tag rows come AFTER both built-ins — the DoD's menu order, pinned end to end");
+  assert.match(SRC, /item\('\(untagged\)',[\s\S]{0,600}for \(const g of viewTagUnion\(v\)\)/,
+    "…and the tag rows come AFTER both built-ins — the DoD's menu order, pinned end to end (the rows are the NAME-KEYED union since the 2026-08-24 ruling)");
 });
 
-test("federation v0: remote tags in the menu + dialog read-only, and the colour join survives every spelling", () => {
-  // executed: the mirror resolves a remote-tag active and labels it host:name (the list_agents idiom)
-  const rt = { active: "TESTHOST-A:g1", tags: [],
-               remoteTags: [{ id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "team", members: ["m1"] }] };
-  assert.equal(viewVisible(rt, "m1"), true);
-  assert.equal(viewVisible(rt, "m2"), false);
-  assert.equal(viewLabel(rt), "TESTHOST-A:team");
+test("federation, NAME-KEYED (user ruling 2026-08-24): one name = one row/label/union — kernels are plumbing", () => {
+  // the ruling superseded the v0 host-marked two-rows render: "if the UX requires understanding
+  // that tags exist across different kernels, it is not good". Executed on the mirror:
+  const both = { active: "TESTHOST-A:g1",
+                 tags: [{ id: "gL", name: "team", color: "#123456", members: ["local1"] }],
+                 remoteTags: [{ id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "team", color: "#DD42FF", members: ["m1"] }] };
+  assert.equal(viewLabel(both), "team", "the NAME, never a host prefix");
+  assert.equal(viewVisible(both, "m1"), true, "the union: the remote store's member shows");
+  assert.equal(viewVisible(both, "local1"), true, "…and the local store's, under ONE view");
+  assert.equal(viewVisible(both, "other"), false);
+  const u = viewTagUnion(both);
+  assert.equal(u.length, 1, "one name = one identity — the twin-chip render is gone");
+  assert.equal(u[0].color, "#123456", "the LOCAL store's colour wins the render, deterministically");
+  assert.deepEqual(u[0].members.slice().sort(), ["local1", "m1"]);
   assert.equal(viewVisible({ active: "TESTHOST-A:g1", tags: [] }, "m2"), true, "gone → falls open");
-  // the menu unions attached kernels' tags read-only (owner colour, host-marked, pick-only)
-  assert.match(SRC, /for \(const rt of \(v\.remoteTags \|\| \[\]\)\)/);
-  assert.match(SRC, /item\(\(rt\.host \? rt\.host \+ ':' : ''\) \+ \(rt\.name \|\| 'tag'\),/);
-  // the dialog renders a remote kernel's chip read-only: dashed border, host prefix, NO ✕
-  assert.match(SRC, /border:1px dashed ' \+ rc \+ ';/);
-  assert.match(SRC, /read-only here; edit with: romp tag --host/);
-  // the gray-glyph fix (the user 2026-08-24): a message endpoint can spell a session bare,
-  // host-prefixed, or third-kernel-prefixed — on an exact miss the join retries by the bare sid
-  // tail (sids are uuids, globally unique), so the owner's colour always lands
+  // the menu: one row per union tag, picked via the handiest id (local first)
+  assert.match(SRC, /for \(const g of viewTagUnion\(v\)\)/);
+  assert.match(SRC, /pick\(g\.localId \|\| g\.ids\[0\]\)/);
+  assert.doesNotMatch(SRC, /border:1px dashed/, "no dashed twin chips anywhere — one solid chip per name");
+  // the gray-glyph fix (unchanged): on an exact miss the colour join retries by the bare sid tail
   assert.match(SRC, /s = data\.sessions\.find\(\(x\) => x\.id === bare \|\| String\(x\.id\)\.endsWith\(':' \+ bare\)\);/);
 });
 
@@ -290,18 +294,66 @@ test("executed: tagEditFailed reverts the optimistic copy and keeps the reason f
   assert.equal(p._tagEditErr.error, "not reachable");
 });
 
-test("federation v1 source pins: the dialog edits remote tags in place, routed home, loudly on failure", () => {
-  // the remote header (rename/recolor/delete) and chip ✕ dispatch through ONE method
-  assert.match(SRC, /this\._editRemoteTag\(rtg, \{ rename: nv \}\);/);
-  assert.match(SRC, /this\._editRemoteTag\(rtg, \{ color: c \}\); build\(\);/);
-  assert.match(SRC, /this\._editRemoteTag\(rtg, \{ delete: true \}\);/);
-  assert.match(SRC, /this\._editRemoteTag\(rt, \{ remove: \[s\.id\] \}\); build\(\);/);
-  assert.match(SRC, /this\._editRemoteTag\(rt, \{ add: rowIds\.slice\(\) \}\); build\(\);/);
-  // no hook (the Obsidian panel) → read-only stays, refusal immediate and visible
+test("federation v1+ruling source pins: header/chips route through the UNION dispatcher, loudly on failure", () => {
+  // rename/recolor/delete fan out to EVERY home; chip ✕ removes everywhere; add prefers local
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ rename: nv \}\);/);
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ color: c \}\); build\(\);/);
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\);/);
+  assert.match(SRC, /this\._editTagUnion\(g, \{ remove: \[s\.id\] \}\); rebuild\(\);/);
+  assert.match(SRC, /this\._editTagUnion\(g, \{ add: rowIds\.filter\(\(id\) => g\.members\.indexOf\(id\) < 0\) \}\); rebuild\(\);/);
+  // the remote transport underneath is unchanged: no hook (the Obsidian panel) → read-only + an
+  // immediate visible refusal; the error line is dismissible and names the owner
   assert.match(SRC, /typeof window\.__rompTimelineEditTag !== 'function'/);
-  // the error line is dismissible and names the owner
   assert.match(SRC, /er\.createSpan\(\{ text: '⚠ ' \+ \(this\._tagEditErr\.host \? this\._tagEditErr\.host \+ ': ' : ''\) \+ this\._tagEditErr\.error \}\);/);
-  // local tags still post the whole blob — zero behavior change (the editTag op is remote-only)
+  // a NEW tag still mints locally, posting the whole blob (zero local-path change)
   assert.match(SRC, /nv\.tags = viewTags\(nv\)\.concat/);
+});
+
+test("executed: the union dispatcher — add prefers local, remove reaches every store, delete fans out", () => {
+  const p: any = Object.create(TimelinePanel.prototype);
+  const setViews: any[] = []; const remote: any[] = [];
+  p._setViews = (v: any) => setViews.push(v);
+  p._editRemoteTag = (rt: any, e: any) => remote.push([rt.id, e]);
+  const rtA = { id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "team", members: ["m1", "x"] };
+  const rtB = { id: "TESTHOST-B:g7", host: "TESTHOST-B", name: "team", members: ["m1"] };
+  const local = { id: "gL", name: "team", color: "#123456", members: ["m1"] };
+  p._views = { active: "all", hidden: [], tags: [local], remoteTags: [rtA, rtB] };
+  p._pendingViews = null; p._pendingTagEdits = {};
+  const g = { name: "team", color: "#123456", members: ["m1", "x"], ids: ["gL", rtA.id, rtB.id],
+              localId: "gL", homes: ["TESTHOST-A", "TESTHOST-B"], remotes: [rtA, rtB] };
+  // ADD prefers the local store when the name exists locally — no remote call at all
+  p._editTagUnion(g, { add: ["new1"] });
+  assert.equal(setViews.length, 1);
+  assert.deepEqual(setViews[0].tags[0].members.slice().sort(), ["m1", "new1"]);
+  assert.equal(remote.length, 0, "add lands locally, never forks to remotes");
+  // …and on the single home when the name is remote-only
+  const gRemote = { ...g, localId: null, ids: [rtA.id], homes: ["TESTHOST-A"], remotes: [rtA] };
+  p._editTagUnion(gRemote, { add: ["new2"] });
+  assert.deepEqual(remote.pop(), ["TESTHOST-A:g1", { add: ["new2"] }]);
+  // REMOVE removes the (name, member) pair from EVERY store holding it — never half-works
+  setViews.length = 0; remote.length = 0;
+  p._editTagUnion(g, { remove: ["m1"] });
+  assert.equal(setViews.length, 1, "the local store cleans");
+  assert.deepEqual(remote.map((r: any) => r[0]).sort(), ["TESTHOST-A:g1", "TESTHOST-B:g7"],
+    "…and BOTH remote stores holding the pair");
+  // a remote NOT holding the member is left alone
+  setViews.length = 0; remote.length = 0;
+  p._editTagUnion(g, { remove: ["x"] });
+  assert.deepEqual(remote.map((r: any) => r[0]), ["TESTHOST-A:g1"], "only the holder is touched");
+  // DELETE fans out to every home
+  setViews.length = 0; remote.length = 0;
+  p._editTagUnion(g, { delete: true });
+  assert.equal(setViews.length, 1);
+  assert.equal(setViews[0].tags.length, 0, "the local tag goes");
+  assert.deepEqual(remote.map((r: any) => r[1].delete), [true, true], "…and every remote home");
+});
+
+test("the lane gear carries the SAME tag editor — the shared builders, never a fork (the user 2026-08-24)", () => {
+  // both surfaces call the one chip builder and the one join menu
+  assert.ok((SRC.match(/this\._tagChips\(/g) || []).length >= 2, "dialog rows AND the gear");
+  assert.ok((SRC.match(/this\._tagJoinMenu\(/g) || []).length >= 2, "dialog [+] menus AND the gear");
+  // the gear's section: compact label row + [+] behind it, menu vocabulary throughout
+  assert.match(SRC, /const tlab = trow\.createSpan\(\{ text: 'Tags' \}\);/);
+  assert.match(SRC, /this\._tagJoinMenu\(am, \[s\.id\], build\);/);
 });
 

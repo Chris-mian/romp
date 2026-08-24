@@ -196,6 +196,29 @@ class TimelineViews(unittest.TestCase):
         finally:
             km._remotes.clear(); km._remotes.update(saved)
 
+    def test_a_tag_view_is_the_name_keyed_union_across_kernels(self):
+        # user ruling 2026-08-24: a tag IS its name — whichever store's id is active, the view shows
+        # the union of every same-name tag's members, local and remote joined. The stored duplicates
+        # stay separate (anti-clobber); this is the read, and both client mirrors pin it identically.
+        saved = dict(km._remotes)
+        try:
+            km._remotes.clear()
+            self._attach("TESTHOST-A", {"tags": [{"id": "g1", "name": "team", "color": "#DD42FF",
+                                                  "members": [{"host": "", "sid": "rs1"}]}]})
+            km._set_timeline_views({"active": "all", "hidden": [],
+                                    "tags": [{"id": "gL", "name": "team", "color": "#123456",
+                                              "members": ["local1"]}]})
+            km._flags_cache.clear()
+            v = km._views_client()
+            v["active"] = "gL"                     # the LOCAL id activates the union
+            self.assertTrue(km._view_visible(v, "local1"))
+            self.assertTrue(km._view_visible(v, "TESTHOST-A:rs1"), "the remote store's member joins")
+            self.assertFalse(km._view_visible(v, "other"))
+            v["active"] = "TESTHOST-A:g1"          # …and so does the remote id — same union
+            self.assertTrue(km._view_visible(v, "local1"))
+        finally:
+            km._remotes.clear(); km._remotes.update(saved)
+
     def test_same_name_tags_on_two_kernels_stay_two_entries(self):
         saved = dict(km._remotes)
         try:
