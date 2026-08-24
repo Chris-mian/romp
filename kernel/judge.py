@@ -10759,7 +10759,7 @@ def courier_llm(message_text, menu_text, declared=""):
     return _judge_run(_triage_model(), COURIER_SYS, user, judge="courier", mark=mk).strip()[:300]
 
 
-_postal_from_memo = {"key": None, "map": {}}   # messages.jsonl (mtime,size) -> {mid: (from, from_host)}
+_postal_from_memo = {"key": None, "map": {}}   # messages.jsonl (mtime,size) -> {mid: (from, from_host, tracked)}
 
 
 def _postal_row(mid):
@@ -10870,6 +10870,9 @@ def _plant_handoff_track(store, parent_id, text, peer_sid, peer_name, t, mid, tr
     for nid, nd in nodes.items():
         h = nd.get("handoff")
         if isinstance(h, dict) and h.get("msgId") == mid:
+            if tracked and not h.get("tracked"):
+                h["tracked"] = True                     # a replant that learned the flag (a crash between
+                #                                         the two store saves) upgrades in place; never down
             return nid                                  # already planted for this message → idempotent
     if parent_id is not None and parent_id not in nodes:
         parent_id = None                                # linked goal vanished → file as a top, never orphan

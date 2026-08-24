@@ -186,7 +186,7 @@ class CourierTracked(unittest.TestCase):
     def test_a_non_local_sender_degrades_to_a_plain_delegate(self):
         # the primary would live on a kernel this courier cannot write; a satellite without a
         # primary hides work, so the flag drops and the pair renders exactly like today
-        ghost = "99999999-8888-7777-6666-555555555555"   # no names entry → not in the local fleet
+        ghost = "99999999-8888-7777-6666-555555555555"   # no names entry → not a local session
         _, planted, handoffs = self._run(tracked=True, sender_id=ghost, both_transcripts=False)
         self.assertEqual(len(planted), 1, "the delegation itself still plants")
         self.assertNotIn("tracked", planted[0]["origin"], "…but untracked: no satellite mark")
@@ -217,8 +217,11 @@ class FeedPayloadPins(unittest.TestCase):
         self.assertIn('if isinstance(nodes[x].get("handoff"), dict) and nodes[x]["handoff"].get("tracked")', KSRC)
         self.assertIn('**({"delegTracked": _tracked_peers} if _tracked_peers else {}),', KSRC)
 
-    def test_the_satellite_wears_its_mark_only_when_tracked(self):
-        self.assertIn('**({"satellite": True} if isinstance(o, dict) and o.get("tracked") else {}),', KSRC)
+    def test_the_satellite_hides_only_while_the_pair_is_intact_and_nothing_needs_you(self):
+        # review 2026-08-24: a needs-you block always surfaces, and a closed/cleared primary
+        # un-hides the copy — a pair divergence self-heals to a visible card, never work in secret
+        self.assertIn('**({"satellite": True} if isinstance(o, dict) and o.get("tracked")\n'
+                      '                   and origin and origin.get("live") and column != "needs_input" else {}),', KSRC)
 
     def test_completed_and_cleared_handoffs_drop_off_the_primary(self):
         self.assertIn('and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")]', KSRC)

@@ -1568,15 +1568,25 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       : "delegated by " + it.origin.peer + " — clearing this card also clears their linked entry")
       + " · click opens the session";
     og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.origin!.peerSid }); };
-  } else if (it.delegTracked && it.delegTracked.length) {
-    // tracked delegation PRIMARY (the user 2026-08-24): the ONE card, homed here under the
-    // delegator — it names the recipient(s) in their identity colors with the board's own live dot
-    // (working/awaiting/idle), so the manager reads the worker's state without leaving this card.
-    // Rides the origin slot with the mirrored arrow: same row, same vocabulary as "↪ from".
+  } else {
+    og.style.display = "none";
+  }
+  // tracked delegation PRIMARY (the user 2026-08-24): the ONE card, homed here under the delegator —
+  // it names the recipient(s) in their identity colors with the board's own live dot
+  // (working/awaiting/idle), so the manager reads the worker's state without leaving this card.
+  // STACKS after an ↪ from badge rather than replacing it (review 2026-08-24: an else-if hid a
+  // middleman's own tracked handoff — origin and delegTracked are different facts about one card);
+  // each recipient span carries its own click, so the ↪ from click keeps opening the sender.
+  if (it.delegTracked && it.delegTracked.length) {
+    const hadOrigin = !!(it.origin && it.origin.peer);
     og.style.display = "";
-    og.replaceChildren();
-    og.style.color = "";
-    const pre = el("span", "fask-origin-pre"); pre.textContent = "↪ delegated to ";
+    if (!hadOrigin) {
+      og.replaceChildren(); og.style.color = ""; og.classList.remove("fask-origin-absorbed");
+      og.title = "a tracked handoff: the work runs with " + it.delegTracked.map((d) => d.name).join(", ")
+        + " and reports back to this card";
+      og.onclick = null;
+    }
+    const pre = el("span", "fask-origin-pre"); pre.textContent = (hadOrigin ? " · " : "") + "↪ delegated to ";
     og.append(pre);
     it.delegTracked.forEach((d, i) => {
       if (i) og.append(", ");
@@ -1584,14 +1594,11 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
       peer.replaceChildren(...hostPartsNodes(d.host, d.name));
       if (d.color && d.color.bg) peer.style.color = d.color.bg;
       setWorkDot(peer, dotFor(d.name));
+      peer.title = "a tracked handoff: the work runs with " + d.name + " and reports back to this card · click opens the session";
+      peer.style.cursor = "pointer";
+      peer.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: d.sid }); };
       og.append(peer);
     });
-    og.classList.remove("fask-origin-absorbed");
-    og.title = "a tracked handoff: the work runs with " + it.delegTracked.map((d) => d.name).join(", ")
-      + " and reports back to this card · click opens the session";
-    og.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: it.delegTracked![0].sid }); };
-  } else {
-    og.style.display = "none";
   }
   a._time.textContent = relAge(hostNow - it.t);
   // hover the stamp for provenance (the user 2026-07-27): the age marks the NEWEST event (a done card's

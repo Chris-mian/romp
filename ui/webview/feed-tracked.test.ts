@@ -18,14 +18,18 @@ test("the default board hides satellites; the session filter is the one-click pa
     "hidden ONLY on the unfiltered board — picking the worker's session still shows its copy");
 });
 
-test("the primary names its recipients with the board's own live dot, on the origin slot", () => {
-  const BLK = SRC.slice(SRC.indexOf("} else if (it.delegTracked"), SRC.indexOf('og.style.display = "none"'));
-  assert.match(BLK, /pre\.textContent = "↪ delegated to ";/, "the mirrored arrow — same vocabulary as ↪ from");
+test("the primary names its recipients with the board's own live dot, STACKING after any ↪ from", () => {
+  const BLK = SRC.slice(SRC.indexOf("if (it.delegTracked && it.delegTracked.length) {"),
+                        SRC.indexOf("a._time.textContent"));
+  // an else-if hid a MIDDLEMAN's tracked handoff behind its own ↪ from badge (review 2026-08-24):
+  // origin and delegTracked are different facts about one card, so they stack on the slot
+  assert.match(BLK, /const hadOrigin = !!\(it\.origin && it\.origin\.peer\);/);
+  assert.match(BLK, /pre\.textContent = \(hadOrigin \? " · " : ""\) \+ "↪ delegated to ";/);
   assert.match(BLK, /peer\.replaceChildren\(\.\.\.hostPartsNodes\(d\.host, d\.name\)\);/,
     "identity rendering matches every other session name (quiet host: prefix included)");
   assert.match(BLK, /setWorkDot\(peer, dotFor\(d\.name\)\);/,
     "the recipient's LIVE state rides the card — the dot language the board already speaks");
-  assert.match(BLK, /openSession", id: it\.delegTracked!\[0\]\.sid/, "click opens the recipient session");
+  assert.match(BLK, /openSession", id: d\.sid/, "each recipient span opens ITS session — ↪ from keeps its own click");
 });
 
 test("both keys are additive on the type — an untracked payload renders exactly as before", () => {

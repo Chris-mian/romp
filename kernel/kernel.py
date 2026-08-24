@@ -18404,7 +18404,13 @@ def build_feed(now, tmux=None):
                 "trgb": list(cm.age_rgb(now - disp_t, _colormap())),
                 "turnId": nid, "origin": origin,
                 **({"delegTracked": _tracked_peers} if _tracked_peers else {}),
-                **({"satellite": True} if isinstance(o, dict) and o.get("tracked") else {}),
+                # the satellite hides ONLY while the pair is INTACT and the work runs its normal
+                # course: a needs-you block always surfaces (interrupt only when the human is the
+                # bottleneck), and a primary that closed or cleared un-hides the copy — origin.live
+                # reads the PRIMARY handoff node, so every pair divergence self-heals to a visible
+                # card instead of work running in secret (review 2026-08-24).
+                **({"satellite": True} if isinstance(o, dict) and o.get("tracked")
+                   and origin and origin.get("live") and column != "needs_input" else {}),
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
                 # DONE-CONFIRMING (the user 2026-07-24): the done verdict is in; only the settle event is
                 # pending. The card STAYS in Working (the settle gate exists precisely so the column never

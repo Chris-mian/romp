@@ -1286,7 +1286,10 @@ class Handler(BaseHTTPRequestHandler):
                 # `tracked` deliberately does NOT ride the relay: the primary view lives on the
                 # SENDER's kernel, which the recipient's courier can never reach across hosts — a
                 # satellite with no primary would hide work, so a cross-host tracked send degrades
-                # to a plain delegate (revisit with federation).
+                # to a plain delegate (revisit with federation) — and the NOTE says so: the sender
+                # asked for a report-back and must hear it degraded (fail loudly, 2026-07-03).
+                tnote = (" — report-back tracking does not cross hosts yet; sent as a plain handoff"
+                         if tracked else "")
                 mid = "px-" + _unique()
                 outbox_put(phost, {"mid": mid, "to": hit.get("name") or to, "frm": frm,
                                    "frm_id": frm_id, "body": body, "kind": kind,
@@ -1298,13 +1301,13 @@ class Handler(BaseHTTPRequestHandler):
                                               "body": body, "kind": kind})
                 if PEERS.get(phost, {}).get("up"):
                     return self._send({"ok": True, "id": mid,
-                                       "note": "relaying to '%s' on %s" % (hit.get("name") or to, phost)})
+                                       "note": "relaying to '%s' on %s%s" % (hit.get("name") or to, phost, tnote)})
                 _kernel_post("/redial", {"host": phost})   # parking IS demand: ask the kernel to
                 #                                             re-dial the host's tunnel now instead of
                 #                                             waiting out its backoff (the user 2026-08-16)
                 return self._send({"ok": True, "id": mid, "parked": phost,
-                                   "note": "parked for %s (unreachable) — delivers on reconnect, "
-                                           "or bounces back to you" % phost})
+                                   "note": ("parked for %s (unreachable) — delivers on reconnect, "
+                                            "or bounces back to you" % phost) + tnote})
             a0 = res["agent"]
             mid = deliver(a0["id"], frm, frm_id, body, kind=kind, tracked=tracked)
             if not a0.get("remote", False):
