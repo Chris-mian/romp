@@ -239,10 +239,11 @@ test("the /kill route sweeps comment threads like the WS endSession op", () => {
   assert.match(KERNEL, /_comment_kill_all\(sid, be\)\s+# its comment threads must not outlive it \(the WS endSession twin\)/);
 });
 
-test("a thread that couldn't start says so instead of pulsing dots forever", () => {
+test("a thread that couldn't start says so — the error note renders in the thread", () => {
+  // (the pulsing dots this note used to preempt are retired outright — the dots-gone test below)
   assert.match(KERNEL, /be\.launch_error\(tsid\) if hasattr\(be, "launch_error"\) else None/);
   assert.match(UI, /cmt-note cmt-err/);
-  assert.match(UI, /!th\.error && \(threadBusy\(th\.state\) \|\| pend\.length\)/);
+  assert.match(UI, /if \(th\.status === "open" && th\.error\) \{/);
 });
 
 test("Delete is offered on open and resolved threads, never mid-promote", () => {
@@ -448,4 +449,13 @@ test("the quoted passage is CONTEXT on the thread's opening message — never an
   // divider to misorder against) — the create/no-events guard is unchanged
   assert.match(UI, /if \(create \|\| !\(th!\.events \|\| \[\]\)\.length\) \{/);
   assert.match(CSS, /\.cmt-quote-ctx \{ margin: 0 0 4px; \}/);
+});
+
+test("the popover's typing dots are retired — the green highlight is the only in-flight cue", () => {
+  // the user 2026-08-24 (closing the 2026-08-24 green-highlight pass): "rather than the little
+  // spinning dot dot dot thing" — the ellipsis animation goes too. The reply's arrival is announced
+  // by the green→yellow settle; the pending bubble still acknowledges the user's own send.
+  assert.doesNotMatch(UI, /cmt-dots/);
+  assert.doesNotMatch(CSS, /cmt-dots|cmt-dot-pulse/);
+  assert.match(UI, /the pending bubble IS the acknowledgement/);
 });

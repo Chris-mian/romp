@@ -2668,16 +2668,49 @@ function renderTodo(ev: Extract<ChatEvent, { kind: "todo" }>): HTMLElement {
   const done = ev.tasks.filter((t) => t.status === "completed").length;
   const head = el("div", "todo-head"); head.textContent = `To-do · ${done}/${ev.tasks.length}`;
   card.appendChild(head);
-  for (const t of ev.tasks) {
-    const row = el("div", "todo-item todo-" + t.status);
+  const row = (t: (typeof ev.tasks)[number]) => {
+    const r = el("div", "todo-item todo-" + t.status);
     const mark = el("span", "todo-mark");
     mark.textContent = t.status === "completed" ? "✓" : t.status === "in_progress" ? "◐" : "○";
-    row.appendChild(mark);
+    r.appendChild(mark);
     const txt = el("span", "todo-text");
     txt.textContent = t.status === "in_progress" && t.activeForm ? t.activeForm : t.subject;
-    row.appendChild(txt);
-    card.appendChild(row);
-  }
+    r.appendChild(txt);
+    return r;
+  };
+  // PROGRESSIVE DISCLOSURE (the user 2026-08-24): a continuously-dispatched session — a manager
+  // especially — accumulates dozens of finished tasks and the card showed them all. Default = the
+  // ON-DECK work (in_progress + pending); the finished bulk (completed — and cancelled/deleted,
+  // should the store carry them: anything not on deck) folds into one row, "+N more completed",
+  // click to expand and click again to re-fold, nothing lost. The fold sits WHERE the bulk lives
+  // (finished work precedes current work in the list), keyed per session so the state survives the
+  // per-push re-renders (the openFolds idiom); a list with ≤ 2 finished rows stays inline — a fold
+  // hiding two rows costs a click for nothing. The label flip + rows appearing ARE the click's
+  // acknowledgement, immediate and local (no round-trip).
+  const onDeck = ev.tasks.filter((t) => t.status === "in_progress" || t.status === "pending");
+  const finished = ev.tasks.filter((t) => t.status !== "in_progress" && t.status !== "pending");
+  if (finished.length >= 3) {
+    const foldKey = "todo-done:" + (renderingSid || "");
+    const doneBox = el("div", "todo-done");
+    for (const t of finished) doneBox.appendChild(row(t));
+    applyFold(doneBox, "todo-open", foldKey);
+    const tog = el("button", "todo-fold") as HTMLButtonElement;
+    tog.type = "button";
+    const label = () => {
+      const open = doneBox.classList.contains("todo-open");
+      tog.textContent = open ? `hide ${finished.length} completed` : `+ ${finished.length} more completed`;
+      tog.title = open ? "collapse the completed items" : "show the completed items";
+    };
+    label();
+    tog.addEventListener("click", (e) => {
+      e.stopPropagation();
+      rememberFold(doneBox, "todo-open", foldKey);
+      label();
+    });
+    card.appendChild(tog);
+    card.appendChild(doneBox);
+  } else for (const t of finished) card.appendChild(row(t));
+  for (const t of onDeck) card.appendChild(row(t));
   turn.appendChild(card);
   return turn;
 }
@@ -6072,11 +6105,9 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
     n.classList.add("pending");
     list.appendChild(n);
   }
-  if (th.status === "open" && !th.error && (threadBusy(th.state) || pend.length)) {
-    const dots = el("div", "cmt-dots");
-    dots.append(el("span"), el("span"), el("span"));
-    list.appendChild(dots);
-  }
+  // (the typing dots that rendered here while the thread was busy are RETIRED — the user 2026-08-24:
+  // the await-green highlight carries the in-flight signal, and the reply's arrival is announced by
+  // the green→yellow settle; the pending bubble still acknowledges the user's own send)
   if (th.status === "open" && threadStuck(th.state)) {
     const note = el("div", "cmt-note");
     note.textContent = "This thread hit a prompt it can't answer from here. Break it out to continue.";
