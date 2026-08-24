@@ -19,6 +19,32 @@ export interface SessionViews {
   // never an edit target, excluded from the echo key, dropped by the kernel if echoed back.
   remoteTags?: SessionTag[];
 }
+// One union group = one tag NAME across every kernel defining it (user ruling 2026-08-24: kernels
+// are plumbing — no host prefixes in any tag presentation). The typed mirror of the timeline's
+// viewTagUnion over the same client blob (local tags + remoteTags); the local store's colour wins.
+// The chat's tab-menu Tags section reads and edits through this exact shape.
+export interface TagUnion { name: string; color: string; members: string[]; ids: string[]; localId: string | null; remotes: SessionTag[] }
+export function viewTagUnion(views: SessionViews | null | undefined): TagUnion[] {
+  const out: TagUnion[] = [], byName: Record<string, TagUnion> = {};
+  for (const t of viewTags(views)) {
+    const key = t.name || "tag";
+    const g = byName[key] || (byName[key] = { name: key, color: "", members: [], ids: [], localId: null, remotes: [] });
+    if (!g.localId) { g.localId = t.id; g.color = t.color || g.color; }
+    g.ids.push(t.id);
+    for (const m of (t.members || [])) if (!g.members.includes(m)) g.members.push(m);
+    if (!out.includes(g)) out.push(g);
+  }
+  for (const rt of (views?.remoteTags || [])) {
+    const key = rt.name || "tag";
+    const g = byName[key] || (byName[key] = { name: key, color: "", members: [], ids: [], localId: null, remotes: [] });
+    if (!g.localId && !g.color) g.color = rt.color || "";
+    g.ids.push(rt.id);
+    g.remotes.push(rt);
+    for (const m of (rt.members || [])) if (!g.members.includes(m)) g.members.push(m);
+    if (!out.includes(g)) out.push(g);
+  }
+  return out;
+}
 
 // the one place the legacy key is honored, so every rule below reads through it
 export function viewTags(views: SessionViews | null | undefined): SessionTag[] {
