@@ -14,6 +14,7 @@ import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
 import { SessionViews, viewVisible, viewsKey, hideIn, revealIn } from "./session-views";
+import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
 import { senderKind } from "./sender-identity";
@@ -440,6 +441,9 @@ const closingTabs = new Map<string, number>();
 // the sole evidence a close didn't take is the kernel still listing the tab long after. Past this we say
 // so and let the tab back, rather than hiding a session that's really still open.
 const CLOSE_ACK_MS = 15_000;
+// Optimistic label/color edits awaiting their kernel echo — holds a stale in-flight push from
+// reverting the strip (see tab-meta.ts; the sessionViews pending machinery's reasoning).
+const pendingTabMeta = new Map<string, PendingTabMeta>();
 // The romp identity palette for the tab right-click color picker (the user 2026-06-29). Fetched once from the
 // kernel's /palette so the client holds no color literals; empty until it lands (the menu just omits the row).
 // The palette is SELECTABLE now (the user 2026-07-12): a {type:"palette"} push lands the new set on switch.
@@ -3824,6 +3828,13 @@ function applyTabOrder(o: any, tabs?: any) {
                             color: (t.color && typeof t.color.bg === "string") ? t.color : null });
       }
     }
+    // …and apply the same blob to EXISTING sessions (the user 2026-08-24): the label/color used to
+    // stick until a per-session frame happened to rebuild — which, after a headless POST
+    // /rename | /color, is never for a background tab (the chat build cache's sig watches
+    // transcript+states only, deliberately). The recurring push is the authoritative carrier, so
+    // ANY writer — CLI POST, WS op, another dashboard, a remote kernel — renders here within a
+    // cycle (see tab-meta.ts); the renderTabs() below repaints with it.
+    syncSessionsFromTabMeta(tabs, (id) => sessions.get(id), pendingTabMeta);
   }
   // Adopt the kernel order verbatim, keeping any just-arrived tab the push doesn't carry yet (see tab-order.ts).
   const kernelOrder = Array.isArray(o) ? o.filter((x: any) => typeof x === "string") : [];
@@ -4326,6 +4337,7 @@ function setSessionFlag(id: string, flag: "hideFromFeed" | "postalServiceOff" | 
 // _name_color. The kernel accepts only a real palette value, so a stale id is a harmless no-op there.
 function setSessionColor(id: string, bg: string) {
   const color: Color = { bg, fg: "#ffffff" };
+  notePendingMeta(pendingTabMeta, id, { colorBg: bg });   // a push built before the kernel applied this cannot revert the swatch
   const s = sessions.get(id);
   if (s) s.color = color;
   const meta = tabMeta.get(id);
@@ -9913,6 +9925,10 @@ function upsert(msg: any) {
     notify: ("notify" in msg) ? !!msg.notify : (prev ? prev.notify : undefined),
   };
   sessions.set(msg.id, s);
+  // a session frame can ride the kernel's chat build cache with a stale name/color embedded (its sig
+  // watches transcript+states only) — the freshest tabOrder meta wins over it, pending guard included
+  const tm = tabMeta.get(msg.id);
+  if (tm) applyMetaToSession(s, tm, pendingTabMeta.get(msg.id));
   reconcileRewind(s);       // pending-rewind overlay + the editable-bubble set, from the fresh payload
   reconcileOptimistic(s);   // re-assert (or retire) any in-flight optimistic sends across the rebuild
   // The kernel re-sends the FULL "session" payload on every push. Distinguish an APPEND (more turns
@@ -10462,6 +10478,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   else if (m.type === "imgData" && typeof m.path === "string") onImgData(m.path, typeof m.url === "string" ? m.url : null);
   else if (m.type === "tabOrder") { captureViews(m.views || null); applyTabOrder(m.order, m.tabs); }
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
+    notePendingMeta(pendingTabMeta, m.id, { name: m.name });   // kernel truth — hold it against a push built pre-rename
     const s = sessions.get(m.id);
     if (s && s.name !== m.name) { s.name = m.name; renderTabs(); }
   }
