@@ -10759,22 +10759,24 @@ def courier_llm(message_text, menu_text, declared=""):
     return _judge_run(_triage_model(), COURIER_SYS, user, judge="courier", mark=mk).strip()[:300]
 
 
-_postal_from_memo = {"key": None, "map": {}}   # messages.jsonl (mtime,size) -> {mid: (from, from_host)}
+_postal_from_memo = {"key": None, "map": {}}   # messages.jsonl (mtime,size) -> {mid: (from, from_host, tracked)}
 
 
-def _postal_from(mid):
-    """(from_name, from_host) for a delivered postal message id, from the messages log's "sent" row —
-    the AUTHORITATIVE record of who sent it. The sender may be a session of ANOTHER kernel (federated
-    mail), so the local names registry cannot resolve it; the log row carries the name the sender
-    wore and, since 2026-07-26, the origin host the postal bus stamped on cross-host delivery.
-    ("", "") for None/unknown mids. Memoized on the log file's (mtime, size)."""
+def _postal_row(mid):
+    """(from_name, from_host, tracked) for a delivered postal message id, from the messages log's
+    "sent" row — the AUTHORITATIVE record of who sent it and how (the row schema is the postal
+    consumer contract). The sender may be a session of ANOTHER kernel (federated mail), so the local
+    names registry cannot resolve it; the log row carries the name the sender wore, the origin host
+    the bus stamped on cross-host delivery (2026-07-26), and the tracked report-back flag
+    (2026-08-24 — read off the row, never off message prose). ("", "", False) for None/unknown mids.
+    Memoized on the log file's (mtime, size)."""
     if not mid:
-        return ("", "")
+        return ("", "", False)
     try:
         st = os.stat(MESSAGES)
         key = (st.st_mtime, st.st_size)
     except OSError:
-        return ("", "")
+        return ("", "", False)
     if _postal_from_memo["key"] != key:
         mp = {}
         try:
@@ -10784,11 +10786,16 @@ def _postal_from(mid):
                 except Exception:
                     continue
                 if r.get("ev") == "sent" and r.get("id"):
-                    mp[r["id"]] = (r.get("from") or "", r.get("from_host") or "")
+                    mp[r["id"]] = (r.get("from") or "", r.get("from_host") or "", bool(r.get("tracked")))
         except OSError:
-            return ("", "")
+            return ("", "", False)
         _postal_from_memo["key"], _postal_from_memo["map"] = key, mp
-    return _postal_from_memo["map"].get(mid, ("", ""))
+    return _postal_from_memo["map"].get(mid, ("", "", False))
+
+
+def _postal_from(mid):
+    """(from_name, from_host) — the pre-tracked reader, kept for its call sites."""
+    return _postal_row(mid)[:2]
 
 
 def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None):
@@ -10852,24 +10859,32 @@ def _handoff_backref(mid):
     return "", ""
 
 
-def _plant_handoff_track(store, parent_id, text, peer_sid, peer_name, t, mid):
+def _plant_handoff_track(store, parent_id, text, peer_sid, peer_name, t, mid, tracked=False):
     """Mint a precise '↪ delegated to <peer>' TRACKING node in the SENDER's own tree (the user 2026-06-22):
     the exact item B's completion checks off, so a PARTIAL handoff doesn't over-complete the sender's broader
     goal. Filed under the courier's linked goal (parent_id) if any, else top-level. Carries handoff:{peer,
-    msgId} both as the run_propagate target and so the feed can badge it. Idempotent by msgId. Returns its id."""
+    msgId} both as the run_propagate target and so the feed can badge it; a TRACKED report-back delegation
+    (the user 2026-08-24) adds handoff.tracked — this node's card is the pair's PRIMARY, and the recipient's
+    planted goal is marked its satellite. Idempotent by msgId. Returns its id."""
     nodes = store["nodes"]
     for nid, nd in nodes.items():
         h = nd.get("handoff")
         if isinstance(h, dict) and h.get("msgId") == mid:
+            if tracked and not h.get("tracked"):
+                h["tracked"] = True                     # a replant that learned the flag (a crash between
+                #                                         the two store saves) upgrades in place; never down
             return nid                                  # already planted for this message → idempotent
     if parent_id is not None and parent_id not in nodes:
         parent_id = None                                # linked goal vanished → file as a top, never orphan
     store["seq"] = store.get("seq", 0) + 1
     nid = "%s:g%d" % (store["rompUuid"], store["seq"])
     label = "↪ delegated to %s: %s" % (peer_name or peer_sid[:8], text or "(work)")
+    handoff = {"peer": peer_sid, "msgId": mid}
+    if tracked:
+        handoff["tracked"] = True
     nodes[nid] = GuardedNode({"id": nid, "text": label[:120], "parentId": parent_id,
                   "nodeComplete": False, "blocked": False, "cleared": False,
-                  "trail": [], "t": t, "mt": t, "handoff": {"peer": peer_sid, "msgId": mid}, "log": []})
+                  "trail": [], "t": t, "mt": t, "handoff": handoff, "log": []})
     return nid
 
 
@@ -11059,16 +11074,30 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
                 save_goals(fsid, store)
                 continue
             link_id = menu[edit["n"] - 1]["id"] if edit["n"] else None   # sender's related open goal (or None)
+            # TRACKED report-back delegation (the user 2026-08-24): the sender flagged the send, so
+            # the tracking node below is the pair's PRIMARY (the one card, on the sender's own tree,
+            # carrying the recipient's identity) and B's planted goal is marked its SATELLITE
+            # (origin.tracked) for the feed to collapse off the default board — still one click away
+            # via B's own session views; nothing runs in secret. Read off the postal row, the
+            # authoritative record, never off prose. A NON-LOCAL sender never qualifies: the primary
+            # would live on a kernel this courier cannot write, and a satellite without a primary
+            # hides work — the flag degrades to a plain delegate (the wire also drops it at the
+            # relay). A demoted tracked delegate reaches neither line: no primary, no satellite, no
+            # orphan.
+            trk = bool(_postal_row(mid)[2]) and sender in id2name
             # Mint the sender's precise '↪ delegated to <recipient>' tracking node (the user 2026-06-22) and
             # point B's goal at IT — so run_propagate checks off only the handed-off piece, never the sender's
             # broader linked goal. Saved to the sender's tree before planting G on the recipient's.
-            track_id = _plant_handoff_track(sender_store, link_id, edit["text"], fsid, id2name.get(fsid), seg_t, mid)
+            track_id = _plant_handoff_track(sender_store, link_id, edit["text"], fsid, id2name.get(fsid), seg_t, mid,
+                                            tracked=trk)
             rollup_status(sender_store, False)
             save_goals(sender, sender_store)
             # Origin provenance snapshots the sender's NAME (and, for federated mail, HOST) at plant
             # time: a cross-host sender's sid resolves to nothing in this kernel's names registry, and
             # without the snapshot the "from" chip degrades to a bare sid prefix (the user 2026-07-26).
             origin = {"peer": sender, "goalId": track_id, "msgId": mid}
+            if trk:
+                origin["tracked"] = True               # the satellite mark — the feed collapses on it
             frm_name, frm_host = _postal_from(mid)
             pn = id2name.get(sender) or frm_name       # live local name first; else the log's snapshot
             if pn:

@@ -18109,6 +18109,18 @@ def build_feed(now, tmux=None):
             if nid != api_top and nid != perm_top and col in ("working", "blocked") and (
                     _await_ok or _stamp_why or _deleg_why or (col == "blocked" and _peer_wait)):
                 col = "awaiting"
+            # TRACKED delegation payloads (the user 2026-08-24): a report-back handoff renders as ONE
+            # card homed under the DELEGATOR. The sender's card is the PRIMARY — delegTracked names
+            # the recipient identities so the feed shows their live status right on it — and the
+            # recipient's planted copy is the SATELLITE (origin.tracked below) the feed collapses
+            # off the default board, still one click away via that session's own views (nothing runs
+            # in secret, 2026-08-11). Both keys ship only when present, so every untracked payload
+            # is byte-identical to before. The pair link stays the courier's msgId graph: clears and
+            # run_propagate cross it unchanged.
+            _tracked_hn = [x for x in _subtree(nid)
+                           if isinstance(nodes[x].get("handoff"), dict) and nodes[x]["handoff"].get("tracked")
+                           and not nodes[x].get("nodeComplete") and not nodes[x].get("cleared")]
+            _tracked_peers = (_handoff_peer_identities(nodes, _tracked_hn) or None) if _tracked_hn else None
             o = nodes[nid].get("origin")             # courier delegation provenance: planted by a peer
             origin = None
             if isinstance(o, dict) and o.get("peer"):
@@ -18391,6 +18403,14 @@ def build_feed(now, tmux=None):
                 "t": disp_t, "live": live,
                 "trgb": list(cm.age_rgb(now - disp_t, _colormap())),
                 "turnId": nid, "origin": origin,
+                **({"delegTracked": _tracked_peers} if _tracked_peers else {}),
+                # the satellite hides ONLY while the pair is INTACT and the work runs its normal
+                # course: a needs-you block always surfaces (interrupt only when the human is the
+                # bottleneck), and a primary that closed or cleared un-hides the copy — origin.live
+                # reads the PRIMARY handoff node, so every pair divergence self-heals to a visible
+                # card instead of work running in secret (review 2026-08-24).
+                **({"satellite": True} if isinstance(o, dict) and o.get("tracked")
+                   and origin and origin.get("live") and column != "needs_input" else {}),
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
                 # DONE-CONFIRMING (the user 2026-07-24): the done verdict is in; only the settle event is
                 # pending. The card STAYS in Working (the settle gate exists precisely so the column never

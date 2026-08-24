@@ -265,7 +265,7 @@ def _tl_append(fname, obj):
         pass
 
 def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host="",
-            relay_mid="", relay_via=""):
+            relay_mid="", relay_via="", tracked=False):
     # park=True marks a HANDOFF parked for a session that's currently dead. The
     # maildir is keyed by the session UUID (which `romp resume` reuses), so the
     # message simply waits on disk until that session is revived — delivered then,
@@ -318,6 +318,10 @@ def deliver(to_id, from_name, from_id, body, park=False, kind="", from_host="",
         ev["park"] = True
     if kind:
         ev["kind"] = kind                            # additive (consumer contract above)
+    if tracked:
+        ev["tracked"] = True                         # additive (consumer contract above): report-back
+        #                                              delegation — the row is the flag's ONE record;
+        #                                              no header, no prose (the recipient reads nothing)
     if from_host:
         ev["from_host"] = from_host                  # additive (consumer contract above)
     _tl_append("messages.jsonl", ev)
@@ -424,7 +428,10 @@ def _queue_read_receipt(meta, unread=False, dmid=""):
 #   1. The `<!-- romp-msg-id: <id> -->` HTML-comment marker emitted after each
 #      message body by format_inbox + format_push — <id> joins to messages.jsonl.
 #   2. The messages.jsonl "sent" event schema written by deliver():
-#      {ev:"sent", id, from, from_id, to_id, body, t, park?}  (park is additive).
+#      {ev:"sent", id, from, from_id, to_id, body, t, park?, kind?, from_host?, tracked?}
+#      (park/kind/from_host/tracked are all additive; `tracked` marks a report-back delegation —
+#      kind stays "delegate" — whose sender-side view is primary: the kernel courier reads it off
+#      this row, never off the message prose).
 # The HUMAN-FACING prose (banner text, headers, the "⏸ parked" tag, REPLY_HINT) is
 # NOT a contract — consumers must not parse it, so it stays free to change.
 
@@ -1255,6 +1262,9 @@ class Handler(BaseHTTPRequestHandler):
             kind = str(data.get("kind", "")).strip().lower()
             if kind not in ("delegate", "coordinate", "question"):
                 kind = ""                              # legacy/CLI mail may be undeclared; never invent one
+            tracked = bool(data.get("tracked")) and kind == "delegate"   # report-back delegation
+            #   (the user 2026-08-24): only a delegate can be tracked; wire metadata only — nothing
+            #   about the flag ever appears in message prose (the injected-voice rule)
             if _postal_off(frm_id):                # the sender is in isolation → sending is disabled
                 return self._send({"error": "isolation: YOUR OWN mailbox is OFF. This session is in postal "
                                    "isolation (its mailbox icon is toggled off on its timeline lane), so it "
@@ -1273,6 +1283,13 @@ class Handler(BaseHTTPRequestHandler):
                 # (or the next reconnect) carries it, and a definitive refusal bounces back to the
                 # sender.
                 phost, hit = res["host"], res["agent"]
+                # `tracked` deliberately does NOT ride the relay: the primary view lives on the
+                # SENDER's kernel, which the recipient's courier can never reach across hosts — a
+                # satellite with no primary would hide work, so a cross-host tracked send degrades
+                # to a plain delegate (revisit with federation) — and the NOTE says so: the sender
+                # asked for a report-back and must hear it degraded (fail loudly, 2026-07-03).
+                tnote = (" — report-back tracking does not cross hosts yet; sent as a plain handoff"
+                         if tracked else "")
                 mid = "px-" + _unique()
                 outbox_put(phost, {"mid": mid, "to": hit.get("name") or to, "frm": frm,
                                    "frm_id": frm_id, "body": body, "kind": kind,
@@ -1284,15 +1301,15 @@ class Handler(BaseHTTPRequestHandler):
                                               "body": body, "kind": kind})
                 if PEERS.get(phost, {}).get("up"):
                     return self._send({"ok": True, "id": mid,
-                                       "note": "relaying to '%s' on %s" % (hit.get("name") or to, phost)})
+                                       "note": "relaying to '%s' on %s%s" % (hit.get("name") or to, phost, tnote)})
                 _kernel_post("/redial", {"host": phost})   # parking IS demand: ask the kernel to
                 #                                             re-dial the host's tunnel now instead of
                 #                                             waiting out its backoff (the user 2026-08-16)
                 return self._send({"ok": True, "id": mid, "parked": phost,
-                                   "note": "parked for %s (unreachable) — delivers on reconnect, "
-                                           "or bounces back to you" % phost})
+                                   "note": ("parked for %s (unreachable) — delivers on reconnect, "
+                                            "or bounces back to you" % phost) + tnote})
             a0 = res["agent"]
-            mid = deliver(a0["id"], frm, frm_id, body, kind=kind)
+            mid = deliver(a0["id"], frm, frm_id, body, kind=kind, tracked=tracked)
             if not a0.get("remote", False):
                 # All through the kernel (it owns the tmux status bar + the wake), off-thread so send latency
                 # stays low: paint the recipient's "📬 from X" badge; record correspondence (peer chips) + the
@@ -2582,7 +2599,9 @@ MCP_TOOLS = [
                      "properties": {"to": {"type": "string", "description": "recipient romp session name"},
                                     "body": {"type": "string", "description": "message text"},
                                     "kind": {"type": "string", "enum": ["delegate", "coordinate", "question"],
-                                             "description": "what this message does: delegate = the recipient owns the work now; coordinate = aligning or a heads-up, reply optional; question = you need an answer"}},
+                                             "description": "what this message does: delegate = the recipient owns the work now; coordinate = aligning or a heads-up, reply optional; question = you need an answer"},
+                                    "tracked": {"type": "boolean",
+                                                "description": "delegate only: a report-back handoff — the work stays tracked under YOU as the one view, with the recipient's live progress; their copy files as its satellite. Omit for a plain handoff the recipient owns outright."}},
                      "required": ["to", "body", "kind"]}},
     {"name": "check_inbox",
      "description": "Read and clear any messages other romp sessions have sent you. Messages are also delivered automatically at the end of each turn, so you rarely need to call this.",
@@ -2621,9 +2640,12 @@ def _mcp_call(name, args):
             return ("Cannot send: this session's own identity did not resolve (no session id), so "
                     "the mail would arrive anonymously and the recipient could not place or answer "
                     "it. This is a session-identity bug worth surfacing to the user.", True)
+        tracked = bool(args.get("tracked")) and kind == "delegate"
         try:
-            resp = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid, "body": body,
-                                           "kind": kind})
+            payload = {"to": to, "from": me or "unknown", "from_id": mid, "body": body, "kind": kind}
+            if tracked:
+                payload["tracked"] = True
+            resp = _http("POST", "/send", payload)
             # "Delivered" has to MEAN delivered. A cross-host send is only relaying (or parked for
             # an unreachable host, or held for the human on the far side), and the bus says so in
             # `note` — which this dropped on the floor, so every one of those read as delivered and
@@ -2641,6 +2663,10 @@ def _mcp_call(name, args):
                 return ("Delivered to '%s' as a question — you are now recorded as waiting on their "
                         "reply until they answer. If you don't actually need a reply, recall this "
                         "message and resend it as coordinate." % to, False)
+            if kind == "delegate" and tracked:
+                return ("Delivered to '%s' as a tracked handoff — they do the work, and it stays "
+                        "tracked under you as the one view with their live progress. You are NOT "
+                        "recorded as waiting; their completion checks it off." % to, False)
             if kind == "delegate":
                 return ("Delivered to '%s' as a handoff — they own it now; you are NOT recorded as "
                         "waiting (the user 2026-08-15: ownership transferred is not a dependency). "
@@ -2740,8 +2766,12 @@ def mcp():
 
 def cli_send(argv):
     kind = frm_label = ""
-    while argv and argv[0] in ("--kind", "--from"):
-        if argv[0] == "--kind":
+    tracked = False
+    while argv and argv[0] in ("--kind", "--from", "--tracked"):
+        if argv[0] == "--tracked":
+            tracked = True
+            argv = argv[1:]
+        elif argv[0] == "--kind":
             kind = (argv[1].strip().lower() if len(argv) > 1 else "")
             argv = argv[2:]
             if kind not in ("delegate", "coordinate", "question"):
@@ -2755,8 +2785,10 @@ def cli_send(argv):
             argv = argv[2:]
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}", frm_label or ""):
                 sys.stderr.write("[romp mail] --from must be one word (letters/digits/dash/underscore, <=32 chars)\n"); return 2
+    if tracked and kind != "delegate":
+        sys.stderr.write("[romp mail] --tracked is for delegations only (add --kind delegate)\n"); return 2
     if len(argv) < 2:
-        sys.stderr.write('usage: romp mail send [--kind delegate|coordinate|question] [--from <label>] <session> <text>\n'); return 2
+        sys.stderr.write('usage: romp mail send [--kind delegate|coordinate|question] [--tracked] [--from <label>] <session> <text>\n'); return 2
     to, body = argv[0], " ".join(argv[1:])
     if not body.strip():
         sys.stderr.write("[romp mail] refusing to send an empty message\n"); return 2
@@ -2775,8 +2807,10 @@ def cli_send(argv):
                          "name.\n")
         return 1
     try:
-        resp = _http("POST", "/send", {"to": to, "from": me or "unknown", "from_id": mid, "body": body,
-                                       "kind": kind})
+        payload = {"to": to, "from": me or "unknown", "from_id": mid, "body": body, "kind": kind}
+        if tracked:
+            payload["tracked"] = True
+        resp = _http("POST", "/send", payload)
     except BusError as e:
         sys.stderr.write("[romp mail] %s\n" % e); return 1
     # Echo what actually happened, not a blanket "delivered": a cross-host send is only RELAYING (or
