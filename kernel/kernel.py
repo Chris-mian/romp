@@ -2889,12 +2889,11 @@ def _goal_awaiting_stamp_full(nodes, top, children=None, answered_at=0):
             # A KINDLESS stamp keeps the old behavior: it may well be a peer wait (the enum predates
             # it), and a false lift there is the known, tested legacy trade.
             kind = nd.get("awaitingKind")
-            # keyed on the stamp's WRITE time, not the anchor (2026-08-19 audit): awaitingAt is the
-            # audited turn's TRIGGER, which predates the reply that turn solicited — so a fresh
-            # re-stamp was superseded the instant it was filed, contradicting this machinery's own
-            # "a stamp filed AFTER the reply survives" contract. The write time is the closer's
-            # epistemic moment; a reply older than it was already in the audited world.
-            if not (at and answered_at and _stamp_written_at(nd) < answered_at and kind in (None, "peer")):
+            # the compare lives in _peer_stamp_superseded — pair-aware since 2026-08-24 (a stamp
+            # naming its awaited peers ends only on THAT pair's answer), write-time keyed since the
+            # 2026-08-19 audit. `answered_at` here may be the pair-aware _peer_answered(sid) tuple
+            # or a legacy scalar (tests, older callers) — the predicate normalizes both.
+            if not _peer_stamp_superseded(nd, answered_at):
                 cand = (at, nd["awaitingWhy"], kind or "")   # "" keeps max() comparable
                 best = cand if best is None else max(best, cand)
         stack.extend(children.get(x, []))
@@ -2931,7 +2930,7 @@ def _mark_nudge_failed(gid, ev_t=None, wake=False):
             if _session_awaiting(_sid, _path_of(_sid) or "", True):
                 return None
             if _goal_awaiting_stamp(jd.load_goals(_sid).get("nodes", {}), gid,
-                                    answered_at=_peer_answered_at(_sid)):
+                                    answered_at=_peer_answered(_sid)):
                 return None                            # the judge's durable ⏳ stamp says the goal waits on
                 #                                        async work — same rule as above, restart-proof
         except Exception:
@@ -3616,9 +3615,9 @@ def _lift_spent_awaiting(now, tmux):
             # exactly like the reader (job/agents/task/timer stamps stand through mail); DORMANT sessions
             # never reach here (the sweep's own gate above) — the dead-wait conversion reads the stamp RAW
             # on purpose (2026-08-23) and owns that ending.
-            answered = _peer_answered_at(sid)
-            for nd in (list(stamped) if answered else ()):
-                if nd.get("awaitingKind") not in (None, "peer") or _stamp_written_at(nd) >= answered:
+            answered = _peer_answered(sid)
+            for nd in (list(stamped) if answered[0] else ()):
+                if not _peer_stamp_superseded(nd, answered):
                     continue
                 if jd.record_verdict(store, nd, "romp", "awaiting", _lift_ev_t(nd, now), lift=True):
                     changed = True
@@ -4079,7 +4078,7 @@ def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
         # last-moment fresh-store re-read (the judges run concurrently with this tick): the wake's whole
         # justification is "the stamp stands and the goal is open" — re-key on the store as written
         _fresh = jd.load_goals(sid)
-        if (not _goal_awaiting_stamp(_fresh.get("nodes", {}), gid, answered_at=_peer_answered_at(sid))
+        if (not _goal_awaiting_stamp(_fresh.get("nodes", {}), gid, answered_at=_peer_answered(sid))
                 or _fresh.get("status", {}).get(gid, "working") != "working"):
             return False
     except Exception:
@@ -4687,7 +4686,7 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
             continue                                 # all open work handed to peers → nothing for THIS session
         if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
             continue                                 # awaiting a live peer's reply to a question this goal predates
-        _stamp = _goal_awaiting_stamp_full(nodes, gid, _kids, answered_at=_peer_answered_at(sid))
+        _stamp = _goal_awaiting_stamp_full(nodes, gid, _kids, answered_at=_peer_answered(sid))
         if _stamp:
             # The judge's durable ⏳ stamp (closer awaiting verdict): the goal's latest audited turn ended
             # waiting on async work it dispatched — not a stall, so the status nudge stays off. Restart-
@@ -4974,9 +4973,7 @@ def _nudge_fire_list(fresh, to_fire, arm_t=None, seen_t=None, held=None):
             # reviver at all. Same read as the walk and the wake's own re-check (answered_at,
             # peer/kindless only): symmetric ends, no flap — and the sweep's superseded-peer lift
             # retires the raw fields durably a beat later either way.
-            _ans = _peer_answered_at(f[0].rsplit(":", 1)[0])
-            if not (_ans and nd.get("awaitingKind") in (None, "peer")
-                    and _stamp_written_at(nd) < _ans):
+            if not _peer_stamp_superseded(nd, _peer_answered(f[0].rsplit(":", 1)[0])):
                 continue
         keep.append(f)
     return keep
@@ -12123,12 +12120,12 @@ def _session_stamp_read(sid):
         nodes = store.get("nodes", {})
         status = store.get("status", {}) or {}
         best = None
-        answered = _peer_answered_at(sid)              # a peer's later answer supersedes older PEER waits
+        answered = _peer_answered(sid)                 # a peer's later answer supersedes older PEER waits
         for nid, nd in nodes.items():
             if nd.get("awaitingWhy") and not nd.get("rolledUp"):
                 at = nd.get("awaitingAt") or 0
                 kind = nd.get("awaitingKind")
-                if at and answered and _stamp_written_at(nd) < answered and kind in (None, "peer"):
+                if _peer_stamp_superseded(nd, answered):
                     continue                           # peer-scoped (the user 2026-08-15): a reply can only
                 #                                        end a wait that was ON a peer; kindless keeps the
                 #                                        legacy trade. Keyed on the stamp's WRITE time like
@@ -17739,6 +17736,45 @@ def _peer_answered_at(sid):
     return best
 
 
+def _peer_answered(sid):
+    """(answered_any, {peer_key: reply_t}) — _peer_answered_at with the PAIR kept (2026-08-24): the
+    pair-blind scalar let ANY answered exchange supersede ANY peer stamp, so an unrelated coordinate
+    from the same log hid a real wait (three stuck stamps, one ~14h). Stamps that record WHICH
+    peer(s) they await (awaitingPeers, written by the closer's admit gate) are matched against their
+    own pair's reply; identity-less legacy stamps keep the scalar read. Keys are the wait maps' own
+    (sids, or "peer:<host>:<name>" for an unresolved cross-host recipient) — the same alias re-key
+    the admit gate derives them from, so the two sides can never disagree."""
+    best = _peer_answered_at(sid)        # the scalar rides the existing name — the tests' stub seam
+    last_any, _la = _postal_wait_maps()
+    per = {}
+    for (f, t_), sent in last_any.items():
+        if f != sid:
+            continue
+        r = last_any.get((t_, f), 0)
+        if r >= sent:
+            per[t_] = max(per.get(t_, 0), r)
+    return best, per
+
+
+def _peer_stamp_superseded(nd, answered):
+    """THE pair-aware peer-answer supersede — the ONE predicate every stamp reader (card, chip/lane,
+    walk, wake re-check), the nudge fire-gate, and the sweep's superseded-peer lift share; extend
+    HERE (2026-08-24), never inline a compare. `answered` = _peer_answered(sid), or a bare scalar
+    from a legacy caller (kept pair-blind). Peer-scoped exactly as before: job/agents/task/timer
+    stamps stand through mail; write-time keyed (the 2026-08-19 audit): a stamp filed after the
+    reply survives — the closer's verdict is fresher than the answer it already saw."""
+    if nd.get("awaitingKind") not in (None, "peer"):
+        return False
+    if isinstance(answered, tuple):
+        any_t, per = answered
+    else:
+        any_t, per = (answered or 0), None   # a legacy SCALAR stays pair-blind for every stamp —
+        #                                      it carries no pair map to match an identity against
+    peers = nd.get("awaitingPeers")
+    ans = (max((per.get(pk, 0) for pk in peers), default=0) if (peers and per is not None) else any_t)
+    return bool((nd.get("awaitingAt") or 0) and ans and _stamp_written_at(nd) < ans)
+
+
 # ───────────────────────── view-builder: goals → feed (parity: feed = ADAPT; minimal here) ─────────────────────────
 _jerr_cache = {}   # str(path) -> ((mtime_ns, size), rows)
 
@@ -18282,7 +18318,7 @@ def build_feed(now, tmux=None):
             # across kernel restarts — exactly where the live snapshot signals above go dark and a
             # genuinely-waiting goal used to read as plain working, then "stalled". It floors WORKING
             # only: a real needs-you (block) always outranks the annotation.
-            _sf = (_goal_awaiting_stamp_full(nodes, nid, children, answered_at=_peer_answered_at(fsid))
+            _sf = (_goal_awaiting_stamp_full(nodes, nid, children, answered_at=_peer_answered(fsid))
                    if col == "working" else None)
             _stamp_why = _sf[1] if _sf else None
             _stamp_kind = _sf[2] if _sf else None

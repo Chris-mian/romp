@@ -53,7 +53,7 @@ class _Base(unittest.TestCase):
         self.td.cleanup()
 
     def _reset_caches(self):
-        jd._PEER_ASK_CACHE[:] = [None, ({}, {})]
+        jd._PEER_ASK_CACHE[:] = [None, ({}, {}, {})]
         km._POSTAL_WAIT_CACHE[:] = [None, None]
         km._SESSION_STAMP_CACHE.clear()
 
@@ -121,6 +121,8 @@ class MatrixCloserGate(_Base):
             if admitted:
                 self.assertEqual(k, "peer", "an open sent-question admits the closer's peer stamp")
                 self.assertTrue(why)
+                self.assertEqual(s["nodes"][gid].get("awaitingPeers"), [MGR],
+                                 "…and records WHICH peer it awaits — the pair-aware supersede's key")
             else:
                 self.assertEqual((why, k), (None, None),
                                  "a sent %s never mints awaiting-peer (ownership moved / nothing asked)" % kind)
@@ -253,6 +255,152 @@ class MatrixSupersedeTwins(_Base):
                           "the peer answered after the stamp was written -> superseded (card)")
         self.assertIsNone(km._session_stamp_read(SID)[0][0],
                           "…and on the session surfaces alike — one fact, one answer")
+
+
+class PairAwareSupersede(_Base):
+    """Hole (b), 2026-08-24: an identity-carrying stamp ends only on the AWAITED pair's answer; an
+    unrelated exchange no longer hides a real wait. Legacy identity-less stamps keep the pair-blind
+    read — nothing strands. One predicate for every reader (pinned below)."""
+
+    OTHER = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"    # an unrelated peer on the same log
+
+    def _stamped(self, ev_t=T0 + 100):
+        s, gid = self._store()
+        self._log([_msg(1, SID, MGR, T0 + 10, "question")])
+        jd.apply_close(s, jd.open_menu(s), {"done": {}, "block": {},
+                       "awaiting": {1: {"why": "asked the manager which port", "kind": "peer"}}}, t=ev_t)
+        jd.GOALDIR.mkdir(parents=True, exist_ok=True)
+        (jd.GOALDIR / (SID + ".json")).write_text(json.dumps(s))
+        km._SESSION_STAMP_CACHE.clear()
+        return s, gid
+
+    def test_an_unrelated_pair_answer_no_longer_supersedes(self):
+        s, gid = self._stamped()
+        future = int(time.time()) + 10_000
+        # an answered exchange with a DIFFERENT peer, after the stamp's write time
+        self._log([_msg(1, SID, MGR, T0 + 10, "question"),
+                   _msg(2, SID, self.OTHER, T0 + 20, "coordinate"),
+                   _msg(3, self.OTHER, SID, future, "coordinate")])
+        answered = km._peer_answered(SID)
+        self.assertGreater(answered[0], 0, "the pair-blind scalar WOULD have superseded")
+        nodes = s["nodes"]
+        self.assertIsNotNone(km._goal_awaiting_stamp_full(nodes, gid, answered_at=answered),
+                             "the stamp awaits MGR — mail from another peer cannot end it (card)")
+        self.assertEqual(km._session_stamp_read(SID)[0][2], "asked the manager which port",
+                         "…and the session-level twin agrees (chip/lane)")
+
+    def test_the_awaited_pair_answer_still_supersedes_instantly(self):
+        s, gid = self._stamped()
+        future = int(time.time()) + 10_000
+        self._log([_msg(1, SID, MGR, T0 + 10, "question"), _msg(2, MGR, SID, future, "coordinate")])
+        answered = km._peer_answered(SID)
+        nodes = s["nodes"]
+        self.assertIsNone(km._goal_awaiting_stamp_full(nodes, gid, answered_at=answered),
+                          "the awaited peer answered after the write -> superseded (card)")
+        self.assertIsNone(km._session_stamp_read(SID)[0][0], "…both readers, one predicate")
+
+    def test_a_legacy_identity_less_stamp_keeps_the_pair_blind_read(self):
+        s, gid = self._stamped()
+        del s["nodes"][gid]["awaitingPeers"]           # a pre-identity stamp, as stored stores hold
+        future = int(time.time()) + 10_000
+        self._log([_msg(1, SID, MGR, T0 + 10, "question"),
+                   _msg(2, SID, self.OTHER, T0 + 20, "coordinate"),
+                   _msg(3, self.OTHER, SID, future, "coordinate")])
+        self.assertIsNone(km._goal_awaiting_stamp_full(s["nodes"], gid, answered_at=km._peer_answered(SID)),
+                          "no identity on the stamp -> today's behavior exactly (never strand legacy)")
+
+    def test_every_reader_shares_the_one_predicate(self):
+        # the twins rule, extended (the manager's ask): no reader may inline its own compare — the
+        # write-time-vs-answer compare exists ONLY inside _peer_stamp_superseded
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        inline = [l for l in src.splitlines()
+                  if "_stamp_written_at(nd) <" in l or "_stamp_written_at(nd) >=" in l]
+        self.assertEqual(len(inline), 1, "one compare, inside the predicate: %r" % inline)
+        self.assertGreaterEqual(src.count("_peer_stamp_superseded(nd,"), 4,
+                                "card reader, session twin, sweep lift, fire-gate — all through it")
+
+
+class CrossHostDelegation(_Base):
+    """Hole (a), 2026-08-24: a cross-host delegate plants the sender-side tracking node from the
+    sent row (declared kind, horizon-bounded, idempotent), and the recipient's REPLY mail — never
+    the relay ack — completes it."""
+
+    RHOST, RNAME = "TESTHOST-B", "web"
+    RSID = "eeeeeeee-ffff-0000-1111-222222222222"     # the remote recipient's sid, learned on reply
+
+    def _xrow(self, i, ts, kind="delegate", body="own the exporter work"):
+        return json.dumps({"id": "px-%d.mail.TESTHOST-A" % i, "ev": "sent", "from": "api",
+                           "from_id": SID, "to_id": "peer:%s" % self.RHOST,
+                           "toName": "%s:%s" % (self.RHOST, self.RNAME), "t": ts,
+                           "kind": kind, "body": body})
+
+    def _reply(self, i, ts):
+        return json.dumps({"id": "rx-%d.mail.%s" % (i, self.RHOST), "ev": "sent", "from": self.RNAME,
+                           "from_id": self.RSID, "from_host": self.RHOST, "to_id": SID,
+                           "t": ts, "kind": "coordinate", "body": "done: exporter shipped"})
+
+    def _fleet_stub(self):
+        # run_courier/run_propagate discover the fleet from names+transcripts; stub the discovery
+        # to the one local sender (the recipient is REMOTE by construction)
+        self._saved_discover = jd.discover
+        jd.discover = lambda now: [(SID, "/tmp/none.jsonl", None, "api")]
+        self.addCleanup(lambda: setattr(jd, "discover", self._saved_discover))
+
+    def _handoffs(self):
+        st = jd.load_goals(SID)
+        return [nd for nd in st["nodes"].values() if isinstance(nd.get("handoff"), dict)]
+
+    def test_a_cross_host_delegate_plants_the_tracking_node(self):
+        self._fleet_stub()
+        self._log([self._xrow(1, T0 + 10)])
+        jd.run_courier(now=T0 + 100)
+        hs = self._handoffs()
+        self.assertEqual(len(hs), 1, "the sent row is the authoritative record — planted from it")
+        self.assertEqual(hs[0]["handoff"]["peer"], "TESTHOST-B:web",
+                         "the identity is toName — displays resolve it, the remote arm re-keys from it")
+        self.assertIn("↪ delegated to TESTHOST-B:web", hs[0]["text"])
+        self.assertNotIn("tracked", hs[0]["handoff"], "tracked never rides the relay — the boundary")
+        jd.run_courier(now=T0 + 200)
+        self.assertEqual(len(self._handoffs()), 1, "idempotent by msgId — one plant per message ever")
+
+    def test_declared_only_and_horizon_bounded(self):
+        self._fleet_stub()
+        self._log([self._xrow(1, T0 + 10, kind="coordinate"),
+                   self._xrow(2, T0 - jd.COURIER_RETRY_HORIZON - 60)])
+        jd.run_courier(now=T0 + 100)
+        self.assertEqual(self._handoffs(), [], "a non-delegate never plants; ancient rows never backfill")
+
+    def test_the_reply_completes_and_the_relay_ack_does_not(self):
+        self._fleet_stub()
+        self._log([self._xrow(1, T0 + 10)])
+        jd.run_courier(now=T0 + 100)
+        # the far host's delivery ack lands — the ASK arrived; the work is NOT done
+        rows = [self._xrow(1, T0 + 10),
+                json.dumps({"id": "px-1.mail.TESTHOST-A", "ev": "relayed", "t": T0 + 100})]
+        self._log(rows)
+        jd.run_propagate(now=T0 + 200)
+        self.assertFalse(self._handoffs()[0].get("nodeComplete"),
+                         "relayed = delivered, not completed — delivery cannot check work off")
+        # the recipient's reply mail is the report-back event
+        rows.append(self._reply(1, T0 + 300))
+        self._log(rows)
+        jd.run_propagate(now=T0 + 400)
+        nd = self._handoffs()[0]
+        self.assertTrue(nd.get("nodeComplete"), "the reply completes the tracking node")
+        self.assertIn("reported back by TESTHOST-B:web", nd.get("doneWhy") or "")
+
+    def test_an_unrelated_peers_reply_never_completes(self):
+        self._fleet_stub()
+        self._log([self._xrow(1, T0 + 10)])
+        jd.run_courier(now=T0 + 100)
+        other = json.dumps({"id": "rx-9.mail.TESTHOST-C", "ev": "sent", "from": "tests",
+                            "from_id": "dddddddd-0000-1111-2222-333333333333",
+                            "from_host": "TESTHOST-C", "to_id": SID, "t": T0 + 300,
+                            "kind": "coordinate", "body": "unrelated news"})
+        self._log([self._xrow(1, T0 + 10), other])
+        jd.run_propagate(now=T0 + 400)
+        self.assertFalse(self._handoffs()[0].get("nodeComplete"),
+                         "only the delegated peer's own reply is the report-back event")
 
 
 if __name__ == "__main__":

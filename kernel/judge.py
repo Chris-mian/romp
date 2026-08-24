@@ -3823,7 +3823,8 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
             # through machinery that already exists. Lifted by the closer's next audit of the goal.
             t = _target(o)
             k = o.get("kind")
-            if k == "peer" and t and not _open_peer_asks(nodes[t]["id"].rsplit(":", 1)[0]):
+            kp = (_open_ask_peers(nodes[t]["id"].rsplit(":", 1)[0]) if k == "peer" and t else None)
+            if k == "peer" and t and not kp:
                 # the peer-kind write gate (the user 2026-08-24, same rule as apply_close): no open
                 # sent-question, no peer wait. DEMOTED to kindless rather than dropped — this op's
                 # whole job is marking "progressing, nothing owed to the user" so the nudge-failed
@@ -3832,7 +3833,7 @@ def apply_plan(store, seg_id, seg_t, ops, menu, place_key=None, prompt_uuid=None
                 # any-answer supersede and the closer's next lift).
                 k = None
             if t and record_verdict(store, nodes[t], "planner", "awaiting", seg_t, why=o["why"], seg=seg_id,
-                                    await_kind=k):
+                                    await_kind=k, await_peers=(kp if k == "peer" else None)):
                 touched = t                           # mt deliberately NOT bumped: an annotation, not work
         elif do == "extend":
             # A queued-fragment landing (the opener's sibling <note>, the user 2026-07-11): this message
@@ -5975,7 +5976,7 @@ LOG_CAP = 64                             # per-node verdict-log bound (a node ra
 
 
 def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=False, undo=False, lift=False,
-                   await_kind=None):
+                   await_kind=None, await_peers=None):
     """P3.1 DUAL-WRITE (the user 2026-07-06): the gate AND the recorder, fused into the one seam every
     verdict write goes through. Asks may_apply; when allowed, appends the event to the node's
     append-only verdict LOG and returns True — the caller then writes the flags exactly as before
@@ -6004,6 +6005,10 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=Fals
                     # what an `awaiting` assert waits ON (AWAIT_KINDS; "kind" is taken by the verdict kind).
                     # Absent = a kindless legacy stamp, which every rule treats exactly as before the enum.
                     **({"awaitKind": await_kind} if await_kind else {}),
+                    # WHICH peer(s) an awaiting-peer assert waits on (2026-08-24): the admit gate's
+                    # open-ask keys, so the supersede can match the awaited pair's answer and stop
+                    # letting unrelated mail from the same log end unrelated waits. Absent = legacy.
+                    **({"awaitPeers": sorted(await_peers)} if await_peers else {}),
                     "at": int(time.time())})
         if len(log) > LOG_CAP:
             del log[:len(log) - LOG_CAP]
@@ -6083,7 +6088,7 @@ def _fold_node(nd):
                    audited turn's own processing, not a fresh event (see the guard in the loop)."""
     state, floor = "open", 0
     cur_settle, prev_settle = None, None
-    awaiting_why = awaiting_at = awaiting_kind = None     # the live ⏳ stamp (see docstring); None = not awaiting
+    awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None     # the live ⏳ stamp (see docstring); None = not awaiting
     done_why = block_why = None           # the landing verdicts' rationale (doneWhy/blockWhy derivation)
     held = pending = False                # held: an unanswered USER reopen pins the node open (no bottom-up
     #                                       re-completion); pending: an unanswered msg-reopen wears the chip.
@@ -6107,7 +6112,7 @@ def _fold_node(nd):
                 # peer's postal reply sat wedged-invisible in Working. Same-trigger symmetry as the
                 # assert's own `t >= floor` equality-lands rule below: within one turn the reopen is the
                 # trigger, the wait is how the turn ENDED.
-                awaiting_why = awaiting_at = awaiting_kind = None
+                awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None
             if e.get("undo") and clear_snap is not None:
                 state, cur_settle, prev_settle = clear_snap      # restore what the cross-off displaced
                 clear_snap = None
@@ -6130,13 +6135,13 @@ def _fold_node(nd):
                 state = "done"
                 done_why = e.get("why") or done_why
                 reopen_snap = None
-                awaiting_why = awaiting_at = awaiting_kind = None
+                awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None
         elif kind == "block":
             if src in ("user", "agent") or t > floor:
                 state = "blocked"
                 block_why = e.get("why") or block_why
                 reopen_snap = None
-                awaiting_why = awaiting_at = awaiting_kind = None
+                awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None
         elif kind == "unblock":
             if state == "blocked":
                 state = "open"
@@ -6144,12 +6149,12 @@ def _fold_node(nd):
             clear_snap = (state, cur_settle, prev_settle)
             state = "cleared"
             reopen_snap = None
-            awaiting_why = awaiting_at = awaiting_kind = None
+            awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None
         elif kind == "settle":            # display annotation: WHEN the card entered Completed; never state
             cur_settle = t
         elif kind == "awaiting":          # ⏳ annotation (like settle, never state): the closer audited a
             if e.get("lift"):             # turn on this goal — either the wait is (still) on, or it ended
-                awaiting_why = awaiting_at = awaiting_kind = None
+                awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None
             elif src in ("user", "agent") or t >= floor:   # done-style floor: equality LANDS — the turn that
                 new_why = e.get("why") or awaiting_why       # processes the user's reply may itself dispatch
                 #                                              and wait (the reply IS that turn's trigger)
@@ -6158,6 +6163,11 @@ def _fold_node(nd):
                 # a neighbor's label onto it would ship an affirmatively wrong kind (review 2026-08-15)
                 awaiting_kind = (e.get("awaitKind")
                                  or (awaiting_kind if new_why == awaiting_why else None))
+                # the awaited-PEER identity (2026-08-24, pair-aware supersede) rides the same
+                # coalesce: a peers-less re-assert of the SAME why keeps the standing identity, a
+                # different why is a different wait
+                awaiting_peers = (e.get("awaitPeers")
+                                  or (awaiting_peers if new_why == awaiting_why else None))
                 awaiting_why = new_why
                 awaiting_at = t
         elif kind == "dismiss":           # the judge rejected the provisional msg-reopen: restore what the
@@ -6173,6 +6183,7 @@ def _fold_node(nd):
             "awaitingWhy": awaiting_why if state == "open" else None,
             "awaitingAt": awaiting_at if state == "open" else None,
             "awaitingKind": awaiting_kind if state == "open" else None,
+            "awaitingPeers": awaiting_peers if state == "open" else None,
             "doneWhy": done_why, "blockWhy": block_why}
 
 
@@ -6385,10 +6396,15 @@ def _materialize_node(nd):
                 nd["awaitingKind"] = f["awaitingKind"]
             else:
                 nd.pop("awaitingKind", None)           # a kindless stamp carries no kind field at all
+            if f.get("awaitingPeers"):
+                nd["awaitingPeers"] = f["awaitingPeers"]   # WHICH peer(s) the wait is on — the pair-aware
+            else:                                          # supersede's key; absent = legacy, pair-blind
+                nd.pop("awaitingPeers", None)
         else:
             nd.pop("awaitingWhy", None)
             nd.pop("awaitingAt", None)
             nd.pop("awaitingKind", None)
+            nd.pop("awaitingPeers", None)
     return f
 
 
@@ -8061,7 +8077,7 @@ AWAIT_KINDS = ("agents", "task", "job", "peer", "timer")
 # edge-drop. Dead peers are NOT excluded: the gate asks "does an open ask exist", and a dead peer's
 # wait is the dead-wait sweep's business, not a reason to refuse the stamp.
 _PEER_ASK_RE = re.compile(r"^\s*(?:QUESTION|ASK|Q)\b", re.I)   # legacy pre-`kind` rows only
-_PEER_ASK_CACHE = [None, ({}, {})]   # (mtime_ns, size) , (last_any, last_ask) — one scan per log change
+_PEER_ASK_CACHE = [None, ({}, {}, {})]   # (mtime_ns, size) , (last_any, last_ask, alias) — one scan per log change
 
 
 def _postal_ask_maps():
@@ -8069,7 +8085,7 @@ def _postal_ask_maps():
         st = MESSAGES.stat()
         key = (st.st_mtime_ns, st.st_size)
     except OSError:
-        return {}, {}
+        return {}, {}, {}
     if _PEER_ASK_CACHE[0] == key:
         return _PEER_ASK_CACHE[1]
     last_any, last_ask, rows, alias = {}, {}, [], {}
@@ -8096,17 +8112,24 @@ def _postal_ask_maps():
                 last_ask[(f, t_)] = ts
     except OSError:
         pass
-    _PEER_ASK_CACHE[:] = [key, (last_any, last_ask)]
-    return last_any, last_ask
+    _PEER_ASK_CACHE[:] = [key, (last_any, last_ask, alias)]
+    return last_any, last_ask, alias
+
+
+def _open_ask_peers(sid):
+    """The peer keys `sid` itself sent a kind=question to that no reply of any kind has come back
+    for — the awaiting-peer admit gate's evidence AND the identity the stamp records (2026-08-24):
+    _peer_answered's pair-aware supersede matches these exact keys (sids, or the wait maps' own
+    "peer:<host>:<name>" for an unresolved cross-host recipient — both sides derive them from the
+    same alias re-key, so they can never disagree)."""
+    last_any, last_ask, _alias = _postal_ask_maps()
+    return sorted(peer for (f, peer), ts in last_ask.items()
+                  if f == sid and last_any.get((peer, f), 0) < ts)
 
 
 def _open_peer_asks(sid):
     """True iff `sid` itself sent a kind=question no reply of any kind has come back for."""
-    last_any, last_ask = _postal_ask_maps()
-    for (f, peer), ts in last_ask.items():
-        if f == sid and last_any.get((peer, f), 0) < ts:
-            return True
-    return False
+    return bool(_open_ask_peers(sid))
 
 
 def _parse_close(raw, menu_len):
@@ -8497,7 +8520,8 @@ def apply_close(store, menu, verdicts, t=None, touched=None, t_overrides=None):
         elif i in awaiting:
             aw_why = (awaiting[i] or {}).get("why") or None
             aw_kind = (awaiting[i] or {}).get("kind")
-            if aw_kind == "peer" and not _open_peer_asks(nd["id"].rsplit(":", 1)[0]):
+            aw_peers = (_open_ask_peers(nd["id"].rsplit(":", 1)[0]) if aw_kind == "peer" else None)
+            if aw_kind == "peer" and not aw_peers:
                 # the peer-kind write gate (the user 2026-08-24): awaiting-a-peer requires an
                 # outstanding kind=question this session ITSELF sent. A delegate transferred
                 # ownership (the courier handoff graph carries that visibility, with the peer's
@@ -8509,7 +8533,8 @@ def apply_close(store, menu, verdicts, t=None, touched=None, t_overrides=None):
                 continue
             if nd.get("awaitingWhy") != aw_why:
                 # a changed why is a real event → new row, new anchor (as ever)
-                record_verdict(store, nd, "closer", "awaiting", t, why=aw_why, await_kind=aw_kind)
+                record_verdict(store, nd, "closer", "awaiting", t, why=aw_why, await_kind=aw_kind,
+                               await_peers=aw_peers)
             elif aw_why and aw_kind and not nd.get("awaitingKind"):
                 # a kind GAIN on the standing why lands AT THE ORIGINAL ANCHOR: the stamp's since-time,
                 # the wake's patience, and the peer-supersede ordering all key on the first assertion —
@@ -8517,7 +8542,7 @@ def apply_close(store, menu, verdicts, t=None, touched=None, t_overrides=None):
                 # an unchanged why coalesces like any same-why re-assert: an LLM relabel (task↔job) is
                 # not new information, and landing it would re-anchor + chew LOG_CAP every audit.
                 record_verdict(store, nd, "closer", "awaiting", nd.get("awaitingAt"),
-                               why=aw_why, await_kind=aw_kind)
+                               why=aw_why, await_kind=aw_kind, await_peers=aw_peers)
         elif nd.get("awaitingWhy") and (touched is None or i <= touched):
             record_verdict(store, nd, "closer", "awaiting", t, lift=True)
     return newly
@@ -10920,6 +10945,41 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
                 rollup_status(a_store, False)           # sender just had work close → recompute its columns
                 save_goals(a_sid, a_store)
                 n += 1
+    # REMOTE recipients (the user 2026-08-24): their goal stores live on another kernel, so the
+    # origin back-link above can never fire for them. The local log still records the exact
+    # report-back event: the recipient's REPLY mail — any kind — at/after the delegate's send, the
+    # same event the stamp machinery has treated as a handoff's ending since the 2026-08-18 audit
+    # ("a delegated peer's reply lifts the awaiting stamp"). `relayed` is deliberately NOT it: that
+    # ack only says the ASK was delivered, and completing on delivery would check off undone work.
+    # Granularity is per-PEER, not per-message — the log carries no reply→delegate join, so one
+    # reply completes every outstanding cross-host handoff to that peer sent at/before it; coarse,
+    # but forward-only and honest, where the alternative was a wait no event could ever end. Keys
+    # re-derive from the stored toName exactly as the wait maps do: the alias when the peer has
+    # spoken (it must have, to reply), else the raw relay key.
+    last_any, _la, alias = _postal_ask_maps()
+    for fsid, path, anchor, name in discover(now)[:sessions_cap]:
+        store = load_goals(fsid)
+        changed = False
+        for nid, nd in list(store.get("nodes", {}).items()):
+            h = nd.get("handoff")
+            if not (isinstance(h, dict) and h.get("peer") and not nd.get("nodeComplete")):
+                continue
+            pk = str(h["peer"])
+            if ":" not in pk:                          # a LOCAL recipient: the origin back-link owns it
+                continue
+            keys = {"peer:" + pk}
+            if alias.get(pk):
+                keys.add(alias[pk])
+            reply = max((last_any.get((k, fsid), 0) for k in keys), default=0)
+            if reply and reply >= (nd.get("t") or 0):
+                why = "reported back by %s (delegated cross-host)" % pk
+                if record_verdict(store, nd, "courier", "done", reply, why=why):
+                    _mark_node_done(store, nid, why, reply, src="courier")
+                    changed = True
+                    n += 1
+        if changed:
+            rollup_status(store, False)
+            save_goals(fsid, store)
     if verbose:
         sys.stderr.write("romp-judge: propagated %d delegation completions\n" % n)
     return n
@@ -10979,8 +11039,47 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
                     continue
                 pending.append((seg["t"], fsid, seg["id"], _unit_text(seg["atoms"]), pm[1], pm[0],
                                 _seg_peer_kind(seg), _seg_anchor(seg), str(path)))
-    pending.sort(key=lambda x: x[0])                  # global cross-session oldest-first
+    # CROSS-HOST delegates plant the SENDER-side tracking node here too (the user 2026-08-24, the
+    # paused-cards investigation): the recipient lives on a remote kernel, so no inbound segment
+    # ever reaches this courier and _plant_handoff_track never ran — the sender's goal waited on a
+    # completion event that could not exist (a live specimen's done-line arrived and was relayed in
+    # 90 seconds; the goal sat paused for hours). The sent row is the authoritative record (to_id
+    # "peer:<host>", toName "<host>:<name>", declared kind): plant from it directly, trusting the
+    # DECLARED kind exactly as the parse give-up path always has — no recipient segment exists to
+    # judge, and the send ack already told the sender "they own it now". Declared-only on purpose:
+    # a kindless legacy row is indistinguishable from a coordinate, and planting from a guess mints
+    # noise. handoff.peer stores toName ("<host>:<name>") — the identity every display resolves
+    # (the quiet host: prefix) and the key run_propagate's remote arm re-derives pair keys from.
+    # `tracked` never rides here: the relay drops the flag by design (a primary/satellite pair
+    # cannot span kernels yet). Horizon-bounded like every courier retry, so old history is never
+    # backfilled; idempotent by msgId, so one plant per message ever.
     placed = 0
+    fleet_ids = {f for f, p, a, nm in fleet}
+    try:
+        xrows = []
+        for line in MESSAGES.read_text(errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if (o.get("ev") == "sent" and o.get("kind") == "delegate" and o.get("id")
+                    and o.get("from_id") in fleet_ids and o.get("toName")
+                    and str(o.get("to_id") or "").startswith("peer:")
+                    and now - (o.get("t") or 0) <= COURIER_RETRY_HORIZON):
+                xrows.append(o)
+    except OSError:
+        xrows = []
+    for o in xrows:
+        sstore = load_goals(o["from_id"])
+        if any(isinstance(nd.get("handoff"), dict) and nd["handoff"].get("msgId") == o["id"]
+               for nd in sstore["nodes"].values()):
+            continue
+        head = " ".join(str(o.get("body") or "").split())[:120]
+        _plant_handoff_track(sstore, None, head, str(o["toName"]), str(o["toName"]), int(o["t"]), o["id"])
+        rollup_status(sstore, False)
+        save_goals(o["from_id"], sstore)
+        placed += 1
+    pending.sort(key=lambda x: x[0])                  # global cross-session oldest-first
     for seg_t, fsid, seg_id, text, mid, sender, declared, anchor_uuid, path in pending:
         store = load_goals(fsid)
         if _placed_key(store["placements"], seg_id):  # drift-safe: never re-plant a t-shifted duplicate
