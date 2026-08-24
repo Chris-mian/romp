@@ -9,6 +9,7 @@
 import { distillText, distillInputs, applyDistillLine, distillPending, distillStaleNote } from "./distiller-line";
 import { spinFor, KIND_WORD, waitedSuffix } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
+import { searchMatches, searchSids } from "./feed-search";
 import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
@@ -470,6 +471,15 @@ try { feedOnlySid = sessionStorage.getItem("romp:feedOnly") || null; } catch { /
 function setFeedOnly(sid: string | null): void {
   feedOnlySid = sid;
   try { sid ? sessionStorage.setItem("romp:feedOnly", sid) : sessionStorage.removeItem("romp:feedOnly"); } catch { /* ignore */ }
+}
+// The SEARCH query (the user 2026-08-23): type-to-filter by session name, host prefix included —
+// "snape" keeps every session on that machine. Same storage lifetime as the session filter: survives
+// this tab's reloads, never a fresh window (a filter persisting for days reads as silently lost cards).
+let feedSearchQ = "";
+try { feedSearchQ = sessionStorage.getItem("romp:feedSearch") || ""; } catch { /* storage blocked */ }
+function setFeedSearch(q: string): void {
+  feedSearchQ = q;
+  try { q ? sessionStorage.setItem("romp:feedSearch", q) : sessionStorage.removeItem("romp:feedSearch"); } catch { /* ignore */ }
 }
 
 // OPTIMISTIC colour echo from the chat pane's tab menu (the user 2026-08-08): the chat repaints its
@@ -3290,6 +3300,46 @@ function openSessMenu(btn: HTMLElement): void {
   document.addEventListener("pointerdown", sessMenuAway, true);
   document.addEventListener("keydown", sessMenuKey, true);
 }
+// The SEARCH box (the user 2026-08-23): a footer "Search" word-button that expands to an inline
+// input filtering the board live by session name, host prefix included. Ensure-once like every foot
+// control — render() never rebuilds it, so focus and the caret survive pushes (the click-safety rule).
+// An ACTIVE query keeps the input open and the control accented; Escape (or emptying + blur) folds it
+// back to the button — a compact state can never hide a live filter (progressive disclosure's no-dead-end).
+function ensureSearchBox(): HTMLElement {
+  let wrap = document.getElementById("feed-search") as HTMLElement | null;
+  if (!wrap) {
+    wrap = el("span", "");
+    wrap.id = "feed-search";
+    const btn = el("button", "fdismiss ffollow feed-modetoggle");
+    btn.id = "feed-search-btn";
+    btn.textContent = "Search";
+    btn.title = "filter cards by session name — the host prefix counts, so a machine name finds all its sessions";
+    const inp = document.createElement("input");
+    inp.id = "feed-search-input";
+    inp.type = "search";
+    inp.placeholder = "session or host…";
+    inp.setAttribute("aria-label", "filter cards by session name (host prefix included)");
+    const openBox = () => { wrap!.classList.add("open"); inp.focus(); };
+    const foldBox = () => {                             // folding with a live query CLEARS it — the button
+      if (inp.value.trim()) { inp.value = ""; setFeedSearch(""); render(); }   // never hides an active filter
+      wrap!.classList.remove("open");
+    };
+    btn.onclick = (ev) => { ev.stopPropagation(); wrap!.classList.contains("open") ? foldBox() : openBox(); };
+    inp.oninput = () => { setFeedSearch(inp.value); render(); };   // live: the keyed render reuses every card
+    inp.onkeydown = (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); foldBox(); } };
+    inp.onblur = () => { if (!inp.value.trim()) wrap!.classList.remove("open"); };
+    wrap.appendChild(btn); wrap.appendChild(inp);
+    (document.getElementById("feed-foot") || document.body).appendChild(wrap);
+  }
+  const inp = wrap.querySelector("input") as HTMLInputElement;
+  if (inp && inp.value !== feedSearchQ && document.activeElement !== inp) inp.value = feedSearchQ;
+  const active = !!feedSearchQ.trim();
+  if (active) wrap.classList.add("open");
+  const btn = document.getElementById("feed-search-btn");
+  if (btn) { btn.classList.toggle("on", active); btn.setAttribute("aria-pressed", active ? "true" : "false"); }
+  return wrap;
+}
+
 function ensureSessionFilter(): HTMLElement {
   let b = document.getElementById("feed-sessfilter") as HTMLElement | null;
   if (!b) {
@@ -3670,6 +3720,7 @@ function render() {
   ensureStackToggle().style.display = showCA ? "" : "none";       // force one-column at any width (the user 2026-08-18)
   ensureGroupToggle().style.display = showCA ? "" : "none";       // by-session grouping (the user 2026-07-13)
   ensureSessionFilter().style.display = showCA ? "" : "none";     // one-session filter menu (the user 2026-08-08)
+  ensureSearchBox().style.display = showCA ? "" : "none";          // type-to-filter by name/host (the user 2026-08-23)
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
@@ -3699,7 +3750,12 @@ function render() {
   // The footer session filter (the user 2026-08-08): with a session picked, the board draws ONLY its
   // cards. Display-side only — `asks` stays complete, so flipping the filter needs no kernel round-trip
   // and everything else (the modal, optimistic moves, the empty check above) still sees the whole board.
-  const shown = feedOnlySid ? asks.filter((a) => a.sid === feedOnlySid) : asks;
+  let shown = feedOnlySid ? asks.filter((a) => a.sid === feedOnlySid) : asks;
+  // The search query composes with the session filter, display-side like it: a card passes when its
+  // session's meta name matches OR its own per-card label does (a just-died session's cards keep
+  // matching by label after the meta list drops it).
+  const sMatch = searchSids(feedSearchQ, sessionsMeta);
+  if (sMatch) shown = shown.filter((a) => sMatch.has(a.sid) || searchMatches(feedSearchQ, (a as { name?: string }).name));
   // Derive sibling GROUPS at render time, keyed by the shared typed turn (turnId).
   // Only host-flagged asks (groupTitle) participate, and a turn needs ≥2 current
   // members to fold — a lone survivor (siblings cleared) renders as a single card.
