@@ -6043,13 +6043,29 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread): void {
     renderingSid = th.tid;
     renderingIntoThread = true;   // same renderer, minus the transcript-coupled hover chrome (see the flag)
     let prev: number | null = null;
+    let quoteHost: HTMLElement | null = null;   // the thread's OPENING message — the quote's home
     for (const ev of evs) {
-      list.appendChild(renderEvent(ev, prev, null));
+      const node = renderEvent(ev, prev, null);
+      list.appendChild(node);
+      if (!quoteHost && ev.kind === "user") quoteHost = node;
       const ep = eventEpoch(ev);
       if (ep != null) prev = ep;
     }
     renderingIntoThread = false;
     renderingSid = saved;
+    // The quoted passage renders as CONTEXT attached to the thread's opening message (the user
+    // 2026-08-24): it used to sit as a standalone block ABOVE the whole list — above the branch
+    // divider too, misreading chronology, since the branch happened before the quote. Same idiom
+    // as the chat's citation-as-context. The standalone block only mints while the events haven't
+    // landed yet (openCommentPop), so it is swept here the moment they have — otherwise the frame's
+    // arrival left BOTH on screen, quote on top, "branched" below it.
+    if (th.exact && quoteHost) {
+      const ctx = el("div", "cmt-quote cmt-quote-ctx");
+      ctx.textContent = th.exact;
+      ctx.title = "the highlighted passage this thread is about";
+      quoteHost.insertBefore(ctx, quoteHost.firstChild);
+      list.closest(".cmt-pop")?.querySelector(":scope > .cmt-quote")?.remove();
+    }
   } else for (const m of th.msgs) list.appendChild(commentMsgEl(m.who, m.text));
   for (const p of pend) {
     const n = commentMsgEl("you", p.text);

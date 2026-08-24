@@ -178,7 +178,7 @@ test("a comments frame refreshes the open popover IN PLACE — composer and care
   assert.match(UI, /function fillCommentMsgs\(list: HTMLElement, th: CommentThread\)/);
 });
 
-test("the ants start on the gesture, and delete is optimistic and cuts the work", () => {
+test("the working state starts on the gesture, and delete is optimistic and cuts the work", () => {
   // create: a synthetic working thread marks the passage before any round-trip; the frame's
   // wholesale list replacement retires it, and a refusal drops it with the warn
   assert.match(UI, /tid: "pending:" \+ create\.uuid, anchorUuid: create\.uuid/);
@@ -368,27 +368,21 @@ test("ticks and message notches share ONE scrollbar frame, so they can never dis
   assert.match(UI, /kids\[i\]\.style\.top = t\.y \+ "px";/);
 });
 
-test("while the thread is WRITING the passage pales and the CRAWL rides the scroll-rail tick", () => {
-  // the user 2026-08-23 (superseding the same-day ants-on-top design): a crawl around the passage
-  // read as distraction, not progress. The passage now holds a PALER solid tint — visibly not the
-  // final color — and the four-strip march lives in miniature on the thread's scroll-rail tick.
+test("while the thread is WRITING the passage holds the await-green tint and NOTHING crawls", () => {
+  // the user 2026-08-24 (superseding 2026-08-23's tick-crawl compromise): the in-flight cue is the
+  // await-green STATE COLOR on the passage itself — its own new-test block below pins the colors;
+  // this one keeps the class wiring and holds the line on motion: no strips, no keyframes, anywhere.
   assert.match(UI, /m\.classList\.toggle\("busy", threadBusy\(th\.state\) && th\.status === "open"\)/);
-  assert.match(CSS, /mark\.cmt-hl\.busy \{\s*\n\s*background-color: color-mix\(in srgb, var\(--cmt-hl\) 16%, transparent\);\s*\n\}/);
   assert.doesNotMatch(CSS, /mark\.cmt-hl\.busy \{[^}]*repeating-linear-gradient/s, "no strips on prose");
-  assert.doesNotMatch(CSS, /@keyframes cmt-ants /, "the passage keyframes are gone with them");
-  // the tick's miniature march: 6px dash cycle, strips oversized by one period (the 2026-08-19
-  // loop-point lesson, scaled down), and the tick class rides threadBusy with the sig tracking it
-  assert.match(CSS, /\.cmt-tick\.busy::after \{[\s\S]*?animation: cmt-tick-ants 1\.8s linear infinite;/);
-  assert.match(CSS, /@keyframes cmt-tick-ants \{\s*\n\s*to \{ background-position: 0 0, -6px 100%, 0 -6px, 100% 0; \}/);
+  assert.doesNotMatch(CSS, /@keyframes cmt-ants /, "the passage keyframes stay gone");
+  assert.doesNotMatch(CSS, /@keyframes cmt-tick-ants/, "…and the tick's miniature march followed them out");
   assert.match(UI, /\+ \(threadBusy\(th\.state\) && th\.status === "open" \? " busy" : ""\);/);
   assert.match(UI, /\+ ":" \+ \(threadBusy\(t\.th\.state\) \? 1 : 0\)\)/, "a state flip re-renders the tick");
-  // the code/math hosts pale the same way — no strips there either
-  assert.match(CSS, /\.md \.katex\.cmt-hl-host:has\(mark\.cmt-hl\.busy\) \{\s*\n\s*background-color: color-mix\(in srgb, var\(--cmt-hl\) 16%, transparent\);\s*\n\}/);
 });
 
 test("the popover renders the thread with the CHAT's own renderer from the branch point", () => {
   assert.match(UI, /renderingSid = th\.tid;/);
-  assert.match(UI, /list\.appendChild\(renderEvent\(ev, prev, null\)\);/);
+  assert.match(UI, /const node = renderEvent\(ev, prev, null\);\s*\n\s*list\.appendChild\(node\);/);
   assert.match(KERNEL, /def _thread_events\(tsid, cut_uuid, now, tmux\):/);
   assert.match(KERNEL, /evs = evs\[at \+ 1:\]/, "sliced to AFTER the branch point — the head system card never rides");
   // the thread's own live model/effort chips post the chat's own ops, keyed to the thread sid
@@ -406,4 +400,52 @@ test("the tint ladder keeps every state distinct: base < unread < hover", () => 
 test("comment chrome (badge, popover card) stays on the menu vocabulary", () => {
   assert.match(CSS, /\.cmt-pop \{[^}]*#252526[^}]*\}/s);
   assert.match(CSS, /\.cmt-pop \{[^}]*border-radius: 6px/s);
+});
+
+// ── the comment-thread UI pass (the user 2026-08-24, three asks) ─────────────────────────────────
+
+test("an in-flight thread's highlight goes await-green — the color is the signal, nothing crawls", () => {
+  // the green/yellow request was always about comments: mid-reply the passage wears a faded
+  // await-green blend, settling into the EXISTING full yellow when the reply lands. The tick's
+  // marching ants (the "spinning dots") are retired — no motion anywhere in the state.
+  assert.match(CSS, /mark\.cmt-hl\.busy \{\s*\n\s*background-color: color-mix\(in srgb, var\(--st-awaitbg-bg\) 24%, transparent\);\s*\n\}/);
+  // the code/math HOST pairing greens the same way — its element tint must not stay full yellow
+  assert.match(CSS, /code\.cmt-hl-host:has\(mark\.cmt-hl\.busy\),\s*\n\.md \.katex\.cmt-hl-host:has\(mark\.cmt-hl\.busy\) \{\s*\n\s*background-color: color-mix\(in srgb, var\(--st-awaitbg-bg\) 24%, transparent\);/);
+  assert.match(CSS, /code\.cmt-hl-host:has\(mark\.cmt-hl\.busy\) \{ background-color: color-mix\(in srgb, var\(--st-awaitbg-bg\) 24%, var\(--code-bg\)\); \}/);
+  // the crawl is gone root and branch; the rail tick wears the same state green instead
+  assert.doesNotMatch(CSS, /cmt-tick-ants/);
+  assert.match(CSS, /\.cmt-tick\.busy \{ background: var\(--st-awaitbg-bg\); \}/);
+  // the other highlight states are untouched: base, unread, hover, resolved stay the yellow family
+  assert.match(CSS, /mark\.cmt-hl \{\s*\n\s*background: color-mix\(in srgb, var\(--cmt-hl\) 30%, transparent\);/);
+  assert.match(CSS, /mark\.cmt-hl\.unread \{ background: color-mix\(in srgb, var\(--cmt-hl\) 45%, transparent\); \}/);
+  assert.match(CSS, /mark\.cmt-hl:hover \{ background: color-mix\(in srgb, var\(--cmt-hl\) 58%, transparent\); \}/);
+  assert.match(CSS, /mark\.cmt-hl\.resolved \{ background: rgba\(255, 255, 255, 0\.08\); \}/);
+});
+
+test("the thread's identity rail runs continuous — no holes at the list's flex gaps", () => {
+  // each chat-parity turn's ::before rail segment spans only its own box (top:0..bottom:0), and
+  // .cmt-msgs' 6px flex gap sat UNPAINTED between consecutive turns — visible holes in the line.
+  // Every turn following another turn stretches its segment up across the gap; non-turn items
+  // (pending bubbles, dots, notes) render after the turns, so the + pair never misses.
+  assert.match(CSS, /\.turn::before \{ content: ""; position: absolute; left: 10\.5px; top: 0; bottom: 0; width: 2px;/,
+    "the base segment this fix extends");
+  assert.match(CSS, /\.cmt-msgs \{ max-height: 45vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; \}/,
+    "the 6px gap the -6px below must stay paired with");
+  assert.match(CSS, /\.cmt-msgs \.turn \+ \.turn::before \{ top: -6px; \}/);
+});
+
+test("the quoted passage is CONTEXT on the thread's opening message — never an item above the branch divider", () => {
+  // chronology: the branch happened before the quote, so the quote cannot sit above the divider.
+  // It attaches to the opening user message (the chat's citation-as-context idiom), and the
+  // standalone block — minted only while the events hadn't landed — is swept when they arrive,
+  // which used to leave BOTH on screen: quote on top, "branched" marker below it.
+  assert.match(UI, /let quoteHost: HTMLElement \| null = null;\s*\/\/ the thread's OPENING message — the quote's home/);
+  assert.match(UI, /if \(!quoteHost && ev\.kind === "user"\) quoteHost = node;/);
+  assert.match(UI, /const ctx = el\("div", "cmt-quote cmt-quote-ctx"\);/);
+  assert.match(UI, /quoteHost\.insertBefore\(ctx, quoteHost\.firstChild\);/);
+  assert.match(UI, /list\.closest\("\.cmt-pop"\)\?\.querySelector\(":scope > \.cmt-quote"\)\?\.remove\(\);/);
+  // the pre-events standalone block still renders (there is nothing to attach to yet, and no
+  // divider to misorder against) — the create/no-events guard is unchanged
+  assert.match(UI, /if \(create \|\| !\(th!\.events \|\| \[\]\)\.length\) \{/);
+  assert.match(CSS, /\.cmt-quote-ctx \{ margin: 0 0 4px; \}/);
 });
