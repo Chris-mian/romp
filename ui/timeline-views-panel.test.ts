@@ -188,6 +188,26 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
     "…and the tag rows come AFTER both built-ins — the DoD's menu order, pinned end to end");
 });
 
+test("federation v0: remote tags in the menu + dialog read-only, and the colour join survives every spelling", () => {
+  // executed: the mirror resolves a remote-tag active and labels it host:name (the list_agents idiom)
+  const rt = { active: "TESTHOST-A:g1", tags: [],
+               remoteTags: [{ id: "TESTHOST-A:g1", host: "TESTHOST-A", name: "team", members: ["m1"] }] };
+  assert.equal(viewVisible(rt, "m1"), true);
+  assert.equal(viewVisible(rt, "m2"), false);
+  assert.equal(viewLabel(rt), "TESTHOST-A:team");
+  assert.equal(viewVisible({ active: "TESTHOST-A:g1", tags: [] }, "m2"), true, "gone → falls open");
+  // the menu unions attached kernels' tags read-only (owner colour, host-marked, pick-only)
+  assert.match(SRC, /for \(const rt of \(v\.remoteTags \|\| \[\]\)\)/);
+  assert.match(SRC, /item\(\(rt\.host \? rt\.host \+ ':' : ''\) \+ \(rt\.name \|\| 'tag'\),/);
+  // the dialog renders a remote kernel's chip read-only: dashed border, host prefix, NO ✕
+  assert.match(SRC, /border:1px dashed ' \+ rc \+ ';/);
+  assert.match(SRC, /read-only here; edit with: romp tag --host/);
+  // the gray-glyph fix (the user 2026-08-24): a message endpoint can spell a session bare,
+  // host-prefixed, or third-kernel-prefixed — on an exact miss the join retries by the bare sid
+  // tail (sids are uuids, globally unique), so the owner's colour always lands
+  assert.match(SRC, /s = data\.sessions\.find\(\(x\) => x\.id === bare \|\| String\(x\.id\)\.endsWith\(':' \+ bare\)\);/);
+});
+
 test("the N-more count opens the views menu — what am I not seeing answers itself (the user 2026-08-24)", () => {
   assert.match(SRC, /m\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); this\._openViewsMenu\(m\); \}\);/);
   assert.match(SRC, /m\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/, "and survives its own opening click");

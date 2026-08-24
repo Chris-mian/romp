@@ -181,7 +181,9 @@ class TagRoute(unittest.TestCase):
         self.assertEqual(len(v["tags"]), 1,
                          "the raw name must address the stored (clamped) tag — never mint a duplicate")
         self.assertEqual(v["tags"][0]["name"], "x" * 40)
-        self.assertEqual(v["tags"][0]["members"], sorted([SID, SID2]))
+        self.assertEqual(v["tags"][0]["members"],
+                         [{"host": "", "sid": s} for s in sorted([SID, SID2])],
+                         "stored members are canonical pairs (federation v0)")
 
     def test_a_host_prefixed_NAME_refuses_like_any_unknown_name(self):
         st, r = self._post({"name": "pool", "add": ["TESTHOST:exp-ghost"]})
@@ -202,10 +204,56 @@ class TagRoute(unittest.TestCase):
         st, v = self._views()
         self.assertEqual(v["active"], "gb", "the active view survives the merge")
         self.assertEqual(v["hidden"], ["s9"], "the hidden list survives")
-        self.assertEqual([g for g in v["tags"] if g["id"] == "gb"], [GB],
-                         "the tag the edit never looked at is untouched")
+        want = dict(GB, members=[{"host": "", "sid": "s2"}])
+        self.assertEqual([g for g in v["tags"] if g["id"] == "gb"], [want],
+                         "the tag the edit never looked at is untouched (stored as pairs)")
         alpha = next(g for g in v["tags"] if g["id"] == "ga")
-        self.assertEqual(alpha["members"], sorted(["s1", SID2]))
+        self.assertEqual(alpha["members"], [{"host": "", "sid": s} for s in sorted(["s1", SID2])])
+
+
+class HostForward(TagRoute):
+    """POST /tag {"host": ...} — tag federation v0's edit path: the edit targets an ATTACHED
+    kernel's store through the tunnel it already holds (Model A home-kernel ownership). The body
+    forwards minus `host`; the TARGET resolves member names against ITS sessions; failures refuse
+    loudly — an unreachable kernel must never silently no-op an edit."""
+
+    def setUp(self):
+        super().setUp()
+        self._remotes_saved = dict(km._remotes)
+        self._fwd_saved = km._remote_forward
+        km._remotes.clear()
+        km._remotes["alpha"] = {"host": "alpha", "status": "up"}
+        km._remotes["down1"] = {"host": "down1", "status": "down"}
+        self.forwarded = []
+        km._remote_forward = lambda r, path, body: (self.forwarded.append((r["host"], path, body))
+                                                    or {"ok": True, "tag": {"name": body.get("name")}})
+
+    def tearDown(self):
+        km._remotes.clear(); km._remotes.update(self._remotes_saved)
+        km._remote_forward = self._fwd_saved
+        super().tearDown()
+
+    def test_host_edit_forwards_to_the_target_kernel_minus_the_host_key(self):
+        st, r = self._post({"name": "team", "host": "alpha", "add": ["web"], "color": "#DD42FF"})
+        self.assertEqual(st, 200)
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.forwarded, [("alpha", "/tag",
+                                           {"name": "team", "add": ["web"], "color": "#DD42FF"})],
+                         "the target resolves names itself — the body forwards verbatim, minus host")
+        self.assertEqual(km._timeline_views()["tags"], [],
+                         "nothing lands on THIS kernel's store — the edit belongs to alpha")
+
+    def test_unknown_and_down_hosts_refuse_loudly(self):
+        st, r = self._post({"name": "team", "host": "ghost", "add": ["web"]})
+        self.assertFalse(r["ok"]); self.assertIn('no attached kernel named "ghost"', r["error"])
+        st, r = self._post({"name": "team", "host": "down1", "add": ["web"]})
+        self.assertFalse(r["ok"]); self.assertIn("not reachable", r["error"])
+        self.assertEqual(self.forwarded, [], "no forward is attempted either way")
+
+    def test_a_dead_forward_surfaces_never_silently_noops(self):
+        km._remote_forward = lambda r, path, body: None
+        st, r = self._post({"name": "team", "host": "alpha", "add": ["web"]})
+        self.assertFalse(r["ok"]); self.assertIn("never landed", r["error"])
 
 
 class GroupAliasSurvives(TagRoute):

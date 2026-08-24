@@ -126,3 +126,19 @@ test("hiding the last visible session blanks its transcript and the placeholder 
   assert.match(RENDER, /Every session is hidden from this view\./);
   assert.match(RENDER, /allHiddenBlanked = false;/, "…and the transcript restores when anything is visible again");
 });
+
+test("executed: a REMOTE tag is a view too — resolved, labeled by its host, gone-falls-open (federation v0)", () => {
+  // the kernel joins attached kernels' tags into remoteTags (read-only, id = "host:tagid", members
+  // already respelled viewer-relative); picking one filters exactly like a local tag
+  const rt = { active: "alpha:g9", tags: [], remoteTags: [{ id: "alpha:g9", host: "alpha", members: ["alpha:rs1", "x"] }] };
+  assert.equal(viewVisible(rt, "alpha:rs1"), true);
+  assert.equal(viewVisible(rt, "y"), false);
+  // its kernel detached → the view falls OPEN, never trapping the viewer in an empty view
+  assert.equal(viewVisible({ active: "alpha:g9", tags: [] }, "y"), true);
+  // the echo key EXCLUDES remoteTags: derived kernel state, not an edit — two blobs differing only
+  // there must reconcile the same optimistic edit
+  const a = { active: "all", hidden: [], tags: [] };
+  const b = { active: "all", hidden: [], tags: [], remoteTags: [{ id: "alpha:g9" }] };
+  assert.equal(viewsKey(a), viewsKey(b));
+});
+

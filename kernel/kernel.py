@@ -1534,6 +1534,28 @@ def _views_path():
     return jd.STATE / "timeline-views.json"
 
 
+def _member_pair(x):
+    """One tag member, canonicalized to the STORED (host, sid) pair (federation v0, the user
+    2026-08-24): host "" = the tag's HOME kernel; any other host is the home kernel's own name for
+    the member session's kernel. The legacy spelling — a plain sid, or the viewer-relative
+    "host:sid" string every client still posts — reads losslessly (sids are uuids, so the first ":"
+    is unambiguous). None = junk, dropped."""
+    if isinstance(x, dict) and isinstance(x.get("sid"), str) and x.get("sid"):
+        return {"host": str(x.get("host") or "")[:64], "sid": str(x["sid"])[:80]}
+    if isinstance(x, str) and x:
+        i = x.find(":")
+        return {"host": x[:i], "sid": x[i + 1:]} if 0 < i < len(x) - 1 else {"host": "", "sid": x}
+    return None
+
+
+def _member_str(m):
+    """A stored (host, sid) pair in the viewer-relative RENDERING spelling this kernel's clients
+    match lane/tab ids against: a home member is the bare sid, a remote one "host:sid" — exactly
+    the strings the store held before pairs. Storage stays canonical; this is display and matching."""
+    h = m.get("host") or ""
+    return (h + ":" + m["sid"]) if h else m["sid"]
+
+
 def _norm_timeline_views(d):
     """Validate + normalize a views blob from disk or a client: always returns the full shape, drops
     junk quietly, clamps sizes, and falls back active→"all" when the named tag does not exist.
@@ -1543,7 +1565,15 @@ def _norm_timeline_views(d):
     TAGS, not groups (the user 2026-08-23): a tag marks a SPECIALIZED session, excluded from the
     untagged view and viewable under its tag — the accurate name for what membership always did.
     Stored under "tags"; a blob carrying only the legacy "groups" key (a pre-rename file, an
-    un-updated Obsidian panel posting the whole blob) reads as tags, so nothing is lost on upgrade."""
+    un-updated Obsidian panel posting the whole blob) reads as tags, so nothing is lost on upgrade.
+    MEMBERS are stored as canonical (host, sid) PAIRS (federation v0, the user 2026-08-24): the
+    viewer-relative string spelling is RENDERING (_views_client), and legacy string members read
+    losslessly via _member_pair — one tag can span linked kernels. An `active` carrying a ":"
+    points at a REMOTE tag ("host:tagid"), which this kernel cannot validate against another's
+    store: it survives normalization and _view_visible falls open to "all"-like behavior when the
+    remote tag is gone. A plain unknown id still falls back — the typo protection stands. The
+    derived `remoteTags` a client may echo back is IGNORED here: it is this kernel's own read of
+    its attached kernels (_views_client), never client state."""
     if not isinstance(d, dict):
         d = {}
     _lst = lambda x: x if isinstance(x, list) else []   # wrong-typed junk (a number, a string) drops, never raises
@@ -1553,13 +1583,15 @@ def _norm_timeline_views(d):
     for g in _lst(raw)[:_VIEWS_MAX_TAGS]:
         if not isinstance(g, dict) or not g.get("id") or not isinstance(g.get("id"), str):
             continue
-        members = [str(x) for x in _lst(g.get("members")) if isinstance(x, str) and x]
+        members = [m for m in (_member_pair(x) for x in _lst(g.get("members"))) if m]
+        dedup = {(m["host"], m["sid"]): m for m in members}
         tags.append({"id": g["id"][:64],
                      "name": str(g.get("name") or "tag")[:_VIEWS_MAX_NAME],
                      "color": str(g.get("color") or "")[:16],
-                     "members": sorted(set(members))})
+                     "members": [dedup[k] for k in sorted(dedup)]})
     active = d.get("active") if isinstance(d.get("active"), str) else "all"
-    if active not in ("all", "untagged") and not any(t["id"] == active for t in tags):
+    if active not in ("all", "untagged") and ":" not in active \
+            and not any(t["id"] == active for t in tags):
         active = "all"
     return {"active": active, "hidden": sorted(set(hidden)), "tags": tags}
 
@@ -1586,9 +1618,59 @@ def _set_timeline_views(blob):
     _atomic_write(_views_path(), json.dumps(_norm_timeline_views(blob), sort_keys=True))
 
 
+def _remote_tag_member_str(owner_host, m):
+    """A remote kernel's stored member pair, respelled for THIS viewer (federation v0): sid-first,
+    because sids are globally unique and host labels are per-kernel names. The owner's home member
+    ("") wears the owner's host here; a session THIS kernel knows locally is the bare sid (the
+    owner tagged one of ours — its label for us is unknowable and unnecessary); anything else keeps
+    the owner's label for it, which joins correctly whenever that kernel is attached here too."""
+    h = m.get("host") or ""
+    sid = m.get("sid") or ""
+    if not h:
+        return owner_host + ":" + sid
+    try:
+        if (jd.STATE / "names" / sid).exists():
+            return sid
+    except OSError:
+        pass
+    return h + ":" + sid
+
+
+def _views_client():
+    """The views blob every client renders and matches against — the RENDERING of the canonical
+    store (federation v0, the user 2026-08-24): local tags with members as viewer-relative strings
+    (the pre-pairs contract, so no client re-learns anything), plus `remoteTags` — each ATTACHED
+    kernel's own tags, read-only, host-stamped, members respelled for this viewer. Per-host maps
+    joined at the viewer, never merged (the federation counter rule); same-name tags on two kernels
+    stay two entries — the host disambiguates, nothing silently merges. Remote reads ride the
+    supervisor's cached /views poll; a kernel that is down simply contributes nothing this push."""
+    v = json.loads(json.dumps(_timeline_views()))
+    for t in v["tags"]:
+        t["members"] = [_member_str(m) for m in t["members"]]
+    remote = []
+    with _remotes_lock:
+        cand = [(r["host"], r.get("views")) for r in _remotes.values()
+                if r.get("status") == "up" and isinstance(r.get("views"), dict)]
+    for host, rv in sorted(cand):
+        for t in (rv.get("tags") or [])[:_VIEWS_MAX_TAGS]:
+            if not isinstance(t, dict) or not t.get("id"):
+                continue
+            members = [m for m in (_member_pair(x) for x in (t.get("members") or [])) if m]
+            remote.append({"id": host + ":" + str(t["id"])[:64], "host": host,
+                           "name": str(t.get("name") or "tag")[:_VIEWS_MAX_NAME],
+                           "color": str(t.get("color") or "")[:16],
+                           "members": [_remote_tag_member_str(host, m) for m in members]})
+    if remote:
+        v["remoteTags"] = remote
+    return v
+
+
 def _view_visible(views, sid):
     """The one visibility decision, kernel-authoritative: mirrored by the chat renderer and the
-    timeline for optimistic feedback — tests pin all three against this shape. ALL — the default
+    timeline for optimistic feedback — tests pin all three against this shape. Operates on the
+    RENDERED blob (_views_client: string members + remoteTags) — the shape every client holds; a
+    remote-tag active ("host:tagid") resolves in remoteTags and falls OPEN when the remote tag is
+    gone (its kernel detached), never trapping the viewer in an empty view. ALL — the default
     (the user 2026-08-24) — shows every session minus the `hidden` set: hiding is a deliberate user
     gesture, so All respects it (the dialog's eye stays the un-hide affordance). UNTAGGED keeps the
     old default's meaning (the user 2026-08-23): tagging a session says "specialized — out of the
@@ -1597,8 +1679,13 @@ def _view_visible(views, sid):
     if views["active"] == "all":
         return sid not in views["hidden"]
     if views["active"] == "untagged":
+        # LOCAL tags only exclude here (federation v0): a remote kernel's tagging of our session
+        # must not flap our untagged view with its poll cadence — remote tags are extra VIEWS
         return sid not in views["hidden"] and not any(sid in t["members"] for t in views["tags"])
     for t in views["tags"]:
+        if t["id"] == views["active"]:
+            return sid in t["members"]
+    for t in views.get("remoteTags") or []:
         if t["id"] == views["active"]:
             return sid in t["members"]
     return True
@@ -1610,7 +1697,9 @@ def _heal_timeline_views(old_sid, new_sid):
     order-slot inheritance that detects the churn. Without this a hidden tmux session would pop back
     visible on every /clear — and worse, a tagged one would silently fall out of its tag."""
     v = _timeline_views()
-    if old_sid not in v["hidden"] and not any(old_sid in t["members"] for t in v["tags"]):
+    def _has(t):
+        return any(m["host"] == "" and m["sid"] == old_sid for m in t["members"])
+    if old_sid not in v["hidden"] and not any(_has(t) for t in v["tags"]):
         return
     v = json.loads(json.dumps(v))                    # deep copy: never mutate the cached blob
     # COPY, never move: stripping the old sid un-hid its DEAD lane, which lingers on the timeline for
@@ -1620,8 +1709,8 @@ def _heal_timeline_views(old_sid, new_sid):
     if old_sid in v["hidden"]:
         v["hidden"] = sorted(set(v["hidden"]) | {new_sid})
     for t in v["tags"]:
-        if old_sid in t["members"]:
-            t["members"] = sorted(set(t["members"]) | {new_sid})
+        if _has(t):
+            t["members"] = t["members"] + [{"host": "", "sid": new_sid}]   # normalizer dedups + re-sorts
     _set_timeline_views(v)
 
 
@@ -1671,12 +1760,19 @@ def _edit_tag(name, add=(), remove=(), color=None, delete=False):
                 n += 1
             t = {"id": "g" + _b36(n), "name": name, "color": "", "members": []}
             v["tags"].append(t)
-        t["members"] = sorted((set(t["members"]) | set(add)) - set(remove))
+        # add/remove arrive as viewer-relative id strings (the route's contract); the store is
+        # canonical pairs — convert on the way in, match removals by pair (federation v0)
+        addp = [m for m in (_member_pair(x) for x in add) if m]
+        remp = {(m["host"], m["sid"]) for m in (_member_pair(x) for x in remove) if m}
+        t["members"] = [m for m in list(t["members"]) + addp
+                        if (m["host"], m["sid"]) not in remp]
         if color is not None:
             t["color"] = color
         v = _norm_timeline_views(v)
         _set_timeline_views(v)
-        return next(t2 for t2 in v["tags"] if t2["id"] == t["id"]), None
+        out = json.loads(json.dumps(next(t2 for t2 in v["tags"] if t2["id"] == t["id"])))
+        out["members"] = [_member_str(m) for m in out["members"]]   # the route's reply speaks strings
+        return out, None
 
 
 # ── per-session view flags (the user 2026-06-19) ──────────────────────────────────────────────────
@@ -9782,6 +9878,7 @@ def _poll_remote_version(r):
 
 
 REMOTE_USAGE_EVERY = 60.0    # a usage window moves over hours; polling it per supervisor pass would be waste
+REMOTE_VIEWS_EVERY = 60.0    # tag edits are human-paced; the view-menu union tolerates a minute of lag
 
 
 def _poll_remote_usage(r):
@@ -9813,6 +9910,33 @@ def _poll_remote_usage(r):
         return u if isinstance(u, dict) and u else {}
     except Exception:
         return r.get("usage")   # keep the last good reading rather than blanking the bars on one blip
+
+
+def _poll_remote_views(r):
+    """GET a remote kernel's /views THROUGH the -L tunnel — the read half of tag federation v0 (the
+    user 2026-08-24): each attached kernel's own tags ride to this viewer read-only, and
+    _views_client joins them per host (never merging — the federation counter rule). Same shape and
+    rate-gate as _poll_remote_usage; on a blip the last good reading stands (a down host simply
+    stops contributing when its status leaves "up"). An older remote without the route answers
+    non-200 → None, and the union just never includes it — nothing breaks across versions."""
+    import urllib.parse
+    now = time.time()
+    if now - float(r.get("_views_at") or 0) < REMOTE_VIEWS_EVERY:
+        return r.get("views")
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(r["local_port"]), timeout=5)
+        path = "/views" + (("?token=" + urllib.parse.quote(r["token"])) if r.get("token") else "")
+        c.request("GET", path)
+        resp = c.getresponse()
+        data = resp.read()
+        c.close()
+        if resp.status != 200:
+            return r.get("views")
+        u = json.loads(data.decode("utf-8"))
+        r["_views_at"] = now
+        return u if isinstance(u, dict) else r.get("views")
+    except Exception:
+        return r.get("views")
 
 
 def _fleet_usage():
@@ -10773,6 +10897,7 @@ def _tunnel_supervisor():
                 # …and which Claude account it burns, so the rail can draw a second set of bars when it is
                 # a different one (self-rate-limited to a minute — these windows are hours wide)
                 ruse = _poll_remote_usage(r) if up else None
+                rviews = _poll_remote_views(r) if up else None   # tag federation v0: the read half
                 with _remotes_lock:
                     if r["host"] not in _remotes:
                         continue
@@ -10860,6 +10985,8 @@ def _tunnel_supervisor():
                             r["usage"] = ruse
                         else:
                             r.pop("usage", None)
+                    if rviews is not None:
+                        r["views"] = rviews
                     auto_check = (st == "up")
                     peer_up = (st == "up")
                     peer_port, peer_tok = r.get("bus_port"), r.get("token") or ""
@@ -20342,7 +20469,7 @@ def build_timeline(now, tmux=None, with_bars=True, live_only=False):
     # letting the bar slide through the map's hues as it compresses — mirroring the context battery fill.
     cmap_grad = [list(cm.ramp(v, ctx_stops)) for v in (0.12, 0.34, 0.56, 0.78, 1.0)]
     return {"type": "timeline", "now": now, "sessions": sessions, "turns": turns,
-            "views": _timeline_views(),
+            "views": _views_client(),
             "palette": pal.colors(_palette_name()),   # tag color choices — the same set sessions draw identity colors from
             "messages": messages, "judging": judging,
             "cmapGrad": cmap_grad,
@@ -21902,7 +22029,7 @@ def _push(targets, connect=False, tmux=None):
                 _send_client(c, ("globalRetryPaused",), {"type": "globalRetryPaused", "value": _retry_paused_on(),
                                                          "resumeAt": _retry_resume_at(),   # limit reset epoch → the card counts down to the real retry
                                                          "reason": _retry_pause_reason()})   # "spend" → the card says 'raise your cap', no countdown
-                _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta, "views": _timeline_views()})
+                _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta, "views": _views_client()})
             active = {c.get("active") for c in chat_clients if c.get("active")}
             # Stable: active tabs first — and TRANSCRIPT-LESS sessions with them. A just-created session
             # has no transcript, so its build is near-free, and its creator is guaranteed to be staring
@@ -22113,7 +22240,7 @@ def _push_session_now(sid):
             return
         ms = None                                    # lazy: the first full send materializes it, the rest reuse
         for c in targets:
-            _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta, "views": _timeline_views()})
+            _send_client(c, ("taborder",), {"type": "tabOrder", "order": tab_order, "tabs": tab_meta, "views": _views_client()})
             ms = _send_chat(c, m, ms, 0, True)       # change_from 0 → always the full-session form
     except Exception:
         sys.stderr.write("push-session-now (%s): %s\n" % (sid, traceback.format_exc()))
@@ -26470,9 +26597,10 @@ class Handler(BaseHTTPRequestHandler):
                     "palettes": [{"name": k, "label": v["label"], "colors": v["bg"]}
                                  for k, v in pal.PALETTES.items()]}), "application/json", cache="no-cache")
             if p == "/views":                             # the session-views blob (active view, hidden set,
-                # tags) for scripts/agents: the read half of POST /tag. The dashboard reads the same
-                # blob off the tabOrder WS push; this route exists for token-bearing curl consumers
-                # (`romp tag` with no args prints it).
+                # tags) for scripts/agents: the read half of POST /tag, AND the remote-poll source of
+                # tag federation v0. CANONICAL shape (member pairs), remoteTags absent on purpose:
+                # a polling kernel re-spells pairs for ITS viewer, and never re-imports another
+                # viewer's join (no transitive unions in v0). `romp tag` maps either spelling.
                 return self._send(200, json.dumps(_timeline_views()), "application/json", cache="no-cache")
             if p == "/models":                                # the ONE model + effort choice list — chat statusline, timeline lanes, AND judge settings all read it (the user 2026-07-02: no hardcoding in multiple places)
                 # each choice carries its colormap tint (the user 2026-08-17: the new-comment dialog's
@@ -27088,6 +27216,30 @@ class Handler(BaseHTTPRequestHandler):
                 if not name:
                     return self._send(400, json.dumps({"ok": False, "error": "name required"}),
                                       "application/json")
+                # --host (tag federation v0, the user 2026-08-24): the edit targets an ATTACHED
+                # kernel's store, through the tunnel it already holds — Model A home-kernel
+                # ownership, no sync engine. The body forwards minus `host`; the TARGET resolves
+                # member names against ITS live sessions (they are its sessions to know). A miss
+                # refuses loudly: an unreachable kernel must never silently no-op an edit.
+                th = str((b or {}).get("host") or "").strip()
+                if th:
+                    with _remotes_lock:
+                        r = next((x for x in _remotes.values() if x.get("host") == th), None)
+                        r_up = bool(r and r.get("status") == "up")
+                    if not r:
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            'no attached kernel named "%s" (see the network panel)' % th}),
+                            "application/json")
+                    if not r_up:
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            '"%s" is attached but not reachable right now' % th}), "application/json")
+                    fwd = {k: v for k, v in b.items() if k != "host"}
+                    ans = _remote_forward(r, "/tag", fwd)
+                    if ans is None:
+                        return self._send(200, json.dumps({"ok": False, "error":
+                            'the edit never landed on "%s" (tunnel hiccup — try again)' % th}),
+                            "application/json")
+                    return self._send(200, json.dumps(ans), "application/json")
                 live = _live_names(_tmux_sessions())
                 ids, unknown = {"add": [], "remove": []}, []
                 for k in ("add", "remove"):
@@ -27541,7 +27693,7 @@ class Handler(BaseHTTPRequestHandler):
                 _o = [s["sid"] for s in _alive]
                 # name+color per tab → the client paints the whole strip as placeholders up front (tabs-first)
                 _tabs = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in _alive]
-                client["send"](json.dumps({"type": "tabOrder", "order": _o, "tabs": _tabs, "views": _timeline_views()}))
+                client["send"](json.dumps({"type": "tabOrder", "order": _o, "tabs": _tabs, "views": _views_client()}))
             except Exception:
                 pass
             # a push tap parked a reveal for this window's chat pane → deliver it now, AFTER the
