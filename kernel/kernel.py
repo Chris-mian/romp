@@ -1511,12 +1511,16 @@ def _ordered_alive(now, tmux):
 
 # ── session VIEWS: which sessions the user is looking at (the user 2026-08-18) ────────────────────
 # One blob under STATE (timeline-views.json), shared by every dashboard this kernel serves (browser,
-# VS Code, Obsidian): {"active": "all"|group-id, "hidden": [id...], "groups": [{"id","name","color",
-# "members": [id...]}]}. "all" shows every session EXCEPT the hidden set — hiding makes a BACKGROUND
-# session: out of the timeline lanes and the chat tab strip, still judged, carded and reachable (the
-# feed and the session pickers keep surfacing it, so nothing runs in secret — the 2026-08-11 rule).
-# A named group shows exactly its members; explicit membership beats the hidden set, which is the
-# one clean answer to "does a hidden session show when its group is picked". Persisted by the LOCAL
+# VS Code, Obsidian): {"active": "all"|"untagged"|tag-id, "hidden": [id...], "tags": [{"id","name",
+# "color", "members": [id...]}]}. TWO built-in sentinels, not tags: "all" — the DEFAULT (the user
+# 2026-08-24) — shows every session EXCEPT the hidden set; "untagged" shows the sessions no tag
+# holds, minus hidden. "all" used to MEAN untagged, so reinterpreting the sentinel as truly-all
+# lands every legacy persisted blob on the new All default with no migration step. Hiding stays the
+# deliberate one-off gesture and makes a BACKGROUND session: out of the timeline lanes and the chat
+# tab strip, still judged, carded and reachable (the feed and the session pickers keep surfacing
+# it, so nothing runs in secret — the 2026-08-11 rule).
+# A tag view shows exactly its members; explicit membership beats the hidden set, which is the
+# one clean answer to "does a hidden session show when its tag is picked". Persisted by the LOCAL
 # kernel like colormap/palette (a viewer display pref, deliberately not federated); ids are stored
 # as the viewer sees them (host-prefixed for remote sessions), opaque to this kernel. mtime-cached
 # like _session_flags. Remote-session ids that churn on a REMOTE kernel are not healed here (that
@@ -1533,8 +1537,11 @@ def _views_path():
 def _norm_timeline_views(d):
     """Validate + normalize a views blob from disk or a client: always returns the full shape, drops
     junk quietly, clamps sizes, and falls back active→"all" when the named tag does not exist.
+    "all" and "untagged" are the two built-in sentinels; "untagged" must pass the whitelist below,
+    or a picked untagged view silently reverts on the next read (the client's optimistic hold makes
+    that failure read as flicker three pushes later, not as an error).
     TAGS, not groups (the user 2026-08-23): a tag marks a SPECIALIZED session, excluded from the
-    default view and viewable under its tag — the accurate name for what membership always did.
+    untagged view and viewable under its tag — the accurate name for what membership always did.
     Stored under "tags"; a blob carrying only the legacy "groups" key (a pre-rename file, an
     un-updated Obsidian panel posting the whole blob) reads as tags, so nothing is lost on upgrade."""
     if not isinstance(d, dict):
@@ -1552,7 +1559,7 @@ def _norm_timeline_views(d):
                      "color": str(g.get("color") or "")[:16],
                      "members": sorted(set(members))})
     active = d.get("active") if isinstance(d.get("active"), str) else "all"
-    if active != "all" and not any(t["id"] == active for t in tags):
+    if active not in ("all", "untagged") and not any(t["id"] == active for t in tags):
         active = "all"
     return {"active": active, "hidden": sorted(set(hidden)), "tags": tags}
 
@@ -1581,11 +1588,15 @@ def _set_timeline_views(blob):
 
 def _view_visible(views, sid):
     """The one visibility decision, kernel-authoritative: mirrored by the chat renderer and the
-    timeline for optimistic feedback — tests pin all three against this shape. The DEFAULT view
-    shows UNTAGGED sessions (the user 2026-08-23): tagging a session says "specialized — out of the
-    main view, viewable under its tag", so membership itself excludes; `hidden` stays the manual
-    one-off hide for untagged sessions."""
+    timeline for optimistic feedback — tests pin all three against this shape. ALL — the default
+    (the user 2026-08-24) — shows every session minus the `hidden` set: hiding is a deliberate user
+    gesture, so All respects it (the dialog's eye stays the un-hide affordance). UNTAGGED keeps the
+    old default's meaning (the user 2026-08-23): tagging a session says "specialized — out of the
+    untagged view, viewable under its tag", so membership itself excludes there; `hidden` hides in
+    both sentinel views. A tag view shows exactly its members — membership beats the hidden bit."""
     if views["active"] == "all":
+        return sid not in views["hidden"]
+    if views["active"] == "untagged":
         return sid not in views["hidden"] and not any(sid in t["members"] for t in views["tags"])
     for t in views["tags"]:
         if t["id"] == views["active"]:
@@ -1647,7 +1658,7 @@ def _edit_tag(name, add=(), remove=(), color=None, delete=False):
             if not hits:
                 return None, 'no tag named "%s"' % name
             v["tags"] = [t for t in v["tags"] if t["id"] != hits[0]["id"]]
-            _set_timeline_views(v)      # an active pointing at it falls back to "all" in the normalizer
+            _set_timeline_views(v)      # an active pointing at it falls back to "all" (the All view) in the normalizer
             return None, None
         if hits:
             t = hits[0]
@@ -20542,23 +20553,30 @@ def _reveal_chat_for(client, focus_msg):
     duplicate rather than the only mover."""
     wid = (client or {}).get("wid") or ""
     # The reveal rule (the user 2026-08-18; reshaped 2026-08-19, re-grounded 2026-08-23 on the TAG
-    # model): every gesture that focuses a session's chat — create, open, revive, a deep link, a
-    # feed chip — must land on a visible tab. Focusing SWITCHES the active view to one that shows
-    # the session and never mutates membership: peeking at a tagged worker must not strip its tag.
-    # Preference order: the first tag holding it (a tagged session's home view — the default never
-    # shows it now); else, untagged: unhide if hidden, and land on the default view.
+    # model; ALL default 2026-08-24): every gesture that focuses a session's chat — create, open,
+    # revive, a deep link, a feed chip — must land on a visible tab, with the MINIMAL move. Under
+    # All only the hidden bit can hide a session, so a focus unhides it and STAYS — it never kicks
+    # the user off the all-sessions view. Elsewhere focusing SWITCHES the active view to one that
+    # shows the session and never mutates membership: peeking at a tagged worker must not strip its
+    # tag. Preference order: the first tag holding it (a tagged session's home view); else unhide
+    # if hidden, then switch to All only if the session is STILL invisible (an unhidden tagless
+    # session already shows in the untagged view — no gratuitous view change).
     sid = focus_msg.get("id") if isinstance(focus_msg, dict) else None
     if sid:
         v = _timeline_views()
         if not _view_visible(v, sid):
             v = json.loads(json.dumps(v))
-            holder = next((t["id"] for t in v["tags"] if sid in t["members"]), None)
-            if holder:
-                v["active"] = holder
+            if v["active"] == "all":
+                v["hidden"] = [x for x in v["hidden"] if x != sid]
             else:
-                if sid in v["hidden"]:
-                    v["hidden"] = [x for x in v["hidden"] if x != sid]
-                v["active"] = "all"
+                holder = next((t["id"] for t in v["tags"] if sid in t["members"]), None)
+                if holder:
+                    v["active"] = holder
+                else:
+                    if sid in v["hidden"]:
+                        v["hidden"] = [x for x in v["hidden"] if x != sid]
+                    if not _view_visible(v, sid):
+                        v["active"] = "all"
             _set_timeline_views(v)
             _mark_views_dirty()
     _send_to_view("chat", focus_msg, wid)

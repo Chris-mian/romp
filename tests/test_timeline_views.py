@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Session views (the user 2026-08-18; TAG model 2026-08-23): one timeline-views.json blob under
 STATE — {"active", "hidden", "tags"} — deciding which sessions show on the timeline lanes AND the
-chat tab strip. A TAG marks a SPECIALIZED session: tagging excludes it from the default view
-("all" = untagged minus the hidden set), and its tag views are where it shows. A tagged or hidden
+chat tab strip. TWO built-in sentinels: "all" — the DEFAULT (2026-08-24) — shows every session
+minus the hidden set; "untagged" keeps the old default's meaning (a TAG marks a SPECIALIZED
+session, excluded from the untagged view and shown under its tag views). "all" used to MEAN
+untagged, so reinterpreting it lands every legacy blob on the new All default. A tagged or hidden
 session is a BACKGROUND session: still judged and carded, surfaced by the feed, the pickers, and
 the "N more" cue. The legacy "groups" key (pre-rename files and un-updated panels) reads as tags.
 Local-kernel persisted (a viewer display pref, not federated). These pin the storage helpers, the
@@ -39,19 +41,30 @@ class TimelineViews(unittest.TestCase):
         self.td.cleanup()
 
     def test_default_shows_everything(self):
+        # fresh blobs open on "all" — and since 2026-08-24 that sentinel means truly-ALL, so a
+        # legacy blob persisted when "all" meant untagged lands on the new default automatically
         v = km._timeline_views()
         self.assertEqual(v, {"active": "all", "hidden": [], "tags": []})
         self.assertTrue(km._view_visible(v, "anything"))
 
-    def test_default_shows_untagged_only_and_a_tag_view_its_members(self):
-        # the TAG rule (the user 2026-08-23): tagging a session says "specialized — out of the main
-        # view, viewable under its tag", so membership itself excludes it from "all"
+    def test_all_shows_every_session_and_untagged_the_tagless_ones(self):
+        # ALL — the default (the user 2026-08-24) — is every session minus the hidden set: hiding is
+        # a deliberate gesture, so All respects it, but a tag no longer excludes a session there
         km._set_timeline_views({"active": "all", "hidden": ["s9"], "tags": [G1]})
         km._flags_cache.clear()
         v = km._timeline_views()
-        self.assertFalse(km._view_visible(v, "s9"), "hidden in the all view")
-        self.assertFalse(km._view_visible(v, "s2"), "TAGGED → out of the default view")
-        self.assertTrue(km._view_visible(v, "s1"), "untagged, not hidden → the default view shows it")
+        self.assertFalse(km._view_visible(v, "s9"), "hidden — All respects the deliberate hide")
+        self.assertTrue(km._view_visible(v, "s2"), "TAGGED → All still shows it")
+        self.assertTrue(km._view_visible(v, "s1"), "untagged → shown")
+        # the untagged view keeps the old default's meaning under its own sentinel (the user
+        # 2026-08-23 TAG rule: tagging says "specialized — out of the main view")
+        km._set_timeline_views({"active": "untagged", "hidden": ["s9"], "tags": [G1]})
+        km._flags_cache.clear()
+        v = km._timeline_views()
+        self.assertEqual(v["active"], "untagged", "the sentinel survives the normalizer round-trip")
+        self.assertFalse(km._view_visible(v, "s9"), "hidden hides in the untagged view too")
+        self.assertFalse(km._view_visible(v, "s2"), "TAGGED → out of the untagged view")
+        self.assertTrue(km._view_visible(v, "s1"), "tagless, not hidden → shown")
         km._set_timeline_views({"active": "g1", "hidden": ["s2"], "tags": [G1]})
         km._flags_cache.clear()
         v = km._timeline_views()
@@ -78,6 +91,9 @@ class TimelineViews(unittest.TestCase):
         self.assertEqual(km._norm_timeline_views({"tags": [{"id": "g", "members": 3}]})["tags"][0]["members"],
                          [], "a wrong-typed members list drops, never raises")
         self.assertEqual(v["active"], "all", "an active tag that does not exist falls back to all")
+        self.assertEqual(km._norm_timeline_views({"active": "untagged"})["active"], "untagged",
+                         "the untagged sentinel passes the whitelist — a rewrite here is SILENT and"
+                         " reads as flicker after the client's optimistic hold expires")
         self.assertEqual(v["hidden"], ["a"], "junk and duplicates dropped")
         self.assertEqual(len(v["tags"]), 1)
         self.assertEqual(len(v["tags"][0]["name"]), km._VIEWS_MAX_NAME)
@@ -132,24 +148,48 @@ class TimelineViews(unittest.TestCase):
         self.assertIn('post({type:"setTimelineViews",views:views});', src)
 
     def test_focus_switches_to_a_view_that_shows_the_session(self):
-        # the reveal rule, TAG model (re-grounded 2026-08-23): focusing switches the active view and
-        # never mutates membership — peeking at a tagged worker must not strip its tag. Order: the
-        # first tag holding it (its home view — the default never shows a tagged session), else,
-        # untagged: unhide if hidden, and land on the default view.
+        # the reveal rule (re-grounded 2026-08-23 on the TAG model; ALL default 2026-08-24): focusing
+        # lands on a visible tab with the MINIMAL move and never mutates membership. Under All only
+        # the hidden bit can hide a session — unhide and STAY, never kick the user off All. Elsewhere:
+        # the first tag holding it, else unhide if hidden and switch only if still invisible.
         G = {"id": "g1", "name": "pool", "members": ["s2"]}
         km._set_timeline_views({"active": "g1", "hidden": [], "tags": [G]})
         km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s9"})
         v = km._timeline_views()
-        self.assertEqual(v["active"], "all", "untagged → land on the default view")
-        km._set_timeline_views({"active": "all", "hidden": [], "tags": [G]})
+        self.assertEqual(v["active"], "all", "tagless session from a tag view → land on All, the default")
+        km._set_timeline_views({"active": "untagged", "hidden": [], "tags": [G]})
         km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
         v = km._timeline_views()
         self.assertEqual(v["active"], "g1", "tagged → its holder tag is its home view")
         self.assertEqual(v["tags"][0]["members"], ["s2"], "membership untouched — the peek never strips a tag")
+        km._set_timeline_views({"active": "all", "hidden": [], "tags": [G]})
+        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
+        self.assertEqual(km._timeline_views()["active"], "all", "tagged is VISIBLE under All → no move at all")
         km._set_timeline_views({"active": "all", "hidden": ["sX"], "tags": [G]})
         km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "sX"})
         v = km._timeline_views()
-        self.assertEqual(v["hidden"], [], "hidden and untagged → un-hidden onto the default view")
+        self.assertEqual(v["hidden"], [], "hidden under All → un-hidden")
+        self.assertEqual(v["active"], "all", "…and the focus NEVER kicks the user off All")
+        km._set_timeline_views({"active": "all", "hidden": ["s2"], "tags": [G]})
+        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
+        v = km._timeline_views()
+        self.assertEqual(v["hidden"], [], "hidden AND tagged under All → the unhide wins")
+        self.assertEqual(v["active"], "all", "…not a kick to the holder tag")
+        km._set_timeline_views({"active": "untagged", "hidden": ["s9"], "tags": [G]})
+        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s9"})
+        v = km._timeline_views()
+        self.assertEqual(v["hidden"], [], "hidden tagless session under untagged → un-hidden")
+        self.assertEqual(v["active"], "untagged", "…already visible here — no gratuitous switch to All")
+        km._set_timeline_views({"active": "g1", "hidden": ["sX"], "tags": [G]})
+        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "sX"})
+        v = km._timeline_views()
+        self.assertEqual(v["hidden"], [], "hidden AND tagless from a tag view → BOTH edits: un-hidden…")
+        self.assertEqual(v["active"], "all", "…and still invisible after the unhide, so the view switches to All")
+        km._set_timeline_views({"active": "untagged", "hidden": ["s2"], "tags": [G]})
+        km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
+        v = km._timeline_views()
+        self.assertEqual(v["active"], "g1", "hidden AND tagged under untagged → the holder tag wins")
+        self.assertEqual(v["hidden"], ["s2"], "…hidden bit untouched — membership beats hidden in a tag view")
         km._set_timeline_views({"active": "g1", "hidden": [], "tags": [G]})
         km._reveal_chat_for({"wid": "w1"}, {"type": "focus", "id": "s2"})
         self.assertEqual(km._timeline_views()["active"], "g1", "a member's focus changes nothing")

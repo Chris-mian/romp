@@ -1,7 +1,8 @@
-// Session views on the chat side (the user 2026-08-18; TAG model 2026-08-23): the kernel's views
-// blob — echoed on every tabOrder push — gates which sessions get TABS. The default view shows
-// UNTAGGED sessions: a tag marks a specialized session, excluded from the main view and shown
-// under its tag views. A tagged or hidden session is a BACKGROUND session: still running, judged,
+// Session views on the chat side (the user 2026-08-18; TAG model 2026-08-23; ALL default
+// 2026-08-24): the kernel's views blob — echoed on every tabOrder push — gates which sessions get
+// TABS. Two built-in sentinels: "all" — the default — shows every session minus the hidden set;
+// "untagged" keeps the old default's meaning (a tag marks a specialized session, excluded from the
+// untagged view and shown under its tag views). A hidden session is a BACKGROUND session: still running, judged,
 // carded; the + picker lists it under "Hidden — reveal" and the timeline's corner panel counts it,
 // so nothing runs in secret (the 2026-08-11 rule this feature deliberately carves an exception
 // into, keeping its spirit). Executed tests on the pure module + source pins.
@@ -15,16 +16,19 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 
 const G = { id: "g1", name: "pool", color: "#DD42FF", members: ["s2"] };
 
-test("executed: the default view shows UNTAGGED minus hidden; a tag view its members exactly", () => {
+test("executed: All shows every session minus hidden; untagged the tagless; a tag view its members", () => {
   assert.equal(viewVisible(null, "s1"), true);
-  assert.equal(viewVisible({ active: "all", hidden: ["s1"] }, "s1"), false);
-  assert.equal(viewVisible({ active: "all", tags: [G] }, "s2"), false, "TAGGED → out of the default view");
-  assert.equal(viewVisible({ active: "all", tags: [G] }, "s1"), true, "untagged → the default view shows it");
+  assert.equal(viewVisible({ active: "all", hidden: ["s1"] }, "s1"), false, "All respects the deliberate hide");
+  assert.equal(viewVisible({ active: "all", tags: [G] }, "s2"), true, "TAGGED → All still shows it (2026-08-24)");
+  assert.equal(viewVisible({ active: "all", tags: [G] }, "s1"), true, "untagged → shown");
+  assert.equal(viewVisible({ active: "untagged", tags: [G] }, "s2"), false, "TAGGED → out of the untagged view");
+  assert.equal(viewVisible({ active: "untagged", tags: [G] }, "s1"), true, "tagless → the untagged view shows it");
+  assert.equal(viewVisible({ active: "untagged", hidden: ["s1"], tags: [G] }, "s1"), false, "hidden hides there too");
   assert.equal(viewVisible({ active: "g1", hidden: ["s2"], tags: [G] }, "s2"), true, "a tag view shows its members, hidden or not");
   assert.equal(viewVisible({ active: "g1", tags: [G] }, "s1"), false);
   assert.equal(viewVisible({ active: "gone", tags: [] }, "s1"), true, "an orphaned active fails open");
   // the pre-rename key an un-updated kernel still pushes reads identically
-  assert.equal(viewVisible({ active: "all", groups: [G] }, "s2"), false, "legacy `groups` key honored");
+  assert.equal(viewVisible({ active: "untagged", groups: [G] }, "s2"), false, "legacy `groups` key honored");
   assert.equal(viewVisible({ active: "g1", groups: [G] }, "s2"), true);
 });
 
@@ -39,17 +43,29 @@ test("executed: hide sets the one-off bit (and leaves the active tag); reveal SW
   assert.deepEqual(g.tags![0].members, ["s3"], "dropped from the ACTIVE tag");
   assert.deepEqual(g.tags![1].members, ["s2"], "other tags keep it — multi-tag membership");
   // reveal never mutates membership (re-grounded 2026-08-23: peeking at a tagged worker must not
-  // strip its tag) — it switches the active view to one that shows the session
+  // strip its tag) — it lands on a visible tab with the MINIMAL move (ALL default 2026-08-24)
   const rev = revealIn({ active: "g1", hidden: [], tags: [G] }, "s1");
-  assert.equal(rev.active, "all", "untagged → land on the default view");
+  assert.equal(rev.active, "all", "tagless session from a tag view → land on All, the default");
   assert.deepEqual(rev.hidden, [], "…and nothing edited");
-  const rev2 = revealIn({ active: "all", hidden: [], tags: [G] }, "s2");
+  const rev2 = revealIn({ active: "untagged", hidden: [], tags: [G] }, "s2");
   assert.equal(rev2.active, "g1", "tagged → its holder tag is its home view");
   assert.deepEqual(rev2.tags![0].members, ["s2"], "membership untouched — the peek never strips a tag");
-  const rev3 = revealIn({ active: "all", hidden: ["sX"], tags: [G] }, "sX");
-  assert.deepEqual(rev3.hidden, [], "hidden and untagged → un-hidden onto the default view (the one edit)");
+  const revAll = revealIn({ active: "all", hidden: [], tags: [G] }, "s2");
+  assert.equal(revAll.active, "all", "tagged is VISIBLE under All → nothing changes at all");
+  const revHid = revealIn({ active: "all", hidden: ["s2"], tags: [G] }, "s2");
+  assert.equal(revHid.active, "all", "hidden under All → unhide and STAY — a focus never kicks off All");
+  assert.deepEqual(revHid.hidden, [], "…even for a tagged session: the unhide wins, not a holder switch");
+  const rev3 = revealIn({ active: "untagged", hidden: ["sX"], tags: [G] }, "sX");
+  assert.equal(rev3.active, "untagged", "unhidden tagless session already shows here — no gratuitous switch");
+  assert.deepEqual(rev3.hidden, [], "hidden and tagless → un-hidden (the one edit)");
   const rev4 = revealIn({ active: "g1", hidden: ["s2"], tags: [G] }, "s2");
   assert.equal(rev4.active, "g1", "already visible in the active tag → nothing changes");
+  const rev5 = revealIn({ active: "g1", hidden: ["sX"], tags: [G] }, "sX");
+  assert.deepEqual(rev5.hidden, [], "hidden AND tagless from a tag view → BOTH edits: un-hidden…");
+  assert.equal(rev5.active, "all", "…and still invisible after the unhide, so the view switches to All");
+  const rev6 = revealIn({ active: "untagged", hidden: ["s2"], tags: [G] }, "s2");
+  assert.equal(rev6.active, "g1", "hidden AND tagged under untagged → the holder tag wins");
+  assert.deepEqual(rev6.hidden, ["s2"], "…hidden bit untouched — membership beats hidden in a tag view");
 });
 
 test("executed: the canonical key ignores list order AND which key the kernel used", () => {

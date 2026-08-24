@@ -27,31 +27,36 @@ function _rompOnlyTag() {
 // <tag> may be a comma-separated LIST (`#only=api,tests,web`) so demo sessions need no shared
 // on-camera prefix (the user 2026-07-16). Mirrors ui/webview/only-filter.ts's matchesOnly.
 // ── session VIEWS (the user 2026-08-18): which sessions the lanes — and the chat tab strip — show.
-// {active:"all"|gid, hidden:[id...], groups:[{id,name,color,members:[id...]}]}, kernel-persisted
-// (timeline-views.json) and echoed on every payload as data.views. The DEFAULT-GROUP model (the user
-// 2026-08-19): every session is in the default group at birth; `hidden` stores the sessions REMOVED
-// from it ("all" minus hidden IS the default group, so the wire shape is unchanged). A session out of
-// the default group is a BACKGROUND session — still judged and carded, surfaced by the feed and the
-// pickers. Named groups are independent member lists (multi-membership by construction: put a manager
-// in the default group AND its workers' group; remove the workers from default and they live only in
-// their group). A named group shows exactly its members — membership beats the hidden bit. The
-// kernel's _view_visible is the decision of record; this is its mirror for the lanes. TAGS
-// (the user 2026-08-23): a tag marks a SPECIALIZED session — tagging excludes it from the default
-// view, and its tag views are where it shows. The kernel emits `tags`; `groups` is honored as the
-// pre-rename key an un-updated kernel still pushes, in ONE place so every rule reads through it.
+// {active:"all"|"untagged"|gid, hidden:[id...], tags:[{id,name,color,members:[id...]}]},
+// kernel-persisted (timeline-views.json) and echoed on every payload as data.views. TWO built-in
+// sentinels, not tags: "all" — the DEFAULT (the user 2026-08-24) — shows every session minus the
+// `hidden` set (hiding is a deliberate gesture, so All respects it); "untagged" keeps the old
+// default's meaning under its own honest name — a TAG marks a SPECIALIZED session (the user
+// 2026-08-23), excluded from the untagged view and shown under its tag views (independent member
+// lists, multi-membership by construction). "all" used to MEAN untagged, so reinterpreting it as
+// truly-all lands every legacy persisted blob on the new All default with no migration. A tag view
+// shows exactly its members — membership beats the hidden bit. A hidden session is a BACKGROUND
+// session — still judged and carded, surfaced by the feed and the pickers. The kernel's
+// _view_visible is the decision of record; this is its mirror for the lanes. The kernel emits
+// `tags`; `groups` is honored as the pre-rename key an un-updated kernel still pushes, in ONE
+// place so every rule reads through it.
 function viewTags(views) { return (views && (views.tags || views.groups)) || []; }
 function viewVisible(views, id) {
   if (!views || !views.active || views.active === 'all') {
-    if (views && Array.isArray(views.hidden) && views.hidden.indexOf(id) >= 0) return false;
+    return !(views && Array.isArray(views.hidden) && views.hidden.indexOf(id) >= 0);
+  }
+  if (views.active === 'untagged') {
+    if (Array.isArray(views.hidden) && views.hidden.indexOf(id) >= 0) return false;
     return !viewTags(views).some((t) => (t.members || []).indexOf(id) >= 0);
   }
   const t = viewTags(views).find((x) => x.id === views.active);
   return t ? (t.members || []).indexOf(id) >= 0 : true;
 }
 function viewLabel(views) {
-  if (!views || !views.active || views.active === 'all') return '(untagged)';
+  if (!views || !views.active || views.active === 'all') return 'All';
+  if (views.active === 'untagged') return '(untagged)';
   const t = viewTags(views).find((x) => x.id === views.active);
-  return t ? (t.name || 'tag') : '(untagged)';
+  return t ? (t.name || 'tag') : 'All';
 }
 // live sessions the current view is NOT showing — the "N more" cue that keeps a hidden or tagged
 // session exactly one glance away (nothing may run in secret: the 2026-08-11 hidden-tabs rule)
@@ -2380,7 +2385,10 @@ class TimelinePanel {
     const v = this._curViews();
     const g = viewTags(v).find((x) => x.id === v.active);
     const more = viewMoreCount(v, (this.data && this.data.sessions) || []);
-    const active = !!g && v.active && v.active !== 'all';
+    // any non-All view is a FILTER now, the untagged view included (it excludes tagged sessions),
+    // so the chip shows for untagged and tag views alike; its ✕ resets to All, the unfiltered default
+    const active = !!v.active && v.active !== 'all' && (!!g || v.active === 'untagged');
+    const gcol = (g && g.color) || '#cccccc';
     const PADH = 7, GAP = 6;   // the chip's horizontal padding; the space between the line's parts
     // ellipsize so the WHOLE line stays inside the gutter — measured on the full string (the
     // 650-weight lane font over-measures the plain spans, which is the safe direction), because a
@@ -2416,10 +2424,10 @@ class TimelinePanel {
       grp.setAttribute('style', 'cursor:pointer;');
       const box = el('rect', { x, y: y - 13, width: cw, height: 18, rx: 9,
         fill: 'transparent',
-        stroke: g.color || '#cccccc', 'stroke-width': 1 });
+        stroke: gcol, 'stroke-width': 1 });
       grp.appendChild(box);
       const ct = el('text', { x: x + PADH, y, 'font-size': 12, 'font-family': FONT,
-        fill: g.color || '#cccccc', 'font-weight': 650 });
+        fill: gcol, 'font-weight': 650 });
       ct.textContent = name;
       ct.setAttribute('style', 'user-select:none;');
       grp.appendChild(ct);
@@ -2429,7 +2437,7 @@ class TimelinePanel {
       cx.setAttribute('style', 'user-select:none;');
       grp.appendChild(cx);
       const tt = el('title', {});
-      tt.textContent = 'showing only ' + (g.name || 'this group') + ' — click to remove the filter (back to the default view)';
+      tt.textContent = 'showing only ' + (g ? (g.name || 'this tag') : 'untagged sessions') + ' — click to remove the filter (back to the default view)';
       grp.appendChild(tt);
       grp.addEventListener('pointerdown', (e) => {
         e.preventDefault(); e.stopPropagation();
@@ -2445,7 +2453,7 @@ class TimelinePanel {
       // …and one CLICK away (the user 2026-08-24): the count opens the same views menu, so "what am
       // I not seeing?" answers itself with the list of tags to switch to
       m.setAttribute('style', 'user-select:none;cursor:pointer;');
-      const mt = el('title', {}); mt.textContent = 'live sessions outside this view — click to pick a tag view';
+      const mt = el('title', {}); mt.textContent = 'live sessions outside this view — click to switch views, or un-hide via Sessions & tags…';
       m.appendChild(mt);
       m.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(m); });
       m.addEventListener('click', (e) => e.stopPropagation());
@@ -2493,7 +2501,10 @@ class TimelinePanel {
     };
     const v = this._curViews();
     const pick = (active) => { const nv = JSON.parse(JSON.stringify(v)); nv.active = active; this._setViews(nv); this._closeViewsMenu(); };
-    item('(untagged)', { current: !v.active || v.active === 'all' }).addEventListener('click', () => pick('all'));
+    // All is the default and sits first (the user 2026-08-24); (untagged) — the old default's
+    // meaning under its own sentinel — second; both are built-ins, not rows in the tags dialog
+    item('All', { current: !v.active || v.active === 'all' }).addEventListener('click', () => pick('all'));
+    item('(untagged)', { current: v.active === 'untagged' }).addEventListener('click', () => pick('untagged'));
     for (const tg of viewTags(v))
       item(tg.name, { dot: tg.color || MODEL_FG, current: v.active === tg.id }).addEventListener('click', () => pick(tg.id));
     sep();
@@ -2510,7 +2521,7 @@ class TimelinePanel {
     });
     item('Sessions & tags…', { dim: true }).addEventListener('click', () => {
       this._closeViewsMenu();
-      this._openViewsDialog(v.active !== 'all' ? v.active : null);
+      this._openViewsDialog(v.active !== 'all' && v.active !== 'untagged' ? v.active : null);
     });
     sep();
     // the two timeline display prefs, finally reachable in every host (they lived only in the web
@@ -2767,7 +2778,7 @@ class TimelinePanel {
             const eye = eyeCell.createSpan({ text: '⌀' });
             eye.setAttribute('style', 'cursor:pointer;opacity:0.6;');
             hover(eye, 'opacity:1;', 'opacity:0.6;');
-            eye.setAttribute('title', 'hidden from the (untagged) view — click to show it again');
+            eye.setAttribute('title', 'hidden from the All and (untagged) views — click to show it again');
             eye.addEventListener('click', () => { this._setViews(viewToggleHidden(this._curViews(), s.id)); build(); });
           }
           if (addMenuFor === s.id) addMenu([s.id]);
