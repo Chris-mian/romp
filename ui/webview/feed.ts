@@ -3309,7 +3309,7 @@ function paintViewMenu(menu: HTMLElement): void {
   });
 }
 function openViewMenu(btn: HTMLElement): void {
-  closeSessMenu();   // one menu at a time: a keyboard open fires no pointerdown, so the away-closers never ran
+  closeSessList();   // one menu at a time: a keyboard open fires no pointerdown, so the away-closers never ran
   const menu = el("div", "ctx-menu feed-viewmenu");
   menu.setAttribute("role", "menu");
   refreshStackForced();   // decide the forced row from the CURRENT width, not the last observed one
@@ -3357,25 +3357,37 @@ function ensureViewMenuBtn(): HTMLElement {
   return b;
 }
 
-// The SESSION FILTER (the user 2026-08-08): a footer menu listing every session the chat tab strip
-// shows, in ITS order, each written the way every other surface writes a session — bold name in its
-// identity colour, "host:" prefix folded quiet, the shared working/awaiting status dot. Picking one
-// shows only that session's cards; "All sessions" (the default — nothing selected) shows everything.
-// The menu opens UPWARD from the footer (that is where the space is) and lives on document.body,
-// outside render()'s reconcile, so a push can never rebuild it mid-press; the button itself is
-// ensure-once like the other footer controls.
-let sessMenuEl: HTMLElement | null = null;
-function closeSessMenu(): void {
-  sessMenuEl?.remove(); sessMenuEl = null;
-  document.removeEventListener("pointerdown", sessMenuAway, true);
-  document.removeEventListener("keydown", sessMenuKey, true);
+// The SESSION COMBOBOX (the user 2026-08-24, merging the 2026-08-08 session picker and the
+// 2026-08-23 search box): ONE footer control owns "which sessions am I looking at". Collapsed, a
+// single "Sessions ▴" word-button. Open, the top-bar-style input with the session list beneath —
+// every row written the way every other surface writes a session (bold name in its identity colour,
+// "host:" prefix folded quiet, the shared working/awaiting dot; the current pick wears the accent
+// wash, exactly today's menu). TYPING narrows the list AND applies the live substring filter
+// (romp:feedSearch — semantics unchanged); PICKING a row applies the exact-session filter
+// (romp:feedOnly — semantics unchanged), rendered as a chip in the bar whose ✕ hands the bar back
+// to typing. The two filters compose downstream exactly as before (viewFiltered). Invariants kept
+// from both parents: an ACTIVE filter of either kind force-opens the bar (a compact state can never
+// hide a live filter); Escape folds, and folding with anything live CLEARS it; the wrap is
+// ensure-once and the list lives on document.body outside render()'s reconcile (click-safety); the
+// list is built ONCE per open and typing only toggles row display, so a keystroke can never rebuild
+// a row out from under a press.
+let sessListEl: HTMLElement | null = null;
+function closeSessList(): void {
+  sessListEl?.remove(); sessListEl = null;
+  document.removeEventListener("pointerdown", sessListAway, true);
+  document.removeEventListener("keydown", sessListKey, true);
 }
-function sessMenuAway(ev: Event): void {
+function sessListAway(ev: Event): void {
   const t = ev.target as Node;
-  if (sessMenuEl && !sessMenuEl.contains(t) && !(document.getElementById("feed-sessfilter")?.contains(t))) closeSessMenu();
+  if (!sessListEl || sessListEl.contains(t) || document.getElementById("feed-search")?.contains(t)) return;
+  closeSessList();
+  // an away-click closes the LIST only — never a filter-clearing fold: clicking a card must not
+  // wipe a live filter (clear-on-fold is for EXPLICIT folds — Escape, the button). With nothing
+  // live the bar collapses quietly; force-open keeps it up otherwise.
+  if (!feedSearchQ.trim() && !feedOnlySid) document.getElementById("feed-search")?.classList.remove("open");
 }
-function sessMenuKey(ev: KeyboardEvent): void { if (ev.key === "Escape") closeSessMenu(); }
-// A session's name in the menu wears EXACTLY the identity treatment every other surface gives it (the
+function sessListKey(ev: KeyboardEvent): void { if (ev.key === "Escape") { closeSessList(); foldSessBox(); } }
+// A session's name in the list wears EXACTLY the identity treatment every other surface gives it (the
 // user 2026-08-08): bold, in the session's own colour, host prefix folded quiet — the way the chat tabs
 // and the grouped session headers write it. Never a colour swatch: a dot beside a name on this board
 // already MEANS working/awaiting (the shared fwork-dot vocabulary), so that status dot rides here too.
@@ -3385,65 +3397,107 @@ function sessMenuName(s: { sid: string; name: string; color: { bg: string; fg: s
   if (s.color) nm.style.color = s.color.bg;
   return nm;
 }
-function openSessMenu(btn: HTMLElement): void {
+// Typing narrows the OPEN list in place: display toggles only, never a rebuild (click-safety). The
+// "All sessions" row always shows — the way back can never be filtered away (no-dead-end).
+function filterSessList(q: string): void {
+  if (!sessListEl) return;
+  sessListEl.querySelectorAll<HTMLElement>(".fsm-row").forEach((r) => {
+    const name = r.getAttribute("data-name");
+    r.style.display = name === null || searchMatches(q, name) ? "" : "none";
+  });
+}
+function repaintSessListCurrent(): void {
+  if (!sessListEl) return;
+  sessListEl.querySelectorAll<HTMLElement>(".fsm-row").forEach((r) => {
+    const on = (r.getAttribute("data-sid") || null) === feedOnlySid;
+    r.classList.toggle("on", on);
+    r.setAttribute("aria-selected", on ? "true" : "false");   // option rows select; checked is the checkbox pattern
+  });
+}
+function openSessList(): void {
   closeViewMenu();   // one menu at a time: a keyboard open fires no pointerdown, so the away-closers never ran
+  const wrap = document.getElementById("feed-search");
+  if (!wrap || sessListEl) return;
   const menu = el("div", "feed-sessmenu");
-  const row = (on: boolean, pick: string | null, label: HTMLElement, dotName?: string) => {
-    const r = el("div", "fsm-row" + (on ? " on" : ""));
+  menu.setAttribute("role", "listbox");
+  const row = (pick: string | null, label: HTMLElement, name: string | null, dotName?: string) => {
+    const r = el("div", "fsm-row");
     r.appendChild(label);
     if (dotName) setWorkDot(label, dotFor(dotName));   // inserts the status dot before the name, in place
-    r.setAttribute("role", "menuitemradio"); r.setAttribute("aria-checked", on ? "true" : "false");
-    r.onclick = (ev) => { ev.stopPropagation(); setFeedOnly(on ? null : pick); closeSessMenu(); render(); };
+    r.setAttribute("role", "option");
+    if (pick !== null) r.setAttribute("data-sid", pick);
+    if (name !== null) r.setAttribute("data-name", name);
+    r.onclick = (ev) => {   // pick = the exact filter, worn as the bar's chip; the list closes, the bar stays
+      ev.stopPropagation();
+      const already = (r.getAttribute("data-sid") || null) === feedOnlySid;
+      setFeedOnly(already ? null : pick);
+      const inp = document.getElementById("feed-search-input") as HTMLInputElement | null;
+      if (inp) { inp.value = ""; inp.focus(); }   // back to typing mode; the chip carries the pick
+      setFeedSearch("");
+      closeSessList();
+      render();
+    };
     menu.appendChild(r);
   };
   const all = el("span", "");
   all.textContent = "All sessions";
-  row(!feedOnlySid, null, all);
+  row(null, all, null);
   // tab order: rank by the kernel's session-order list (the same rank grouped mode sorts by); a sid the
   // list doesn't know keeps its place in the kernel's tab list (stable sort), after the ranked ones
   const rank = new Map(sessionOrder.map((s, i) => [s, i] as const));
   const rows = sessionsMeta.slice().sort((a, b) => (rank.get(a.sid) ?? 1e9) - (rank.get(b.sid) ?? 1e9));
-  for (const s of rows) row(feedOnlySid === s.sid, s.sid, sessMenuName(s), s.name);
+  for (const s of rows) row(s.sid, sessMenuName(s), s.name, s.name);
   document.body.appendChild(menu);
-  // above the footer, left-aligned to the button, clamped into the viewport
-  const r = btn.getBoundingClientRect();
+  // above the footer, aligned to the BAR and at least its width (combobox convention), clamped in
+  const r = wrap.getBoundingClientRect();
+  menu.style.minWidth = Math.max(150, Math.round(r.width)) + "px";
   menu.style.bottom = Math.round(window.innerHeight - r.top + 6) + "px";
   menu.style.left = Math.round(Math.max(6, Math.min(r.left, window.innerWidth - menu.offsetWidth - 6))) + "px";
-  sessMenuEl = menu;
-  document.addEventListener("pointerdown", sessMenuAway, true);
-  document.addEventListener("keydown", sessMenuKey, true);
+  sessListEl = menu;
+  repaintSessListCurrent();
+  filterSessList(feedSearchQ);
+  document.addEventListener("pointerdown", sessListAway, true);
+  document.addEventListener("keydown", sessListKey, true);
 }
-// The SEARCH box (the user 2026-08-23): a footer "Search" word-button that expands to an inline
-// input filtering the board live by session name, host prefix included. Ensure-once like every foot
-// control — render() never rebuilds it, so focus and the caret survive pushes (the click-safety rule).
-// An ACTIVE query keeps the input open and the control accented; Escape (or emptying + blur) folds it
-// back to the button — a compact state can never hide a live filter (progressive disclosure's no-dead-end).
-// The expanded bar wears the TOP search bar's look scaled to the footer (the user 2026-08-24): rounded
-// input-background field, an inner ✕ that clears and REFOCUSES, flexing into the row's spare space
-// instead of a fixed width (feed.css owns the metrics).
-function ensureSearchBox(): HTMLElement {
+// Folding with anything live CLEARS it — the bar never hides an active filter of either kind.
+function foldSessBox(): void {
+  const wrap = document.getElementById("feed-search");
+  const inp = document.getElementById("feed-search-input") as HTMLInputElement | null;
+  let changed = false;
+  if (inp && inp.value.trim()) { inp.value = ""; changed = true; }
+  if (feedSearchQ.trim()) { setFeedSearch(""); changed = true; }
+  if (feedOnlySid) { setFeedOnly(null); changed = true; }
+  wrap?.classList.remove("open");
+  closeSessList();
+  if (changed) render();
+}
+function ensureSessionBox(): HTMLElement {
   let wrap = document.getElementById("feed-search") as HTMLElement | null;
   if (!wrap) {
     wrap = el("span", "");
     wrap.id = "feed-search";
     const btn = el("button", "fdismiss ffollow feed-modetoggle");
     btn.id = "feed-search-btn";
-    btn.textContent = "Search";
-    btn.title = "filter cards by session name — the host prefix counts, so a machine name finds all its sessions";
+    btn.textContent = "Sessions \u25b4";
+    btn.title = "filter the board by session — type to narrow (host prefix counts), or pick one exactly";
+    btn.setAttribute("aria-haspopup", "listbox");
+    const chip = el("span", "fsm-chip");
+    chip.id = "feed-sess-chip";
+    chip.hidden = true;
     const inp = document.createElement("input");
     inp.id = "feed-search-input";
     inp.type = "search";
     inp.placeholder = "session or host…";
-    inp.setAttribute("aria-label", "filter cards by session name (host prefix included)");
-    const openBox = () => { wrap!.classList.add("open"); inp.focus(); };
-    const foldBox = () => {                             // folding with a live query CLEARS it — the button
-      if (inp.value.trim()) { inp.value = ""; setFeedSearch(""); render(); }   // never hides an active filter
-      wrap!.classList.remove("open");
+    inp.setAttribute("aria-label", "filter cards by session name (host prefix included), or pick a session from the list");
+    const openBox = () => { wrap!.classList.add("open"); openSessList(); inp.focus(); };
+    btn.onclick = (ev) => { ev.stopPropagation(); wrap!.classList.contains("open") ? foldSessBox() : openBox(); };
+    inp.onfocus = () => { if (!sessListEl) openSessList(); };   // focus re-opens the list (a pick closed it)
+    inp.oninput = () => { setFeedSearch(inp.value); filterSessList(inp.value); render(); };   // live: narrows list AND board
+    inp.onkeydown = (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); foldSessBox(); } };
+    inp.onblur = () => {   // an empty bar folds quietly when focus leaves AND the list is gone — a row
+      //                      press keeps the list (blur fires first); the away-closer owns that case
+      if (!sessListEl && !inp.value.trim() && !feedOnlySid) wrap!.classList.remove("open");
     };
-    btn.onclick = (ev) => { ev.stopPropagation(); wrap!.classList.contains("open") ? foldBox() : openBox(); };
-    inp.oninput = () => { setFeedSearch(inp.value); render(); };   // live: the keyed render reuses every card
-    inp.onkeydown = (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); foldBox(); } };
-    inp.onblur = () => { if (!inp.value.trim()) wrap!.classList.remove("open"); };
     const clr = el("button", "");
     clr.id = "feed-search-clear";
     (clr as HTMLButtonElement).type = "button";
@@ -3453,45 +3507,52 @@ function ensureSearchBox(): HTMLElement {
     clr.textContent = "\u00d7";
     clr.onclick = (ev) => {   // clear + REFOCUS — the user is mid-search, never fold under them
       ev.stopPropagation();
-      inp.value = ""; setFeedSearch(""); inp.focus(); render();
+      inp.value = ""; setFeedSearch(""); filterSessList(""); inp.focus(); render();
     };
-    wrap.appendChild(btn); wrap.appendChild(inp); wrap.appendChild(clr);
+    wrap.appendChild(btn); wrap.appendChild(chip); wrap.appendChild(inp); wrap.appendChild(clr);
     (document.getElementById("feed-foot") || document.body).appendChild(wrap);
   }
   const inp = wrap.querySelector("input") as HTMLInputElement;
   if (inp && inp.value !== feedSearchQ && document.activeElement !== inp) inp.value = feedSearchQ;
   const clrBtn = document.getElementById("feed-search-clear");
   if (clrBtn && inp) clrBtn.hidden = !inp.value.trim();   // trimmed, like the fold + the filter — whitespace is no query
-  const active = !!feedSearchQ.trim();
+  // the chip quotes the picked session verbatim, dot included — a narrowed board must never look whole
+  const chip = document.getElementById("feed-sess-chip") as HTMLElement | null;
+  const cur = feedOnlySid ? sessionsMeta.find((s) => s.sid === feedOnlySid) : undefined;
+  if (chip) {
+    chip.hidden = !cur;
+    if (cur) {
+      // the ✕ is built ONCE (a per-render rebuild would swap it under a press — click-safety);
+      // only the NAME re-quotes each render, so colour echoes and the working/awaiting dot stay live
+      let nm = (chip as any)._nm as HTMLElement | undefined;
+      if (!nm) {
+        nm = el("span", "fsm-name");
+        const x = el("button", "fsm-chipx");
+        (x as HTMLButtonElement).type = "button";
+        x.textContent = "\u00d7";
+        x.setAttribute("aria-label", "show all sessions");
+        x.title = "show all sessions — back to typing";
+        x.onclick = (ev) => {
+          ev.stopPropagation();
+          setFeedOnly(null);
+          repaintSessListCurrent();
+          (document.getElementById("feed-search-input") as HTMLInputElement | null)?.focus();
+          render();
+        };
+        chip.replaceChildren(nm, x);
+        (chip as any)._nm = nm;
+      }
+      nm.replaceChildren(...hostNameNodes(cur.name, cur.sid));
+      nm.style.color = cur.color ? cur.color.bg : "";
+      setWorkDot(nm, dotFor(cur.name));
+    }
+  }
+  // an ACTIVE filter of either kind force-opens the bar — never hidden behind the collapsed button
+  const active = !!feedSearchQ.trim() || !!feedOnlySid;
   if (active) wrap.classList.add("open");
   const btn = document.getElementById("feed-search-btn");
   if (btn) { btn.classList.toggle("on", active); btn.setAttribute("aria-pressed", active ? "true" : "false"); }
   return wrap;
-}
-
-function ensureSessionFilter(): HTMLElement {
-  let b = document.getElementById("feed-sessfilter") as HTMLElement | null;
-  if (!b) {
-    b = el("button", "fdismiss ffollow feed-modetoggle");
-    b.id = "feed-sessfilter";
-    b.onclick = (ev) => {   // opening the menu IS the acknowledgement (same as the fold caret)
-      ev.stopPropagation();
-      if (sessMenuEl) closeSessMenu(); else openSessMenu(b!);
-    };
-    (document.getElementById("feed-foot") || document.body).appendChild(b);
-  }
-  const cur = feedOnlySid ? sessionsMeta.find((s) => s.sid === feedOnlySid) : undefined;
-  const on = !!feedOnlySid;
-  b.classList.toggle("on", on);
-  b.setAttribute("aria-pressed", on ? "true" : "false");
-  b.title = cur ? "showing only " + cur.name + " — click to change or show all"
-    : "show a single session's cards (default: all)";
-  if (cur) {
-    const nm = sessMenuName(cur);
-    b.replaceChildren(nm, document.createTextNode(" ▴"));
-    setWorkDot(nm, dotFor(cur.name));   // the button quotes the picked session verbatim, dot included
-  } else b.replaceChildren(document.createTextNode("Session ▴"));
-  return b;
 }
 
 // (The footer "Sub-goals" checkbox was removed 2026-07-08: sub-goals is now a per-card "Sub-goals" button
@@ -3863,8 +3924,7 @@ function render() {
   // footer pane (below the cards, no overlap): view menu · Session filter · Search | Clear all · Undo
   const showCA = !!asks.length;
   ensureViewMenuBtn().style.display = showCA ? "" : "none";       // sort + layout menu (the user 2026-08-24)
-  ensureSessionFilter().style.display = showCA ? "" : "none";     // one-session filter menu (the user 2026-08-08)
-  ensureSearchBox().style.display = showCA ? "" : "none";          // type-to-filter by name/host (the user 2026-08-23)
+  ensureSessionBox().style.display = showCA ? "" : "none";        // session combobox: type-or-pick filter (the user 2026-08-24)
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");

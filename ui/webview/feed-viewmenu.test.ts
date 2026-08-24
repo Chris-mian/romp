@@ -66,8 +66,8 @@ test("a live menu syncs IN PLACE — rows are never rebuilt under a pressed poin
 test("one menu at a time: the view menu and the session menu close each other on open", () => {
   // the pointerdown-away closers cover mouse opens; a keyboard Enter fires click with NO pointerdown,
   // so each opener must close the other explicitly (found in review, 2026-08-24)
-  assert.match(FEED, /function openViewMenu\(btn: HTMLElement\): void \{\s*\n\s*closeSessMenu\(\);/);
-  assert.match(FEED, /function openSessMenu\(btn: HTMLElement\): void \{\s*\n\s*closeViewMenu\(\);/);
+  assert.match(FEED, /function openViewMenu\(btn: HTMLElement\): void \{\s*\n\s*closeSessList\(\);/);
+  assert.match(FEED, /function openSessList\(\): void \{\s*\n\s*closeViewMenu\(\);/);
 });
 
 test("the popup wears the repo menu vocabulary: .ctx-menu chrome + the ✓-in-circle current mark", () => {

@@ -52,8 +52,13 @@ test("the filter defaults to NOTHING selected and only ever narrows the RENDER, 
   assert.ok(FEED.includes("if (feedOnlySid && !sessionsMeta.some((s) => s.sid === feedOnlySid)) setFeedOnly(null);"));
 });
 
-test("the menu sits right of the view-menu icon, lists sessions in tab order, canonical form, click-safe", () => {
-  assert.match(FEED, /ensureViewMenuBtn\(\)\.style\.display = showCA \? "" : "none";[^\n]*\n\s*ensureSessionFilter\(\)\.style\.display = showCA \? "" : "none";/);
+test("the combobox sits right of the view-menu icon, lists sessions in tab order, canonical form, click-safe", () => {
+  // one control since 2026-08-24: the session picker and the search box merged into the combobox
+  assert.match(FEED, /ensureViewMenuBtn\(\)\.style\.display = showCA \? "" : "none";[^\n]*\n\s*ensureSessionBox\(\)\.style\.display = showCA \? "" : "none";/);
+  // the list is built ONCE per open; typing only toggles row display — a keystroke can never
+  // rebuild a row out from under a press (click-safety)
+  assert.match(FEED, /r\.style\.display = name === null \|\| searchMatches\(q, name\) \? "" : "none";/);
+  assert.match(FEED, /row\(null, all, null\);/, "the All-sessions way back is never filtered away");
   // tab order: ranked by the kernel's session-order list — the same rank grouped mode sorts by
   assert.ok(FEED.includes("const rows = sessionsMeta.slice().sort((a, b) => (rank.get(a.sid) ?? 1e9) - (rank.get(b.sid) ?? 1e9));"));
   // the menu lives on document.body — outside render()'s reconcile, so a push can't rebuild it mid-press
@@ -65,15 +70,20 @@ test("menu rows write a session the way the tabs do — coloured bold name + the
   // colour SWATCH read as a status dot — on this board a dot beside a name means working/awaiting)
   assert.ok(FEED.includes("nm.replaceChildren(...hostNameNodes(s.name, s.sid));"), "host prefix folded quiet");
   assert.ok(FEED.includes("if (s.color) nm.style.color = s.color.bg;"), "name IN the identity colour");
-  assert.ok(FEED.includes("for (const s of rows) row(feedOnlySid === s.sid, s.sid, sessMenuName(s), s.name);"));
+  assert.ok(FEED.includes("for (const s of rows) row(s.sid, sessMenuName(s), s.name, s.name);"));
   assert.ok(FEED.includes("if (dotName) setWorkDot(label, dotFor(dotName));"),
     "the SAME working/awaiting dot the tabs and headers wear — never a colour swatch");
   assert.ok(!FEED.includes("sessDot"), "the swatch helper is gone");
   const CSS = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.css"), "utf8");
   assert.match(CSS, /\.fsm-name \{ font-weight: 600; \}/, "bold, like the tab titles and session headers");
   assert.ok(!CSS.includes(".fsm-dot"), "no swatch styles either");
-  // with a filter on, the button quotes the picked session verbatim, dot included — a narrowed board
-  // must never look like the whole one
-  assert.ok(FEED.includes('b.replaceChildren(nm, document.createTextNode(" ▴"));'));
+  // with a filter on, the CHIP in the bar quotes the picked session verbatim, dot included — a
+  // narrowed board must never look like the whole one; its ✕ hands the bar back to typing. The ✕
+  // is built ONCE (a per-render rebuild would swap it under a press — click-safety); the NAME
+  // re-quotes per render so colour echoes and the dot stay live.
+  assert.ok(FEED.includes("chip.replaceChildren(nm, x);"));
+  assert.ok(FEED.includes("(chip as any)._nm = nm;"));
+  assert.ok(FEED.includes("nm.replaceChildren(...hostNameNodes(cur.name, cur.sid));"));
   assert.ok(FEED.includes("setWorkDot(nm, dotFor(cur.name));"));
+  assert.ok(FEED.includes('x.setAttribute("aria-label", "show all sessions");'));
 });
