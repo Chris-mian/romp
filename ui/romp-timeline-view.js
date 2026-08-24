@@ -3924,6 +3924,36 @@ class TimelinePanel {
     // (the CLI's unmappable-member precedent).
     const msgHtml = (mm) => () => { const col = colorOf(mm.fromId); return '<div class="r"><span class="chip" style="background:' + col + '"></span><span class="who" style="color:' + col + '">' + esc(mm.from || mm.fromId) + '</span><span class="ar">→</span><span class="who" style="color:' + colorOf(mm.toId) + '">' + esc(mm.to || mm.toId) + '</span>' + (mm.pending ? ' <span class="k">pending</span>' : '') + '<span class="t">' + clock(mm.sent) + (mm.pending ? ' → …' : ' → ' + clock(mm.exec)) + '</span></div>' + this.body(esc(mm.summary || mm.text || '')); };
     const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); this._select(mm.toId); this.openChat((an && an.tid) || mm.toId, mm.id || (an && (an.uuid || an.replyUuid)), false, false, execAt(mm)); };   // land on the message's OWN postal card BY ID — the chat matches mm.id to the card's data-mid (the user 2026-06-20); nearest-turn uuid / time only as fallback
+    // OVERLAP HOVER (the user 2026-08-24): message marks stack — several exchanges on one pair, a
+    // stub riding another's track — and the topmost hit swallowed the hover, so the modal named ONE
+    // message where the cursor covered several. Resolve every message element under the point
+    // (elementsFromPoint walks the whole paint stack; every message hit and arrival dot carries its
+    // message index) and show them ALL: one modal, each message its own block, every unit lit
+    // together, oldest first. Capped so a pile-up stays a modal, not a wall. Environments without
+    // elementsFromPoint (bare-node tests, odd hosts) fall back to the hovered message alone —
+    // exactly the old behavior.
+    const MSG_TIP_CAP = 8;
+    const msgHoverSet = (e, selfI) => {
+      const found = new Set([selfI]);
+      try {
+        const doc = (this.svg && this.svg.ownerDocument) || document;
+        if (e && e.clientX != null && doc.elementsFromPoint)
+          for (const n of doc.elementsFromPoint(e.clientX, e.clientY))
+            if (n && n.__tlMsgI != null && data.messages[n.__tlMsgI]) found.add(n.__tlMsgI);
+      } catch (err) { /* fall back to the hovered message alone */ }
+      return Array.from(found).sort((a, b) => (data.messages[a].sent || 0) - (data.messages[b].sent || 0));
+    };
+    const msgSetHtml = (set) => set.slice(0, MSG_TIP_CAP).map((ix, k) =>
+      (k ? '<div style="margin-top:6px;border-top:1px solid #ffffff1f;padding-top:6px">' : '<div>')
+      + msgHtml(data.messages[ix])() + '</div>').join('')
+      + (set.length > MSG_TIP_CAP
+         ? '<div class="k" style="margin-top:4px">+' + (set.length - MSG_TIP_CAP) + ' more messages here</div>' : '');
+    const msgSetLight = (set, on) => set.forEach((ix) => {
+      const u = msgUI[ix];
+      if (!u) return;
+      if (u.hl) u.hl.setAttribute('opacity', (on || u.lit) ? '0.95' : '0');
+      if (u.dot) u.dot.setAttribute('r', (on || u.lit) ? DOT_R + 2 : DOT_R);
+    });
     // ── HIDDEN-COUNTERPART STUBS (the user 2026-08-24; HORIZONTAL form later the same day — the
     // angled diagonals fanned out of a busy lane like a starburst and read as noise): a message
     // whose OTHER endpoint has no visible lane still shows on the lane it does touch, as a
@@ -4008,8 +4038,9 @@ class TimelinePanel {
       const hit = el('path', { d, fill: 'none', stroke: 'transparent', 'stroke-width': MSG_HIT_W,
                                'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
       hit.style.cursor = 'pointer';
-      const mEnter = (e) => { hl.setAttribute('opacity', '0.95'); if (u.dot) u.dot.setAttribute('r', DOT_R + 2); this.showTip(msgHtml(mm)(), e); };
-      const mLeave = () => { hl.setAttribute('opacity', msgLit ? '0.95' : '0'); if (u.dot) u.dot.setAttribute('r', msgLit ? DOT_R + 2 : DOT_R); this.hideTip(); };
+      const mEnter = (e) => { u.hoverSet = msgHoverSet(e, i); msgSetLight(u.hoverSet, true); this.showTip(msgSetHtml(u.hoverSet), e); };
+      const mLeave = () => { msgSetLight(u.hoverSet || [i], false); u.hoverSet = null; this.hideTip(); };
+      hit.__tlMsgI = i;                            // the overlap resolver's key (msgHoverSet)
       hit.__tlHoverIn = mEnter;                    // re-armable after a redraw rebuilds this stub (_rehover)
       hit.addEventListener('mouseenter', mEnter);
       hit.addEventListener('mousemove', (e) => this.moveTip(e));
@@ -4061,11 +4092,12 @@ class TimelinePanel {
       // and a wider stroke so a short vertical (an immediately-delivered message is almost ALL vertical)
       // is still an easy target.
       const hit = el('path', { d, fill: 'none', stroke: 'transparent', 'stroke-width': MSG_HIT_W, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }); hit.style.cursor = 'pointer';
-      const mEnter = (e) => { hl.setAttribute('opacity', '0.95'); if (u.dot) u.dot.setAttribute('r', DOT_R + 2); this.showTip(msgHtml(mm)(), e); };
+      const mEnter = (e) => { u.hoverSet = msgHoverSet(e, i); msgSetLight(u.hoverSet, true); this.showTip(msgSetHtml(u.hoverSet), e); };
+      hit.__tlMsgI = i;                            // the overlap resolver's key (msgHoverSet)
       hit.__tlHoverIn = mEnter;                    // re-armable after a redraw rebuilds this path (_rehover)
       hit.addEventListener('mouseenter', mEnter);
       hit.addEventListener('mousemove', (e) => this.moveTip(e));
-      hit.addEventListener('mouseleave', () => { hl.setAttribute('opacity', msgLit ? '0.95' : '0'); if (u.dot) u.dot.setAttribute('r', msgLit ? DOT_R + 2 : DOT_R); this.hideTip(); });
+      hit.addEventListener('mouseleave', () => { msgSetLight(u.hoverSet || [i], false); u.hoverSet = null; this.hideTip(); });
       hit.addEventListener('click', msgNav(mm));
       u.hit = hit;
     });
@@ -4073,13 +4105,20 @@ class TimelinePanel {
     // dot helper: optional onClick (deep-link) + optional linkedHl (co-light a connector on hover).
     // lit = cross-hover focus (feed-card hover / DAG journey): drawn GROWN in its own color — the same
     // growth the native hover applies, no white ring (the user 2026-07-17) — and mouseleave restores it.
-    const dot = (cx, cy, color, html, onClick, linkedHl, lit) => {
+    const dot = (cx, cy, color, html, onClick, linkedHl, lit, msgI) => {
       const c = el('circle', { cx, cy, r: lit ? DOT_R + 2 : DOT_R, fill: color, stroke: '#e8eef5', 'stroke-width': 0.75 }); c.style.cursor = onClick ? 'pointer' : 'default';   // thinner white border on EVERY dot — romp + user (the user 2026-06-23)
-      const dEnter = (e) => { c.setAttribute('r', DOT_R + 2); if (linkedHl) linkedHl.setAttribute('opacity', '0.95'); this.showTip(html(), e); };
+      // a MESSAGE dot (msgI) hovers as its whole overlap set — stacked arrivals on one lane x are
+      // the commonest pile-up of all; a non-message dot keeps the plain single tooltip
+      const dEnter = (msgI != null)
+        ? (e) => { const u0 = msgUI[msgI] || (msgUI[msgI] = { hl: linkedHl, dot: c, lit }); u0.hoverSet = msgHoverSet(e, msgI); msgSetLight(u0.hoverSet, true); c.setAttribute('r', DOT_R + 2); this.showTip(msgSetHtml(u0.hoverSet), e); }
+        : (e) => { c.setAttribute('r', DOT_R + 2); if (linkedHl) linkedHl.setAttribute('opacity', '0.95'); this.showTip(html(), e); };
       c.__tlHoverIn = dEnter;                      // re-armable after a redraw rebuilds this dot (_rehover)
+      if (msgI != null) c.__tlMsgI = msgI;         // the overlap resolver's key (msgHoverSet)
       c.addEventListener('mouseenter', dEnter);
       c.addEventListener('mousemove', (e) => this.moveTip(e));
-      c.addEventListener('mouseleave', () => { c.setAttribute('r', lit ? DOT_R + 2 : DOT_R); if (linkedHl) linkedHl.setAttribute('opacity', lit ? '0.95' : '0'); this.hideTip(); });
+      c.addEventListener('mouseleave', (msgI != null)
+        ? () => { const u0 = msgUI[msgI]; msgSetLight((u0 && u0.hoverSet) || [msgI], false); if (u0) u0.hoverSet = null; c.setAttribute('r', lit ? DOT_R + 2 : DOT_R); this.hideTip(); }
+        : () => { c.setAttribute('r', lit ? DOT_R + 2 : DOT_R); if (linkedHl) linkedHl.setAttribute('opacity', lit ? '0.95' : '0'); this.hideTip(); });
       if (onClick) c.addEventListener('click', onClick);
       svg.appendChild(c);
       return c;
@@ -4092,7 +4131,7 @@ class TimelinePanel {
       if (vidx[mm.toId] == null || !inWin(landXT(mm))) return;
       const col = colorOf(mm.fromId), cy = laneY(vidx[mm.toId]);
       const u = msgUI[i];
-      const c = dot(x(landXT(mm)), cy, col, msgHtml(mm), msgNav(mm), u && u.hl, dagOrHoverMsg(mm.id));
+      const c = dot(x(landXT(mm)), cy, col, msgHtml(mm), msgNav(mm), u && u.hl, dagOrHoverMsg(mm.id), i);
       if (u) u.dot = c;
     });
 
