@@ -59,8 +59,23 @@ PY
     # the link.
     [ ! -e "$ROMP_DIR/claude/skills/romp-postal/romp-postal" ]
     [ -L "$HOME/.claude/skills/romp-postal" ]
-    [ ! -e "$ROMP_DIR/claude/skills/manager/manager" ]
-    [ -L "$HOME/.claude/skills/manager" ]
+}
+
+@test "install.sh: the retired bundled manager skill unlinks ONLY when it points into this repo" {
+    # The manager skill moved to the user's dotfiles 2026-08-23 (romp ships primitives; workflows
+    # live outside). The dotfiles successor claims the SAME ~/.claude/skills/manager name, so the
+    # upgrade cleanup must remove a link into $ROMP_DIR and leave any other target alone — a plain
+    # unlink here would delete the successor the moment a user reinstalls romp.
+    mkdir -p "$HOME/.claude/skills"   # the hermetic HOME starts empty; ln needs the parent
+    ln -s "$ROMP_DIR/claude/skills/manager" "$HOME/.claude/skills/manager"
+    run bash "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ ! -e "$HOME/.claude/skills/manager" ] && [ ! -L "$HOME/.claude/skills/manager" ]
+    mkdir -p "$HOME/dotfiles-skills/manager"
+    ln -s "$HOME/dotfiles-skills/manager" "$HOME/.claude/skills/manager"
+    run bash "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [ -L "$HOME/.claude/skills/manager" ]   # the dotfiles successor link survives the re-run
 }
 
 @test "install.sh: upgrading unlinks the retired romp skill, leaving no dangling link" {

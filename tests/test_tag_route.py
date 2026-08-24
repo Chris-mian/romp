@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""GET /views + POST /group (the user 2026-08-23, manager/worker workflow): the worker roster IS a
-session group, so an agent reads the views blob over GET /views and keeps ONE group current over
-POST /group. NOT the setTimelineViews WS op re-exposed — that op replaces the whole blob, and an
-agent replaying a stale read would clobber the active view and every group it never looked at;
-/group is a targeted merge on one NAMED group (_edit_group): live names resolve to sids, opaque
+"""GET /views + POST /tag (the user 2026-08-23, manager/worker workflow): the worker roster IS a
+session tag, so an agent reads the views blob over GET /views and keeps ONE tag current over
+POST /tag. NOT the setTimelineViews WS op re-exposed — that op replaces the whole blob, and an
+agent replaying a stale read would clobber the active view and every tag it never looked at;
+/tag is a targeted merge on one NAMED tag (_edit_tag): live names resolve to sids, opaque
 ids (dead sids, host-prefixed remote ids) pass through verbatim, unknown names refuse loudly.
 Drives the REAL Handler over HTTP (the test_new_route_prefs.py pattern). Synthetic only."""
 import json
@@ -35,7 +35,7 @@ DEAD = "33333333-4444-5555-6666-777777777777"                        # a sid no 
 REMOTE = "TESTHOST:11111111-2222-3333-4444-555555555555"             # a host-prefixed remote id
 
 
-class GroupRoute(unittest.TestCase):
+class TagRoute(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), km.Handler)
@@ -65,7 +65,7 @@ class GroupRoute(unittest.TestCase):
 
     def _post(self, body):
         req = urllib.request.Request(
-            "http://127.0.0.1:%d/group" % self.port, data=json.dumps(body).encode(),
+            "http://127.0.0.1:%d/tag" % self.port, data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json",
                      "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
         try:
@@ -84,13 +84,13 @@ class GroupRoute(unittest.TestCase):
     def test_get_views_serves_the_normalized_default(self):
         st, v = self._views()
         self.assertEqual(st, 200)
-        self.assertEqual(v, {"active": "all", "hidden": [], "groups": []})
+        self.assertEqual(v, {"active": "all", "hidden": [], "tags": []})
 
     def test_create_resolves_a_live_name_and_mints_the_ui_id_shape(self):
         st, r = self._post({"name": "pool", "add": ["web"]})
         self.assertEqual(st, 200)
         self.assertTrue(r.get("ok"), r)
-        g = r.get("group") or {}
+        g = r.get("tag") or {}
         self.assertRegex(g.get("id") or "", r"^g[0-9a-z]+$",
                          "the UI's Date.now-base36 mint shape — one id shape either birthplace")
         self.assertEqual(g.get("name"), "pool")
@@ -100,36 +100,36 @@ class GroupRoute(unittest.TestCase):
     def test_sids_and_remote_ids_pass_through_verbatim(self):
         st, r = self._post({"name": "mixed", "add": [DEAD, REMOTE]})
         self.assertTrue(r.get("ok"), r)
-        self.assertEqual(r["group"]["members"], sorted([DEAD, REMOTE]),
+        self.assertEqual(r["tag"]["members"], sorted([DEAD, REMOTE]),
                          "opaque ids stored as sent — the blob's own contract")
 
     def test_remove_drops_a_member_even_a_dead_one_by_sid(self):
         st, r = self._post({"name": "pool", "add": ["web", DEAD]})
-        self.assertEqual(r["group"]["members"], sorted([SID, DEAD]))
+        self.assertEqual(r["tag"]["members"], sorted([SID, DEAD]))
         st, r = self._post({"name": "pool", "remove": [DEAD]})
         self.assertTrue(r.get("ok"), r)
-        self.assertEqual(r["group"]["members"], [SID], "a dead member goes by sid")
+        self.assertEqual(r["tag"]["members"], [SID], "a dead member goes by sid")
 
-    def test_color_is_stored_on_the_group(self):
+    def test_color_is_stored_on_the_tag(self):
         self._post({"name": "pool", "add": ["web"]})
         st, r = self._post({"name": "pool", "color": "#DD42FF"})
         self.assertTrue(r.get("ok"), r)
-        self.assertEqual(r["group"]["color"], "#DD42FF")
-        self.assertEqual(r["group"]["members"], [SID], "a color edit does not clobber membership")
+        self.assertEqual(r["tag"]["color"], "#DD42FF")
+        self.assertEqual(r["tag"]["members"], [SID], "a color edit does not clobber membership")
 
-    def test_delete_removes_the_group_and_the_active_view_falls_back(self):
+    def test_delete_removes_the_tag_and_the_active_view_falls_back(self):
         gid = "g1a2b3c"
         km._set_timeline_views({"active": gid, "hidden": [],
-                                "groups": [{"id": gid, "name": "pool", "color": "",
+                                "tags": [{"id": gid, "name": "pool", "color": "",
                                             "members": [SID]}]})
         km._flags_cache.clear()
         st, v = self._views()
-        self.assertEqual(v["active"], gid, "precondition: the group IS the active view")
+        self.assertEqual(v["active"], gid, "precondition: the tag IS the active view")
         st, r = self._post({"name": "pool", "delete": True})
         self.assertTrue(r.get("ok"), r)
         self.assertTrue(r.get("deleted"))
         st, v = self._views()
-        self.assertEqual(v["groups"], [])
+        self.assertEqual(v["tags"], [])
         self.assertEqual(v["active"], "all", "the normalizer falls the orphaned active back to all")
 
     def test_an_unknown_add_name_refuses_loudly_and_writes_nothing(self):
@@ -137,10 +137,10 @@ class GroupRoute(unittest.TestCase):
         self.assertFalse(r.get("ok"))
         self.assertIn("no live session named", r.get("error") or "")
         st, v = self._views()
-        self.assertEqual(v["groups"], [], "a refused edit writes nothing — no member no session matches")
+        self.assertEqual(v["tags"], [], "a refused edit writes nothing — no member no session matches")
 
-    def test_two_same_named_groups_refuse_any_edit(self):
-        km._set_timeline_views({"active": "all", "hidden": [], "groups": [
+    def test_two_same_named_tags_refuse_any_edit(self):
+        km._set_timeline_views({"active": "all", "hidden": [], "tags": [
             {"id": "g1", "name": "dup", "color": "", "members": []},
             {"id": "g2", "name": "dup", "color": "", "members": []}]})
         km._flags_cache.clear()
@@ -148,28 +148,28 @@ class GroupRoute(unittest.TestCase):
         self.assertFalse(r.get("ok"))
         self.assertIn("rename one in the dashboard first", r.get("error") or "")
 
-    def test_the_group_cap_refuses_a_33rd_instead_of_silently_dropping_it(self):
-        groups = [{"id": "g%02d" % i, "name": "grp%02d" % i, "color": "", "members": []}
+    def test_the_tag_cap_refuses_a_33rd_instead_of_silently_dropping_it(self):
+        tags33 = [{"id": "g%02d" % i, "name": "grp%02d" % i, "color": "", "members": []}
                   for i in range(32)]
-        km._set_timeline_views({"active": "all", "hidden": [], "groups": groups})
+        km._set_timeline_views({"active": "all", "hidden": [], "tags": tags33})
         km._flags_cache.clear()
         st, r = self._post({"name": "overflow", "add": []})
         self.assertFalse(r.get("ok"))
         self.assertIn("caps at 32", r.get("error") or "",
                       "the normalizer would drop the appended 33rd SILENTLY — the route must refuse")
         st, v = self._views()
-        self.assertEqual(len(v["groups"]), 32)
-        self.assertNotIn("overflow", [g["name"] for g in v["groups"]])
+        self.assertEqual(len(v["tags"]), 32)
+        self.assertNotIn("overflow", [g["name"] for g in v["tags"]])
 
-    def test_back_to_back_creates_mint_distinct_ids_and_delete_hits_only_its_group(self):
+    def test_back_to_back_creates_mint_distinct_ids_and_delete_hits_only_its_tag(self):
         st, ra = self._post({"name": "alpha"})
         st, rb = self._post({"name": "beta"})
-        ida, idb = ra["group"]["id"], rb["group"]["id"]
+        ida, idb = ra["tag"]["id"], rb["tag"]["id"]
         self.assertNotEqual(ida, idb, "same-millisecond creates must not share an id")
         st, r = self._post({"name": "alpha", "delete": True})
         self.assertTrue(r.get("ok"), r)
         st, v = self._views()
-        self.assertEqual([g["id"] for g in v["groups"]], [idb],
+        self.assertEqual([g["id"] for g in v["tags"]], [idb],
                          "delete filters by id, so a shared id would have taken beta with it")
 
     def test_a_long_name_is_clamped_at_entry_so_it_stays_addressable(self):
@@ -178,10 +178,10 @@ class GroupRoute(unittest.TestCase):
         st, r = self._post({"name": long_name, "add": ["api"]})
         self.assertTrue(r.get("ok"), r)
         st, v = self._views()
-        self.assertEqual(len(v["groups"]), 1,
-                         "the raw name must address the stored (clamped) group — never mint a duplicate")
-        self.assertEqual(v["groups"][0]["name"], "x" * 40)
-        self.assertEqual(v["groups"][0]["members"], sorted([SID, SID2]))
+        self.assertEqual(len(v["tags"]), 1,
+                         "the raw name must address the stored (clamped) tag — never mint a duplicate")
+        self.assertEqual(v["tags"][0]["name"], "x" * 40)
+        self.assertEqual(v["tags"][0]["members"], sorted([SID, SID2]))
 
     def test_a_host_prefixed_NAME_refuses_like_any_unknown_name(self):
         st, r = self._post({"name": "pool", "add": ["TESTHOST:exp-ghost"]})
@@ -194,7 +194,7 @@ class GroupRoute(unittest.TestCase):
 
     def test_an_edit_merges_and_never_clobbers_the_rest_of_the_blob(self):
         GB = {"id": "gb", "name": "beta", "color": "#DD42FF", "members": ["s2"]}
-        km._set_timeline_views({"active": "gb", "hidden": ["s9"], "groups": [
+        km._set_timeline_views({"active": "gb", "hidden": ["s9"], "tags": [
             {"id": "ga", "name": "alpha", "color": "", "members": ["s1"]}, GB]})
         km._flags_cache.clear()
         st, r = self._post({"name": "alpha", "add": ["api"]})
@@ -202,10 +202,27 @@ class GroupRoute(unittest.TestCase):
         st, v = self._views()
         self.assertEqual(v["active"], "gb", "the active view survives the merge")
         self.assertEqual(v["hidden"], ["s9"], "the hidden list survives")
-        self.assertEqual([g for g in v["groups"] if g["id"] == "gb"], [GB],
-                         "the group the edit never looked at is untouched")
-        alpha = next(g for g in v["groups"] if g["id"] == "ga")
+        self.assertEqual([g for g in v["tags"] if g["id"] == "gb"], [GB],
+                         "the tag the edit never looked at is untouched")
+        alpha = next(g for g in v["tags"] if g["id"] == "ga")
         self.assertEqual(alpha["members"], sorted(["s1", SID2]))
+
+
+class GroupAliasSurvives(TagRoute):
+    """The pre-rename surface (same-day rename, 2026-08-23): an un-updated remote's bin/romp still
+    POSTs /group and reads the "group" response key — both stay as quiet aliases of /tag."""
+
+    def test_post_group_still_merges_and_answers_with_both_keys(self):
+        req = urllib.request.Request(
+            "http://127.0.0.1:%d/group" % self.port, data=json.dumps({"name": "legacy", "add": ["web"]}).encode(),
+            headers={"Content-Type": "application/json",
+                     "X-Romp-Token": os.environ["ROMP_SERVE_TOKEN"]})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            resp = json.loads(r.read().decode())
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["tag"]["name"], "legacy")
+        self.assertEqual(resp["group"], resp["tag"], "the pre-rename key mirrors the tag row")
+        self.assertEqual(resp["tag"]["members"], [SID], "a live name resolved through the alias route too")
 
 
 if __name__ == "__main__":
