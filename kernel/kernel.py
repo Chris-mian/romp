@@ -4494,7 +4494,22 @@ def _nudge_deferred_ok(gid, reason, now, sid=None, ev_t=None):
                    **({"evT": int(ev_t)} if ev_t else {})}
         d["deferred"] = dd
         _write_auto_nudge(d)
-    return (now - first) > NUDGE_DEFER_BACKSTOP_SECS
+    # WEDGED-REVIVER BOUND ON THE PASS EVENT, not a clock (W2c, the user 2026-08-24): the named
+    # reviver is wedged exactly when its OWNING TIER has completed a per-session pass over this fsid
+    # SINCE the deferral was minted and the reason still stands — the pass ran and did not retire it.
+    # jd.pass_watermark is this boot's per-(tier, fsid) completion stamp; a pre-restart deferral
+    # re-arms on the FIRST post-boot pass (the registry resets, never a stale stamp). While the judge
+    # tiers are PAUSED there is NO owner and the deferral holds indefinitely — the pause is the user's
+    # own gesture, and a nudge computed from unjudged state is what it exists to prevent; the UNPAUSE
+    # transition is the deciding event (the producer's next pass stamps the watermark, and this gate
+    # re-evaluates immediately). WHY_JUDGING keeps its own event (the call's finally-deregister, swept
+    # by _deferral_sweep_tick); the pass bound is belt-and-braces behind it.
+    if reason.startswith("the judge tiers are paused"):
+        return False                                 # user's own hold: no owner, no clock — the unpause re-arms
+    _sid = sid or (rec or {}).get("sid") if isinstance(rec, dict) else sid
+    _wm = max(filter(None, (jd.pass_watermark("plan", _sid), jd.pass_watermark("close", _sid))),
+              default=None) if _sid else None
+    return bool(_wm and _wm > first)
 
 
 def _stalled_goals():

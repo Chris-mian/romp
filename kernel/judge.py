@@ -698,6 +698,25 @@ _judge_ctx = threading.local()                       # per-thread: the fsid bein
 # (SourceFileLoader), so it reads `active_runs()` directly — no file, no cross-process race. Self-cleaning:
 # every call deregisters in a `finally`, so a timeout/parse-fail/exception can't leak a forever-growing bar.
 _active = {}                                          # run_id -> {"judge", "fsid", "sent"}
+_PASS_DONE = {}                                       # (tier, fsid) -> wall clock of that tier's last COMPLETED
+#                                                       per-session pass THIS BOOT. In-memory on purpose (W2c,
+#                                                       the user 2026-08-24): a restart resets it, so "the first
+#                                                       completed post-boot pass over this fsid" is the re-arm
+#                                                       event — a pre-boot deferral can never fire off a stale
+#                                                       stamp. Usage rows can't serve here: they record CALLS,
+#                                                       and a tier with no new work makes zero calls, so keying
+#                                                       the wedged-reviver bound on usage would defer forever in
+#                                                       exactly the wedged cases it exists to catch.
+
+
+def pass_done(tier, fsid):
+    """Stamp: `tier` finished its per-session pass over fsid (work done OR declined-as-no-work)."""
+    _PASS_DONE[(str(tier), str(fsid))] = time.time()
+
+
+def pass_watermark(tier, fsid):
+    """When `tier` last completed a per-session pass over fsid this boot, or None."""
+    return _PASS_DONE.get((str(tier), str(fsid)))
 _active_lock = threading.Lock()
 _active_seq = [0]
 
@@ -7159,6 +7178,7 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verb
         for fut in as_completed(futs):
             try:
                 placed += fut.result()
+                pass_done("plan", futs[fut])          # the pass over THIS fsid completed (W2c's event)
             except Exception:
                 pass
     if verbose:
@@ -9011,6 +9031,7 @@ def run_close(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, ver
         for fut in as_completed(futs):
             try:
                 n += len(fut.result())
+                pass_done("close", futs[fut])         # the pass over THIS fsid completed (W2c's event)
             except Exception:
                 pass
     if verbose:
