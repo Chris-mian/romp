@@ -4143,6 +4143,25 @@ function render() {
     else { const k = kbHoverId(hov); if (k && k !== freezeKey) freezeKey = k; }
   }
   paintFreezeBadges();   // hover-freeze: local renders while frozen re-sync the +N/-N hints (no-op unfrozen)
+  // stale-ring heal: releaseTabScope sweeps the DOCUMENT, but a card DETACHED at release (filtered
+  // out by search, say) keeps its ring and the reconcile may reattach that cached element later —
+  // with no scope active, any ring inside a card is stale; strip per render (kbMode owns its own)
+  if (!tabScopeKey && !kbMode) document.querySelectorAll(".fitem .kbd-focus").forEach((n) => n.classList.remove("kbd-focus"));
+  // keyboard-scope focus restore (the user 2026-08-24): a re-render may rebuild the focused
+  // control's element, and a rebuild must not eat keyboard focus (click-safety, applied to the
+  // keyboard). Find the control again by LOGICAL identity — class + label, then the old slot.
+  if (tabScopeKey && tabScopeSig) {
+    const card = cardElByKey(tabScopeKey);
+    const ae = document.activeElement;
+    if (!card) releaseTabScope();
+    else if (!ae || ae === document.body || !card.contains(ae)) {
+      const els = cardControls(card);
+      let i = els.findIndex((e2) => ctrlSig(e2) === tabScopeSig!.sig);
+      if (i < 0) i = Math.min(tabScopeSig.idx, els.length - 1);
+      if (i >= 0) tabScopeFocus(card, els, i);
+      else releaseTabScope();
+    }
+  }
   // FLIP-across-identity: a card whose KEY is new this render (group→solo, solo→group, umbrella absorb) has no
   // First rect of its own, so the normal FLIP can't slide it. Alias it to its PREDECESSOR's rect — the card
   // key that covered one of its goals LAST render — so it glides in from where that predecessor sat instead of
@@ -4198,7 +4217,7 @@ window.addEventListener("click", (e) => {
 // out. Every highlight + action reuses the mouse path — card cursor = the same hoverAskId/applyFocus/showAskPath
 // the hover uses; element cursor dispatches a real mouseenter (so zone highlights + timeline light exactly as on
 // hover) and Enter calls the element's own click() — so the keyboard can never drift from the mouse.
-const KB_EL_SEL = ".fcard-title.nav,.fask-distill-link,.fname,.fask-apiRetry,.fask-revive,.fdismiss,.fcheck .lz-nav,.fask-delegation";
+const KB_EL_SEL = ".fcard-title.nav,.fask-distill-link,.fname,.fask-apiRetry,.fask-revive,.fdismiss,.fask-secbtn,.fask-bellbtn,.fcheck .lz-nav,.fask-delegation";
 function kbCardEls(): HTMLElement[] {
   // VISUAL order, not DOM order (review 2026-08-24): the columns re-sequence via --col-order — in
   // both layouts since the drag extended — so the arrow cursor sorts cards by their column's
@@ -4348,6 +4367,7 @@ let freezeKey: string | null = null;     // the hovered card's focus key, or nul
 let pendingFeedPayload: any = null;      // newest queued payload; older ones are superseded unseen
 function freezeEnter(key: string): void { freezeKey = key; }
 function freezeLeave(key: string): void {
+  if (tabScopeKey === key) releaseTabScope();   // hover-away releases the keyboard scope too
   if (freezeKey !== key) return;
   freezeKey = null;
   flushFreeze();
@@ -4366,7 +4386,8 @@ function flushFreeze(): void {
     if (m) applyFeedPayload(m);          // render() repaints the badges away (nothing pending)
   });
 }
-window.addEventListener("blur", () => { freezeKey = null; flushFreeze(); });   // backstop: focus left the pane
+window.addEventListener("blur", () => { releaseTabScope(); freezeKey = null; flushFreeze(); });   // backstop:
+//   focus left the pane — BOTH gate holders release (the keyboard scope has no pointer to leave with)
 
 // The queued payload's would-be card list — the same pre-filters applyFeedPayload will apply,
 // WITHOUT its bookkeeping side effects (a hint must never mutate pendingCleared or the disclosure
@@ -4420,6 +4441,77 @@ function paintFreezeBadges(): void {
     put(h, groupedNow ? d.sess[h.getAttribute("data-fsid") || ""] : undefined);
   });
 }
+
+// ── CARD KEYBOARD SCOPE (the user 2026-08-24) ──────────────────────────────────────────────────
+// Tab, pressed while a card is hovered (a click puts the pointer there too) or held by the keyboard
+// card cursor, scopes to THAT card: it cycles every visible control on it — section pills, Clear,
+// retries, the bell, follow-up, sub-goal links — wrapping at the ends; Enter/Space activate; the
+// accent .kbd-focus ring marks the stop. Escape or the pointer leaving the card releases back to
+// normal page order. Focus survives the feed's constant re-renders by LOGICAL control identity
+// (class + label, then the old slot) — the click-safety rule applied to keyboard focus. While focus
+// is inside, the card holds the payload gate hover-freeze uses, so the board cannot move the card
+// being keyed (same gate as the pointer).
+let tabScopeKey: string | null = null;
+let tabScopeSig: { sig: string; idx: number } | null = null;
+function cardElByKey(key: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-key="' + (key.startsWith("g:") ? key : "a:" + key) + '"]');
+}
+function cardControls(card: HTMLElement): HTMLElement[] {
+  // the card's own DOM order IS its visual reading order — title row, pills, tail controls
+  return Array.from(card.querySelectorAll<HTMLElement>(KB_EL_SEL)).filter((e) => e.offsetParent !== null);
+}
+function ctrlSig(e: HTMLElement): string {
+  return e.className + "|" + (e.getAttribute("aria-label") || e.textContent || "").trim().slice(0, 24);
+}
+function tabScopeFocus(card: HTMLElement, els: HTMLElement[], i: number): void {
+  document.querySelectorAll(".kbd-focus").forEach((n) => n.classList.remove("kbd-focus"));
+  const el2 = els[i];
+  if (!el2) return;
+  tabScopeKey = kbHoverId(card);
+  tabScopeSig = { sig: ctrlSig(el2), idx: i };
+  if (el2.tabIndex < 0 && !el2.matches("button, a, input")) el2.tabIndex = -1;   // focusable, outside page order
+  el2.classList.add("kbd-focus");
+  el2.focus();
+}
+function releaseTabScope(): void {
+  if (!tabScopeKey) return;
+  tabScopeKey = null;
+  tabScopeSig = null;
+  document.querySelectorAll(".kbd-focus").forEach((n) => n.classList.remove("kbd-focus"));
+  const ae = document.activeElement as HTMLElement | null;
+  if (ae && ae.closest(".fitem")) ae.blur();
+  if (!freezeKey) flushFreeze();   // the scope held the payload gate — releasing applies the queue
+}
+window.addEventListener("keydown", (e) => {
+  if (document.getElementById("feed-modal")) return;   // the modal owns keys while it is open
+  if (e.key === "Escape" && tabScopeKey) {
+    e.preventDefault(); e.stopPropagation();
+    releaseTabScope();
+    return;
+  }
+  if (e.key === "Tab") {
+    let card = tabScopeKey ? cardElByKey(tabScopeKey) : null;
+    if (!card) card = (freezeKey ? cardElByKey(freezeKey) : null) || kbCardEl;   // hover/click, else the kb cursor
+    if (!card || !card.isConnected) return;
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && !card.contains(ae)) return;   // typing elsewhere
+    const els = cardControls(card);
+    if (!els.length) return;
+    e.preventDefault(); e.stopPropagation();
+    let i = ae ? els.indexOf(ae) : -1;
+    i = e.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1);   // WRAP at the ends
+    tabScopeFocus(card, els, i);
+    return;
+  }
+  if ((e.key === "Enter" || e.key === " ") && tabScopeKey) {
+    const ae = document.activeElement as HTMLElement | null;
+    const card = cardElByKey(tabScopeKey);
+    if (!ae || !card || !card.contains(ae)) return;
+    if (ae.matches("button, a, input")) return;   // native activation already fires the click
+    e.preventDefault();
+    ae.click();                                   // EXACTLY a mouse click on that control
+  }
+}, true);
 
 // The feed payload's full application — model swap, bookkeeping, render. One body, two callers:
 // the message handler applies live when no card is hovered; flushFreeze applies the newest queued
@@ -4516,7 +4608,7 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (m.type === "feed") {
     // HOVER-FREEZE: a hovered card must not move on screen — queue the payload (newest wins) and
     // hint the deferred churn on the headers instead; mouseleave/blur flush it (see freezeEnter).
-    if (freezeKey) { pendingFeedPayload = m; paintFreezeBadges(); return; }
+    if (freezeKey || tabScopeKey) { pendingFeedPayload = m; paintFreezeBadges(); return; }
     applyFeedPayload(m);
   } else if (m.type === "hoverCards") {
     // rail-dot hover in the CHAT panel → white-outline the card(s) built from
