@@ -658,7 +658,7 @@ EOF
     _romp_cmd "romp fork <parent> <name>"  -            "Branch a session into a new parallel one (parent untouched; --at <uuid> picks the cut)"
     _romp_cmd "romp rename <session> <name>" -          "Rename a session (uuid-keyed: mailboxes, goals and history all follow)"
     _romp_cmd "romp color <session> [<#hex|1-9>]" -     "Recolor a session's identity swatch (palette hex or slot 1-9; no color arg reads bg/fg)"
-    _romp_cmd "romp tag [<name>] [--add ...]" -         "Session tags: bare lists them; <name> with --add/--remove/--color/--delete merges one (a tagged session leaves the default view)"
+    _romp_cmd "romp tag [<name>] [--add ...]" -         "Session tags: bare lists them; <name> with --add/--remove/--color/--delete merges one (a tagged session leaves the untagged view)"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> [--tag <label>] <text>" - "Hand a session a message; scripts/cron SHOULD pass --tag so it renders machine-sent, not as your typed words"
     _romp_cmd "romp interrupt <session>"   -            "Interrupt a session's current turn"
@@ -933,7 +933,7 @@ for r in rows:
 fi
 
 # Session tags from the CLI (the user 2026-08-23; renamed from "group" the same day: a tag marks a
-# SPECIALIZED session, excluded from the default view and shown under its tag — the accurate name.
+# SPECIALIZED session, excluded from the untagged view and shown under its tag — the accurate name.
 # The manager/worker workflow keeps its worker roster as a tag, all one identity color, and an agent
 # can mint/color/fill a tag programmatically, sessions it just spawned included). Bare / --json READS
 # GET /views; bare maps member sids to live names via GET /sessions and prints an unmappable id

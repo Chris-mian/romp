@@ -1,6 +1,7 @@
 // The timeline's corner control panel (the user 2026-08-18; filter-chip form + TAG model
 // 2026-08-23): "Filter ▾" in the bottom-left corner — the strip under the lane gutter, left of the
-// time labels. The dropdown picks the active VIEW (default = UNTAGGED sessions / the named tags),
+// time labels. The dropdown picks the active VIEW (All — every session minus hidden, the default
+// since 2026-08-24 — / the (untagged) built-in / the named tags),
 // holds New tag… / Sessions & tags…, and carries the two timeline display toggles (collapse idle
 // gaps, active only) so they finally work in every host. The dialog is TAG-CENTRIC: one row per
 // session wearing its tag chips (✕ leaves a tag; [+] joins or mints one) — a tagged session leaves
@@ -20,26 +21,31 @@ const { TimelinePanel, viewVisible, viewLabel, viewMoreCount, viewToggleHidden, 
 const G = { id: "g1", name: "pool", color: "#DD42FF", members: ["s2", "s3"] };
 const V = (active: string, hidden: string[] = [], tags: any[] = [G]) => ({ active, hidden, tags });
 
-test("executed: the default view shows UNTAGGED minus hidden; a tag view its members exactly", () => {
+test("executed: All shows every session minus hidden; untagged the tagless; a tag view its members", () => {
   assert.equal(viewVisible(null, "s1"), true, "no blob yet → everything shows");
-  assert.equal(viewVisible(V("all", ["s9"]), "s9"), false, "hidden");
-  assert.equal(viewVisible(V("all"), "s2"), false, "TAGGED → out of the default view (the user 2026-08-23)");
+  assert.equal(viewVisible(V("all", ["s9"]), "s9"), false, "hidden — All respects the deliberate hide");
+  assert.equal(viewVisible(V("all"), "s2"), true, "TAGGED → All still shows it (the user 2026-08-24)");
   assert.equal(viewVisible(V("all"), "s1"), true, "untagged → shown");
+  assert.equal(viewVisible(V("untagged", ["s9"]), "s9"), false, "hidden hides in the untagged view too");
+  assert.equal(viewVisible(V("untagged"), "s2"), false, "TAGGED → out of the untagged view (the user 2026-08-23)");
+  assert.equal(viewVisible(V("untagged"), "s1"), true, "tagless → the untagged view shows it");
   assert.equal(viewVisible(V("g1", ["s2"]), "s2"), true, "a tag view shows its members, hidden or not");
   assert.equal(viewVisible(V("g1"), "s1"), false, "a tag view shows exactly its members");
   assert.equal(viewVisible(V("ghost", [], []), "s1"), true, "an orphaned active falls back open");
-  assert.equal(viewVisible({ active: "all", groups: [G] }, "s2"), false,
+  assert.equal(viewVisible({ active: "untagged", groups: [G] }, "s2"), false,
     "the legacy `groups` key an un-updated kernel pushes reads identically");
 });
 
 test("executed: the trigger label and the N-more cue (live sessions outside the view)", () => {
-  // the default view is named for what it shows (the user 2026-08-24): "(untagged)", parenthesized
-  // as the built-in it is — "default" said nothing about the rule
-  assert.equal(viewLabel(null), "(untagged)");
+  // the views are named for what they show: "All" (every session minus hidden — the default since
+  // 2026-08-24) and "(untagged)", parenthesized as the built-in it is
+  assert.equal(viewLabel(null), "All");
+  assert.equal(viewLabel(V("untagged")), "(untagged)");
   assert.equal(viewLabel(V("g1")), "pool");
   const sessions = [{ id: "s1", live: true }, { id: "s2", live: true }, { id: "s4", live: false }];
   assert.equal(viewMoreCount(V("g1"), sessions), 1, "s1 is live and outside; dead s4 never counts");
-  assert.equal(viewMoreCount(V("all", ["s1"]), sessions), 2, "hidden live s1 AND tagged live s2 count; dead s4 never");
+  assert.equal(viewMoreCount(V("all", ["s1"]), sessions), 1, "hidden live s1 counts under All; tagged s2 shows now");
+  assert.equal(viewMoreCount(V("untagged", ["s1"]), sessions), 2, "hidden s1 AND tagged s2 sit outside untagged");
 });
 
 test("executed: an optimistic edit holds until the kernel echoes it — then yields to authority", () => {
@@ -81,14 +87,14 @@ test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separ
   assert.match(SRC, /grp\.addEventListener\('pointerdown', \(e\) => \{\n\s*e\.preventDefault\(\); e\.stopPropagation\(\);\n\s*const nv = JSON\.parse\(JSON\.stringify\(v\)\); nv\.active = 'all'; this\._setViews\(nv\);/);
   // OUTLINE only on the page's own ground (the tinted fill was too much — the user 2026-08-24),
   // and the ✕ is dim and SEPARATE, the composer context chip's read — never baked into the name
-  assert.match(SRC, /fill: 'transparent',\n\s*stroke: g\.color \|\| '#cccccc', 'stroke-width': 1/);
+  assert.match(SRC, /fill: 'transparent',\n\s*stroke: gcol, 'stroke-width': 1/);
   assert.match(SRC, /y: y - 13, width: cw, height: 18, rx: 9,/, "taller chip");
   assert.match(SRC, /cx\.textContent = '✕';/);
   assert.match(SRC, /fill: MODEL_FG, opacity: 0\.75/);
-  assert.match(SRC, /fill: g\.color \|\| '#cccccc', 'font-weight': 650/);
+  assert.match(SRC, /fill: gcol, 'font-weight': 650/);
   assert.match(SRC, /click to remove the filter \(back to the default view\)/);
-  // no chip on the default view — nothing to remove
-  assert.match(SRC, /const active = !!g && v\.active && v\.active !== 'all';/);
+  // no chip on All — the unfiltered default; the untagged view IS a filter now, so it wears one
+  assert.match(SRC, /const active = !!v\.active && v\.active !== 'all' && \(!!g \|\| v\.active === 'untagged'\);/);
   // …and the bottom strip grew so the taller chip has air
   assert.match(SRC, /bottom: 27 \}/);
 });
@@ -145,10 +151,14 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   assert.match(SRC, /const ft = LANE_TOGGLES\.find\(\(t\) => t\.flag === 'hideFromFeed'\);/);
   assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.hideFromFeed = next;/,
     "the same optimistic sticky flags the lane gear uses");
-  // the menu items say so: New tag… / Sessions & tags… / the (untagged) default
+  // the menu items say so: All first (the default), (untagged) second, then New tag… / Sessions & tags…
   assert.match(SRC, /item\('New tag…', \{ dim: true \}\)/);
   assert.match(SRC, /item\('Sessions & tags…', \{ dim: true \}\)/);
-  assert.match(SRC, /item\('\(untagged\)', \{ current: !v\.active \|\| v\.active === 'all' \}\)/);
+  assert.match(SRC, /item\('All', \{ current: !v\.active \|\| v\.active === 'all' \}\)/);
+  assert.match(SRC, /item\('\(untagged\)', \{ current: v\.active === 'untagged' \}\)/);
+  assert.match(SRC, /item\('All',[\s\S]{0,300}item\('\(untagged\)',/, "All sits ABOVE (untagged) in the menu");
+  assert.match(SRC, /item\('\(untagged\)',[\s\S]{0,200}for \(const tg of viewTags\(v\)\)/,
+    "…and the tag rows come AFTER both built-ins — the DoD's menu order, pinned end to end");
 });
 
 test("the N-more count opens the views menu — what am I not seeing answers itself (the user 2026-08-24)", () => {
