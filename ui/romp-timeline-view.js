@@ -1019,7 +1019,22 @@ class TimelinePanel {
     return [24, 24, 24];
   }
 
-  _font(b) { this._mc.font = (b ? '700 ' + BADGE_FS + 'px ' : '650 12px ') + FONT; }
+  // the family the svg's text ACTUALLY renders in — inherited from the host (VS Code, Obsidian and
+  // the web page each set their own UI font; svg text carries no family of its own). Measuring with
+  // the hardcoded FONT stack drifted from rendered widths wherever the host font differs — the
+  // gutter width and the corner chip's box/ellipsis are sized from these measures. Resolved once
+  // per panel: a host's UI font does not change under a live pane. FONT stays the fallback for a
+  // measure before the wrap is styled (and for bare-node tests, where getComputedStyle is absent).
+  _fontFace() {
+    if (!this._fontFaceCache) {
+      try {
+        this._fontFaceCache = (this.wrap && typeof getComputedStyle === 'function'
+          && getComputedStyle(this.wrap).fontFamily) || FONT;
+      } catch (e) { this._fontFaceCache = FONT; }
+    }
+    return this._fontFaceCache;
+  }
+  _font(b) { this._mc.font = (b ? '700 ' + BADGE_FS + 'px ' : '650 12px ') + this._fontFace(); }
   labelWidth(s) { this._font(false); return this._mc.measureText(s || '').width; }
   badgeWidth(s) { this._font(true); return this._mc.measureText(s || '').width; }
   ctxWidth(s) { this._mc.font = '600 11px ' + FONT; return this._mc.measureText(s || '').width; }
@@ -2402,7 +2417,14 @@ class TimelinePanel {
     const fits = (n) => width(n) <= this.M.left - PADL - 6;
     while (active && name.length > 3 && !fits(name)) name = name.slice(0, -2) + '…';
     const y = axisY + 14;
-    const t = el('text', { x: PADL, y, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG });
+    // the whole corner line wears the LANE LABELS' typography (the user 2026-08-24, who read the
+    // chip as the wrong font): no explicit family — inherit the host font exactly like the lane
+    // names above, which carry none. The old explicit FONT override rendered the line in the
+    // fallback stack while the lanes wore the host's UI font, so at the same nominal 12px the chip
+    // read visibly bigger. Sizes/weights already match the lanes (12px; chip name at the lane-name
+    // 650), and labelWidth measures in the same inherited family (_fontFace), so the box/ellipsis
+    // math stays in step with what renders.
+    const t = el('text', { x: PADL, y, 'font-size': 12, fill: MODEL_FG });
     t.textContent = 'Filter ▾';
     t.setAttribute('style', 'cursor:pointer;user-select:none;');
     t.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(t); });
@@ -2426,13 +2448,12 @@ class TimelinePanel {
         fill: 'transparent',
         stroke: gcol, 'stroke-width': 1 });
       grp.appendChild(box);
-      const ct = el('text', { x: x + PADH, y, 'font-size': 12, 'font-family': FONT,
-        fill: gcol, 'font-weight': 650 });
+      const ct = el('text', { x: x + PADH, y, 'font-size': 12, fill: gcol, 'font-weight': 650 });
       ct.textContent = name;
       ct.setAttribute('style', 'user-select:none;');
       grp.appendChild(ct);
       const cx = el('text', { x: x + PADH + this.labelWidth(name) + XGAP, y, 'font-size': 11,
-        'font-family': FONT, fill: MODEL_FG, opacity: 0.75 });
+        fill: MODEL_FG, opacity: 0.75 });
       cx.textContent = '✕';
       cx.setAttribute('style', 'user-select:none;');
       grp.appendChild(cx);
@@ -2448,7 +2469,7 @@ class TimelinePanel {
       x += cw;
     }
     if (more) {
-      const m = el('text', { x: x + GAP, y, 'font-size': 12, 'font-family': FONT, fill: MODEL_FG, opacity: 0.7 });
+      const m = el('text', { x: x + GAP, y, 'font-size': 12, fill: MODEL_FG, opacity: 0.7 });
       m.textContent = tailStr;   // a filtered-out live session is always one glance away
       // …and one CLICK away (the user 2026-08-24): the count opens the same views menu, so "what am
       // I not seeing?" answers itself with the list of tags to switch to
