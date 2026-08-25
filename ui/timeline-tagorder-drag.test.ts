@@ -123,4 +123,13 @@ test("executed: the ordering rule, both mirrors — tagOrder governs, unlisted n
   v.tagOrder = ["remotepool", "gamma"];
   assert.deepEqual(viewTagUnion(v).map((u: any) => u.name), ["remotepool", "gamma", "alpha", "beta"],
     "listed names lead in order; unlisted keep natural order after (stable sort)");
+  // a user-typed name CAN be a prototype key — the lookup must be null-prototype (found in
+  // adversarial review 2026-08-25: `"constructor" in {}` is true via the chain, so a tag named
+  // constructor read as always-listed/always-picked through a plain object)
+  const proto = { active: "all", tags: [
+    { id: "p1", name: "constructor", color: "#DD42FF", members: [] },
+    { id: "p2", name: "zed", color: "#4EC9B0", members: [] },
+  ], tagOrder: ["zed"] };
+  assert.deepEqual(viewTagUnion(proto).map((u: any) => u.name), ["zed", "constructor"],
+    "a prototype-key name sorts as UNLISTED (after the ordered), never as index-of-Function");
 });

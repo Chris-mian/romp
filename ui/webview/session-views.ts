@@ -32,7 +32,10 @@ export interface SessionViews {
 // The chat's tab-menu Tags section reads and edits through this exact shape.
 export interface TagUnion { name: string; color: string; members: string[]; ids: string[]; localId: string | null; remotes: SessionTag[] }
 export function viewTagUnion(views: SessionViews | null | undefined): TagUnion[] {
-  const out: TagUnion[] = [], byName: Record<string, TagUnion> = {};
+  // byName is null-prototype: a user-typed tag NAME can be "constructor"/"toString", which a
+  // plain {} resolves through the prototype chain (the lookup returned a Function and the
+  // builder crashed on it — adversarial review 2026-08-25)
+  const out: TagUnion[] = [], byName: Record<string, TagUnion> = Object.create(null);
   for (const t of viewTags(views)) {
     const key = t.name || "tag";
     const g = byName[key] || (byName[key] = { name: key, color: "", members: [], ids: [], localId: null, remotes: [] });

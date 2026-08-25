@@ -45,7 +45,11 @@ function viewTags(views) { return (views && (views.tags || views.groups)) || [];
 // stored duplicates stay separate under the hood (no automatic store merges — the anti-clobber
 // rule); this is PRESENTATION, and the mirrors (session-views.ts, kernel _view_visible) agree.
 function viewTagUnion(views) {
-  const out = [], byName = {};
+  // byName is null-prototype: a user-typed tag NAME can be "constructor"/"toString", which a
+  // plain {} resolves through the prototype chain — the lookup returned a Function and the
+  // union builder crashed on it (found in adversarial review 2026-08-25; the ordering lookups
+  // below wear the same guard)
+  const out = [], byName = Object.create(null);
   for (const t of viewTags(views)) {
     const g = byName[t.name] || (byName[t.name] = { name: t.name || 'tag', color: '', members: [],
                                                     ids: [], localId: null, homes: [], remotes: [] });
@@ -71,7 +75,9 @@ function viewTagUnion(views) {
   // here renders through this union, so the order flows everywhere from this line.
   const ord = (views && views.tagOrder) || [];
   if (ord.length) {
-    const ix = {};
+    // null-prototype lookup: a user-typed tag NAME can be "constructor"/"toString", which a plain
+    // {} would resolve through the prototype chain (the TS twin uses a Map for the same reason)
+    const ix = Object.create(null);
     ord.forEach((n, i) => { if (!(n in ix)) ix[n] = i; });
     out.sort((a, b) => (a.name in ix ? ix[a.name] : ord.length) - (b.name in ix ? ix[b.name] : ord.length));
   }
@@ -2773,7 +2779,7 @@ class TimelinePanel {
     const chips = [];
     if (active) {
       if (lens.none) chips.push({ label: 'no tags', color: MODEL_FG, pick: 'none' });
-      const picked = {};
+      const picked = Object.create(null);   // null-prototype: a tag named "constructor" must not read as picked
       (lens.tags || []).forEach((n) => { picked[n] = true; });
       for (const u of unions) {
         if (!picked[u.name]) continue;
@@ -3120,7 +3126,7 @@ class TimelinePanel {
                 names.splice(toIdx, 0, names.splice(fromIdx, 1)[0]);
                 const nv = JSON.parse(JSON.stringify(this._curViews()));
                 nv.tagOrder = names;                       // the union display order, remote-homed names included
-                const pos = {};
+                const pos = Object.create(null);           // null-prototype (the prototype-key name hazard)
                 names.forEach((n, i) => { pos[n] = i; });
                 nv.tags = viewTags(nv).slice().sort((a, b) =>
                   ((a.name in pos) ? pos[a.name] : names.length) - ((b.name in pos) ? pos[b.name] : names.length));

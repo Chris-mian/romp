@@ -165,4 +165,8 @@ test("executed: the union renders in the USER'S order — tagOrder governs, remo
   // the echo key carries the order, so an optimistic drag clears on the kernel's echo and never flaps
   assert.notEqual(viewsKey({ ...v, tagOrder: ["remotepool", "alpha"] }), viewsKey(v),
     "tagOrder is part of the canonical echo compare");
+  // a user-typed name CAN be a prototype key (adversarial review 2026-08-25): the name-keyed
+  // builder crashed on {}["constructor"] resolving to Function — null-prototype lookups now
+  assert.deepEqual(viewTagUnion({ tags: [{ id: "p1", name: "constructor", members: [] }], tagOrder: ["constructor"] })
+    .map((u) => u.name), ["constructor"], "a prototype-key tag name builds and orders cleanly");
 });
