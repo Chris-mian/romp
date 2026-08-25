@@ -203,6 +203,23 @@ class ThreadForkInvisibility(unittest.TestCase):
         self.assertEqual(reg.get("forkOf"), PARENT)
         self.assertEqual(reg.get("forkAt"), "a1")
 
+    def test_fast_mode_rides_the_fork_like_model_and_effort(self):
+        # the user 2026-08-25: a comment made from an Opus-high-FAST session came up slow — the fork
+        # reg seeded mode/effort/model from the parent but never fast; fast_opt reads reg["fast"] at
+        # connect, so inheriting it here makes the thread fast from its first frame
+        preg_path = Path(self.td) / "sdk" / (PARENT + ".json")
+        preg = json.loads(preg_path.read_text())
+        preg["fast"] = True
+        preg_path.write_text(json.dumps(preg))
+        self.be.fork("thread-x", PARENT, "a1", sid=THREAD, thread_of=PARENT)
+        reg = json.loads((Path(self.td) / "sdk" / (THREAD + ".json")).read_text())
+        self.assertTrue(reg.get("fast"), "a fast parent's new thread is fast")
+
+    def test_a_slow_parent_stays_slow(self):
+        self.be.fork("thread-x", PARENT, "a1", sid=THREAD, thread_of=PARENT)
+        reg = json.loads((Path(self.td) / "sdk" / (THREAD + ".json")).read_text())
+        self.assertNotIn("fast", reg, "no inherited fast key when the parent never asked for it")
+
     def test_a_plain_fork_still_writes_its_names_entry(self):
         self.be.fork("fork-x", PARENT, "a1", sid=THREAD)
         self.assertTrue((Path(self.td) / "names" / THREAD).exists())

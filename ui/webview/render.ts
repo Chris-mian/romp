@@ -5917,16 +5917,24 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
 
 // The standard romp loader's inner anatomy — wordmark + spinning swirl + pulsing dots + caption
 // (the boot/pane .rl-* styles already on this page) — shared by every in-page wait that wears it
-// (the revive loader, the comment popover's boot), per the loading-states rule: one treatment.
-function rompLoaderInner(caption: string): HTMLElement {
+// (the revive loader, the loading-tab wait, the comment popover's boot), per the loading-states
+// rule: one treatment, parameterized rather than forked. wordmark:false (the user 2026-08-25,
+// POPOVER-ONLY: "don't write the whole text of romp — just the spinning logo") keeps the spinning
+// swirl + dots + caption and drops the R-o-m-p letters; everywhere else keeps the full treatment.
+function rompLoaderInner(caption: string, opts?: { wordmark?: boolean }): HTMLElement {
   const inner = el("div", "rl-in");
   const word = el("div", "rl-word");
-  const r = el("span", ""); (r as HTMLElement).style.color = "#1EA1EB"; r.textContent = "R";
   const swirl = el("img", "rl-o") as HTMLImageElement;
-  swirl.src = mediaSrc("romp-swirl-o.svg"); swirl.alt = "o"; swirl.onerror = () => swirl.remove();
-  const mm = el("span", ""); (mm as HTMLElement).style.color = "#54B204"; mm.textContent = "m";
-  const p = el("span", ""); (p as HTMLElement).style.color = "#4EA8A9"; p.textContent = "p";
-  word.append(r, swirl, mm, p);
+  swirl.src = mediaSrc("romp-swirl-o.svg"); swirl.alt = ""; swirl.onerror = () => swirl.remove();
+  if (opts?.wordmark === false) {
+    word.appendChild(swirl);
+  } else {
+    const r = el("span", ""); (r as HTMLElement).style.color = "#1EA1EB"; r.textContent = "R";
+    swirl.alt = "o";
+    const mm = el("span", ""); (mm as HTMLElement).style.color = "#54B204"; mm.textContent = "m";
+    const p = el("span", ""); (p as HTMLElement).style.color = "#4EA8A9"; p.textContent = "p";
+    word.append(r, swirl, mm, p);
+  }
   const dots = el("div", "rl-dots");
   dots.append(el("i", ""), el("i", ""), el("i", ""));
   const cap = el("div", "revive-cap");
@@ -6425,10 +6433,12 @@ function openCommentComposer(sid: string, uuid: string, exact: string, x: number
   renderCommentPopover();
 }
 
-function openCommentPopover(sid: string, tid: string, x?: number, y?: number): void {
+function openCommentPopover(sid: string, tid: string, _x?: number, _y?: number): void {
   openCommentKey = { sid, tid };
   pendingCommentAnchor = null;
-  if (x != null && y != null) commentPopPos = { x, y };
+  // click coords no longer seed the position (the user 2026-08-25): a THREAD popover opens at the
+  // fixed right-aligned geometry below; only a real drag (commentPopPos) parks it elsewhere. The
+  // CREATE composer (openCommentComposer) still opens at the selection point — a different gesture.
   vscodeApi?.postMessage({ type: "commentSeen", id: sid, tid });
   const th = (commentThreads.get(sid) || []).find((t) => t.tid === tid);
   if (th) th.unread = false;                    // optimistic; the kernel's watermark reconciles
@@ -6471,7 +6481,11 @@ function openCommentThread(): { sid: string; th: CommentThread } | null {
  *  frame-driven refresh so an update never rebuilds the composer under the user's caret. */
 function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): void {
   const prevScroll = list.scrollTop;
-  const atTail = list.scrollTop >= list.scrollHeight - list.clientHeight - 8;
+  // the slack rule (the user 2026-08-25, same word as the chat's appendActive): while the thread's
+  // content hasn't overflowed the fixed box, streaming writes in place — no follow, no jump; once
+  // overflowing, the at-tail stick behaves as before
+  const overflowed = list.scrollHeight > list.clientHeight + 2;
+  const atTail = overflowed && list.scrollTop >= list.scrollHeight - list.clientHeight - 8;
   list.replaceChildren();
   const pend = prunePending(commentPending.get(th.tid) || [], th.msgs);
   commentPending.set(th.tid, pend);
@@ -6484,7 +6498,7 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): voi
   // kernel) can't trap the loader.
   if (!evs.length && th.status === "open" && !th.error && cmtBootHolds(th.tid)) {
     const boot = el("div", "cmt-boot");
-    boot.appendChild(rompLoaderInner("opening the thread…"));
+    boot.appendChild(rompLoaderInner("opening the thread…", { wordmark: false }));
     list.appendChild(boot);
     for (const pb of pend) {
       const n = commentMsgEl("you", pb.text);
@@ -6965,8 +6979,17 @@ function renderCommentPopover(): void {
     });
     ro.observe(pop);
   }
+  // OPEN GEOMETRY (the user 2026-08-25), THREAD mode: 70% of the chat pane's width with the RIGHT
+  // edge on the chat's right edge, 60% of the pane's height — and the size is FIXED from open:
+  // streaming text fills within (.cmt-msgs flexes and scrolls; the box never reflows on content
+  // events — the auto-expand was the jarring part). Manual resize (resize: both) still hands the
+  // user control, and a dragged position (commentPopPos) still wins over the default placement.
+  // The CREATE composer keeps its natural size at the selection point — a different gesture.
+  if (th && !pop.style.width) { pop.style.width = Math.round(window.innerWidth * 0.7) + "px"; }
+  if (th && !pop.style.height) { pop.style.height = Math.round(window.innerHeight * 0.6) + "px"; }
   const r = pop.getBoundingClientRect();
-  const px = Math.max(8, Math.min(commentPopPos?.x ?? (window.innerWidth - r.width) / 2, window.innerWidth - r.width - 8));
+  const defaultX = th ? (window.innerWidth - r.width - 8) : (window.innerWidth - r.width) / 2;
+  const px = Math.max(8, Math.min(commentPopPos?.x ?? defaultX, window.innerWidth - r.width - 8));
   const py = Math.max(8, Math.min(commentPopPos?.y ?? 120, window.innerHeight - r.height - 8));
   pop.style.left = px + "px";
   pop.style.top = py + "px";
@@ -8278,7 +8301,12 @@ function appendActive() {
   const content = document.getElementById("content");
   if (!content || !activeId) { showActive(); return; }
   const v = views.get(activeId);
-  const stick = nearBottom(content);
+  // Follow-the-tail engages ONLY once content actually overflows (the user 2026-08-25: with slack
+  // below, a streaming reply should write IN PLACE and grow a scrollbar, not jump the view to the
+  // bottom). nearBottom is trivially true while nothing overflows, so without this gate the very
+  // append that crosses the overflow boundary yanked the view. Overflowing + genuinely at the
+  // bottom keeps the existing stick; scrolled-up keeps its never-yank rule.
+  const stick = content.scrollHeight > content.clientHeight + 2 && nearBottom(content);
   const before = content.scrollTop;
   const anchor = !stick && v ? captureScrollAnchor(content, v) : null;
   syncView(activeId, stick);

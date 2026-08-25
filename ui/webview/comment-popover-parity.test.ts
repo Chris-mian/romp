@@ -52,7 +52,7 @@ test("the popover's bottom row IS a statusline: the chat's chip anatomy + counti
 
 test("the action buttons wear the chat's under-bubble family; Fork stays out by the user's call", () => {
   assert.match(CSS, /\.cmt-act \{\s*\n\s*background: rgba\(255, 255, 255, 0\.06\);\s*\n\s*border: 1px solid var\(--box-border\); color: var\(--dim\); border-radius: 5px; font-size: 0\.78em;\s*\n\s*padding: 1px 8px; cursor: pointer;\s*\n\}/);
-  assert.match(CSS, /\.cmt-act:hover \{ background: var\(--accent\); color: var\(--accent-fg\); border-color: var\(--accent\); \}/);
+  assert.match(CSS, /\.cmt-act:hover \{ border-color: var\(--accent\); color: var\(--accent\); background: rgba\(156, 210, 255, 0\.12\); \}/);   // the feed word-button hover (2026-08-25): text+outline accent, never a fill
   // the popover's verbs stay Break out / Merge / Delete — the chat's Fork button is deliberately absent
   const pop = RENDER.split("function renderCommentPopover(")[1].split("\nfunction ")[0];
   assert.ok(!/data-act="fork"|showForkPrompt/.test(pop), "no fork button in the popover");
@@ -62,7 +62,12 @@ test("a fresh thread boots on the romp loader, then renders its final format ONC
   // the loader holds the list until the thread's REAL render (its events) is ready — the plain
   // msgs projection no longer flashes as an intermediate format
   assert.match(RENDER, /if \(!evs\.length && th\.status === "open" && !th\.error && cmtBootHolds\(th\.tid\)\) \{/);
-  assert.match(RENDER, /boot\.appendChild\(rompLoaderInner\("opening the thread…"\)\);/);
+  assert.match(RENDER, /boot\.appendChild\(rompLoaderInner\("opening the thread…", \{ wordmark: false \}\)\);/);
+  // logo-only in the POPOVER (the user 2026-08-25): the spinning swirl + dots stay, the R-o-m-p
+  // letters drop — parameterized on the ONE shared builder, so the boot splash and the pane/revive
+  // loaders keep the full treatment (their call sites pass no opts)
+  assert.match(RENDER, /if \(opts\?\.wordmark === false\) \{\s*\n\s*word\.appendChild\(swirl\);/);
+  assert.match(RENDER, /o\.appendChild\(rompLoaderInner\(`reviving “\$\{name\}”…`\)\);/, "the revive loader keeps the wordmark");
   // event-based fade: the frame that carries events refills the list and retires the hold
   assert.match(RENDER, /if \(evs\.length\) cmtBootSince\.delete\(th\.tid\);/);
   // …with the can't-trap backstop: past it, the hold releases and the projection paints after all
@@ -130,3 +135,18 @@ test("the caret faces RIGHT and the submenu side is measured, right-preferred (t
     "left is the measured fallback, not the default");
 });
 
+
+test("the thread popover opens 70% wide right-aligned, 60% tall — and NEVER grows on content", () => {
+  // the user 2026-08-25: "start out pretty big and fill in" — the size is fixed at open, streaming
+  // fills within (.cmt-msgs flexes + scrolls; comments.test.ts pins that rule), the box never
+  // reflows on a content event. Verified headless: 840×480 at 1200×800, right gap 8, zero rect
+  // change across three streaming appends. The CREATE composer keeps its selection-point gesture.
+  assert.match(RENDER, /if \(th && !pop\.style\.width\) \{ pop\.style\.width = Math\.round\(window\.innerWidth \* 0\.7\) \+ "px"; \}/);
+  assert.match(RENDER, /if \(th && !pop\.style\.height\) \{ pop\.style\.height = Math\.round\(window\.innerHeight \* 0\.6\) \+ "px"; \}/);
+  assert.match(RENDER, /const defaultX = th \? \(window\.innerWidth - r\.width - 8\) : \(window\.innerWidth - r\.width\) \/ 2;/);
+  // a thread open ignores click coords — only a real drag parks the box elsewhere
+  const opener = RENDER.split("function openCommentPopover(")[1].split("\nfunction ")[0];
+  assert.ok(!opener.includes("commentPopPos = { x, y }"), "no click-coord seeding on thread open");
+  // …and the CSS no longer hard-sizes the box (the inline open geometry owns it)
+  assert.doesNotMatch(CSS, /\.cmt-pop \{[^}]*width: 440px/s);
+});
