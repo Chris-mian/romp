@@ -9532,13 +9532,19 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
       }
       document.body.appendChild(sub);
       const rr = item.getBoundingClientRect();
-      sub.style.right = Math.max(8, window.innerWidth - rr.left + 4) + "px";
+      // side rule (the user 2026-08-25): PREFER opening RIGHT; fall left only when the right edge
+      // would clip — measured, never assumed (this menu anchors bottom-right, so left often wins,
+      // but a narrow window or a wide panel can leave right-room; the measurement decides)
+      const sw = sub.offsetWidth || 140;
+      if (rr.right + 4 + sw <= window.innerWidth - 8) sub.style.left = Math.round(rr.right + 4) + "px";
+      else sub.style.right = Math.max(8, window.innerWidth - rr.left + 4) + "px";
       sub.style.bottom = Math.max(8, window.innerHeight - rr.bottom) + "px";
       subEl = sub;
       return sub;
     } : null;
     if (openSub) {
-      item.appendChild(el("span", "meta-caret")).textContent = "\u25C2";
+      // the caret ALWAYS faces right (the user 2026-08-25) — it marks "expandable", not the side
+      item.appendChild(el("span", "meta-caret")).textContent = "\u25B8";
       item.addEventListener("mouseenter", () => openSub());
     } else {
       item.addEventListener("mouseenter", () => closeSub());
@@ -9550,7 +9556,8 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
     item.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); pickValue(kind === "model" ? (c.default || c.value) : c.value); }
       else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && openSub) {
-        // the submenu opens leftward, so both arrows expand — ArrowLeft inside it collapses
+        // both arrows expand (the side is measured, so either may be where it opens) —
+        // ArrowLeft inside the submenu collapses back
         e.preventDefault();
         const sub = openSub();
         (sub.querySelector("[tabindex]") as HTMLElement | null)?.focus();

@@ -70,6 +70,21 @@ class JudgeSettings(unittest.TestCase):
         self.assertIn('versions=[dict(v) for v in MODEL_VERSIONS.get(c["value"]) or []]', ksrc)
 
     # ---- per-tier overrides honored + validated ----
+    def test_judge_tiers_accept_version_ids(self):
+        # the settings pickers mirror the family+version submenus (the user 2026-08-25): a version
+        # id is a valid judge model — it rides the SDK model param verbatim, like session picks.
+        # The setter is effect-only (writes the state file or silently refuses) — assert the file.
+        km._set_judge_model("claude-opus-4-8")
+        jd._state_cache.clear()
+        self.assertEqual(jd._triage_model(), "claude-opus-4-8")
+        km._set_distill_model("claude-sonnet-4-6")
+        self.assertEqual((jd.STATE / "distill-model").read_text(), "claude-sonnet-4-6")
+        km._set_judge_model("claude-nonsense-9")
+        jd._state_cache.clear()
+        self.assertEqual(jd._triage_model(), "claude-opus-4-8", "unknown ids refused — the pick stands")
+        km._set_judge_model("opus")   # restore a family value for the suites that follow
+        jd._state_cache.clear()
+
     def test_overrides_are_honored(self):
         (jd.STATE / "judge-model").write_text("opus")
         (jd.STATE / "index-model").write_text("sonnet")

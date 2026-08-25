@@ -120,3 +120,13 @@ test("the badges' COLOR is the chat's too: the rank tints ride the frame (the 20
   // the equality bar (asserted headless over the built bundle, per the follow-up): computed
   // font-family/size/weight AND color/opacity equal chat↔popover for chip, timer, and all badges
 });
+
+test("the caret faces RIGHT and the submenu side is measured, right-preferred (the user 2026-08-25)", () => {
+  assert.match(RENDER, /textContent = "\\u25B8"/, "the caret marks expandable, never the side");
+  assert.ok(!RENDER.includes("\\u25C2"), "no left-facing caret anywhere");
+  assert.match(RENDER, /if \(rr\.right \+ 4 \+ sw <= window\.innerWidth - 8\) sub\.style\.left = Math\.round\(rr\.right \+ 4\) \+ "px";/,
+    "right side taken whenever it fits");
+  assert.match(RENDER, /else sub\.style\.right = Math\.max\(8, window\.innerWidth - rr\.left \+ 4\) \+ "px";/,
+    "left is the measured fallback, not the default");
+});
+
