@@ -220,6 +220,25 @@ test("membership rows drag-reorder into the SHARED session order (the user 2026-
     "the rebuild happens on the drop, after the persist");
 });
 
+test("the dialog sizes to the screen: 90% ceiling both axes, padded edges, wrap only when narrow (the user 2026-08-25)", () => {
+  // 560px read cramped — no padding at the edges, rows wrapping with plenty of screen left. The
+  // card grows with the window to the big panels' ~90% family norm (capped 1200px so a huge
+  // monitor doesn't stretch a form unreadably wide) with real breathing room inside the edges.
+  // the card declarations come AFTER MENU_STYLE: the menu spec opens with ITS padding (4px), and
+  // in one style string the later declaration wins — stated first, the dialog's padding had been
+  // silently 4px all along (found by headless computed-style measurement, 2026-08-25)
+  assert.match(SRC, /MENU_STYLE \+ 'box-sizing:border-box;width:min\(1200px,90vw\);max-height:90vh;'\s*\n\s*\+ 'overflow:hidden;display:flex;flex-direction:column;padding:22px 26px;font-size:13px;'/,
+    "the card's screen-sized border-box footprint + edge padding, declared after the menu spec");
+  // wrap stays GRACEFUL, not needless: the wide card lays the rows out on their lines; these
+  // containers wrap only when the window genuinely narrows
+  assert.match(SRC, /row\.setAttribute\('style', 'display:flex;align-items:center;gap:6px;margin:2px 0;flex-wrap:wrap;'\);/,
+    "the five filter rows fold only under real pressure");
+  assert.match(SRC, /chips\.setAttribute\('style', 'display:flex;gap:5px;flex-wrap:wrap;align-items:center;min-width:0;'\);/,
+    "membership chip cells ditto");
+  assert.match(SRC, /gridBox\.setAttribute\('style', 'flex:1 1 auto;min-height:0;overflow-y:auto;'\);/,
+    "only the session rows pan when height runs out — the card itself never scrolls whole");
+});
+
 test("federation, NAME-KEYED (user ruling 2026-08-24): one name = one row/label/union — kernels are plumbing", () => {
   // the ruling superseded the v0 host-marked two-rows render: "if the UX requires understanding
   // that tags exist across different kernels, it is not good". Executed on the mirror:
@@ -470,7 +489,8 @@ test("cross-pane dismissal rides the storage echo (the user 2026-08-25)", () => 
 
 test("dialog polish + reachable tag management (the user 2026-08-25)", () => {
   // the dialog reads at the page's 13px form scale (the menu 12px was the too-small complaint)
-  assert.match(SRC, /MENU_STYLE \+ 'font-size:13px;'/);
+  assert.match(SRC, /padding:22px 26px;font-size:13px;'/,
+    "the 13px form scale rides the card's own declarations (after MENU_STYLE, whose 4px padding they beat)");
   // the session table scrolls WITHIN the modal — chrome stays put
   assert.match(SRC, /gridBox\.setAttribute\('style', 'flex:1 1 auto;min-height:0;overflow-y:auto;'\)/);
   // [+] is a rounded RECTANGLE in its own column between name and tags

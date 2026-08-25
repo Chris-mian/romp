@@ -2983,9 +2983,17 @@ class TimelinePanel {
       + 'display:flex;align-items:center;justify-content:center;');
     const card = back.createDiv();
     // the dialog is a FORM, not a menu: it reads at 13px (the page's standard reading size, the
-    // user 2026-08-25: the menu 12px read too small here) — sub-lines keep the one 0.82em scale
-    card.setAttribute('style', 'width:min(560px,94vw);max-height:78vh;overflow:hidden;display:flex;flex-direction:column;padding:14px 16px;'
-      + MENU_STYLE + 'font-size:13px;');
+    // user 2026-08-25: the menu 12px read too small here) — sub-lines keep the one 0.82em scale.
+    // It sizes to the SCREEN (the user 2026-08-25, round two: 560px read cramped and made rows
+    // wrap for no reason): up to 90% of the viewport both axes — the big panels' family norm —
+    // capped at 1200px so a huge monitor doesn't stretch a form unreadably wide, with real
+    // breathing room inside the card's edges. The centered-card-over-dim treatment stands.
+    // the card's own declarations come AFTER the shared menu spec: MENU_STYLE opens with the
+    // MENU padding (4px), and in one style string the later declaration wins — with the paddings
+    // stated first the dialog had been rendering 4px edges all along, which IS the claustrophobia
+    // the user reported (2026-08-25); the 14px/22px in the source never applied.
+    card.setAttribute('style', MENU_STYLE + 'box-sizing:border-box;width:min(1200px,90vw);max-height:90vh;'
+      + 'overflow:hidden;display:flex;flex-direction:column;padding:22px 26px;font-size:13px;');
     card.addEventListener('click', (e) => e.stopPropagation());
     // the open [+] menu's key rides the INSTANCE (this._tagAddFor: sid, or '*' for the bulk bar)
     // so the shared join builder can close it from either surface — the dialog or the lane gear
