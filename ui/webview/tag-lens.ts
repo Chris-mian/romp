@@ -62,3 +62,17 @@ export function lensKey(l: TagLens | null | undefined): string {
 export function lensUnions(views: SessionViews | null | undefined): TagUnion[] {
   return viewTagUnion(views);
 }
+
+/** One surface's lens off the views blob. A pre-lens blob (an older kernel, a client-held legacy
+ *  shape) derives its lens from the legacy scalar EXACTLY as the kernel normalizer seeds it —
+ *  behavior migrates, not just shape (an untagged view keeps excluding rather than falling open). */
+export function surfaceLens(views: SessionViews | null | undefined, surface: string): TagLens {
+  const l = views?.actives?.[surface];
+  if (l) return l;
+  const a = views?.active;
+  if (!a || a === "all") return { all: true };
+  if (a === "untagged") return { none: true };
+  const g = viewTagUnion(views).find((x) => x.ids.includes(a));
+  return g ? { tags: [g.name] } : { all: true };
+}
+

@@ -32,19 +32,23 @@ test("executed: All shows literally everything (hidden retired 2026-08-24); unta
   assert.equal(viewVisible({ active: "g1", groups: [G] }, "s2"), true);
 });
 
-test("executed: reveal SWITCHES views, never mutates membership (hideIn retired 2026-08-24)", () => {
-  // the hide gesture is GONE with the hidden set (the user 2026-08-24: the tag system covers
-  // backgrounding; the kernel migrated existing entries into "archived"). revealIn survives for the
-  // picker's jump: minimal move, membership untouched (2026-08-23 — a peek never strips a tag).
+test("executed: reveal ADDS to the chat lens, never mutates membership (per-surface, 2026-08-25)", () => {
+  // the reveal keys on the CHAT surface's lens now: the minimal move is ADDITIVE — the holder tag
+  // (or the none bucket) JOINS the selection, and what the user was looking at stays visible.
+  // Membership is still never touched (2026-08-23 — a peek never strips a tag), and the legacy
+  // scalar `active` is left alone entirely (old clients own it).
   const rev = revealIn({ active: "g1", tags: [G] }, "s1");
-  assert.equal(rev.active, "all", "tagless session from a tag view → land on All, the default");
+  assert.deepEqual(rev.actives!.chat, { none: true, tags: ["pool"] },
+    "tagless from a tag view: the none bucket JOINS — the pool selection stays visible");
+  assert.equal(rev.active, "g1", "the legacy scalar is never rewritten");
   const rev2 = revealIn({ active: "untagged", tags: [G] }, "s2");
-  assert.equal(rev2.active, "g1", "tagged → its holder tag is its home view");
+  assert.deepEqual(rev2.actives!.chat, { none: true, tags: ["pool"] },
+    "tagged: its holder tag joins the selection; the untagged pick stays");
   assert.deepEqual(rev2.tags![0].members, ["s2"], "membership untouched — the jump never strips a tag");
   const revAll = revealIn({ active: "all", tags: [G] }, "s2");
-  assert.equal(revAll.active, "all", "everything is visible under All → nothing changes at all");
+  assert.equal(revAll.actives?.chat, undefined, "everything visible under All: nothing changes at all");
   const rev4 = revealIn({ active: "g1", tags: [G] }, "s2");
-  assert.equal(rev4.active, "g1", "already visible in the active tag → nothing changes");
+  assert.equal(rev4.actives?.chat, undefined, "already visible in the active tag: nothing changes");
 });
 
 test("executed: the canonical key ignores list order AND which key the kernel used", () => {

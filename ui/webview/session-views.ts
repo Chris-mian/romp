@@ -88,9 +88,26 @@ export function viewsKey(v: SessionViews | null | undefined): string {
 // anything else is already visible under All, so switch there only when actually invisible.
 export function revealIn(views: SessionViews | null | undefined, id: string): SessionViews {
   const v: SessionViews = JSON.parse(JSON.stringify(views || {}));
-  if (viewVisible(v, id)) return v;
-  const holder = viewTags(v).find((t) => (t.members || []).includes(id));
-  if (holder) { v.active = holder.id; return v; }
-  v.active = "all";
+  // the reveal keys on the CHAT surface's lens (per-surface selections, the user 2026-08-25): the
+  // MINIMAL move is ADDING the session's first holder tag to the selection — additive, never a
+  // switch that hides what the user was looking at; a session in no tag home adds the none bucket.
+  const unions = viewTagUnion(v);
+  const lens = (v.actives || {})["chat"] || (v.active === "untagged" ? { none: true }
+    : v.active && v.active !== "all" ? (() => { const g = unions.find((x) => x.ids.includes(v.active!)); return g ? { tags: [g.name] } : { all: true }; })()
+    : { all: true });
+  const visible = !lens || lens.all ? true
+    : (lens.none && !unions.some((u) => u.members.includes(id)))
+      || unions.some((u) => (lens.tags || []).includes(u.name) && u.members.includes(id));
+  if (visible) return v;
+  const holder = unions.find((u) => u.members.includes(id));
+  const next: { none?: boolean; tags?: string[] } = {};
+  if (holder) {
+    if (lens.none) next.none = true;
+    next.tags = [...(lens.tags || []), holder.name];
+  } else {
+    next.none = true;
+    if (lens.tags && lens.tags.length) next.tags = lens.tags;
+  }
+  v.actives = Object.assign({}, v.actives, { chat: next });
   return v;
 }

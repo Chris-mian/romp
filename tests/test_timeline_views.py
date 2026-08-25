@@ -45,7 +45,7 @@ class TimelineViews(unittest.TestCase):
         # legacy blob persisted when "all" meant untagged lands on the new default automatically
         v = km._timeline_views()
         self.assertEqual(v, {"active": "all", "tags": [],
-                         "actives": {"chat": {"all": True}, "timeline": {"all": True}}})   # per-surface lenses seed from the scalar (2026-08-25)
+                         "actives": {"chat": {"all": True}, "timeline": {"all": True}, "outline": {"all": True}}})   # per-surface lenses seed from the scalar (2026-08-25)
         self.assertTrue(km._view_visible(v, "anything"))
 
     def test_all_shows_every_session_and_untagged_the_tagless_ones(self):
@@ -89,7 +89,7 @@ class TimelineViews(unittest.TestCase):
                                               {"noid": True}, "junk"]})
         self.assertEqual(km._norm_timeline_views({"hidden": 7, "tags": "nope"}),
                          {"active": "all", "tags": [],
-                          "actives": {"chat": {"all": True}, "timeline": {"all": True}}},
+                          "actives": {"chat": {"all": True}, "timeline": {"all": True}, "outline": {"all": True}}},
                          "wrong-TYPED fields drop instead of raising")
         self.assertEqual(km._norm_timeline_views({"tags": [{"id": "g", "members": 3}]})["tags"][0]["members"],
                          [], "a wrong-typed members list drops, never raises")
@@ -343,11 +343,13 @@ class TimelineViews(unittest.TestCase):
         # lossless legacy (the user 2026-08-25): a blob without `actives` reads as if each surface
         # had selected the old shared view — untagged seeds the none bucket, a tag id its NAME
         v = km._norm_timeline_views({"active": "untagged"})
-        self.assertEqual(v["actives"], {"chat": {"none": True}, "timeline": {"none": True}})
+        self.assertEqual(v["actives"], {"chat": {"none": True}, "timeline": {"none": True},
+                                        "outline": {"none": True}})
         v = km._norm_timeline_views({"active": "g1",
                                      "tags": [{"id": "g1", "name": "workers", "members": []}]})
         self.assertEqual(v["actives"], {"chat": {"tags": ["workers"]},
-                                        "timeline": {"tags": ["workers"]}})
+                                        "timeline": {"tags": ["workers"]},
+                                        "outline": {"tags": ["workers"]}})
         # once a blob CARRIES actives, they win — and a surface absent from it reads All, never
         # a re-seed (the scalar may lag the lenses; seeding again would resurrect a stale pick)
         v = km._norm_timeline_views({"active": "untagged",

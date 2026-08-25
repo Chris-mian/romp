@@ -1604,7 +1604,7 @@ def _member_str(m):
     return (h + ":" + m["sid"]) if h else m["sid"]
 
 
-_LENS_SURFACES = ("chat", "timeline")   # per-surface selections (the user 2026-08-25); the feed's is client-local
+_LENS_SURFACES = ("chat", "timeline", "outline")   # per-surface selections (the user 2026-08-25); the feed's is client-local
 
 
 def _norm_lens(x, tags):
@@ -19619,6 +19619,7 @@ def build_feed(now, tmux=None):
     for _a in asks:
         _a["notify"] = True if _notify_card_effective(_ncards, _a["itemId"], str(_a.get("sid") or "")) else None
     return {"type": "feed", "asks": asks, "now": now,
+            "views": _views_client(),   # the rendered views blob — the outline + feed tag mounts read it (2026-08-25)
             # usage-limit-down latch (judge-limit.json): analysis is paused because the account
             # cannot bill judge calls — the dashboard must SAY so, never fail quietly into retries
             # (the user 2026-08-18); self-expires at the window reset, cleared by the next success
@@ -28774,6 +28775,11 @@ class Handler(BaseHTTPRequestHandler):
             # dashboards, like colormap). Validation/normalization happens in the setter.
             _set_timeline_views(msg["views"])
             _mark_views_dirty()
+        elif msg and msg.get("type") == "openTagsDialog":
+            # any pane's "Configure tags…" opens THE tags dialog — which lives on the timeline pane
+            # (one dialog, one implementation; the user 2026-08-25). Routed to the SAME dashboard's
+            # timeline like tagEditFailed; an empty wid falls back to the broadcast.
+            _send_to_view("timeline", {"type": "openViewsDialog"}, (client or {}).get("wid") or "")
         elif msg and msg.get("type") == "editTag" and isinstance(msg.get("edit"), dict):
             # tag federation v1 (the user 2026-08-24): a REMOTE tag edited in the dialog/menu routes
             # to its HOME kernel through the same channel `romp tag --host` uses — the tag's host
