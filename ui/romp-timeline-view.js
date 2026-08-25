@@ -64,6 +64,17 @@ function viewTagUnion(views) {
     for (const m of (rt.members || [])) if (g.members.indexOf(m) < 0) g.members.push(m);
     if (out.indexOf(g) < 0) out.push(g);
   }
+  // THE ordering rule, stated once per mirror (the user 2026-08-25; session-views.ts is the
+  // typed twin): unions render in the user's dragged order (views.tagOrder, name-keyed — a
+  // remote-homed name holds its position too); unlisted names follow in natural order (stable
+  // sort, so a new tag lands at the end). Every chip list, menu row list, and dialog row list
+  // here renders through this union, so the order flows everywhere from this line.
+  const ord = (views && views.tagOrder) || [];
+  if (ord.length) {
+    const ix = {};
+    ord.forEach((n, i) => { if (!(n in ix)) ix[n] = i; });
+    out.sort((a, b) => (a.name in ix ? ix[a.name] : ord.length) - (b.name in ix ? ix[b.name] : ord.length));
+  }
   return out;
 }
 function viewVisible(views, id) {
@@ -2543,6 +2554,7 @@ class TimelinePanel {
   // may clamp names, so compare shapes, not object identity
   _viewsKey(v) {
     return JSON.stringify({ active: v.active || 'all',
+      order: v.tagOrder || [],   // the dragged union order is client-posted state (2026-08-25)
       hidden: (v.hidden || []).slice().sort(),
       tags: viewTags(v).map((t) => ({ id: t.id, name: t.name, color: t.color,
                                       members: (t.members || []).slice().sort() })) });
@@ -2755,10 +2767,21 @@ class TimelinePanel {
     const unions = viewTagUnion(v);
     const more = viewMoreCount(v, (this.data && this.data.sessions) || []);
     const active = !lensAll(lens);
-    const chips = active ? (lens.tags || []).map((n) => {
-      const u = unions.find((x) => x.name === n);
-      return { label: n, color: (u && u.color) || MODEL_FG, pick: { tag: n } };
-    }).concat(lens.none ? [{ label: 'no tags', color: MODEL_FG, pick: 'none' }] : []) : [];
+    // "no tags" sits LEFTMOST, the tags following in the USER'S order (the user 2026-08-25):
+    // the unions arrive ordered (viewTagUnion's one rule), so walking them IS the order; a
+    // selected name missing from the unions (a stale lens) appends last in the gray.
+    const chips = [];
+    if (active) {
+      if (lens.none) chips.push({ label: 'no tags', color: MODEL_FG, pick: 'none' });
+      const picked = {};
+      (lens.tags || []).forEach((n) => { picked[n] = true; });
+      for (const u of unions) {
+        if (!picked[u.name]) continue;
+        delete picked[u.name];
+        chips.push({ label: u.name, color: u.color || MODEL_FG, pick: { tag: u.name } });
+      }
+      for (const n of (lens.tags || [])) if (picked[n]) chips.push({ label: n, color: MODEL_FG, pick: { tag: n } });
+    }
     const GAP = 8, BTNW = 34;   // the bar's flex gap; the feed tag button's measured box width
     const tailStr = more ? more + ' more' : '';
     const chipW = (c) => 18 + this.labelWidth(c.label) + 6 + 8;   // pad+border + name + gap + ✕ (the 12px measure over-covers the 10.7px render)
@@ -3056,8 +3079,60 @@ class TimelinePanel {
         for (const tg of viewTagUnion(v)) {
           const editable = tg.localId || canEdit;
           const tc = tg.color || MODEL_FG;
-          // the tag itself: the normal pill, NO ✕ — actions live beside it, never on it
+          // the tag itself: the normal pill, NO ✕ — actions live beside it, never on it.
+          // DRAGGABLE (the user 2026-08-25): grab a pill to reorder the tags — the drop writes
+          // tagOrder (the union display order, viewer-side) AND re-sorts the local tags array to
+          // match (the natural store for local-only readers). The membership drag's discipline:
+          // pointer capture, an accent border cue that moves WITHOUT rebuilding mid-drag (the
+          // redraw-eats-pointer rule); the rebuild and the write happen on the drop. The rename
+          // input keeps the cell — no drag while editing.
           const pillCell = tgrid.createDiv();
+          pillCell._tname = tg.name;
+          if (this._tagEditorFor !== tg.name || !editable) {
+            pillCell.style.cursor = 'grab';
+            pillCell.addEventListener('pointerdown', (e) => {
+              e.preventDefault();
+              const cells = Array.from(tgrid.children).filter((c) => c._tname);
+              const fromIdx = cells.indexOf(pillCell);
+              if (fromIdx < 0) return;
+              let toIdx = fromIdx;
+              try { pillCell.setPointerCapture(e.pointerId); } catch (e2) {}
+              pillCell.style.opacity = '0.45';
+              const clearCues = () => cells.forEach((c) => { c.style.borderTop = ''; c.style.borderBottom = ''; });
+              const onMove = (ev) => {
+                const ys = cells.map((c) => { const r = c.getBoundingClientRect(); return (r.top + r.bottom) / 2; });
+                let idx = ys.findIndex((y) => ev.clientY < y);
+                if (idx < 0) idx = cells.length - 1;
+                if (idx !== toIdx) {
+                  toIdx = idx;
+                  clearCues();
+                  if (toIdx !== fromIdx) cells[toIdx].style[toIdx > fromIdx ? 'borderBottom' : 'borderTop'] = '2px solid #9cd2ff';
+                }
+              };
+              const onUp = () => {
+                pillCell.removeEventListener('pointermove', onMove);
+                pillCell.removeEventListener('pointerup', onUp);
+                pillCell.removeEventListener('pointercancel', onUp);
+                pillCell.style.opacity = '';
+                clearCues();
+                if (toIdx === fromIdx) return;
+                const names = cells.map((c) => c._tname);
+                names.splice(toIdx, 0, names.splice(fromIdx, 1)[0]);
+                const nv = JSON.parse(JSON.stringify(this._curViews()));
+                nv.tagOrder = names;                       // the union display order, remote-homed names included
+                const pos = {};
+                names.forEach((n, i) => { pos[n] = i; });
+                nv.tags = viewTags(nv).slice().sort((a, b) =>
+                  ((a.name in pos) ? pos[a.name] : names.length) - ((b.name in pos) ? pos[b.name] : names.length));
+                delete nv.groups;
+                this._setViews(nv);
+                build();
+              };
+              pillCell.addEventListener('pointermove', onMove);
+              pillCell.addEventListener('pointerup', onUp);
+              pillCell.addEventListener('pointercancel', onUp);
+            });
+          }
           if (this._tagEditorFor === tg.name && editable) {
             const nameIn = document.createElement('input');
             nameIn.value = tg.name; nameIn.maxLength = 40;
