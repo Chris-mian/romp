@@ -1,0 +1,76 @@
+// The comment popover's chat-parity pass (the user 2026-08-25, four asks in one): the thread's
+// statusline carries the chat's own working chip WITH the counting timer; the action buttons wear
+// the chat's under-bubble button family; a fresh thread boots on the standard romp loader and then
+// renders in its final (chat-parity) format ONCE — no intermediate msgs-projection flash; and the
+// green→yellow settle repaints LIVE on the push event, no refocus needed (the kernel carries the
+// settle count on the frame, since the wire dedup withholds the unchanged frames the client latch
+// used to wait for). Source pins — the chat renderer has no jsdom harness (repo convention).
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const ui = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", ...p), "utf8");
+const RENDER = ui("webview", "render.ts");
+const COMMENTS = ui("webview", "comments.ts");
+const CSS = ui("webview", "styles.css");
+const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+
+test("the popover's bottom row IS a statusline: the chat's chip anatomy + counting timer", () => {
+  // one vocabulary by construction: the row wears .statusline, the chip wears chip-working +
+  // chip-pulse, the timer wears .status-timer — the chat's own classes, not restyled copies
+  assert.match(RENDER, /const mrow = el\("div", "statusline cmt-meta-row"\);/);
+  assert.match(RENDER, /mrow\.appendChild\(cmtStateChip\(th\)\);/);
+  const chip = RENDER.split("function cmtStateChip(")[1].split("\nfunction ")[0];
+  assert.ok(chip.includes('el("span", "chip chip-working")'), "the chat's working chip");
+  assert.ok(chip.includes('el("span", "chip-pulse")'), "with its pulse label");
+  assert.ok(chip.includes('timer.id = "cmt-work-timer"'), "and the counting timer");
+  assert.ok(chip.includes("elapsedMs(th.sinceEpoch || null)"), "counting from the kernel's state-start epoch");
+  // the 1s tick drives it exactly like the chat's #work-timer
+  assert.match(RENDER, /const ct = document\.getElementById\("cmt-work-timer"\);/);
+  assert.match(RENDER, /if \(cur && threadBusy\(cur\.th\.state\)\) ct\.textContent = elapsedMs\(cur\.th\.sinceEpoch \|\| null\);/);
+  // the model/effort badges cluster right in .sl-right, the statusline's own placement idiom
+  assert.match(RENDER, /right\.append\(mkLive\("model"\), mkLive\("effort"\)\);/);
+  // …and the comments frame carries the epoch (milliseconds, the client convention)
+  assert.match(KERNEL, /"settledPushes": quiet, "sinceEpoch": since_ms,/);
+  // the in-place refresh keeps chip + timer live per frame (chips carry no listeners — click-safe)
+  assert.match(RENDER, /if \(th && cs\) cs\.replaceWith\(cmtStateChip\(th\)\);/);
+});
+
+test("the action buttons wear the chat's under-bubble family; Fork stays out by the user's call", () => {
+  assert.match(CSS, /\.cmt-act \{\s*\n\s*background: rgba\(255, 255, 255, 0\.06\);\s*\n\s*border: 1px solid var\(--box-border\); color: var\(--dim\); border-radius: 5px; font-size: 0\.78em;\s*\n\s*padding: 1px 8px; cursor: pointer;\s*\n\}/);
+  assert.match(CSS, /\.cmt-act:hover \{ background: var\(--accent\); color: var\(--accent-fg\); border-color: var\(--accent\); \}/);
+  // the popover's verbs stay Break out / Merge / Delete — the chat's Fork button is deliberately absent
+  const pop = RENDER.split("function renderCommentPopover(")[1].split("\nfunction ")[0];
+  assert.ok(!/data-act="fork"|showForkPrompt/.test(pop), "no fork button in the popover");
+});
+
+test("a fresh thread boots on the romp loader, then renders its final format ONCE", () => {
+  // the loader holds the list until the thread's REAL render (its events) is ready — the plain
+  // msgs projection no longer flashes as an intermediate format
+  assert.match(RENDER, /if \(!evs\.length && th\.status === "open" && !th\.error && cmtBootHolds\(th\.tid\)\) \{/);
+  assert.match(RENDER, /boot\.appendChild\(rompLoaderInner\("opening the thread…"\)\);/);
+  // event-based fade: the frame that carries events refills the list and retires the hold
+  assert.match(RENDER, /if \(evs\.length\) cmtBootSince\.delete\(th\.tid\);/);
+  // …with the can't-trap backstop: past it, the hold releases and the projection paints after all
+  assert.match(RENDER, /const CMT_BOOT_BACKSTOP_MS = 8000;/);
+  assert.match(RENDER, /window\.setTimeout\(\(\) => \{ if \(openCommentKey\?\.tid === tid\) refillOpenCommentPop\(\); \}, CMT_BOOT_BACKSTOP_MS \+ 50\);/);
+  // the user's own pending sends still acknowledge under the loader
+  const gate = RENDER.split("cmtBootHolds(th.tid)) {")[1].split("return;")[0];
+  assert.ok(gate.includes('commentMsgEl("you", pb.text)'), "pending bubbles ride the boot view");
+});
+
+test("green→yellow settles LIVE: the kernel carries the confirm the dedup used to withhold", () => {
+  // the client latch needed two confirming FRAMES; unchanged frames never arrive (wire dedup), so
+  // the flip waited for an unrelated change (the user: it didn't flip until clicking back). The
+  // kernel counts pushes-since-busy on the frame, clamped so dedup resumes once decided.
+  assert.match(KERNEL, /def _comment_settle_step\(prev, raw_busy, decided\):/);
+  assert.match(COMMENTS, /export function settleConfirmed\(th: CommentThread\): boolean \| null \{/);
+  assert.match(COMMENTS, /return typeof sp === "number" \? sp >= SETTLE_CONFIRM_PUSHES : null;/);
+  // commentInFlight prefers the kernel's confirm; the client latch stays as the old-kernel fallback
+  assert.match(RENDER, /const confirmed = settleConfirmed\(th\);/);
+  assert.match(RENDER, /if \(confirmed !== null\) return raw \|\| \(th\.status === "open" && !th\.error && !confirmed\);/);
+  assert.match(RENDER, /return raw \|\| !!commentBusyLatch\.get\(th\.tid\)\?\.green;/);
+  // the frame handler already repaints marks AND the open popover per frame — the live wire
+  assert.match(RENDER, /applyCommentMarks\(sid\);\s*\n\s*if \(openCommentKey && openCommentKey\.sid === sid\) \{/);
+});

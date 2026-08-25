@@ -6400,6 +6400,24 @@ def _comments_frame(sid, tmux=None):
         unread = any(m["who"] == "agent" and m["t"] > seen for m in msgs)
         events = [] if status == "promoted" else _thread_events(tsid, str(th.get("cutUuid") or ""), now, tmux)
         reg = _thread_reg(tsid)
+        # the settle count (see _comment_settle_step): raw_busy mirrors the client's threadInFlight
+        # (comments.ts) exactly — live work or an owed reply, on an open unstuck thread
+        tid = str(th.get("tid") or "")
+        raw_busy = (status == "open" and not err and state not in ("permission", "picker")
+                    and (state in ("working", "retrying", "compacting")
+                         or bool(msgs and msgs[-1]["who"] == "you")))
+        quiet = _comment_settle_step(_comment_settle.get(tid), raw_busy, status != "open" or bool(err))
+        _comment_settle[tid] = quiet
+        if len(_comment_settle) > 512:
+            _comment_settle.clear()
+        # sinceEpoch (MILLISECONDS, the client convention): when the thread's current state began —
+        # the popover's working chip counts from it, exactly as the chat's statusline does
+        since_ms = 0
+        if be and status == "open" and hasattr(be, "session_since"):
+            try:
+                since_ms = int(be.session_since(tsid)) * 1000
+            except Exception:
+                since_ms = 0
         threads.append({"tid": th.get("tid"), "anchorUuid": th.get("anchorUuid"),
                         "name": th.get("name") or "", "color": th.get("color") or "",
                         "exact": str(th.get("exact") or "")[:500], "status": status,
@@ -6407,8 +6425,29 @@ def _comments_frame(sid, tmux=None):
                         "unread": unread, "promotedName": th.get("promotedName") or "",
                         "model": (reg.get("liveModel") or reg.get("model") or "") if reg else "",
                         "effort": (reg.get("effort") or "") if reg else "",
+                        "settledPushes": quiet, "sinceEpoch": since_ms,
                         "msgs": msgs, "events": events})
     return {"type": "comments", "id": sid, "threads": threads}
+
+
+# The client's green→yellow settle needs TWO CONFIRMING PUSHES (comments.ts latchBusy), but
+# _send_client's dedup withholds unchanged frames — so after a reply landed, the second confirming
+# frame never arrived and the passage stayed green until some unrelated change minted one (the user
+# 2026-08-25: it didn't flip until clicking back into the main chat). The frame now carries the
+# count ITSELF: pushes since the thread last read busy, clamped at 2 — each step is a real pusher
+# cycle (an event, never a timer), the frame changes at most twice after settling, and then the
+# dedup resumes. tid → count; pure step logic split out for the test.
+_comment_settle = {}
+
+
+def _comment_settle_step(prev, raw_busy, decided):
+    """One pusher cycle's step of the settle count: busy → 0; a decided status (closed/errored)
+    settles immediately; otherwise count up, clamped at 2 (the client's SETTLE_CONFIRM_PUSHES)."""
+    if decided:
+        return 2
+    if raw_busy:
+        return 0
+    return min(2, (2 if prev is None else prev) + 1)
 
 
 def _comment_markers(sid):

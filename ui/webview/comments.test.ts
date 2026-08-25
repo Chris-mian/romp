@@ -325,7 +325,7 @@ test("the create dialog names the thread right there: prefilled <session>-commen
   assert.match(UI, /send\.setAttribute\("aria-label", create \? "Comment" : "Send"\);/);   // the ➤ carries the word
   assert.match(UI, /text, name: nm, model: create\.model \|\| "", effort: create\.effort \|\| "",\s*\n\s*color: create\.color \|\| ""/);
   // the comment's own model/effort selectors reuse the statusline's /models-fed choices + menu skin
-  assert.match(UI, /const metaRow = el\("div", "cmt-meta-row"\);/);
+  assert.match(UI, /const metaRow = el\("div", "statusline cmt-meta-row"\);/);   // the chat statusline dress (2026-08-25 parity)
   assert.match(UI, /META_CHOICES\[kind\]/);
   assert.match(KERNEL, /model=str\(msg\.get\("model"\) or ""\), effort=str\(msg\.get\("effort"\) or ""\)/);
   assert.match(KERNEL, /"%s-comment-%d" % \(sess\["name"\], len\(data\.get\("threads"\) or \[\]\) \+ 1\)/);
@@ -406,14 +406,16 @@ test("comment chrome (badge, popover card) stays on the menu vocabulary", () => 
 
 // ── the comment-thread UI pass (the user 2026-08-24, three asks) ─────────────────────────────────
 
-test("an in-flight thread's highlight goes await-green — the color is the signal, nothing crawls", () => {
-  // the green/yellow request was always about comments: mid-reply the passage wears a faded
-  // await-green blend, settling into the EXISTING full yellow when the reply lands. The tick's
-  // marching ants (the "spinning dots") are retired — no motion anywhere in the state.
-  assert.match(CSS, /mark\.cmt-hl\.busy \{\s*\n\s*background-color: color-mix\(in srgb, var\(--st-awaitbg-bg\) 24%, transparent\);\s*\n\}/);
-  // the code/math HOST pairing greens the same way — its element tint must not stay full yellow
-  assert.match(CSS, /code\.cmt-hl-host:has\(mark\.cmt-hl\.busy\),\s*\n\.md \.katex\.cmt-hl-host:has\(mark\.cmt-hl\.busy\) \{\s*\n\s*background-color: color-mix\(in srgb, var\(--st-awaitbg-bg\) 24%, transparent\);/);
-  assert.match(CSS, /code\.cmt-hl-host:has\(mark\.cmt-hl\.busy\) \{ background-color: color-mix\(in srgb, var\(--st-awaitbg-bg\) 24%, var\(--code-bg\)\); \}/);
+test("an in-flight thread's highlight PULSES await-green — text and hosts in lockstep", () => {
+  // mid-reply the passage wears the await-green blend, and it PULSES while generating (the user
+  // 2026-08-25, asking for exactly this — superseding the earlier no-motion ruling for THIS state
+  // only; the marching ants stay dead below). Settles into the existing full yellow on landing.
+  assert.match(CSS, /mark\.cmt-hl\.busy \{\s*\n\s*background-color: color-mix\(in srgb, var\(--st-awaitbg-bg\) 24%, transparent\);\s*\n\s*animation: cmt-busy-pulse 2\.2s ease-in-out infinite;\s*\n\}/);
+  // the code/math HOST pairing greens AND pulses the same way, the SAME clock — lockstep by keyframe
+  assert.match(CSS, /code\.cmt-hl-host:has\(mark\.cmt-hl\.busy\),\s*\n\.md \.katex\.cmt-hl-host:has\(mark\.cmt-hl\.busy\) \{\s*\n\s*background-color: color-mix\(in srgb, var\(--st-awaitbg-bg\) 24%, transparent\);\s*\n\s*animation: cmt-busy-pulse 2\.2s ease-in-out infinite;/);
+  assert.match(CSS, /code\.cmt-hl-host:has\(mark\.cmt-hl\.busy\) \{\s*\n\s*background-color: color-mix\(in srgb, var\(--st-awaitbg-bg\) 24%, var\(--code-bg\)\);\s*\n\s*animation: cmt-busy-pulse-code 2\.2s ease-in-out infinite;/);
+  // reduced motion keeps the static green — the pulse joins the loading-cues idiom family
+  assert.match(CSS, /@media \(prefers-reduced-motion: reduce\) \{\s*\n\s*mark\.cmt-hl\.busy,[\s\S]{0,160}animation: none; \}\s*\n\}/);
   // the crawl is gone root and branch; the rail tick wears the same state green instead
   assert.doesNotMatch(CSS, /cmt-tick-ants/);
   assert.match(CSS, /\.cmt-tick\.busy \{ background: var\(--st-awaitbg-bg\); \}/);

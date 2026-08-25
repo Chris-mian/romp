@@ -45,7 +45,7 @@ import { mediaSrc, kernelUrl } from "./media";
 import { initStrip, fmtReset } from "./strip";
 import { apiErrorReason } from "./api-error-reason";
 import { mathBlock, mathInline } from "./math";
-import { threadInFlight, latchBusy, type BusyLatch, threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, type CommentThread } from "./comments";
+import { threadInFlight, latchBusy, settleConfirmed, type BusyLatch, threadsByAnchor, threadBusy, threadStuck, findAnchorRange, sliceRanges, prunePending, type CommentThread } from "./comments";
 
 for (const [name, lang] of Object.entries({
   bash, sh: bash, shell: bash, python, py: python, javascript, js: javascript,
@@ -5775,6 +5775,26 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   requestSessionList("");   // the Host row resets to local on open, so the list starts local too
 }
 
+// The standard romp loader's inner anatomy — wordmark + spinning swirl + pulsing dots + caption
+// (the boot/pane .rl-* styles already on this page) — shared by every in-page wait that wears it
+// (the revive loader, the comment popover's boot), per the loading-states rule: one treatment.
+function rompLoaderInner(caption: string): HTMLElement {
+  const inner = el("div", "rl-in");
+  const word = el("div", "rl-word");
+  const r = el("span", ""); (r as HTMLElement).style.color = "#1EA1EB"; r.textContent = "R";
+  const swirl = el("img", "rl-o") as HTMLImageElement;
+  swirl.src = mediaSrc("romp-swirl-o.svg"); swirl.alt = "o"; swirl.onerror = () => swirl.remove();
+  const mm = el("span", ""); (mm as HTMLElement).style.color = "#54B204"; mm.textContent = "m";
+  const p = el("span", ""); (p as HTMLElement).style.color = "#4EA8A9"; p.textContent = "p";
+  word.append(r, swirl, mm, p);
+  const dots = el("div", "rl-dots");
+  dots.append(el("i", ""), el("i", ""), el("i", ""));
+  const cap = el("div", "revive-cap");
+  cap.textContent = caption;
+  inner.append(word, dots, cap);
+  return inner;
+}
+
 // ---- revive loader (the user 2026-07-05; PANE-LOCAL 2026-08-25) ----
 // Reviving a dead session takes seconds (relaunch + resume), and the Revive click used to give ZERO
 // feedback. Per the repo's loading rule the FIRST thing up is the romp loader — spinning swirl +
@@ -5830,20 +5850,7 @@ function showReviveLoader(id: string, name: string) {
   renderTabs();
   setActive(id);
   const o = el("div", ""); o.id = "revive-loader";
-  const inner = el("div", "rl-in");
-  const word = el("div", "rl-word");
-  const r = el("span", ""); (r as HTMLElement).style.color = "#1EA1EB"; r.textContent = "R";
-  const swirl = el("img", "rl-o") as HTMLImageElement;
-  swirl.src = mediaSrc("romp-swirl-o.svg"); swirl.alt = "o"; swirl.onerror = () => swirl.remove();
-  const mm = el("span", ""); (mm as HTMLElement).style.color = "#54B204"; mm.textContent = "m";
-  const p = el("span", ""); (p as HTMLElement).style.color = "#4EA8A9"; p.textContent = "p";
-  word.append(r, swirl, mm, p);
-  const dots = el("div", "rl-dots");
-  dots.append(el("i", ""), el("i", ""), el("i", ""));
-  const cap = el("div", "revive-cap");
-  cap.textContent = `reviving “${name}”…`;
-  inner.append(word, dots, cap);
-  o.appendChild(inner);
+  o.appendChild(rompLoaderInner(`reviving “${name}”…`));
   document.body.appendChild(o);
   placeReviveLoader();
   const c = document.getElementById("content");
@@ -5958,9 +5965,26 @@ const commentPending = new Map<string, { text: string; t: number }[]>(); // tid 
 const commentBusyLatch = new Map<string, BusyLatch>();
 const commentInFlight = (th: CommentThread): boolean => {
   const raw = threadInFlight(th) || (th.status === "open" && !!(commentPending.get(th.tid) || []).length);
+  // the kernel-carried confirm makes the settle LIVE (the user 2026-08-25: green→yellow waited for a
+  // click): green holds until the frame says two pushes read settled; older kernels → the client latch
+  const confirmed = settleConfirmed(th);
+  if (confirmed !== null) return raw || (th.status === "open" && !th.error && !confirmed);
   return raw || !!commentBusyLatch.get(th.tid)?.green;
 };
 const commentDrafts = new Map<string, string>();                    // draft key → unsent popover text
+// The popover-boot hold (fillCommentMsgs): tid → when the loader first held the list. Held until the
+// thread's events land (event-based) or the backstop expires (never trap); a backstop timer refills
+// the open popover so the fall-through actually paints.
+const cmtBootSince = new Map<string, number>();
+const CMT_BOOT_BACKSTOP_MS = 8000;
+function cmtBootHolds(tid: string): boolean {
+  const t0 = cmtBootSince.get(tid) ?? Date.now();
+  if (!cmtBootSince.has(tid)) {
+    cmtBootSince.set(tid, t0);
+    window.setTimeout(() => { if (openCommentKey?.tid === tid) refillOpenCommentPop(); }, CMT_BOOT_BACKSTOP_MS + 50);
+  }
+  return Date.now() - t0 < CMT_BOOT_BACKSTOP_MS;
+}
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
 let pendingCommentAnchor: { sid: string; uuid: string; exact: string;
   model?: string; effort?: string; color?: string } | null = null; // create mode (+ the thread's own picks)
@@ -6306,6 +6330,25 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): voi
   const pend = prunePending(commentPending.get(th.tid) || [], th.msgs);
   commentPending.set(th.tid, pend);
   const evs = (th.events || []) as ChatEvent[];
+  // ONE final format (the user 2026-08-25: a fresh thread flashed the plain msgs projection for a
+  // couple of seconds before jumping into the chat rendering): until the thread's REAL render — its
+  // events — is ready, the conversation area holds the standard romp loader, and the chat-parity
+  // render appears once. Event-based fade (the comments frame carrying events refills this list);
+  // the backstop falls through to the msgs projection so a thread whose events never come (an old
+  // kernel) can't trap the loader.
+  if (!evs.length && th.status === "open" && !th.error && cmtBootHolds(th.tid)) {
+    const boot = el("div", "cmt-boot");
+    boot.appendChild(rompLoaderInner("opening the thread…"));
+    list.appendChild(boot);
+    for (const pb of pend) {
+      const n = commentMsgEl("you", pb.text);
+      n.classList.add("pending");
+      list.appendChild(n);
+    }
+    list.scrollTop = list.scrollHeight;
+    return;
+  }
+  if (evs.length) cmtBootSince.delete(th.tid);
   if (evs.length) {
     // the CHAT's own renderer, from the branch point on (the user 2026-08-17: the same component —
     // rail dots, markdown, tool folds, notice cards — never a simplified twin). renderingSid keys
@@ -6401,6 +6444,45 @@ function refillOpenCommentPop(): void {
   if (th && list) fillCommentMsgs(list, th, openCommentKey.sid);
 }
 
+/** The popover statusline's LEFT half — the thread's state chip, wearing exactly the chat's chip
+ *  anatomy (chip-working + pulse + counting timer, retrying, compacting-line, Blocked, Ready), so
+ *  the popover says it's working the way the main chat does (the user 2026-08-25: no indication it
+ *  was working, no counting timer). Rebuilt in place per comments frame — chips carry no listeners,
+ *  so the swap is click-safe. */
+function cmtStateChip(th: CommentThread): HTMLElement {
+  const wrap = el("span", "cmt-state");
+  wrap.id = "cmt-state";
+  if (th.status !== "open") return wrap;                    // closed threads carry their status in the title
+  const st = th.state || "";
+  if (st === "working") {
+    const chip = el("span", "chip chip-working");
+    const label = el("span", "chip-pulse");
+    label.textContent = CHIP_LABEL.working;
+    chip.appendChild(label);
+    const timer = el("span", "status-timer");
+    timer.id = "cmt-work-timer";
+    timer.textContent = elapsedMs(th.sinceEpoch || null);
+    wrap.append(chip, timer);
+  } else if (st === "retrying") {
+    const chip = el("span", "chip chip-retrying");
+    chip.textContent = CHIP_LABEL.retrying;
+    wrap.appendChild(chip);
+  } else if (st === "compacting") {
+    const c = el("span", "compacting-line");
+    c.textContent = "⟳ Compacting context…";
+    wrap.appendChild(c);
+  } else if (threadStuck(st)) {
+    const chip = el("span", "chip chip-needsInput");
+    chip.textContent = CHIP_LABEL.needsInput;
+    wrap.appendChild(chip);
+  } else {
+    const chip = el("span", "chip chip-ready");
+    chip.textContent = CHIP_LABEL.ready;
+    wrap.appendChild(chip);
+  }
+  return wrap;
+}
+
 function commentPopTitle(create: boolean, th: CommentThread | null | undefined): string {
   const nm = th?.name || "Thread";
   return create ? "New comment:"
@@ -6485,6 +6567,8 @@ function renderCommentPopover(): void {
     if (t) t.textContent = commentPopTitle(!!create, th);
     const list = prev.querySelector(".cmt-msgs") as HTMLElement | null;
     if (th && list) fillCommentMsgs(list, th, sid);
+    const cs = prev.querySelector("#cmt-state");
+    if (th && cs) cs.replaceWith(cmtStateChip(th));   // state chip + timer track every frame, in place
     if (th) for (const b of Array.from(prev.querySelectorAll(".meta-btn[data-kind]")) as HTMLElement[]) {
       const lbl = b.querySelector(".meta-label") as HTMLElement | null;
       if (lbl) liveMetaLabel(lbl, b.dataset.kind === "model" ? "model" : "effort", th);
@@ -6582,7 +6666,7 @@ function renderCommentPopover(): void {
     // chat's statusline selectors use, defaulting to what this session runs now — picking one
     // affects only the thread; the conversation it branches from is never touched
     const st = sessions.get(sid)?.status;
-    const metaRow = el("div", "cmt-meta-row");
+    const metaRow = el("div", "statusline cmt-meta-row");
     const mkSel = (kind: "model" | "effort") => {
       // the statusline's own badge chrome (.meta-btn/.meta-label/.meta-caret) so the two stay in
       // sync by construction (the user 2026-08-17), tinted from the /models list's shared colors
@@ -6623,7 +6707,9 @@ function renderCommentPopover(): void {
       });
       return btn;
     };
-    metaRow.append(mkSel("model"), mkSel("effort"));
+    const metaRight = el("span", "sl-right");
+    metaRight.append(mkSel("model"), mkSel("effort"));
+    metaRow.appendChild(metaRight);
     metaRowPending = metaRow;
   }
   if (create || th!.status !== "promoted") {
@@ -6660,8 +6746,11 @@ function renderCommentPopover(): void {
     if (metaRowPending) pop.appendChild(metaRowPending);   // model/effort under the box, like the chat
     if (th && th.status === "open") {
       // the thread is a real session under the hood — its model/effort switch LIVE through the
-      // chat's own ops (setModel/setEffort route by sid; be.owns makes the thread reachable)
-      const mrow = el("div", "cmt-meta-row");
+      // chat's own ops (setModel/setEffort route by sid; be.owns makes the thread reachable).
+      // The row IS a statusline (the user 2026-08-25): the chat's own .statusline dress — state
+      // chip with the counting timer on the left, the meta badges clustered right in .sl-right —
+      // so the popover and the chat stay one vocabulary by construction.
+      const mrow = el("div", "statusline cmt-meta-row");
       const mkLive = (kind: "model" | "effort") => {
         const btn = el("span", "meta-btn cmt-meta") as HTMLElement;
         btn.dataset.kind = kind;
@@ -6695,7 +6784,10 @@ function renderCommentPopover(): void {
         });
         return btn;
       };
-      mrow.append(mkLive("model"), mkLive("effort"));
+      mrow.appendChild(cmtStateChip(th));
+      const right = el("span", "sl-right");
+      right.append(mkLive("model"), mkLive("effort"));
+      mrow.appendChild(right);
       pop.appendChild(mrow);
     }
     const row = el("div", "cmt-actions");
@@ -11025,6 +11117,11 @@ setInterval(() => {
     const timer = document.getElementById("work-timer");
     if (timer) timer.textContent = elapsedMs(s.status.sinceEpoch);
     else updateStatusline();
+  }
+  const ct = document.getElementById("cmt-work-timer");
+  if (ct) {
+    const cur = openCommentThread();
+    if (cur && threadBusy(cur.th.state)) ct.textContent = elapsedMs(cur.th.sinceEpoch || null);
   }
   const meta = document.getElementById("spinner-meta");
   if (meta) syncMetaControls(meta, s.status);

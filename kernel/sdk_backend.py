@@ -4663,6 +4663,18 @@ class SdkBackend:
                 return ""
         return ""
 
+    def session_since(self, sid: str) -> int:
+        """Epoch seconds the sid's current state began (0 unknown) — session_state's twin, read by
+        the comments frame so the popover's working chip can carry the chat's counting timer."""
+        with self._lock:
+            s = self.sessions.get(sid)
+        if s and s.thread.is_alive():
+            try:
+                return int(float(s.snapshot().get("since") or 0))
+            except Exception:
+                return 0
+        return 0
+
     def rename(self, sid: str, new_name: str) -> bool:
         reg = read_reg(self.state_dir, sid)
         if not reg:
