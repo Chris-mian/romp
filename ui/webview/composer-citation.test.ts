@@ -139,8 +139,13 @@ test("⌘-selecting another piece of text ADDS a context below the held ones (th
   assert.match(seeder, /else \{ list\.length = 0; idx = 0; \}/);
   // flavors never mix: any quote seed drops a goal chip (the send routes goal XOR quotes)
   assert.match(seeder, /\.filter\(\(c\) => !c\.itemId\)/);
-  // the second chip sits BELOW the first: the strip stacks (flex column), one chip per row
-  assert.match(CSS, /#composer-chips \{ flex: 1 1 100%; display: flex; flex-direction: column; align-items: flex-start/);
+  // chips wrap in rows and the Stage button rides the end of the LAST row — never alone on its own
+  // line (the user 2026-08-25, screenshot: the old column layout wrapped Stage beneath a wide chip)
+  assert.match(CSS, /#composer-chips \{ flex: 1 1 100%; display: flex; flex-flow: row wrap; align-items: center/);
+  // the room beside the last chip is GUARANTEED: every chip cedes the Stage button's footprint,
+  // ellipsizing sooner rather than pushing Stage to wrap; the edit pill (no Stage) keeps the full row
+  assert.match(CSS, /max-width: calc\(100% - 64px\);/);
+  assert.match(CSS, /\.composer-chip-edit \{ max-width: 100%; \}/);
   // Backspace-at-start eats the NEWEST chip first, one per press
   assert.match(RENDER, /list\.splice\(idx == null \? list\.length - 1 : idx, 1\);/);
   // the persisted state restores a LIST, and still accepts the pre-stack single-object form
@@ -233,7 +238,7 @@ test("context stages ALONE, and the chips strip carries the visible Stage button
   assert.match(CSS, /\.composer-stage-btn \{ background: rgba\(255, 255, 255, 0\.06\);\n\s*border: 1px solid var\(--box-border\); color: var\(--dim\);/);
   assert.match(CSS, /\.composer-stage-btn:hover \{ background: var\(--accent\); color: var\(--accent-fg\); border-color: var\(--accent\); \}/);
   assert.doesNotMatch(CSS, /\.composer-stage-btn \{ position: absolute/,
-    "no absolute pin — the button flows in the chips column, immediately after what it acts on");
+    "no absolute pin — the button flows in the strip, immediately after what it acts on");
   assert.match(RENDER, /st\.title = "hold this context \(and anything typed\) for one combined send later — ⌘⏎ does the same";/);
   assert.match(RENDER, /label\.textContent = s\.text \|\| "\(context only — sends with your message\)";/,
     "a context-only staged row says what it is");

@@ -9730,7 +9730,8 @@ function renderComposerChips(id: string | null): void {
   const cites = id ? composerCitations.get(id) : undefined;
   if (!cites || !cites.length) { strip.style.display = "none"; return; }
   strip.style.display = "flex";
-  // one chip per held context, in the order they were added — the strip stacks them (flex column)
+  // one chip per held context, in the order they were added — the strip wraps them in rows, and the
+  // Stage button appended after the loop rides the end of the LAST row (the chip's max-width cedes it room)
   cites.forEach((cite, i) => {
     const chip = el("div", "composer-chip");
     chip.title = cite.quote

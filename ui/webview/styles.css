@@ -597,7 +597,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* ── citation chip strip (the user 2026-07-01) ── a click on a feed card summary / sub-goal seeds a
    dismissible pill here, ABOVE the textarea: "you're following up on THIS". Accent-blue, with an ✕ to
    dismiss (Backspace-at-start dismisses too). Reads as attached context, not typed text. */
-#composer-chips { flex: 1 1 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 0 0 6px 2px; position: relative; }   /* (the Stage button flows in the column now — 2026-08-24) */
+#composer-chips { flex: 1 1 100%; display: flex; flex-flow: row wrap; align-items: center; gap: 6px; padding: 0 0 6px 2px; position: relative; }   /* chips wrap in rows and the Stage button rides the END of the last row (the user 2026-08-25, screenshot: the column layout wrapped Stage to its own line under a wide chip) — .composer-chip's max-width bound below guarantees the room beside the last chip */
 /* attachment thumbnails (the user 2026-08-04): dropped/pasted/picked files sit as little previews above
    the box until send — a row that wraps, unlike the stacked context chips below it */
 #composer-files { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 0 6px 2px; }
@@ -631,12 +631,17 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .composer-ship-dots i:nth-child(3) { animation-delay: 0.32s; }
 @keyframes ship-bnc { 0%, 75%, 100% { opacity: 0.25; } 38% { opacity: 1; } }
 .composer-chip {
-  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  /* bounded BELOW the strip width: every row keeps the Stage button's footprint (~52px + gap) free,
+     so Stage always fits to the RIGHT of the last chip instead of wrapping alone beneath it (the
+     user 2026-08-25). Long quotes still shorten label-first: the 42ch cap + ellipsis rules there. */
+  display: inline-flex; align-items: center; gap: 5px; max-width: calc(100% - 64px);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   border: 1px solid var(--accent); color: var(--fg);
   border-radius: 12px; padding: 2px 4px 2px 8px; font-size: 12px; line-height: 1.4;
 }
 .composer-chip-mark { color: var(--accent); font-weight: 600; }
+/* the EDIT pill has no Stage beside it — it may use the full row before ellipsizing */
+.composer-chip-edit { max-width: 100%; }
 .composer-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42ch; }
 /* STAGED messages (the user 2026-08-15): held in the composer until the next send — deliberately NOT
    the queued idiom (queued = sent, awaiting injection; these are unsent by choice). Same chip anatomy
