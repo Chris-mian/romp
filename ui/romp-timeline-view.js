@@ -82,7 +82,7 @@ function viewVisible(views, id) {
 }
 function viewLabel(views) {
   if (!views || !views.active || views.active === 'all') return 'All';
-  if (views.active === 'untagged') return '(untagged)';
+  if (views.active === 'untagged') return '(no tags)';   // the user-chosen words (2026-08-24); parens stay, marking the built-in apart from tag names
   const g = viewTagUnion(views).find((x) => x.ids.indexOf(views.active) >= 0);
   return g ? g.name : 'All';   // the NAME, never a host prefix — kernels are plumbing
 }
@@ -2721,7 +2721,7 @@ class TimelinePanel {
     // All is the default and sits first (the user 2026-08-24); (untagged) — the old default's
     // meaning under its own sentinel — second; both are built-ins, not rows in the tags dialog
     item('All', { current: !v.active || v.active === 'all' }).addEventListener('click', () => pick('all'));
-    item('(untagged)', { current: v.active === 'untagged' }).addEventListener('click', () => pick('untagged'));
+    item('(no tags)', { current: v.active === 'untagged' }).addEventListener('click', () => pick('untagged'));
     // NAME-KEYED (user ruling 2026-08-24, superseding the v0 host-marked two-rows render: "if the
     // UX requires understanding that tags exist across different kernels, it is not good"): one row
     // per tag NAME, membership the union across every kernel defining it, the local store's colour

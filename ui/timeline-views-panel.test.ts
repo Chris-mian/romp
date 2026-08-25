@@ -1,7 +1,7 @@
 // The timeline's corner control panel (the user 2026-08-18; filter-chip form + TAG model
 // 2026-08-23): "Filter ▾" in the bottom-left corner — the strip under the lane gutter, left of the
 // time labels. The dropdown picks the active VIEW (All — literally everything, the default
-// since 2026-08-24 — / the (untagged) built-in / the named tags),
+// since 2026-08-24 — / the (no tags) built-in / the named tags),
 // holds New tag… / Sessions & tags…, and carries the two timeline display toggles (collapse idle
 // gaps, active only) so they finally work in every host. The dialog is TAG-CENTRIC: one row per
 // session wearing its tag chips (✕ leaves a tag; [+] joins or mints one) — a tagged session leaves
@@ -38,9 +38,9 @@ test("executed: All shows literally everything (hidden retired 2026-08-24); unta
 
 test("executed: the trigger label and the N-more cue (live sessions outside the view)", () => {
   // the views are named for what they show: "All" (literally everything — the hidden set retired
-  // 2026-08-24) and "(untagged)", parenthesized as the built-in it is
+  // 2026-08-24) and "(no tags)" — the user-chosen words (2026-08-24), parens kept as the built-in marker
   assert.equal(viewLabel(null), "All");
-  assert.equal(viewLabel(V("untagged")), "(untagged)");
+  assert.equal(viewLabel(V("untagged")), "(no tags)");
   assert.equal(viewLabel(V("g1")), "pool");
   const sessions = [{ id: "s1", live: true }, { id: "s2", live: true }, { id: "s4", live: false }];
   assert.equal(viewMoreCount(V("g1"), sessions), 1, "s1 is live and outside; dead s4 never counts");
@@ -179,13 +179,13 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   assert.match(SRC, /const ft = LANE_TOGGLES\.find\(\(t\) => t\.flag === 'hideFromFeed'\);/);
   assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.hideFromFeed = next;/,
     "the same optimistic sticky flags the lane gear uses");
-  // the menu items say so: All first (the default), (untagged) second, then New tag… / Sessions & tags…
+  // the menu items say so: All first (the default), (no tags) second, then New tag… / Sessions & tags…
   assert.match(SRC, /item\('New tag…', \{ dim: true \}\)/);
   assert.match(SRC, /item\('Sessions & tags…', \{ dim: true \}\)/);
   assert.match(SRC, /item\('All', \{ current: !v\.active \|\| v\.active === 'all' \}\)/);
-  assert.match(SRC, /item\('\(untagged\)', \{ current: v\.active === 'untagged' \}\)/);
-  assert.match(SRC, /item\('All',[\s\S]{0,300}item\('\(untagged\)',/, "All sits ABOVE (untagged) in the menu");
-  assert.match(SRC, /item\('\(untagged\)',[\s\S]{0,600}for \(const g of viewTagUnion\(v\)\)/,
+  assert.match(SRC, /item\('\(no tags\)', \{ current: v\.active === 'untagged' \}\)/);
+  assert.match(SRC, /item\('All',[\s\S]{0,300}item\('\(no tags\)',/, "All sits ABOVE (no tags) in the menu");
+  assert.match(SRC, /item\('\(no tags\)',[\s\S]{0,600}for \(const g of viewTagUnion\(v\)\)/,
     "…and the tag rows come AFTER both built-ins — the DoD's menu order, pinned end to end (the rows are the NAME-KEYED union since the 2026-08-24 ruling)");
 });
 
