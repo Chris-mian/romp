@@ -18651,7 +18651,9 @@ def build_feed(now, tmux=None):
                     w, r = _seg_anchors(seg["atoms"])
                     seg_uuid[_seg_key(seg["id"])] = r or _seg_jump(seg["atoms"])   # timestamp-invariant key; landable
                     #                                  anchors only — never a thinking-only uuid (SDK echo/real drift)
-                    seg_trig[_seg_key(seg["id"])] = seg.get("trigger")
+                    seg_trig[_seg_key(seg["id"])] = jd._prompt_anchor_uuid(seg)   # attachment-safe: a
+                    #                                  title click must land on the USER message, never an
+                    #                                  attachment record no chat event carries (2026-08-25)
                     _lu, _lsub = _seg_last_text(seg["atoms"])
                     seg_best[_seg_key(seg["id"])] = (_lu, _lsub, seg.get("t", 0))   # latest prose → summary deep-link fallback
                     for _a in seg["atoms"]:              # citable-uuid set: gates the distiller's CITED anchor.
@@ -20107,7 +20109,7 @@ def _seg_anchors(atoms):
     (isApiErrorMessage, tagged isApiError by em), so it carries text and would otherwise WIN the
     reply anchor — deep-linking a done/blocked goal to an 'API Error: …' line instead of its real
     reply. An error is a failure, not a reply, and is never a jump target (the user 2026-06-18)."""
-    work = reply = None
+    work = reply = settle = None
     for a in atoms:
         if a.get("type") != "assistant" or a.get("isApiError"):
             continue
@@ -20117,8 +20119,18 @@ def _seg_anchors(atoms):
         if isinstance(blocks, list) and any(
                 isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip()
                 for b in blocks):
-            reply = a.get("uuid")
-    return work, reply
+            # the machine-cut NULL SETTLE ("No response requested." / model "<synthetic>") is an
+            # anchor of last resort, never the reply while a substantive atom exists (2026-08-25):
+            # verdicts anchored at a cut turn's settle deep-linked to a filler the chat renders as
+            # a seam marker — the alias belt covers residue, but the mint prefers the real reply
+            _txt = " ".join(b.get("text", "") for b in blocks
+                            if isinstance(b, dict) and b.get("type") == "text").strip()
+            if _txt == "No response requested." \
+                    or (a.get("message") or {}).get("model") == "<synthetic>":
+                settle = a.get("uuid")
+            else:
+                reply = a.get("uuid")
+    return work, (reply or settle)
 
 
 def _segs_seam(turn, store):
