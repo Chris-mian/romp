@@ -149,7 +149,7 @@ test("the dropdown and dialog wear the shared menu vocabulary and adopt into the
 test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2026-08-24, JLD-designed)", () => {
   // one grid, columns [name | chips | + | feed | (spare)] — the un-hide eye retired 2026-08-24; the [+] column's ALIGNMENT carries the
   // table structure (JLD: sequence in space suggests structure)
-  assert.match(SRC, /grid-template-columns:max-content 1fr max-content max-content max-content;/);
+  assert.match(SRC, /grid-template-columns:max-content max-content 1fr;/);
   // the session NAME wears its identity colour directly (JLD: label directly, never a legend-like
   // proxy dot), the host: prefix is quiet lowercase italic, a dead session is struck — the same
   // read as the lanes and the feed. No model column, no instruction caption, no ellipsized names.
@@ -163,8 +163,8 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   // act on the FILTERED set: search is how a batch is selected (the user 2026-08-24)
   assert.match(SRC, /q\.placeholder = 'search name or host…';/);
   assert.match(SRC, /const tagAll = bar\.createSpan\(\{ text: '\+ tag all' \}\);/);
-  assert.match(SRC, /anyOn \? 'mute feed for all' : 'restore feed for all'/);
-  assert.match(SRC, /const flagVal = ft\.value\(!anyOn\);/, "any still minting → mute all; all muted → restore");
+  assert.ok(!SRC.includes("mute feed for all"), "the feed bulk control left the dialog (2026-08-25) — the flag lives on in the lane gear");
+  assert.ok(!SRC.includes("const flagVal = ft.value(!anyOn);"), "the bulk feed wiring left with its control (2026-08-25)");
   // chips: outline in the tag's colour, dim separate ✕, hover changes colour (menu chrome)
   // the chips live in the SHARED name-keyed builder now (user ruling 2026-08-24): one chip per
   // tag NAME, ✕ = remove-everywhere via the union dispatcher — the dialog and the gear both call it
@@ -179,9 +179,10 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   assert.doesNotMatch(SRC, /viewToggleHidden/);
   // the feed toggle still rides every live row (the user 2026-08-19 pool-builder rule), aligned in
   // its own column; NOT auto-coupled to membership.
-  assert.match(SRC, /const ft = LANE_TOGGLES\.find\(\(t\) => t\.flag === 'hideFromFeed'\);/);
-  assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.hideFromFeed = next;/,
-    "the same optimistic sticky flags the lane gear uses");
+  // (the dialog's hideFromFeed lookup left with the feed column, 2026-08-25 — the lane gear keeps the flag)/);
+  // the per-row feed toggle left the dialog (2026-08-25); the lane gear still writes the same
+  // optimistic sticky flags — pinned in its own test block
+
   // the menu is multi-select toggles since 2026-08-25: All first (a plain pick), (no tags) a
   // toggle second, tag toggles after; the one management entry is Configure tags… — creation
   // moved into the dialog's bulk bar
@@ -299,7 +300,7 @@ test("executed: tagEditFailed reverts the optimistic copy and keeps the reason f
 
 test("federation v1+ruling source pins: header/chips route through the UNION dispatcher, loudly on failure", () => {
   // rename/recolor/delete fan out to EVERY home; chip ✕ removes everywhere; add prefers local
-  assert.match(SRC, /this\._editTagUnion\(tg, \{ rename: nv \}\);/);
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ rename: nv2 \}\);/);
   assert.match(SRC, /this\._editTagUnion\(tg, \{ color: c \}\); build\(\);/);
   assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\);/);
   assert.match(SRC, /this\._editTagUnion\(g, \{ remove: \[s\.id\] \}\); rebuild\(\);/);
@@ -435,5 +436,22 @@ test("cross-pane dismissal rides the storage echo (the user 2026-08-25)", () => 
   assert.match(SRC, /e\.key === 'romp:menu-echo' && e\.newValue/, "every open menu listens");
   assert.match(SRC, /localStorage\.setItem\('romp:menu-echo'/, "every pane writes the pointerdown echo");
   assert.match(SRC, /addEventListener\('storage', this\._onMenuEcho\)/);
+});
+
+test("dialog polish + reachable tag management (the user 2026-08-25)", () => {
+  // the dialog reads at the page's 13px form scale (the menu 12px was the too-small complaint)
+  assert.match(SRC, /MENU_STYLE \+ 'font-size:13px;'/);
+  // the session table scrolls WITHIN the modal — chrome stays put
+  assert.match(SRC, /gridBox\.setAttribute\('style', 'flex:1 1 auto;min-height:0;overflow-y:auto;'\)/);
+  // [+] is a rounded RECTANGLE in its own column between name and tags
+  assert.match(SRC, /padding:1px 7px;'\n\s*\+ 'border-radius:5px;/, "the standard button anatomy, not a circle");
+  assert.ok(!/width:17px;height:17px;'\n?\s*\+ 'border-radius:50%/.test(SRC), "the circle plus is gone");
+  // the feed column + mute-all left the dialog; the flag lives on in the lane gear
+  assert.ok(!SRC.includes("its prompts make feed cards"), "no per-row feed toggle here");
+  assert.ok(!SRC.includes("mute feed for all"), "no bulk feed control here");
+  // tag management reachable from EVERY open: rows with rename/recolor/delete via the union dispatcher
+  assert.match(SRC, /the tags — rename, recolor, delete/);
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\); build\(\);/, "delete without a tag-scoped open");
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ color: c \}\); build\(\);/, "the identity-palette recolor");
 });
 

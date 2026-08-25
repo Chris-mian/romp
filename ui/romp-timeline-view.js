@@ -2958,7 +2958,10 @@ class TimelinePanel {
     back.setAttribute('style', 'position:fixed;inset:0;z-index:1002;background:rgba(0,0,0,0.55);'
       + 'display:flex;align-items:center;justify-content:center;');
     const card = back.createDiv();
-    card.setAttribute('style', 'width:min(560px,94vw);max-height:78vh;overflow:auto;padding:14px 16px;' + MENU_STYLE);
+    // the dialog is a FORM, not a menu: it reads at 13px (the page's standard reading size, the
+    // user 2026-08-25: the menu 12px read too small here) — sub-lines keep the one 0.82em scale
+    card.setAttribute('style', 'width:min(560px,94vw);max-height:78vh;overflow:hidden;display:flex;flex-direction:column;padding:14px 16px;'
+      + MENU_STYLE + 'font-size:13px;');
     card.addEventListener('click', (e) => e.stopPropagation());
     // the open [+] menu's key rides the INSTANCE (this._tagAddFor: sid, or '*' for the bulk bar)
     // so the shared join builder can close it from either surface — the dialog or the lane gear
@@ -2981,35 +2984,11 @@ class TimelinePanel {
       // NAME-KEYED (user ruling 2026-08-24): whichever store's id opened this, the header is the
       // tag's ONE identity — rename/recolor/delete fan out to every kernel defining the name
       // (_editTagUnion), and no host prefix appears; kernels are plumbing.
-      const tg = gid ? (viewTagUnion(v).find((x) => x.ids.indexOf(gid) >= 0) || null) : null;
-      if (gid && !tg) { this._closeViewsDialog(); return; }   // the tag was deleted elsewhere
       const canEdit = typeof window !== 'undefined' && typeof window.__rompTimelineEditTag === 'function';
       const head = card.createDiv();
       head.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:0 0 8px;');
-      if (tg) {
-        const nameIn = document.createElement('input');
-        nameIn.value = tg.name; nameIn.maxLength = 40;
-        nameIn.disabled = !tg.localId && !canEdit;   // remote-only + no bridge (Obsidian) → read-only
-        nameIn.setAttribute('style', 'flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;'
-          + 'border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:3px 6px;font:inherit;');
-        nameIn.addEventListener('change', () => {
-          const nv = nameIn.value.slice(0, 40).trim();
-          if (nv && nv !== tg.name) this._editTagUnion(tg, { rename: nv });
-          build();
-        });
-        head.appendChild(nameIn);
-        const del = head.createSpan({ text: 'Delete' });
-        del.setAttribute('style', 'flex:0 0 auto;cursor:pointer;opacity:0.7;color:#F85B5A;'
-          + (tg.localId || canEdit ? '' : 'display:none;'));
-        hover(del, 'opacity:1;', 'opacity:0.7;');
-        del.addEventListener('click', () => {
-          this._editTagUnion(tg, { delete: true });
-          this._closeViewsDialog();
-        });
-      } else {
-        const ttl = head.createDiv({ text: 'Sessions & tags' });
-        ttl.setAttribute('style', 'font-weight:650;');
-      }
+      const ttl = head.createDiv({ text: 'Sessions & tags' });
+      ttl.setAttribute('style', 'font-weight:650;');
       // the LOUD failure of the last routed edit (a down owner, a collision there) — dismissible
       if (this._tagEditErr) {
         const er = card.createDiv();
@@ -3020,14 +2999,57 @@ class TimelinePanel {
         ex.setAttribute('style', 'margin-left:auto;cursor:pointer;opacity:0.7;');
         ex.addEventListener('click', () => { this._tagEditErr = null; build(); });
       }
-      if (tg && (tg.localId || canEdit)) {
-        const sw = card.createDiv();
-        sw.setAttribute('style', 'display:flex;gap:6px;margin:2px 0 8px;flex-wrap:wrap;');
-        for (const c of (this._palette && this._palette.length ? this._palette : [tg.color || '#1EA1EB'])) {
-          const d = sw.createSpan();
-          d.setAttribute('style', 'width:16px;height:16px;border-radius:50%;cursor:pointer;background:' + c + ';'
-            + (c === tg.color ? 'outline:2px solid #ffffff;outline-offset:1px;' : 'opacity:0.75;'));
-          d.addEventListener('click', () => { this._editTagUnion(tg, { color: c }); build(); });
+      // ── THE TAGS SECTION (the user 2026-08-25: delete and recolor had no reachable home —
+      // the affordances existed but only rendered on a tag-scoped open, and every entry point
+      // opens unscoped now). One row per union tag from EVERY open: the color dot opens the
+      // identity-palette picker, the name is an input (rename on change), Delete at the right.
+      // All through _editTagUnion — local edits in place, remote-homed tags fan out over the v1
+      // editTag route with its loud refusals. A gid deep-link highlights its row.
+      {
+        const capT = card.createDiv();
+        capT.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:4px 0;');
+        capT.createDiv().setAttribute('style', 'height:1px;flex:0 0 8px;background:rgba(255,255,255,0.12);');
+        const ct = capT.createSpan({ text: 'the tags — rename, recolor, delete' });
+        ct.setAttribute('style', 'font-size:0.82em;opacity:0.6;font-style:italic;white-space:nowrap;');
+        capT.createDiv().setAttribute('style', 'height:1px;flex:1;background:rgba(255,255,255,0.12);');
+        for (const tg of viewTagUnion(v)) {
+          const editable = tg.localId || canEdit;
+          const trow = card.createDiv();
+          trow.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:2px 0;'
+            + (gid && tg.ids.indexOf(gid) >= 0 ? 'outline:1px solid rgba(255,255,255,0.25);outline-offset:2px;border-radius:4px;' : ''));
+          const dot = trow.createSpan();
+          dot.setAttribute('style', 'width:12px;height:12px;border-radius:50%;flex:0 0 auto;cursor:'
+            + (editable ? 'pointer' : 'default') + ';background:' + (tg.color || MODEL_FG) + ';');
+          dot.setAttribute('title', editable ? 'change this tag\u2019s color' : 'read-only here');
+          const nameIn = document.createElement('input');
+          nameIn.value = tg.name; nameIn.maxLength = 40;
+          nameIn.disabled = !editable;
+          nameIn.setAttribute('style', 'flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;'
+            + 'border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:2px 6px;font:inherit;');
+          nameIn.addEventListener('change', () => {
+            const nv2 = nameIn.value.slice(0, 40).trim();
+            if (nv2 && nv2 !== tg.name) this._editTagUnion(tg, { rename: nv2 });
+            build();
+          });
+          trow.appendChild(nameIn);
+          const del = trow.createSpan({ text: 'Delete' });
+          del.setAttribute('style', 'flex:0 0 auto;cursor:pointer;opacity:0.7;color:#F85B5A;font-size:0.82em;'
+            + (editable ? '' : 'display:none;'));
+          hover(del, 'opacity:1;', 'opacity:0.7;');
+          del.addEventListener('click', () => { this._editTagUnion(tg, { delete: true }); build(); });
+          let swRow = null;
+          if (editable) dot.addEventListener('click', () => {
+            if (swRow) { swRow.remove(); swRow = null; return; }
+            swRow = card.createDiv();
+            trow.after(swRow);
+            swRow.setAttribute('style', 'display:flex;gap:6px;margin:2px 0 4px 20px;flex-wrap:wrap;');
+            for (const c of (this._palette && this._palette.length ? this._palette : [tg.color || '#1EA1EB'])) {
+              const d = swRow.createSpan();
+              d.setAttribute('style', 'width:16px;height:16px;border-radius:50%;cursor:pointer;background:' + c + ';'
+                + (c === tg.color ? 'outline:2px solid #ffffff;outline-offset:1px;' : 'opacity:0.75;'));
+              d.addEventListener('click', () => { this._editTagUnion(tg, { color: c }); build(); });
+            }
+          });
         }
       }
       // SCOPE SECTION (the user 2026-08-25): which selection each surface holds, side by side,
@@ -3101,37 +3123,21 @@ class TimelinePanel {
       hover(tagAll, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
       tagAll.setAttribute('title', 'add a tag to every session the search shows');
       tagAll.addEventListener('click', () => { this._tagAddFor = this._tagAddFor === '*' ? null : '*'; renderRows(); });
-      const feedAll = bar.createSpan();
-      feedAll.setAttribute('style', btnStyle);
-      hover(feedAll, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
-      bar.appendChild(feedAll);
+      // (the mute-feed-for-all control left with the feed column, the user 2026-08-25 — the
+      // per-session flag lives on in the lane gear)
       const gridBox = card.createDiv();
-      const ft = LANE_TOGGLES.find((t) => t.flag === 'hideFromFeed');
+      // the TABLE scrolls within the modal (the user 2026-08-25) — header, scope, tags, and the
+      // bulk bar stay put; only the session rows pan (the .cmt-msgs overflow idiom family)
+      gridBox.setAttribute('style', 'flex:1 1 auto;min-height:0;overflow-y:auto;');
       const renderRows = () => {
         gridBox.textContent = '';
         const needle = query.trim().toLowerCase();
         const rows = ((this.data && this.data.sessions) || []).filter((s) =>
           !needle || String(s.name || s.id || '').toLowerCase().indexOf(needle) >= 0);
-        // the feed-all control speaks for the FILTERED live set: any card-minting session → mute
-        const liveRows = rows.filter((s) => s.live);
-        const anyOn = !!ft && liveRows.some((s) => ft.enabled(s));
-        feedAll.textContent = anyOn ? 'mute feed for all' : 'restore feed for all';
-        feedAll.setAttribute('title', anyOn
-          ? 'mute feed cards for every live session the search shows'
-          : 'restore feed cards for every live session the search shows');
-        feedAll.onclick = () => {
-          if (!ft) return;
-          const flagVal = ft.value(!anyOn);   // any still minting → mute all; all muted → restore all
-          for (const s of liveRows) {
-            s.hideFromFeed = flagVal;
-            (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = flagVal;
-            this._setSessionFlag(s, 'hideFromFeed', flagVal);
-          }
-          this._reconcilePendingFlags();
-          renderRows();
-        };
         const grid = gridBox.createDiv();
-        grid.setAttribute('style', 'display:grid;grid-template-columns:max-content 1fr max-content max-content max-content;'
+        // columns: name | + | tags (the user 2026-08-25 — the [+] sits in its OWN column between
+        // the session name and the tags; the feed column left the dialog, see below)
+        grid.setAttribute('style', 'display:grid;grid-template-columns:max-content max-content 1fr;'
           + 'column-gap:10px;row-gap:3px;align-items:center;');
         const addMenu = (rowIds) => {   // the [+] menu, per-row or bulk — the SHARED join builder, grid-spanning
           const am = grid.createDiv();
@@ -3153,45 +3159,24 @@ class TimelinePanel {
           const nm = nameCell.createSpan({ text: bare });
           nm.setAttribute('style', 'font-weight:650;color:' + (s.color || '#cccccc') + ';'
             + (s.live ? '' : 'text-decoration:line-through;'));
+          // [+] — its own column between the name and the tags (the user 2026-08-25), wearing the
+          // standard button anatomy: a rounded RECTANGLE, not a circle
+          const plusCell = grid.createDiv();
+          const plus = plusCell.createSpan({ text: '+' });
+          plus.setAttribute('style', 'display:inline-flex;align-items:center;justify-content:center;padding:1px 7px;'
+            + 'border-radius:5px;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;background:transparent;');
+          hover(plus, 'background:rgba(255,255,255,0.09);opacity:1;', 'background:transparent;opacity:0.7;');
+          plus.setAttribute('title', 'add a tag');
+          plus.addEventListener('click', () => { this._tagAddFor = this._tagAddFor === s.id ? null : s.id; renderRows(); });
           // TAGS — one solid chip per union tag holding this session (user ruling 2026-08-24:
           // a tag is its NAME; kernels are plumbing — the twin dashed/solid render is gone), ✕ =
           // remove-everywhere. The shared builder; the lane gear renders the identical editor.
           const chips = grid.createDiv();
           chips.setAttribute('style', 'display:flex;gap:5px;flex-wrap:wrap;align-items:center;min-width:0;');
           this._tagChips(chips, s, build);
-          // [+] — one aligned column, so the table reads as a table
-          const plusCell = grid.createDiv();
-          const plus = plusCell.createSpan({ text: '+' });
-          plus.setAttribute('style', 'display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;'
-            + 'border-radius:50%;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;font-size:0.85em;background:transparent;');
-          hover(plus, 'background:rgba(255,255,255,0.09);opacity:1;', 'background:transparent;opacity:0.7;');
-          plus.setAttribute('title', 'add a tag');
-          plus.addEventListener('click', () => { this._tagAddFor = this._tagAddFor === s.id ? null : s.id; renderRows(); });
-          // FEED — the pool-builder switch rides every live row (the user 2026-08-19), aligned
-          const feedCell = grid.createDiv();
-          if (ft && s.live) {
-            const on = ft.enabled(s);
-            const fic = el('svg', { viewBox: '0 0 17 17', width: 14, height: 14 });
-            fic.setAttribute('style', 'cursor:pointer;' + (on ? '' : 'opacity:0.55;'));
-            fic.appendChild(ft.icon(!on, 8.5, 8.5, on ? ROMP_BLUE : MODEL_FG));
-            fic.addEventListener('click', (e) => {
-              e.stopPropagation();
-              const next = ft.value(!on);
-              s.hideFromFeed = next;
-              (this._pendingFlags[s.id] = this._pendingFlags[s.id] || {}).hideFromFeed = next;
-              this._setSessionFlag(s, 'hideFromFeed', next);
-              this._reconcilePendingFlags();
-              renderRows();
-            });
-            fic.addEventListener('mouseenter', () => { fic.setAttribute('title', on
-              ? 'its prompts make feed cards — click to mute (a background worker usually wants this off)'
-              : 'feed-muted: new prompts mint no cards — click to restore'); fic.style.opacity = '1'; });
-            fic.addEventListener('mouseleave', () => { fic.style.opacity = on ? '' : '0.55'; });
-            feedCell.appendChild(fic);
-          }
-          // (the un-hide EYE retired with the hidden set, the user 2026-08-24 — tags cover
-          // backgrounding, and the kernel migrated existing hidden entries into "archived")
-          grid.createDiv();
+          // (the FEED column left this dialog, the user 2026-08-25 — the hideFromFeed flag stays
+          // fully reachable per session via the lane gear's toggle, which was always its other
+          // home; the un-hide EYE retired earlier with the hidden set, 2026-08-24)
           if (this._tagAddFor === s.id) addMenu([s.id]);
         }
       };
@@ -3261,8 +3246,8 @@ class TimelinePanel {
       tlab.setAttribute('style', 'opacity:0.6;font-size:0.82em;flex:0 0 auto;margin-right:2px;');
       this._tagChips(trow, s, build);
       const plus = trow.createSpan({ text: '+' });
-      plus.setAttribute('style', 'display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;'
-        + 'border-radius:50%;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;font-size:0.85em;background:transparent;');
+      plus.setAttribute('style', 'display:inline-flex;align-items:center;justify-content:center;padding:1px 7px;'
+        + 'border-radius:5px;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;font-size:0.85em;background:transparent;');
       plus.addEventListener('mouseenter', () => { plus.style.background = 'rgba(255,255,255,0.09)'; plus.style.opacity = '1'; });
       plus.addEventListener('mouseleave', () => { plus.style.background = 'transparent'; plus.style.opacity = '0.7'; });
       plus.setAttribute('title', 'add a tag');
