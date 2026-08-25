@@ -10,8 +10,6 @@ import { distillText, distillInputs, applyDistillLine, distillPending, distillSt
 import { spinFor, KIND_WORD, waitedSuffix } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { searchMatches, searchSids } from "./feed-search";
-import { cardInView, outsideView, outsideViewCount, viewLabel } from "./feed-view";
-import { SessionViews, viewsKey } from "./session-views";
 import { freezeDiff } from "./feed-freeze";
 import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
@@ -470,14 +468,6 @@ let sessionOrder: string[] = [];
 // menu lists exactly the tabs (the user 2026-08-08) — a session with no cards still appears, and
 // filtering to it shows an empty board. Federation prefixes sid+name per host and concatenates.
 let sessionsMeta: { sid: string; name: string; color: { bg: string; fg: string } | null }[] = [];
-// The ACTIVE session view (the user 2026-08-24): the same views blob every tabOrder push carries,
-// riding the feed payload — the board's cards gate on it (feed-view.ts / viewFiltered). The pending
-// copy is the tab strip's own optimistic convention (render.ts pendingSessionViews): a view switch
-// from THIS page applies at once and holds until the kernel's echo matches by shape (viewsKey) or
-// three pushes pass — a push count, never a timer.
-let feedViews: SessionViews | null = null;
-let feedViewsPending: SessionViews | null = null;
-let feedViewsPendingAge = 0;
 // The one session the board is filtered to, or null — the DEFAULT, nothing selected, everything shows.
 // sessionStorage, deliberately: it survives this tab's reloads (webviews reload on updates) but a fresh
 // window always starts unfiltered — a filter that persisted for days would read as silently lost cards.
@@ -886,14 +876,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // against the chips whenever it does fit on the one line.
   const origin = el("a", "fask-origin"); origin.style.display = "none";
   origin.title = "this work was delegated from another session — click to open it";
-  // ↪ BREAKTHROUGH cue (the user 2026-08-24): this card's session is OUTSIDE the active view — it
-  // shows anyway because it needs you (the interrupt rule); the cue says why it's here. Quiet, the
-  // ↪ provenance family, never a status colour.
-  const viewbreak = el("span", "fask-viewbreak"); viewbreak.style.display = "none";
-  viewbreak.textContent = "\u21aa outside this view";
-  viewbreak.title = "the active view hides this session — this card shows because it needs you";
-  idwrap.append(name);   // the cue is a DIRECT row2 child below: grouped mode hides idwrap wholesale,
-  //                        and a breakthrough under a session header still needs its why
+  idwrap.append(name);
   const actions = el("div", "fask-actions");
   // (the "reopened" chip was DELETED 2026-07-07: dead since cleared-is-sealed-forever made a follow-up
   // to a cleared card a FRESH goal (2026-06-22) — the kernel never produced the flag again.)
@@ -1017,7 +1000,7 @@ function makeAskCard(it: AskItem): HTMLElement {
   // direct children they render in BOTH modes, count toward row2's grouped-mode liveness, and the
   // API badge stays immediately before its Retry button — one visual unit. idwrap keeps only the
   // name. Placement only; every badge's mint/retire semantics are untouched.
-  row2.append(idwrap, retryBadge, apiBadge, apiRetry, jauthBadge, blkBadge, origin, viewbreak, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
+  row2.append(idwrap, retryBadge, apiBadge, apiRetry, jauthBadge, blkBadge, origin, fupBadge, dcBadge, nfBadge, intingBadge, intBadge, warnChip, waitOnBadge);
   // the bell BUTTON (the user 2026-07-28): INLINE in row1's metadata cluster, right after the
   // timestamp (the last line's tail), the one spot that never shoves the title — and in-flow, so it
   // cannot overlap the floated Clear. It hides with VISIBILITY, so its slot is reserved whether or
@@ -1238,7 +1221,6 @@ function makeAskCard(it: AskItem): HTMLElement {
   a._taskBtn = taskBtn; a._taskLbl = taskLbl;
   a._awaitSpin = awaitSpin; a._awaitWhy = awaitWhy;
   a._origin = origin;
-  a._viewbreak = viewbreak;
   return card;
 }
 
@@ -1607,8 +1589,6 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
   a._name.replaceChildren(...hostNameNodes(it.name, it.sid));   // remote "host:" prefix = quiet metadata
   if (it.color) a._name.style.color = it.color.bg;
   setWorkDot(a._name, dotFor(it.name));   // working/awaiting dot before the session name
-  // a card on the board whose session the active view HIDES is a breakthrough — say why it's here
-  (a._viewbreak as HTMLElement).style.display = outsideView(feedViews, it.sid) ? "" : "none";
   // ↪ courier handoff: planted by a peer's message → "↪ from <sender>", click opens the sender
   const og = a._origin as HTMLElement;
   if (it.origin && it.origin.peer) {
@@ -2225,9 +2205,6 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   const row2 = el("div", "fask-row2");
   const idwrap = el("div", "fask-id");
   const name = el("a", "fname"); name.title = "open this session";
-  const gviewbreak = el("span", "fask-viewbreak"); gviewbreak.style.display = "none";
-  gviewbreak.textContent = "\u21aa outside this view";   // breakthrough cue — same dress as the ask card's
-  gviewbreak.title = "the active view hides this session — this card shows because it needs you";
   idwrap.append(name);   // no "· N parts" label — the member checklist below already shows the count
   const clr = el("button", "fdismiss"); clr.textContent = "Clear"; clr.title = "clear ALL sub-asks of this request (inbox-zero)";
   // Clear rides row1's action corner in every mode (the user 2026-08-08) — matches the ask card. Same
@@ -2236,7 +2213,7 @@ function makeGroupCard(g: AskGroup): HTMLElement {
   const btns = el("span", "fask-btns");
   btns.append(clr);
   row1.append(btns);
-  row2.append(idwrap, gviewbreak);   // the cue is a row2 SIBLING: grouped mode hides idwrap wholesale
+  row2.append(idwrap);
   const memberList = el("div", "fgroup-members");   // no row3: the group card has no time-row content left
   main.append(row1, row2, memberList);
   card.append(main);
@@ -2319,9 +2296,6 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   a._name.replaceChildren(...hostNameNodes(g.name, g.sid));
   if (g.color) a._name.style.color = g.color.bg;
   setWorkDot(a._name, dotFor(g.name));   // working/awaiting dot before the session name
-  const gbroke = outsideView(feedViews, g.sid);   // shown AND view-hidden = a breakthrough
-  const gvb = card.querySelector(".fask-viewbreak") as HTMLElement | null;
-  if (gvb) gvb.style.display = gbroke ? "" : "none";   // breakthrough cue
   a._time.textContent = relAge(hostNow - g.t);
   wireAgeTip(a._time, () => provenanceGroupRows(g.members.map(rootStart), g.t, hostNow, PROV_FMT));
   // member lines — rebuilt only when the member set or any member's status changes
@@ -2341,8 +2315,7 @@ function updateGroupCard(card: HTMLElement, g: AskGroup) {
   // user 2026-08-08 — no re-home between renders.)
   const gmode = feedPrefs().grouped;
   ((a._name as HTMLElement).parentElement as HTMLElement).style.display = gmode ? "none" : "";
-  (a._row2 as HTMLElement).style.display = gmode && !gbroke ? "none" : "";   // the group's row2 is only the
-  //   name now — except a BREAKTHROUGH's cue (grouped hides the name via idwrap; the cue stays)
+  (a._row2 as HTMLElement).style.display = gmode ? "none" : "";   // the group's row2 is only the name now
 }
 
 // Transient hover-highlight signal: hovering a modal line emits its event id(s);
@@ -4079,16 +4052,15 @@ function paintJudgeLimit(): void {
 // Shared by render() and the hover-freeze badge painter, so the deferred-churn hint counts exactly
 // what the user would see move.
 function viewFiltered(list: AskItem[]): AskItem[] {
-  // the ACTIVE session view gates the board FIRST (the user 2026-08-24): the same union-aware
-  // decider the tabs read (feed-view.ts cardInView -> session-views.ts viewVisible — never a fourth
-  // fork), with the BREAKTHROUGH GUARD: a needs-you card always shows, wearing the outside-view cue.
-  // Inside this helper like every display filter — the hover-freeze churn badges count through it.
-  let shown = feedViews ? list.filter((a) => cardInView(feedViews, a.sid, askColumn(a) === "needsInput")) : list;
+  // The board shows EVERY session's cards, whatever tag view the tabs/timeline hold (the user's
+  // 2026-08-25 ruling, superseding the 2026-08-24 feed-follows-the-view coupling after living with
+  // it): the feed is the attention/clearing surface — hidden-elsewhere work still lands and clears
+  // here. Its ONLY narrowing is its own local scoping below (the combobox exact filter + search).
   // A tracked delegation's satellite lives under its delegator's PRIMARY card: the default board
   // hides it, and picking its session in the filter is the one-click path back. INSIDE this helper
   // on purpose — the hover-freeze churn badges count through it, so they see exactly what the
   // board shows (a filter outside would paint +N for cards that never appear).
-  shown = feedOnlySid ? shown.filter((a) => a.sid === feedOnlySid) : shown.filter((a) => !a.satellite);
+  let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list.filter((a) => !a.satellite);
   const sMatch = searchSids(feedSearchQ, sessionsMeta);
   if (sMatch) shown = shown.filter((a) => sMatch.has(a.sid) || searchMatches(feedSearchQ, (a as { name?: string }).name));
   return shown;
@@ -4241,41 +4213,6 @@ function render() {
   }
   for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid) && undismissed(groupEls.get(tid))) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
 
-  // "N cards outside this view" (the user 2026-08-24; the 2026-08-11 rule: what a view filters
-  // away stays one glance from reach, never silently omitted). Dim, one line, after the columns;
-  // the click switches the active view to All — optimistically (the board reflows NOW, the
-  // click-safety acknowledgement), the kernel echo reconciling through the pending-copy above.
-  const outN = feedViews ? outsideViewCount(feedViews,
-    asks.map((a) => ({ sid: a.sid, needsYou: askColumn(a) === "needsInput" }))) : 0;
-  let vmore = document.getElementById("feed-viewmore");
-  if (!vmore) {
-    vmore = el("div", "");
-    vmore.id = "feed-viewmore";
-    vmore.title = "cards from sessions the active view hides — click to switch the view to All";
-    vmore.onclick = () => {
-      if (!feedViews) return;
-      feedViewsPending = { ...feedViews, active: "all" };
-      feedViewsPendingAge = 0;
-      feedViews = feedViewsPending;
-      vscodeApi?.postMessage({ type: "setTimelineViews", views: feedViewsPending });
-      render();
-    };
-    list.appendChild(vmore);
-  }
-  // PROMOTION (the user 2026-08-25, who read a view-narrowed board as "the feed is broken": one card
-  // showed, twenty hid, and the dim line went unseen): when the view hides MORE than the board shows,
-  // the line trades the whisper for the judge-limit banner's card chrome and NAMES the view — the
-  // near-empty board must state plainly which view it is showing and how to widen. Exact rule, no
-  // heuristics: outN > (cards on the board).
-  const shownN = viewFiltered(asks).length;
-  vmore.classList.toggle("prominent", outN > shownN);
-  vmore.style.display = outN ? "" : "none";
-  if (outN) {
-    vmore.textContent = outN > shownN
-      ? "Showing the \u201c" + viewLabel(feedViews) + "\u201d view — " + outN
-        + (outN === 1 ? " card is" : " cards are") + " in other views · show all"
-      : outN + (outN === 1 ? " card" : " cards") + " outside this view — show all";
-  }
   list.scrollTop = prevScroll;
   // Stale-freeze heal (hover-freeze): a LOCAL render can detach or re-key the hovered element with
   // no mouseleave — a removed element never fires leave events (typing in search filters the card
@@ -4727,13 +4664,6 @@ function applyFeedPayload(m: any): void {
   unknownSet = new Set(Array.isArray(m.stateUnknown) ? m.stateUnknown : []);   // listed-but-unreadable → gray ring, never a blank
   bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
   if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
-  if (m.views && typeof m.views === "object") {
-    const incoming = m.views as SessionViews;
-    if (feedViewsPending && (viewsKey(incoming) === viewsKey(feedViewsPending) || ++feedViewsPendingAge >= 3)) {
-      feedViewsPending = null; feedViewsPendingAge = 0;   // the echo landed (or three pushes said it never will)
-    }
-    feedViews = feedViewsPending || incoming;
-  }
   if (Array.isArray(m.sessions)) {
     sessionsMeta = m.sessions.filter((s: any) => s && typeof s.sid === "string" && typeof s.name === "string");
     // a filter aimed at a session the tab strip no longer shows is moot — clear it (the deciding
