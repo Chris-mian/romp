@@ -300,8 +300,8 @@ test("executed: tagEditFailed reverts the optimistic copy and keeps the reason f
 
 test("federation v1+ruling source pins: header/chips route through the UNION dispatcher, loudly on failure", () => {
   // rename/recolor/delete fan out to EVERY home; chip ✕ removes everywhere; add prefers local
-  assert.match(SRC, /this\._editTagUnion\(tg, \{ rename: nv2 \}\);/);
-  assert.match(SRC, /this\._editTagUnion\(tg, \{ color: c \}\); build\(\);/);
+  assert.match(SRC, /this\._editTagUnion\(open, \{ rename: nv2 \}\);/);
+  assert.match(SRC, /this\._editTagUnion\(open, \{ color: c \}\); build\(\);/);
   assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\);/);
   assert.match(SRC, /this\._editTagUnion\(g, \{ remove: \[s\.id\] \}\); rebuild\(\);/);
   assert.match(SRC, /this\._editTagUnion\(g, \{ add: rowIds\.filter\(\(id\) => g\.members\.indexOf\(id\) < 0\) \}\); rebuild\(\);/);
@@ -450,8 +450,29 @@ test("dialog polish + reachable tag management (the user 2026-08-25)", () => {
   assert.ok(!SRC.includes("its prompts make feed cards"), "no per-row feed toggle here");
   assert.ok(!SRC.includes("mute feed for all"), "no bulk feed control here");
   // tag management reachable from EVERY open: rows with rename/recolor/delete via the union dispatcher
-  assert.match(SRC, /the tags — rename, recolor, delete/);
-  assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\); build\(\);/, "delete without a tag-scoped open");
-  assert.match(SRC, /this\._editTagUnion\(tg, \{ color: c \}\); build\(\);/, "the identity-palette recolor");
+  assert.match(SRC, /text: 'the tags'/);
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\);\n\s*build\(\);/, "delete without a tag-scoped open");
+  assert.match(SRC, /this\._editTagUnion\(open, \{ color: c \}\); build\(\);/, "the identity-palette recolor");
+});
+
+test("the dialog redesign: chip cloud, delete-✕ convention, five filter rows (the user 2026-08-25)", () => {
+  // TAGS: a compact chip cloud — click a chip to edit (rename+recolor), ✕ ON the chip DELETES the
+  // tag, wearing the destructive convention (red-tinted hover) so it can't be mistaken for a
+  // membership ✕; [+ New tag] closes the section in the rounded-rect anatomy
+  assert.match(SRC, /this\._tagEditorFor = this\._tagEditorFor === tg\.name \? null : tg\.name;/, "chip click toggles its editor");
+  assert.match(SRC, /dx\.style\.color = '#F85B5A'/, "the delete-✕ goes red on hover — destructive, unlike membership ✕");
+  assert.match(SRC, /DELETE the tag/, "the hover says what the ✕ does");
+  assert.match(SRC, /text: '\+ New tag'/, "creation closes the tag section");
+  // FILTERS: five rows — All surfaces / Chat / Sessions / Outline / Feed (the pane names), each
+  // the full lens vocabulary as pills editing ONLY its surface; All-surfaces fans to all four
+  assert.match(SRC, /\[\['All surfaces', '\*'\], \['Chat', 'chat'\], \['Sessions', 'timeline'\], \['Outline', 'outline'\], \['Feed', 'feed'\]\]/);
+  assert.match(SRC, /const upd = key === '\*' \? \{ chat: lens, timeline: lens, outline: lens \} : \{\};/,
+    "All-surfaces writes all three kernel lenses…");
+  assert.match(SRC, /if \(key === '\*' \|\| key === 'feed'\) \{\n\s*try \{ localStorage\.setItem\('romp:feedTags-set'/,
+    "…and reaches the feed (and the feed row itself) through the adoption echo — the placeholder died");
+  assert.match(SRC, /return four\.every\(\(l\) => canonL\(l\) === canonL\(four\[0\]\)\) \? four\[0\] : null;/,
+    "the All-surfaces row shows agreement, or (mixed)");
+  assert.match(SRC, /as last set from this dialog/, "the feed row's display is honest about its source");
+  assert.match(SRC, /pane filters — what each pane shows/, "the sections are separately captioned");
 });
 
