@@ -66,7 +66,16 @@ test("the mount is the SHARED component: tag glyph button, stay-open menu, Confi
     "one management entry; creation lives in the dialog");
   assert.match(PIPE, /"openTagsDialog"/, "the VS Code pipe whitelists the route the kernel already carries");
   assert.match(FEED, /ensureTagLensBtn\(\)\.style\.display = showCA \? "" : "none";/, "footer-gated like its siblings");
-  assert.match(FEED, /b\.style\.color = active \? "var\(--accent\)" : "";/, "active wears the accent, never re-hardcoded");
+  // resting state = the SIBLINGS' computed style by construction (the user 2026-08-25, round two:
+  // the shared component's inline dress made rest blue-outlined and All off-black): the inline
+  // style is stripped and the className IS the sibling vocabulary — equality pinned, so it can't
+  // drift dark again; active is the standard .on class only, no inline colour anywhere.
+  assert.match(FEED, /b\.removeAttribute\("style"\);/);
+  assert.match(FEED, /b\.className = "fdismiss ffollow feed-modetoggle";/,
+    "the exact class string the Sessions/View buttons wear");
+  assert.match(FEED, /b\.classList\.toggle\("on", active\);/, "accent ONLY while the lens narrows");
+  const mnt = FEED.slice(FEED.indexOf("function ensureTagLensBtn"), FEED.indexOf("function ensureInternalLens"));
+  assert.ok(!mnt.includes("style.color"), "no inline colour survives in the mount");
 });
 
 test("what the lens hides stays one glance away: whisper, promoted banner, click-to-All (665 lineage)", () => {

@@ -908,6 +908,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    + promoted banner, revived under the user's OWN lens): dim one-liner after the columns; when the
    lens hides MORE than the board shows, the judge-limit banner's card chrome + the lens named.
    Neutral chrome — a narrowed board is a choice, not an error. */
+/* the tag-glyph button sits flush with its word-button siblings: same .fdismiss dress (the shared
+   component's inline style is stripped at mount — the user 2026-08-25, whose resting button wore an
+   accent outline and an off-black All state); only the svg centering is its own. */
+#feed-taglens { display: inline-flex; align-items: center; }
+#feed-taglens svg { display: block; }
 #feed-lensmore { padding: 4px 14px 10px; color: var(--dim); font-size: 0.82em; cursor: pointer; }
 #feed-lensmore:hover { color: var(--accent); text-decoration: underline; }
 #feed-lensmore.prominent { margin: 6px 8px 2px; padding: 10px 14px; background: #252526;
