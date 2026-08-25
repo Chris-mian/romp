@@ -18,6 +18,9 @@ export interface SessionViews {
   // the kernel per host (id = "host:tagid", members already respelled viewer-relative). Derived —
   // never an edit target, excluded from the echo key, dropped by the kernel if echoed back.
   remoteTags?: SessionTag[];
+  /** per-surface multi-select lenses (the user 2026-08-25) — the shared TagLens shape; the legacy
+   *  scalar `active` stays for old clients and seeds these on migration (kernel-normalized) */
+  actives?: { [surface: string]: { all?: boolean; none?: boolean; tags?: string[] } };
 }
 // One union group = one tag NAME across every kernel defining it (user ruling 2026-08-24: kernels
 // are plumbing — no host prefixes in any tag presentation). The typed mirror of the timeline's
@@ -74,6 +77,7 @@ export function viewVisible(views: SessionViews | null | undefined, id: string):
 export function viewsKey(v: SessionViews | null | undefined): string {
   if (!v) return "";
   return JSON.stringify({ active: v.active || "all",
+    actives: v.actives || {},   // per-surface lenses are client-posted state — the echo compares them (2026-08-25)
     tags: viewTags(v).map((t) => ({ id: t.id, name: t.name, color: t.color,
                                     members: (t.members || []).slice().sort() })) });
 }

@@ -1604,6 +1604,40 @@ def _member_str(m):
     return (h + ":" + m["sid"]) if h else m["sid"]
 
 
+_LENS_SURFACES = ("chat", "timeline")   # per-surface selections (the user 2026-08-25); the feed's is client-local
+
+
+def _norm_lens(x, tags):
+    """One surface's selection in the shared TagLens shape ({all} | {none?, tags?:[names]} — the
+    feed-authored model, manager-sanctioned as the shared shape 2026-08-25). Tag entries are NAMES
+    (name-keyed union; kernels are plumbing), and an unknown name is KEPT — it may exist only on a
+    linked kernel and match remoteTags at read time. An empty selection normalizes to All (the lens
+    never strands an empty selection)."""
+    if not isinstance(x, dict) or x.get("all"):
+        return {"all": True}
+    names = []
+    for n in (x.get("tags") if isinstance(x.get("tags"), list) else []):
+        if isinstance(n, str) and n[:_VIEWS_MAX_NAME] not in names:
+            names.append(n[:_VIEWS_MAX_NAME])
+    lens = {}
+    if x.get("none"):
+        lens["none"] = True
+    if names:
+        lens["tags"] = names[:_VIEWS_MAX_TAGS]
+    return lens or {"all": True}
+
+
+def _lens_seed(active, tags):
+    """A legacy scalar active as a lens — the migration seed for every surface's initial selection
+    (the user 2026-08-25: the current shared view becomes each surface's starting point). A tag id
+    seeds its NAME; an unresolvable id (a remote tag whose kernel is away) seeds All rather than a
+    view this kernel cannot name."""
+    if active == "untagged":
+        return {"none": True}
+    t = next((t for t in tags if t["id"] == active), None)
+    return {"tags": [t["name"]]} if t else {"all": True}
+
+
 def _norm_timeline_views(d):
     """Validate + normalize a views blob from disk or a client: always returns the full shape, drops
     junk quietly, clamps sizes, and falls back active→"all" when the named tag does not exist.
@@ -1643,7 +1677,16 @@ def _norm_timeline_views(d):
     if active not in ("all", "untagged") and ":" not in active \
             and not any(t["id"] == active for t in tags):
         active = "all"
-    return {"active": active, "tags": tags}
+    # PER-SURFACE SELECTIONS (the user 2026-08-25): each surface owns a multi-select lens under
+    # `actives`; the legacy scalar `active` STAYS — written, validated, echoed — so old clients and
+    # the federation poll keep working, and it SEEDS every surface's initial selection the first
+    # time a blob without `actives` is read (lossless migration, no store rewrite).
+    posted = d.get("actives") if isinstance(d.get("actives"), dict) else None
+    actives = {}
+    for sf in _LENS_SURFACES:
+        actives[sf] = _norm_lens(posted.get(sf), tags) if posted and isinstance(posted.get(sf), dict) \
+            else (_lens_seed(active, tags) if posted is None else {"all": True})
+    return {"active": active, "actives": actives, "tags": tags}
 
 
 def _timeline_views():
@@ -1766,7 +1809,21 @@ def _views_client():
     return v
 
 
-def _view_visible(views, sid):
+def _lens_visible(views, lens, sid):
+    """The multi-select decision (the user 2026-08-25), kernel-authoritative and mirrored by
+    tag-lens.ts: All admits everything; `none` admits a session in NO tag home (the name-keyed
+    union — local and remote alike, my untagged rule); a selected tag NAME admits its union's
+    members; visibility is the UNION over the selected buckets."""
+    if not isinstance(lens, dict) or lens.get("all"):
+        return True
+    everything = list(views["tags"]) + list(views.get("remoteTags") or [])
+    if lens.get("none") and not any(sid in t["members"] for t in everything):
+        return True
+    picked = set(lens.get("tags") or [])
+    return any(t["name"] in picked and sid in t["members"] for t in everything)
+
+
+def _view_visible(views, sid, surface=None):
     """The one visibility decision, kernel-authoritative: mirrored by the chat renderer and the
     timeline for optimistic feedback — tests pin all three against this shape. Operates on the
     RENDERED blob (_views_client: string members + remoteTags) — the shape every client holds; a
@@ -1776,7 +1833,11 @@ def _view_visible(views, sid):
     system covers backgrounding, and existing hidden entries migrated into the "archived" tag).
     UNTAGGED keeps its meaning (the user 2026-08-23): tagging a session says "specialized — out of
     the untagged view, viewable under its tag", so membership itself excludes there. A tag view
-    shows exactly its members."""
+    shows exactly its members. With a SURFACE named (per-surface selections, the user 2026-08-25),
+    the decision is that surface's lens instead — the scalar path below stays for legacy callers
+    and the tests that pin it."""
+    if surface is not None:
+        return _lens_visible(views, (views.get("actives") or {}).get(surface), sid)
     if views["active"] == "all":
         return True                                  # All = literally everything (hidden retired 2026-08-24)
     if views["active"] == "untagged":
@@ -24390,7 +24451,8 @@ else if(m.type==="hover"&&panel.setHover)panel.setHover(m);
 // this inline copy serves the browser, that one the VS Code webview. net-popover-known.test.ts's sibling
 // timeline-boot.test.ts pins the pair.
 else if(m.type==="revealEvent"&&panel.revealEvent)panel.revealEvent(m.sid,m.t,m.id);
-else if(m.type==="tagEditFailed"&&panel.tagEditFailed)panel.tagEditFailed(m);});
+else if(m.type==="tagEditFailed"&&panel.tagEditFailed)panel.tagEditFailed(m);
+else if(m.type==="openViewsDialog"&&panel._openViewsDialog)panel._openViewsDialog(null);});
 window.__rompTimelineOpenExternal=function(url){try{var u=new URL(url);if(u.protocol==="vscode:"){var q=u.searchParams;
 post({type:"deepLink",session:q.get("session"),anchor:q.get("anchor")||undefined,anchorT:Number(q.get("anchorT"))||undefined,anchorKind:q.get("anchorKind")||undefined,compose:q.get("compose")==="1"});
 if(window.parent!==window)window.parent.postMessage({romp:"reveal",pane:"chat"},"*");return;}}catch(e){}window.open(url,"_blank");};
