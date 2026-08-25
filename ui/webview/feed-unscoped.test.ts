@@ -16,14 +16,15 @@ const FEED = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.ts"), "utf8"
 const CSS = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.css"), "utf8");
 const KERNEL = fs.readFileSync(path.join(ROOT, "kernel", "kernel.py"), "utf8");
 
-test("the feed reads NO view state for card gating — all sessions' cards render under ANY active view", () => {
-  // structural proof: with no views input anywhere in the feed bundle, no tag-home shape (local,
-  // remote, union — the fixtures the tab-side deciders still execute against in session-views.test)
-  // can narrow the board; only the combobox exact filter and the search do.
-  assert.doesNotMatch(FEED, /session-views|feed-view"|viewVisible|cardInView|outsideView|feedViews/,
-    "no import, no decider, no adopted blob");
+test("the SHARED active view never gates the feed — the blob feeds tag DEFINITIONS only (T70)", () => {
+  // the decoupling ruling stands: the shared `active` is the tabs'/timeline's business. The feed's
+  // OWN local tag lens (T70, same day) legitimately reads the blob's tag definitions (lensUnions) —
+  // definitions, never the shared selection: no viewVisible, no `.active` read, anywhere.
+  assert.doesNotMatch(FEED, /viewVisible|cardInView|feedTagViews\.active|views\.active/,
+    "no shared-view decider, no read of the blob's active selection");
+  assert.match(FEED, /feedTagViews = m\.views as SessionViews;   \/\/ tag DEFINITIONS only — never `active`/);
   assert.match(FEED, /let shown = feedOnlySid \? list\.filter\(\(a\) => a\.sid === feedOnlySid\) : list\.filter\(\(a\) => !a\.satellite\);/,
-    "viewFiltered's whole composition: the board's own local scoping only");
+    "the board's own local scoping (viewScope) unchanged");
   assert.match(FEED, /the user's\s*\n\s*\/\/ 2026-08-25 ruling, superseding the 2026-08-24 feed-follows-the-view coupling/,
     "the ruling is cited where the gate used to live");
 });

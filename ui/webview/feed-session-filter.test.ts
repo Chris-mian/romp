@@ -56,7 +56,8 @@ test("the filter defaults to NOTHING selected and only ever narrows the RENDER, 
 
 test("the combobox sits right of the view-menu icon, lists sessions in tab order, canonical form, click-safe", () => {
   // one control since 2026-08-24: the session picker and the search box merged into the combobox
-  assert.match(FEED, /ensureViewMenuBtn\(\)\.style\.display = showCA \? "" : "none";[^\n]*\n\s*ensureSessionBox\(\)\.style\.display = showCA \? "" : "none";/);
+  // the tag-lens button (T70, 2026-08-25) sits between the view menu and the combobox now
+  assert.match(FEED, /ensureViewMenuBtn\(\)\.style\.display = showCA \? "" : "none";[^\n]*\n\s*ensureTagLensBtn\(\)\.style\.display = showCA \? "" : "none";[^\n]*\n\s*ensureSessionBox\(\)\.style\.display = showCA \? "" : "none";/);
   // the list is built ONCE per open; typing only toggles row display — a keystroke can never
   // rebuild a row out from under a press (click-safety)
   assert.match(FEED, /r\.style\.display = name === null \|\| searchMatches\(q, name\) \? "" : "none";/);
