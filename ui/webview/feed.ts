@@ -106,6 +106,7 @@ interface AskItem {
   origin?: { peer: string; peerSid: string; peerHost?: string; color: { bg: string; fg: string } | null; live?: boolean } | null;
   handoffTo?: { peer: string; peerSid: string; peerHost?: string; color?: { bg: string; fg: string } | null } | null;  // sender-side handoff provenance (the user 2026-08-24): this card IS a top-level "↪ delegated to <peer>" tracking node — the kernel titles it with the WORK and ships the delegation here, the mirror of origin's "↪ from"; click opens the recipient
   satellite?: boolean | null;                        // tracked delegation (the user 2026-08-24): this card is the recipient-side copy of a delegator-homed primary — off the default board; the session filter still reaches it (nothing runs in secret)
+  internal?: boolean | null;                         // team-internal provenance (the user 2026-08-25, option (iii)): the card's evidence chain roots in peer chatter / romp bookkeeping / machine-injected input, never a user prompt (kernel _ProvenanceWalk). The footer "team internals" lens folds these off the DEFAULT board; needs-you always breaks through, and an unclassifiable card is never stamped (false-quiet is the failure this option was chosen against)
   delegTracked?: { name: string; host?: string; sid: string; color?: { bg: string; fg: string } | null }[] | null;  // tracked delegation PRIMARY: the recipient identities whose live status this one card carries  // courier handoff: planted by a peer's message → "↪ from <peer>"; peerHost = a FEDERATED sender's host, rendered as the quiet "host:" prefix (absent on older payloads / local senders). live = the sender's linked entry is still OPEN; false → the badge is PROVENANCE, dimmed (the completed-column merge, the user 2026-08-16)
   waitingOn?: { peerSid: string; name: string; color: { bg: string; fg: string } | null; inCycle: boolean; kind?: string; since?: number } | null;  // unanswered msg out to a live peer → "Awaiting <peer>" chip, or "Handed off to <peer>" when kind is "delegate" (peer name in native colour, no emoji; kernel _wait_for_graph; the user 2026-06-22 / 2026-07-25). since = when the unanswered ask was sent → the chip's elapsed readout (the user 2026-08-23)
   awaiting?: { why?: string | null; kind?: string | null; since?: number | null; tasks?: string[] | null;
@@ -3315,6 +3316,24 @@ function ensureClearAll(): HTMLElement {
   return b;
 }
 
+// The "team internals" LENS button (the user 2026-08-25, option (iii)): a footer word-button wearing
+// the session combobox's mode-toggle vocabulary — "N team-internal", accent .on while the lens is
+// showing them. Ensure-once (click-safe across re-renders: the node persists, render() only rewrites
+// its label); the pref rides the shared romp:settings via setViewPref, whose romp:settings event
+// re-renders every same-doc listener. Hidden entirely when nothing is folded and the lens is off —
+// a control that governs zero cards is noise.
+function ensureInternalLens(): HTMLElement {
+  let b = document.getElementById("feed-internal-lens");
+  if (!b) {
+    b = el("button", "fdismiss ffollow feed-modetoggle");
+    b.id = "feed-internal-lens";
+    b.setAttribute("aria-pressed", "false");
+    b.onclick = (ev) => { ev.stopPropagation(); setViewPref("teamInternals", !internalLensOn()); };
+    (document.getElementById("feed-foot") || document.body).appendChild(b);
+  }
+  return b;
+}
+
 // The footer VIEW MENU (the user 2026-08-24): the three view controls — sort direction, single-column
 // layout, by-session grouping — live behind ONE monochrome icon button now, a popup wearing the shared
 // .ctx-menu vocabulary, where three word-buttons crowded the footer and the labels can breathe.
@@ -4073,19 +4092,42 @@ function paintJudgeLimit(): void {
 // per-card label does, so a just-died session's cards keep matching after the meta list drops it).
 // Shared by render() and the hover-freeze badge painter, so the deferred-churn hint counts exactly
 // what the user would see move.
-function viewFiltered(list: AskItem[]): AskItem[] {
+function viewBase(list: AskItem[]): AskItem[] {
   // The board shows EVERY session's cards, whatever tag view the tabs/timeline hold (the user's
   // 2026-08-25 ruling, superseding the 2026-08-24 feed-follows-the-view coupling after living with
   // it): the feed is the attention/clearing surface — hidden-elsewhere work still lands and clears
-  // here. Its ONLY narrowing is its own local scoping below (the combobox exact filter + search).
-  // A tracked delegation's satellite lives under its delegator's PRIMARY card: the default board
-  // hides it, and picking its session in the filter is the one-click path back. INSIDE this helper
-  // on purpose — the hover-freeze churn badges count through it, so they see exactly what the
-  // board shows (a filter outside would paint +N for cards that never appear).
+  // here. Its ONLY narrowing is its own local scoping below (the combobox exact filter + search)
+  // plus the team-internals lens (viewFiltered). A tracked delegation's satellite lives under its
+  // delegator's PRIMARY card: the default board hides it, and picking its session in the filter is
+  // the one-click path back.
   let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list.filter((a) => !a.satellite);
   const sMatch = searchSids(feedSearchQ, sessionsMeta);
   if (sMatch) shown = shown.filter((a) => sMatch.has(a.sid) || searchMatches(feedSearchQ, (a as { name?: string }).name));
   return shown;
+}
+
+// The team-internals lens (the user 2026-08-25, option (iii) of the provenance audit): the DEFAULT
+// board shows cards rooted in the user's own asks; kernel-stamped `internal` cards fold behind the
+// footer's "N team-internal" word-button. Needs-you ALWAYS breaks through (interrupt only when the
+// human is the bottleneck — the same rule the satellite wears), and an unstamped card always shows.
+// Persisted in the shared romp:settings like every footer view pref.
+function internalLensOn(): boolean {
+  try { return JSON.parse(localStorage.getItem("romp:settings") || "{}").teamInternals === true; }
+  catch { return false; }
+}
+
+function viewFiltered(list: AskItem[]): AskItem[] {
+  // INSIDE this helper on purpose — the hover-freeze churn badges count through it, so they see
+  // exactly what the board shows (a filter outside would paint +N for cards that never appear).
+  const base = viewBase(list);
+  if (internalLensOn()) return base;
+  return base.filter((a) => !a.internal || a.column === "needs_input");
+}
+
+// The lens button's honest count: every card the lens GOVERNS under the current session/search
+// scoping (needs-you cards are outside its jurisdiction — they show either way).
+function internalLensCount(list: AskItem[]): number {
+  return viewBase(list).filter((a) => a.internal && a.column !== "needs_input").length;
 }
 
 // The per-host loading strip (the user 2026-08-25): while an attached host's cards are pending,
@@ -4124,6 +4166,17 @@ function render() {
   const showCA = !!asks.length;
   ensureViewMenuBtn().style.display = showCA ? "" : "none";       // sort + layout menu (the user 2026-08-24)
   ensureSessionBox().style.display = showCA ? "" : "none";        // session combobox: type-or-pick filter (the user 2026-08-24)
+  // the team-internals lens (the user 2026-08-25): label carries the honest count of what it governs
+  const lensN = internalLensCount(asks);
+  const lensOn = internalLensOn();
+  const lensBtn = ensureInternalLens();
+  lensBtn.style.display = (showCA && (lensN > 0 || lensOn)) ? "" : "none";
+  lensBtn.textContent = lensN + " team-internal";
+  lensBtn.classList.toggle("on", lensOn);
+  lensBtn.setAttribute("aria-pressed", lensOn ? "true" : "false");
+  lensBtn.title = lensOn
+    ? "team-internal cards (peer-to-peer work, not your asks) are showing — click to fold them back off the default board"
+    : "cards rooted in team-internal work (peer-to-peer, not your asks) are folded — click to show them; needs-you cards always surface";
   ensureClearAll().style.display = showCA ? "" : "none";
   ensureUndoClear().style.display = canUndoClear ? "" : "none";
   const foot = document.getElementById("feed-foot");
