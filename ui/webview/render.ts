@@ -9095,7 +9095,8 @@ function elapsedMs(sinceMs: number | null): string {
 type MetaKind = "mode" | "model" | "effort" | "fast";
 // One dropdown entry. `sub` is the second line for a choice whose consequence is not obvious from its
 // label; `sdkOnly` drops the entry on a tmux session, whose backend cannot apply it.
-interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boolean; color?: number[] | null }
+interface MetaChoice { label: string; value: string; sub?: string; sdkOnly?: boolean; color?: number[] | null;
+  versions?: { label: string; value: string }[]; default?: string }   // model families only (the user 2026-08-25)
 // Model + effort choices come from the kernel's /models — the ONE list shared with the timeline lanes and the
 // judge-tier settings (the user 2026-07-02, who wanted one shared code path, not hardcoded in multiple places), so
 // the client holds no model literals (mirrors paletteColors above). Populated in place on load so META_CHOICES
@@ -9288,6 +9289,7 @@ function syncMetaControls(meta: HTMLElement, st: Status, forSid?: string | null)
 
 let metaMenuEl: HTMLElement | null = null;
 function closeMetaMenu() {
+  document.querySelectorAll(".meta-sub").forEach((n) => n.remove());   // an open version submenu goes with its menu
   metaMenuEl?.remove();
   metaMenuEl = null;
 }
@@ -9311,10 +9313,22 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
   const s = { status };
   const menu = el("div", "meta-menu");
   menu.dataset.kind = kind;
+  const pickValue = (value: string) => {
+    if (vscodeApi) {
+      vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : kind === "fast" ? "setFast" : "setMode", id: opSid, value });
+      const was = metaCurrent(kind, s.status);
+      metaPending.set(`${opSid}:${kind}`, { was, until: Date.now() + 20_000 });
+      btn.classList.add("meta-pending");
+    }
+    closeMetaMenu();
+  };
+  let subEl: HTMLElement | null = null;
+  const closeSub = () => { subEl?.remove(); subEl = null; };
   // An sdkOnly entry is dropped on tmux rather than shown-and-refused: the backend cannot apply it, and
   // a menu that lists a mode you can't have is worse than one that doesn't.
   for (const c of META_CHOICES[kind].filter((c) => !c.sdkOnly || s.status.backend === "sdk")) {
     const item = el("div", "meta-item" + (isCurrentMeta(kind, s.status, c.value) ? " current" : ""));
+    item.tabIndex = 0;
     if (c.sub) {
       const head = el("div");
       head.textContent = c.label;
@@ -9325,15 +9339,54 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null
     } else {
       item.textContent = c.label;
     }
+    // A model family with more than one live version wears the side-submenu affordance (the user
+    // 2026-08-25): hover or an arrow key reveals every version, each directly pickable with the ✓
+    // on the session's current one; clicking the family picks its DEFAULT — the version the user
+    // last chose for it, else the newest (the kernel /models `default` field). The submenu opens
+    // LEFTWARD: this menu is anchored at the panel's bottom-right, so left is where the room is.
+    // One builder serves the chat statusline AND the comment-popover statusline (post-676), so
+    // both surfaces grow the affordance together.
+    const versions = kind === "model" ? (c.versions || []) : [];
+    const openSub = versions.length > 1 ? () => {
+      closeSub();
+      const sub = el("div", "meta-menu meta-sub");
+      for (const v of versions) {
+        const cur = (s.status.model || "").toLowerCase() === v.label.toLowerCase();
+        const row = el("div", "meta-item" + (cur ? " current" : ""));
+        row.tabIndex = 0;
+        row.textContent = v.label;
+        row.addEventListener("click", (e) => { e.stopPropagation(); pickValue(v.value); });
+        row.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); pickValue(v.value); }
+          else if (e.key === "ArrowLeft") { e.preventDefault(); closeSub(); item.focus(); }
+        });
+        sub.appendChild(row);
+      }
+      document.body.appendChild(sub);
+      const rr = item.getBoundingClientRect();
+      sub.style.right = Math.max(8, window.innerWidth - rr.left + 4) + "px";
+      sub.style.bottom = Math.max(8, window.innerHeight - rr.bottom) + "px";
+      subEl = sub;
+      return sub;
+    } : null;
+    if (openSub) {
+      item.appendChild(el("span", "meta-caret")).textContent = "\u25C2";
+      item.addEventListener("mouseenter", () => openSub());
+    } else {
+      item.addEventListener("mouseenter", () => closeSub());
+    }
     item.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (vscodeApi) {
-        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : kind === "fast" ? "setFast" : "setMode", id: opSid, value: c.value });
-        const was = metaCurrent(kind, s.status);
-        metaPending.set(`${opSid}:${kind}`, { was, until: Date.now() + 20_000 });
-        btn.classList.add("meta-pending");
+      pickValue(kind === "model" ? (c.default || c.value) : c.value);
+    });
+    item.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); pickValue(kind === "model" ? (c.default || c.value) : c.value); }
+      else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && openSub) {
+        // the submenu opens leftward, so both arrows expand — ArrowLeft inside it collapses
+        e.preventDefault();
+        const sub = openSub();
+        (sub.querySelector("[tabindex]") as HTMLElement | null)?.focus();
       }
-      closeMetaMenu();
     });
     menu.appendChild(item);
   }

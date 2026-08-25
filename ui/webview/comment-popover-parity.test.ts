@@ -87,3 +87,25 @@ test("green→yellow settles LIVE: the kernel carries the confirm the dedup used
   // the frame handler already repaints marks AND the open popover per frame — the live wire
   assert.match(RENDER, /applyCommentMarks\(sid\);\s*\n\s*if \(openCommentKey && openCommentKey\.sid === sid\) \{/);
 });
+
+test("the model meta-menu exposes VERSIONS: submenu, remembered default, keyboard (the user 2026-08-25)", () => {
+  // families with >1 live version wear a side submenu (leftward — the menu anchors bottom-right):
+  // hover or an arrow key reveals every version, each pickable with the current-✓; clicking the
+  // family sends its remembered DEFAULT (the kernel /models `default`), never a bare shorthand.
+  // Rides the ONE builder, so the chat statusline and the popover statusline both grow it.
+  assert.match(RENDER, /const versions = kind === "model" \? \(c\.versions \|\| \[\]\) : \[\]/);
+  assert.match(RENDER, /pickValue\(kind === "model" \? \(c\.default \|\| c\.value\) : c\.value\)/,
+    "family click sends the remembered default");
+  assert.match(RENDER, /versions\.length > 1 \?/, "single-version families stay flat");
+  assert.match(RENDER, /el\("span", "meta-caret"\)/, "the caret affordance marks expandable families");
+  assert.match(RENDER, /\(e\.key === "ArrowRight" \|\| e\.key === "ArrowLeft"\) && openSub/,
+    "arrow keys expand (the submenu opens leftward, so both arrows work)");
+  assert.match(RENDER, /e\.key === "ArrowLeft"[\s\S]{0,90}closeSub\(\); item\.focus\(\)/,
+    "ArrowLeft inside the submenu collapses back to the family row");
+  assert.match(RENDER, /pickValue\(v\.value\)/, "version rows pick their own full id");
+  assert.match(RENDER, /\(s\.status\.model \|\| ""\)\.toLowerCase\(\) === v\.label\.toLowerCase\(\)/,
+    "the ✓ marks the session's current version");
+  assert.match(RENDER, /querySelectorAll\("\.meta-sub"\)\.forEach/, "closing the menu drops an open submenu");
+  assert.match(CSS, /\.meta-caret \{ position: absolute; right: 22px/, "caret sits left of the ✓ slot");
+});
+

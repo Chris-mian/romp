@@ -965,6 +965,10 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* second line for a choice whose consequence its label doesn't carry (Bypass permissions). Same
    0.82em / 0.6 opacity as .ctx-item-sub — one sub-line size across every romp menu. */
 .meta-item-sub { font-size: 0.82em; opacity: 0.6; }
+/* the version-submenu affordance on model families (the user 2026-08-25): a dim caret at the row's
+   right, sitting left of the current-check slot; the submenu itself is a second .meta-menu beside it */
+.meta-caret { position: absolute; right: 22px; top: 50%; transform: translateY(-50%); opacity: 0.55; }
+.meta-sub { z-index: 61; }
 .meta-item.current::after {
   content: "✓"; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
   background: var(--check-bg); color: #fff; border-radius: 50%;
