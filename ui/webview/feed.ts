@@ -4503,11 +4503,35 @@ function paintFreezeParts(b: HTMLElement, c: { add: number; del: number }): void
   if (c.add) { const i = el("i", "fz-add"); i.textContent = "+" + c.add; b.appendChild(i); }
   if (c.add && c.del) b.appendChild(document.createTextNode("/"));
   if (c.del) { const i = el("i", "fz-del"); i.textContent = "-" + c.del; b.appendChild(i); }
+  // the explicit reading (the user 2026-08-25, liking the +N/−N but wanting it to say what it
+  // means): a parenthetical in the accent dress, well under their verbosity ceiling
+  const note = el("i", "fz-note");
+  note.textContent = " (" + (c.add + c.del) + " changed — mouse away to apply)";
+  b.appendChild(note);
   b.title = "updates waiting while you hover — they apply when the pointer leaves the card";
+}
+// Has the FROZEN card's own content changed in the withheld payload? Churn elsewhere and a stale
+// card under the pointer are different facts (the user 2026-08-25) — this one gets its own line,
+// shown WITH the churn badges when both are true. Group keys compare the turn's member set
+// (itemId-sorted, so payload order can never fake a change); ask keys compare the one item.
+function pendingSelfChanged(key: string): boolean {
+  if (!pendingFeedPayload) return false;
+  const pend = payloadView(pendingFeedPayload);
+  const byId = (a: AskItem, b2: AskItem) => (a.itemId < b2.itemId ? -1 : 1);
+  if (key.startsWith("g:")) {
+    const tid = key.slice(2);
+    const cur = JSON.stringify(asks.filter((a) => a.turnId === tid).slice().sort(byId));
+    const nxt = JSON.stringify(pend.filter((a) => a.turnId === tid).slice().sort(byId));
+    return cur !== nxt;
+  }
+  const cur = asks.find((a) => a.itemId === key);
+  const nxt = pend.find((a) => a.itemId === key);
+  return JSON.stringify(cur) !== JSON.stringify(nxt);
 }
 function paintFreezeBadges(): void {
   if (!pendingFeedPayload) {
     document.querySelectorAll(".freeze-badge").forEach((n) => n.remove());
+    document.getElementById("freeze-selfnote")?.remove();
     return;
   }
   const toItems = (list: AskItem[]) => viewFiltered(list).map((a) => ({ id: a.itemId, col: askColumn(a) as string, sid: a.sid }));
@@ -4526,6 +4550,25 @@ function paintFreezeBadges(): void {
   document.querySelectorAll<HTMLElement>(".feed-sess-head").forEach((h) => {
     put(h, groupedNow ? d.sess[h.getAttribute("data-fsid") || ""] : undefined);
   });
+  // the hovered/keyed card's OWN pending update — its own line, independent of the churn badges
+  // (both show when both are true). Body-mounted and pointer-inert: it must never affect hover,
+  // and the frozen card's rect is stable by construction (that is the freeze's whole contract).
+  const selfKey = freezeKey || tabScopeKey;
+  const selfCard = selfKey ? cardElByKey(selfKey) : null;
+  let selfNote = document.getElementById("freeze-selfnote");
+  if (!selfKey || !selfCard || !pendingSelfChanged(selfKey)) {
+    selfNote?.remove();
+  } else {
+    if (!selfNote) {
+      selfNote = el("div", "");
+      selfNote.id = "freeze-selfnote";
+      selfNote.textContent = "(this card updated — mouse away to refresh)";
+      document.body.appendChild(selfNote);
+    }
+    const r = selfCard.getBoundingClientRect();
+    selfNote.style.left = Math.round(r.left + 12) + "px";
+    selfNote.style.top = Math.round(r.bottom - 24) + "px";
+  }
 }
 
 // ── CARD KEYBOARD SCOPE (the user 2026-08-24) ──────────────────────────────────────────────────

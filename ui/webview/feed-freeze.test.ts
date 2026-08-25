@@ -109,6 +109,27 @@ test("the badge hint counts the USER'S view and never mutates state computing it
     "the hint path is side-effect free");
 });
 
+test("the badges say what they mean; the frozen card's own update gets its own line (2026-08-25)", () => {
+  // the explicit reading joins the +N/−N (the user liked the numbers, wanted the meaning): one
+  // phrasing everywhere a badge renders, well under their verbosity ceiling, in the accent dress
+  assert.match(FEED, /note\.textContent = " \(" \+ \(c\.add \+ c\.del\) \+ " changed — mouse away to apply\)";/);
+  assert.match(CSS, /\.freeze-badge \.fz-note \{ color: var\(--accent\); font-weight: 400; \}/,
+    "accent var, never re-hardcoded; the badge's own scale");
+  // the hovered card's OWN pending update is a different fact — its own line, INDEPENDENT of the
+  // churn badges (both render when both are true: the self block sits outside the per-header loop)
+  assert.match(FEED, /function pendingSelfChanged\(key: string\): boolean/);
+  assert.match(FEED, /const selfKey = freezeKey \|\| tabScopeKey;/, "the pointer's card or the keyboard-scoped one");
+  assert.match(FEED, /selfNote\.textContent = "\(this card updated — mouse away to refresh\)";/);
+  assert.match(FEED, /if \(!selfKey \|\| !selfCard \|\| !pendingSelfChanged\(selfKey\)\) \{\s*\n\s*selfNote\?\.remove\(\);/,
+    "churn-only: no self line; self-only: badges empty but the line shows; both: both");
+  // group keys compare the turn's member set itemId-sorted — payload order can never fake a change
+  assert.match(FEED, /asks\.filter\(\(a\) => a\.turnId === tid\)\.slice\(\)\.sort\(byId\)/);
+  assert.match(CSS, /#freeze-selfnote \{ position: fixed; z-index: 6; pointer-events: none; color: var\(--accent\);/,
+    "pointer-inert — the note must never affect the hover it describes");
+  assert.match(FEED, /document\.getElementById\("freeze-selfnote"\)\?\.remove\(\);/,
+    "nothing pending → the line comes off with the badges");
+});
+
 test("badges wear the header conventions: accent adds, block-red removes, the count's own scale", () => {
   assert.match(CSS, /\.freeze-badge \{ font-weight: 600; opacity: 0\.7; margin-left: 6px; white-space: nowrap; \}/);
   assert.match(CSS, /\.freeze-badge \.fz-add \{ color: var\(--accent\); \}/, "never a re-hardcoded accent hex");

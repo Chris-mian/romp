@@ -143,6 +143,15 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .freeze-badge i { font-style: normal; }
 .freeze-badge .fz-add { color: var(--accent); }
 .freeze-badge .fz-del { color: var(--err); }
+/* the explicit reading (the user 2026-08-25): the parenthetical wears the accent — the blue they
+   asked for — at the badge's own scale and normal weight so the +N/−N stays the loudest part */
+.freeze-badge .fz-note { color: var(--accent); font-weight: 400; }
+/* the hovered card's OWN pending update: a floating pointer-inert accent line pinned inside the
+   frozen card's lower edge (the rect is stable — that is the freeze's contract). Page-bg pill so
+   it reads over card content; 10.5px is the footer's existing scale, no new sizes. */
+#freeze-selfnote { position: fixed; z-index: 6; pointer-events: none; color: var(--accent);
+  font-size: 10.5px; font-weight: 600; background: rgba(30, 30, 30, 0.85);
+  border-radius: 4px; padding: 1px 6px; }
 /* margin-top, NOT header padding: the liveness rings are outlines drawn ~2.5px
    OUTSIDE the first card's top edge, and the sticky header paints its padding as
    opaque background over them — only unpainted margin space lets them show */
