@@ -50,8 +50,8 @@ test("cross-mount computed equality: one gray, one accent, everywhere", () => {
 test("every JS mount renders through the ONE convention function", () => {
   for (const [name, src] of [["render", RENDER], ["fleet", FLEET], ["feed", FEED]] as const)
     assert.match(src, /syncTagFilter\(/, name + " mounts the shared renderer");
-  assert.match(RENDER, /tagBtn\.style\.alignSelf = "center";/,
-    "the chat button centers against the + tab's box (the user 2026-08-25 — it sat high)");
+  assert.match(RENDER, /const tagBox = el\("span", "tab-tagbox"\);/,
+    "the chat button + chips ride the .tab-tagbox, which reserves the + tab's box and centers them (the user 2026-08-25 — a wrapped controls line sat flush under the row above)");
 });
 
 test("THE BUTTON OUTLINE (the user 2026-08-25, round two): every mount wears the feed word-button's box", () => {
