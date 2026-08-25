@@ -4523,14 +4523,18 @@ function renderTabs() {
     });
   });
   tagBtn.classList.add("tab-tagfilter");
-  // vertically centered against the + tab's box (the user 2026-08-25 — it sat high)
-  tagBtn.style.alignSelf = "center";
-  bar.appendChild(tagBtn);
+  // button + chips ride ONE box that reserves the + tab's exact height (.tab-tagbox, 31px) and
+  // centers them in it — a wrapped controls-only line used to stand only pill-tall and sat nearly
+  // flush under the row above (the user 2026-08-25); the box makes every line the controls form
+  // as tall as a line the + is on, wherever the strip wraps them
+  const tagBox = el("span", "tab-tagbox");
+  tagBox.appendChild(tagBtn);
   // THE BUTTON CONVENTION (the user 2026-08-25): gray alone at rest; accent + the chips of
   // everything selected when narrowed — the shared renderer, identical on every mount
   const tagChipsHost = el("span", "tab-tagchips");
-  tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;align-self:center;margin-left:2px;");
-  bar.appendChild(tagChipsHost);
+  tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
+  tagBox.appendChild(tagChipsHost);
+  bar.appendChild(tagBox);
   {
     const v = effViews();
     syncTagFilter(tagBtn, tagChipsHost, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {

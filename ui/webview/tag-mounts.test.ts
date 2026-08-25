@@ -66,6 +66,25 @@ test("every pane's Configure tags… routes to THE dialog on the timeline (sourc
     "routed to the SAME dashboard's timeline, like tagEditFailed");
 });
 
+test("a wrapped tag-controls line reserves the + tab's exact box — the arithmetic, from the stylesheet", () => {
+  // the user 2026-08-25: chips wrapping WITHOUT the + sat nearly flush under the tab row above,
+  // because a flex line is only as tall as its tallest item and the pill is 18px to the +'s ~31.
+  // The fix pins the +'s content box (line-height) and reserves the SAME total on the controls'
+  // box, so line height never depends on which elements land on the line. This test recomputes
+  // the equality from the stylesheet literals, so neither side can drift alone.
+  const CSS = ui("webview", "styles.css");
+  const addRule = CSS.match(/\.tab-add \{[^}]*\}/)![0];
+  const lineH = Number(addRule.match(/line-height: (\d+)px/)![1]);
+  const padV = Number(addRule.match(/padding: (\d+)px/)![1]);   // vertical padding, both sides
+  const tabRule = CSS.match(/^\.tab \{[\s\S]*?\n\}/m)![0];
+  const borderV = tabRule.includes("border: 1px solid") && tabRule.includes("border-bottom: none") ? 1 : 2;
+  const boxRule = CSS.match(/\.tab-tagbox \{[^}]*\}/)![0];
+  const minH = Number(boxRule.match(/min-height: (\d+)px/)![1]);
+  assert.equal(minH, lineH + padV * 2 + borderV,
+    "the .tab-tagbox floor equals the + tab's rendered box (content line + padding + border)");
+  assert.match(boxRule, /align-items: center/, "…with the pill and chips centered inside it");
+});
+
 test("the shared component: toggles stay open, no scope caption, echo dismissal (source pins)", () => {
   assert.match(MENU, /opts\.onApply\(toggleLens\(lens, \{ tag: u\.name \}\), false\); build\(\);/,
     "tag rows toggle and repaint in place");

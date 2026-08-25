@@ -358,7 +358,13 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .tab-tip-recent-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tab-tip-recent-item { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
-.tab-add { color: var(--dim); font-size: 1.1em; padding: 6px 10px; border-radius: 6px; }
+.tab-add { color: var(--dim); font-size: 1.1em; padding: 6px 10px; border-radius: 6px; line-height: 18px; }
+/* the tag controls reserve the + tab's EXACT vertical box — 18px line + 12px padding + 1px border
+   = 31px (the line-height above pins the +'s content box so this arithmetic is exact, checked by
+   tag-mounts.test.ts): a wrapped controls-only flex line otherwise stood only as tall as the 18px
+   pill and landed nearly flush under the tab row above, while a line the + shared had air (the
+   user 2026-08-25). Inner centering keeps the pill and chips at their own sizes. */
+.tab-tagbox { display: inline-flex; align-items: center; flex-wrap: wrap; min-height: 31px; }
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
 /* (The .tab-fleet pill was removed 2026-06-24 — Fleet/Chat are now the rotated toggles in the chat pane's
    vertical strip, so the tab-bar pill was redundant.) */
