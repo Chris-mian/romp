@@ -3028,12 +3028,12 @@ class TimelinePanel {
         ex.setAttribute('style', 'margin-left:auto;cursor:pointer;opacity:0.7;');
         ex.addEventListener('click', () => { this._tagEditErr = null; build(); });
       }
-      // ── TAGS — a compact CHIP CLOUD (the user 2026-08-25 redesign, superseding the rows):
-      // every tag side by side; the ✕ ON a chip DELETES THE TAG (destructive — red-tinted hover,
-      // deliberately unlike the membership-✕ contexts so muscle memory can't cross); clicking a
-      // chip opens its editor (rename + the identity-palette recolor) right under the cloud. All
-      // through _editTagUnion — remote-homed tags ride the v1 editTag route, loud refusals. The
-      // [+ New tag] closes the section (the PR-C rounded-rect anatomy).
+      // ── TAGS — A TABLE (the user 2026-08-25 revision, superseding the chip cloud): each tag
+      // is a ROW — the tag itself in its normal pill rendering with NO ✕ on it, and to the side
+      // the actions: delete | rename | the color. The user's rationale: it reads clearly as
+      // deleting/renaming THE TAG. All at the dialog's own scale (the few-sizes rule); remote-
+      // homed tags still ride the v1 editTag route with its loud refusals. [+ New tag] is the
+      // table's FINAL ROW.
       {
         const capT = card.createDiv();
         capT.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:4px 0;');
@@ -3041,63 +3041,78 @@ class TimelinePanel {
         const ct = capT.createSpan({ text: 'the tags' });
         ct.setAttribute('style', 'font-size:0.82em;opacity:0.6;font-style:italic;white-space:nowrap;');
         capT.createDiv().setAttribute('style', 'height:1px;flex:1;background:rgba(255,255,255,0.12);');
-        const cloud = card.createDiv();
-        cloud.setAttribute('style', 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0 4px;');
+        const tgrid = card.createDiv();
+        tgrid.setAttribute('style', 'display:grid;grid-template-columns:max-content max-content max-content 1fr;'
+          + 'column-gap:14px;row-gap:4px;align-items:center;margin:2px 0 6px;');
+        const action = (row, text, title) => {
+          const a = row.createSpan({ text });
+          a.setAttribute('style', 'cursor:pointer;opacity:0.7;color:#cccccc;');
+          a.setAttribute('title', title);
+          return a;
+        };
         for (const tg of viewTagUnion(v)) {
           const editable = tg.localId || canEdit;
           const tc = tg.color || MODEL_FG;
-          const chip = cloud.createSpan();
-          chip.setAttribute('style', 'display:inline-flex;align-items:center;gap:6px;padding:2px 9px;'
-            + 'border-radius:10px;border:1px solid ' + tc + ';color:' + tc + ';background:transparent;'
-            + (gid && tg.ids.indexOf(gid) >= 0 ? 'outline:1px solid rgba(255,255,255,0.25);outline-offset:2px;' : ''));
-          const nm2 = chip.createSpan({ text: tg.name });
-          nm2.setAttribute('style', 'cursor:' + (editable ? 'pointer' : 'default') + ';font-weight:650;');
-          nm2.setAttribute('title', editable ? 'edit this tag — rename, recolor' : 'read-only here');
-          if (editable) nm2.addEventListener('click', () => {
-            this._tagEditorFor = this._tagEditorFor === tg.name ? null : tg.name;
-            build();
-          });
+          // the tag itself: the normal pill, NO ✕ — actions live beside it, never on it
+          const pillCell = tgrid.createDiv();
+          if (this._tagEditorFor === tg.name && editable) {
+            const nameIn = document.createElement('input');
+            nameIn.value = tg.name; nameIn.maxLength = 40;
+            nameIn.setAttribute('style', 'width:130px;background:#1e1e1e;color:#ccc;'
+              + 'border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:2px 6px;font:inherit;');
+            nameIn.addEventListener('change', () => {
+              const nv2 = nameIn.value.slice(0, 40).trim();
+              this._tagEditorFor = null;
+              if (nv2 && nv2 !== tg.name) this._editTagUnion(tg, { rename: nv2 });
+              build();
+            });
+            nameIn.addEventListener('keydown', (e) => { if (e.key === 'Escape') { this._tagEditorFor = null; build(); } });
+            pillCell.appendChild(nameIn);
+            setTimeout(() => { try { nameIn.focus(); nameIn.select(); } catch (e) {} }, 0);
+          } else {
+            const pill = pillCell.createSpan({ text: tg.name });
+            pill.setAttribute('style', 'display:inline-flex;align-items:center;padding:2px 9px;'
+              + 'border-radius:10px;border:1px solid ' + tc + ';color:' + tc + ';background:transparent;font-weight:650;'
+              + (gid && tg.ids.indexOf(gid) >= 0 ? 'outline:1px solid rgba(255,255,255,0.25);outline-offset:2px;' : ''));
+          }
+          // delete — the destructive convention: dim at rest, red on hover
+          const del = tgrid.createDiv();
           if (editable) {
-            const dx = chip.createSpan({ text: '✕' });
-            // DELETE-the-tag, not remove-a-member: the destructive convention — dim at rest,
-            // RED on hover — keeps this ✕ visually apart from every membership ✕
-            dx.setAttribute('style', 'cursor:pointer;opacity:0.55;color:' + MODEL_FG + ';font-size:0.82em;');
-            dx.setAttribute('title', 'DELETE the tag \u201c' + tg.name + '\u201d everywhere (members keep running, just untagged)');
-            dx.addEventListener('mouseenter', () => { dx.style.color = '#F85B5A'; dx.style.opacity = '1'; });
-            dx.addEventListener('mouseleave', () => { dx.style.color = MODEL_FG; dx.style.opacity = '0.55'; });
-            dx.addEventListener('click', () => {
+            const d = action(del, 'delete', 'DELETE the tag \u201c' + tg.name + '\u201d everywhere (members keep running, just untagged)');
+            d.addEventListener('mouseenter', () => { d.style.color = '#F85B5A'; d.style.opacity = '1'; });
+            d.addEventListener('mouseleave', () => { d.style.color = '#cccccc'; d.style.opacity = '0.7'; });
+            d.addEventListener('click', () => {
               if (this._tagEditorFor === tg.name) this._tagEditorFor = null;
               this._editTagUnion(tg, { delete: true });
               build();
             });
           }
-        }
-        const open = this._tagEditorFor ? viewTagUnion(v).find((x) => x.name === this._tagEditorFor) : null;
-        if (open) {
-          const ed = card.createDiv();
-          ed.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:2px 0 4px;flex-wrap:wrap;');
-          const nameIn = document.createElement('input');
-          nameIn.value = open.name; nameIn.maxLength = 40;
-          nameIn.setAttribute('style', 'flex:0 1 160px;min-width:0;background:#1e1e1e;color:#ccc;'
-            + 'border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:2px 6px;font:inherit;');
-          nameIn.addEventListener('change', () => {
-            const nv2 = nameIn.value.slice(0, 40).trim();
-            if (nv2 && nv2 !== open.name) { this._tagEditorFor = nv2; this._editTagUnion(open, { rename: nv2 }); }
-            build();
-          });
-          ed.appendChild(nameIn);
-          for (const c of (this._palette && this._palette.length ? this._palette : [open.color || '#1EA1EB'])) {
-            const d = ed.createSpan();
-            d.setAttribute('style', 'width:16px;height:16px;border-radius:50%;cursor:pointer;background:' + c + ';'
-              + (c === open.color ? 'outline:2px solid #ffffff;outline-offset:1px;' : 'opacity:0.75;'));
-            d.addEventListener('click', () => { this._editTagUnion(open, { color: c }); build(); });
+          // rename — turns the pill into an input
+          const ren = tgrid.createDiv();
+          if (editable) {
+            const r = action(ren, 'rename', 'rename this tag (everywhere it is defined)');
+            r.addEventListener('mouseenter', () => { r.style.opacity = '1'; });
+            r.addEventListener('mouseleave', () => { r.style.opacity = '0.7'; });
+            r.addEventListener('click', () => { this._tagEditorFor = this._tagEditorFor === tg.name ? null : tg.name; build(); });
+          }
+          // the color — the identity-palette swatches inline in the row's last column
+          const colCell = tgrid.createDiv();
+          colCell.setAttribute('style', 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;');
+          if (editable) {
+            for (const c of (this._palette && this._palette.length ? this._palette : [tc])) {
+              const sw = colCell.createSpan();
+              sw.setAttribute('style', 'width:14px;height:14px;border-radius:50%;cursor:pointer;background:' + c + ';'
+                + (c === tg.color ? 'outline:2px solid #ffffff;outline-offset:1px;' : 'opacity:0.7;'));
+              sw.addEventListener('click', () => { this._editTagUnion(tg, { color: c }); build(); });
+            }
           }
         }
-        // [+ New tag] at the section's BOTTOM (the user 2026-08-25), rounded-rect anatomy
-        const nt = card.createDiv();
-        const ntBtn = nt.createSpan({ text: '+ New tag' });
+        // [+ New tag] — the table's final row, at the dialog's own scale
+        const ntRow = tgrid.createDiv();
+        ntRow.setAttribute('style', 'grid-column:1 / -1;');
+        const ntBtn = ntRow.createSpan({ text: '+ New tag' });
         ntBtn.setAttribute('style', 'display:inline-flex;align-items:center;justify-content:center;padding:1px 9px;'
-          + 'border-radius:5px;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;background:transparent;margin:0 0 6px;');
+          + 'border-radius:5px;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;background:transparent;');
         hover(ntBtn, 'background:rgba(255,255,255,0.09);opacity:1;', 'background:transparent;opacity:0.7;');
         ntBtn.addEventListener('click', () => {
           const nv = JSON.parse(JSON.stringify(this._curViews()));
@@ -3105,7 +3120,7 @@ class TimelinePanel {
           const color = (this._palette || []).find((c) => !used.has(c)) || (this._palette || [])[0] || '#1EA1EB';
           const tg = { id: 'g' + Date.now().toString(36), name: 'tag ' + (viewTags(nv).length + 1), color, members: [] };
           nv.tags = viewTags(nv).concat([tg]); delete nv.groups;
-          this._tagEditorFor = tg.name;   // a new tag opens straight into its editor
+          this._tagEditorFor = tg.name;   // a new tag opens straight into its rename input
           this._setViews(nv);
           build();
         });
@@ -3181,9 +3196,18 @@ class TimelinePanel {
           }
         }
       }
-      // search + the bulk controls, one row: the search names the SET, the controls act on it
+      // ── THE SESSIONS (the user 2026-08-25: another divider here, "to show that you're tagging
+      // sessions down there") — search, then the bulk 'tag all' on its OWN line, then the table
+      {
+        const capS = card.createDiv();
+        capS.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:4px 0;');
+        capS.createDiv().setAttribute('style', 'height:1px;flex:0 0 8px;background:rgba(255,255,255,0.12);');
+        const cs = capS.createSpan({ text: 'the sessions — tag them below' });
+        cs.setAttribute('style', 'font-size:0.82em;opacity:0.6;font-style:italic;white-space:nowrap;');
+        capS.createDiv().setAttribute('style', 'height:1px;flex:1;background:rgba(255,255,255,0.12);');
+      }
       const bar = card.createDiv();
-      bar.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:0 0 8px;');
+      bar.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:0 0 6px;');
       const q = document.createElement('input');
       q.placeholder = 'search name or host…'; q.value = query;
       q.setAttribute('style', 'flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;'
@@ -3192,22 +3216,10 @@ class TimelinePanel {
       bar.appendChild(q);
       const btnStyle = 'flex:0 0 auto;cursor:pointer;padding:2px 8px;border-radius:5px;'
         + 'border:1px solid rgba(255,255,255,0.25);color:#cccccc;background:transparent;font-size:0.9em;';
-      // tag CREATION lives here now (the user 2026-08-25: the corner menu carries only
-      // "Configure tags…" — management, minting included, belongs to this dialog)
-      const newTag = bar.createSpan({ text: 'New tag…' });
-      newTag.setAttribute('style', btnStyle);
-      hover(newTag, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
-      newTag.setAttribute('title', 'create a tag — add sessions to it with the [+] column');
-      newTag.addEventListener('click', () => {
-        const nv = JSON.parse(JSON.stringify(this._curViews()));
-        const used = new Set(viewTags(nv).map((t) => t.color));
-        const color = (this._palette || []).find((c) => !used.has(c)) || (this._palette || [])[0] || '#1EA1EB';
-        const tg = { id: 'g' + Date.now().toString(36), name: 'tag ' + (viewTags(nv).length + 1), color, members: [] };
-        nv.tags = viewTags(nv).concat([tg]); delete nv.groups;
-        this._setViews(nv);
-        if (this._viewsDialogBuild) this._viewsDialogBuild();
-      });
-      const tagAll = bar.createSpan({ text: '+ tag all' });
+      // 'tag all' on its OWN LINE, plain text (the user 2026-08-25: it surprised where it sat)
+      const bulkLine = card.createDiv();
+      bulkLine.setAttribute('style', 'margin:0 0 6px;');
+      const tagAll = bulkLine.createSpan({ text: 'tag all' });
       tagAll.setAttribute('style', btnStyle);
       hover(tagAll, 'background:rgba(255,255,255,0.09);', 'background:transparent;');
       tagAll.setAttribute('title', 'add a tag to every session the search shows');
@@ -3221,7 +3233,8 @@ class TimelinePanel {
       const renderRows = () => {
         gridBox.textContent = '';
         const needle = query.trim().toLowerCase();
-        const rows = ((this.data && this.data.sessions) || []).filter((s) =>
+        // LIVE sessions only (the user 2026-08-25: the crossed-out ones shouldn't show here)
+        const rows = ((this.data && this.data.sessions) || []).filter((s) => s.live).filter((s) =>
           !needle || String(s.name || s.id || '').toLowerCase().indexOf(needle) >= 0);
         const grid = gridBox.createDiv();
         // columns: name | + | tags (the user 2026-08-25 — the [+] sits in its OWN column between
@@ -3237,17 +3250,58 @@ class TimelinePanel {
         for (const s of rows) {
           const vv = this._curViews();
           // NAME — the session's identity colour on the name itself (never a proxy dot), the
-          // "host:" prefix quiet lowercase italic, a dead session struck: every other surface's read
+          // "host:" prefix quiet lowercase italic. DRAGGABLE (the user 2026-08-25): grab a name to
+          // reorder — the drop writes the SHARED session order (session-order.json), the same store
+          // the tab-drag and lane-drag write, so all three surfaces reorder together. The insertion
+          // cue moves WITHOUT rebuilding mid-drag (the redraw-eats-pointer rule); the rebuild —
+          // and the persist — happen on the drop.
           const nameCell = grid.createDiv();
-          nameCell.setAttribute('style', 'white-space:nowrap;' + (s.live ? '' : 'opacity:0.55;'));
+          nameCell.setAttribute('style', 'white-space:nowrap;cursor:grab;');
+          nameCell._sid = s.id;
+          nameCell.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            const cells = Array.from(grid.children).filter((c) => c._sid);
+            const fromIdx = cells.indexOf(nameCell);
+            if (fromIdx < 0) return;
+            let toIdx = fromIdx;
+            try { nameCell.setPointerCapture(e.pointerId); } catch (e2) {}
+            nameCell.style.opacity = '0.45';
+            const clearCues = () => cells.forEach((c) => { c.style.borderTop = ''; c.style.borderBottom = ''; });
+            const onMove = (ev) => {
+              const ys = cells.map((c) => { const r = c.getBoundingClientRect(); return (r.top + r.bottom) / 2; });
+              let idx = ys.findIndex((y) => ev.clientY < y);
+              if (idx < 0) idx = cells.length - 1;
+              if (idx !== toIdx) {
+                toIdx = idx;
+                clearCues();
+                if (toIdx !== fromIdx) cells[toIdx].style[toIdx > fromIdx ? 'borderBottom' : 'borderTop'] = '2px solid #9cd2ff';
+              }
+            };
+            const onUp = () => {
+              nameCell.removeEventListener('pointermove', onMove);
+              nameCell.removeEventListener('pointerup', onUp);
+              nameCell.removeEventListener('pointercancel', onUp);
+              nameCell.style.opacity = '';
+              clearCues();
+              if (toIdx === fromIdx) return;
+              const vis = cells.map((c) => c._sid);
+              vis.splice(toIdx, 0, vis.splice(fromIdx, 1)[0]);
+              const full = this._mergeVisibleOrder(vis);   // only the shown rows permute within the full order
+              this._applyOrderToData(full);                // optimistic — no snap-back before the next poll
+              this._persistOrder(full);                    // the shared store: tabs + lanes follow
+              renderRows();
+            };
+            nameCell.addEventListener('pointermove', onMove);
+            nameCell.addEventListener('pointerup', onUp);
+            nameCell.addEventListener('pointercancel', onUp);
+          });
           const [hpre, bare] = nameParts(s);
           if (hpre) {
             const hp = nameCell.createSpan({ text: hpre });
             hp.setAttribute('style', 'color:' + MODEL_FG + ';font-style:italic;font-size:0.88em;');
           }
           const nm = nameCell.createSpan({ text: bare });
-          nm.setAttribute('style', 'font-weight:650;color:' + (s.color || '#cccccc') + ';'
-            + (s.live ? '' : 'text-decoration:line-through;'));
+          nm.setAttribute('style', 'font-weight:650;color:' + (s.color || '#cccccc') + ';');   // rows are live-only now — no strike variant
           // [+] — its own column between the name and the tags (the user 2026-08-25), wearing the
           // standard button anatomy: a rounded RECTANGLE, not a circle
           const plusCell = grid.createDiv();
