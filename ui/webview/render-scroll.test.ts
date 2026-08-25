@@ -83,9 +83,27 @@ test("a scrolled-up append restores by turn ANCHOR (data-uuid), raw scrollTop on
 // the time fallback). Prompt-intent jumps resolve by id (promptAnchorUuid → a user turn OR a peer's postal
 // card, see the kind-guard test below); the genuinely-unanchorable (autonomous / pruned-or-compacted) honest-
 // fail with a toast. The whole time-nearest mechanism (scrollToNearestT) is deleted.
-test("scrollToNearestT is GONE — no time-based navigation remains in the chat", () => {
-  assert.doesNotMatch(RENDER, /function scrollToNearestT/, "the time-nearest helper is deleted");
+test("scrollToNearestT is GONE — time never silently substitutes for an ID anchor", () => {
+  assert.doesNotMatch(RENDER, /function scrollToNearestT\b/, "the time-nearest helper is deleted");
   assert.doesNotMatch(RENDER, /scrollToNearestT\(/, "nothing calls it");
+  // landNearestMoment (2026-08-25) is NOT that tier reborn: it fires only when the navigation
+  // carries NO id at all (anchorT-only producers — timeline lane clicks, deep links), so there is
+  // no right turn for time to impersonate — and it announces itself with the honest note instead
+  // of posing as an exact jump. An ID anchor that fails still never falls back to time:
+  assert.match(RENDER, /if \(!scrolled && !att\.anchor && att\.t != null\) scrolled = landNearestMoment\(att\.t\);/);
+});
+
+test("a time-only navigation lands at the nearest moment and SAYS so — never the bare toast", () => {
+  // the fifth can't-locate shape (the user 2026-08-25): anchor null + anchorT set dead-ended with
+  // "couldn't locate" and an empty trail — the whole producer class (timeline/deep links/atomless
+  // cards) could never land after the id-only hardening
+  const fn = RENDER.split("function landNearestMoment(")[1].split("\nfunction ")[0];
+  assert.ok(fn.includes("const d = Math.abs(ep - t);"), "nearest by the anchor's own datum");
+  assert.ok(fn.includes('landTrail.push("time-nearest");'), "the audit names the landing kind");
+  assert.ok(fn.includes('"that link points at a time, not a message — landed at the closest one"'), "the honest note");
+  assert.ok(fn.includes('"that link points at a moment before the loaded history — landed at the oldest loaded message"'),
+    "…and the pre-history case names itself too");
+  assert.ok(fn.includes("renderWindowItems(v, s, items,"), "off-window moments re-window like the id recovery");
 });
 
 test("the PROMPT-tier time fallback is removed — an unresolvable prompt anchor honest-fails (no clock-nearest)", () => {

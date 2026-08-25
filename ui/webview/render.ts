@@ -7560,6 +7560,39 @@ function scrollToAnchor(uuid: string): boolean {
   return true;
 }
 
+/** The time-only landing (see landActive): the event whose epoch sits nearest `t` among the
+ *  RESIDENT events, landed with the honest note. Returns true when it landed. */
+function landNearestMoment(t: number): boolean {
+  const v = activeId ? views.get(activeId) : null;
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!v || !s || !s.events.length) return false;
+  let best = -1, bestD = Infinity, headEp: number | null = null;
+  for (let i = 0; i < s.events.length; i++) {
+    const ep = eventEpoch(s.events[i]);
+    if (ep == null) continue;
+    if (headEp == null) headEp = ep;
+    const d = Math.abs(ep - t);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  if (best < 0) return false;
+  const uuid = (s.events[best] as { uuid?: string }).uuid || "";
+  const items = displayItems(s);
+  let u = items.findIndex((it) => it.kind === "toolgroup" ? it.indices.includes(best) : it.index === best);
+  if (u < 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= best));
+  const working = s.status.state === "working" || s.status.state === "compacting";
+  renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), working);
+  const target = (uuid ? v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`) : null)
+    || (v.el.querySelector(`[data-unit="${u}"]`) as HTMLElement | null);
+  if (!target) { landTrail.push("time-nearest-miss"); return false; }
+  landTrail.push("time-nearest");
+  landOn(target as HTMLElement, uuid || undefined);
+  const beforeHead = headEp != null && t < headEp && (s.headFrom ?? 0) > 0;
+  landToast(beforeHead
+    ? "that link points at a moment before the loaded history — landed at the oldest loaded message"
+    : "that link points at a time, not a message — landed at the closest one");
+  return true;
+}
+
 // Land on a turn at the TOP of the viewport and KEEP it landed while the chrome
 // above the scroll container settles. Top-align (not center) so a jump lands on
 // the START of the thing and you read DOWN into it — a long work period isn't
@@ -8271,6 +8304,15 @@ function landActive(content: HTMLElement | null, v: View): void {
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind, keep: pendingAnchorKeepY != null };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
   let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
+  // TIME-ONLY navigation (the user 2026-08-25, the fifth can't-locate shape): some producers — the
+  // timeline's lane clicks, deep links, cards minted from segments with no anchorable atom — send
+  // anchorT with NO uuid, and the by-id-only landing left the whole class dead-ending in the bare
+  // toast (audit rows: anchor null, empty trail). When the TIME is the anchor's only datum it is
+  // the datum, not a proxy (the 2026-06-20 removal was about silently substituting time for a
+  // KNOWN id): land at the event nearest that moment and SAY SO, never impersonating an exact jump
+  // and never dead-ending. If the moment predates the loaded history, the oldest loaded message is
+  // the nearest reachable point — the note names that too (fail loudly, land nearest).
+  if (!scrolled && !att.anchor && att.t != null) scrolled = landNearestMoment(att.t);
   if (seek && att.anchor === seek.uuid) {
     if (scrolled) clearSeek();             // the landing event — the indicator dies with the seek
     else showSeekNote();                   // outlived the immediate landing → say the search is on
