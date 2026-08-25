@@ -36,9 +36,12 @@ test("executed: lensChips — All bare; narrowed = every selection incl. the no-
 test("cross-mount computed equality: one gray, one accent, everywhere", () => {
   assert.equal(TAG_BTN_GRAY, "#9aa0a6");
   assert.equal(TAG_BTN_ACCENT, "#9cd2ff");
-  // the timeline inlines the same values (it loads no modules — Obsidian host)
-  assert.match(TL, /const MODEL_FG = '#9aa0a6';/, "the timeline's gray IS the convention gray");
-  assert.match(TL, /const tagIconCol = active \? '#9cd2ff' : MODEL_FG;/, "gray at rest, accent narrowed");
+  // the timeline inlines the same values (it loads no modules — Obsidian host). Round three: the
+  // corner buttons' rest gray is the FEED INSTANCE's own computed chain (var(--dim) resolves this),
+  // narrowed is the .on accent — stated in the injected corner CSS, currentColor carries the glyph
+  assert.match(TL, /const MODEL_FG = '#9aa0a6';/, "the timeline's text gray (chip fallback) is the convention gray");
+  assert.match(TL, /color:var\(--vscode-descriptionForeground,#9a9a9a\)/, "rest = the feed's exact color chain");
+  assert.match(TL, /\.romp-tl-cbtn\.on\{color:var\(--accent,#9cd2ff\);/, "narrowed = the .on accent");
   // the feed's class mode resolves to the same accent (its own :root states the literal)
   assert.match(FEEDCSS, /--accent: #9cd2ff;/, "feed.css's accent equals the convention accent");
   assert.match(FEED, /"class"\);/, "the feed mounts in class mode — its .on carries that accent");
@@ -70,18 +73,19 @@ test("THE BUTTON OUTLINE (the user 2026-08-25, round two): every mount wears the
     "narrowed = accent border, at rest the hairline");
   assert.match(TAGMENU, /btn\.style\.background = narrowed \? TAG_BTN_WASH : "transparent";/,
     "narrowed = the .on wash");
-  // the timeline draws the same box in svg terms, and the BOX is the hit target (the bare 16x16
-  // glyph pad read unclickable — the user 2026-08-25)
-  assert.match(TL, /const box = el\('rect', \{ x: PADL \+ dx, y: y - 13, width: BTNW, height: BTNH, rx: 6,/,
-    "the corner buttons draw the outlined box as their hit rect");
-  assert.match(TL, /stroke: narrowed \? '#9cd2ff' : 'rgba\(255,255,255,0\.10\)', 'stroke-width': 1 \}\);/,
-    "same hairline at rest, same accent narrowed");
-  assert.match(TL, /fill: narrowed \? 'rgba\(156,210,255,0\.12\)' : 'transparent',/,
-    "same wash narrowed, transparent (still hit-catching) at rest");
+  // the timeline mounts REAL HTML buttons in the corner layer (round three — the SVG imitation
+  // of the same numbers still rendered differently; parity is the rendered image now, checked by
+  // side-by-side crops in review), wearing the identical literals:
+  assert.match(TL, /border:1px solid rgba\(255,255,255,0\.10\);border-radius:6px;cursor:pointer;white-space:nowrap;opacity:0\.95;/,
+    "the corner button carries the feed's hairline, radius, and footer opacity");
+  assert.match(TL, /font:inherit;font-size:10\.5px;padding:1px 9px;/,
+    "…and the footer instance's font scale and padding");
+  assert.match(TL, /\.romp-tl-cbtn\.on\{[^}]*background:rgba\(156,210,255,0\.12\);opacity:1\}/,
+    "narrowed = the .on wash at full strength");
 });
 
 test("timeline spacing grew (the user 2026-08-25: the corner controls were cramped)", () => {
-  assert.match(TL, /const BTNW = 32, BTNH = 18;/, "the outlined boxes replaced the bare icon slots (round two)");
-  assert.match(TL, /const PADH = 7, GAP = 9;/, "more air between the line's parts");
+  assert.match(TL, /const GAP = 8, BTNW = 34;/,
+    "round three: the button slot IS the feed tag button's measured box (34px), the bar's flex gap 8");
   assert.match(TL, /if \(hidden > 0\)/, "overflow chips collapse into a +N, one click from the menu");
 });

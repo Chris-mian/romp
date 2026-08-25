@@ -77,19 +77,15 @@ function drawnPanel(): any {
   return panel;
 }
 
-function findByTitle(root: any, txt: string): any {
-  for (const c of root.children || []) {
-    if (c.tag === "title" && String(c.textContent).includes(txt)) return root;
-    const hit = findByTitle(c, txt);
-    if (hit) return hit;
-  }
-  return null;
+function cornerBtn(panel: any, txt: string): any {
+  return (panel._cornerBar.children || []).find((c: any) => String(c.title || "").includes(txt)) || null;
 }
 
 test("executed: a tag-button press BUILDS the menu under a three-helper host (the 2026-08-25 dead button)", () => {
   const panel = drawnPanel();
-  const btn = findByTitle(panel.svg, "filter these lanes by tag");
-  assert.ok(btn, "the corner tag button drew");
+  const btn = cornerBtn(panel, "filter these lanes by tag");
+  assert.ok(btn, "the corner tag button rendered in the persistent HTML layer");
+  assert.equal(btn.tag, "button", "a REAL button — round three moved the corner off the SVG");
   const before = g.document.body.children.length;
   btn._listeners.pointerdown({ preventDefault() {}, stopPropagation() {} });   // the press — must not throw
   assert.ok(panel._viewsMenu, "the views menu opened");
@@ -104,35 +100,44 @@ test("executed: a tag-button press BUILDS the menu under a three-helper host (th
   panel._closeViewsMenu();
 });
 
-test("executed: the outlined box is the button's hit geometry — it spans the glyph, not a bare 16x16 pad", () => {
+test("executed: the whole button IS the hit target, wearing the feed's box by value", () => {
   const panel = drawnPanel();
-  const btn = findByTitle(panel.svg, "filter these lanes by tag");
-  const box = btn.children[0];
-  assert.equal(box.tag, "rect", "the box is the button's base layer");
-  assert.equal(box._attrs.width, 32, "full box width (14px glyph + 9px sides)");
-  assert.equal(box._attrs.height, 18, "chip-row height");
-  assert.equal(box._attrs.rx, 6, "the feed's radius");
-  assert.equal(box._attrs.fill, "transparent", "at rest transparent — still pointer-catching in svg");
-  assert.equal(box._attrs.stroke, "rgba(255,255,255,0.10)", "the feed's hairline at rest");
-  // every glyph part opts out of hits, so the box is the ONE hit surface (the lock's pattern)
-  for (const part of btn.children.slice(1))
-    if (part.tag !== "title") assert.equal(part._attrs["pointer-events"], "none", part.tag + " opts out of hits");
-  // the glyph sits INSIDE the box — the press target covers everything the eye reads as the button
-  const glyph = btn.children.find((c: any) => c.tag === "path");
-  assert.ok(glyph, "tag glyph drew");
-  const d = String(glyph._attrs.d);
-  const mx = Number(d.split(" ")[1]);
-  assert.ok(mx > Number(box._attrs.x) && mx < Number(box._attrs.x) + 32, "glyph starts inside the box");
+  const btn = cornerBtn(panel, "filter these lanes by tag");
+  // a native <button> — the entire box takes the press; no glyph-pad geometry to get wrong
+  assert.equal(btn.tag, "button");
+  assert.match(String(btn.className), /romp-tl-cbtn/);
+  assert.match(String(btn.innerHTML), /svg width="14" height="14"/, "the shared 14px tag glyph, currentColor");
+  // the injected corner CSS states the feed footer's values — the executed style node carries them
+  const styles = (g.document.head.children || []).filter((c: any) => c.tag === "style").map((c: any) => c.textContent).join("");
+  for (const lit of [
+    ".romp-tl-cbtn{display:inline-flex;align-items:center;font:inherit;font-size:10.5px;padding:1px 9px;",
+    "border:1px solid rgba(255,255,255,0.10);border-radius:6px;",
+    "color:var(--vscode-descriptionForeground,#9a9a9a);",
+  ]) assert.ok(styles.includes(lit), "corner CSS carries: " + lit);
 });
 
-test("executed: narrowed, the box wears the accent border + the feed .on wash", () => {
+test("executed: narrowed, the button wears the feed's .on dress and the chip renders beside it", () => {
   const panel = drawnPanel();
   const v = { active: "all", tags: [{ id: "g1", name: "infra", color: "#DD42FF", members: ["s2"] }], actives: { timeline: { tags: ["infra"] } } };
   panel.update(Object.assign({}, panel.data, { views: v }));
-  const btn = findByTitle(panel.svg, "filter these lanes by tag");
-  const box = btn.children[0];
-  assert.equal(box._attrs.stroke, "#9cd2ff", "accent border while narrowed");
-  assert.equal(box._attrs.fill, "rgba(156,210,255,0.12)", "the .on wash while narrowed");
+  const btn = cornerBtn(panel, "filter these lanes by tag");
+  assert.match(String(btn.className), /\bon\b/, "the .on class — same mechanics as the feed mount");
+  const styles = (g.document.head.children || []).filter((c: any) => c.tag === "style").map((c: any) => c.textContent).join("");
+  assert.ok(styles.includes(".romp-tl-cbtn.on{color:var(--accent,#9cd2ff);border-color:var(--accent,#9cd2ff);background:rgba(156,210,255,0.12);opacity:1}"),
+    "narrowed = accent border + the feed .on wash, full strength");
+  const chip = (panel._cornerBar.children || []).find((c: any) => String(c.className || "") === "romp-tl-chip");
+  assert.ok(chip, "the selection's chip renders beside the button");
+  assert.equal(chip.style.borderColor, "#DD42FF", "in its tag's colour");
+});
+
+test("executed: the corner bar persists across redraws — same signature, same nodes (click-safe by construction)", () => {
+  // the SVG is wiped per poll and per live-edge frame; the corner layer is NOT — it rebuilds only
+  // when its content signature changes, so a press can never land on a node a redraw just replaced
+  const panel = drawnPanel();
+  const before = cornerBtn(panel, "filter these lanes by tag");
+  panel.update(JSON.parse(JSON.stringify(panel.data)));   // same content, fresh poll
+  const after = cornerBtn(panel, "filter these lanes by tag");
+  assert.equal(before, after, "an unchanged poll leaves the very same button element in place");
 });
 
 test("the view speaks plain DOM: no Obsidian-only helper calls (the hosts install only the three)", () => {
