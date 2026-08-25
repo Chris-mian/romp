@@ -22,7 +22,6 @@ export interface TagMenuOpts {
   lens: () => TagLens;                       // the surface's current selection (re-read per repaint)
   unions: () => TagUnion[];                  // the name-keyed union rows (re-read per repaint)
   onApply: (l: TagLens, done: boolean) => void;  // done=true → the pick closes the menu (All)
-  scopeCaption: string;                      // "filters these tabs" — which surface this governs
   onConfigure?: () => void;                  // the one management entry, when the surface has a route
 }
 
@@ -68,20 +67,8 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
   const build = () => {
     menu.textContent = "";
     const lens = opts.lens();
-    const cap = document.createElement("div");
-    cap.setAttribute("style", "display:flex;align-items:center;gap:6px;margin:4px 6px;");
-    const capMk = (grow: boolean) => {
-      const d = document.createElement("div");
-      d.setAttribute("style", "height:1px;" + (grow ? "flex:1;" : "flex:0 0 8px;") + "background:rgba(255,255,255,0.12);");
-      return d;
-    };
-    cap.appendChild(capMk(false));
-    const capT = document.createElement("span");
-    capT.textContent = opts.scopeCaption;
-    capT.setAttribute("style", "font-size:0.82em;opacity:0.6;font-style:italic;white-space:nowrap;");
-    cap.appendChild(capT);
-    cap.appendChild(capMk(true));
-    menu.appendChild(cap);
+    // (the scope caption retired 2026-08-25 — the user: the button tooltip already names the
+    // surface, so it is the ONE scope carrier and the menu opens straight onto its rows)
     const row = (label: string, current: boolean, dot?: string | null, dim?: boolean) => {
       const r = document.createElement("div");
       r.setAttribute("style", "padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;"

@@ -842,7 +842,6 @@ function showHoverCard(row: HTMLElement, sid: string, nid: string): void {
           vscodeApi?.postMessage({ type: "setTimelineViews", views: v });
           render();
         },
-        scopeCaption: "filters this outline",
         onConfigure: () => { vscodeApi?.postMessage({ type: "openTagsDialog" }); },
       });
     });

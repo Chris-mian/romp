@@ -446,10 +446,11 @@ test("the corner grew two icon buttons and the menus split (the user 2026-08-25)
   assert.match(SRC, /btn\('timeline display options',[\s\S]{0,900}btn\('filter these lanes by tag',/,
     "sliders sit left, the tag button beside it (append order = flex order)");
   assert.match(SRC, /_openDisplayMenu\(b\)/);
-  assert.match(SRC, /capSep\('filters this timeline'\)/,
-    "the captioned divider says which surface the selection governs");
-  assert.match(SRC, /font-size:0\.82em;opacity:0\.6;font-style:italic/,
-    "caption at the sub-line scale — no new font sizes");
+  // the menu scope captions retired 2026-08-25 (the user: the tooltip already says it) — the
+  // button TOOLTIP is the one scope carrier now, and the menus open straight onto their rows
+  assert.ok(!SRC.includes("capSep("), "the tag menu's scope caption is gone");
+  assert.ok(!SRC.includes("how this timeline draws"), "the display menu's header is gone");
+  assert.match(SRC, /btn\('filter these lanes by tag',/, "…the tooltip names the surface instead");
   assert.match(SRC, /item\('Configure tags…', \{ dim: true \}\)/, "one management entry");
   assert.ok(!/item\('New tag…', \{ dim: true \}\)/.test(SRC), "New tag left the menu…");
   assert.match(SRC, /text: '\+ New tag'/,
