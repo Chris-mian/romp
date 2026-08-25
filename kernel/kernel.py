@@ -22055,8 +22055,11 @@ def _set_judge_state(fname, value, allowed, allow_empty=False):
             pass
 
 
-def _set_judge_model(v):  _set_judge_state("judge-model", v, _MODEL_VALUES)
-def _set_index_model(v):  _set_judge_state("index-model", v, _MODEL_VALUES)
+# judge tiers accept VERSION ids too (the user 2026-08-25: the settings pickers mirror the
+# family+version submenus) — a version rides the SDK model param verbatim, like session picks
+_JUDGE_MODEL_VALUES = _MODEL_VALUES | set(_VERSION_FAMILY)
+def _set_judge_model(v):  _set_judge_state("judge-model", v, _JUDGE_MODEL_VALUES)
+def _set_index_model(v):  _set_judge_state("index-model", v, _JUDGE_MODEL_VALUES)
 def _set_judge_effort(v): _set_judge_state("judge-effort", v, _EFFORT_VALUES, allow_empty=True)
 def _set_index_effort(v): _set_judge_state("index-effort", v, _EFFORT_VALUES, allow_empty=True)
 # The distilling pair accepts extra sentinels (resolved by jd._distill_model/_distill_effort at call
@@ -22064,7 +22067,7 @@ def _set_index_effort(v): _set_judge_state("index-effort", v, _EFFORT_VALUES, al
 # staller did before the split (the user 2026-08-14) — and effort's "none" pins no-flag. "none" exists
 # because "" cannot: _state_str folds an empty file into the default, so an allow_empty pin here would
 # read back as "follow" (caught by test_distill_tier before it shipped).
-def _set_distill_model(v):  _set_judge_state("distill-model", v, _MODEL_VALUES | {"triage"})
+def _set_distill_model(v):  _set_judge_state("distill-model", v, _JUDGE_MODEL_VALUES | {"triage"})
 def _set_distill_effort(v): _set_judge_state("distill-effort", v, _EFFORT_VALUES | {"triage", "none"})
 
 
