@@ -356,3 +356,22 @@ test("the lane gear carries the SAME tag editor — the shared builders, never a
   assert.match(SRC, /this\._tagJoinMenu\(am, \[s\.id\], build\);/);
 });
 
+test("the lane model menu exposes VERSIONS: submenu affordance, remembered default, keyboard (the user 2026-08-25)", () => {
+  // families with >1 live version wear a side submenu — hover or ArrowRight reveals it, every
+  // version directly pickable with the current-✓; clicking the family picks its remembered DEFAULT
+  // (the kernel /models `default` field), never a bare shorthand that silently resolves to newest
+  assert.match(SRC, /const versions = kind === 'model' \? \(c\.versions \|\| \[\]\) : \[\]/);
+  assert.match(SRC, /pick\(kind === 'model' \? \(c\.default \|\| c\.value\) : c\.value\)/,
+    "family click sends the remembered default");
+  assert.match(SRC, /versions\.length > 1 \?/, "single-version families stay flat");
+  assert.match(SRC, /text: '\\u25B8'/, "the caret affordance marks expandable families");
+  assert.match(SRC, /e\.key === 'ArrowRight' && openSub/, "right-arrow expands (keyboard operable)");
+  assert.match(SRC, /e\.key === 'ArrowLeft'[\s\S]{0,80}closeSub\(\); item\.focus\(\)/,
+    "left-arrow collapses back to the family row");
+  assert.match(SRC, /pick\(v\.value\)/, "version rows pick their own full id");
+  assert.match(SRC, /\(s\.model \|\| ''\)\.toLowerCase\(\) === v\.label\.toLowerCase\(\)/,
+    "the ✓ marks the lane's current version");
+  assert.match(SRC, /if \(this\._metaMenu\._sub\) this\._metaMenu\._sub\.remove\(\)/,
+    "closing the menu drops an open submenu too");
+});
+
