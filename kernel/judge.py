@@ -5268,18 +5268,39 @@ def _session_settled(fsid, path, session, store):
     return _session_closed(session) and not _awaiting_bg_hold(fsid, path, session, store)
 
 
-def _seg_anchor(seg):
-    """The segment's landable anchor uuid: its trigger when the event model recognized one, else the
-    first non-idle atom's uuid. A peer/system segment has no recognized trigger, and every node minted
-    from it stored promptUuid None — an unlinkable card summary that silently dead-ended on the feed
-    (the user 2026-07-20, the g200 federation card). Every landed uuid is landable (scrollToAnchor
-    expands the run holding it), so the segment head is its honest anchor. None only for a segment
-    with no landed uuids at all."""
+def _prompt_anchor_uuid(seg):
+    """The PROMPT anchor for a segment: its trigger uuid — unless that atom is an ATTACHMENT record
+    (2026-08-25, the settle-alias diagnosis): attachments never become chat events, so a title click
+    (prompt intent) on a card whose promptUuid names one can never land by id. Then the ENCLOSING
+    user MESSAGE owns the anchor — the segment's first user-typed, non-attachment atom. None only
+    when the segment has no trigger (callers keep their own fallbacks); the raw trigger survives as
+    the last resort when no user atom exists either (the chat's settle/alias belt covers residue)."""
     t = seg.get("trigger")
+    if not t:
+        return None
+    atoms = seg.get("atoms") or []
+    ta = next((a for a in atoms if a.get("uuid") == t), None)
+    if ta is None or ta.get("type") != "attachment":
+        return t
+    for a in atoms:
+        if a.get("type") == "user" and a.get("uuid"):
+            return a["uuid"]
+    return t
+
+
+def _seg_anchor(seg):
+    """The segment's landable anchor uuid: its trigger when the event model recognized one (routed
+    through the attachment-safe prompt rule above), else the first non-idle, non-attachment atom's
+    uuid. A peer/system segment has no recognized trigger, and every node minted from it stored
+    promptUuid None — an unlinkable card summary that silently dead-ended on the feed (the user
+    2026-07-20, the g200 federation card). Every landed uuid is landable (scrollToAnchor expands the
+    run holding it), so the segment head is its honest anchor. None only for a segment with no
+    landed uuids at all."""
+    t = _prompt_anchor_uuid(seg)
     if t:
         return t
     for a in seg.get("atoms") or []:
-        if a.get("type") != "idle" and a.get("uuid"):
+        if a.get("type") not in ("idle", "attachment") and a.get("uuid"):
             return a["uuid"]
     return None
 
