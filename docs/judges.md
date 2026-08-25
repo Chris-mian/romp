@@ -124,7 +124,15 @@ and tagged follow-ups (file under the cited goal unless the reply starts a
 different thread — and even then the new goal groups with the cited card
 under one umbrella: the follow-up tie). A segment opened by an
 untargeted kernel notice (restart or resume) carries a housekeeping note:
-pure verification sweeps file nothing.
+pure verification sweeps file nothing. Since 2026-08-25 that is also a
+mechanical floor, not just a request: a work-run whose segment was opened by
+romp's own bookkeeping — a kernel notice, or the CLI's `[Request
+interrupted…]` stop artifact — never mints a fresh top-level goal (its
+menu-targeted ops still apply, so the work keeps advancing existing cards),
+and no mint anywhere roots its promptUuid at a record that files nothing (a
+coordinate/question mail, a bookkeeping record): the anchor substitutes the
+segment's first assistant atom. The clear wrap-up is exempt — its one
+blocked card is the designed needs-you escape.
 
 **placer.** The second, scoped call, only when the chosen card already has
 open sub-goals: it sees just that card's subtree and picks the spot, biased

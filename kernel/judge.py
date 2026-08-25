@@ -3614,6 +3614,44 @@ def _restrict_retitle(ops, allowed):
     return [o for o in ops if o["do"] != "retitle" or o.get("goal") == allowed]
 
 
+def _strip_top_mints(ops):
+    """Drop every top-level `mint` op — and every op chained onto a dropped node — remapping the
+    surviving same-reply refs. The deterministic half of the bookkeeping-root gate (the user
+    2026-08-25, the provenance audit): a work-run whose segment was opened by romp's OWN line — a
+    restart/resume/tasks-died notice, or the CLI's '[Request interrupted…]' stop artifact — may
+    still file work under EXISTING goals (sub/done/block on menu targets pass through untouched),
+    but it never opens a fresh top-level card: our own bookkeeping is never an ask. The advisory
+    housekeeping note (plan_units, 2026-07-08) asked the model for this; the audit found a third
+    of one team's board rooted in exactly these records, so the floor is now mechanical.
+    Ref remapping matters: `ref` indexes the reply's CREATED nodes (mints and subs, in order), so
+    removing a mint shifts every later position — an unmapped ref would silently retarget a
+    neighbouring node, and a sub whose ref died would fall back to a TOP mint in apply_plan
+    (the exact hole this closes)."""
+    out, newpos, alive = [], [], 0        # newpos[i]: created-node i's new 1-based position (None = dropped)
+    for o in ops:
+        do, r = o.get("do"), o.get("ref")
+        dead_ref = bool(r) and (r > len(newpos) or newpos[r - 1] is None)
+        if do == "mint":
+            newpos.append(None)
+            continue
+        if do == "sub":
+            if dead_ref:                  # chained onto a dropped mint → drops with it
+                newpos.append(None)
+                continue
+            if r:
+                o = dict(o, ref=newpos[r - 1])
+            alive += 1
+            newpos.append(alive)
+            out.append(o)
+            continue
+        if dead_ref:                      # a verdict aimed at a dropped node evaporates with it
+            continue
+        if r:
+            o = dict(o, ref=newpos[r - 1])
+        out.append(o)
+    return out
+
+
 def _seg_spliced(seg):
     """True when this segment's TRIGGER is an ABSORBED atom — a prompt the CLI spliced into a
     RUNNING turn (a queued_command attachment; em._absorbed_atom marks the synthesized atom
@@ -5301,6 +5339,35 @@ def _seg_anchor(seg):
         return t
     for a in seg.get("atoms") or []:
         if a.get("type") not in ("idle", "attachment") and a.get("uuid"):
+            return a["uuid"]
+    return None
+
+
+def _mint_anchor_uuid(seg):
+    """The anchor a MINT may claim as its ROOT (promptUuid) — the attachment-safe prompt anchor,
+    unless that record is one that must FILE NOTHING on the board (the user 2026-08-25, the
+    provenance audit): a coordinate/question peer mail (binding, no courier call — the audited
+    specimen was a to-do mirror top whose promptUuid named a kind=coordinate mail, so the chain
+    walk read peer chatter as the card's root), or romp's own bookkeeping (a romp-authored notice,
+    the CLI's interrupt artifact — _seg_bookkeeping's classes). Those records stay in the TRAIL as
+    ordinary history; only the ROOT claim is refused. Substitute: the segment's first assistant
+    atom — where the agent actually declared or did the work, still a landable deep-link — else
+    None (an anchorless mint beats a false confession; the chat's alias belt covers residue).
+    A DELEGATE mail keeps the anchor: the courier plants from that same record by design."""
+    t = _prompt_anchor_uuid(seg)
+    if not t:
+        return None
+    atoms = (seg or {}).get("atoms") or []
+    ta = next((a for a in atoms if a.get("uuid") == t), None)
+    if ta is None:
+        return t
+    author = ta.get("author")
+    files_nothing = (isinstance(author, dict)
+                     and (author.get("kind") or "") in ("coordinate", "question"))
+    if not files_nothing and not (author == "romp" or em.is_interrupt_record(ta)):
+        return t
+    for a in atoms:
+        if a.get("type") == "assistant" and a.get("uuid"):
             return a["uuid"]
     return None
 
@@ -7144,6 +7211,19 @@ def _plan_session(fsid, path, now):
                 save_goals(fsid, store)
                 continue
             ops = _coerce_place(menu, text, title=_prompt_gist(fsid, seg_id) or None)
+        if _seg_bookkeeping(seg_by_id.get(seg_id) or {}):
+            # DETERMINISTIC top-mint floor (the user 2026-08-25, the provenance audit): this stretch
+            # was opened by romp's own bookkeeping — a restart/resume/tasks-died notice or the CLI's
+            # interrupt artifact — so its work may advance EXISTING goals but never opens a fresh top
+            # card. The housekeeping note above asks the model for this; the floor makes it mechanical
+            # (the note sanctioned "a genuinely new thread", and a third of one team's audited board
+            # was rooted in exactly these records). Bookkeeping roots are never human (_seg_human
+            # excludes them), so an emptied reply retires like any other non-human no-op.
+            ops = _strip_top_mints(ops)
+            if not ops:
+                store["placements"][seg_id] = None
+                save_goals(fsid, store)
+                continue
         ops = _restrict_retitle(ops, pgi)              # only the segment's own prompt-run node is retitle-eligible
         ops = _card_route_subs(store, ops, menu)       # card-first: route subs to the card, then the placer
         if apply_plan_guarded(fsid, path, store, seg_id, seg_t, ops, menu, prompt_uuid=trig, quote=vq,
@@ -7169,7 +7249,13 @@ def _plan_session(fsid, path, now):
         _log_judge_error("planner", fsid, "rewind-stand-down",
                          note="plan-sync skipped this pass: the latest segment was rewound away mid-pass")
     elif _sync_declared_plan(store, session, (latest_seg or {}).get("id"), (latest_seg or {}).get("t") or now,
-                             prompt_uuid=_ls_trig):
+                             prompt_uuid=_mint_anchor_uuid(latest_seg) if latest_seg else None):
+        # ^ the VETTED anchor, not the raw trigger (the user 2026-08-25, the audited g-specimen): the
+        #   mirror stamps its promptUuid off whatever segment happens to be syncing, and when that
+        #   segment was opened by a coordinate/question mail or a romp notice, the raw trigger made
+        #   the mail/notice the CARD'S ROOT — a record that must file nothing confessing to an ask
+        #   it never made. The rewind check above stays on the RAW trigger: it asks about the
+        #   segment's chain liveness, not about anchor suitability.
         _group_store(store, fsid, now)
         save_goals(fsid, store)
     rollup_status(store, _session_settled(fsid, path, session, store))
@@ -10863,6 +10949,24 @@ def _seg_clearwrap(seg):
     atoms = seg.get("atoms") or []
     trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
     return bool(trig and ROMP_CLEARWRAP_RE.search(_atom_text(trig)))
+
+
+def _seg_bookkeeping(seg):
+    """True if this segment was opened by romp's OWN BOOKKEEPING, never an ask (the user 2026-08-25,
+    the provenance audit): a romp-authored line (the romp-injected marker — restart/resume/tasks-died
+    notices, plus a nudge whose goal marker no longer resolves and so falls to the generic work-run),
+    or the CLI's '[Request interrupted by user…]' stop artifact (written for BOTH a user Esc and a
+    machine cut — either way it is the stop EVENT, not a request). The generic work-run strips top
+    mints from such a segment (_strip_top_mints): its work may advance existing goals, but a fresh
+    top card rooted here claims romp's own turn was an ask — the audit found restart-notice- and
+    interrupt-rooted tops a full third of one team's board. The clear wrap-up is EXEMPT by design:
+    its one blocked card is the needs-you escape the wrap-up exists for (the user 2026-07-29), and
+    its own prompt bounds it. Mirrors _seg_human's trigger lookup."""
+    if _seg_clearwrap(seg):
+        return False
+    atoms = seg.get("atoms") or []
+    trig = next((a for a in atoms if a.get("uuid") == seg.get("trigger")), None) or (atoms[0] if atoms else None)
+    return bool(trig and (trig.get("author") == "romp" or em.is_interrupt_record(trig)))
 
 
 def _parse_courier(raw, menu_len):
