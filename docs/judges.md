@@ -264,7 +264,15 @@ goal-independent hard-block floor), while the sender's "delegated to"
 tracking node plants either way — so the delegation stays one glance away on
 the sender's board. At mint time uncertainty files quiet; the burden of
 proof is on the mint, the inverse of a display filter's. Coordinating makes
-no card, ever. The companion `run_propagate` is deterministic: when the
+no card, ever. A planted goal also stores the delegating mail's cleaned
+first line as the additive node field `frame` (2026-08-25, part of the
+goal-node consumer contract): the distiller and briefer prepend it — with
+the sender's linked-ask title — to their prompts as a marked
+`<delegating-request>` section, so a delegated card's summary opens in the
+requester's phrasing (usually the user's own words) instead of the worker's
+implementation nouns. A goal without a frame (a session's own work, or a
+node minted before the field existed) distills byte-identically to before.
+The companion `run_propagate` is deterministic: when the
 recipient completes the plant, the sender's tracker checks itself off
 through the origin pointer; a quiet-filed delegation's tracker (which no
 recipient goal can ever back-link) completes on the recipient's reply — the
