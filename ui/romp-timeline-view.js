@@ -2298,7 +2298,7 @@ class TimelinePanel {
     } catch (e) { /* no host hook + no Node → can't send */ }
   }
 
-  _closeMetaMenu() { if (this._metaMenu) { this._metaMenu.remove(); this._metaMenu = null; } }
+  _closeMetaMenu() { if (this._metaMenu) { if (this._metaMenu._sub) this._metaMenu._sub.remove(); this._metaMenu.remove(); this._metaMenu = null; } }
 
   // Where a drop-down should live and be measured: the tip's host document (the topmost same-origin
   // window — in the web shell that's the whole page, so a menu taller than the timeline band gets the
@@ -2333,23 +2333,77 @@ class TimelinePanel {
     const menu = document.body.createDiv();
     menu.setAttribute('style', 'position:fixed;z-index:1001;min-width:96px;' + MENU_STYLE);
     menu._kind = kind; menu._sid = s.id;
+    const h = this._menuHost(anchorEl.getBoundingClientRect());
+    const pick = (value) => {
+      this._sendCommand(s.name, '/' + kind + ' ' + value, kind === 'model');
+      const now = (typeof Date !== 'undefined' && Date.now) ? Date.now() : 0;
+      this._metaPending[s.id + ':' + kind] = { was: (kind === 'model' ? s.model : s.effort) || '', until: now + 20000 };
+      this._closeMetaMenu();
+      this.draw();
+    };
+    const closeSub = () => { if (menu._sub) { menu._sub.remove(); menu._sub = null; } };
     for (const c of (kind === 'model' ? MODEL_CHOICES : EFFORT_CHOICES)) {
       const cur = isCurrentMeta(kind, s, c.value);
+      const versions = kind === 'model' ? (c.versions || []) : [];
       const item = menu.createDiv({ text: c.label });
-      item.setAttribute('style', 'padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;');
+      item.setAttribute('style', 'padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;display:flex;align-items:center;');
+      item.setAttribute('tabindex', '0');
       if (cur) { const ck = item.createSpan({ text: '✓' }); ck.setAttribute('style', MENU_CHECK_STYLE); }
-      item.addEventListener('mouseenter', () => { item.style.background = 'rgba(255,255,255,0.09)'; });
+      // A family with more than one live version wears the side-submenu affordance (the user
+      // 2026-08-25): hovering (or right-arrow) reveals every version, each directly pickable with
+      // the ✓ on the lane's current one; clicking the family itself picks its DEFAULT — the version
+      // the user last chose for that family, else the newest (the kernel's /models `default`).
+      // .ctx-caret/.ctx-sub vocabulary inlined — this pane may live in a foreign document (Obsidian).
+      const openSub = versions.length > 1 ? () => {
+        closeSub();
+        const sub = document.body.createDiv();
+        sub.setAttribute('style', 'position:fixed;z-index:1002;min-width:96px;' + MENU_STYLE);
+        for (const v of versions) {
+          const cv = ((s.model || '').toLowerCase() === v.label.toLowerCase());
+          const row = sub.createDiv({ text: v.label });
+          row.setAttribute('style', 'padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;');
+          row.setAttribute('tabindex', '0');
+          if (cv) { const ck = row.createSpan({ text: '✓' }); ck.setAttribute('style', MENU_CHECK_STYLE); }
+          row.addEventListener('mouseenter', () => { row.style.background = 'rgba(255,255,255,0.09)'; });
+          row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
+          row.addEventListener('click', (e) => { e.stopPropagation(); pick(v.value); });
+          row.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); pick(v.value); }
+            else if (e.key === 'ArrowLeft') { e.preventDefault(); closeSub(); item.focus(); }
+          });
+        }
+        const hr = item.getBoundingClientRect();
+        h.doc.body.appendChild(sub);
+        const iw = (h.win.innerWidth || 9999);
+        let sl = Math.round(hr.right + 2);
+        if (sl + (sub.offsetWidth || 120) > iw - 6) sl = Math.max(6, Math.round(hr.left) - (sub.offsetWidth || 120) - 2);
+        sub.style.left = sl + 'px';
+        sub.style.top = Math.round(menuTop(hr, sub.offsetHeight || 0, h.win.innerHeight || 9999)) + 'px';
+        menu._sub = sub;
+        return sub;
+      } : null;
+      if (openSub) {
+        const caret = item.createSpan({ text: '\u25B8' });
+        caret.setAttribute('style', 'margin-left:auto;padding-left:10px;opacity:0.55;');
+        item.addEventListener('mouseenter', () => { item.style.background = 'rgba(255,255,255,0.09)'; openSub(); });
+      } else {
+        item.addEventListener('mouseenter', () => { item.style.background = 'rgba(255,255,255,0.09)'; closeSub(); });
+      }
       item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
       item.addEventListener('click', (e) => {
         e.stopPropagation();
-        this._sendCommand(s.name, '/' + kind + ' ' + c.value, kind === 'model');
-        const now = (typeof Date !== 'undefined' && Date.now) ? Date.now() : 0;
-        this._metaPending[s.id + ':' + kind] = { was: (kind === 'model' ? s.model : s.effort) || '', until: now + 20000 };
-        this._closeMetaMenu();
-        this.draw();
+        pick(kind === 'model' ? (c.default || c.value) : c.value);
+      });
+      item.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); pick(kind === 'model' ? (c.default || c.value) : c.value); }
+        else if (e.key === 'ArrowRight' && openSub) {
+          e.preventDefault();
+          const sub = openSub();
+          const first = sub && sub.querySelector('[tabindex]');
+          if (first) first.focus();
+        }
       });
     }
-    const h = this._menuHost(anchorEl.getBoundingClientRect());
     h.doc.body.appendChild(menu);   // a cross-document append ADOPTS the node; its listeners are kept
     // clamp to the host viewport so a right-edge lane's menu stays on-screen
     const left = Math.min(Math.round(h.rect.left), (h.win.innerWidth || 9999) - 140);

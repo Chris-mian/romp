@@ -735,6 +735,54 @@ def _write_palette_mirror():
 # model literals. The judge accepts only a value from here (setJudgeModel/setIndexModel validate against it).
 MODEL_CHOICES = [{"value": "fable", "label": "Fable"}, {"value": "opus", "label": "Opus"},
                  {"value": "sonnet", "label": "Sonnet"}, {"value": "haiku", "label": "Haiku"}]
+# Every version a family can pin (the user 2026-08-25: shorthand aliases resolve to the NEWEST —
+# opus became Opus 5 — silently losing the legacy versions that remain live on the API). Newest
+# first; values are the API's DATELESS aliases, verified against the claude-api reference
+# 2026-08-25 (deprecated 4.1/4.0-era models excluded on purpose — they are retiring). Clicking a
+# family in a picker sends that family's DEFAULT: the most recent version the user picked for it
+# (model-picks.json below), else the newest. Full ids ride every set path verbatim already — the
+# alias table stops at the family names, so a version pick needs no new transport.
+MODEL_VERSIONS = {
+    "fable":  [{"value": "claude-fable-5", "label": "Fable 5"}],
+    "opus":   [{"value": "claude-opus-5", "label": "Opus 5"},
+               {"value": "claude-opus-4-8", "label": "Opus 4.8"},
+               {"value": "claude-opus-4-7", "label": "Opus 4.7"},
+               {"value": "claude-opus-4-6", "label": "Opus 4.6"},
+               {"value": "claude-opus-4-5", "label": "Opus 4.5"}],
+    "sonnet": [{"value": "claude-sonnet-5", "label": "Sonnet 5"},
+               {"value": "claude-sonnet-4-6", "label": "Sonnet 4.6"},
+               {"value": "claude-sonnet-4-5", "label": "Sonnet 4.5"}],
+    "haiku":  [{"value": "claude-haiku-4-5", "label": "Haiku 4.5"}],
+}
+_VERSION_FAMILY = {v["value"]: fam for fam, vs in MODEL_VERSIONS.items() for v in vs}
+MODEL_PICKS_FILE_NAME = "model-picks.json"   # {family: full-id} — a viewer pref all surfaces read, like colormap
+
+
+def _model_picks():
+    """The per-family last-picked map. Only known version ids survive the read (a stale or hand-edited
+    entry falls back to the family's newest rather than poisoning the default)."""
+    try:
+        d = json.loads((jd.STATE / MODEL_PICKS_FILE_NAME).read_text())
+        return {f: v for f, v in d.items() if isinstance(v, str) and _VERSION_FAMILY.get(v) == f} \
+            if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _note_model_pick(value):
+    """Record a version pick as its family's new default (write-on-change). Family shorthands and
+    unknown strings record nothing — they are not version picks."""
+    fam = _VERSION_FAMILY.get(str(value or ""))
+    if not fam:
+        return
+    picks = _model_picks()
+    if picks.get(fam) == value:
+        return
+    picks[fam] = value
+    try:
+        _atomic_write(jd.STATE / MODEL_PICKS_FILE_NAME, json.dumps(picks))
+    except Exception:
+        sys.stderr.write("model-picks save: %s\n" % traceback.format_exc())
 # "ultracode" tops the ladder (the user 2026-08-04): the CLI's own /effort offers it — xhigh effort plus
 # standing dynamic-workflow orchestration, per session. tmux delivers the literal "/effort ultracode"; the
 # SDK backend maps it to effort=xhigh + the `ultracode` settings key (the CLI's documented per-session
@@ -15829,6 +15877,7 @@ def _set_model_or_park(be, sid, value):
     way, the pick is ACCEPTED now: stamp the shared pending signal (_mark_model_pending) so chat + timeline
     both show switching-dots immediately, from whichever surface the click came from (the user 2026-07-03)."""
     _mark_model_pending(sid, value)
+    _note_model_pick(value)          # a version pick becomes its family's remembered default (2026-08-25)
     if _ops_gate(sid):
         _park_op(sid, ("model", value))
     else:
@@ -27501,8 +27550,17 @@ class Handler(BaseHTTPRequestHandler):
                 # selectors wear the same colors the statusline badges do, for ANY pick — the badge
                 # colors only cover the current value, so the list is where the shared tint belongs)
                 _stops = cm.stops_for(_colormap())
+                # each family also carries its VERSIONS (newest first, the family's tint) and its
+                # DEFAULT — the last version the user picked for that family, else the newest (the
+                # user 2026-08-25: family click = remembered pick; the submenu holds the rest).
+                _picks = _model_picks()
                 return self._send(200, json.dumps(
-                    {"models": [dict(c, color=_model_color(c["value"], _stops)) for c in MODEL_CHOICES],
+                    {"models": [dict(c, color=_model_color(c["value"], _stops),
+                                     versions=[dict(v) for v in MODEL_VERSIONS.get(c["value"]) or []],
+                                     default=_picks.get(c["value"])
+                                         or ((MODEL_VERSIONS.get(c["value"]) or [{}])[0].get("value")
+                                             or c["value"]))
+                                for c in MODEL_CHOICES],
                      "efforts": [dict(c, color=_effort_color(c["value"], _stops)) for c in EFFORT_CHOICES]}),
                     "application/json", cache="no-cache")
             if p == "/usage":                                 # the /usage rate-limit bars, re-read on demand: the rail's
