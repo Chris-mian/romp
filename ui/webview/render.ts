@@ -7258,19 +7258,39 @@ function landToast(msg: string) {
 // Right-side warning toast: kernel `warn` messages and federation delivery failures
 // land here, so a failed action never dies silently (the user 2026-07-10: creating a
 // session on an unreachable remote host gave no feedback at all — the kernel's warn
-// had no handler and the dropped route had no witness). Click to dismiss; fades on
-// its own otherwise. Toasts stack in #warn-toasts so bursts stay readable.
+// had no handler and the dropped route had no witness). Toasts stack in #warn-toasts
+// so bursts stay readable, and fade on their own.
+// DISMISSAL is the family treatment (the user 2026-08-25: the notice is useful but it
+// floats over the tab strip with no visible way out — "it gets in the way of stuff"):
+// a visible ✕ (the chip-✕ dress: dim, separate, hover-brightens), the whole toast still
+// click-dismisses, and Escape clears the stack. One DELEGATED handler on the stable
+// #warn-toasts container (created once, toasts appended into it — click-safe across
+// re-renders by construction, per the standing button rules; removal IS the immediate
+// acknowledgement). The Escape listener never stops propagation: clearing a toast is
+// additive noise-removal, not a key the rest of the UI loses — and overlay consumers
+// that capture Escape (the lightbox, the viewer) still peel first by construction.
 function warnToast(msg: string) {
   let box = document.getElementById("warn-toasts");
   if (!box) {
     box = el("div", "");
     box.id = "warn-toasts";
     document.body.appendChild(box);
+    box.addEventListener("click", (e) => {
+      (e.target as HTMLElement | null)?.closest(".warn-toast")?.remove();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") for (const w of Array.from(box!.children)) w.remove();
+    });
   }
   const t = el("div", "warn-toast");
-  t.textContent = msg;
+  const txt = el("span", "warn-toast-msg");
+  txt.textContent = msg;
+  const x = el("button", "warn-toast-x");
+  x.setAttribute("aria-label", "Dismiss");
+  x.title = "dismiss (Esc)";
+  x.textContent = "✕";
+  t.append(txt, x);
   t.title = "click to dismiss";
-  t.addEventListener("click", () => t.remove());
   box.appendChild(t);
   setTimeout(() => t.classList.add("fade"), 11000);
   setTimeout(() => t.remove(), 12000);

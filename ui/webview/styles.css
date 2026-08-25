@@ -2310,12 +2310,21 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   display: flex; flex-direction: column; gap: 8px; max-width: 340px;
 }
 .warn-toast {
+  display: flex; align-items: flex-start; gap: 8px;
   padding: 8px 12px; border-radius: 8px; cursor: pointer;
   background: rgba(28, 28, 28, 0.96);
   border: 1px solid var(--vscode-errorForeground, #f48771);
   color: var(--fg); font-size: 0.85em;
   transition: opacity 0.7s ease;
 }
+.warn-toast-msg { min-width: 0; }
+/* the dismiss ✕ — the chip-✕ dress (dim, separate, hover-brightens); the whole toast still
+   click-dismisses, this makes the way out VISIBLE (the user 2026-08-25) */
+.warn-toast-x {
+  flex: 0 0 auto; border: none; background: none; cursor: pointer; color: var(--dim);
+  font-size: 11px; line-height: 1.4; padding: 2px 4px; border-radius: 8px;
+}
+.warn-toast-x:hover { color: var(--fg); background: rgba(255, 255, 255, 0.08); }
 .warn-toast.fade { opacity: 0; }
 
 /* INTERRUPTING… chip (the user 2026-07-02): the stop is in flight — busy-yellow like working (it still
