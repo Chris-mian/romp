@@ -4130,6 +4130,49 @@ def _dead_wait_block(sid, gid, at, why, nudged, now, blk_why=None):
     return False
 
 
+def _file_wake_answer(store, sid, gid, now):
+    """The answered wake's outcome becomes a FILED event (the user 2026-08-25, closing the awaiting
+    audit's last live mechanism): the answer IS new information, and new information that files no
+    diary row is invisible to every reader that matters — the response segment was often placed
+    under NO goal, so the closer's filed-since re-nomination never fired and an answered wake
+    re-affirmed a dead wait forever (two live specimens, 12-13h). File a same-why re-assert on the
+    stamped node AT ITS OWN ANCHOR (the coalesce convention: the anchor freezes, so wake episodes
+    and patience never churn) — the row's arrival moves _newest_filed past closerLookT, so the
+    closer re-audits WITH the answer in view and rules it — done, lift, block, or keep — from real
+    evidence. Runs once per answer by construction (the answered leg itself runs once per record).
+    Returns True when the row landed."""
+    try:
+        nodes = store.get("nodes", {})
+        kids = {}
+        for x, n in nodes.items():
+            kids.setdefault(n.get("parentId"), []).append(x)
+        best, stack, seen = None, [gid], set()
+        while stack:
+            x = stack.pop()
+            if x in seen:
+                continue
+            seen.add(x)
+            n = nodes.get(x)
+            if not n:
+                continue
+            if n.get("awaitingWhy") and not n.get("rolledUp")                     and (best is None or (n.get("awaitingAt") or 0) > (best.get("awaitingAt") or 0)):
+                best = n
+            stack.extend(kids.get(x, []))
+        if best is None:
+            return False
+        if jd.record_verdict(store, best, "nudge", "awaiting",
+                             best.get("awaitingAt") or int(now),
+                             why=best.get("awaitingWhy"), await_kind=best.get("awaitingKind"),
+                             await_peers=best.get("awaitingPeers")):
+            jd.rollup_status(store, False)
+            jd.save_goals(sid, store)
+            _mark_views_dirty()
+            return True
+    except Exception:
+        sys.stderr.write("wake-answer filing (%s): %s\n" % (gid, traceback.format_exc()))
+    return False
+
+
 def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
     """The AWAITING branch of _auto_nudge_session's goal walk — one stamped top goal. The stamp is a
     judged wait, so the plain status nudge stays off; but a wait is not an exemption from the ladder
@@ -4178,7 +4221,8 @@ def _wake_goal(sid, gid, stamp, nudged, turns, store, now, lt, tmux):
             # the judges ruled on the answer and the stamp still stands → the wait was re-affirmed
             nudged[gid] = dict(rec, answeredAt=(resp.get("t") or int(now)))
             _put_nudged(gid, nudged[gid])
-            return False
+            _file_wake_answer(store, sid, gid, now)   # the answer becomes a FILED event → the closer
+            return False                              #   re-audits with it in view (see the helper)
         _sdefer = _revivers_pending(sid, store, turns, gid)
         if _sdefer and not _nudge_deferred_ok(gid, _sdefer, now, sid):
             return False                             # something else can still move it (judge pass, retry
@@ -4285,6 +4329,7 @@ def _awaiting_wake_outcomes(now, walked=None):
                 # answered and ruled — re-arm from the answer, exactly as the walk's eval would have (the
                 # walk never got to: its session gates held, e.g. an api-error AFTER the judged response)
                 _put_nudged(gid, dict(rec, answeredAt=(resp.get("t") or int(now))))
+                _file_wake_answer(store, sid, gid, now)   # …and the answer files, same as the walk's leg
                 continue
             if resp is not None:
                 continue                             # visible but not ruled yet — the judges own it
