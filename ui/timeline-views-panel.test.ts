@@ -79,7 +79,7 @@ test("the trigger sits in the corner strip and opens on pointerdown, like every 
   // two monochrome icon buttons since 2026-08-25 (display options + the tag filter), both
   // pointerdown-opened with tooltips carrying the words
   assert.match(SRC, /btn\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); open\(btn\); \}\);/);
-  assert.match(SRC, /iconBtn\(ICONW, 'filter these lanes by tag'/);
+  assert.match(SRC, /iconBtn\(BTNW \+ GAP, 'filter these lanes by tag'/);
   assert.match(SRC, /const tailStr = more \? more \+ ' more' : '';/, "a filtered-out live session is always one glance away");
 });
 
@@ -253,7 +253,7 @@ test("the trigger measures its WHOLE string against the gutter, and the dialog's
   // the fit measures the whole line as LAID OUT: trigger + gap + padded chip + gap + tail
   // per-chip budgeting since 2026-08-25: chips render while they fit; the rest collapse into +N
   assert.match(SRC, /const chipW = \(c\) => PADH \* 2 \+ this\.labelWidth\(c\.label\) \+ XGAP \+ this\.labelWidth\('✕'\);/);
-  assert.match(SRC, /const budget = this\.M\.left - PADL - 6 - ICONW \* 2 - \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
+  assert.match(SRC, /const budget = this\.M\.left - PADL - 6 - \(BTNW \* 2 \+ GAP\) - \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
   assert.match(SRC, /if \(used \+ w \+ restW > budget\) break;/);
 
   assert.match(SRC, /this\._viewsDialogKey = \{ doc: h\.doc, fn: onKey \};/);
@@ -420,7 +420,7 @@ test("executed: the timeline lens — toggles, All exclusivity, last-off→All, 
 test("the corner grew two icon buttons and the menus split (the user 2026-08-25)", () => {
   // display options (sliders) LEFT of the tag filter (tag icon); both monochrome, tooltip-worded
   assert.match(SRC, /iconBtn\(0, 'timeline display options'/, "sliders sit left");
-  assert.match(SRC, /iconBtn\(ICONW, 'filter these lanes by tag'/, "the tag button beside it");
+  assert.match(SRC, /iconBtn\(BTNW \+ GAP, 'filter these lanes by tag'/, "the tag button beside it");
   assert.match(SRC, /_openDisplayMenu\(btn\)/);
   assert.match(SRC, /capSep\('filters this timeline'\)/,
     "the captioned divider says which surface the selection governs");

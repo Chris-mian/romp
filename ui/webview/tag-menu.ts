@@ -128,12 +128,17 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
   openMenu = menu;
 }
 
-/** The shared monochrome tag-icon button (the user chose a tag glyph): identical across surfaces. */
+/** The shared tag-icon button (the user chose a tag glyph): identical across surfaces. It wears
+ * THE BUTTON OUTLINE (the user 2026-08-25, round two: the bare glyph read weird next to the feed's
+ * dressed buttons) — the feed word-button's box, stated in the same literals the feed's classes
+ * resolve to (--card-border, 6px radius, the #feed-foot 1px 9px padding), so a chat/outline mount
+ * computes equal to the feed instance by value, not by shared class (the 678 lesson). */
 export function tagMenuButton(title: string, open: (btn: HTMLElement) => void): HTMLElement {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.title = title;
-  btn.setAttribute("style", "background:transparent;border:0;padding:2px 4px;cursor:pointer;color:#9aa0a6;display:inline-flex;align-items:center;");
+  btn.setAttribute("style", "background:transparent;border:1px solid " + TAG_BTN_BORDER + ";"
+    + "border-radius:6px;padding:1px 9px;cursor:pointer;color:#9aa0a6;display:inline-flex;align-items:center;");
   btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none">'
     + '<path d="M2 7.5 L7.5 2.5 H14 V9 L8.5 14 Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>'
     + '<circle cx="11" cy="5.5" r="1.2" fill="currentColor"/></svg>';
@@ -149,6 +154,8 @@ export function tagMenuButton(title: string, open: (btn: HTMLElement) => void): 
 // its class mechanics (mode: "class" — its .on/.--dim values are pinned equal to these literals).
 export const TAG_BTN_GRAY = "#9aa0a6";
 export const TAG_BTN_ACCENT = "#9cd2ff";   // the romp accent (--accent) — pinned equal in feed.css/styles.css
+export const TAG_BTN_BORDER = "rgba(255,255,255,0.10)";   // the feed's --card-border, stated by value
+export const TAG_BTN_WASH = "rgba(156,210,255,0.12)";     // the feed .on's faint accent wash, ditto
 
 export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement,
                               lens: TagLens, unions: { name: string; color?: string | null; members: string[]; }[],
@@ -156,7 +163,12 @@ export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement,
                               mode: "inline" | "class" = "inline"): void {
   const narrowed = !lensAll(lens);
   if (mode === "class") btn.classList.toggle("on", narrowed);
-  else btn.style.color = narrowed ? TAG_BTN_ACCENT : TAG_BTN_GRAY;
+  else {
+    // inline mode mirrors the feed's .on by VALUE: accent glyph + accent border + the faint wash
+    btn.style.color = narrowed ? TAG_BTN_ACCENT : TAG_BTN_GRAY;
+    btn.style.borderColor = narrowed ? TAG_BTN_ACCENT : TAG_BTN_BORDER;
+    btn.style.background = narrowed ? TAG_BTN_WASH : "transparent";
+  }
   btn.setAttribute("aria-pressed", narrowed ? "true" : "false");
   chipsHost.textContent = "";
   for (const c of lensChips(lens, unions as never)) {
