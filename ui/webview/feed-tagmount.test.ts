@@ -73,7 +73,10 @@ test("the mount is the SHARED component: tag glyph button, stay-open menu, Confi
   assert.match(FEED, /b\.removeAttribute\("style"\);/);
   assert.match(FEED, /b\.className = "fdismiss ffollow feed-modetoggle";/,
     "the exact class string the Sessions/View buttons wear");
-  assert.match(FEED, /b\.classList\.toggle\("on", active\);/, "accent ONLY while the lens narrows");
+  // the 696 instance toggle subsumed by the SHARED convention renderer (the user 2026-08-25):
+  // class mode keeps the footer's .on mechanics, and the selection chips render beside the button
+  assert.match(FEED, /syncTagFilter\(b, ch, feedLens, lensUnions\(feedTagViews\) as never, \(l\) => \{ setFeedLens\(l\); render\(\); \}, "class"\);/,
+    "accent ONLY while the lens narrows — via the shared renderer");
   const mnt = FEED.slice(FEED.indexOf("function ensureTagLensBtn"), FEED.indexOf("function ensureInternalLens"));
   assert.ok(!mnt.includes("style.color"), "no inline colour survives in the mount");
 });

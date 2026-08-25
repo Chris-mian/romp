@@ -76,3 +76,18 @@ export function surfaceLens(views: SessionViews | null | undefined, surface: str
   return g ? { tags: [g.name] } : { all: true };
 }
 
+/** The selection as display chips (the user 2026-08-25 convention: a narrowed button shows the
+ *  chips of everything selected — each tag in its color, the no-tags bucket as its own chip).
+ *  All → empty (the resting button stands alone). Per-selection chips, superseding the earlier
+ *  combined-label call (that documented design choice retargeted by this ruling). */
+export function lensChips(l: TagLens | null | undefined, unions: TagUnion[]): { label: string; color: string | null; pick: "none" | { tag: string } }[] {
+  if (lensAll(l)) return [];
+  const out: { label: string; color: string | null; pick: "none" | { tag: string } }[] = [];
+  for (const name of (l!.tags || [])) {
+    const u = unions.find((x) => x.name === name);
+    out.push({ label: name, color: (u && u.color) || null, pick: { tag: name } });
+  }
+  if (l!.none) out.push({ label: "no tags", color: null, pick: "none" });
+  return out;
+}
+

@@ -16,7 +16,7 @@
 // model-version submenus: carets always face right (▸), expansion prefers the right side and
 // falls left only when the right edge would clip (measured, never assumed).
 import { TagUnion } from "./session-views";
-import { TagLens, lensAll, toggleLens } from "./tag-lens";
+import { TagLens, lensAll, toggleLens, lensChips } from "./tag-lens";
 
 export interface TagMenuOpts {
   lens: () => TagLens;                       // the surface's current selection (re-read per repaint)
@@ -41,11 +41,15 @@ export function closeTagMenu(): void {
   openMenu?.remove();
   openMenu = null;
 }
-document.addEventListener("click", () => closeTagMenu());
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTagMenu(); });
-try {
-  window.addEventListener("storage", (e) => { if (e.key === "romp:menu-echo" && e.newValue) closeTagMenu(); });
-} catch { /* no storage events (foreign host) — local closers still apply */ }
+// module-level closers, guarded: the model half of this module (and its constants) is importable
+// from non-DOM contexts (the node test runner) — only a real document wires the listeners
+if (typeof document !== "undefined") {
+  document.addEventListener("click", () => closeTagMenu());
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTagMenu(); });
+  try {
+    window.addEventListener("storage", (e) => { if (e.key === "romp:menu-echo" && e.newValue) closeTagMenu(); });
+  } catch { /* no storage events (foreign host) — local closers still apply */ }
+}
 
 /** Open (or toggle shut) the lens menu anchored under `anchor`. The ctx-family skin — the chat
  *  pane's .ctx-menu is the reference spec (CLAUDE.md menu vocabulary). */
@@ -137,3 +141,38 @@ export function tagMenuButton(title: string, open: (btn: HTMLElement) => void): 
   btn.addEventListener("click", (e) => e.stopPropagation());   // the click-and-hold rule: swallow the opener's own click
   return btn;
 }
+
+// THE BUTTON CONVENTION (the user 2026-08-25): at rest (All) the tag icon is GRAY and stands
+// alone; narrowed, it wears the ACCENT and the chips of everything selected render beside it —
+// each tag in its color, the no-tags bucket as its own chip, a dim ✕ per chip unselecting that
+// one pick. One renderer, so every mount is identical by construction; the feed's footer keeps
+// its class mechanics (mode: "class" — its .on/.--dim values are pinned equal to these literals).
+export const TAG_BTN_GRAY = "#9aa0a6";
+export const TAG_BTN_ACCENT = "#9cd2ff";   // the romp accent (--accent) — pinned equal in feed.css/styles.css
+
+export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement,
+                              lens: TagLens, unions: { name: string; color?: string | null; members: string[]; }[],
+                              onApply: (l: TagLens) => void,
+                              mode: "inline" | "class" = "inline"): void {
+  const narrowed = !lensAll(lens);
+  if (mode === "class") btn.classList.toggle("on", narrowed);
+  else btn.style.color = narrowed ? TAG_BTN_ACCENT : TAG_BTN_GRAY;
+  btn.setAttribute("aria-pressed", narrowed ? "true" : "false");
+  chipsHost.textContent = "";
+  for (const c of lensChips(lens, unions as never)) {
+    const col = c.color || TAG_BTN_GRAY;
+    const chip = document.createElement("span");
+    chip.setAttribute("style", "display:inline-flex;align-items:center;gap:5px;padding:1px 8px;"
+      + "border-radius:9px;font-size:0.82em;border:1px solid " + col + ";color:" + col + ";"
+      + "background:transparent;white-space:nowrap;");
+    chip.appendChild(document.createTextNode(c.label));
+    const x = document.createElement("span");
+    x.textContent = "✕";
+    x.setAttribute("style", "cursor:pointer;opacity:0.75;color:" + TAG_BTN_GRAY + ";font-size:0.9em;");
+    x.title = "remove this from the filter";
+    x.addEventListener("click", (e) => { e.stopPropagation(); onApply(toggleLens(lens, c.pick)); });
+    chip.appendChild(x);
+    chipsHost.appendChild(chip);
+  }
+}
+

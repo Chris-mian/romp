@@ -2706,26 +2706,32 @@ class TimelinePanel {
     const lens = timelineLens(v);
     const unions = viewTagUnion(v);
     const more = viewMoreCount(v, (this.data && this.data.sessions) || []);
-    // any non-All selection is a FILTER; the chip names the whole selection ("infra + no tags" —
-    // ONE combined chip, the honest one-line read inside the gutter's space; per-tag chips would
-    // ellipsize each other out at two picks). Its ✕ resets to All.
+    // any non-All selection is a FILTER shown as PER-SELECTION CHIPS (the user's 2026-08-25
+    // convention, retargeting the earlier one-combined-chip call): each selected tag as its own
+    // chip in its color, the no-tags bucket as its own chip, a dim ✕ per chip unselecting that
+    // one pick. Chips that don't fit the gutter collapse into a dim "+N" that opens the menu.
     const active = !lensAll(lens);
-    const firstTag = active ? unions.find((u) => (lens.tags || []).indexOf(u.name) >= 0) : null;
-    const gcol = (firstTag && firstTag.color) || MODEL_FG;   // a pure no-tags pick wears the line's own gray
-    const gdim = firstTag ? 1 : 0.7;
-    const PADH = 7, GAP = 6;   // the chip's horizontal padding; the space between the line's parts
+    const chips = active ? (lens.tags || []).map((n) => {
+      const u = unions.find((x) => x.name === n);
+      return { label: n, color: (u && u.color) || MODEL_FG, pick: { tag: n } };
+    }).concat(lens.none ? [{ label: 'no tags', color: MODEL_FG, pick: 'none' }] : []) : [];
+    const PADH = 7, GAP = 9;   // the chip's horizontal padding; the space between the line's parts (the user 2026-08-25: more air)
     // TWO monochrome icon buttons (the user 2026-08-25): display options (sliders) LEFT of the tag
     // filter (tag icon) — the display toggles left the tags menu for their own button. Icon-only,
     // MODEL_FG, 14px, drawn inline (no icon font in the Obsidian host); tooltips carry the words.
-    const ICONW = 18;
-    let name = active ? lensLabel(lens) : '';
+    const ICONW = 22;   // wider than the icon: the extra is the controls' breathing room (2026-08-25)
     const tailStr = more ? more + ' more' : '';
-    const XGAP = 6;                                  // between the name and its dim ✕ (the composer chip's read)
-    const width = (n) => ICONW * 2
-      + (active ? GAP + PADH * 2 + this.labelWidth(n) + XGAP + this.labelWidth('✕') : 0)
-      + (tailStr ? GAP + this.labelWidth(tailStr) : 0);
-    const fits = (n) => width(n) <= this.M.left - PADL - 6;
-    while (active && name.length > 3 && !fits(name)) name = name.slice(0, -2) + '…';
+    const XGAP = 6;                                  // between a chip's name and its dim ✕ (the composer chip's read)
+    const chipW = (c) => PADH * 2 + this.labelWidth(c.label) + XGAP + this.labelWidth('✕');
+    const budget = this.M.left - PADL - 6 - ICONW * 2 - (tailStr ? GAP + this.labelWidth(tailStr) : 0);
+    let used = 0, shown = [];
+    for (const c of chips) {
+      const w = GAP + chipW(c);
+      const restW = chips.length - shown.length - 1 > 0 ? GAP + this.labelWidth('+' + (chips.length - shown.length - 1)) : 0;
+      if (used + w + restW > budget) break;
+      shown.push(c); used += w;
+    }
+    const hidden = chips.length - shown.length;
     const y = axisY + 14;
     const iconBtn = (dx, title, draw, open) => {
       const btn = el('g', {});
@@ -2749,50 +2755,60 @@ class TimelinePanel {
           stroke: MODEL_FG, 'stroke-width': 1.4 }));
       }
     }, (btn) => this._openDisplayMenu(btn));
-    // tag: the classic label outline with its hole — the filter-by-tag read (the user chose a tag icon)
+    // tag: the classic label outline with its hole — the filter-by-tag read (the user chose a tag
+    // icon). THE BUTTON CONVENTION (2026-08-25): GRAY at rest (All), the ACCENT while narrowed —
+    // the same values the shared webview renderer uses (#9aa0a6 / #9cd2ff, cross-mount equality)
+    const tagIconCol = active ? '#9cd2ff' : MODEL_FG;
     iconBtn(ICONW, 'filter these lanes by tag', (btn, bx, by) => {
       const ox = bx + 1, oy = by - 11;
       btn.appendChild(el('path', {
         d: 'M ' + ox + ' ' + (oy + 5.5) + ' l 5.5 -4.5 h 6.5 v 6.5 l -5.5 4.5 z',
-        fill: 'transparent', stroke: MODEL_FG, 'stroke-width': 1.4, 'stroke-linejoin': 'round' }));
-      btn.appendChild(el('circle', { cx: ox + 9.5, cy: oy + 3.5, r: 1.3, fill: MODEL_FG }));
+        fill: 'transparent', stroke: tagIconCol, 'stroke-width': 1.4, 'stroke-linejoin': 'round' }));
+      btn.appendChild(el('circle', { cx: ox + 9.5, cy: oy + 3.5, r: 1.3, fill: tagIconCol }));
     }, (btn) => this._openViewsMenu(btn));
     let x = PADL + ICONW * 2;
-    if (active) {
+    for (const c of shown) {
       x += GAP;
-      const cw = PADH * 2 + this.labelWidth(name) + XGAP + this.labelWidth('✕');
-      // the active tag as a removable filter chip (the user 2026-08-23; re-dressed 2026-08-24):
-      // OUTLINE only in the tag's colour on the page's own dark ground — the tinted fill was too
-      // much — with the ✕ dim and SEPARATE, the way the composer context chip draws its ✕. Taller
-      // than the text line so the chip breathes (the bottom margin grew with it). Its own
-      // pointerdown clears the filter — one click back to the default view, no menu trip.
+      const cw = chipW(c);
+      // each selected pick as its own chip (2026-08-25): OUTLINE in its colour on the dark ground,
+      // ✕ dim and SEPARATE (the composer chip's read) — the ✕ unselects THAT pick, not the filter
       const grp = el('g', {});
       grp.setAttribute('style', 'cursor:pointer;');
-      const box = el('rect', { x, y: y - 13, width: cw, height: 18, rx: 9,
-        fill: 'transparent',
-        stroke: gcol, 'stroke-width': 1, opacity: gdim });
-      grp.appendChild(box);
-      const ct = el('text', { x: x + PADH, y, 'font-size': 12, fill: gcol, 'font-weight': 650, opacity: gdim });
-      ct.textContent = name;
+      grp.appendChild(el('rect', { x, y: y - 13, width: cw, height: 18, rx: 9,
+        fill: 'transparent', stroke: c.color, 'stroke-width': 1 }));
+      const ct = el('text', { x: x + PADH, y, 'font-size': 12, fill: c.color, 'font-weight': 650 });
+      ct.textContent = c.label;
       ct.setAttribute('style', 'user-select:none;');
       grp.appendChild(ct);
-      const cx = el('text', { x: x + PADH + this.labelWidth(name) + XGAP, y, 'font-size': 11,
+      const cx = el('text', { x: x + PADH + this.labelWidth(c.label) + XGAP, y, 'font-size': 11,
         fill: MODEL_FG, opacity: 0.75 });
       cx.textContent = '✕';
       cx.setAttribute('style', 'user-select:none;');
       grp.appendChild(cx);
       const tt = el('title', {});
-      tt.textContent = 'this timeline shows only: ' + lensLabel(lens) + ' — click to remove the filter (back to All)';
+      tt.textContent = 'remove \u201c' + c.label + '\u201d from this timeline\u2019s filter';
       grp.appendChild(tt);
       grp.addEventListener('pointerdown', (e) => {
         e.preventDefault(); e.stopPropagation();
         const nv = JSON.parse(JSON.stringify(v));
-        nv.actives = Object.assign({}, nv.actives, { timeline: { all: true } });
+        nv.actives = Object.assign({}, nv.actives, { timeline: lensToggle(lens, c.pick) });
         this._setViews(nv);
       });
       grp.addEventListener('click', (e) => e.stopPropagation());
       svg.appendChild(grp);
       x += cw;
+    }
+    if (hidden > 0) {
+      // the picks that didn't fit the gutter — one dim count, one click from the menu
+      const hx = el('text', { x: x + GAP, y, 'font-size': 12, fill: MODEL_FG, opacity: 0.7 });
+      hx.textContent = '+' + hidden;
+      hx.setAttribute('style', 'user-select:none;cursor:pointer;');
+      const ht = el('title', {}); ht.textContent = hidden + ' more selected — open the tag filter';
+      hx.appendChild(ht);
+      hx.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(hx); });
+      hx.addEventListener('click', (e) => e.stopPropagation());
+      svg.appendChild(hx);
+      x += GAP + this.labelWidth('+' + hidden);
     }
     if (more) {
       const m = el('text', { x: x + GAP, y, 'font-size': 12, fill: MODEL_FG, opacity: 0.7 });
