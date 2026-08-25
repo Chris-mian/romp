@@ -252,10 +252,11 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    don't pop in one-by-one, and a still-building tab reads as "romp is generating this" (the user 2026-07-03),
    the same loader motif as the panes, instead of a whole-tab opacity pulse. Non-interactive (no select/
    close/drag); cursor stays default, hover doesn't highlight, and the label sits dimmed beside the swirl. */
-.tab.tab-placeholder { cursor: default; }
+.tab.tab-placeholder { cursor: pointer; }   /* clickable while loading (the user 2026-08-25): activate now, be there when it opens */
 .tab.tab-placeholder .tab-label { color: var(--dim); }
 .tab.tab-placeholder.colored .tab-label { opacity: 0.75; }   /* keep the identity color but a touch muted while loading */
-.tab.tab-placeholder:hover { color: var(--dim); background: none; }
+/* the pane-local wait while a clicked loading tab's payload is still on its way (showActive) */
+.tab-loading-wait { display: flex; align-items: center; justify-content: center; min-height: 60vh; }
 .tab-ph-swirl { width: 12px; height: 12px; border-radius: 2px; flex: none;
   animation: tab-ph-swirl-spin 7s linear infinite; }   /* .tab is flex with its own gap, so no margin needed */
 @keyframes tab-ph-swirl-spin { to { transform: rotate(-360deg); } }
@@ -1231,7 +1232,13 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
   margin: 6px 0 2px;
   font-size: 0.72em; font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
   color: var(--dim); opacity: 0.7;
+  /* a flex row so the fork button sits INLINE, just right of the seconds (the user 2026-08-25) —
+     same row-sharing discipline as the Stage fix: the short label never pushes the button to wrap */
+  display: flex; align-items: center; gap: 8px; min-width: 0;
 }
+.turn-elapsed .fork-spot { margin-top: 0; }   /* inline: the row's own alignment rules, no extra drop */
+/* the button must not inherit the footer's 0.7 opacity ceiling — hover reveal still governs via .msg-fork */
+.turn-elapsed .msg-fork { font-size: 11px; }
 /* tool success = a BLUE disc with a white ✓ — the romp "check" blue used everywhere else (the feed,
    ledger, …) so it stays consistent (the user 2026-06-15). Disc colors are decoupled from the session. */
 .dot.green { background: var(--check-bg); display: flex; align-items: center; justify-content: center; }

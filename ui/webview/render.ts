@@ -4245,14 +4245,20 @@ let tabPointerHeld = false;
 let renderPendingWhilePressed = false;
 // A loading PLACEHOLDER tab (the user 2026-06-26): name + identity color from the kernel's tabOrder push,
 // shown while the session's build_session is still in flight so the strip's full width is reserved up front
-// (no one-by-one pop-in). Non-interactive — no select/close/drag — until the real session arrives and
-// renderTabs swaps in the full tab. It wears the MINI romp swirl (spinning glyph) as its "generating" cue
-// (the user 2026-07-03) instead of a whole-tab opacity pulse — the same romp-loader motif as the panes, so a
-// tab still building reads as "romp is working on this," consistent everywhere.
+// (no one-by-one pop-in). CLICKABLE (the user 2026-08-25: "I'd like to click it so when the session
+// opens I'm already there") — it joins the tab set fully (select via the same #tabs delegate, keyboard,
+// activation → MRU + peek derivation), the thread area holding the pane-local romp loader until the
+// first session frame lands in place (showActive's loading branch). Still no close/drag: there is no
+// session to end yet, and the order is the kernel's until the payload arrives. It wears the MINI romp
+// swirl (spinning glyph) as its "generating" cue (the user 2026-07-03) — the same romp-loader motif as
+// the panes, so a tab still building reads as "romp is working on this," consistent everywhere.
 function makePlaceholderTab(id: string): HTMLElement {
   const meta = tabMeta.get(id);
-  const tab = el("div", "tab tab-placeholder");
+  const tab = el("div", "tab tab-placeholder" + (id === activeId ? " active" : ""));
   tab.dataset.id = id;
+  tab.dataset.act = "select";   // the SAME stable #tabs delegate every real tab rides (click-safe)
+  tab.tabIndex = 0;
+  tab.addEventListener("keydown", onTabKey);
   if (meta?.color) {
     tab.style.setProperty("--chip-bg", meta.color.bg);
     tab.style.setProperty("--chip-fg", meta.color.fg);
@@ -6213,12 +6219,13 @@ function applyForkSpots(sid: string, v: View): void {
   }
   if (run && !spots.has(run)) spots.set(run, "");   // the tip run: nothing follows -> whole conversation
   for (const old of Array.from(v.el.querySelectorAll(".fork-spot")) as HTMLElement[]) {
-    const anchor = (old.parentElement as HTMLElement | null)?.dataset.uuid || "";
+    // closest, not parentElement: the spot may nest inside the turn's elapsed row (below)
+    const anchor = (old.closest(".turn-assistant") as HTMLElement | null)?.dataset.uuid || "";
     if (spots.get(anchor) !== old.dataset.cut) old.remove();   // gone, or its cut moved
   }
   for (const [anchor, cut] of spots) {
     const turn = v.el.querySelector(`.turn-assistant[data-uuid="${cssEscape(anchor)}"]`) as HTMLElement | null;
-    if (!turn || turn.querySelector(":scope > .fork-spot")) continue;
+    if (!turn || turn.querySelector(".fork-spot")) continue;
     const row = el("div", "fork-spot");
     row.dataset.cut = cut;
     const fk = el("button", "msg-fork") as HTMLButtonElement;
@@ -6229,7 +6236,12 @@ function applyForkSpots(sid: string, v: View): void {
       ? "Fork the session from just below this response — a new parallel session carries the conversation to here; this one is untouched"
       : "Fork the session — a new parallel session continues this whole conversation; this one is untouched";
     row.appendChild(fk);
-    turn.appendChild(row);
+    // INLINE with the "worked …" seconds label when the turn has one (the user 2026-08-25: not on a
+    // new row — just to the right of it). The elapsed row is the flex host; a turn with no footer
+    // (the live tip) keeps the button on its own row exactly as before.
+    const elapsed = turn.querySelector(":scope > .turn-elapsed") as HTMLElement | null;
+    if (elapsed) elapsed.appendChild(row);
+    else turn.appendChild(row);
   }
 }
 
@@ -8001,7 +8013,17 @@ function showActive() {
   const s = activeId ? sessions.get(activeId) : null;
   if (!s) {
     for (const v of views.values()) v.el.style.display = "none";
-    if (!empty) {
+    // A KNOWN-LOADING tab (its meta arrived, its payload hasn't — the clicked placeholder): the
+    // thread area holds the pane-local romp loader, and the first session frame renders in place —
+    // you're already there (the user 2026-08-25). Everything else keeps the no-sessions copy.
+    document.getElementById("tab-loading")?.remove();
+    if (activeId && tabMeta.has(activeId)) {
+      const wait = el("div", "tab-loading-wait");
+      wait.id = "tab-loading";
+      wait.appendChild(rompLoaderInner("opening “" + (tabMeta.get(activeId)?.name || "session") + "”…"));
+      content.appendChild(wait);
+      if (empty) empty.style.display = "none";
+    } else if (!empty) {
       empty = el("div", "empty-state"); empty.id = "empty-state";
       empty.textContent = "No session open — click + to add one.";
       content.appendChild(empty);
@@ -8010,6 +8032,7 @@ function showActive() {
     updateStatusline();
     return;
   }
+  document.getElementById("tab-loading")?.remove();   // the payload landed — the real view takes over in place
   if (empty) empty.style.display = "none";
   restoreActiveDraftOnce();   // after a reload, drop the active tab's persisted draft back into the box (once)
   // A closed (dead) session is READ-ONLY: disable the composer so a message can't be black-holed into
