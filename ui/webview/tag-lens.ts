@@ -83,11 +83,18 @@ export function surfaceLens(views: SessionViews | null | undefined, surface: str
 export function lensChips(l: TagLens | null | undefined, unions: TagUnion[]): { label: string; color: string | null; pick: "none" | { tag: string } }[] {
   if (lensAll(l)) return [];
   const out: { label: string; color: string | null; pick: "none" | { tag: string } }[] = [];
-  for (const name of (l!.tags || [])) {
-    const u = unions.find((x) => x.name === name);
-    out.push({ label: name, color: (u && u.color) || null, pick: { tag: name } });
-  }
+  // "no tags" sits LEFTMOST in every selection render, the tags following in the USER'S order —
+  // the unions arrive ordered (viewTagUnion's one ordering rule), so emitting selected names by
+  // walking the unions IS the order (the user 2026-08-25, superseding the chips-then-none-last
+  // form). A selected name missing from the unions (a stale lens) appends last, dressless.
   if (l!.none) out.push({ label: "no tags", color: null, pick: "none" });
+  const picked = new Set(l!.tags || []);
+  for (const u of unions) {
+    if (!picked.has(u.name)) continue;
+    picked.delete(u.name);
+    out.push({ label: u.name, color: u.color || null, pick: { tag: u.name } });
+  }
+  for (const name of (l!.tags || [])) if (picked.has(name)) out.push({ label: name, color: null, pick: { tag: name } });
   return out;
 }
 

@@ -1686,7 +1686,21 @@ def _norm_timeline_views(d):
     for sf in _LENS_SURFACES:
         actives[sf] = _norm_lens(posted.get(sf), tags) if posted and isinstance(posted.get(sf), dict) \
             else (_lens_seed(active, tags) if posted is None else {"all": True})
-    return {"active": active, "actives": actives, "tags": tags}
+    out = {"active": active, "actives": actives, "tags": tags}
+    # TAG ORDER (the user 2026-08-25): the union DISPLAY order — a NAME list, viewer-side, so a
+    # remote-homed tag holds its dragged position without any cross-kernel write (a display
+    # preference must not need another kernel up; the lane order's viewer-side philosophy). Local
+    # tags ALSO keep their array order (the drag rewrites both); this list extends the same order
+    # across the whole name-keyed union. Names are not validated against the local store — a
+    # remote name is unknowable here by design; junk entries cost nothing and age out on the next
+    # drag. Absent stays absent, so pre-order blobs round-trip byte-identical.
+    order = []
+    for n in _lst(d.get("tagOrder"))[:_VIEWS_MAX_TAGS * 2]:
+        if isinstance(n, str) and n and n[:_VIEWS_MAX_NAME] not in order:
+            order.append(n[:_VIEWS_MAX_NAME])
+    if order:
+        out["tagOrder"] = order
+    return out
 
 
 def _timeline_views():

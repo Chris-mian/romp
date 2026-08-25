@@ -29,6 +29,41 @@ jd = km.jd
 G1 = {"id": "g1", "name": "pool", "color": "#DD42FF", "members": ["s2", "s3"]}
 
 
+class TagOrderRoundTrip(unittest.TestCase):
+    """The union DISPLAY order (the user 2026-08-25): a NAME list on the views blob, viewer-side —
+    so a dragged remote-homed tag holds its position without any cross-kernel write. The normalizer
+    passes it through (clamped, deduped); pre-order blobs round-trip without the key."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = jd.STATE
+        jd.STATE = Path(self.td.name)
+        km._flags_cache.clear()
+
+    def tearDown(self):
+        jd.STATE = self.saved
+        self.td.cleanup()
+
+    def test_order_survives_normalize_and_store(self):
+        blob = {"active": "all", "tags": [G1], "tagOrder": ["experiments", "pool", "remotename"]}
+        n = km._norm_timeline_views(blob)
+        self.assertEqual(n["tagOrder"], ["experiments", "pool", "remotename"],
+                         "names pass through unvalidated — a remote-homed name is unknowable here by design")
+        km._set_timeline_views(blob)
+        self.assertEqual(km._timeline_views()["tagOrder"], ["experiments", "pool", "remotename"],
+                         "the drag persists: the stored blob re-reads with the order intact")
+        self.assertEqual(km._views_client()["tagOrder"], ["experiments", "pool", "remotename"],
+                         "…and the rendered blob every client holds carries it")
+
+    def test_absent_stays_absent_and_junk_drops(self):
+        n = km._norm_timeline_views({"active": "all", "tags": [G1]})
+        self.assertNotIn("tagOrder", n, "pre-order blobs round-trip without the key")
+        n = km._norm_timeline_views({"tags": [G1], "tagOrder": [3, "", None, "pool", "pool"]})
+        self.assertEqual(n["tagOrder"], ["pool"], "junk entries drop quietly; duplicates collapse")
+        n = km._norm_timeline_views({"tags": [G1], "tagOrder": "pool"})
+        self.assertNotIn("tagOrder", n, "a wrong-typed order drops whole, never raises")
+
+
 class TimelineViews(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()

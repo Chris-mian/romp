@@ -21,6 +21,10 @@ export interface SessionViews {
   /** per-surface multi-select lenses (the user 2026-08-25) — the shared TagLens shape; the legacy
    *  scalar `active` stays for old clients and seeds these on migration (kernel-normalized) */
   actives?: { [surface: string]: { all?: boolean; none?: boolean; tags?: string[] } };
+  /** the union DISPLAY order (the user 2026-08-25): tag NAMES in the user's dragged order,
+   *  viewer-side so remote-homed names hold position without cross-kernel writes; locals also
+   *  keep array order (the drag rewrites both). Unlisted names follow, in natural order. */
+  tagOrder?: string[];
 }
 // One union group = one tag NAME across every kernel defining it (user ruling 2026-08-24: kernels
 // are plumbing — no host prefixes in any tag presentation). The typed mirror of the timeline's
@@ -28,7 +32,10 @@ export interface SessionViews {
 // The chat's tab-menu Tags section reads and edits through this exact shape.
 export interface TagUnion { name: string; color: string; members: string[]; ids: string[]; localId: string | null; remotes: SessionTag[] }
 export function viewTagUnion(views: SessionViews | null | undefined): TagUnion[] {
-  const out: TagUnion[] = [], byName: Record<string, TagUnion> = {};
+  // byName is null-prototype: a user-typed tag NAME can be "constructor"/"toString", which a
+  // plain {} resolves through the prototype chain (the lookup returned a Function and the
+  // builder crashed on it — adversarial review 2026-08-25)
+  const out: TagUnion[] = [], byName: Record<string, TagUnion> = Object.create(null);
   for (const t of viewTags(views)) {
     const key = t.name || "tag";
     const g = byName[key] || (byName[key] = { name: key, color: "", members: [], ids: [], localId: null, remotes: [] });
@@ -46,7 +53,19 @@ export function viewTagUnion(views: SessionViews | null | undefined): TagUnion[]
     for (const m of (rt.members || [])) if (!g.members.includes(m)) g.members.push(m);
     if (!out.includes(g)) out.push(g);
   }
-  return out;
+  return orderUnions(out, views);
+}
+
+/** THE ordering rule, stated once (the user 2026-08-25): unions render in the user's dragged
+ *  order (views.tagOrder, name-keyed — remote-homed names hold position too); names not yet
+ *  ordered follow in their natural (array/arrival) order — sort() is stable, so a new tag lands
+ *  at the end without disturbing anything. Every chip list, menu row list, and dialog row list
+ *  renders through viewTagUnion, so the order flows everywhere from here. */
+function orderUnions(out: TagUnion[], views: SessionViews | null | undefined): TagUnion[] {
+  const ord = views?.tagOrder || [];
+  if (!ord.length) return out;
+  const ix = new Map(ord.map((n, i) => [n, i]));
+  return out.sort((a, b) => (ix.has(a.name) ? ix.get(a.name)! : ord.length) - (ix.has(b.name) ? ix.get(b.name)! : ord.length));
 }
 
 // the one place the legacy key is honored, so every rule below reads through it
@@ -78,6 +97,7 @@ export function viewsKey(v: SessionViews | null | undefined): string {
   if (!v) return "";
   return JSON.stringify({ active: v.active || "all",
     actives: v.actives || {},   // per-surface lenses are client-posted state — the echo compares them (2026-08-25)
+    order: v.tagOrder || [],    // the dragged union order is client-posted state too (2026-08-25)
     tags: viewTags(v).map((t) => ({ id: t.id, name: t.name, color: t.color,
                                     members: (t.members || []).slice().sort() })) });
 }

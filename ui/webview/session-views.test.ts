@@ -10,7 +10,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { viewVisible, viewsKey, revealIn } from "../../ui/webview/session-views";
+import { viewVisible, viewsKey, revealIn, viewTagUnion } from "../../ui/webview/session-views";
 
 const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
 
@@ -147,3 +147,26 @@ test("executed: untagged excludes by the UNION — a remote-homed tag counts (th
   assert.equal(viewVisible(v, "other"), true);
 });
 
+
+test("executed: the union renders in the USER'S order — tagOrder governs, remote-homed names hold position (the user 2026-08-25)", () => {
+  const v = {
+    active: "all",
+    tags: [
+      { id: "g1", name: "alpha", color: "#DD42FF", members: [] },
+      { id: "g2", name: "beta", color: "#4EC9B0", members: [] },
+    ],
+    remoteTags: [{ id: "TESTHOST-A:r1", host: "TESTHOST-A", name: "remotepool", color: "#7aa2f7", members: [] }],
+  };
+  assert.deepEqual(viewTagUnion(v).map((u) => u.name), ["alpha", "beta", "remotepool"],
+    "no order yet → natural (array, then remotes) order");
+  assert.deepEqual(viewTagUnion({ ...v, tagOrder: ["remotepool", "alpha"] }).map((u) => u.name),
+    ["remotepool", "alpha", "beta"],
+    "the dragged order governs — the remote-homed name holds its position, viewer-side; unlisted names follow naturally");
+  // the echo key carries the order, so an optimistic drag clears on the kernel's echo and never flaps
+  assert.notEqual(viewsKey({ ...v, tagOrder: ["remotepool", "alpha"] }), viewsKey(v),
+    "tagOrder is part of the canonical echo compare");
+  // a user-typed name CAN be a prototype key (adversarial review 2026-08-25): the name-keyed
+  // builder crashed on {}["constructor"] resolving to Function — null-prototype lookups now
+  assert.deepEqual(viewTagUnion({ tags: [{ id: "p1", name: "constructor", members: [] }], tagOrder: ["constructor"] })
+    .map((u) => u.name), ["constructor"], "a prototype-key tag name builds and orders cleanly");
+});

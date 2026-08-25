@@ -97,8 +97,12 @@ test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separ
   // a SENTINEL view's chip dims to the corner line's own gray at the N-more opacity (the user
   // 2026-08-24: at #cccccc it read bright as a tag) — real tag chips keep their tag colors, full strength
   // per-selection chips since 2026-08-25: each pick derives its own colour (no-tags in the gray)
-  assert.match(SRC, /return \{ label: n, color: \(u && u\.color\) \|\| MODEL_FG, pick: \{ tag: n \} \};/);
-  assert.match(SRC, /\.concat\(lens\.none \? \[\{ label: 'no tags', color: MODEL_FG, pick: 'none' \}\] : \[\]\)/);
+  // ORDER (the user 2026-08-25): "no tags" leftmost, then the tags in the USER'S order — the
+  // chips walk the ordered unions instead of the raw selection (superseding the none-last form)
+  assert.match(SRC, /if \(lens\.none\) chips\.push\(\{ label: 'no tags', color: MODEL_FG, pick: 'none' \}\);/,
+    "no-tags sits leftmost in the corner's selection render");
+  assert.match(SRC, /if \(lens\.none\) chips\.push[\s\S]{0,400}for \(const u of unions\) \{/,
+    "…and the tag chips follow by walking the ORDERED unions");
   assert.match(SRC, /x\.textContent = '\\u2715';/);
   assert.match(SRC, /\.romp-tl-chipx\{cursor:pointer;opacity:0\.75;/, "the ✕ dim and separate");
   assert.match(SRC, /remove \\u201c' \+ c\.label \+ '\\u201d from this timeline/,
