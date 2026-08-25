@@ -75,11 +75,11 @@ test("the lane gate composes the view filter first, and the all-quiet fallback r
 });
 
 test("the trigger sits in the corner strip and opens on pointerdown, like every timeline control", () => {
-  assert.match(SRC, /_drawViewsTrigger\(svg, axisY\);/);
-  // two monochrome icon buttons since 2026-08-25 (display options + the tag filter), both
-  // pointerdown-opened with tooltips carrying the words
-  assert.match(SRC, /btn\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); open\(btn\); \}\);/);
-  assert.match(SRC, /iconBtn\(BTNW \+ GAP, 'filter these lanes by tag'/);
+  assert.match(SRC, /this\._renderCornerBar\(\);/);
+  // two icon buttons since 2026-08-25 (display options + the tag filter) — REAL HTML <button>s in
+  // the persistent corner layer since round three — both pointerdown-opened, tooltips carry the words
+  assert.match(SRC, /b\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); open\(b\); \}\);/);
+  assert.match(SRC, /btn\('filter these lanes by tag',/);
   assert.match(SRC, /const tailStr = more \? more \+ ' more' : '';/, "a filtered-out live session is always one glance away");
 });
 
@@ -90,16 +90,17 @@ test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separ
     "each chip's ✕ unselects THAT pick (per-selection chips, the user 2026-08-25)");
   // OUTLINE only on the page's own ground (the tinted fill was too much — the user 2026-08-24),
   // and the ✕ is dim and SEPARATE, the composer context chip's read — never baked into the name
-  assert.match(SRC, /fill: 'transparent', stroke: c\.color, 'stroke-width': 1/);
+  assert.match(SRC, /chip\.style\.borderColor = c\.color; chip\.style\.color = c\.color;/,
+    "outline + text in the pick's colour on the page's own ground");
+  assert.match(SRC, /\.romp-tl-chip\{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:9px;/,
+    "the chip anatomy is the shared syncTagFilter chip's, by value");
   // a SENTINEL view's chip dims to the corner line's own gray at the N-more opacity (the user
   // 2026-08-24: at #cccccc it read bright as a tag) — real tag chips keep their tag colors, full strength
   // per-selection chips since 2026-08-25: each pick derives its own colour (no-tags in the gray)
   assert.match(SRC, /return \{ label: n, color: \(u && u\.color\) \|\| MODEL_FG, pick: \{ tag: n \} \};/);
   assert.match(SRC, /\.concat\(lens\.none \? \[\{ label: 'no tags', color: MODEL_FG, pick: 'none' \}\] : \[\]\)/);
-  assert.match(SRC, /y: y - 13, width: cw, height: 18, rx: 9,/, "taller chip");
-  assert.match(SRC, /cx\.textContent = '✕';/);
-  assert.match(SRC, /fill: MODEL_FG, opacity: 0\.75/);
-  assert.match(SRC, /fill: c\.color, 'font-weight': 650/);
+  assert.match(SRC, /x\.textContent = '\\u2715';/);
+  assert.match(SRC, /\.romp-tl-chipx\{cursor:pointer;opacity:0\.75;/, "the ✕ dim and separate");
   assert.match(SRC, /remove \\u201c' \+ c\.label \+ '\\u201d from this timeline/,
     "the ✕ hover names the ONE pick it removes");
   // no chip on All — the unfiltered default; the untagged view IS a filter now, so it wears one
@@ -108,17 +109,13 @@ test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separ
   assert.match(SRC, /bottom: 27 \}/);
 });
 
-test("the corner line wears the LANE LABELS' typography — inherited family, measured as rendered", () => {
-  // the user 2026-08-24, who read the chip as the wrong font: the corner texts carried an explicit
-  // 'font-family: FONT' while the lane names inherit the host's UI font, so at the same nominal
-  // 12px the chip rendered visibly bigger. The whole corner line now inherits like the lanes do —
-  // no family override anywhere in the trigger drawing…
-  const TRIG = SRC.slice(SRC.indexOf("_drawViewsTrigger(svg, axisY) {"), SRC.indexOf("_closeViewsMenu() {"));
-  assert.doesNotMatch(TRIG, /font-family/, "corner texts inherit the host font exactly like lane labels");
-  // …at the lane-label scale: the N-more at the lane 12px, the chip name at the lane-name 650
-  // (the "Filter ▾" trigger TEXT retired 2026-08-25 — the corner is two icon buttons now)
-  assert.match(TRIG, /'font-size': 12, fill: c\.color, 'font-weight': 650/);
-  assert.match(SRC, /'font-weight': 650, 'font-size': 12, fill: F\(s\.color\)/, "the lane-name reference the line matches");
+test("the corner bar wears the FEED FOOTER's typography — stated, since the pane may live in a foreign document", () => {
+  // round three (the user 2026-08-25): the corner is the feed footer's control row now, so it
+  // carries the feed's own font stack EXPLICITLY (the menu rule: an adopted/foreign host would
+  // substitute its own family otherwise — how the gear menu once drifted off-brand)
+  assert.match(SRC, /\.romp-tl-corner\{[^}]*font-family:var\(--vscode-font-family,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif\)/,
+    "the bar states the shared stack every romp surface resolves to");
+  assert.match(SRC, /'font-weight': 650, 'font-size': 12, fill: F\(s\.color\)/, "the lane-name reference is untouched");
   // …and the width/ellipsis math measures in the SAME family the text renders in: _font resolves
   // the wrap's computed family (FONT is only the unstyled/bare-node fallback), so box and ellipsis
   // can never drift from the rendered glyphs
@@ -135,9 +132,9 @@ test("a pointerdown-opened menu survives its OWN opening click (the user 2026-08
   // the browser fires a click after pointerup; unstopped it bubbles to the document's menu-closer
   // and shuts the menu the instant it opened — only a mid-press redraw (element swapped, no click
   // at all) let it survive, which read as "hold to open". Every pointerdown anchor swallows it.
-  assert.match(SRC, /open\(btn\); \}\);[\s\S]{0,400}btn\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
+  assert.match(SRC, /open\(b\); \}\);[\s\S]{0,400}b\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
   assert.match(SRC, /this\._openLaneMenu\(s, ghit\);\n\s*\}\);[\s\S]{0,300}ghit\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
-  assert.match(SRC, /grp\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
+  assert.match(SRC, /x\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/, "the chip ✕ swallows its own click too");
 });
 
 test("the dropdown and dialog wear the shared menu vocabulary and adopt into the menu host", () => {
@@ -247,8 +244,8 @@ test("federation, NAME-KEYED (user ruling 2026-08-24): one name = one row/label/
 });
 
 test("the N-more count opens the views menu — what am I not seeing answers itself (the user 2026-08-24)", () => {
-  assert.match(SRC, /m\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); this\._openViewsMenu\(m\); \}\);/);
-  assert.match(SRC, /m\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/, "and survives its own opening click");
+  assert.match(SRC, /t\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); this\._openViewsMenu\(t\); \}\);/);
+  assert.match(SRC, /t\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/, "and survives its own opening click");
 });
 
 test("the two display toggles write the host's own romp:settings — reachable in every host now", () => {
@@ -279,8 +276,8 @@ test("executed: the dialog's membership mutation, pure (viewToggleHidden retired
 test("the trigger measures its WHOLE string against the gutter, and the dialog's Escape hook dies on every close", () => {
   // the fit measures the whole line as LAID OUT: trigger + gap + padded chip + gap + tail
   // per-chip budgeting since 2026-08-25: chips render while they fit; the rest collapse into +N
-  assert.match(SRC, /const chipW = \(c\) => PADH \* 2 \+ this\.labelWidth\(c\.label\) \+ XGAP \+ this\.labelWidth\('✕'\);/);
-  assert.match(SRC, /const budget = this\.M\.left - PADL - 6 - \(BTNW \* 2 \+ GAP\) - \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
+  assert.match(SRC, /const chipW = \(c\) => 18 \+ this\.labelWidth\(c\.label\) \+ 6 \+ 8;/);
+  assert.match(SRC, /const budget = this\.M\.left - PADL - \(BTNW \* 2 \+ GAP\) - \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
   assert.match(SRC, /if \(used \+ w \+ restW > budget\) break;/);
 
   assert.match(SRC, /this\._viewsDialogKey = \{ doc: h\.doc, fn: onKey \};/);
@@ -446,9 +443,9 @@ test("executed: the timeline lens — toggles, All exclusivity, last-off→All, 
 
 test("the corner grew two icon buttons and the menus split (the user 2026-08-25)", () => {
   // display options (sliders) LEFT of the tag filter (tag icon); both monochrome, tooltip-worded
-  assert.match(SRC, /iconBtn\(0, 'timeline display options'/, "sliders sit left");
-  assert.match(SRC, /iconBtn\(BTNW \+ GAP, 'filter these lanes by tag'/, "the tag button beside it");
-  assert.match(SRC, /_openDisplayMenu\(btn\)/);
+  assert.match(SRC, /btn\('timeline display options',[\s\S]{0,900}btn\('filter these lanes by tag',/,
+    "sliders sit left, the tag button beside it (append order = flex order)");
+  assert.match(SRC, /_openDisplayMenu\(b\)/);
   assert.match(SRC, /capSep\('filters this timeline'\)/,
     "the captioned divider says which surface the selection governs");
   assert.match(SRC, /font-size:0\.82em;opacity:0\.6;font-style:italic/,

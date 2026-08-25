@@ -793,6 +793,42 @@ class TimelinePanel {
       }
     } catch (e) {}
 
+    // THE CORNER BAR (the user 2026-08-25, round three: the SVG-drawn outlines still read awkward
+    // and missized live): the display-options + tag-filter buttons are REAL HTML <button>s in a
+    // persistent layer over the SVG's bottom-left strip — an SVG imitation of a CSS button is never
+    // the same picture, because the box comes from the LAYOUT ENGINE (the 10.5px line box, inside
+    // borders, its own AA), not from viewBox math. The values below are the feed footer's own
+    // (#feed-foot .fdismiss / .feed-modetoggle.on / the syncTagFilter chip), stated BY VALUE —
+    // computed equality with the feed instance, never a shared stylesheet (the 678 lesson). The
+    // layer persists across SVG wipes (click-safe by construction — the compact-bar precedent) and
+    // rebuilds only when its content signature changes.
+    this._cornerBar = document.createElement('div');
+    this._cornerBar.className = 'romp-tl-corner';
+    this.wrap.appendChild(this._cornerBar);
+    this._cornerSig = null;
+    try {
+      if (typeof document !== 'undefined' && document.head && !document.getElementById('tl-corner-css')) {
+        const bst = document.createElement('style'); bst.id = 'tl-corner-css';
+        bst.textContent =
+          '.romp-tl-corner{position:absolute;left:8px;bottom:4px;display:flex;align-items:center;gap:8px;'
+          + 'pointer-events:none;font-size:13px;'
+          + 'font-family:var(--vscode-font-family,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif)}'
+          + '.romp-tl-corner>*{pointer-events:auto}'
+          + '.romp-tl-cbtn{display:inline-flex;align-items:center;font:inherit;font-size:10.5px;padding:1px 9px;'
+          + 'color:var(--vscode-descriptionForeground,#9a9a9a);background:transparent;'
+          + 'border:1px solid rgba(255,255,255,0.10);border-radius:6px;cursor:pointer;white-space:nowrap;opacity:0.95;'
+          + 'transition:color 0.12s ease,border-color 0.12s ease,background 0.12s ease}'
+          + '.romp-tl-cbtn svg{display:block}'
+          + '.romp-tl-cbtn:hover{border-color:var(--accent,#9cd2ff);color:var(--accent,#9cd2ff);background:rgba(156,210,255,0.12)}'
+          + '.romp-tl-cbtn.on{color:var(--accent,#9cd2ff);border-color:var(--accent,#9cd2ff);background:rgba(156,210,255,0.12);opacity:1}'
+          + '.romp-tl-chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:9px;'
+          + 'font-size:0.82em;border:1px solid;background:transparent;white-space:nowrap}'
+          + '.romp-tl-chipx{cursor:pointer;opacity:0.75;color:#9aa0a6;font-size:0.9em}'
+          + '.romp-tl-ctail{color:#9aa0a6;opacity:0.7;font-size:12px;cursor:pointer;user-select:none;white-space:nowrap}';
+        document.head.appendChild(bst);
+      }
+    } catch (e) {}
+
     // Click-safe redraws (the user 2026-06-24): the EXTERNAL redraw paths — the poll update() and the live-edge
     // _tickLive() (which rebuilds the SVG every animation frame while following now) — wipe and recreate every
     // SVG child (lane rows, bars, dots, hit-targets). A native `click` needs mousedown AND mouseup on the same
@@ -2701,33 +2737,33 @@ class TimelinePanel {
     this.draw();
   }
 
-  _drawViewsTrigger(svg, axisY) {
+  // ── THE CORNER BAR — real HTML over the SVG strip (the user 2026-08-25, round three) ─────────
+  // The 702 pass drew the feed button's anatomy in SVG and it STILL read awkward live: a CSS
+  // button's box is the layout engine's product, and copying its numbers into viewBox math gives a
+  // different picture. So the corner controls render as real HTML in the persistent layer the
+  // constructor mounts, and parity with the feed footer is the RENDERED image (verified by
+  // side-by-side crops), not just the computed numbers — the 702 lesson generalized. Any
+  // non-All selection is a FILTER shown as PER-SELECTION CHIPS (the 2026-08-25 convention): each
+  // selected tag as its own chip in its color, the no-tags bucket as its own chip, a dim ✕ per
+  // chip unselecting that one pick. Chips that don't fit the gutter collapse into a dim "+N"
+  // that opens the menu. Rebuilds only when the content signature changes, so a press can never
+  // land on a node a redraw just replaced.
+  _renderCornerBar() {
+    if (!this._cornerBar) return;
     const v = this._curViews();
     const lens = timelineLens(v);
     const unions = viewTagUnion(v);
     const more = viewMoreCount(v, (this.data && this.data.sessions) || []);
-    // any non-All selection is a FILTER shown as PER-SELECTION CHIPS (the user's 2026-08-25
-    // convention, retargeting the earlier one-combined-chip call): each selected tag as its own
-    // chip in its color, the no-tags bucket as its own chip, a dim ✕ per chip unselecting that
-    // one pick. Chips that don't fit the gutter collapse into a dim "+N" that opens the menu.
     const active = !lensAll(lens);
     const chips = active ? (lens.tags || []).map((n) => {
       const u = unions.find((x) => x.name === n);
       return { label: n, color: (u && u.color) || MODEL_FG, pick: { tag: n } };
     }).concat(lens.none ? [{ label: 'no tags', color: MODEL_FG, pick: 'none' }] : []) : [];
-    const PADH = 7, GAP = 9;   // the chip's horizontal padding; the space between the line's parts (the user 2026-08-25: more air)
-    // TWO icon buttons (the user 2026-08-25): display options (sliders) LEFT of the tag filter
-    // (tag icon) — the display toggles left the tags menu for their own button. Drawn inline (no
-    // icon font in the Obsidian host); tooltips carry the words. Each wears THE BUTTON OUTLINE
-    // (the user 2026-08-25, round two: the bare glyph read weird next to the feed's dressed
-    // button): the feed word-button's box in svg terms — 1px hairline, 6px radius, 9px side
-    // padding around the 14px glyph, accent border + faint wash while narrowed (the feed's .on).
-    const BTNW = 32, BTNH = 18;   // 14px glyph + 9px sides; chip-row height, so the line reads level
+    const GAP = 8, BTNW = 34;   // the bar's flex gap; the feed tag button's measured box width
     const tailStr = more ? more + ' more' : '';
-    const XGAP = 6;                                  // between a chip's name and its dim ✕ (the composer chip's read)
-    const chipW = (c) => PADH * 2 + this.labelWidth(c.label) + XGAP + this.labelWidth('✕');
-    const budget = this.M.left - PADL - 6 - (BTNW * 2 + GAP) - (tailStr ? GAP + this.labelWidth(tailStr) : 0);
-    let used = 0, shown = [];
+    const chipW = (c) => 18 + this.labelWidth(c.label) + 6 + 8;   // pad+border + name + gap + ✕ (the 12px measure over-covers the 10.7px render)
+    const budget = this.M.left - PADL - (BTNW * 2 + GAP) - (tailStr ? GAP + this.labelWidth(tailStr) : 0);
+    let used = 0; const shown = [];
     for (const c of chips) {
       const w = GAP + chipW(c);
       const restW = chips.length - shown.length - 1 > 0 ? GAP + this.labelWidth('+' + (chips.length - shown.length - 1)) : 0;
@@ -2735,101 +2771,74 @@ class TimelinePanel {
       shown.push(c); used += w;
     }
     const hidden = chips.length - shown.length;
-    const y = axisY + 14;
-    const iconBtn = (dx, title, narrowed, draw, open) => {
-      const btn = el('g', {});
-      btn.setAttribute('style', 'cursor:pointer;');
-      // the box is the WHOLE hit target (transparent fill still catches pointevents; the glyph
-      // parts opt out) — the old bare 16x16 glyph pad was half the size and read unclickable
-      const box = el('rect', { x: PADL + dx, y: y - 13, width: BTNW, height: BTNH, rx: 6,
-        fill: narrowed ? 'rgba(156,210,255,0.12)' : 'transparent',
-        stroke: narrowed ? '#9cd2ff' : 'rgba(255,255,255,0.10)', 'stroke-width': 1 });
-      btn.appendChild(box);
-      draw(btn, PADL + dx + 9, y);
-      const tt = el('title', {}); tt.textContent = title; btn.appendChild(tt);
-      btn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); open(btn); });
+    const sig = JSON.stringify([active, shown, hidden, tailStr]);
+    if (sig === this._cornerSig) return;
+    this._cornerSig = sig;
+    const bar = this._cornerBar;
+    while (bar.firstChild) bar.removeChild(bar.firstChild);
+    const btn = (title, glyph, open, on) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.title = title;
+      b.className = 'romp-tl-cbtn' + (on ? ' on' : '');
+      b.innerHTML = glyph;
+      b.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); open(b); });
       // the follow-up click would bubble to the document's menu-closer and shut the menu the same
       // instant it opened (the click-and-hold bug, 2026-08-24). Swallow it here.
-      btn.addEventListener('click', (e) => e.stopPropagation());
-      svg.appendChild(btn);
+      b.addEventListener('click', (e) => e.stopPropagation());
+      bar.appendChild(b);
+      return b;
     };
     // sliders: two horizontal rails with offset knobs — the display-options read
-    iconBtn(0, 'timeline display options', false, (btn, bx, by) => {
-      for (const [ry, kx] of [[-7, 9], [-2, 4]]) {
-        btn.appendChild(el('line', { x1: bx + 1, y1: by + ry, x2: bx + 13, y2: by + ry,
-          stroke: MODEL_FG, 'stroke-width': 1.4, 'stroke-linecap': 'round', 'pointer-events': 'none' }));
-        btn.appendChild(el('circle', { cx: bx + kx, cy: by + ry, r: 2.4, fill: '#1e1e1e',
-          stroke: MODEL_FG, 'stroke-width': 1.4, 'pointer-events': 'none' }));
-      }
-    }, (btn) => this._openDisplayMenu(btn));
-    // tag: the classic label outline with its hole — the filter-by-tag read (the user chose a tag
-    // icon). THE BUTTON CONVENTION (2026-08-25): GRAY at rest (All), the ACCENT while narrowed —
-    // the same values the shared webview renderer uses (#9aa0a6 / #9cd2ff, cross-mount equality)
-    const tagIconCol = active ? '#9cd2ff' : MODEL_FG;
-    iconBtn(BTNW + GAP, 'filter these lanes by tag', active, (btn, bx, by) => {
-      const ox = bx + 1, oy = by - 11;
-      btn.appendChild(el('path', {
-        d: 'M ' + ox + ' ' + (oy + 5.5) + ' l 5.5 -4.5 h 6.5 v 6.5 l -5.5 4.5 z',
-        fill: 'transparent', stroke: tagIconCol, 'stroke-width': 1.4, 'stroke-linejoin': 'round',
-        'pointer-events': 'none' }));
-      btn.appendChild(el('circle', { cx: ox + 9.5, cy: oy + 3.5, r: 1.3, fill: tagIconCol, 'pointer-events': 'none' }));
-    }, (btn) => this._openViewsMenu(btn));
-    let x = PADL + BTNW * 2 + GAP;
+    btn('timeline display options',
+      '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">'
+      + '<line x1="1" y1="4" x2="13" y2="4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
+      + '<circle cx="9" cy="4" r="2.4" fill="#1e1e1e" stroke="currentColor" stroke-width="1.4"/>'
+      + '<line x1="1" y1="10" x2="13" y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
+      + '<circle cx="4" cy="10" r="2.4" fill="#1e1e1e" stroke="currentColor" stroke-width="1.4"/></svg>',
+      (b) => this._openDisplayMenu(b), false);
+    // tag: the ONE shared glyph — the exact markup every other mount renders (tag-menu.ts, the feed)
+    btn('filter these lanes by tag',
+      '<svg width="14" height="14" viewBox="0 0 16 16" fill="none">'
+      + '<path d="M2 7.5 L7.5 2.5 H14 V9 L8.5 14 Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>'
+      + '<circle cx="11" cy="5.5" r="1.2" fill="currentColor"/></svg>',
+      (b) => this._openViewsMenu(b), active);
     for (const c of shown) {
-      x += GAP;
-      const cw = chipW(c);
-      // each selected pick as its own chip (2026-08-25): OUTLINE in its colour on the dark ground,
-      // ✕ dim and SEPARATE (the composer chip's read) — the ✕ unselects THAT pick, not the filter
-      const grp = el('g', {});
-      grp.setAttribute('style', 'cursor:pointer;');
-      grp.appendChild(el('rect', { x, y: y - 13, width: cw, height: 18, rx: 9,
-        fill: 'transparent', stroke: c.color, 'stroke-width': 1 }));
-      const ct = el('text', { x: x + PADH, y, 'font-size': 12, fill: c.color, 'font-weight': 650 });
-      ct.textContent = c.label;
-      ct.setAttribute('style', 'user-select:none;');
-      grp.appendChild(ct);
-      const cx = el('text', { x: x + PADH + this.labelWidth(c.label) + XGAP, y, 'font-size': 11,
-        fill: MODEL_FG, opacity: 0.75 });
-      cx.textContent = '✕';
-      cx.setAttribute('style', 'user-select:none;');
-      grp.appendChild(cx);
-      const tt = el('title', {});
-      tt.textContent = 'remove \u201c' + c.label + '\u201d from this timeline\u2019s filter';
-      grp.appendChild(tt);
-      grp.addEventListener('pointerdown', (e) => {
+      // each selected pick as its own chip: OUTLINE in its colour, ✕ dim and SEPARATE (the
+      // composer chip's read) — the ✕ unselects THAT pick, not the filter
+      const chip = document.createElement('span');
+      chip.className = 'romp-tl-chip';
+      chip.style.borderColor = c.color; chip.style.color = c.color;
+      // a span, not a text node: this runs on the DRAW path, which the node harnesses drive with
+      // a minimal DOM shim (menus open only on real input; draw runs in every headless test)
+      const lbl = document.createElement('span');
+      lbl.textContent = c.label;
+      chip.appendChild(lbl);
+      const x = document.createElement('span');
+      x.className = 'romp-tl-chipx';
+      x.textContent = '\u2715';
+      x.title = 'remove \u201c' + c.label + '\u201d from this timeline\u2019s filter';
+      x.addEventListener('pointerdown', (e) => {
         e.preventDefault(); e.stopPropagation();
         const nv = JSON.parse(JSON.stringify(v));
         nv.actives = Object.assign({}, nv.actives, { timeline: lensToggle(lens, c.pick) });
         this._setViews(nv);
       });
-      grp.addEventListener('click', (e) => e.stopPropagation());
-      svg.appendChild(grp);
-      x += cw;
+      x.addEventListener('click', (e) => e.stopPropagation());
+      chip.appendChild(x);
+      bar.appendChild(chip);
     }
-    if (hidden > 0) {
-      // the picks that didn't fit the gutter — one dim count, one click from the menu
-      const hx = el('text', { x: x + GAP, y, 'font-size': 12, fill: MODEL_FG, opacity: 0.7 });
-      hx.textContent = '+' + hidden;
-      hx.setAttribute('style', 'user-select:none;cursor:pointer;');
-      const ht = el('title', {}); ht.textContent = hidden + ' more selected — open the tag filter';
-      hx.appendChild(ht);
-      hx.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(hx); });
-      hx.addEventListener('click', (e) => e.stopPropagation());
-      svg.appendChild(hx);
-      x += GAP + this.labelWidth('+' + hidden);
-    }
-    if (more) {
-      const m = el('text', { x: x + GAP, y, 'font-size': 12, fill: MODEL_FG, opacity: 0.7 });
-      m.textContent = tailStr;   // a filtered-out live session is always one glance away
-      // …and one CLICK away (the user 2026-08-24): the count opens the same views menu, so "what am
-      // I not seeing?" answers itself with the list of tags to switch to
-      m.setAttribute('style', 'user-select:none;cursor:pointer;');
-      const mt = el('title', {}); mt.textContent = 'live sessions outside this view — click to switch views, or un-hide via Sessions & tags…';
-      m.appendChild(mt);
-      m.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(m); });
-      m.addEventListener('click', (e) => e.stopPropagation());
-      svg.appendChild(m);
-    }
+    const tail = (text, title) => {
+      const t = document.createElement('span');
+      t.className = 'romp-tl-ctail';
+      t.textContent = text; t.title = title;
+      t.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this._openViewsMenu(t); });
+      t.addEventListener('click', (e) => e.stopPropagation());
+      bar.appendChild(t);
+    };
+    if (hidden > 0) tail('+' + hidden, hidden + ' more selected \u2014 open the tag filter');
+    // a filtered-out live session is always one glance away — and one CLICK away (the user
+    // 2026-08-24): the count opens the same views menu, so "what am I not seeing?" answers itself
+    if (more) tail(tailStr, 'live sessions outside this view \u2014 click to switch views, or un-hide via Sessions & tags\u2026');
   }
 
   _closeViewsMenu() { if (this._viewsMenu) { this._viewsMenu.remove(); this._viewsMenu = null; } }
@@ -4023,7 +4032,7 @@ class TimelinePanel {
           this.hideTip();
           this._openLaneMenu(s, ghit);
         });
-        // same latent close-on-own-click as the views trigger (see _drawViewsTrigger): the gear's
+        // same latent close-on-own-click as the views trigger (see _renderCornerBar): the gear's
         // follow-up click must not reach the document's menu-closer
         ghit.addEventListener('click', (e) => e.stopPropagation());
       }
@@ -4628,7 +4637,7 @@ class TimelinePanel {
 
     // 🔒 lock-to-now padlock at the now-edge (replaces the old toolbar checkbox, the user 2026-06-26)
     this._drawLockToggle(svg, lockCx, axisY);
-    this._drawViewsTrigger(svg, axisY);
+    this._renderCornerBar();
 
     // The svg is fully rebuilt above — restore the hover the rebuild just swallowed, so a tip under a
     // stationary cursor comes up at once instead of waiting for the next mouse move (see _rehover).
