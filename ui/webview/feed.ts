@@ -10,7 +10,7 @@ import { distillText, distillInputs, applyDistillLine, distillPending, distillSt
 import { spinFor, KIND_WORD, waitedSuffix } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { searchMatches, searchSids } from "./feed-search";
-import { cardInView, outsideView, outsideViewCount } from "./feed-view";
+import { cardInView, outsideView, outsideViewCount, viewLabel } from "./feed-view";
 import { SessionViews, viewsKey } from "./session-views";
 import { freezeDiff } from "./feed-freeze";
 import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
@@ -4262,8 +4262,20 @@ function render() {
     };
     list.appendChild(vmore);
   }
+  // PROMOTION (the user 2026-08-25, who read a view-narrowed board as "the feed is broken": one card
+  // showed, twenty hid, and the dim line went unseen): when the view hides MORE than the board shows,
+  // the line trades the whisper for the judge-limit banner's card chrome and NAMES the view — the
+  // near-empty board must state plainly which view it is showing and how to widen. Exact rule, no
+  // heuristics: outN > (cards on the board).
+  const shownN = viewFiltered(asks).length;
+  vmore.classList.toggle("prominent", outN > shownN);
   vmore.style.display = outN ? "" : "none";
-  if (outN) vmore.textContent = outN + (outN === 1 ? " card" : " cards") + " outside this view — show all";
+  if (outN) {
+    vmore.textContent = outN > shownN
+      ? "Showing the \u201c" + viewLabel(feedViews) + "\u201d view — " + outN
+        + (outN === 1 ? " card is" : " cards are") + " in other views · show all"
+      : outN + (outN === 1 ? " card" : " cards") + " outside this view — show all";
+  }
   list.scrollTop = prevScroll;
   // Stale-freeze heal (hover-freeze): a LOCAL render can detach or re-key the hovered element with
   // no mouseleave — a removed element never fires leave events (typing in search filters the card

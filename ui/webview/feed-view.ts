@@ -20,6 +20,17 @@ export function cardInView(views: SessionViews | null | undefined, sid: string, 
   return !outsideView(views, sid) || needsYou;
 }
 
+/** The active view's display label for the outside-view line: a tag view is its NAME (the union is
+ *  name-keyed), untagged is its plain-words self, All is All (only the manual hidden set excludes). */
+export function viewLabel(views: SessionViews | null | undefined): string {
+  const act = views && views.active;
+  if (!act || act === "all") return "All";
+  if (act === "untagged") return "no tags";
+  const tags = (views!.tags || views!.groups || []).concat(views!.remoteTags || []);
+  const t = tags.find((x) => x.id === act);
+  return (t && t.name) || "this";
+}
+
 /** The dim "N cards outside this view" count: view-hidden and NOT broken through — exactly what
  *  the board is not showing (a breakthrough already shows; counting it would double-speak). */
 export function outsideViewCount(views: SessionViews | null | undefined,

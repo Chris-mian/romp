@@ -8,7 +8,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { cardInView, outsideView, outsideViewCount } from "./feed-view";
+import { cardInView, outsideView, outsideViewCount, viewLabel } from "./feed-view";
 import type { SessionViews } from "./session-views";
 
 const ROOT = path.resolve(process.cwd(), "..");
@@ -68,7 +68,7 @@ test("the outside count is exactly what the board is NOT showing — breakthroug
 });
 
 test("the feed gates through the shared decider and adopts the payload's views blob", () => {
-  assert.match(FEED, /import \{ cardInView, outsideView, outsideViewCount \} from "\.\/feed-view";/);
+  assert.match(FEED, /import \{ cardInView, outsideView, outsideViewCount, viewLabel \} from "\.\/feed-view";/);
   assert.match(FEED, /let shown = feedViews \? list\.filter\(\(a\) => cardInView\(feedViews, a\.sid, askColumn\(a\) === "needsInput"\)\) : list;/,
     "the view layer runs FIRST in viewFiltered — the freeze badges and the render share it");
   // adoption rides every payload; the optimistic pending copy follows the tab strip's own
@@ -101,11 +101,29 @@ test("the breakthrough cue rides BOTH card shapes as a row2-visible mark, the �
     "dim, sub-line scale, never a status colour");
 });
 
+test("the near-empty board says WHICH view it shows — the whisper promotes to card chrome", () => {
+  // the user 2026-08-25 read a view-narrowed board as "the feed is broken": one card showed, twenty
+  // hid, the dim line went unseen. Exact promotion rule: the view hides more than the board shows.
+  assert.match(FEED, /const shownN = viewFiltered\(asks\)\.length;/);
+  assert.match(FEED, /vmore\.classList\.toggle\("prominent", outN > shownN\);/);
+  assert.match(FEED, /"Showing the \\u201c" \+ viewLabel\(feedViews\) \+ "\\u201d view — " \+ outN/,
+    "the promoted line NAMES the active view");
+  assert.match(CSS, /#feed-viewmore\.prominent \{ margin: 6px 8px 2px; padding: 10px 14px; background: #252526;/,
+    "the judge-limit banner's own card chrome — neutral, never a status colour");
+  // label truth: a tag view is its name; untagged says plain words; All only excludes the hidden set
+  assert.equal(viewLabel({ active: "untagged" }), "no tags");
+  assert.equal(viewLabel({ active: "t1", tags: [{ id: "t1", name: "infra" }] }), "infra");
+  assert.equal(viewLabel({ active: "TESTHOST:t9", tags: [], remoteTags: [{ id: "TESTHOST:t9", name: "infra" }] }), "infra");
+  assert.equal(viewLabel({ active: "all" }), "All");
+  assert.equal(viewLabel(null), "All");
+});
+
 test("what's filtered stays one glance away: the N-outside line, click-switches to All", () => {
   assert.match(FEED, /const outN = feedViews \? outsideViewCount\(feedViews,/);
   assert.match(FEED, /vmore\.id = "feed-viewmore";/);
   assert.match(FEED, /vmore\.style\.display = outN \? "" : "none";/, "zero outside → no line, not a zero");
-  assert.match(FEED, /outN \+ \(outN === 1 \? " card" : " cards"\) \+ " outside this view — show all";/);
+  assert.match(FEED, /outN \+ \(outN === 1 \? " card" : " cards"\) \+ " outside this view — show all";/,
+    "the whisper stays for a lightly narrowed board (outN <= shown)");
   // the click switches the ACTIVE view to All — optimistically (the board reflows now, the
   // click-safety acknowledgement), through the same whole-blob op the dashboard uses
   assert.match(FEED, /feedViewsPending = \{ \.\.\.feedViews, active: "all" \};/);
