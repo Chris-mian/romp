@@ -1305,6 +1305,11 @@ function renderEvent(ev: ChatEvent, prevEpoch?: number | null, worked?: number |
   // anchors on its own uuid.
   const anchorUuid = (ev.kind === "tool" && ev.name === "AskUserQuestion" && ev.resultUuid) ? ev.resultUuid : ev.uuid;
   if (anchorUuid) turn.dataset.uuid = anchorUuid; // deep-link anchor (shared with vs_chat)
+  // A machine-cut turn's settle record is dropped server-side, but anchors minted AT that settle's
+  // uuid (a verdict filed on the cut turn) must still land — the seam that replaced it answers to
+  // them (kernel settleUuids → data-uuids, a token list like the postal data-mids).
+  const su = (ev as any).settleUuids as string[] | undefined;
+  if (su && su.length) turn.dataset.uuids = su.join(" ");
   // epoch-seconds stamp → time-based anchor fallback (when a uuid anchor is
   // stale/orphaned, the deep link can still land on the nearest moment)
   const epoch = eventEpoch(ev);
@@ -7119,7 +7124,8 @@ function scrollToAnchor(uuid: string): boolean {
   // never contains whitespace.
   let target = (v?.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
                 || v?.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)
-                || v?.el.querySelector(`.turn[data-mids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
+                || v?.el.querySelector(`.turn[data-mids~="${cssEscape(uuid)}"]`)
+                || v?.el.querySelector(`.turn[data-uuids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
   // Deep-link into history the window doesn't currently cover (the head/tail folded into a spacer): find the
   // event, render a fresh window AROUND its unit, then re-query — the "load it when you jump there" behaviour.
   // (No match anywhere → genuinely off the active path; stash for the next render pass.)
@@ -7129,7 +7135,8 @@ function scrollToAnchor(uuid: string): boolean {
     // (renderEvent's data-uuid — the uuid the timeline emits for the decision), which no event
     // carries as its OWN uuid, so a uuid/mid-only lookup missed it and this recovery never ran.
     const idx = s ? s.events.findIndex((e) => e.uuid === uuid || (e as { mid?: string }).mid === uuid
-                                       || (e as { resultUuid?: string }).resultUuid === uuid) : -1;
+                                       || (e as { resultUuid?: string }).resultUuid === uuid
+                                       || (((e as { settleUuids?: string[] }).settleUuids || []).includes(uuid))) : -1;
     if (s && idx >= 0) {
       const items = displayItems(s);
       let u = items.findIndex((it) => it.kind === "toolgroup" ? it.indices.includes(idx) : it.index === idx);
@@ -7149,7 +7156,8 @@ function scrollToAnchor(uuid: string): boolean {
       // have its window rendered — and then still honest-fail "pointer-not-rendered" on the re-query.
       target = (v.el.querySelector(`.turn[data-uuid="${cssEscape(uuid)}"]`)
                 || v.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)
-                || v.el.querySelector(`.turn[data-mids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
+                || v.el.querySelector(`.turn[data-mids~="${cssEscape(uuid)}"]`)
+                || v.el.querySelector(`.turn[data-uuids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
     } else if (s && (s.headFrom ?? 0) > 0) {
       // The anchor is OLDER than the resident tail — the chat ships only WIRE_TAIL events and streams older
       // history in on demand, so a deep-link to a message past the tail had nothing to match and honest-failed

@@ -16522,6 +16522,15 @@ def _stamp_interrupt_causes(events):
                     # keeps it, where it IS feedback that the interrupt landed and the turn closed clean.
                     # Dropped SERVER-side: rendering it hidden would leave a zero-height turn whose rail
                     # time-marker restampMarkers still measures (at y=0), throwing off the spacing pass.
+                    # The dropped settle's uuid still ANSWERS on the seam (the user 2026-08-25): a cut
+                    # turn's settle atom is its last assistant atom, so verdicts/cards get anchored at
+                    # exactly this uuid — and with the event gone the click honest-failed "couldn't
+                    # locate" though the seam it closed is right there. The marker carries the alias;
+                    # the client lands data-uuids~= on it (event-based; the parent seam, never a
+                    # nearest-time guess).
+                    su = [x.get("uuid") for x in settles if x.get("uuid")]
+                    if su:
+                        ev["settleUuids"] = sorted(set(ev.get("settleUuids") or []) | set(su))
                     for s in settles:
                         s["_dropSettle"] = True
                 break                                     # romp's own notice decides, matched or not
