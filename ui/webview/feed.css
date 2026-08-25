@@ -903,7 +903,18 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 #feed-undoclear .undo-dots i:nth-child(2) { animation-delay: 0.18s; }
 #feed-undoclear .undo-dots i:nth-child(3) { animation-delay: 0.36s; }
 @keyframes undo-dot { 0%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { #feed-undoclear .undo-dots i { animation: none; opacity: 0.8; } }
+@media (prefers-reduced-motion: reduce) { #feed-undoclear .undo-dots i { animation: none; opacity: 0.8; }
+  .hostload-dots i { animation: none; opacity: 0.8; } }
+/* The per-host loading strip (the user 2026-08-25): an attached host's sessions are on the tabs but
+   its cards haven't merged yet — one quiet line per pending host, the loader family's pulsing accent
+   dots (the undo-dot keyframes, shared), dim text at the footer's own scale. Never a takeover. */
+#feed-hostload { display: flex; flex-direction: column; gap: 4px; padding: 8px 14px; }
+.hostload-line { display: flex; align-items: center; gap: 7px; color: var(--dim); font-size: 0.82em; }
+.hostload-dots { display: inline-flex; gap: 3px; }
+.hostload-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+  animation: undo-dot 1s ease-in-out infinite; }
+.hostload-dots i:nth-child(2) { animation-delay: 0.18s; }
+.hostload-dots i:nth-child(3) { animation-delay: 0.36s; }
 /* the footer MODE button (the session combobox's "Sessions ▴"): active (.on) wears the accent language
    (blue text + border + faint wash), the same selected-state look the card section toggles use (the
    user 2026-07-07) */
