@@ -18708,166 +18708,6 @@ def _state_unknown_names(alive, tmux, working, awaiting):
     return out
 
 
-# ───────────────────────── provenance split (the user 2026-08-25) ─────────────────────────
-# Option (iii) of the dashboard provenance audit, the user's pick: the DEFAULT board shows cards
-# whose evidence chain roots in a USER prompt; team-internal cards (peer-chatter roots, romp's own
-# bookkeeping, machine-injected kickoffs) live one click away behind the feed footer's
-# "team internals" lens. Mint machinery untouched — this classifies at BUILD time and stamps a
-# display field; needs-you always breaks through (feed-side, the same rule the satellite wears).
-
-_prov_auth_cache = {}   # sid -> ((mtime, size), {uuid: klass}) — parse-identity keyed, like _parse_cached
-_prov_store_cache = {}  # sid -> (stat keys, merged nodes) — build_feed runs every push (0.5–3s), and
-#                         re-parsing every session's goals-archive JSON that often is real money; the
-#                         walk reads only immutable-ish chain fields (parentId/promptUuid/origin), so a
-#                         raw stat-keyed read is exact and skips _feed_goals' snapshot/GuardedNode work
-
-
-def _prov_atom_text(a):
-    m = a.get("message")
-    if isinstance(m, dict):
-        c = m.get("content")
-        if isinstance(c, str):
-            return c
-        if isinstance(c, list):
-            return " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
-    return a.get("text") or ""
-
-
-def _prov_atom_klass(a):
-    """One record's provenance class: 'user' (a human prompt), 'internal' (romp bookkeeping,
-    machine-injected input, or files-nothing peer mail), 'delegate' (a delegate mail record —
-    the chain continues through the courier's origin link, not this record), or None (no
-    confident read → the card SHOWS; false-quiet is the failure option (iii) was chosen to
-    avoid). Attachment records (old cards minted before the attachment-free anchor rule) are
-    read by their markers: postal kind, romp-injected, else the queued human dictation they
-    wrap."""
-    au = a.get("author")
-    if isinstance(au, dict):
-        k = au.get("kind") or ""
-        if k == "delegate":
-            return "delegate"
-        return "internal" if k in ("coordinate", "question") else None
-    if au == "human":
-        return "internal" if em.is_interrupt_record(a) else "user"
-    if au in ("romp", "sdk"):
-        return "internal"
-    if a.get("type") == "attachment":
-        txt = _prov_atom_text(a)
-        pairs = em.postal_pairs(txt)
-        if pairs:
-            k = pairs[-1][1]
-            return "delegate" if k == "delegate" else ("internal" if k in ("coordinate", "question") else None)
-        if em.ROMP_INJECT_RE.search(txt):
-            return "internal"
-        return "user" if txt.strip() else None
-    return None
-
-
-class _ProvenanceWalk:
-    """Build-time provenance classifier: walks a top card's evidence chain — self-then-ancestors
-    within its store, hopping stores through courier origin links (origin.goalId is the sender's
-    tracking node, parented under the sender's linked ask) — to the nearest record that reads
-    confidently 'user' or 'internal'. Deterministic and cache-only: records come from
-    _parse_cached (never a cold parse — a cold classification is None → SHOWN, and self-heals on
-    the next push once _warm_fleet_bg fills the cache, the working-dot idiom). Cross-host origins
-    are unclassifiable by design (their stores live on another kernel; the row arrives already
-    classified there and the field rides the merge). Cycle-safe, hop-capped."""
-    MAX_HOPS = 12
-
-    def __init__(self, alive):
-        self._paths = {s["sid"]: s["path"] for s in alive}
-        self._stores = {}    # sid -> {nid: node} (live + archive merged; archive never shadows live)
-        self._memo = {}      # (sid, nid) -> "user" | "internal" | None
-
-    def _nodes(self, sid):
-        n = self._stores.get(sid)
-        if n is not None:
-            return n
-        files = [jd.GOALARCHDIR / (sid + ".json"), jd.GOALDIR / (sid + ".json")]   # archive first; live shadows
-        key = []
-        for p in files:
-            try:
-                st = p.stat()
-                key.append((st.st_mtime_ns, st.st_size))
-            except OSError:
-                key.append(None)
-        hit = _prov_store_cache.get(sid)
-        if hit is not None and hit[0] == key:
-            n = hit[1]
-        else:
-            n = {}
-            for p in files:
-                try:
-                    n.update(json.loads(p.read_text()).get("nodes") or {})
-                except Exception:
-                    pass                               # unreadable store → its chains stay unclassifiable (shown)
-            _prov_store_cache[sid] = (key, n)
-        self._stores[sid] = n
-        return n
-
-    def _authors(self, sid):
-        path = self._paths.get(sid)
-        if not path:
-            return None
-        try:
-            st = os.stat(path)
-            key = (st.st_mtime, st.st_size)
-        except OSError:
-            return None
-        hit = _prov_auth_cache.get(sid)
-        if hit is not None and hit[0] == key:
-            return hit[1]
-        ps = _parse_cached(path)
-        if ps is None:
-            return None                                # cold cache → unclassifiable, never a cold parse
-        idx = {}
-        for turn in ps.get("turns") or []:
-            for a in turn.get("atoms") or []:
-                u = a.get("uuid")
-                if u:
-                    idx[u] = _prov_atom_klass(a)
-        _prov_auth_cache[sid] = (key, idx)
-        return idx
-
-    def klass(self, sid, nid, _seen=None, _hops=0):
-        """'user' | 'internal' | None (unclassifiable → shown)."""
-        if _hops >= self.MAX_HOPS:
-            return None
-        key = (sid, nid)
-        if key in self._memo:
-            return self._memo[key]
-        seen = _seen if _seen is not None else set()
-        out = None
-        nodes = self._nodes(sid)
-        x = nid
-        while x is not None and (sid, x) not in seen:
-            seen.add((sid, x))
-            nd = nodes.get(x)
-            if not isinstance(nd, dict):
-                break
-            o = nd.get("origin")
-            if isinstance(o, dict) and o.get("peer") and o.get("goalId") and not o.get("peerHost"):
-                r = self.klass(o["peer"], o["goalId"], seen, _hops + 1)
-                if r is not None:
-                    out = r
-                    break
-            pu = nd.get("promptUuid")
-            if pu:
-                auth = self._authors(sid)
-                k = auth.get(pu) if auth else None
-                if k in ("user", "internal"):
-                    out = k
-                    break
-                # 'delegate' with no usable origin, or a record outside the cached window →
-                # keep climbing; a higher ancestor may still resolve
-            x = nd.get("parentId")
-        self._memo[key] = out
-        return out
-
-    def internal(self, sid, nid):
-        return self.klass(sid, nid) == "internal"
-
-
 def build_feed(now, tmux=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
@@ -18884,7 +18724,6 @@ def build_feed(now, tmux=None):
     asks, working, awaiting = [], [], []
     bg_services = {}          # session name -> live SERVICE descs (judge-classified, _bg_split) → the neutral chip
     alive = _alive_sessions(now, tmux)               # hard filter: living sessions only
-    _prov = _ProvenanceWalk(alive)                   # build-time provenance classes (the user 2026-08-25)
     wmap = _wait_for_graph(now, {s["sid"] for s in alive})   # per-session 'waiting on a live peer' (the user 2026-06-22)
     _stalls = _stalled_goals()                       # goals romp's nudge gate is holding → the card's Stalled section
     _jauth_map = jd._auth_down_map()                 # judge-auth-down latch → the per-session card floor below
@@ -19618,12 +19457,6 @@ def build_feed(now, tmux=None):
                 # card instead of work running in secret (review 2026-08-24).
                 **({"satellite": True} if isinstance(o, dict) and o.get("tracked")
                    and origin and origin.get("live") and column != "needs_input" else {}),
-                # team-internal (the user 2026-08-25, option (iii)): the card's evidence chain roots
-                # in peer chatter / romp bookkeeping / machine-injected input, never a user prompt.
-                # A display CLASS, not a hide: the feed's footer lens decides visibility (its
-                # needs-you breakthrough included) — kernel-side the fact is stamped unconditionally
-                # so counts stay honest and the toggle needs no kernel round-trip.
-                **({"internal": True} if _prov.internal(fsid, nid) else {}),
                 "followupPending": nodes[nid].get("followupPending"),   # optimistic reopen → "Followed up" chip until the judge catches up
                 # DONE-CONFIRMING (the user 2026-07-24): the done verdict is in; only the settle event is
                 # pending. The card STAYS in Working (the settle gate exists precisely so the column never

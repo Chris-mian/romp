@@ -11303,6 +11303,72 @@ def _lift_handoff_children(store, hid):
     return moved
 
 
+def _session_user_prompt_record(sender, path, uuid, now):
+    """True only when `uuid` in the sender's session is a HUMAN prompt record — read from the
+    CACHED stitched parse (parsed_session: fork-aware, author-stamped with the SDK-human channel
+    applied), so the courier pays no extra parse. author 'human' minus the CLI's interrupt
+    artifacts is the rule the board audit used; an attachment record (a queued_command wrapping
+    what the user dictated mid-turn) counts as human exactly when it carries no postal or
+    romp-injected marker. Everything else — mail, romp's own lines, machine input, a record the
+    stitched chain no longer holds — is False."""
+    try:
+        s = parsed_session(sender, [str(path)], now)
+    except Exception:
+        return False
+    for turn in s.get("turns") or []:
+        for a in turn.get("atoms") or []:
+            if a.get("uuid") != uuid:
+                continue
+            if a.get("author") == "human":
+                return not em.is_interrupt_record(a)
+            if a.get("type") == "attachment":
+                txt = _atom_text(a) or str(a.get("text") or "")
+                if em.postal_pairs(txt) or NUDGE_MARKER_RE.search(txt):
+                    return False
+                return bool(txt.strip())
+            return False
+    return False
+
+
+def _delegate_user_rooted(sender, link_id, paths, now, _depth=0, _seen=None):
+    """MINT-TIME chain trace (the user 2026-08-25 ~19:4x, who wants team-internal cards not
+    CREATED rather than foldable behind a lens): True only when the SENDER's linked goal traces
+    to a HUMAN prompt — self-then-ancestors in the sender's store (live+archive merged), an
+    origin hop into a LOCAL grand-sender's chain first (a mid-chain worker's ask was itself
+    courier-planted), then the node's own promptUuid read against the sender's stitched parse
+    (_session_user_prompt_record). EVERYTHING ELSE IS FALSE — no link at all, a machine/mail/
+    romp root, a missing store/node/record, a cross-host hop (that kernel's stores are not ours
+    to read), a cycle, the depth cap: at mint time uncertainty files QUIET, the inverse of the
+    retired display split's default (uncertainty SHOWED there; the user's verdict is that the
+    card must not exist, so the burden of proof flips to the mint). The failure surface that
+    inversion accepts — a REAL user ask whose chain evidence is lossy files quietly on the
+    recipient — is bounded by what surfaces regardless of this trace: the SENDER-side tracking
+    node (planted either way, with the parked cue and the report-back closure), and every
+    needs-you state (the hard-block floor + placeholder synthesize a board card from the live
+    prompt with zero goal nodes; interrupt only when the human is the bottleneck)."""
+    if not link_id or _depth >= 8:
+        return False
+    seen = _seen if _seen is not None else set()
+    nodes = dict(load_goal_archive(sender).get("nodes") or {})
+    nodes.update(load_goals(sender).get("nodes") or {})
+    x = link_id
+    while x is not None and (sender, x) not in seen:
+        seen.add((sender, x))
+        nd = nodes.get(x)
+        if not isinstance(nd, dict):
+            return False
+        o = nd.get("origin")
+        if (isinstance(o, dict) and o.get("peer") and o.get("goalId")
+                and not o.get("peerHost") and o["peer"] in paths):
+            if _delegate_user_rooted(o["peer"], o["goalId"], paths, now, _depth + 1, seen):
+                return True
+        pu = nd.get("promptUuid")
+        if pu and sender in paths and _session_user_prompt_record(sender, paths[sender], pu, now):
+            return True
+        x = nd.get("parentId")
+    return False
+
+
 def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
     """DETERMINISTIC delegation completion link-back (the user 2026-06-22). When a courier-planted goal G
     (origin.peer + origin.goalId) is COMPLETE on the recipient B's tree, mark the SENDER's tracking node
@@ -11365,14 +11431,23 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
             if not (isinstance(h, dict) and h.get("peer") and not nd.get("nodeComplete")):
                 continue
             pk = str(h["peer"])
-            if ":" not in pk:                          # a LOCAL recipient: the origin back-link owns it
+            if ":" not in pk and not h.get("quiet"):   # a LOCAL linked recipient: the origin back-link owns it
                 continue
-            keys = {"peer:" + pk}
-            if alias.get(pk):
-                keys.add(alias[pk])
-            reply = max((last_any.get((k, fsid), 0) for k in keys), default=0)
+            if ":" not in pk:
+                # a LOCAL QUIET handoff (chain-rooted minting, the user 2026-08-25): no recipient
+                # goal exists BY DESIGN, so the origin back-link can never fire — the recipient's
+                # reply (any kind, at/after the send) is the report-back event, exactly the
+                # cross-host rule. Same coarseness, same honesty: completing on the reply, never on
+                # delivery.
+                reply = last_any.get((pk, fsid), 0)
+            else:
+                keys = {"peer:" + pk}
+                if alias.get(pk):
+                    keys.add(alias[pk])
+                reply = max((last_any.get((k, fsid), 0) for k in keys), default=0)
             if reply and reply >= (nd.get("t") or 0):
-                why = "reported back by %s (delegated cross-host)" % pk
+                why = ("reported back by %s (delegated, quiet-filed)" % pk[:8] if ":" not in pk
+                       else "reported back by %s (delegated cross-host)" % pk)
                 if record_verdict(store, nd, "courier", "done", reply, why=why):
                     _mark_node_done(store, nid, why, reply, src="courier")
                     changed = True
@@ -11395,6 +11470,7 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
         now = int(time.time())
     fleet = discover(now)[:sessions_cap]
     id2name = {f: nm for f, p, a, nm in fleet}          # recipient id → name, for the sender's tracking-node label
+    paths_map = {f: str(p) for f, p, a, nm in fleet}    # sid → transcript, for the mint-time chain trace
     pending, closed = [], {}                           # pending: (seg_t, fsid, seg_id, text, mid, sender)
     for fsid, path, anchor, name in fleet:
         try:
@@ -11588,13 +11664,40 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             # relay). A demoted tracked delegate reaches neither line: no primary, no satellite, no
             # orphan.
             trk = bool(_postal_row(mid)[2]) and sender in id2name
+            # CHAIN-ROOTED MINTING (the user 2026-08-25 ~19:4x, replacing the view-side split): a
+            # recipient top card mints ONLY when the sender's linked goal traces to a user prompt —
+            # the ask flowing down. An untraceable delegate files QUIET: the sender-side tracking
+            # node below still plants (the delegation stays one glance away on the sender's board,
+            # with the parked cue and the report-back closure), but the recipient gets NO standalone
+            # top — its work lives in that session's own view and transcript, and any needs-you
+            # state still reaches the board through the hard-block floor/placeholder, which need no
+            # goal node. Uncertainty quiets by design (the trace's docstring names the surface).
+            rooted = _delegate_user_rooted(sender, link_id, paths_map, now)
             # Mint the sender's precise '↪ delegated to <recipient>' tracking node (the user 2026-06-22) and
             # point B's goal at IT — so run_propagate checks off only the handed-off piece, never the sender's
             # broader linked goal. Saved to the sender's tree before planting G on the recipient's.
             track_id = _plant_handoff_track(sender_store, link_id, edit["text"], fsid, id2name.get(fsid), seg_t, mid,
-                                            tracked=trk)
+                                            tracked=trk and rooted)
+            if not rooted:
+                h = sender_store["nodes"][track_id].get("handoff")
+                if isinstance(h, dict) and not h.get("quiet"):
+                    # QUIET mark: no recipient goal will ever carry this msgId, so run_propagate's
+                    # origin back-link can never end this tracker — the recipient's REPLY (any kind,
+                    # at/after the send) is its report-back event instead, the same rule the
+                    # cross-host arm has always used. Also the breadcrumb for "where is the card?":
+                    # the delegation chose quiet filing because its chain roots in team-internal
+                    # work, not a user ask.
+                    h["quiet"] = True
             rollup_status(sender_store, False)
             save_goals(sender, sender_store)
+            if not rooted:
+                store["placements"][seg_id] = "fyi"    # quiet: processed, no recipient top (the #d
+                #                                        delegation phase retires on this, exactly the
+                #                                        coordinate treatment)
+                rollup_status(store, closed.get(fsid, False))
+                save_goals(fsid, store)
+                placed += 1
+                continue
             # Origin provenance snapshots the sender's NAME (and, for federated mail, HOST) at plant
             # time: a cross-host sender's sid resolves to nothing in this kernel's names registry, and
             # without the snapshot the "from" chip degrades to a bare sid prefix (the user 2026-07-26).
