@@ -4232,19 +4232,23 @@ class SdkBackend:
         s = self._ensure(sid)
         if not s:
             return False
-        # RENAME PING (the user 2026-08-24): one line ahead of the next thing that enters the
-        # session, so it hears its own new name instead of inferring it. A slash-command send
-        # passes untouched (the CLI must see the bare command) and the note holds for the next
-        # real prompt. MARKER-FREE on purpose, unlike the standalone restart notices: this line
-        # joins an EXISTING message, and the romp-injected marker would re-author the host
-        # message's echo and transcript atom (a typed follow-up would render as a gray romp
-        # bubble). The [romp] prefix is the sanctioned family for mechanics notices — the session
-        # prompt's housekeeping note already tells every session what it means.
+        # RENAME PING (the user 2026-08-24; own-record form 2026-08-25): one line ahead of the
+        # next thing that enters the session, so it hears its own new name instead of inferring
+        # it. Its OWN record in the machine-sent dress — string-prepending it into the incoming
+        # text put the bookkeeping line inside the USER's bubble, rendered as if they typed it
+        # (the user 2026-08-25, on their very first message). The romp-injected markers are safe
+        # here precisely BECAUSE the record is separate: they author this line 'romp' (the gray
+        # machine bubble, the restart notices' dress) without touching the user's own record. It
+        # still rides the same wake — the recursive send enqueues back-to-back with the message
+        # that triggered it, and an idle session stays idle. A slash-command send passes untouched
+        # (the CLI must see the bare command) and the note holds for the next real prompt; the
+        # recursion terminates because the note is cleared before the ping is sent.
         if not text.lstrip().startswith("/"):
             _reg = read_reg(self.state_dir, sid) or {}
             if _reg.get("renameNote"):
-                text = "%s\n\n%s" % (RENAME_NUDGE % _reg["renameNote"], text)
+                _note = _reg["renameNote"]
                 self._update_reg(sid, renameNote=None)
+                self.send(sid, "<!-- romp-injected --><!-- romp-system -->" + RENAME_NUDGE % _note)
         if _is_compact_cmd(text):
             # Delivering /compact: mark the session compacting NOW (authoritative), covering the gap between
             # this send and the CLI actually starting the turn — so a drive op the producer tick checks in
@@ -4697,11 +4701,20 @@ class SdkBackend:
         reg = read_reg(self.state_dir, sid)
         if not reg:
             return False
-        # renameNote: the one-line "you were renamed" ping, delivered by send() ahead of whatever
-        # NEXT enters the session (the user 2026-08-24: a renamed worker learned its own new name
-        # only by inference from a peer's prose). Reg-persisted so it survives restarts; never a
-        # wake of its own — the queue wakes sessions, this rides a send that already happens.
-        self._update_reg(sid, name=new_name, renameNote=new_name)   # locked RMW — see set_effort's race note
+        # renameNote: the one-line "you were renamed" ping, delivered by send() as its OWN
+        # machine-dressed record ahead of whatever NEXT enters the session (the user 2026-08-24: a
+        # renamed worker learned its own new name only by inference from a peer's prose).
+        # Reg-persisted so it survives restarts; never a wake of its own — the queue wakes
+        # sessions, this rides a send that already happens. ONLY when prior turns exist under the
+        # old name (the transcript is the record of prior turns): a rename before the first turn
+        # has no stale self-knowledge to correct — the fresh session learns its name the normal
+        # way, and pinging it put bookkeeping ahead of the user's very first words (the user
+        # 2026-08-25).
+        _ls = reg.get("lastSid")
+        _tp = Path(transcript_path(reg.get("cwd") or "", _ls)) if _ls else None
+        _has_history = bool(_tp) and _tp.exists() and _tp.stat().st_size > 0
+        self._update_reg(sid, name=new_name,
+                         **({"renameNote": new_name} if _has_history else {}))   # locked RMW — see set_effort's race note
         # keep the shared names/ identity file in sync (preserve colours)
         try:
             parts = (Path(self.state_dir) / "names" / sid).read_text().rstrip("\n").split("\t")
