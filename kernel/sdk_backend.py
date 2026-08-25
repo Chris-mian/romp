@@ -2313,7 +2313,7 @@ class SdkSession:
         append_state(self.backend.state_dir, self.sid, state)
 
     def _on_message(self, msg, AssistantMessage, ResultMessage, SystemMessage):
-        if self._ping_feeding:
+        if getattr(self, "_ping_feeding", False):   # getattr: __new__-built test doubles skip __init__
             # the ping's turn is streaming — the CLI demonstrably started it, so a message fed from
             # here on lands MID-TURN as its own record (the CLI's designed forward behavior); the
             # queue can flow again
