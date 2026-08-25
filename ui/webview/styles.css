@@ -2622,6 +2622,7 @@ mark.cmt-hl.resolved { background: rgba(255, 255, 255, 0.08); }
    nothing moves. */
 mark.cmt-hl.busy {
   background-color: color-mix(in srgb, var(--st-awaitbg-bg) 24%, transparent);
+  animation: cmt-busy-pulse 2.2s ease-in-out infinite;
 }
 mark.cmt-hl.hl-first { border-top-left-radius: 2px; border-bottom-left-radius: 2px; }
 mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 2px; }
@@ -2634,8 +2635,29 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 .md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy),
 .md .katex.cmt-hl-host:has(mark.cmt-hl.busy) {
   background-color: color-mix(in srgb, var(--st-awaitbg-bg) 24%, transparent);
+  animation: cmt-busy-pulse 2.2s ease-in-out infinite;
 }
-.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy) { background-color: color-mix(in srgb, var(--st-awaitbg-bg) 24%, var(--code-bg)); }
+.md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy) {
+  background-color: color-mix(in srgb, var(--st-awaitbg-bg) 24%, var(--code-bg));
+  animation: cmt-busy-pulse-code 2.2s ease-in-out infinite;
+}
+/* THE PULSE (the user 2026-08-25, asking for exactly this: the green should pulse on and off while
+   the highlight is generating — superseding the earlier no-motion ruling for THIS state only; the
+   marching ants stay dead). Text and the code/math hosts pulse in LOCKSTEP: same keyframe clock,
+   classes landed by the same applyCommentMarks pass. Static green under prefers-reduced-motion. */
+@keyframes cmt-busy-pulse {
+  0%, 100% { background-color: color-mix(in srgb, var(--st-awaitbg-bg) 12%, transparent); }
+  50% { background-color: color-mix(in srgb, var(--st-awaitbg-bg) 36%, transparent); }
+}
+@keyframes cmt-busy-pulse-code {
+  0%, 100% { background-color: color-mix(in srgb, var(--st-awaitbg-bg) 12%, var(--code-bg)); }
+  50% { background-color: color-mix(in srgb, var(--st-awaitbg-bg) 36%, var(--code-bg)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  mark.cmt-hl.busy,
+  .md :not(pre) > code.cmt-hl-host:has(mark.cmt-hl.busy),
+  .md .katex.cmt-hl-host:has(mark.cmt-hl.busy) { animation: none; }
+}
 .md :not(pre) > code.cmt-hl-host { background: color-mix(in srgb, var(--cmt-hl) 30%, var(--code-bg)); }
 .md :not(pre) > code.cmt-hl-host > mark.cmt-hl { background: transparent; }
 .md :not(pre) > code.cmt-hl-host:hover { background: color-mix(in srgb, var(--cmt-hl) 58%, var(--code-bg)); }
@@ -2656,6 +2678,11 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
   font-size: 12px;
 }
 .cmt-head { display: flex; align-items: center; user-select: none; }
+/* the popover's boot loader (the user 2026-08-25: a fresh thread flashed the plain msgs projection
+   before jumping into the chat rendering) — the standard romp loader holds the conversation area
+   from open until the thread's REAL render (its events) is ready; a backstop falls back so it can
+   never trap. Reuses the page's .rl-* pieces, centered in the list. */
+.cmt-boot { display: flex; align-items: center; justify-content: center; min-height: 90px; }
 .cmt-head .cmt-x { cursor: pointer; }
 .cmt-title { font-weight: 600; }
 .cmt-x {
@@ -2672,6 +2699,11 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 .cmt-pop.dragging { cursor: grabbing; }
 .cmt-pop .cmt-quote, .cmt-pop .cmt-msgs, .cmt-pop .cmt-input, .cmt-pop .cmt-name { cursor: auto; }
 .cmt-pop button, .cmt-pop .meta-btn { cursor: pointer; }
+/* the thread's own statusline (the user 2026-08-25: the popover should carry the chat's components —
+   the working chip WITH its counting timer, and the model/effort badges in the statusline's own
+   anatomy). Same classes as the chat's row so fonts and chrome stay one vocabulary; only the chat
+   column geometry is neutralized for the card. */
+.cmt-pop .statusline { max-width: none; margin: 0; padding: 2px 0 0; }
 /* user-resized (.sized): the quoted context takes the extra room — its clamp unlocks and it flexes */
 .cmt-pop.sized .cmt-quote {
   display: block; -webkit-line-clamp: unset; flex: 1 1 auto; min-height: 3em; overflow-y: auto;
@@ -2710,11 +2742,15 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 .cmt-input:focus { outline: none; border-color: var(--accent); }
 .cmt-actions { display: flex; gap: 6px; align-items: center; }
 .cmt-actions:empty { display: none; }
+/* the chat's under-bubble button family, exactly (the composer-stage-btn dress — the user
+   2026-08-25: the popover's buttons should be the chat's, one vocabulary): neutral at rest,
+   accent on hover, the 0.78em label tier */
 .cmt-act {
-  padding: 3px 8px; border: 1px solid var(--box-border); border-radius: 4px; cursor: pointer;
-  background: none; color: inherit; font: inherit; opacity: 0.85;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--box-border); color: var(--dim); border-radius: 5px; font-size: 0.78em;
+  padding: 1px 8px; cursor: pointer;
 }
-.cmt-act:hover { opacity: 1; background: rgba(255, 255, 255, 0.06); }
+.cmt-act:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .cmt-act.cmt-del.armed { border-color: var(--st-blocked-bg, #c94f4f); color: var(--st-blocked-bg, #c94f4f); }
 .cmt-note.cmt-err { color: var(--st-blocked-bg, #c94f4f); opacity: 0.9; }
 

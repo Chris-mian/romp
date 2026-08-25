@@ -20,10 +20,13 @@ test("the Revive click acknowledges at once: post reviveSession AND show the loa
 });
 
 test("the loader is the romp treatment: wordmark + swirl + pulsing dots + caption", () => {
+  // ONE shared builder (rompLoaderInner) carries the anatomy — the revive loader and the comment
+  // popover's boot both wear it, per the loading-states rule
+  assert.match(RENDER, /function rompLoaderInner\(caption: string\): HTMLElement/);
   assert.match(RENDER, /const word = el\("div", "rl-word"\)/, "reuses the boot-splash .rl-* styles already on the page");
   assert.match(RENDER, /swirl\.src = mediaSrc\("romp-swirl-o\.svg"\)/);
   assert.match(RENDER, /const dots = el\("div", "rl-dots"\)/);
-  assert.match(RENDER, /cap\.textContent = `reviving “\$\{name\}”…`/);
+  assert.match(RENDER, /o\.appendChild\(rompLoaderInner\(`reviving “\$\{name\}”…`\)\);/);
 });
 
 test("event-based clear: the kernel's focus for the reviving sid retires the loader", () => {
