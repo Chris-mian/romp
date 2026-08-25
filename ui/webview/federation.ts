@@ -315,7 +315,7 @@ export function mergeHostOrder(perHost: Record<string, readonly string[]>, hostS
  *  (local first); keep the scalar chrome fields (now, dismissedCount, flags) from the LOCAL host, since the
  *  dashboard's own controls are local-authoritative. Ids are already prefixed by prefixInbound. */
 export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly string[],
-                               view: readonly string[] = []): any {
+                               view: readonly string[] = [], deadHosts: readonly string[] = []): any {
   const local = perHost[LOCAL] || {};
   const merged: any = { ...local, type: "feed", items: [], asks: [], working: [], awaiting: [], stateUnknown: [], order: [], sessions: [] };
   // `ledgers` drives the FLEET pane (it rides the same feed message). Only include it once at least one host
@@ -379,6 +379,10 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // to send) and retires the hint; a detach deletes the entry (dropHost), so a reattach re-pends and
   // the hint re-arms identically — no timers anywhere in this signal. The local kernel never pends.
   merged.pendingHosts = hostSeq.filter((h) => h !== LOCAL && !(h in perHost));
+  // …and which of those waits are on a DEAD link (the caller knows its sockets): the board says
+  // THAT instead of an open-ended wait — the fail-loudly rule; still retired only by the real
+  // events (a payload arriving, or the detach dropping the host from hostSeq).
+  merged.pendingDead = merged.pendingHosts.filter((h: string) => deadHosts.includes(h));
   return merged;
 }
 
@@ -669,7 +673,12 @@ export class FederationManager {
       this.lastFeedCounts = sig;
       this.diag("feedmerge", { counts });
     }
-    window.dispatchEvent(new MessageEvent("message", { data: mergeHostFeeds(this.perHostFeed, this.hostSeq, this.view()) }));
+    const dead = this.hostSeq.filter((h) => {
+      if (h === LOCAL) return false;
+      const c = this.conns.get(h);
+      return !c || !c.ws || c.ws.readyState === 3;   // no socket / closed = a dead link right now
+    });
+    window.dispatchEvent(new MessageEvent("message", { data: mergeHostFeeds(this.perHostFeed, this.hostSeq, this.view(), dead) }));
   }
 
   private emitMergedTimeline(bars: boolean): void {

@@ -43,20 +43,38 @@ test("reconnect re-arms by construction: detach deletes the contribution, reatta
   assert.deepEqual(gone.pendingHosts, ["TESTHOST"], "post-detach reattach looks exactly like first attach");
 });
 
-test("the feed adopts the signal and hints in BOTH board states, loader family, backstopped", () => {
+test("the hint covers the WHOLE pending window: escalate at 45s, remove only on the real events", () => {
   assert.match(FEED, /pendingHosts = Array\.isArray\(m\.pendingHosts\) \? m\.pendingHosts\.filter\(\(h: any\) => typeof h === "string"\) : \[\];/);
+  assert.match(FEED, /pendingDead = Array\.isArray\(m\.pendingDead\) \? m\.pendingDead\.filter\(\(h: any\) => typeof h === "string"\) : \[\];/);
   assert.match(FEED, /syncHostloadBackstops\(\);/);
-  assert.match(FEED, /txt\.textContent = "loading cards from " \+ h \+ "\\u2026";/);
   // both board states: the strip rides under the cards AND under the empty wordmark
   assert.match(FEED, /ensureHostLoad\(list\);   \/\/ an attached host's cards may be the ONLY thing coming — say so here too/);
   assert.match(FEED, /ensureHostLoad\(list\);\s*\n\s*list\.scrollTop = prevScroll;/);
-  // the standing can't-trap backstop: a stale tunnels row must never pin a loader forever; the
-  // RETIRE path is the payload event (pendingHosts recomputed per merge), never this timer
-  assert.match(FEED, /window\.setTimeout\(\(\) => \{ hostloadGaveUp\.add\(h\); render\(\); \}, 45000\)/);
-  assert.match(FEED, /if \(!pendingHosts\.includes\(h\)\) \{   \/\/ the payload landed \(or the host detached\) — the retire EVENT/);
-  // the loader family: the shared pulsing accent dots, reduced motion honored
-  assert.match(CSS, /\.hostload-dots i \{ width: 4px; height: 4px; border-radius: 50%; background: var\(--accent\);\s*\n\s*animation: undo-dot 1s ease-in-out infinite; \}/);
-  assert.match(CSS, /\.hostload-dots i \{ animation: none; opacity: 0\.8; \} \}/);
+  // round two (the user 2026-08-25): the first cut's 45s backstop RETIRED the hint while the host
+  // genuinely still pended — the signal knew, the backstop overrode it. Now 45s = COPY ESCALATION,
+  // never removal; the pending list itself (payload/detach recompute) is the only way off the board.
+  assert.match(FEED, /window\.setTimeout\(\(\) => \{ hostloadLong\.add\(h\); render\(\); \}, 45000\)/);
+  assert.match(FEED, /if \(!pendingHosts\.length\) \{ strip\?\.remove\(\); return; \}   \/\/ the real events emptied the list — the only way off/);
+  assert.match(FEED, /if \(!pendingHosts\.includes\(h\)\) \{   \/\/ the payload landed \(or the host detached\) — the ONLY removals/);
+  assert.doesNotMatch(FEED, /hostloadGaveUp/, "no hide-set survives — nothing ever hides a true wait");
+  // the three honest copies: loading → still waiting (45s) → a dead link names itself (fail-loudly)
+  assert.match(FEED, /"loading cards from " \+ h \+ "\\u2026"/);
+  assert.match(FEED, /"still waiting on " \+ h \+ "\\u2026"/);
+  assert.match(FEED, /"can\\u2019t reach " \+ h \+ " \\u2014 its cards return when it reconnects"/);
+  // the swirl (the user's pick over the dots): the SHARED reverse-spin glyph, LEFT of the text
+  assert.match(FEED, /const swirl = el\("span", "fask-awaiting-swirl"\);/);
+  assert.match(FEED, /line\.append\(swirl, txt\);/);
   assert.match(CSS, /\.hostload-line \{ display: flex; align-items: center; gap: 7px; color: var\(--dim\); font-size: 0\.82em; \}/,
     "quiet, dim, existing scale — a hint, never a takeover");
+  assert.doesNotMatch(CSS, /hostload-dots/, "the dots retired with the swirl swap");
+});
+
+test("the merge names DEAD pending links from socket truth; the feed says that instead of waiting", () => {
+  const FED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
+  assert.match(FED, /merged\.pendingDead = merged\.pendingHosts\.filter\(\(h: string\) => deadHosts\.includes\(h\)\);/);
+  assert.match(FED, /return !c \|\| !c\.ws \|\| c\.ws\.readyState === 3;   \/\/ no socket \/ closed = a dead link right now/);
+  const m = mergeHostFeeds({ "": local }, ["", "TESTHOST"], [], ["TESTHOST"]);
+  assert.deepEqual(m.pendingDead, ["TESTHOST"], "pending + dead socket = named");
+  const alive = mergeHostFeeds({ "": local }, ["", "TESTHOST"], [], []);
+  assert.deepEqual(alive.pendingDead, [], "pending on a live socket stays a plain wait");
 });
