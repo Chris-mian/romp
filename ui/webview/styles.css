@@ -2306,6 +2306,22 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 }
 .locate-toast.fade { opacity: 0; }
 
+/* the SEEK notice (render.ts showSeekNote, the user 2026-08-25): a quiet pane-local box while an
+   anchored jump is still finding its passage — pulsing dots + copy + the cancel ✕. The menu-card
+   vocabulary, never a window blocker; it dies on the landing event, the ✕, or the backstop. */
+#seek-note {
+  position: fixed; left: 50%; bottom: 86px; transform: translateX(-50%); z-index: 60;
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 6px;
+  background: var(--vscode-menu-background, #252526); border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); font-size: 12px; color: var(--fg);
+}
+#seek-note .seek-note-label { color: var(--dim); }
+#seek-note .seek-note-x {
+  flex: 0 0 auto; border: none; background: none; cursor: pointer; color: var(--dim);
+  font-size: 11px; line-height: 1.4; padding: 2px 4px; border-radius: 8px;
+}
+#seek-note .seek-note-x:hover { color: var(--fg); background: rgba(255, 255, 255, 0.08); }
+
 /* right-side warning toasts (render.ts warnToast): kernel `warn` messages and federation
    delivery failures — a failed action never dies silently (the user 2026-07-10: creating a
    session on an unreachable remote gave no feedback at all). Click to dismiss. */

@@ -549,6 +549,89 @@ let pendingAnchorIntent: string | null = null; // kind the uuid anchor must hono
 let pendingAnchorT: number | null = null; // time fallback (epoch s) when the uuid can't resolve
 let pendingAnchorKind: string | null = null; // intent for the time fallback: "user" = land on the user's own turn
 let anchorPendingOlder = false; // scrollToAnchor kicked off a loadOlder fetch for an anchor past the resident tail → don't toast "couldn't locate"; chatHead re-lands when the chunk arrives (the user 2026-06-27)
+// ── the SEEK (the user 2026-08-25): a card/summary click sometimes needed a second press ──
+// The give-up underneath: landActive runs ONE scrollToAnchor attempt per pass and then nulls
+// pendingAnchor unconditionally — the "stash for the next render pass" scrollToAnchor writes was
+// wiped in the same breath, so any transient miss (a re-query racing the window re-render it just
+// asked for, a push rebuilding mid-seek) one-shotted the navigation into the couldn't-locate
+// toast. The second click "worked" because the first click's re-render had made the target
+// resident. The seek is now DURABLE state: it re-arms the attempt on every render pass (pushes,
+// chatHead arrivals — events, not timers) until it LANDS, the user CANCELS via the indicator's ✕,
+// or the standing can't-trap backstop expires into the honest failure. While it outlives the
+// immediate landing, a small pane-local notice says so ("finding the passage…") with the ✕ —
+// cancel leaves the reader exactly where they are, scroll fully theirs.
+let seek: { sid: string; uuid: string; kind: string | null } | null = null;
+let seekBackstop: number | undefined;
+const SEEK_BACKSTOP_MS = 30_000;
+
+function armSeek(sid: string, uuid: string, kind: string | null): void {
+  if (seek && seek.sid === sid && seek.uuid === uuid) return;   // same target mid-seek: idempotent, never a restart
+  clearSeek();                                                  // a different target supersedes cleanly
+  seek = { sid, uuid, kind };
+  seekBackstop = window.setTimeout(() => failSeek(), SEEK_BACKSTOP_MS);
+}
+
+function clearSeek(): void {
+  seek = null;
+  if (seekBackstop !== undefined) { clearTimeout(seekBackstop); seekBackstop = undefined; }
+  document.getElementById("seek-note")?.remove();
+}
+
+/** Drop the seek's claim on any in-flight older fetch: the chunk (if one is on the wire) arrives as
+ *  a PURE prepend re-anchored on the reader's own row + offset — never a yank to the abandoned target. */
+function releaseSeekFetch(sid: string): void {
+  anchorPendingOlder = false;
+  if (loadingOlder.has(sid)) {
+    const content = document.getElementById("content");
+    const v = views.get(sid);
+    const keep = content && v && sid === activeId ? captureScrollAnchor(content, v) : null;
+    if (keep) { pendingOlderAnchor.set(sid, keep.uuid); pendingOlderKeepY.set(sid, keep.y); return; }
+  }
+  pendingOlderAnchor.delete(sid);
+  pendingOlderKeepY.delete(sid);
+}
+
+function cancelSeek(): void {   // the indicator's ✕ — the reader keeps their spot
+  if (!seek) return;
+  const sid = seek.sid;
+  pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
+  releaseSeekFetch(sid);
+  clearSeek();
+}
+
+function failSeek(): void {     // the backstop: the seek could not land — say so, honestly, once
+  if (!seek) return;
+  const sid = seek.sid;
+  pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
+  releaseSeekFetch(sid);
+  clearSeek();
+  landToast("couldn't locate this in the transcript");
+  notifyShell("locate", "Couldn't jump to this in " + (sessions.get(sid)?.name || "the transcript")
+              + ". The chat is missing that part of its history.", sid);
+}
+
+/** The pane-local seek notice: pulsing dots + "finding the passage…" + the cancel ✕. Created once
+ *  per seek (never rebuilt by renders — click-safe by construction; removal is the ✕'s immediate
+ *  acknowledgement), shown only while the seeking session is the active tab. */
+function showSeekNote(): void {
+  if (!seek) return;
+  const existing = document.getElementById("seek-note");
+  if (seek.sid !== activeId) { existing?.remove(); return; }
+  if (existing) return;
+  const n = el("div", "");
+  n.id = "seek-note";
+  n.appendChild(metaDots());
+  const label = el("span", "seek-note-label");
+  label.textContent = "finding the passage…";
+  n.appendChild(label);
+  const x = el("button", "seek-note-x");
+  x.setAttribute("aria-label", "Stop looking");
+  x.title = "stop looking — stay right here";
+  x.textContent = "✕";
+  x.addEventListener("click", (e) => { e.stopPropagation(); cancelSeek(); });
+  n.appendChild(x);
+  document.body.appendChild(n);
+}
 // KEEP-OFFSET landing (the user 2026-08-02). A scroll-back loadOlder re-anchors on the row the reader was
 // on — that is POSITION PRESERVATION, not a deep-link: the row must come back at the SAME on-screen offset,
 // with no top-align and no flash. Non-null ⇒ resolve pendingAnchor by id as usual (which renders the window
@@ -6478,7 +6561,8 @@ function threadMetaStatus(th: CommentThread): Status {
   const stuck = threadStuck(th.state);
   return { state: stuck ? "needsInput" : (threadBusy(th.state) ? "working" : "ready"),
            sinceEpoch: th.sinceEpoch || null, mode: th.mode || "", model: th.model || "",
-           effort: th.effort || "default", fast: th.fast || "", backend: "sdk" } as Status;
+           effort: th.effort || "default", fast: th.fast || "", backend: "sdk",
+           modelColor: th.modelColor, effortColor: th.effortColor } as Status;
 }
 
 /** The popover statusline's LEFT half — the thread's state chip, wearing exactly the chat's chip
@@ -8032,9 +8116,19 @@ function landActive(content: HTMLElement | null, v: View): void {
   }
   sizeSpacers(v);  // the view is now VISIBLE (display set in showActive), so the spacers get a real height
                    // measurement — a tab pre-built while display:none could only fall back until now
+  // The durable seek re-arms the per-pass attempt: every render pass retries until it lands, the
+  // user cancels, or the backstop fires — never hijacking a scroll-back keep-offset restore.
+  if (!pendingAnchor && pendingAnchorT == null && pendingAnchorKeepY == null && seek && seek.sid === activeId) {
+    pendingAnchor = seek.uuid;
+    pendingAnchorIntent = seek.kind;
+  }
   const att = { anchor: pendingAnchor, t: pendingAnchorT, kind: pendingAnchorKind, keep: pendingAnchorKeepY != null };   // this pass's landing attempt, for diagnostics
   if (att.anchor || att.t != null) landTrail = [];
   let scrolled = pendingAnchor ? scrollToAnchor(pendingAnchor) : false;
+  if (seek && att.anchor === seek.uuid) {
+    if (scrolled) clearSeek();             // the landing event — the indicator dies with the seek
+    else showSeekNote();                   // outlived the immediate landing → say the search is on
+  }
   // BY-ID landing ONLY (the user 2026-06-20, who wanted to shrink the 29%, then remove the time fallback). TIER 1, by id:
   // a card TITLE / node text sends promptAnchorUuid, which lands the originating MESSAGE — a user turn OR a
   // peer's postal card (scrollToAnchor's kind guard now accepts both). That covers the ~71% of cards that
@@ -8055,7 +8149,7 @@ function landActive(content: HTMLElement | null, v: View): void {
     // A keep-offset restore is NOT a user navigation — nobody asked to locate anything, so a failed one must
     // not raise "couldn't locate this in the transcript" at a reader who only scrolled. It still gets its
     // audit row above (trail + keep), which is where a lost position is diagnosed from.
-    if (!scrolled && !anchorPendingOlder && !att.keep) {
+    if (!scrolled && !anchorPendingOlder && !att.keep && !(seek && att.anchor === seek.uuid)) {   // a live SEEK keeps working instead — its backstop owns the failure
       landToast("couldn't locate this in the transcript");  // fetching older history → chatHead re-lands, no false "couldn't locate"
       // …and file it in the error center. The toast is transient and the locate-audit.jsonl row is invisible
       // from the UI, so a failed jump left NOTHING the user could point at afterwards — it read as the click
@@ -10436,6 +10530,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   pendingAnchor = anchor ?? null;
   if (anchor) flashedAnchor = null;        // a fresh navigation re-arms the one-per-navigation flash
   pendingAnchorIntent = anchor ? (anchorKind ?? null) : null;
+  if (anchor) armSeek(id, anchor, anchorKind ?? null);   // durable until land / ✕ / backstop (see armSeek)
   activeId = id;
   try { vscodeApi?.setState?.({ ...(vscodeApi.getState?.() || {}), activeId: id }); } catch { /* ignore */ }
   renderTabs();
