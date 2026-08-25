@@ -390,7 +390,7 @@ test("the popover renders the thread with the CHAT's own renderer from the branc
   assert.match(KERNEL, /evs = evs\[at \+ 1:\]/, "sliced to AFTER the branch point — the head system card never rides");
   // the thread's own statusline posts the chat's own ops through the SHARED menu, keyed to the
   // thread sid (toggleMetaMenu's opSid — 2026-08-25 parity: one builder, sid-scoped)
-  assert.match(UI, /type: kind === "model" \? "setModel" : kind === "effort" \? "setEffort" : kind === "fast" \? "setFast" : "setMode", id: opSid, value: c\.value/);
+  assert.match(UI, /type: kind === "model" \? "setModel" : kind === "effort" \? "setEffort" : kind === "fast" \? "setFast" : "setMode", id: opSid, value/);
 });
 
 test("the tint ladder keeps every state distinct: base < unread < hover", () => {
