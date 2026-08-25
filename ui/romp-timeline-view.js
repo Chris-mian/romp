@@ -3030,6 +3030,46 @@ class TimelinePanel {
           d.addEventListener('click', () => { this._editTagUnion(tg, { color: c }); build(); });
         }
       }
+      // SCOPE SECTION (the user 2026-08-25): which selection each surface holds, side by side,
+      // with a set-for-all — one gesture applies one surface's selection to every surface. The
+      // feed's selection is pane-local (its own sessionStorage): the dialog can't read it, so its
+      // column says so honestly, and set-for-all reaches it through a localStorage echo the feed
+      // pane adopts (romp:feedTags-set — the menu-echo idiom; noted in the feed pairing).
+      {
+        const scope = card.createDiv();
+        scope.setAttribute('style', 'display:flex;align-items:center;gap:14px;margin:0 0 8px;flex-wrap:wrap;');
+        const vNow = this._curViews();
+        const cell = (label, lens, applyAll) => {
+          const c = scope.createDiv();
+          c.setAttribute('style', 'display:flex;align-items:center;gap:6px;');
+          const l = c.createSpan({ text: label });
+          l.setAttribute('style', 'font-size:0.82em;opacity:0.6;font-style:italic;');
+          const val = c.createSpan({ text: lens === null ? 'set on the feed' : lensLabel(lens) });
+          val.setAttribute('style', lens === null ? 'font-size:0.82em;opacity:0.5;' : '');
+          if (applyAll) {
+            const btn = c.createSpan({ text: '→ all' });
+            btn.setAttribute('style', 'cursor:pointer;padding:1px 6px;border-radius:5px;'
+              + 'border:1px solid rgba(255,255,255,0.25);font-size:0.82em;opacity:0.85;');
+            btn.setAttribute('title', 'apply this selection to every surface (tabs, timeline, outline, feed)');
+            btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(255,255,255,0.09)'; });
+            btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
+            btn.addEventListener('click', () => applyAll());
+          }
+          return c;
+        };
+        const setAll = (lens) => {
+          const nv = JSON.parse(JSON.stringify(this._curViews()));
+          nv.actives = Object.assign({}, nv.actives, { chat: lens, timeline: lens, outline: lens });
+          this._setViews(nv);
+          try { localStorage.setItem('romp:feedTags-set', JSON.stringify({ lens, t: Date.now() })); } catch (e) {}
+          if (this._viewsDialogBuild) this._viewsDialogBuild();
+        };
+        const acts = vNow.actives || {};
+        cell('tabs:', acts.chat || { all: true }, () => setAll(acts.chat || { all: true }));
+        cell('timeline:', acts.timeline || { all: true }, () => setAll(acts.timeline || { all: true }));
+        cell('outline:', acts.outline || { all: true }, () => setAll(acts.outline || { all: true }));
+        cell('feed:', null, null);
+      }
       // search + the bulk controls, one row: the search names the SET, the controls act on it
       const bar = card.createDiv();
       bar.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:0 0 8px;');

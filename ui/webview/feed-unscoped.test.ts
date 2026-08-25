@@ -33,8 +33,10 @@ test("the coupling's artifacts are fully retired: cue, N-outside line, promoted 
   assert.doesNotMatch(CSS, /fask-viewbreak|feed-viewmore/);
 });
 
-test("the kernel's views blob still serves the tabs/timeline; the feed payload no longer carries a copy", () => {
+test("the kernel's views blob serves the tabs/timeline; the feed payload carries it again for the tag mounts", () => {
   assert.ok(KERNEL.includes('"views": _views_client()}'), "tabOrder pushes keep the blob (tabs + timeline consume it)");
   const fp = KERNEL.slice(KERNEL.indexOf('return {"type": "feed", "asks": asks'), KERNEL.indexOf('"clearNotices"'));
-  assert.ok(!fp.includes('"views"'), "the feed payload's copy retired with the gating that read it");
+  // retired 2026-08-25 morning as unread; REVIVED the same day for the per-surface tag lenses —
+  // the outline pane and the feed's own tag filter read the rendered blob off this payload
+  assert.ok(fp.includes('"views": _views_client()'), "the tag mounts' read");
 });

@@ -14,6 +14,8 @@ import yaml from "highlight.js/lib/languages/yaml";
 import type { ParsedAsk } from "../ask-types";
 import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
 import { SessionViews, viewVisible, viewsKey, revealIn, viewTagUnion, viewTags, type TagUnion, type SessionTag } from "./session-views";
+import { lensVisible, surfaceLens } from "./tag-lens";
+import { openTagMenu, tagMenuButton } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
@@ -512,11 +514,17 @@ function postViews(v: SessionViews) {
 // like every activation, which re-derives peek-vs-normal from the CURRENT views (a since-revealed
 // session re-pops as a normal tab, a since-hidden one as a peek).
 let peekId: string | null = null;
+// the CHAT surface keys on its own lens (per-surface selections, the user 2026-08-25) — the scalar
+// viewVisible stays for legacy callers; tabs and peeks decide through actives.chat
+function chatVisible(id: string): boolean {
+  const v = effViews();
+  return lensVisible(surfaceLens(v, "chat"), viewTagUnion(v), id);
+}
 function assertPeekFor(id: string): void {
-  const next = viewVisible(effViews(), id) ? null : id;
+  const next = chatVisible(id) ? null : id;
   if (next !== peekId) { peekId = next; renderTabs(); }
 }
-function tabInView(id: string): boolean { return id === peekId || viewVisible(effViews(), id); }
+function tabInView(id: string): boolean { return id === peekId || chatVisible(id); }
 function visibleOrder(): string[] { return order.filter(tabInView); }
 function revealSession(id: string) { postViews(revealIn(effViews(), id)); }
 
@@ -4500,6 +4508,23 @@ function renderTabs() {
   add.title = titleWithKey("Open a session", "session.new");
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
+  // the shared TAG-ICON filter (the user 2026-08-25): identical across surfaces, opening the one
+  // multi-select lens menu — this instance governs the TAB STRIP (actives.chat)
+  const tagBtn = tagMenuButton("filter these tabs by tag", (btn) => {
+    openTagMenu(btn, {
+      lens: () => surfaceLens(effViews(), "chat"),
+      unions: () => viewTagUnion(effViews()),
+      onApply: (l) => {
+        const v = JSON.parse(JSON.stringify(effViews() || { active: "all", tags: [] }));
+        v.actives = Object.assign({}, v.actives, { chat: l });
+        postViews(v);
+      },
+      scopeCaption: "filters these tabs",
+      onConfigure: () => { vscodeApi?.postMessage({ type: "openTagsDialog" }); },
+    });
+  });
+  tagBtn.classList.add("tab-tagfilter");
+  bar.appendChild(tagBtn);
   // Restore tab-mode focus if a tab held it before this rebuild (see the top of renderTabs).
   if (refocusTab) focusActiveTab();
   syncNoSessionsPlaceholder(visibleIds.length, ids.length);
