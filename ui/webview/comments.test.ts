@@ -292,10 +292,11 @@ test("picking a model/effort never reads as an outside press — the box stays p
   // on mousedown and null pendingCommentAnchor before the item's click could land the pick, and a
   // click on the break-out dialog's Cancel stranded the user the same way (the user 2026-08-18)
   assert.match(UI, /if \(!pop \|\| pop\.contains\(ev\.target as Node\)\) return;\s*\n\s*if \(\(ev\.target as HTMLElement\)\.closest\?\.\("\.meta-menu, #fork-prompt"\)\) return;\s*\n\s*closeCommentPop\(\);/);
-  // and the surviving popover shows the pick: the click acks the label, the frame keeps it honest
-  assert.match(UI, /function liveMetaLabel\(label: HTMLElement, kind: "model" \| "effort", th: CommentThread\)/);
-  assert.match(UI, /\.meta-btn\[data-kind\]/, "the in-place refresh reaches the live chips");
-  assert.match(UI, /label\.textContent = c\.label;\s+\/\/ acknowledge the pick now/);
+  // and the surviving popover shows the pick THROUGH the chat's own builder (2026-08-25 parity):
+  // the shared menu's click arms the sid-scoped pending dots, and the frame-driven refresh re-runs
+  // syncMetaControls on the popover's row exactly as the chat's tick does
+  assert.match(UI, /metaPending\.set\(`\$\{opSid\}:\$\{kind\}`, \{ was, until: Date\.now\(\) \+ 20_000 \}\);/);
+  assert.match(UI, /if \(th && cm\) syncMetaControls\(cm, threadMetaStatus\(th\), th\.tid\);/);
 });
 
 test("marks use the prefix-tolerant anchor matcher", () => {
@@ -387,8 +388,9 @@ test("the popover renders the thread with the CHAT's own renderer from the branc
   assert.match(UI, /const node = renderEvent\(ev, prev, null\);\s*\n\s*list\.appendChild\(node\);/);
   assert.match(KERNEL, /def _thread_events\(tsid, cut_uuid, now, tmux\):/);
   assert.match(KERNEL, /evs = evs\[at \+ 1:\]/, "sliced to AFTER the branch point — the head system card never rides");
-  // the thread's own live model/effort chips post the chat's own ops, keyed to the thread sid
-  assert.match(UI, /type: kind === "model" \? "setModel" : "setEffort", id: th\.tid, value: c\.value/);
+  // the thread's own statusline posts the chat's own ops through the SHARED menu, keyed to the
+  // thread sid (toggleMetaMenu's opSid — 2026-08-25 parity: one builder, sid-scoped)
+  assert.match(UI, /type: kind === "model" \? "setModel" : kind === "effort" \? "setEffort" : kind === "fast" \? "setFast" : "setMode", id: opSid, value: c\.value/);
 });
 
 test("the tint ladder keeps every state distinct: base < unread < hover", () => {

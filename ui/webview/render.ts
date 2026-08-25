@@ -6444,6 +6444,17 @@ function refillOpenCommentPop(): void {
   if (th && list) fillCommentMsgs(list, th, openCommentKey.sid);
 }
 
+/** The open thread's status, in the chat's own Status shape — what the SHARED statusline builders
+ *  (syncMetaControls / toggleMetaMenu) consume, so the popover renders the chat statusline's full
+ *  element set (mode · model · effort · fast; the user 2026-08-25) through the one code path.
+ *  metaPending's switching-dots ride the same keys, sid-scoped. */
+function threadMetaStatus(th: CommentThread): Status {
+  const stuck = threadStuck(th.state);
+  return { state: stuck ? "needsInput" : (threadBusy(th.state) ? "working" : "ready"),
+           sinceEpoch: th.sinceEpoch || null, mode: th.mode || "", model: th.model || "",
+           effort: th.effort || "default", fast: th.fast || "", backend: "sdk" } as Status;
+}
+
 /** The popover statusline's LEFT half — the thread's state chip, wearing exactly the chat's chip
  *  anatomy (chip-working + pulse + counting timer, retrying, compacting-line, Blocked, Ready), so
  *  the popover says it's working the way the main chat does (the user 2026-08-25: no indication it
@@ -6535,16 +6546,6 @@ function commentSendFromPop(pop: HTMLElement): void {
   if (list) fillCommentMsgs(list, cur.th, cur.sid);      // the pending bubble IS the acknowledgement
 }
 
-/** A live thread's model/effort chip label: the frame's value, tinted from the shared /models
- *  colors. Shared by the chip's build and the in-place refresh — the popover survives the pick
- *  now, so the frame's fresh value must reach the label it left behind. */
-function liveMetaLabel(label: HTMLElement, kind: "model" | "effort", th: CommentThread): void {
-  label.textContent = kind === "model" ? (th.model || "Default") : (th.effort || "default");
-  const choice = META_CHOICES[kind].find((c) => (label.textContent || "").toLowerCase().startsWith(c.value));
-  label.style.color = choice?.color && choice.color.length === 3
-    ? `rgb(${choice.color[0]},${choice.color[1]},${choice.color[2]})` : "";
-}
-
 /** The popover — ONE pane-local card (no backdrop: the conversation stays readable beside it).
  *  Same thread still open → the conversation refreshes IN PLACE: the composer, its caret and the
  *  action row survive every comments frame (a full rebuild per push ate mid-press clicks and
@@ -6569,10 +6570,8 @@ function renderCommentPopover(): void {
     if (th && list) fillCommentMsgs(list, th, sid);
     const cs = prev.querySelector("#cmt-state");
     if (th && cs) cs.replaceWith(cmtStateChip(th));   // state chip + timer track every frame, in place
-    if (th) for (const b of Array.from(prev.querySelectorAll(".meta-btn[data-kind]")) as HTMLElement[]) {
-      const lbl = b.querySelector(".meta-label") as HTMLElement | null;
-      if (lbl) liveMetaLabel(lbl, b.dataset.kind === "model" ? "model" : "effort", th);
-    }
+    const cm = prev.querySelector("#cmt-meta") as HTMLElement | null;
+    if (th && cm) syncMetaControls(cm, threadMetaStatus(th), th.tid);   // same in-place refresh as the chat's tick
     return;
   }
   const hadFocus = !!prev?.querySelector(".cmt-input:focus-within, .cmt-input:focus");
@@ -6670,7 +6669,7 @@ function renderCommentPopover(): void {
     const mkSel = (kind: "model" | "effort") => {
       // the statusline's own badge chrome (.meta-btn/.meta-label/.meta-caret) so the two stay in
       // sync by construction (the user 2026-08-17), tinted from the /models list's shared colors
-      const btn = el("span", "meta-btn cmt-meta") as HTMLElement;
+      const btn = el("span", "meta-btn") as HTMLElement;
       const chosen = kind === "model" ? create.model : create.effort;
       const choice = chosen ? META_CHOICES[kind].find((c) => c.value === chosen) : null;
       const label = el("span", "meta-label");
@@ -6751,42 +6750,16 @@ function renderCommentPopover(): void {
       // chip with the counting timer on the left, the meta badges clustered right in .sl-right —
       // so the popover and the chat stay one vocabulary by construction.
       const mrow = el("div", "statusline cmt-meta-row");
-      const mkLive = (kind: "model" | "effort") => {
-        const btn = el("span", "meta-btn cmt-meta") as HTMLElement;
-        btn.dataset.kind = kind;
-        const label = el("span", "meta-label");
-        liveMetaLabel(label, kind, th);
-        const caret = el("span", "meta-caret");
-        caret.textContent = "▾";
-        btn.append(label, caret);
-        btn.title = "the thread's own " + kind + " — switching it never touches the session it branched from";
-        btn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          closeMetaMenu();
-          const menu = el("div", "meta-menu");
-          for (const c of META_CHOICES[kind]) {
-            const item = el("div", "meta-item");
-            item.textContent = c.label;
-            item.addEventListener("click", (ev) => {
-              ev.stopPropagation();
-              vscodeApi?.postMessage({ type: kind === "model" ? "setModel" : "setEffort", id: th.tid, value: c.value });
-              label.textContent = c.label;   // acknowledge the pick now; the next comments frame is authoritative
-              if (c.color && c.color.length === 3) label.style.color = `rgb(${c.color[0]},${c.color[1]},${c.color[2]})`;
-              closeMetaMenu();
-            });
-            menu.appendChild(item);
-          }
-          document.body.appendChild(menu);
-          const r2 = btn.getBoundingClientRect();
-          menu.style.left = r2.left + "px";
-          menu.style.top = (r2.bottom + 4) + "px";
-          metaMenuEl = menu;
-        });
-        return btn;
-      };
       mrow.appendChild(cmtStateChip(th));
+      // the chat's OWN meta controls — mode · model · effort · fast, the full statusline element
+      // set (the user 2026-08-25: fast and the mode badge were missing; a popover-local copy had
+      // drifted in dress too). syncMetaControls builds/refreshes them; forSid routes the ops and
+      // the pending keys at the THREAD, so a pick touches only it.
       const right = el("span", "sl-right");
-      right.append(mkLive("model"), mkLive("effort"));
+      const metaBox = el("span", "spinner-meta");   // the SAME wrapper the chat's badges wear — its
+      metaBox.id = "cmt-meta";                      // mono/0.92em/dim dress is where the font lives
+      syncMetaControls(metaBox, threadMetaStatus(th), th.tid);
+      right.appendChild(metaBox);
       mrow.appendChild(right);
       pop.appendChild(mrow);
     }
@@ -9243,7 +9216,7 @@ function metaDots(): HTMLElement {
   return d;
 }
 
-function metaButton(kind: MetaKind, text: string): HTMLElement {
+function metaButton(kind: MetaKind, text: string, forSid?: string | null): HTMLElement {
   const btn = el("span", "meta-btn");
   btn.dataset.kind = kind;
   const label = el("span", "meta-label");
@@ -9256,7 +9229,7 @@ function metaButton(kind: MetaKind, text: string): HTMLElement {
     : kind === "effort" ? "change thinking effort (sends /effort)"
     : kind === "fast" ? "toggle fast mode (sends /fast)"
     : "change permission mode (shift+tab cycle)";
-  btn.addEventListener("click", (e) => { e.stopPropagation(); toggleMetaMenu(kind, btn); });
+  btn.addEventListener("click", (e) => { e.stopPropagation(); toggleMetaMenu(kind, btn, forSid ?? null); });
   return btn;
 }
 
@@ -9272,7 +9245,7 @@ function metaColor(kind: MetaKind, st: Status): string {
 
 // Build or refresh the model/effort buttons inside #spinner-meta. Called from
 // updateStatusline (fresh container) and the 1s ticker (label refresh in place).
-function syncMetaControls(meta: HTMLElement, st: Status) {
+function syncMetaControls(meta: HTMLElement, st: Status, forSid?: string | null) {
   // order left→right: mode · model · effort · fast — the mode selector sits LEFT of the model name
   // (the user 2026-06-16); fast exists only when the session reports it (SDK init) AND the model can
   // run it (fastAvailable). Billing moved to the tab's right-click menu (the user 2026-08-09) — no
@@ -9282,10 +9255,10 @@ function syncMetaControls(meta: HTMLElement, st: Status) {
   const btns = Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[];
   if (btns.map((b) => b.dataset.kind).join() !== want) {
     meta.replaceChildren();
-    if (st.mode) meta.appendChild(metaButton("mode", prettyMode(st.mode)));
-    if (st.model) meta.appendChild(metaButton("model", st.model));
-    if (st.effort) meta.appendChild(metaButton("effort", st.effort));
-    if (fast) meta.appendChild(metaButton("fast", prettyFast(fast)));
+    if (st.mode) meta.appendChild(metaButton("mode", prettyMode(st.mode), forSid));
+    if (st.model) meta.appendChild(metaButton("model", st.model, forSid));
+    if (st.effort) meta.appendChild(metaButton("effort", st.effort, forSid));
+    if (fast) meta.appendChild(metaButton("fast", prettyFast(fast), forSid));
   }
   for (const b of Array.from(meta.querySelectorAll(".meta-btn")) as HTMLElement[]) {
     const kind = b.dataset.kind as MetaKind;
@@ -9318,15 +9291,24 @@ function closeMetaMenu() {
   metaMenuEl?.remove();
   metaMenuEl = null;
 }
-function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
+function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null) {
   const wasOpen = metaMenuEl?.dataset.kind === kind;
   closeMetaMenu();
   if (wasOpen) return;
-  const s = activeId ? sessions.get(activeId) : null;
-  if (!s) return;
+  // forSid ≠ the active session: a COMMENT THREAD's own statusline (the user 2026-08-25 — one
+  // builder for both surfaces, so the popover can never drift off the chat's anatomy again). The
+  // thread's status-shape comes from the open popover's frame fields; the ops route by its sid.
+  const forThread = !!forSid && forSid !== activeId;
+  const th0 = forThread ? openCommentThread()?.th : null;
+  if (forThread && !th0) return;
+  const status: Status | null = forThread ? threadMetaStatus(th0!)
+    : (activeId ? sessions.get(activeId)?.status ?? null : null);
+  const opSid = forThread ? forSid! : activeId;
+  if (!status || !opSid) return;
   // a pending permission/picker prompt owns the pane's keyboard — injecting a
   // slash command there would answer the prompt instead (host guards this too)
-  if (s.status.state === "needsInput" || s.status.state === "awaiting") return;
+  if (status.state === "needsInput" || status.state === "awaiting") return;
+  const s = { status };
   const menu = el("div", "meta-menu");
   menu.dataset.kind = kind;
   // An sdkOnly entry is dropped on tmux rather than shown-and-refused: the backend cannot apply it, and
@@ -9345,10 +9327,10 @@ function toggleMetaMenu(kind: MetaKind, btn: HTMLElement) {
     }
     item.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (activeId && vscodeApi) {
-        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : kind === "fast" ? "setFast" : "setMode", id: activeId, value: c.value });
+      if (vscodeApi) {
+        vscodeApi.postMessage({ type: kind === "model" ? "setModel" : kind === "effort" ? "setEffort" : kind === "fast" ? "setFast" : "setMode", id: opSid, value: c.value });
         const was = metaCurrent(kind, s.status);
-        metaPending.set(`${activeId}:${kind}`, { was, until: Date.now() + 20_000 });
+        metaPending.set(`${opSid}:${kind}`, { was, until: Date.now() + 20_000 });
         btn.classList.add("meta-pending");
       }
       closeMetaMenu();

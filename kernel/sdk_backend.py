@@ -4675,6 +4675,19 @@ class SdkBackend:
                 return 0
         return 0
 
+    def session_meta(self, sid: str) -> dict:
+        """{'mode','fast'} from the live snapshot ({} unknown) — the comments frame's statusline
+        parity: the popover shows the chat statusline's FULL element set (the user 2026-08-25)."""
+        with self._lock:
+            s = self.sessions.get(sid)
+        if s and s.thread.is_alive():
+            try:
+                snap = s.snapshot()
+                return {"mode": str(snap.get("mode") or ""), "fast": str(snap.get("fast") or "")}
+            except Exception:
+                return {}
+        return {}
+
     def rename(self, sid: str, new_name: str) -> bool:
         reg = read_reg(self.state_dir, sid)
         if not reg:

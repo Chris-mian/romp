@@ -20,6 +20,8 @@ export type CommentThread = {
   unread: boolean;            // an agent reply newer than the read watermark
   settledPushes?: number;     // kernel pushes since the thread last read busy, clamped at 2 (settleConfirmed)
   sinceEpoch?: number;        // ms epoch the thread's current state began — the popover chip's timer
+  mode?: string;              // the thread's permission mode — the popover statusline's Auto badge
+  fast?: string;              // fast-mode state ("on"/"off"/"cooldown"; "" = unknown → no badge)
   promotedName: string;       // the board session it became, when status === "promoted"
   model?: string;             // the thread's live/chosen model (the popover's switchable chip)
   effort?: string;            // the thread's effort level (ditto)

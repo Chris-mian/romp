@@ -29,8 +29,21 @@ test("the popover's bottom row IS a statusline: the chat's chip anatomy + counti
   // the 1s tick drives it exactly like the chat's #work-timer
   assert.match(RENDER, /const ct = document\.getElementById\("cmt-work-timer"\);/);
   assert.match(RENDER, /if \(cur && threadBusy\(cur\.th\.state\)\) ct\.textContent = elapsedMs\(cur\.th\.sinceEpoch \|\| null\);/);
-  // the model/effort badges cluster right in .sl-right, the statusline's own placement idiom
-  assert.match(RENDER, /right\.append\(mkLive\("model"\), mkLive\("effort"\)\);/);
+  // the meta badges are the CHAT'S OWN controls (the user 2026-08-25 follow-up: sharing classes
+  // wasn't enough — the popover copy drifted in dress, font, and element set): syncMetaControls
+  // builds the FULL set (mode · model · effort · fast) into .sl-right, sid-scoped at the thread
+  assert.match(RENDER, /const metaBox = el\("span", "spinner-meta"\);/);
+  assert.match(RENDER, /syncMetaControls\(metaBox, threadMetaStatus\(th\), th\.tid\);/);
+  const tms = RENDER.split("function threadMetaStatus(")[1].split("\nfunction ")[0];
+  assert.ok(tms.includes("mode: th.mode ||"), "the mode badge's source rides the frame");
+  assert.ok(tms.includes("fast: th.fast ||"), "the fast badge's source rides the frame");
+  // …and the kernel sends both (the element-set gap: Auto and Fast were missing entirely)
+  assert.match(KERNEL, /"mode": str\(meta\.get\("mode"\) or ""\), "fast": str\(meta\.get\("fast"\) or ""\),/);
+  // the popover-local dress is GONE — no .cmt-meta chip skin to drift again; and the row restates
+  // the page's base font inside the popover's 12px context (the adopted-context trap)
+  const CSSs = CSS;
+  assert.ok(!/\.cmt-meta \{/.test(CSSs), "no popover-local meta dress");
+  assert.match(CSSs, /\.cmt-pop \.statusline \{[^}]*font-family: var\(--vscode-font-family\); font-size: var\(--vscode-font-size, 13px\); \}/);
   // …and the comments frame carries the epoch (milliseconds, the client convention)
   assert.match(KERNEL, /"settledPushes": quiet, "sinceEpoch": since_ms,/);
   // the in-place refresh keeps chip + timer live per frame (chips carry no listeners — click-safe)

@@ -6418,6 +6418,14 @@ def _comments_frame(sid, tmux=None):
                 since_ms = int(be.session_since(tsid)) * 1000
             except Exception:
                 since_ms = 0
+        # mode + fast ride too (the user 2026-08-25): the popover's statusline shows the chat's FULL
+        # element set — Auto/mode and the fast badge included, fork the one documented exemption
+        meta = {}
+        if be and status == "open" and hasattr(be, "session_meta"):
+            try:
+                meta = be.session_meta(tsid) or {}
+            except Exception:
+                meta = {}
         threads.append({"tid": th.get("tid"), "anchorUuid": th.get("anchorUuid"),
                         "name": th.get("name") or "", "color": th.get("color") or "",
                         "exact": str(th.get("exact") or "")[:500], "status": status,
@@ -6426,6 +6434,7 @@ def _comments_frame(sid, tmux=None):
                         "model": (reg.get("liveModel") or reg.get("model") or "") if reg else "",
                         "effort": (reg.get("effort") or "") if reg else "",
                         "settledPushes": quiet, "sinceEpoch": since_ms,
+                        "mode": str(meta.get("mode") or ""), "fast": str(meta.get("fast") or ""),
                         "msgs": msgs, "events": events})
     return {"type": "comments", "id": sid, "threads": threads}
 

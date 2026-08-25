@@ -2703,7 +2703,12 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    the working chip WITH its counting timer, and the model/effort badges in the statusline's own
    anatomy). Same classes as the chat's row so fonts and chrome stay one vocabulary; only the chat
    column geometry is neutralized for the card. */
-.cmt-pop .statusline { max-width: none; margin: 0; padding: 2px 0 0; }
+.cmt-state { display: inline-flex; align-items: center; gap: 10px; }   /* chip · timer — the statusline's own column gap */
+.cmt-pop .statusline { max-width: none; margin: 0; padding: 2px 0 0;
+  /* the popover card is a 12px context (.cmt-pop) — restate the PAGE's base so every statusline
+     element computes the same font as the chat's row (the user 2026-08-25: "the font is different";
+     the timeline gear menu hit the same adopted-context trap) */
+  font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px); }
 /* user-resized (.sized): the quoted context takes the extra room — its clamp unlocks and it flexes */
 .cmt-pop.sized .cmt-quote {
   display: block; -webkit-line-clamp: unset; flex: 1 1 auto; min-height: 3em; overflow-y: auto;
@@ -2797,14 +2802,11 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
 .cmt-name:focus { outline: none; border-bottom-color: var(--accent); }
 .cmt-name.bad { border-bottom: 1px solid var(--st-blocked-bg, #c94f4f); color: var(--st-blocked-bg, #c94f4f); }
 
-/* the comment's own model/effort selectors (the user 2026-08-17) — chip-shaped buttons opening the
-   same .meta-menu the statusline uses; the picks ride the create call and touch only the thread */
+/* the comment's own statusline row (the user 2026-08-17; full parity 2026-08-25): the CHAT'S meta
+   buttons verbatim — the old .cmt-meta chip dress (border, radius, opacity) made the same classes
+   render as rounded buttons in a different font, exactly the drift the shared classes were meant
+   to prevent. No local dress: .meta-btn/.meta-label/.meta-caret rule here as they do in the chat. */
 .cmt-meta-row { display: flex; gap: 6px; }
-.cmt-meta {
-  padding: 2px 8px; border: 1px solid var(--box-border); border-radius: 4px; cursor: pointer;
-  background: none; color: inherit; font: inherit; opacity: 0.85;
-}
-.cmt-meta:hover { opacity: 1; border-color: var(--accent); }
 
 /* comment ticks on the chat's scroll rail (the user 2026-08-15): where the comments are, at the
    anchor's proportional position in the whole conversation; click = jump + open the thread */
