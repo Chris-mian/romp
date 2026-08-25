@@ -2716,14 +2716,17 @@ class TimelinePanel {
       return { label: n, color: (u && u.color) || MODEL_FG, pick: { tag: n } };
     }).concat(lens.none ? [{ label: 'no tags', color: MODEL_FG, pick: 'none' }] : []) : [];
     const PADH = 7, GAP = 9;   // the chip's horizontal padding; the space between the line's parts (the user 2026-08-25: more air)
-    // TWO monochrome icon buttons (the user 2026-08-25): display options (sliders) LEFT of the tag
-    // filter (tag icon) — the display toggles left the tags menu for their own button. Icon-only,
-    // MODEL_FG, 14px, drawn inline (no icon font in the Obsidian host); tooltips carry the words.
-    const ICONW = 22;   // wider than the icon: the extra is the controls' breathing room (2026-08-25)
+    // TWO icon buttons (the user 2026-08-25): display options (sliders) LEFT of the tag filter
+    // (tag icon) — the display toggles left the tags menu for their own button. Drawn inline (no
+    // icon font in the Obsidian host); tooltips carry the words. Each wears THE BUTTON OUTLINE
+    // (the user 2026-08-25, round two: the bare glyph read weird next to the feed's dressed
+    // button): the feed word-button's box in svg terms — 1px hairline, 6px radius, 9px side
+    // padding around the 14px glyph, accent border + faint wash while narrowed (the feed's .on).
+    const BTNW = 32, BTNH = 18;   // 14px glyph + 9px sides; chip-row height, so the line reads level
     const tailStr = more ? more + ' more' : '';
     const XGAP = 6;                                  // between a chip's name and its dim ✕ (the composer chip's read)
     const chipW = (c) => PADH * 2 + this.labelWidth(c.label) + XGAP + this.labelWidth('✕');
-    const budget = this.M.left - PADL - 6 - ICONW * 2 - (tailStr ? GAP + this.labelWidth(tailStr) : 0);
+    const budget = this.M.left - PADL - 6 - (BTNW * 2 + GAP) - (tailStr ? GAP + this.labelWidth(tailStr) : 0);
     let used = 0, shown = [];
     for (const c of chips) {
       const w = GAP + chipW(c);
@@ -2733,12 +2736,16 @@ class TimelinePanel {
     }
     const hidden = chips.length - shown.length;
     const y = axisY + 14;
-    const iconBtn = (dx, title, draw, open) => {
+    const iconBtn = (dx, title, narrowed, draw, open) => {
       const btn = el('g', {});
       btn.setAttribute('style', 'cursor:pointer;');
-      const hit = el('rect', { x: PADL + dx, y: y - 12, width: 16, height: 16, fill: 'transparent' });
-      btn.appendChild(hit);
-      draw(btn, PADL + dx, y);
+      // the box is the WHOLE hit target (transparent fill still catches pointevents; the glyph
+      // parts opt out) — the old bare 16x16 glyph pad was half the size and read unclickable
+      const box = el('rect', { x: PADL + dx, y: y - 13, width: BTNW, height: BTNH, rx: 6,
+        fill: narrowed ? 'rgba(156,210,255,0.12)' : 'transparent',
+        stroke: narrowed ? '#9cd2ff' : 'rgba(255,255,255,0.10)', 'stroke-width': 1 });
+      btn.appendChild(box);
+      draw(btn, PADL + dx + 9, y);
       const tt = el('title', {}); tt.textContent = title; btn.appendChild(tt);
       btn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); open(btn); });
       // the follow-up click would bubble to the document's menu-closer and shut the menu the same
@@ -2747,26 +2754,27 @@ class TimelinePanel {
       svg.appendChild(btn);
     };
     // sliders: two horizontal rails with offset knobs — the display-options read
-    iconBtn(0, 'timeline display options', (btn, bx, by) => {
-      for (const [ry, kx] of [[-8, 9], [-3, 4]]) {
+    iconBtn(0, 'timeline display options', false, (btn, bx, by) => {
+      for (const [ry, kx] of [[-7, 9], [-2, 4]]) {
         btn.appendChild(el('line', { x1: bx + 1, y1: by + ry, x2: bx + 13, y2: by + ry,
-          stroke: MODEL_FG, 'stroke-width': 1.4, 'stroke-linecap': 'round' }));
+          stroke: MODEL_FG, 'stroke-width': 1.4, 'stroke-linecap': 'round', 'pointer-events': 'none' }));
         btn.appendChild(el('circle', { cx: bx + kx, cy: by + ry, r: 2.4, fill: '#1e1e1e',
-          stroke: MODEL_FG, 'stroke-width': 1.4 }));
+          stroke: MODEL_FG, 'stroke-width': 1.4, 'pointer-events': 'none' }));
       }
     }, (btn) => this._openDisplayMenu(btn));
     // tag: the classic label outline with its hole — the filter-by-tag read (the user chose a tag
     // icon). THE BUTTON CONVENTION (2026-08-25): GRAY at rest (All), the ACCENT while narrowed —
     // the same values the shared webview renderer uses (#9aa0a6 / #9cd2ff, cross-mount equality)
     const tagIconCol = active ? '#9cd2ff' : MODEL_FG;
-    iconBtn(ICONW, 'filter these lanes by tag', (btn, bx, by) => {
+    iconBtn(BTNW + GAP, 'filter these lanes by tag', active, (btn, bx, by) => {
       const ox = bx + 1, oy = by - 11;
       btn.appendChild(el('path', {
         d: 'M ' + ox + ' ' + (oy + 5.5) + ' l 5.5 -4.5 h 6.5 v 6.5 l -5.5 4.5 z',
-        fill: 'transparent', stroke: tagIconCol, 'stroke-width': 1.4, 'stroke-linejoin': 'round' }));
-      btn.appendChild(el('circle', { cx: ox + 9.5, cy: oy + 3.5, r: 1.3, fill: tagIconCol }));
+        fill: 'transparent', stroke: tagIconCol, 'stroke-width': 1.4, 'stroke-linejoin': 'round',
+        'pointer-events': 'none' }));
+      btn.appendChild(el('circle', { cx: ox + 9.5, cy: oy + 3.5, r: 1.3, fill: tagIconCol, 'pointer-events': 'none' }));
     }, (btn) => this._openViewsMenu(btn));
-    let x = PADL + ICONW * 2;
+    let x = PADL + BTNW * 2 + GAP;
     for (const c of shown) {
       x += GAP;
       const cw = chipW(c);
@@ -2878,7 +2886,12 @@ class TimelinePanel {
     // and the menu STAYS OPEN across toggles (a settings panel, not a command — the gear's rule),
     // repainting in place. Tag rows stay NAME-KEYED (kernels are plumbing).
     const build = () => {
-      menu.empty();
+      // plain-DOM clear, NOT the Obsidian-only empty helper: the browser and VS Code hosts
+      // install just createEl/createDiv/createSpan (timeline-boot's three), so the repaint threw a
+      // TypeError and every tag-button press died before the menu appeared (the 2026-08-25
+      // unclickable corner button; timeline-tagbtn-click.test.ts executes this path under a
+      // three-helper host so an Obsidian-only call can never land again).
+      while (menu.firstChild) menu.removeChild(menu.firstChild);
       const v = this._curViews();
       const lens = timelineLens(v);
       const apply = (nl, close) => {
