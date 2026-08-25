@@ -658,7 +658,7 @@ EOF
     _romp_cmd "romp fork <parent> <name>"  -            "Branch a session into a new parallel one (parent untouched; --at <uuid> picks the cut)"
     _romp_cmd "romp rename <session> <name>" -          "Rename a session (uuid-keyed: mailboxes, goals and history all follow)"
     _romp_cmd "romp color <session> [<#hex|1-9>]" -     "Recolor a session's identity swatch (palette hex or slot 1-9; no color arg reads bg/fg)"
-    _romp_cmd "romp tag [<name>] [--add ...]" -         "Session tags: bare lists them; <name> with --add/--remove/--color/--delete merges one (a tagged session leaves the untagged view); --host <kernel> edits an attached kernel's tag; --rename renames"
+    _romp_cmd "romp tag [<name>] [--add ...]" -         "Session tags: bare lists them; <name> with --add/--remove/--color/--delete merges one (a tagged session leaves the no-tags view); --host <kernel> edits an attached kernel's tag; --rename renames"
     _romp_cmd "romp watch-pr <n> [--repo o/r]" -        "One mail here when the PR lands or fails — the kernel owns the watch, so it survives restarts (replaces the mortal shell loop)"
     _romp_cmd "romp mail ..."              romp-postal-service  "Romp Postal Service: send <to> <text> | inbox | agents | remote"
     _romp_cmd "romp send <session> [--tag <label>] <text>" - "Hand a session a message; scripts/cron SHOULD pass --tag so it renders machine-sent, not as your typed words"
@@ -1081,7 +1081,8 @@ def spell(x):
     return x
 groups = v.get("tags") or v.get("groups") or []   # older kernel: pre-rename key
 act = v.get("active") or "all"
-act = next((g.get("name") for g in groups if g.get("id") == act), act)
+act = {"all": "All", "untagged": "no tags"}.get(act) \
+    or next((g.get("name") for g in groups if g.get("id") == act), act)
 print("active view: %s" % act)
 for g in groups:
     m = [names.get(spell(x)) or spell(x) for x in (g.get("members") or [])]
