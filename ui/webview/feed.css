@@ -904,6 +904,16 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 #feed-undoclear .undo-dots i:nth-child(3) { animation-delay: 0.36s; }
 @keyframes undo-dot { 0%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { #feed-undoclear .undo-dots i { animation: none; opacity: 0.8; } }
+/* The tag lens's disclosure line (the user 2026-08-25, T70; lineage: the 665 outside-view whisper
+   + promoted banner, revived under the user's OWN lens): dim one-liner after the columns; when the
+   lens hides MORE than the board shows, the judge-limit banner's card chrome + the lens named.
+   Neutral chrome — a narrowed board is a choice, not an error. */
+#feed-lensmore { padding: 4px 14px 10px; color: var(--dim); font-size: 0.82em; cursor: pointer; }
+#feed-lensmore:hover { color: var(--accent); text-decoration: underline; }
+#feed-lensmore.prominent { margin: 6px 8px 2px; padding: 10px 14px; background: #252526;
+  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px;
+  color: var(--fg); font-size: 0.9em; }
+#feed-lensmore.prominent:hover { color: var(--fg); text-decoration: none; border-color: var(--accent); }
 /* The per-host loading strip (the user 2026-08-25; round two same day): an attached host's sessions
    are on the tabs but its cards haven't merged yet — one quiet line per pending host, the SHARED
    reverse-spin swirl glyph (.fask-awaiting-swirl, the user's pick over the dots) LEFT of the text,

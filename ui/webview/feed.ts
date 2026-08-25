@@ -10,6 +10,9 @@ import { distillText, distillInputs, applyDistillLine, distillPending, distillSt
 import { spinFor, KIND_WORD, waitedSuffix } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { searchMatches, searchSids } from "./feed-search";
+import { TagLens, lensAll, lensLabel, lensVisible, lensUnions } from "./tag-lens";
+import { openTagMenu, tagMenuButton } from "./tag-menu";
+import { SessionViews } from "./session-views";
 import { freezeDiff, contentSig } from "./feed-freeze";
 import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
@@ -495,6 +498,33 @@ function syncHostloadBackstops(): void {
     }
   }
 }
+// The feed's LOCAL tag lens (the user 2026-08-25, T70): the shared TagLens model (tag-lens.ts, the
+// multi-select every surface speaks) applied as THIS board's own deliberate narrowing — never the
+// shared blob's `active` (the decoupling ruling stands); the payload's views blob feeds tag
+// DEFINITIONS only (lensUnions). Persistence is sessionStorage, the feed's storage-split convention
+// (romp:feedOnly's reasoning): reload-proof, but a fresh window starts on All — a lens persisting
+// for days would read as silently missing cards, and the disclosure line only mitigates. The tags
+// dialog's "set for all surfaces" writes localStorage romp:feedTags-set {lens,t}; the storage
+// listener below adopts it into this pane's own lens (the PR-B adoption contract).
+let feedTagViews: SessionViews | null = null;
+let feedLens: TagLens = { all: true };
+try { feedLens = JSON.parse(sessionStorage.getItem("romp:feedTags") || "") || { all: true }; } catch { /* default All */ }
+function setFeedLens(l: TagLens): void {
+  feedLens = l;
+  try {
+    if (lensAll(l)) sessionStorage.removeItem("romp:feedTags");
+    else sessionStorage.setItem("romp:feedTags", JSON.stringify(l));
+  } catch { /* storage blocked */ }
+}
+try {
+  window.addEventListener("storage", (e) => {
+    if (e.key !== "romp:feedTags-set" || !e.newValue) return;
+    try {
+      const v = JSON.parse(e.newValue);
+      if (v && v.lens) { setFeedLens(v.lens as TagLens); render(); }
+    } catch { /* malformed set-for-all — ignore */ }
+  });
+} catch { /* no storage events */ }
 // The one session the board is filtered to, or null — the DEFAULT, nothing selected, everything shows.
 // sessionStorage, deliberately: it survives this tab's reloads (webviews reload on updates) but a fresh
 // window always starts unfiltered — a filter that persisted for days would read as silently lost cards.
@@ -3326,6 +3356,33 @@ function ensureClearAll(): HTMLElement {
 // its label); the pref rides the shared romp:settings via setViewPref, whose romp:settings event
 // re-renders every same-doc listener. Hidden entirely when nothing is folded and the lens is off —
 // a control that governs zero cards is noise.
+// The feed's mount of the SHARED tag-lens menu (tag-menu.ts — one component every surface mounts;
+// the user's generalized design). The button is the shared monochrome tag glyph; active (a narrowed
+// lens) wears the accent like every footer .on state. The menu inherits cross-pane dismissal free
+// (romp:menu-echo). Configure routes to the tags dialog through the kernel (openTagsDialog).
+function ensureTagLensBtn(): HTMLElement {
+  let b = document.getElementById("feed-taglens") as HTMLElement | null;
+  if (!b) {
+    b = tagMenuButton("filter this board by tag — combinations union; All shows everything", (btn) => {
+      openTagMenu(btn, {
+        lens: () => feedLens,
+        unions: () => lensUnions(feedTagViews),
+        onApply: (l) => { setFeedLens(l); render(); },
+        scopeCaption: "filters this feed",
+        onConfigure: () => vscodeApi?.postMessage({ type: "openTagsDialog" }),
+      });
+    });
+    b.id = "feed-taglens";
+    b.classList.add("feed-modetoggle");
+    (document.getElementById("feed-foot") || document.body).appendChild(b);
+  }
+  const active = !lensAll(feedLens);
+  b.classList.toggle("on", active);
+  b.style.color = active ? "var(--accent)" : "";   // the shared button's own gray otherwise
+  b.setAttribute("aria-pressed", active ? "true" : "false");
+  return b;
+}
+
 function ensureInternalLens(): HTMLElement {
   let b = document.getElementById("feed-internal-lens");
   if (!b) {
@@ -4096,18 +4153,35 @@ function paintJudgeLimit(): void {
 // per-card label does, so a just-died session's cards keep matching after the meta list drops it).
 // Shared by render() and the hover-freeze badge painter, so the deferred-churn hint counts exactly
 // what the user would see move.
-function viewBase(list: AskItem[]): AskItem[] {
+function viewScope(list: AskItem[]): AskItem[] {
   // The board shows EVERY session's cards, whatever tag view the tabs/timeline hold (the user's
   // 2026-08-25 ruling, superseding the 2026-08-24 feed-follows-the-view coupling after living with
   // it): the feed is the attention/clearing surface — hidden-elsewhere work still lands and clears
-  // here. Its ONLY narrowing is its own local scoping below (the combobox exact filter + search)
-  // plus the team-internals lens (viewFiltered). A tracked delegation's satellite lives under its
-  // delegator's PRIMARY card: the default board hides it, and picking its session in the filter is
-  // the one-click path back.
+  // here. Its ONLY narrowing is its own local scoping (this combobox exact filter + search), the
+  // feed-local TAG LENS (viewBase), and the team-internals lens (viewFiltered). A tracked
+  // delegation's satellite lives under its delegator's PRIMARY card: the default board hides it,
+  // and picking its session in the filter is the one-click path back.
   let shown = feedOnlySid ? list.filter((a) => a.sid === feedOnlySid) : list.filter((a) => !a.satellite);
   const sMatch = searchSids(feedSearchQ, sessionsMeta);
   if (sMatch) shown = shown.filter((a) => sMatch.has(a.sid) || searchMatches(feedSearchQ, (a as { name?: string }).name));
   return shown;
+}
+
+// The feed-local TAG LENS slot (the user 2026-08-25, T70; disclosure lineage: the 665 outside-view
+// treatments, retired with the shared-view coupling, live again here under the user's OWN lens).
+// Needs-you always passes — the same interrupt rule the satellite and internals lens wear: a
+// view-hidden session that needs the human is this board's whole job.
+function viewBase(list: AskItem[]): AskItem[] {
+  const s = viewScope(list);
+  if (lensAll(feedLens)) return s;   // default All = today's board, byte-identical
+  const u = lensUnions(feedTagViews);
+  return s.filter((a) => lensVisible(feedLens, u, a.sid) || a.column === "needs_input");
+}
+
+// The disclosure count: what the TAG LENS alone hides (breakthroughs already show; counting them
+// would double-speak) — viewScope minus viewBase, by construction.
+function outsideLensCount(list: AskItem[]): number {
+  return lensAll(feedLens) ? 0 : viewScope(list).length - viewBase(list).length;
 }
 
 // The team-internals lens (the user 2026-08-25, option (iii) of the provenance audit): the DEFAULT
@@ -4171,6 +4245,7 @@ function render() {
   // footer pane (below the cards, no overlap): view menu · Session filter · Search | Clear all · Undo
   const showCA = !!asks.length;
   ensureViewMenuBtn().style.display = showCA ? "" : "none";       // sort + layout menu (the user 2026-08-24)
+  ensureTagLensBtn().style.display = showCA ? "" : "none";        // the feed-local tag lens (the user 2026-08-25, T70)
   ensureSessionBox().style.display = showCA ? "" : "none";        // session combobox: type-or-pick filter (the user 2026-08-24)
   // the team-internals lens (the user 2026-08-25): label carries the honest count of what it governs
   const lensN = internalLensCount(asks);
@@ -4320,6 +4395,28 @@ function render() {
   }
   for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid) && undismissed(groupEls.get(tid))) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
 
+  // The tag lens's disclosure line (the user 2026-08-25, T70; lineage: the 665 outside-view line +
+  // promoted banner, retired with the shared-view coupling, revived under the user's OWN lens —
+  // what a filter hides stays one glance from reach, never silent, the 2026-08-11 rule). The click
+  // resets to All, purely local (no kernel round-trip: sessionStorage + render).
+  const lensOutN = outsideLensCount(asks);
+  let lmore = document.getElementById("feed-lensmore");
+  if (!lmore) {
+    lmore = el("div", "");
+    lmore.id = "feed-lensmore";
+    lmore.title = "cards the tag filter hides — click to show all";
+    lmore.onclick = () => { setFeedLens({ all: true }); render(); };
+    list.appendChild(lmore);
+  }
+  const lensShownN = viewFiltered(asks).length;
+  lmore.classList.toggle("prominent", lensOutN > lensShownN);
+  lmore.style.display = lensOutN ? "" : "none";
+  if (lensOutN) {
+    lmore.textContent = lensOutN > lensShownN
+      ? "Showing \u201c" + lensLabel(feedLens) + "\u201d \u2014 " + lensOutN
+        + (lensOutN === 1 ? " card is" : " cards are") + " outside this filter \u00b7 show all"
+      : lensOutN + (lensOutN === 1 ? " card" : " cards") + " outside this tag filter \u2014 show all";
+  }
   ensureHostLoad(list);
   list.scrollTop = prevScroll;
   // Stale-freeze heal (hover-freeze): a LOCAL render can detach or re-key the hovered element with
@@ -4818,6 +4915,7 @@ function applyFeedPayload(m: any): void {
   pendingHosts = Array.isArray(m.pendingHosts) ? m.pendingHosts.filter((h: any) => typeof h === "string") : [];
   pendingDead = Array.isArray(m.pendingDead) ? m.pendingDead.filter((h: any) => typeof h === "string") : [];
   syncHostloadBackstops();
+  if (m.views && typeof m.views === "object") feedTagViews = m.views as SessionViews;   // tag DEFINITIONS only — never `active`
   if (Array.isArray(m.sessions)) {
     sessionsMeta = m.sessions.filter((s: any) => s && typeof s.sid === "string" && typeof s.name === "string");
     // a filter aimed at a session the tab strip no longer shows is moot — clear it (the deciding
