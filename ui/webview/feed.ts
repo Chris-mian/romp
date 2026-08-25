@@ -11,7 +11,7 @@ import { spinFor, KIND_WORD, waitedSuffix } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { searchMatches, searchSids } from "./feed-search";
 import { TagLens, lensAll, lensLabel, lensVisible, lensUnions } from "./tag-lens";
-import { openTagMenu, tagMenuButton } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter } from "./tag-menu";
 import { SessionViews } from "./session-views";
 import { freezeDiff, contentSig } from "./feed-freeze";
 import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
@@ -3382,9 +3382,17 @@ function ensureTagLensBtn(): HTMLElement {
     b.className = "fdismiss ffollow feed-modetoggle";
     (document.getElementById("feed-foot") || document.body).appendChild(b);
   }
-  const active = !lensAll(feedLens);
-  b.classList.toggle("on", active);
-  b.setAttribute("aria-pressed", active ? "true" : "false");
+  // THE BUTTON CONVENTION (the user 2026-08-25), shared renderer — subsumes the 696 instance
+  // toggle: same .on class mechanics (mode "class", so the footer's sibling dress stands), plus
+  // the chips of everything selected beside the button, identical to every other mount
+  let ch = document.getElementById("feed-tagchips") as HTMLElement | null;
+  if (!ch) {
+    ch = document.createElement("span");
+    ch.id = "feed-tagchips";
+    ch.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
+    b.after(ch);
+  }
+  syncTagFilter(b, ch, feedLens, lensUnions(feedTagViews) as never, (l) => { setFeedLens(l); render(); }, "class");
   return b;
 }
 

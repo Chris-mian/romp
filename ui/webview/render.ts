@@ -15,7 +15,7 @@ import type { ParsedAsk } from "../ask-types";
 import { TABBAR_H_KEY, TABBAR_H_DEFAULT, clampTabbarH, parseTabbarH } from "./tabbar-resize";
 import { SessionViews, viewVisible, viewsKey, revealIn, viewTagUnion, viewTags, type TagUnion, type SessionTag } from "./session-views";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext } from "./time-marker";
 import { compactDisplay, toolCounts, type DisplayItem } from "./compact";
@@ -4524,7 +4524,22 @@ function renderTabs() {
     });
   });
   tagBtn.classList.add("tab-tagfilter");
+  // vertically centered against the + tab's box (the user 2026-08-25 — it sat high)
+  tagBtn.style.alignSelf = "center";
   bar.appendChild(tagBtn);
+  // THE BUTTON CONVENTION (the user 2026-08-25): gray alone at rest; accent + the chips of
+  // everything selected when narrowed — the shared renderer, identical on every mount
+  const tagChipsHost = el("span", "tab-tagchips");
+  tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;align-self:center;margin-left:2px;");
+  bar.appendChild(tagChipsHost);
+  {
+    const v = effViews();
+    syncTagFilter(tagBtn, tagChipsHost, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
+      const nv = JSON.parse(JSON.stringify(v || { active: "all", tags: [] }));
+      nv.actives = Object.assign({}, nv.actives, { chat: l });
+      postViews(nv);
+    });
+  }
   // Restore tab-mode focus if a tab held it before this rebuild (see the top of renderTabs).
   if (refocusTab) focusActiveTab();
   syncNoSessionsPlaceholder(visibleIds.length, ids.length);

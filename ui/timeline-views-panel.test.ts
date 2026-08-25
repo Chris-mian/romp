@@ -86,20 +86,22 @@ test("the trigger sits in the corner strip and opens on pointerdown, like every 
 test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separate ✕, air below (the user 2026-08-24)", () => {
   // the chip's own pointerdown clears the filter without a menu trip; stopPropagation keeps the
   // text element's menu handler out of it (both are pointerdown — the redraw-eats-click rule)
-  assert.match(SRC, /grp\.addEventListener\('pointerdown', \(e\) => \{\n\s*e\.preventDefault\(\); e\.stopPropagation\(\);\n\s*const nv = JSON\.parse\(JSON\.stringify\(v\)\);\n\s*nv\.actives = Object\.assign\(\{\}, nv\.actives, \{ timeline: \{ all: true \} \}\);/,
-    "the ✕ clears THIS surface's lens back to All");
+  assert.match(SRC, /nv\.actives = Object\.assign\(\{\}, nv\.actives, \{ timeline: lensToggle\(lens, c\.pick\) \}\);/,
+    "each chip's ✕ unselects THAT pick (per-selection chips, the user 2026-08-25)");
   // OUTLINE only on the page's own ground (the tinted fill was too much — the user 2026-08-24),
   // and the ✕ is dim and SEPARATE, the composer context chip's read — never baked into the name
-  assert.match(SRC, /fill: 'transparent',\n\s*stroke: gcol, 'stroke-width': 1, opacity: gdim/);
+  assert.match(SRC, /fill: 'transparent', stroke: c\.color, 'stroke-width': 1/);
   // a SENTINEL view's chip dims to the corner line's own gray at the N-more opacity (the user
   // 2026-08-24: at #cccccc it read bright as a tag) — real tag chips keep their tag colors, full strength
-  assert.match(SRC, /const gcol = \(firstTag && firstTag\.color\) \|\| MODEL_FG;/);
-  assert.match(SRC, /const gdim = firstTag \? 1 : 0\.7;/);
+  // per-selection chips since 2026-08-25: each pick derives its own colour (no-tags in the gray)
+  assert.match(SRC, /return \{ label: n, color: \(u && u\.color\) \|\| MODEL_FG, pick: \{ tag: n \} \};/);
+  assert.match(SRC, /\.concat\(lens\.none \? \[\{ label: 'no tags', color: MODEL_FG, pick: 'none' \}\] : \[\]\)/);
   assert.match(SRC, /y: y - 13, width: cw, height: 18, rx: 9,/, "taller chip");
   assert.match(SRC, /cx\.textContent = '✕';/);
   assert.match(SRC, /fill: MODEL_FG, opacity: 0\.75/);
-  assert.match(SRC, /fill: gcol, 'font-weight': 650, opacity: gdim/);
-  assert.match(SRC, /click to remove the filter \(back to All\)/);
+  assert.match(SRC, /fill: c\.color, 'font-weight': 650/);
+  assert.match(SRC, /remove \\u201c' \+ c\.label \+ '\\u201d from this timeline/,
+    "the ✕ hover names the ONE pick it removes");
   // no chip on All — the unfiltered default; the untagged view IS a filter now, so it wears one
   assert.match(SRC, /const active = !lensAll\(lens\);/, "any non-All lens selection shows the chip (2026-08-25)");
   // …and the bottom strip grew so the taller chip has air
@@ -115,7 +117,7 @@ test("the corner line wears the LANE LABELS' typography — inherited family, me
   assert.doesNotMatch(TRIG, /font-family/, "corner texts inherit the host font exactly like lane labels");
   // …at the lane-label scale: the N-more at the lane 12px, the chip name at the lane-name 650
   // (the "Filter ▾" trigger TEXT retired 2026-08-25 — the corner is two icon buttons now)
-  assert.match(TRIG, /'font-size': 12, fill: gcol, 'font-weight': 650/);
+  assert.match(TRIG, /'font-size': 12, fill: c\.color, 'font-weight': 650/);
   assert.match(SRC, /'font-weight': 650, 'font-size': 12, fill: F\(s\.color\)/, "the lane-name reference the line matches");
   // …and the width/ellipsis math measures in the SAME family the text renders in: _font resolves
   // the wrap's computed family (FONT is only the unstyled/bare-node fallback), so box and ellipsis
@@ -249,8 +251,11 @@ test("executed: the dialog's membership mutation, pure (viewToggleHidden retired
 
 test("the trigger measures its WHOLE string against the gutter, and the dialog's Escape hook dies on every close", () => {
   // the fit measures the whole line as LAID OUT: trigger + gap + padded chip + gap + tail
-  assert.match(SRC, /const width = \(n\) => ICONW \* 2\n\s*\+ \(active \? GAP \+ PADH \* 2 \+ this\.labelWidth\(n\) \+ XGAP \+ this\.labelWidth\('✕'\) : 0\)\n\s*\+ \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
-  assert.match(SRC, /const fits = \(n\) => width\(n\) <= this\.M\.left - PADL - 6;/);
+  // per-chip budgeting since 2026-08-25: chips render while they fit; the rest collapse into +N
+  assert.match(SRC, /const chipW = \(c\) => PADH \* 2 \+ this\.labelWidth\(c\.label\) \+ XGAP \+ this\.labelWidth\('✕'\);/);
+  assert.match(SRC, /const budget = this\.M\.left - PADL - 6 - ICONW \* 2 - \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
+  assert.match(SRC, /if \(used \+ w \+ restW > budget\) break;/);
+
   assert.match(SRC, /this\._viewsDialogKey = \{ doc: h\.doc, fn: onKey \};/);
   assert.match(SRC, /this\._viewsDialogKey\.doc\.removeEventListener\('keydown', this\._viewsDialogKey\.fn\);/);
 });

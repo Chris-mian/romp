@@ -7,7 +7,7 @@
 import { delegate } from "./actions";
 import { SessionViews, viewTagUnion } from "./session-views";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter } from "./tag-menu";
 import { fleetVisibleRoots } from "./fleet-roots";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { hostPrefix } from "./host-prefix";
@@ -38,6 +38,7 @@ let loaded = false;
 let emptyShown = false;   // the romp wordmark is currently showing → don't replay its fade-in every push
 let searchQuery = "";     // #fleet-search filter (the user 2026-06-29): show only sessions whose NAME matches
 let fleetViews: SessionViews | null = null;   // the rendered views blob off the feed payload — the outline lens reads it (2026-08-25)
+let syncFleetTagBtn: (() => void) | null = null;   // re-dress the tag button per the shared convention on each render
 // Provisional cards (the user 2026-06-29): a session working a brand-new prompt the planner hasn't classified
 // into a goal yet has NO ledger node, so it's invisible in the fleet — exactly the "things about to appear" the
 // user wants to track. They ride the SAME feed payload (feed.asks, provisional:true), so surface a dotted
@@ -346,6 +347,7 @@ function renderFleetNode(ctx: SessCtx, n: LedgerNode, depth: number, container: 
 }
 
 function render() {
+  syncFleetTagBtn?.();
   const list = document.getElementById("fleet-list");
   if (!list) return;
   list.replaceChildren();
@@ -845,6 +847,19 @@ function showHoverCard(row: HTMLElement, sid: string, nid: string): void {
       });
     });
     barEl.appendChild(tagBtn);
+    const chipsHost = document.createElement("span");
+    chipsHost.id = "fleet-tagchips";
+    chipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
+    barEl.appendChild(chipsHost);
+    // the shared convention: gray alone at rest, accent + selection chips when narrowed
+    syncFleetTagBtn = () => syncTagFilter(tagBtn, chipsHost, surfaceLens(fleetViews, "outline"), viewTagUnion(fleetViews), (l) => {
+      const v = JSON.parse(JSON.stringify(fleetViews || { active: "all", tags: [] }));
+      v.actives = Object.assign({}, v.actives, { outline: l });
+      fleetViews = v;
+      vscodeApi?.postMessage({ type: "setTimelineViews", views: v });
+      render();
+    });
+    syncFleetTagBtn();
   }
   const syncClear = () => { if (clear) clear.hidden = search.value === ""; };
   search.addEventListener("input", () => { searchQuery = search.value; syncClear(); render(); });
