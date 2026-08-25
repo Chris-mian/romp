@@ -10,6 +10,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { prefixInbound, mergeHostFeeds } from "./federation";
+import { lensUnions } from "./tag-lens";
 
 const ROOT = path.resolve(process.cwd(), "..");
 const FEED = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.ts"), "utf8");
@@ -66,6 +67,27 @@ test("the combobox sits right of the view-menu icon, lists sessions in tab order
   assert.ok(FEED.includes("const rows = sessionsMeta.slice().sort((a, b) => (rank.get(a.sid) ?? 1e9) - (rank.get(b.sid) ?? 1e9));"));
   // the menu lives on document.body — outside render()'s reconcile, so a push can't rebuild it mid-press
   assert.ok(FEED.includes("document.body.appendChild(menu);"));
+});
+
+test("session rows carry their tag chips — grouping visible, the pick untouched (2026-08-25)", () => {
+  // the union math executes against both tag-home shapes (the shared model's own function)
+  const views = { tags: [{ id: "t1", name: "infra", members: [U] }],
+    remoteTags: [{ id: "TESTHOST:t9", name: "infra", members: [V] }, { id: "TESTHOST:t8", name: "web", members: [V] }] };
+  const unions = lensUnions(views);
+  const chipsFor = (sid: string) => unions.filter((g: any) => g.members.includes(sid)).map((g: any) => g.name);
+  assert.deepEqual(chipsFor(U), ["infra"], "a locally-tagged session wears its union chip");
+  assert.deepEqual(chipsFor(V), ["infra", "web"], "a remote-homed member joins the SAME name-keyed union");
+  // the row wiring: chips appended only when the session has any, the dialog's outline vocabulary,
+  // non-interactive, ellipsizing in the row's leftover space
+  assert.match(FEED, /if \(!g\.members\.includes\(pick\)\) continue;/);
+  assert.match(FEED, /if \(chips\.childElementCount\) r\.appendChild\(chips\);/);
+  assert.match(FEED, /if \(g\.color\) \{ c\.style\.color = g\.color; c\.style\.borderColor = g\.color; \}/,
+    "the tag's own colour, outline-pill like the dialog");
+  const CSS2 = fs.readFileSync(path.join(ROOT, "ui", "webview", "feed.css"), "utf8");
+  assert.match(CSS2, /\.fsm-chips \{ flex: 1 1 auto; min-width: 0; margin-left: 8px; text-align: right;\s*\n\s*overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; \}/,
+    "ellipsizes, never wraps the row; never a click target — the pick stays byte-identical");
+  assert.match(CSS2, /\.fsm-chip-tag \{ display: inline-block; font-style: normal; padding: 0 6px; margin-left: 4px;/,
+    "compact at the row's scale");
 });
 
 test("menu rows write a session the way the tabs do — coloured bold name + the shared status dot", () => {

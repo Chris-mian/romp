@@ -3623,6 +3623,22 @@ function openSessList(): void {
     r.setAttribute("role", "option");
     if (pick !== null) r.setAttribute("data-sid", pick);
     if (name !== null) r.setAttribute("data-name", name);
+    // TAG CHIPS inline (the user 2026-08-25 — the unification call's smaller variant): the session's
+    // name-keyed union tags as compact outline chips, the dialog's own one-chip-per-name vocabulary,
+    // NON-interactive (grouping made visible; the two controls stay separate and the pick is
+    // untouched). The strip ellipsizes in the row's leftover space so names stay primary.
+    // (Deliberately NOT built, decided: search matching tag names — the pick list stays sessions-only.)
+    if (pick !== null) {
+      const chips = el("span", "fsm-chips");
+      for (const g of lensUnions(feedTagViews)) {
+        if (!g.members.includes(pick)) continue;
+        const c = el("i", "fsm-chip-tag");
+        c.textContent = g.name;
+        if (g.color) { c.style.color = g.color; c.style.borderColor = g.color; }
+        chips.appendChild(c);
+      }
+      if (chips.childElementCount) r.appendChild(chips);
+    }
     r.onclick = (ev) => {   // pick = the exact filter, worn as the bar's chip; the list closes, the bar stays
       ev.stopPropagation();
       const already = (r.getAttribute("data-sid") || null) === feedOnlySid;
