@@ -4043,6 +4043,11 @@ class SdkBackend:
             reg["threadOf"] = thread_of
         if parent.get("model") and parent["model"] != "default":
             reg["model"] = parent["model"]
+        if parent.get("fast"):
+            # fast rides the fork like model/effort do (the user 2026-08-25: a comment made from an
+            # Opus-high-FAST session came up slow) — the reg's `fast` is the persisted ask fast_opt
+            # reads at connect, so the thread's first frame already reports it
+            reg["fast"] = True
         # Per-fork model/effort OVERRIDES (the user 2026-08-17: a comment thread on a different model
         # or effort, without touching the parent). Applied HERE, in the reg the first connect reads —
         # never via set_model, whose write_sdk_default side effect would make a thread's pick the seed

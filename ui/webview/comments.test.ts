@@ -435,7 +435,7 @@ test("the thread's identity rail runs continuous — no holes at the list's flex
   // (pending bubbles, dots, notes) render after the turns, so the + pair never misses.
   assert.match(CSS, /\.turn::before \{ content: ""; position: absolute; left: 10\.5px; top: 0; bottom: 0; width: 2px;/,
     "the base segment this fix extends");
-  assert.match(CSS, /\.cmt-msgs \{ max-height: 45vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; \}/,
+  assert.match(CSS, /\.cmt-msgs \{ flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; \}/,
     "the 6px gap the -6px below must stay paired with");
   assert.match(CSS, /\.cmt-msgs \.turn \+ \.turn::before \{ top: -6px; \}/);
 });

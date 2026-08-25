@@ -50,9 +50,15 @@ test("sharesAnyUuid: a continuation shares a uuid, a wholesale fork shares none"
   assert.equal(sharesAnyUuid([{}, {}], before), false, "no uuids to match (live tail-only) → treated as a fork-ish rebuild");
 });
 
-test("appendActive snaps only when the user is already near the bottom", () => {
-  assert.match(RENDER, /const stick = nearBottom\(content\);[\s\S]*?if \(stick\) content\.scrollTop = content\.scrollHeight/,
-    "tail-append follows the live edge only if the reader was already at the bottom");
+test("appendActive snaps only when the user is already near the bottom of OVERFLOWING content", () => {
+  // the slack rule (the user 2026-08-25): while nothing overflows, nearBottom is trivially true —
+  // ungated, the very append crossing the overflow boundary yanked the view; now streaming into
+  // slack writes in place and grows the scrollbar, and the stick engages only once overflowing
+  assert.match(RENDER, /const stick = content\.scrollHeight > content\.clientHeight \+ 2 && nearBottom\(content\);[\s\S]*?if \(stick\) content\.scrollTop = content\.scrollHeight/,
+    "tail-append follows the live edge only if content overflows AND the reader was at the bottom");
+  // the popover's thread list speaks the same rule
+  assert.match(RENDER, /const overflowed = list\.scrollHeight > list\.clientHeight \+ 2;/);
+  assert.match(RENDER, /const atTail = overflowed && list\.scrollTop >= list\.scrollHeight - list\.clientHeight - 8;/);
 });
 
 // Scrolled-up re-renders anchor on a TURN, not a pixel offset (the user 2026-07-05): chatTail deep-fills

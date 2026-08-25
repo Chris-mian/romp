@@ -22,7 +22,7 @@ test("the Revive click acknowledges at once: post reviveSession AND show the loa
 test("the loader is the romp treatment: wordmark + swirl + pulsing dots + caption", () => {
   // ONE shared builder (rompLoaderInner) carries the anatomy — the revive loader and the comment
   // popover's boot both wear it, per the loading-states rule
-  assert.match(RENDER, /function rompLoaderInner\(caption: string\): HTMLElement/);
+  assert.match(RENDER, /function rompLoaderInner\(caption: string, opts\?: \{ wordmark\?: boolean \}\): HTMLElement/);   // parameterized, never forked (the popover drops the wordmark; everything else keeps it)
   assert.match(RENDER, /const word = el\("div", "rl-word"\)/, "reuses the boot-splash .rl-* styles already on the page");
   assert.match(RENDER, /swirl\.src = mediaSrc\("romp-swirl-o\.svg"\)/);
   assert.match(RENDER, /const dots = el\("div", "rl-dots"\)/);

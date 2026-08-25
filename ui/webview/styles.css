@@ -660,7 +660,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .held-head { flex: 1 1 100%; }
 .staged-head .staged-go { margin-left: auto; background: none; border: 1px solid var(--accent); color: var(--accent);
   border-radius: 5px; font: inherit; padding: 1px 8px; cursor: pointer; }
-.staged-head .staged-go:hover { background: var(--accent); color: var(--accent-fg); }
+.staged-head .staged-go:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }   /* the feed word-button hover (2026-08-25) */
 /* the chips strip's Stage button (the user 2026-08-23; moved 2026-08-24): it FOLLOWS the blue
    context chips in the strip's column — immediately after what it acts on, where its meaning reads;
    right-justified it floated detached. Exists exactly while context is held (the strip renders it,
@@ -670,7 +670,10 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .composer-stage-btn { background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--box-border); color: var(--dim); border-radius: 5px; font-size: 0.78em;
   padding: 1px 8px; cursor: pointer; }
-.composer-stage-btn:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+/* hover = the FEED's word-button treatment exactly (the user 2026-08-25: text + outline light up
+   blue, like Clear/Undo — never a background fill; the wash values are the feed's .ftree-act-btn
+   family, referenced not re-derived) */
+.composer-stage-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
 .staged-chip { display: flex; flex-direction: column; gap: 2px; border: 1px dashed rgba(156, 210, 255, 0.45);
   border-left: 2px solid var(--accent); border-radius: 6px; padding: 2px 6px; font-size: 12px; color: var(--fg);
   cursor: pointer; }
@@ -2694,7 +2697,11 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    below and the scroll-rail tick carry the states it used to) */
 
 .cmt-pop {
-  position: fixed; z-index: 120; width: 440px; max-width: 94vw;
+  position: fixed; z-index: 120; max-width: 94vw;
+  /* SIZE IS FIXED FROM OPEN (the user 2026-08-25: auto-expanding height on new text was jarring —
+     "start out pretty big and fill in"): renderCommentPopover sets width (70% of the pane,
+     right-aligned) and height (60%) inline at open; .cmt-msgs flexes + scrolls inside, so content
+     events never reflow the box. Manual resize (resize: both) stays. */
   resize: both; overflow: auto; min-width: 300px; min-height: 120px; max-height: 90vh;
   cursor: grab;                       /* the whole box drags (interactive children override below) */
   display: flex; flex-direction: column; gap: 6px; padding: 8px;
@@ -2741,7 +2748,7 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
   display: block; -webkit-line-clamp: unset; flex: 1 1 auto; min-height: 3em; overflow-y: auto;
 }
 .cmt-pop.sized .cmt-msgs { flex: 2 1 auto; max-height: none; }
-.cmt-msgs { max-height: 45vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.cmt-msgs { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }   /* fills the FIXED box; scroll absorbs streams (2026-08-25) */
 /* chat-parity turns inside the popover (the user 2026-08-17): the chat's own .turn nodes, given a
    little rail room; the popover's card is the backdrop, so no extra chrome */
 .cmt-msgs .turn { max-width: 100%; box-sizing: border-box; }
@@ -2782,7 +2789,7 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
   border: 1px solid var(--box-border); color: var(--dim); border-radius: 5px; font-size: 0.78em;
   padding: 1px 8px; cursor: pointer;
 }
-.cmt-act:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.cmt-act:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }   /* the feed word-button hover (2026-08-25): Break out / Merge / Delete light up like Clear/Undo */
 .cmt-act.cmt-del.armed { border-color: var(--st-blocked-bg, #c94f4f); color: var(--st-blocked-bg, #c94f4f); }
 .cmt-note.cmt-err { color: var(--st-blocked-bg, #c94f4f); opacity: 0.9; }
 
@@ -2822,7 +2829,9 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    failed the session-name charset, matching the fork modal. */
 .cmt-name {
   flex: 1; min-width: 60px; margin: 0 6px; padding: 0 2px;
-  border: 0; border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  /* no underline at rest (the user 2026-08-25: drop the dotted line under the name; everything else
+     stays) — the transparent bottom border keeps the box's height so focus doesn't shift layout */
+  border: 0; border-bottom: 1px solid transparent;
   border-radius: 0; background: transparent;
   color: var(--accent); font: inherit; font-weight: 600;
 }
@@ -2981,7 +2990,7 @@ body.filebrowse-open { overflow: hidden; }
    reverse-highlight hover so a selected toggle never reads as dead. */
 .fileview-btn.on { color: var(--accent); border-color: var(--accent);
   background: rgba(156, 210, 255, 0.10); font-weight: 600; }
-.fileview-btn.on:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.fileview-btn.on:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }   /* the feed word-button hover (2026-08-25) */
 
 /* Wrap mode (the Wrap toggle, persisted per browser): long lines soft-wrap instead of scrolling
    sideways. The flat sibling gutter cannot survive that — one logical line becomes several visual lines
