@@ -2999,98 +2999,158 @@ class TimelinePanel {
         ex.setAttribute('style', 'margin-left:auto;cursor:pointer;opacity:0.7;');
         ex.addEventListener('click', () => { this._tagEditErr = null; build(); });
       }
-      // ── THE TAGS SECTION (the user 2026-08-25: delete and recolor had no reachable home —
-      // the affordances existed but only rendered on a tag-scoped open, and every entry point
-      // opens unscoped now). One row per union tag from EVERY open: the color dot opens the
-      // identity-palette picker, the name is an input (rename on change), Delete at the right.
-      // All through _editTagUnion — local edits in place, remote-homed tags fan out over the v1
-      // editTag route with its loud refusals. A gid deep-link highlights its row.
+      // ── TAGS — a compact CHIP CLOUD (the user 2026-08-25 redesign, superseding the rows):
+      // every tag side by side; the ✕ ON a chip DELETES THE TAG (destructive — red-tinted hover,
+      // deliberately unlike the membership-✕ contexts so muscle memory can't cross); clicking a
+      // chip opens its editor (rename + the identity-palette recolor) right under the cloud. All
+      // through _editTagUnion — remote-homed tags ride the v1 editTag route, loud refusals. The
+      // [+ New tag] closes the section (the PR-C rounded-rect anatomy).
       {
         const capT = card.createDiv();
         capT.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:4px 0;');
         capT.createDiv().setAttribute('style', 'height:1px;flex:0 0 8px;background:rgba(255,255,255,0.12);');
-        const ct = capT.createSpan({ text: 'the tags — rename, recolor, delete' });
+        const ct = capT.createSpan({ text: 'the tags' });
         ct.setAttribute('style', 'font-size:0.82em;opacity:0.6;font-style:italic;white-space:nowrap;');
         capT.createDiv().setAttribute('style', 'height:1px;flex:1;background:rgba(255,255,255,0.12);');
+        const cloud = card.createDiv();
+        cloud.setAttribute('style', 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0 4px;');
         for (const tg of viewTagUnion(v)) {
           const editable = tg.localId || canEdit;
-          const trow = card.createDiv();
-          trow.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:2px 0;'
-            + (gid && tg.ids.indexOf(gid) >= 0 ? 'outline:1px solid rgba(255,255,255,0.25);outline-offset:2px;border-radius:4px;' : ''));
-          const dot = trow.createSpan();
-          dot.setAttribute('style', 'width:12px;height:12px;border-radius:50%;flex:0 0 auto;cursor:'
-            + (editable ? 'pointer' : 'default') + ';background:' + (tg.color || MODEL_FG) + ';');
-          dot.setAttribute('title', editable ? 'change this tag\u2019s color' : 'read-only here');
+          const tc = tg.color || MODEL_FG;
+          const chip = cloud.createSpan();
+          chip.setAttribute('style', 'display:inline-flex;align-items:center;gap:6px;padding:2px 9px;'
+            + 'border-radius:10px;border:1px solid ' + tc + ';color:' + tc + ';background:transparent;'
+            + (gid && tg.ids.indexOf(gid) >= 0 ? 'outline:1px solid rgba(255,255,255,0.25);outline-offset:2px;' : ''));
+          const nm2 = chip.createSpan({ text: tg.name });
+          nm2.setAttribute('style', 'cursor:' + (editable ? 'pointer' : 'default') + ';font-weight:650;');
+          nm2.setAttribute('title', editable ? 'edit this tag — rename, recolor' : 'read-only here');
+          if (editable) nm2.addEventListener('click', () => {
+            this._tagEditorFor = this._tagEditorFor === tg.name ? null : tg.name;
+            build();
+          });
+          if (editable) {
+            const dx = chip.createSpan({ text: '✕' });
+            // DELETE-the-tag, not remove-a-member: the destructive convention — dim at rest,
+            // RED on hover — keeps this ✕ visually apart from every membership ✕
+            dx.setAttribute('style', 'cursor:pointer;opacity:0.55;color:' + MODEL_FG + ';font-size:0.82em;');
+            dx.setAttribute('title', 'DELETE the tag \u201c' + tg.name + '\u201d everywhere (members keep running, just untagged)');
+            dx.addEventListener('mouseenter', () => { dx.style.color = '#F85B5A'; dx.style.opacity = '1'; });
+            dx.addEventListener('mouseleave', () => { dx.style.color = MODEL_FG; dx.style.opacity = '0.55'; });
+            dx.addEventListener('click', () => {
+              if (this._tagEditorFor === tg.name) this._tagEditorFor = null;
+              this._editTagUnion(tg, { delete: true });
+              build();
+            });
+          }
+        }
+        const open = this._tagEditorFor ? viewTagUnion(v).find((x) => x.name === this._tagEditorFor) : null;
+        if (open) {
+          const ed = card.createDiv();
+          ed.setAttribute('style', 'display:flex;align-items:center;gap:8px;margin:2px 0 4px;flex-wrap:wrap;');
           const nameIn = document.createElement('input');
-          nameIn.value = tg.name; nameIn.maxLength = 40;
-          nameIn.disabled = !editable;
-          nameIn.setAttribute('style', 'flex:1 1 auto;min-width:0;background:#1e1e1e;color:#ccc;'
+          nameIn.value = open.name; nameIn.maxLength = 40;
+          nameIn.setAttribute('style', 'flex:0 1 160px;min-width:0;background:#1e1e1e;color:#ccc;'
             + 'border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:2px 6px;font:inherit;');
           nameIn.addEventListener('change', () => {
             const nv2 = nameIn.value.slice(0, 40).trim();
-            if (nv2 && nv2 !== tg.name) this._editTagUnion(tg, { rename: nv2 });
+            if (nv2 && nv2 !== open.name) { this._tagEditorFor = nv2; this._editTagUnion(open, { rename: nv2 }); }
             build();
           });
-          trow.appendChild(nameIn);
-          const del = trow.createSpan({ text: 'Delete' });
-          del.setAttribute('style', 'flex:0 0 auto;cursor:pointer;opacity:0.7;color:#F85B5A;font-size:0.82em;'
-            + (editable ? '' : 'display:none;'));
-          hover(del, 'opacity:1;', 'opacity:0.7;');
-          del.addEventListener('click', () => { this._editTagUnion(tg, { delete: true }); build(); });
-          let swRow = null;
-          if (editable) dot.addEventListener('click', () => {
-            if (swRow) { swRow.remove(); swRow = null; return; }
-            swRow = card.createDiv();
-            trow.after(swRow);
-            swRow.setAttribute('style', 'display:flex;gap:6px;margin:2px 0 4px 20px;flex-wrap:wrap;');
-            for (const c of (this._palette && this._palette.length ? this._palette : [tg.color || '#1EA1EB'])) {
-              const d = swRow.createSpan();
-              d.setAttribute('style', 'width:16px;height:16px;border-radius:50%;cursor:pointer;background:' + c + ';'
-                + (c === tg.color ? 'outline:2px solid #ffffff;outline-offset:1px;' : 'opacity:0.75;'));
-              d.addEventListener('click', () => { this._editTagUnion(tg, { color: c }); build(); });
-            }
-          });
-        }
-      }
-      // SCOPE SECTION (the user 2026-08-25): which selection each surface holds, side by side,
-      // with a set-for-all — one gesture applies one surface's selection to every surface. The
-      // feed's selection is pane-local (its own sessionStorage): the dialog can't read it, so its
-      // column says so honestly, and set-for-all reaches it through a localStorage echo the feed
-      // pane adopts (romp:feedTags-set — the menu-echo idiom; noted in the feed pairing).
-      {
-        const scope = card.createDiv();
-        scope.setAttribute('style', 'display:flex;align-items:center;gap:14px;margin:0 0 8px;flex-wrap:wrap;');
-        const vNow = this._curViews();
-        const cell = (label, lens, applyAll) => {
-          const c = scope.createDiv();
-          c.setAttribute('style', 'display:flex;align-items:center;gap:6px;');
-          const l = c.createSpan({ text: label });
-          l.setAttribute('style', 'font-size:0.82em;opacity:0.6;font-style:italic;');
-          const val = c.createSpan({ text: lens === null ? 'set on the feed' : lensLabel(lens) });
-          val.setAttribute('style', lens === null ? 'font-size:0.82em;opacity:0.5;' : '');
-          if (applyAll) {
-            const btn = c.createSpan({ text: '→ all' });
-            btn.setAttribute('style', 'cursor:pointer;padding:1px 6px;border-radius:5px;'
-              + 'border:1px solid rgba(255,255,255,0.25);font-size:0.82em;opacity:0.85;');
-            btn.setAttribute('title', 'apply this selection to every surface (tabs, timeline, outline, feed)');
-            btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(255,255,255,0.09)'; });
-            btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
-            btn.addEventListener('click', () => applyAll());
+          ed.appendChild(nameIn);
+          for (const c of (this._palette && this._palette.length ? this._palette : [open.color || '#1EA1EB'])) {
+            const d = ed.createSpan();
+            d.setAttribute('style', 'width:16px;height:16px;border-radius:50%;cursor:pointer;background:' + c + ';'
+              + (c === open.color ? 'outline:2px solid #ffffff;outline-offset:1px;' : 'opacity:0.75;'));
+            d.addEventListener('click', () => { this._editTagUnion(open, { color: c }); build(); });
           }
-          return c;
-        };
-        const setAll = (lens) => {
+        }
+        // [+ New tag] at the section's BOTTOM (the user 2026-08-25), rounded-rect anatomy
+        const nt = card.createDiv();
+        const ntBtn = nt.createSpan({ text: '+ New tag' });
+        ntBtn.setAttribute('style', 'display:inline-flex;align-items:center;justify-content:center;padding:1px 9px;'
+          + 'border-radius:5px;border:1px solid rgba(255,255,255,0.25);color:#cccccc;opacity:0.7;cursor:pointer;background:transparent;margin:0 0 6px;');
+        hover(ntBtn, 'background:rgba(255,255,255,0.09);opacity:1;', 'background:transparent;opacity:0.7;');
+        ntBtn.addEventListener('click', () => {
           const nv = JSON.parse(JSON.stringify(this._curViews()));
-          nv.actives = Object.assign({}, nv.actives, { chat: lens, timeline: lens, outline: lens });
+          const used = new Set(viewTags(nv).map((t) => t.color));
+          const color = (this._palette || []).find((c) => !used.has(c)) || (this._palette || [])[0] || '#1EA1EB';
+          const tg = { id: 'g' + Date.now().toString(36), name: 'tag ' + (viewTags(nv).length + 1), color, members: [] };
+          nv.tags = viewTags(nv).concat([tg]); delete nv.groups;
+          this._tagEditorFor = tg.name;   // a new tag opens straight into its editor
           this._setViews(nv);
-          try { localStorage.setItem('romp:feedTags-set', JSON.stringify({ lens, t: Date.now() })); } catch (e) {}
-          if (this._viewsDialogBuild) this._viewsDialogBuild();
+          build();
+        });
+      }
+      // ── PANE FILTERS — five rows (the user 2026-08-25 redesign, superseding the one-line
+      // strip): All surfaces, then Chat / Sessions / Outline / Feed — the pane names. Each row is
+      // the FULL lens vocabulary as toggle pills (All, no-tags, every tag), editing ONLY its
+      // surface; the All-surfaces row edits all four at once — the set-for-all promoted to a
+      // first-class row, the feed reached for real through the romp:feedTags-set echo its pane
+      // adopts. The feed row DISPLAYS the last state set from here (the echo is readable back);
+      // its own pane button may have moved it since — the hover says so.
+      {
+        const capF = card.createDiv();
+        capF.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:4px 0;');
+        capF.createDiv().setAttribute('style', 'height:1px;flex:0 0 8px;background:rgba(255,255,255,0.12);');
+        const cf = capF.createSpan({ text: 'pane filters — what each pane shows' });
+        cf.setAttribute('style', 'font-size:0.82em;opacity:0.6;font-style:italic;white-space:nowrap;');
+        capF.createDiv().setAttribute('style', 'height:1px;flex:1;background:rgba(255,255,255,0.12);');
+        const acts = v.actives || {};
+        const feedEcho = () => {
+          try { const e = JSON.parse(localStorage.getItem('romp:feedTags-set') || ''); return (e && e.lens) || { all: true }; } catch (e) { return { all: true }; }
         };
-        const acts = vNow.actives || {};
-        cell('tabs:', acts.chat || { all: true }, () => setAll(acts.chat || { all: true }));
-        cell('timeline:', acts.timeline || { all: true }, () => setAll(acts.timeline || { all: true }));
-        cell('outline:', acts.outline || { all: true }, () => setAll(acts.outline || { all: true }));
-        cell('feed:', null, null);
+        const canonL = (l) => JSON.stringify({ n: !!(l && l.none), t: ((l && l.tags) || []).slice().sort() });
+        const lensFor = (key) => {
+          if (key === 'feed') return feedEcho();
+          if (key !== '*') return acts[key] || { all: true };
+          const four = [acts.chat || { all: true }, acts.timeline || { all: true }, acts.outline || { all: true }, feedEcho()];
+          return four.every((l) => canonL(l) === canonL(four[0])) ? four[0] : null;   // null = mixed
+        };
+        const applyFor = (key, lens) => {
+          if (key === '*' || key !== 'feed') {
+            const nv = JSON.parse(JSON.stringify(this._curViews()));
+            const upd = key === '*' ? { chat: lens, timeline: lens, outline: lens } : {};
+            if (key !== '*') upd[key] = lens;
+            nv.actives = Object.assign({}, nv.actives, upd);
+            this._setViews(nv);
+          }
+          if (key === '*' || key === 'feed') {
+            try { localStorage.setItem('romp:feedTags-set', JSON.stringify({ lens, t: Date.now() })); } catch (e) {}
+          }
+          build();
+        };
+        const rows = [['All surfaces', '*'], ['Chat', 'chat'], ['Sessions', 'timeline'], ['Outline', 'outline'], ['Feed', 'feed']];
+        for (const [label, key] of rows) {
+          const row = card.createDiv();
+          row.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:2px 0;flex-wrap:wrap;');
+          const lb = row.createSpan({ text: label });
+          lb.setAttribute('style', 'flex:0 0 88px;font-size:0.82em;opacity:0.6;font-style:italic;');
+          if (key === 'feed') lb.setAttribute('title', "as last set from this dialog — the feed pane's own filter button may have changed it since");
+          const lens = lensFor(key);
+          const mixed = lens === null;
+          const base = mixed ? { all: true } : lens;
+          const pill = (text, selected, color, apply) => {
+            const c2 = color || MODEL_FG;
+            const s2 = row.createSpan({ text });
+            s2.setAttribute('style', 'cursor:pointer;padding:1px 8px;border-radius:9px;font-size:0.82em;'
+              + 'border:1px solid ' + c2 + ';color:' + c2 + ';'
+              + (selected ? 'background:rgba(255,255,255,0.13);opacity:1;font-weight:650;' : 'background:transparent;opacity:0.6;'));
+            s2.addEventListener('mouseenter', () => { s2.style.opacity = '1'; });
+            s2.addEventListener('mouseleave', () => { if (!selected) s2.style.opacity = '0.6'; });
+            s2.addEventListener('click', apply);
+            return s2;
+          };
+          pill('All', !mixed && lensAll(base), null, () => applyFor(key, { all: true }));
+          pill('no tags', !mixed && !lensAll(base) && !!base.none, null, () => applyFor(key, lensToggle(base, 'none')));
+          for (const g of viewTagUnion(v))
+            pill(g.name, !mixed && !lensAll(base) && (base.tags || []).indexOf(g.name) >= 0, g.color || MODEL_FG,
+              () => applyFor(key, lensToggle(base, { tag: g.name })));
+          if (mixed) {
+            const mx = row.createSpan({ text: '(mixed)' });
+            mx.setAttribute('style', 'font-size:0.82em;opacity:0.5;font-style:italic;');
+            mx.setAttribute('title', 'the four panes currently hold different filters — picking here sets them all the same way');
+          }
+        }
       }
       // search + the bulk controls, one row: the search names the SET, the controls act on it
       const bar = card.createDiv();
