@@ -16,7 +16,7 @@ import { createRequire } from "node:module";
 const requireCjs = createRequire(__filename);
 const VIEW_PATH = path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js");
 const SRC = fs.readFileSync(VIEW_PATH, "utf8");
-const { TimelinePanel, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion } = requireCjs(VIEW_PATH);
+const { TimelinePanel, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, timelineLens } = requireCjs(VIEW_PATH);
 
 const G = { id: "g1", name: "pool", color: "#DD42FF", members: ["s2", "s3"] };
 const V = (active: string, hidden: string[] = [], tags: any[] = [G]) => ({ active, hidden, tags });
@@ -67,7 +67,8 @@ test("executed: an optimistic edit holds until the kernel echoes it — then yie
 });
 
 test("the lane gate composes the view filter first, and the all-quiet fallback respects it", () => {
-  assert.match(SRC, /const inView = \(s\) => viewVisible\(this\._curViews\(\), s\.id\);/);
+  assert.match(SRC, /const inView = \(s\) => \{ const v = this\._curViews\(\); return lensVisible\(timelineLens\(v\), viewTagUnion\(v\), s\.id\); \};/,
+    "lanes key on THIS surface's lens (per-surface selections, 2026-08-25)");
   assert.match(SRC, /let vis = data\.sessions\.filter\(inView\)\.filter\(active\);/);
   assert.match(SRC, /if \(this\._activeOnly && !vis\.length\) vis = data\.sessions\.filter\(inView\)\.filter\(\(s\) => s\.live \|\| hasWork\(s\)\);/,
     "the fallback can never resurrect a view-hidden lane");
@@ -75,30 +76,32 @@ test("the lane gate composes the view filter first, and the all-quiet fallback r
 
 test("the trigger sits in the corner strip and opens on pointerdown, like every timeline control", () => {
   assert.match(SRC, /_drawViewsTrigger\(svg, axisY\);/);
-  // named for what it does (the user 2026-08-23): it FILTERS the lanes — "Show:" read as a passive label
-  assert.match(SRC, /t\.textContent = 'Filter ▾';/);
-  assert.match(SRC, /t\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); this\._openViewsMenu\(t\); \}\);/);
+  // two monochrome icon buttons since 2026-08-25 (display options + the tag filter), both
+  // pointerdown-opened with tooltips carrying the words
+  assert.match(SRC, /btn\.addEventListener\('pointerdown', \(e\) => \{ e\.preventDefault\(\); e\.stopPropagation\(\); open\(btn\); \}\);/);
+  assert.match(SRC, /iconBtn\(ICONW, 'filter these lanes by tag'/);
   assert.match(SRC, /const tailStr = more \? more \+ ' more' : '';/, "a filtered-out live session is always one glance away");
 });
 
 test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separate ✕, air below (the user 2026-08-24)", () => {
   // the chip's own pointerdown clears the filter without a menu trip; stopPropagation keeps the
   // text element's menu handler out of it (both are pointerdown — the redraw-eats-click rule)
-  assert.match(SRC, /grp\.addEventListener\('pointerdown', \(e\) => \{\n\s*e\.preventDefault\(\); e\.stopPropagation\(\);\n\s*const nv = JSON\.parse\(JSON\.stringify\(v\)\); nv\.active = 'all'; this\._setViews\(nv\);/);
+  assert.match(SRC, /grp\.addEventListener\('pointerdown', \(e\) => \{\n\s*e\.preventDefault\(\); e\.stopPropagation\(\);\n\s*const nv = JSON\.parse\(JSON\.stringify\(v\)\);\n\s*nv\.actives = Object\.assign\(\{\}, nv\.actives, \{ timeline: \{ all: true \} \}\);/,
+    "the ✕ clears THIS surface's lens back to All");
   // OUTLINE only on the page's own ground (the tinted fill was too much — the user 2026-08-24),
   // and the ✕ is dim and SEPARATE, the composer context chip's read — never baked into the name
   assert.match(SRC, /fill: 'transparent',\n\s*stroke: gcol, 'stroke-width': 1, opacity: gdim/);
   // a SENTINEL view's chip dims to the corner line's own gray at the N-more opacity (the user
   // 2026-08-24: at #cccccc it read bright as a tag) — real tag chips keep their tag colors, full strength
-  assert.match(SRC, /const gcol = \(g && g\.color\) \|\| MODEL_FG;/);
-  assert.match(SRC, /const gdim = g \? 1 : 0\.7;/);
+  assert.match(SRC, /const gcol = \(firstTag && firstTag\.color\) \|\| MODEL_FG;/);
+  assert.match(SRC, /const gdim = firstTag \? 1 : 0\.7;/);
   assert.match(SRC, /y: y - 13, width: cw, height: 18, rx: 9,/, "taller chip");
   assert.match(SRC, /cx\.textContent = '✕';/);
   assert.match(SRC, /fill: MODEL_FG, opacity: 0\.75/);
   assert.match(SRC, /fill: gcol, 'font-weight': 650, opacity: gdim/);
-  assert.match(SRC, /click to remove the filter \(back to the default view\)/);
+  assert.match(SRC, /click to remove the filter \(back to All\)/);
   // no chip on All — the unfiltered default; the untagged view IS a filter now, so it wears one
-  assert.match(SRC, /const active = !!v\.active && v\.active !== 'all' && \(!!g \|\| v\.active === 'untagged'\);/);
+  assert.match(SRC, /const active = !lensAll\(lens\);/, "any non-All lens selection shows the chip (2026-08-25)");
   // …and the bottom strip grew so the taller chip has air
   assert.match(SRC, /bottom: 27 \}/);
 });
@@ -110,8 +113,8 @@ test("the corner line wears the LANE LABELS' typography — inherited family, me
   // no family override anywhere in the trigger drawing…
   const TRIG = SRC.slice(SRC.indexOf("_drawViewsTrigger(svg, axisY) {"), SRC.indexOf("_closeViewsMenu() {"));
   assert.doesNotMatch(TRIG, /font-family/, "corner texts inherit the host font exactly like lane labels");
-  // …at the lane-label scale: trigger and N-more at the lane 12px, the chip name at the lane-name 650
-  assert.match(TRIG, /const t = el\('text', \{ x: PADL, y, 'font-size': 12, fill: MODEL_FG \}\);/);
+  // …at the lane-label scale: the N-more at the lane 12px, the chip name at the lane-name 650
+  // (the "Filter ▾" trigger TEXT retired 2026-08-25 — the corner is two icon buttons now)
   assert.match(TRIG, /'font-size': 12, fill: gcol, 'font-weight': 650/);
   assert.match(SRC, /'font-weight': 650, 'font-size': 12, fill: F\(s\.color\)/, "the lane-name reference the line matches");
   // …and the width/ellipsis math measures in the SAME family the text renders in: _font resolves
@@ -130,7 +133,7 @@ test("a pointerdown-opened menu survives its OWN opening click (the user 2026-08
   // the browser fires a click after pointerup; unstopped it bubbles to the document's menu-closer
   // and shuts the menu the instant it opened — only a mid-press redraw (element swapped, no click
   // at all) let it survive, which read as "hold to open". Every pointerdown anchor swallows it.
-  assert.match(SRC, /this\._openViewsMenu\(t\); \}\);[\s\S]{0,400}t\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
+  assert.match(SRC, /open\(btn\); \}\);[\s\S]{0,400}btn\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
   assert.match(SRC, /this\._openLaneMenu\(s, ghit\);\n\s*\}\);[\s\S]{0,300}ghit\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
   assert.match(SRC, /grp\.addEventListener\('click', \(e\) => e\.stopPropagation\(\)\);/);
 });
@@ -179,11 +182,12 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   assert.match(SRC, /const ft = LANE_TOGGLES\.find\(\(t\) => t\.flag === 'hideFromFeed'\);/);
   assert.match(SRC, /\(this\._pendingFlags\[s\.id\] = this\._pendingFlags\[s\.id\] \|\| \{\}\)\.hideFromFeed = next;/,
     "the same optimistic sticky flags the lane gear uses");
-  // the menu items say so: All first (the default), (no tags) second, then New tag… / Sessions & tags…
-  assert.match(SRC, /item\('New tag…', \{ dim: true \}\)/);
-  assert.match(SRC, /item\('Sessions & tags…', \{ dim: true \}\)/);
-  assert.match(SRC, /item\('All', \{ current: !v\.active \|\| v\.active === 'all' \}\)/);
-  assert.match(SRC, /item\('\(no tags\)', \{ current: v\.active === 'untagged' \}\)/);
+  // the menu is multi-select toggles since 2026-08-25: All first (a plain pick), (no tags) a
+  // toggle second, tag toggles after; the one management entry is Configure tags… — creation
+  // moved into the dialog's bulk bar
+  assert.match(SRC, /item\('Configure tags…', \{ dim: true \}\)/);
+  assert.match(SRC, /item\('All', \{ current: lensAll\(lens\) \}\)/);
+  assert.match(SRC, /item\('\(no tags\)', \{ current: !lensAll\(lens\) && !!lens\.none \}\)/);
   assert.match(SRC, /item\('All',[\s\S]{0,300}item\('\(no tags\)',/, "All sits ABOVE (no tags) in the menu");
   assert.match(SRC, /item\('\(no tags\)',[\s\S]{0,600}for \(const g of viewTagUnion\(v\)\)/,
     "…and the tag rows come AFTER both built-ins — the DoD's menu order, pinned end to end (the rows are the NAME-KEYED union since the 2026-08-24 ruling)");
@@ -206,7 +210,7 @@ test("federation, NAME-KEYED (user ruling 2026-08-24): one name = one row/label/
   assert.equal(viewVisible({ active: "TESTHOST-A:g1", tags: [] }, "m2"), true, "gone → falls open");
   // the menu: one row per union tag, picked via the handiest id (local first)
   assert.match(SRC, /for \(const g of viewTagUnion\(v\)\)/);
-  assert.match(SRC, /pick\(g\.localId \|\| g\.ids\[0\]\)/);
+  assert.match(SRC, /apply\(lensToggle\(lens, \{ tag: g\.name \}\), false\)/);
   assert.doesNotMatch(SRC, /border:1px dashed/, "no dashed twin chips anywhere — one solid chip per name");
   // the gray-glyph fix (unchanged): on an exact miss the colour join retries by the bare sid tail
   assert.match(SRC, /s = data\.sessions\.find\(\(x\) => x\.id === bare \|\| String\(x\.id\)\.endsWith\(':' \+ bare\)\);/);
@@ -244,7 +248,7 @@ test("executed: the dialog's membership mutation, pure (viewToggleHidden retired
 
 test("the trigger measures its WHOLE string against the gutter, and the dialog's Escape hook dies on every close", () => {
   // the fit measures the whole line as LAID OUT: trigger + gap + padded chip + gap + tail
-  assert.match(SRC, /const width = \(n\) => this\.labelWidth\('Filter ▾'\)\n\s*\+ \(active \? GAP \+ PADH \* 2 \+ this\.labelWidth\(n\) \+ XGAP \+ this\.labelWidth\('✕'\) : 0\)\n\s*\+ \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
+  assert.match(SRC, /const width = \(n\) => ICONW \* 2\n\s*\+ \(active \? GAP \+ PADH \* 2 \+ this\.labelWidth\(n\) \+ XGAP \+ this\.labelWidth\('✕'\) : 0\)\n\s*\+ \(tailStr \? GAP \+ this\.labelWidth\(tailStr\) : 0\);/);
   assert.match(SRC, /const fits = \(n\) => width\(n\) <= this\.M\.left - PADL - 6;/);
   assert.match(SRC, /this\._viewsDialogKey = \{ doc: h\.doc, fn: onKey \};/);
   assert.match(SRC, /this\._viewsDialogKey\.doc\.removeEventListener\('keydown', this\._viewsDialogKey\.fn\);/);
@@ -373,5 +377,63 @@ test("the lane model menu exposes VERSIONS: submenu affordance, remembered defau
     "the ✓ marks the lane's current version");
   assert.match(SRC, /if \(this\._metaMenu\._sub\) this\._metaMenu\._sub\.remove\(\)/,
     "closing the menu drops an open submenu too");
+});
+
+test("executed: the timeline lens — toggles, All exclusivity, last-off→All, union visibility (the user 2026-08-25)", () => {
+  // parity with ui/webview/tag-lens.ts (the shared model, promoted from the feed's branch)
+  let l = { all: true };
+  l = lensToggle(l, { tag: "infra" });
+  assert.deepEqual(l, { tags: ["infra"] }, "picking a tag leaves All");
+  l = lensToggle(l, "none");
+  assert.deepEqual(l, { none: true, tags: ["infra"] }, "arbitrary combinations");
+  l = lensToggle(l, { tag: "infra" });
+  l = lensToggle(l, "none");
+  assert.deepEqual(l, { all: true }, "toggling the last selection off returns to All");
+  assert.deepEqual(lensToggle({ none: true, tags: ["a", "b"] }, "all"), { all: true }, "All is exclusive");
+  const unions = [
+    { name: "infra", members: ["s1", "alpha:r1"] },
+    { name: "workers", members: ["s2"] },
+  ];
+  assert.ok(lensVisible({ all: true }, unions, "anything"));
+  assert.ok(lensVisible({ tags: ["infra"] }, unions, "alpha:r1"), "union members incl. remote");
+  assert.ok(!lensVisible({ tags: ["infra"] }, unions, "s2"));
+  assert.ok(lensVisible({ none: true }, unions, "loose"), "none = in no tag home");
+  assert.ok(!lensVisible({ none: true }, unions, "s1"));
+  assert.ok(lensVisible({ none: true, tags: ["workers"] }, unions, "s2"), "union over buckets");
+  assert.equal(lensLabel({ none: true, tags: ["infra"] }), "infra + no tags");
+  assert.deepEqual(timelineLens({ actives: { timeline: { tags: ["x"] } } }), { tags: ["x"] });
+  assert.deepEqual(timelineLens({}), { all: true }, "a pre-lens blob with no view reads All");
+  // a legacy scalar SEEDS the lens client-side too — the kernel's migration rule, mirrored, so an
+  // un-upgraded blob keeps its exact old behavior instead of falling open
+  assert.deepEqual(timelineLens({ active: "untagged" }), { none: true });
+  assert.deepEqual(
+    timelineLens({ active: "g1", tags: [{ id: "g1", name: "pool", members: [] }] }),
+    { tags: ["pool"] });
+});
+
+test("the corner grew two icon buttons and the menus split (the user 2026-08-25)", () => {
+  // display options (sliders) LEFT of the tag filter (tag icon); both monochrome, tooltip-worded
+  assert.match(SRC, /iconBtn\(0, 'timeline display options'/, "sliders sit left");
+  assert.match(SRC, /iconBtn\(ICONW, 'filter these lanes by tag'/, "the tag button beside it");
+  assert.match(SRC, /_openDisplayMenu\(btn\)/);
+  assert.match(SRC, /capSep\('filters this timeline'\)/,
+    "the captioned divider says which surface the selection governs");
+  assert.match(SRC, /font-size:0\.82em;opacity:0\.6;font-style:italic/,
+    "caption at the sub-line scale — no new font sizes");
+  assert.match(SRC, /item\('Configure tags…', \{ dim: true \}\)/, "one management entry");
+  assert.ok(!/item\('New tag…', \{ dim: true \}\)/.test(SRC), "New tag left the menu…");
+  assert.match(SRC, /const newTag = bar\.createSpan\(\{ text: 'New tag…' \}\)/,
+    "…and lives in the dialog's bulk bar");
+  assert.match(SRC, /apply\(lensToggle\(lens, \{ tag: g\.name \}\), false\)/,
+    "tag rows TOGGLE and the menu stays open (repaint in place)");
+  assert.match(SRC, /apply\(\{ all: true \}, true\)/, "All is a plain pick and closes");
+  assert.match(SRC, /nv\.actives = Object\.assign\(\{\}, nv\.actives, \{ timeline: nl \}\)/,
+    "writes land on THIS surface's lens only");
+});
+
+test("cross-pane dismissal rides the storage echo (the user 2026-08-25)", () => {
+  assert.match(SRC, /e\.key === 'romp:menu-echo' && e\.newValue/, "every open menu listens");
+  assert.match(SRC, /localStorage\.setItem\('romp:menu-echo'/, "every pane writes the pointerdown echo");
+  assert.match(SRC, /addEventListener\('storage', this\._onMenuEcho\)/);
 });
 
