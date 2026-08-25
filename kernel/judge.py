@@ -8505,11 +8505,33 @@ def _subtree_done_candidates(store):
             continue
         if _sealed_above(nodes, nid) or _task_open_below(nodes, children, nid):
             continue
-        if not _filed_since(nodes, children, nid, _look_stamp(nd)):
+        if (not _filed_since(nodes, children, nid, _look_stamp(nd))
+                and not _deleg_unseen(nodes, children, nid, nd)):
             continue                                   # the closer already looked at this world
         out.append(nd)
     out.sort(key=lambda nd: nd.get("t", 0))
     return out
+
+
+def _deleg_unseen(nodes, children, nid, nd):
+    """A DONE handoff child whose completion filing no closer look has yet seen WITH the delegation
+    report in evidence (the user 2026-08-25, the re-asking umbrella): the closer used to omit a
+    delegated ask — its visible history was just the dispatch; the recipient's completion lived in
+    another session's store — and closerLookT then sealed it forever (nothing files in a finished
+    subtree again), leaving the ask open to feed the auto-nudge loop. delegLookT is the look that
+    HAD the report visible (_close_turn stamps it beside closerLookT now that the report rides the
+    menu), so every already-sealed specimen re-nominates exactly ONCE post-upgrade, and a future
+    handoff completion re-arms naturally by its own done filing. Event-keyed both ways; no clock."""
+    seen = int(nd.get("delegLookT") or 0)
+    for c in children.get(nid, []):
+        cd = nodes.get(c) or {}
+        if not (isinstance(cd.get("handoff"), dict) and cd.get("nodeComplete")):
+            continue
+        at = max((int(e.get("at") or 0) for e in (cd.get("log") or []) if e.get("kind") == "done"),
+                 default=0)
+        if at > seen:
+            return True
+    return False
 
 
 def _starved_candidates(store):
@@ -8616,6 +8638,37 @@ def _status_report_candidates(store, turn):
         if nd.get("umbrella") or _task_open_below(nodes, children, nid):
             continue
         out.append(nd)
+    # CITED-UMBRELLA OPEN DESCENDANTS (the user 2026-08-25, the re-asking umbrella): a nudge/
+    # follow-up names its goal and the reply accounts for THAT goal's work — and when the named
+    # goal is an UMBRELLA, the top itself is unrulable (a structural container, skipped above)
+    # while the open LEAF actually holding it at working rides NO channel: the turn menu needs
+    # placements (a nudge spliced into a busy session's running turn strips its dones, so nothing
+    # ever places), steps-finished needs all-children-done, starved needs an empty diary. Three
+    # "it's finished" replies filed nothing on the audited specimen. So a cited UMBRELLA's open
+    # descendants ride this same closer call, with the sibling channels' skips — handoff trackers
+    # stay run_propagate's (their ending event is the recipient's completion, not this reply),
+    # blocked stays the unblocker's, and an agentTask-open subtree stays the agent's own. A PLAIN
+    # cited goal keeps the 2026-07-26 shape exactly: the closer rules the goal itself, and its
+    # subs never ride (the widened-menu pin in test_judge StatusReportMenu).
+    seen_ids = {nd["id"] for nd in out}
+    cited = set()
+    for s in _segs(turn, store):
+        for tgt in _seg_followup_all(s) or []:
+            if tgt in nodes and (nodes[tgt] or {}).get("umbrella"):
+                cited.add(tgt)
+    for top in sorted(cited):
+        stack = list(children.get(top, []))
+        while stack:
+            cid = stack.pop()
+            stack.extend(children.get(cid, []))
+            cd = nodes.get(cid) or {}
+            if (cid in seen_ids or cd.get("nodeComplete") or cd.get("cleared") or cd.get("blocked")
+                    or cd.get("settledDone") or cd.get("umbrella")
+                    or isinstance(cd.get("handoff"), dict)
+                    or _task_open_below(nodes, children, cid)):
+                continue
+            seen_ids.add(cid)
+            out.append(cd)
     out.sort(key=lambda nd: nd.get("t", 0))
     return out
 
@@ -8637,6 +8690,48 @@ def _reply_reopened_ids(menu):
         if any(e.get("kind") == "reopen" and e.get("src") == "user" and e.get("msg")
                and not e.get("undo") for e in rows[k + 1:]):
             out.add(nd["id"])
+    return out
+
+
+def _deleg_report_lines(store, nid):
+    """The completion evidence of nid's DONE handoff children, one line each — the cross-session
+    report the steps-finished ruling was blind to (the user 2026-08-25): a delegated ask's own
+    history is just the dispatch; the recipient's resolution lives on ANOTHER session's tree. The
+    substance comes from the tracking node's enriched done-why (run_propagate carries the
+    recipient's doneWhy/summary across since this fix); a pre-fix bare why falls back to a
+    read-only fetch from the recipient's store (origin/links msgId join — the same pointer
+    run_propagate follows). Capped like every quoted why; cross-host peers skip the fetch (their
+    stores live on another kernel) and report the bare completion."""
+    nodes = store["nodes"]
+    out = []
+    for cid, cd in nodes.items():
+        if cd.get("parentId") != nid or not cd.get("nodeComplete"):
+            continue
+        h = cd.get("handoff")
+        if not isinstance(h, dict) or not h.get("peer"):
+            continue
+        peer = str(h.get("peerName") or h.get("peer") or "a peer session")
+        sub = str(cd.get("doneWhy") or "").strip()
+        if sub.startswith("completed by") and ": " in sub:
+            sub = sub.split(": ", 1)[1]                # the enriched form → keep just the substance
+        elif sub.startswith("completed by") or sub.startswith("reported back by"):
+            sub = ""                                   # the bare pre-fix form carries none
+        if not sub and ":" not in str(h.get("peer") or ""):
+            try:                                       # read-only recipient join (local peers only)
+                r_nodes = dict(load_goal_archive(h["peer"]).get("nodes") or {})
+                r_nodes.update(load_goals(h["peer"]).get("nodes") or {})
+                for rn in r_nodes.values():
+                    o = rn.get("origin")
+                    refs = [o] if isinstance(o, dict) else []
+                    refs += [l for l in (rn.get("links") or []) if isinstance(l, dict)]
+                    if any(r.get("msgId") == h.get("msgId") for r in refs):
+                        sub = str(rn.get("doneWhy") or "").strip() \
+                            or (str(rn.get("summary") or "").strip().splitlines() or [""])[0]
+                        break
+            except Exception:
+                sub = ""
+        out.append("was delegated (\u21aa %s) and the recipient completed it%s"
+                   % (cd.get("text") or peer, (": " + sub[:220]) if sub else "."))
     return out
 
 
@@ -8685,7 +8780,29 @@ def apply_close(store, menu, verdicts, t=None, touched=None, t_overrides=None):
         # state row — so t_overrides carries that anchor. Anchoring a history ruling to the turn made
         # it pre-shadowed by the very lift that nominated it (the fold orders by evidence time).
         ev = (t_overrides or {}).get(i, t)
+        if i in done and isinstance(nd.get("handoff"), dict) and nd["handoff"].get("peer"):
+            # a '↪ delegated' tracking node's ending event is the RECIPIENT's completion
+            # (run_propagate, or the cross-host reply sweep) — never this session's own prose
+            # (2026-08-25, the re-asking umbrella): the closer done'd a tracker at DISPATCH time
+            # ("queued to the peer"), propagate's real completion then no-op'd on the already-done
+            # node, and the parent ask's nomination sealed on dispatched-only evidence. The
+            # stand-down files nothing in either direction; the authoritative writer's own filing
+            # lands untouched, and the same reply's verdicts on other menu nodes still apply.
+            continue
         if i in done:
+            if isinstance(nd.get("handoff"), dict):
+                # A '↪ delegated' TRACKING node's deciding event is the RECIPIENT's completion —
+                # run_propagate's back-link for a local peer, the reply sweep for a cross-host one —
+                # never this session's own dispatch-time prose (the user 2026-08-25, the re-asking
+                # umbrella): the closer done'd a tracker "queued to the peer" at send time, which
+                # CONSUMED the slot — propagate's real completion later no-op'd on the already-done
+                # node, so the recipient's resolution never filed, the parent ask's steps-finished
+                # nomination sealed on dispatched-only evidence, and the card above ping-ponged
+                # nudge-block ↔ unblocker-unblock for 75 minutes. Stand down at the write moment;
+                # the authoritative writer's filing carries the report and re-arms the parent's
+                # nomination for free. (Same posture as the peer-kind awaiting gate below: a claim
+                # whose ending event belongs to another writer is not this closer's to file.)
+                continue
             if not record_verdict(store, nd, "closer", "done", ev, why=done[i] or None):
                 continue                              # the user's follow-up/move postdates this turn's evidence
             if ev is not None:                        # (the event materialized the flags + doneWhy)
@@ -8783,6 +8900,19 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
                       % ("s" if len(flagged) > 1 else "",
                          ", ".join("#%d" % i for i in flagged),
                          "each" if len(flagged) > 1 else "it"))
+    dlines = []
+    for i, nd in enumerate(menu, 1):
+        if nd["id"] in cand_ids:
+            for line in _deleg_report_lines(store, nd["id"]):
+                dlines.append("Goal #%d %s" % (i, line))
+    if dlines:
+        # the cross-session completion evidence the steps-finished ruling was blind to (2026-08-25):
+        # its own marked section, like the lift whys — recipient-written text never rides romp's
+        # instruction prose
+        menu_text += ("\n\nDelegation reports (a goal above was handed to another session; that "
+                      "session finished and this is its report — completion evidence for the "
+                      "steps-finished rule, unless the goal's own history shows unfinished scope "
+                      "beyond what was delegated):\n" + "\n".join(dlines))
     starved_ids = {c["id"] for c in starved}
     sflagged = [i for i, nd in enumerate(menu, 1) if nd["id"] in starved_ids]
     if sflagged:
@@ -8899,6 +9029,12 @@ def _close_turn(store, turn, samples=None, seg_by_id=None):
     for nd in menu:
         if nd["id"] in store["nodes"]:
             nd["closerLookT"] = _newest_filed(store["nodes"], kidmap, nd["id"])
+            if any(isinstance((store["nodes"].get(c) or {}).get("handoff"), dict)
+                   and (store["nodes"].get(c) or {}).get("nodeComplete")
+                   for c in kidmap.get(nd["id"], [])):
+                # this look SAW the delegation report (the menu carries it now) — seal the
+                # _deleg_unseen re-arm the same way closerLookT seals filings (2026-08-25)
+                nd["delegLookT"] = int(time.time())
     segs = _segs(turn, store)                          # seam-aware: post-split, the recap lives in the tail
     if segs:                                           # anchor each resolved (done/blocked) TURN goal to the recap
         # …but ONLY the turn's own menu (i <= n_touched). The riders behind it — steps-finished,
@@ -11192,10 +11328,20 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
                 a_node = a_store.get("nodes", {}).get(a_gid)
                 if not a_node or a_node.get("nodeComplete"):
                     continue                            # sender's tracking node gone or already done → idempotent
-                record_verdict(a_store, a_store["nodes"][a_gid], "courier", "done", now,
-                               why="completed by %s (delegated)" % (name or fsid[:8]))
-                _mark_node_done(a_store, a_gid, "completed by %s (delegated)" % (name or fsid[:8]), now,
-                                src="courier")
+                # Carry the RECIPIENT'S OWN RESOLUTION across (the user 2026-08-25, the re-asking
+                # umbrella): the bare "completed by <peer>" why gave the sender-side closer nothing
+                # to rule a delegated ask done WITH — the steps-finished nomination saw an ask whose
+                # only visible history was the dispatch, omitted, and the look-stamp sealed it while
+                # the auto-nudge re-asked a finished question seven times in 75 minutes. The
+                # recipient's doneWhy (else its summary head) IS the report-back's substance; capped
+                # like every quoted why.
+                why = "completed by %s (delegated)" % (name or fsid[:8])
+                sub = str(nd.get("doneWhy") or "").strip() \
+                    or (str(nd.get("summary") or "").strip().splitlines() or [""])[0]
+                if sub:
+                    why += ": " + sub[:220]
+                record_verdict(a_store, a_store["nodes"][a_gid], "courier", "done", now, why=why)
+                _mark_node_done(a_store, a_gid, why, now, src="courier")
                 rollup_status(a_store, False)           # sender just had work close → recompute its columns
                 save_goals(a_sid, a_store)
                 n += 1
