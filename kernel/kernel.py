@@ -12709,6 +12709,24 @@ def _handoff_peer_identities(nodes, hnodes):
 _HANDOFF_LABEL_RE = re.compile(r"^\s*↪\s*delegated to (.+?): (.*)$", re.S)
 
 
+def _title_shaped(text, cap=120):
+    """One TITLE-SHAPED line from arbitrary prose (the user 2026-08-25, the whole-summary-as-title
+    card): every leg of a card-title fallback chain must produce a TITLE — the first sentence of the
+    source, one line, clamped at the card-title length convention (the planter's own 120) with an
+    honest ellipsis — never a paragraph the body then repeats. Already-title-shaped strings pass
+    through BYTE-IDENTICAL (one line, one sentence, inside the cap → untouched), so shaping is a
+    no-op everywhere titles were already titles."""
+    t = text or ""
+    if "\n" in t:
+        t = " ".join(t.split())
+    m = re.search(r"[.!?](?=\s)", t[12:])            # a terminator with more prose after it ends the
+    if m:                                            #   title at sentence one (offset 12: a leading
+        t = t[:12 + m.start() + 1]                   #   "e.g." or an initial never ends a real title)
+    if len(t) > cap:
+        t = t[:cap - 1].rstrip() + "…"
+    return t
+
+
 def _parked_rows(nodes, children):
     """{nid: N} for every OPEN row that newer sibling work has LEAPFROGGED: nothing has happened in
     nid's own subtree — no delegation edge, no witnessed verdict row — while N (>= 1) YOUNGER siblings
@@ -12806,7 +12824,10 @@ def _handoff_card_fields(nodes, nid):
     if not work or work == "(work)":
         work = ((nd.get("why") or "").strip() or (nd.get("summary") or "").strip()
                 or txt.replace("↪ ", "", 1).strip() or txt)
-    return badge, work
+    # EVERY leg title-shapes (the user 2026-08-25): the why and summary legs are unbounded prose —
+    # the specimen card's bold title was the entire stitched three-paragraph summary, repeated
+    # properly in the Summary section below it. One shared shaper, no per-leg clamps.
+    return badge, _title_shaped(work)
 
 
 def _session_delegated_why(sid):
