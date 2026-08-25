@@ -5775,25 +5775,60 @@ function openPicker(pick = false, prompt?: string, allowNew = false) {
   requestSessionList("");   // the Host row resets to local on open, so the list starts local too
 }
 
-// ---- revive loader (the user 2026-07-05) ----
+// ---- revive loader (the user 2026-07-05; PANE-LOCAL 2026-08-25) ----
 // Reviving a dead session takes seconds (relaunch + resume), and the Revive click used to give ZERO
 // feedback. Per the repo's loading rule the FIRST thing up is the romp loader — spinning swirl +
 // wordmark + three pulsing dots, the same .rl-* treatment as the boot/pane loaders (their styles are
-// already on this page) — over the chat, with a "reviving <name>…" caption. EVENT-cleared: the
-// kernel's focus for that sid (revive succeeded) or reviveFailed (the loader morphs into the error
-// notice — fail loudly, never silently back to nothing). A 60s backstop can never trap the user.
+// already on this page) — with a "reviving <name>…" caption. EVENT-cleared: the kernel's focus for
+// that sid (revive succeeded) or reviveFailed. A 60s backstop can never trap the user.
+// PANE-LOCAL (the user 2026-08-25): the old overlay covered the WHOLE window and blocked everything
+// while the revive ran. Now the revive gesture mints/foregrounds the session's TAB immediately and
+// the loader covers only THAT session's thread area (#content's box, measured — the tab strip and
+// composer stay live), shown only while the reviving session is the active one: switch away and every
+// other tab is fully interactive, switch back and the loader (or the revived thread) is there.
+// placeReviveLoader() re-runs from showActive (every switch/push) + a ResizeObserver on #content.
 let revivePending: string | null = null;
 let reviveBackstop: number | undefined;
+let reviveRo: ResizeObserver | null = null;
+// sid → the kernel's named revive failure: shown INSIDE that session's pane (the empty-transcript
+// placeholder), plus the dismissible warn-toast family — never a window-blocking overlay.
+const failedRevives = new Map<string, string>();
 
 function clearReviveLoader() {
   revivePending = null;
   if (reviveBackstop !== undefined) { clearTimeout(reviveBackstop); reviveBackstop = undefined; }
+  reviveRo?.disconnect(); reviveRo = null;
   document.getElementById("revive-loader")?.remove();
+}
+
+// Session-local visibility + geometry: the loader shows only while the reviving session is ACTIVE,
+// pinned over the thread area's current box. Runs on every showActive (tab switches, push re-renders)
+// and on #content resizes, so the tab bar wrapping or the ledger appearing never leaves it adrift.
+function placeReviveLoader() {
+  const o = document.getElementById("revive-loader");
+  if (!o) return;
+  const c = document.getElementById("content");
+  if (!c || activeId !== revivePending) { o.style.display = "none"; return; }
+  const r = c.getBoundingClientRect();
+  o.style.display = "flex";
+  o.style.top = r.top + "px"; o.style.left = r.left + "px";
+  o.style.width = r.width + "px"; o.style.height = r.height + "px";
 }
 
 function showReviveLoader(id: string, name: string) {
   clearReviveLoader();
+  failedRevives.delete(id);
   revivePending = id;
+  // The TAB mints immediately (the openProvisional idiom): the session usually already has its closed
+  // tab; a revive reaching a session the chat doesn't hold gets a stub — "opening" is the designed
+  // vocabulary for a tab whose real payload is on its way, and the kernel's first payload for the
+  // revived session continues it seamlessly.
+  if (!sessions.has(id)) {
+    sessions.set(id, { id, name, color: null, events: [], status: { state: "opening", sinceEpoch: Date.now() } });
+    order.push(id);
+  }
+  renderTabs();
+  setActive(id);
   const o = el("div", ""); o.id = "revive-loader";
   const inner = el("div", "rl-in");
   const word = el("div", "rl-word");
@@ -5810,25 +5845,27 @@ function showReviveLoader(id: string, name: string) {
   inner.append(word, dots, cap);
   o.appendChild(inner);
   document.body.appendChild(o);
+  placeReviveLoader();
+  const c = document.getElementById("content");
+  if (c && typeof ResizeObserver === "function") {
+    reviveRo = new ResizeObserver(placeReviveLoader);
+    reviveRo.observe(c);
+  }
   reviveBackstop = window.setTimeout(
-    () => showReviveError(name, "still waiting — the resume may be stuck; check the kernel log"), 60000);
+    () => reviveFailedLocal(id, name, "still waiting — the resume may be stuck; check the kernel log"), 60000);
 }
 
-function showReviveError(name: string, text: string) {
-  // Morph the loader into the failure notice (fail loudly); build the overlay if it's already gone.
-  revivePending = null;
-  if (reviveBackstop !== undefined) { clearTimeout(reviveBackstop); reviveBackstop = undefined; }
-  let o = document.getElementById("revive-loader");
-  if (!o) { o = el("div", ""); o.id = "revive-loader"; document.body.appendChild(o); }
-  o.replaceChildren();
-  const box = el("div", "revive-err");
-  const msg = el("div", "revive-err-text");
-  msg.textContent = `Couldn’t revive “${name}”: ${text}`;
-  const btn = el("button", "revive-err-dismiss");
-  btn.textContent = "Dismiss";
-  btn.addEventListener("click", () => clearReviveLoader());
-  box.append(msg, btn);
-  o.appendChild(box);
+// Failure lands in the SESSION'S OWN PANE (fail loudly, never a window-blocking overlay): the named
+// error fills that session's empty-transcript placeholder, and the dismissible warn-toast carries it
+// to a user who already switched away. A user gesture (tab ✕, another revive) always beats it.
+function reviveFailedLocal(id: string, name: string, text: string) {
+  clearReviveLoader();
+  const msg = `Couldn’t revive “${name}”: ${text}`;
+  failedRevives.set(id, msg);
+  const v = views.get(id);
+  if (v) { v.rendered = 0; v.stale = true; }   // the placeholder re-renders with the failure text
+  if (activeId === id) { syncView(id); showActive(); }
+  warnToast(msg);
 }
 
 // ---- in-webview confirm dialog (replaces the host's native modals) ----
@@ -7373,7 +7410,10 @@ function syncViewInner(id: string, atBottom?: boolean): View {
       // any wait), not the placeholder that tells you to send something. The composer below it is live
       // either way: anything typed here is held and flushed when the session lands. A FAILED create's
       // tab says what happened instead (the user 2026-08-08) — the loader would be a lie.
-      if (isProvisionalId(id) && failedProvisionals.has(id)) {
+      if (failedRevives.has(id)) {
+        ph.textContent = failedRevives.get(id) || "";
+        ph.classList.add("tx-revive-failed");
+      } else if (isProvisionalId(id) && failedProvisionals.has(id)) {
         ph.textContent = "This session couldn't start. What you typed is kept in the box below; "
           + "✕ on the tab discards both.";
       } else if (isProvisionalId(id)) {
@@ -7777,6 +7817,7 @@ function runPrebuild(deadline: IdleDeadline): void {
 function showActive() {
   const content = document.getElementById("content");
   if (!content) return;
+  placeReviveLoader();   // session-local: shows over THIS pane only while the reviving tab is active
   notifyActive();
   renderLedger();  // swap in the active session's digest box (or hide if none)
   renderLiveAsk(); // swap in the active session's pending picker (or hide if none)
@@ -10846,8 +10887,8 @@ window.addEventListener("message", (e: MessageEvent) => {
       });
   }
   else if (m.type === "reviveFailed" && m.id) {
-    // the kernel's loud revive failure → the loader morphs into the reason (never a silent no-op)
-    showReviveError(String(m.name || m.id), String(m.text || "unknown error"));
+    // the kernel's loud revive failure → named, in that session's own pane + the dismissible toast
+    reviveFailedLocal(String(m.id), String(m.name || m.id), String(m.text || "unknown error"));
   }
   else if (m.type === "focusComposer") { const ta = document.getElementById("composer-input") as HTMLTextAreaElement | null; ta?.focus(); }
   else if (m.type === "glowTurns") applyGlow(Array.isArray(m.groups) ? m.groups : [], Array.isArray(m.mids) ? m.mids : []);

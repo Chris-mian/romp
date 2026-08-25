@@ -2418,22 +2418,17 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 @keyframes fl-prov-spin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .fl-prov-swirl { animation: none; } }
 
-/* ── revive loader (the user 2026-07-05): the romp loader (swirl + wordmark + dots, .rl-* styles from
-   the page's boot-splash block) over the chat while a dead session revives — the Revive click used to
-   give no feedback at all. Backdrop dims the chat; cleared event-based (focus / reviveFailed), 60s
-   backstop. The error morph keeps the same overlay so failure is loud, with a Dismiss escape hatch. */
-#revive-loader { position: fixed; inset: 0; z-index: 65; display: flex; align-items: center;
+/* ── revive loader (the user 2026-07-05; PANE-LOCAL 2026-08-25): the romp loader (swirl + wordmark +
+   dots, .rl-* styles from the page's boot-splash block) while a dead session revives. It covers ONLY
+   the reviving session's thread area — geometry set inline by placeReviveLoader over #content's box,
+   shown only while that session is the active tab — so the tab strip and composer stay live and every
+   other tab is fully interactive (the old inset-0 overlay blocked the whole window). Cleared
+   event-based (focus / reviveFailed), 60s backstop. Failure is pane-local: the named error fills the
+   session's own placeholder (.tx-revive-failed) plus the dismissible warn-toast — no error overlay. */
+#revive-loader { position: fixed; z-index: 65; display: flex; align-items: center;
   justify-content: center; background: rgba(20, 20, 20, 0.82); }
 #revive-loader .revive-cap { font-size: 0.86em; color: var(--vscode-descriptionForeground, #999); }
-#revive-loader .revive-err { display: flex; flex-direction: column; align-items: center; gap: 12px;
-  max-width: 420px; padding: 18px 22px; border-radius: 10px;
-  background: var(--vscode-editorWidget-background, #252526);
-  border: 1px solid var(--vscode-editorHoverWidget-border, #454545); }
-#revive-loader .revive-err-text { font-size: 0.86em; color: var(--vscode-errorForeground, #f48771);
-  text-align: center; line-height: 1.5; overflow-wrap: anywhere; }
-#revive-loader .revive-err-dismiss { font: inherit; font-size: 0.86em; cursor: pointer;
-  padding: 4px 14px; border-radius: 6px; background: var(--vscode-input-background, #3c3c3c);
-  color: var(--vscode-foreground, #ccc); border: 1px solid var(--vscode-widget-border, #303031); }
+.tx-empty.tx-revive-failed { color: var(--vscode-errorForeground, #f48771); }
 
 /* ── path previews in the chat (the user 2026-07-08): a mentioned image/PDF renders under the message
    (render.ts linkifyFileUris → preview.ts previewFull). Chat-only since the feed's artifact strips
