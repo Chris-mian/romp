@@ -470,23 +470,27 @@ let sessionOrder: string[] = [];
 let sessionsMeta: { sid: string; name: string; color: { bg: string; fg: string } | null }[] = [];
 // Attached hosts whose CARD payload hasn't merged yet (the user 2026-08-25: sessions land via the
 // faster channels, cards trail with no cue) — the federation merge names them (pendingHosts), the
-// board hints per host, and the hint retires on the exact event of that host's first contribution
-// (an empty one included). The backstop set holds hosts whose hint gave up after the standing
-// can't-trap window — a stale tunnels row must never pin a loader forever.
+// board hints per host, and the hint retires ONLY on the real events: that host's first contribution
+// (an empty one included) or its detach. The 45s mark ESCALATES the copy ("still waiting…"), never
+// hides — the first cut's backstop RETIRED the hint while the host genuinely still pended (the user
+// 2026-08-25, round two: the dots vanished, the cards still hadn't come; the signal knew, the
+// backstop overrode it — a backstop must never make the board lie about a true wait). A DEAD link
+// (pendingDead, from the merge's socket truth) names itself instead of waiting open-endedly.
 let pendingHosts: string[] = [];
-const hostloadBackstops = new Map<string, number>();
-const hostloadGaveUp = new Set<string>();
+let pendingDead: string[] = [];
+const hostloadTimers = new Map<string, number>();
+const hostloadLong = new Set<string>();
 function syncHostloadBackstops(): void {
   for (const h of pendingHosts) {
-    if (!hostloadBackstops.has(h)) {
-      hostloadBackstops.set(h, window.setTimeout(() => { hostloadGaveUp.add(h); render(); }, 45000));
+    if (!hostloadTimers.has(h)) {
+      hostloadTimers.set(h, window.setTimeout(() => { hostloadLong.add(h); render(); }, 45000));
     }
   }
-  for (const [h, t] of Array.from(hostloadBackstops)) {
-    if (!pendingHosts.includes(h)) {   // the payload landed (or the host detached) — the retire EVENT
+  for (const [h, t] of Array.from(hostloadTimers)) {
+    if (!pendingHosts.includes(h)) {   // the payload landed (or the host detached) — the ONLY removals
       window.clearTimeout(t);
-      hostloadBackstops.delete(h);
-      hostloadGaveUp.delete(h);
+      hostloadTimers.delete(h);
+      hostloadLong.delete(h);
     }
   }
 }
@@ -4095,20 +4099,22 @@ function viewFiltered(list: AskItem[]): AskItem[] {
 // non-interactive, so a per-render rebuild is click-safe by construction.
 function ensureHostLoad(list: HTMLElement): void {
   let strip = document.getElementById("feed-hostload");
-  const show = pendingHosts.filter((h) => !hostloadGaveUp.has(h));
-  if (!show.length) { strip?.remove(); return; }
+  if (!pendingHosts.length) { strip?.remove(); return; }   // the real events emptied the list — the only way off
   if (!strip) {
     strip = el("div", "");
     strip.id = "feed-hostload";
   }
   list.appendChild(strip);   // last child in either board state (cards or the empty wordmark)
-  strip.replaceChildren(...show.map((h) => {
+  strip.replaceChildren(...pendingHosts.map((h) => {
     const line = el("div", "hostload-line");
+    const swirl = el("span", "fask-awaiting-swirl");   // the shared reverse-spin glyph, LEFT of the text
     const txt = el("span", "");
-    txt.textContent = "loading cards from " + h + "\u2026";
-    const dots = el("span", "hostload-dots");
-    dots.append(el("i", ""), el("i", ""), el("i", ""));
-    line.append(txt, dots);
+    txt.textContent = pendingDead.includes(h)
+      ? "can\u2019t reach " + h + " \u2014 its cards return when it reconnects"
+      : hostloadLong.has(h)
+        ? "still waiting on " + h + "\u2026"
+        : "loading cards from " + h + "\u2026";
+    line.append(swirl, txt);
     return line;
   }));
 }
@@ -4757,6 +4763,7 @@ function applyFeedPayload(m: any): void {
   bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
   if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
   pendingHosts = Array.isArray(m.pendingHosts) ? m.pendingHosts.filter((h: any) => typeof h === "string") : [];
+  pendingDead = Array.isArray(m.pendingDead) ? m.pendingDead.filter((h: any) => typeof h === "string") : [];
   syncHostloadBackstops();
   if (Array.isArray(m.sessions)) {
     sessionsMeta = m.sessions.filter((s: any) => s && typeof s.sid === "string" && typeof s.name === "string");
