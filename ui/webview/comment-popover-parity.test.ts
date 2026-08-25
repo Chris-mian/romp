@@ -109,3 +109,14 @@ test("the model meta-menu exposes VERSIONS: submenu, remembered default, keyboar
   assert.match(CSS, /\.meta-caret \{ position: absolute; right: 22px/, "caret sits left of the ✓ slot");
 });
 
+
+test("the badges' COLOR is the chat's too: the rank tints ride the frame (the 2026-08-25 color rider)", () => {
+  // the user's sighting was two layers: a stale pre-parity window, AND a real gap underneath — the
+  // chat's model/effort labels are tinted by server-computed rank colors (st.modelColor/effortColor,
+  // metaColor), and the comments frame never carried them, so the popover's stayed plain gray.
+  assert.match(KERNEL, /"modelColor": _model_color\(\(reg\.get\("liveModel"\) or reg\.get\("model"\) or ""\) if reg else "",\s*\n\s*cm\.stops_for\(_colormap\(\)\)\),/);
+  assert.match(KERNEL, /"effortColor": _effort_color\(\(reg\.get\("effort"\) or ""\) if reg else "",\s*\n\s*cm\.stops_for\(_colormap\(\)\)\),/);
+  assert.match(RENDER, /modelColor: th\.modelColor, effortColor: th\.effortColor \} as Status;/);
+  // the equality bar (asserted headless over the built bundle, per the follow-up): computed
+  // font-family/size/weight AND color/opacity equal chat↔popover for chip, timer, and all badges
+});

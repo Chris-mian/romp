@@ -97,7 +97,7 @@ test("the kind guard accepts a peer's postal card as a valid PROMPT target (reco
 test("honest-fail fires whenever the deep-link can't resolve by id (the turn is genuinely gone)", () => {
   // now gated on !anchorPendingOlder so it doesn't fire while we're fetching older history for the anchor —
   // and on !att.keep, since a scroll-back position restore is nobody's navigation (chat-older-restore.test.ts)
-  assert.match(RENDER, /if \(!scrolled && !anchorPendingOlder && !att\.keep\) \{\s*\n\s*landToast\("couldn't locate this in the transcript"\)/);
+  assert.match(RENDER, /if \(!scrolled && !anchorPendingOlder && !att\.keep && !\(seek && att\.anchor === seek\.uuid\)\) \{[^\n]*\n\s*landToast\("couldn't locate this in the transcript"\)/);   // a live SEEK retries instead; its backstop owns the failure (2026-08-25)
   // 2026-07-28: the same failure ALSO files an error-center entry — a transient toast left nothing the
   // user could point at once it faded (the full bridge is pinned in chat-delta-resync.test.ts).
   assert.match(RENDER, /notifyShell\("locate",/);

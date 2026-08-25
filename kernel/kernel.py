@@ -6483,6 +6483,13 @@ def _comments_frame(sid, tmux=None):
                         "effort": (reg.get("effort") or "") if reg else "",
                         "settledPushes": quiet, "sinceEpoch": since_ms,
                         "mode": str(meta.get("mode") or ""), "fast": str(meta.get("fast") or ""),
+                        # the same rank tints the chat statusline's badges wear (the user 2026-08-25,
+                        # color rider: the popover's model/effort rendered plain gray — metaColor
+                        # reads these and the frame never carried them)
+                        "modelColor": _model_color((reg.get("liveModel") or reg.get("model") or "") if reg else "",
+                                                   cm.stops_for(_colormap())),
+                        "effortColor": _effort_color((reg.get("effort") or "") if reg else "",
+                                                     cm.stops_for(_colormap())),
                         "msgs": msgs, "events": events})
     return {"type": "comments", "id": sid, "threads": threads}
 
