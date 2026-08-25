@@ -468,6 +468,28 @@ let sessionOrder: string[] = [];
 // menu lists exactly the tabs (the user 2026-08-08) — a session with no cards still appears, and
 // filtering to it shows an empty board. Federation prefixes sid+name per host and concatenates.
 let sessionsMeta: { sid: string; name: string; color: { bg: string; fg: string } | null }[] = [];
+// Attached hosts whose CARD payload hasn't merged yet (the user 2026-08-25: sessions land via the
+// faster channels, cards trail with no cue) — the federation merge names them (pendingHosts), the
+// board hints per host, and the hint retires on the exact event of that host's first contribution
+// (an empty one included). The backstop set holds hosts whose hint gave up after the standing
+// can't-trap window — a stale tunnels row must never pin a loader forever.
+let pendingHosts: string[] = [];
+const hostloadBackstops = new Map<string, number>();
+const hostloadGaveUp = new Set<string>();
+function syncHostloadBackstops(): void {
+  for (const h of pendingHosts) {
+    if (!hostloadBackstops.has(h)) {
+      hostloadBackstops.set(h, window.setTimeout(() => { hostloadGaveUp.add(h); render(); }, 45000));
+    }
+  }
+  for (const [h, t] of Array.from(hostloadBackstops)) {
+    if (!pendingHosts.includes(h)) {   // the payload landed (or the host detached) — the retire EVENT
+      window.clearTimeout(t);
+      hostloadBackstops.delete(h);
+      hostloadGaveUp.delete(h);
+    }
+  }
+}
 // The one session the board is filtered to, or null — the DEFAULT, nothing selected, everything shows.
 // sessionStorage, deliberately: it survives this tab's reloads (webviews reload on updates) but a fresh
 // window always starts unfiltered — a filter that persisted for days would read as silently lost cards.
@@ -4066,6 +4088,31 @@ function viewFiltered(list: AskItem[]): AskItem[] {
   return shown;
 }
 
+// The per-host loading strip (the user 2026-08-25): while an attached host's cards are pending,
+// one quiet line per host — the romp loader family scoped to a strip, never a board takeover; the
+// cards already present stay fully live. Retires per host on the exact event of its first merged
+// contribution (pendingHosts, federation.ts) or on the standing can't-trap backstop; the lines are
+// non-interactive, so a per-render rebuild is click-safe by construction.
+function ensureHostLoad(list: HTMLElement): void {
+  let strip = document.getElementById("feed-hostload");
+  const show = pendingHosts.filter((h) => !hostloadGaveUp.has(h));
+  if (!show.length) { strip?.remove(); return; }
+  if (!strip) {
+    strip = el("div", "");
+    strip.id = "feed-hostload";
+  }
+  list.appendChild(strip);   // last child in either board state (cards or the empty wordmark)
+  strip.replaceChildren(...show.map((h) => {
+    const line = el("div", "hostload-line");
+    const txt = el("span", "");
+    txt.textContent = "loading cards from " + h + "\u2026";
+    const dots = el("span", "hostload-dots");
+    dots.append(el("i", ""), el("i", ""), el("i", ""));
+    line.append(txt, dots);
+    return line;
+  }));
+}
+
 function render() {
   const list = document.getElementById("feed-list")!;
   pruneAgeTip();   // drop the tip only if the render tore its hovered stamp out (see pruneAgeTip)
@@ -4098,6 +4145,7 @@ function render() {
       e.setAttribute("role", "img"); e.setAttribute("aria-label", "All tasks complete");
       list.appendChild(e);
     }
+    ensureHostLoad(list);   // an attached host's cards may be the ONLY thing coming — say so here too
     return;
   }
 
@@ -4213,6 +4261,7 @@ function render() {
   }
   for (const tid of Array.from(groupEls.keys())) if (!desired.has("g:" + tid) && undismissed(groupEls.get(tid))) { groupEls.get(tid)?.remove(); groupEls.delete(tid); }
 
+  ensureHostLoad(list);
   list.scrollTop = prevScroll;
   // Stale-freeze heal (hover-freeze): a LOCAL render can detach or re-key the hovered element with
   // no mouseleave — a removed element never fires leave events (typing in search filters the card
@@ -4707,6 +4756,8 @@ function applyFeedPayload(m: any): void {
   unknownSet = new Set(Array.isArray(m.stateUnknown) ? m.stateUnknown : []);   // listed-but-unreadable → gray ring, never a blank
   bgServicesMap = m.bgServices && typeof m.bgServices === "object" ? m.bgServices : {};   // session name -> judge-classified service descs → the session-header chip (2026-07-24)
   if (Array.isArray(m.order)) sessionOrder = m.order.filter((x: any) => typeof x === "string");   // grouped-mode session rank (tab/lane order)
+  pendingHosts = Array.isArray(m.pendingHosts) ? m.pendingHosts.filter((h: any) => typeof h === "string") : [];
+  syncHostloadBackstops();
   if (Array.isArray(m.sessions)) {
     sessionsMeta = m.sessions.filter((s: any) => s && typeof s.sid === "string" && typeof s.name === "string");
     // a filter aimed at a session the tab strip no longer shows is moot — clear it (the deciding

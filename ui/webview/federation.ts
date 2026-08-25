@@ -372,6 +372,13 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   if (syncs.length) merged.syncNotices = syncs;
   else delete merged.syncNotices;
   merged.buildIds = buildIds;
+  // Hosts ATTACHED but yet to contribute a feed payload (the user 2026-08-25: after attaching, the
+  // sessions land via the faster tabOrder/timeline channels while the cards trail with no cue) —
+  // the sessions-shown/cards-pending window, named per host so the board can say cards are coming.
+  // Presence in perHost is the event: an EMPTY contribution is a valid arrival (the host had nothing
+  // to send) and retires the hint; a detach deletes the entry (dropHost), so a reattach re-pends and
+  // the hint re-arms identically — no timers anywhere in this signal. The local kernel never pends.
+  merged.pendingHosts = hostSeq.filter((h) => h !== LOCAL && !(h in perHost));
   return merged;
 }
 
