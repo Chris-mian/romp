@@ -6655,6 +6655,66 @@ function cmtStateChip(th: CommentThread): HTMLElement {
   return wrap;
 }
 
+/** Resize from ANY edge or corner, macOS-style (the user 2026-08-25: "only from the little thing
+ *  at the bottom right — I should be able to grab any edge and pull"). An 8px band on each side is
+ *  a live handle with the platform cursor (ew/ns/nwse/nesw); each pull moves its own edge with the
+ *  opposite edge anchored, clamped to the CSS min-size. The bottom-right corner is deliberately
+ *  left to the native resize grip (it keeps working exactly as before). Pointer capture keeps fast
+ *  pulls on the edge; a north/west pull writes the new position through to commentPopPos, the same
+ *  persistence the drag has. Installed once per popover element (the element survives in-place
+ *  refreshes — the click-safety discipline). */
+function wireEdgeResize(pop: HTMLElement): void {
+  const EDGE = 8;
+  const MIN_W = 300, MIN_H = 120;   // the .cmt-pop CSS mins, restated for the math
+  const zoneAt = (ev: PointerEvent): string => {
+    const r = pop.getBoundingClientRect();
+    if (ev.clientX > r.right - 18 && ev.clientY > r.bottom - 18) return "";   // the native grip's corner
+    const n = ev.clientY - r.top < EDGE, so = r.bottom - ev.clientY < EDGE;
+    const w = ev.clientX - r.left < EDGE, e = r.right - ev.clientX < EDGE;
+    return (n ? "n" : so ? "s" : "") + (w ? "w" : e ? "e" : "");
+  };
+  const CUR: Record<string, string> = { n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+                                        ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" };
+  pop.addEventListener("pointermove", (ev: PointerEvent) => {
+    if (ev.buttons) return;                          // mid-press: the active gesture owns the cursor
+    pop.style.cursor = CUR[zoneAt(ev)] || "";
+  });
+  pop.addEventListener("pointerdown", (ev: PointerEvent) => {
+    const zone = zoneAt(ev);
+    if (!zone) return;
+    ev.preventDefault();
+    ev.stopPropagation();                            // the whole-box drag must not also engage
+    const r0 = pop.getBoundingClientRect();
+    const x0 = ev.clientX, y0 = ev.clientY;
+    pop.setPointerCapture(ev.pointerId);
+    const move = (mv: PointerEvent) => {
+      const dx = mv.clientX - x0, dy = mv.clientY - y0;
+      let left = r0.left, top = r0.top, wpx = r0.width, hpx = r0.height;
+      if (zone.includes("e")) wpx = r0.width + dx;
+      if (zone.includes("s")) hpx = r0.height + dy;
+      if (zone.includes("w")) { wpx = r0.width - dx; left = r0.left + dx; }
+      if (zone.includes("n")) { hpx = r0.height - dy; top = r0.top + dy; }
+      if (wpx < MIN_W) { if (zone.includes("w")) left -= MIN_W - wpx; wpx = MIN_W; }
+      if (hpx < MIN_H) { if (zone.includes("n")) top -= MIN_H - hpx; hpx = MIN_H; }
+      left = Math.max(4, left); top = Math.max(4, top);
+      pop.style.width = wpx + "px";
+      pop.style.height = hpx + "px";
+      pop.style.left = left + "px";
+      pop.style.top = top + "px";
+      commentPopPos = { x: left, y: top };           // the drag's own persistence, kept in step
+    };
+    const up = () => {
+      pop.removeEventListener("pointermove", move);
+      pop.removeEventListener("pointerup", up);
+      pop.removeEventListener("pointercancel", up);
+      pop.classList.add("sized");                    // a real user resize unlocks the quote clamp, like the grip
+    };
+    pop.addEventListener("pointermove", move);
+    pop.addEventListener("pointerup", up);
+    pop.addEventListener("pointercancel", up);
+  });
+}
+
 function commentPopTitle(create: boolean, th: CommentThread | null | undefined): string {
   const nm = th?.name || "Thread";
   return create ? "New comment:"
@@ -6808,6 +6868,7 @@ function renderCommentPopover(): void {
     pop.addEventListener("pointercancel", up);
   });
   pop.appendChild(head);
+  wireEdgeResize(pop);
   if (create || !(th!.events || []).length) {
     // the chat-parity view opens ON the quoting message, so a second quote block would say it twice
     const quote = el("div", "cmt-quote");

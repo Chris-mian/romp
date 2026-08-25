@@ -150,3 +150,27 @@ test("the thread popover opens 70% wide right-aligned, 60% tall — and NEVER gr
   // …and the CSS no longer hard-sizes the box (the inline open geometry owns it)
   assert.doesNotMatch(CSS, /\.cmt-pop \{[^}]*width: 440px/s);
 });
+
+test("the popover resizes from ANY edge or corner, macOS-style; the old grip keeps working", () => {
+  // the user 2026-08-25: an 8px band per side is a live handle with the platform cursor, each pull
+  // moving its own edge with the opposite one anchored, clamped to the CSS mins; the native
+  // bottom-right grip's corner is deliberately deferred to (it keeps working exactly as before)
+  const fn = RENDER.split("function wireEdgeResize(")[1].split("\nfunction ")[0];
+  assert.ok(fn.includes('if (ev.clientX > r.right - 18 && ev.clientY > r.bottom - 18) return "";'), "the native grip corner defers");
+  assert.ok(fn.includes('ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize"'), "corner cursors");
+  assert.ok(fn.includes('n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize"'), "edge cursors");
+  assert.ok(fn.includes('if (zone.includes("w")) { wpx = r0.width - dx; left = r0.left + dx; }'), "west pulls west, east anchored");
+  assert.ok(fn.includes('if (zone.includes("n")) { hpx = r0.height - dy; top = r0.top + dy; }'), "north pulls north, south anchored");
+  assert.ok(fn.includes("const MIN_W = 300, MIN_H = 120;"), "min bounds match the CSS");
+  assert.ok(fn.includes("pop.setPointerCapture(ev.pointerId);"), "capture keeps fast pulls on the edge");
+  assert.ok(fn.includes("commentPopPos = { x: left, y: top };"), "a north/west pull persists position like the drag");
+  assert.match(RENDER, /wireEdgeResize\(pop\);/);
+  const CSSs = CSS;
+  assert.match(CSSs, /resize: both/, "the native grip stays");
+});
+
+test("the create name input wears no underline at rest (the user 2026-08-25)", () => {
+  assert.match(CSS, /\.cmt-name \{[^}]*border-bottom: 1px solid transparent;/s);
+  assert.doesNotMatch(CSS, /\.cmt-name \{[^}]*dashed/s);
+  assert.match(CSS, /\.cmt-name:focus \{ outline: none; border-bottom-color: var\(--accent\); \}/, "focus still shows the editing affordance");
+});

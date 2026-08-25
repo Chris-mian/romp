@@ -2829,7 +2829,9 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    failed the session-name charset, matching the fork modal. */
 .cmt-name {
   flex: 1; min-width: 60px; margin: 0 6px; padding: 0 2px;
-  border: 0; border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  /* no underline at rest (the user 2026-08-25: drop the dotted line under the name; everything else
+     stays) — the transparent bottom border keeps the box's height so focus doesn't shift layout */
+  border: 0; border-bottom: 1px solid transparent;
   border-radius: 0; background: transparent;
   color: var(--accent); font: inherit; font-weight: 600;
 }
