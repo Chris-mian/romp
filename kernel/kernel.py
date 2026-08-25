@@ -3235,14 +3235,20 @@ def _interrupt_block_tick(now, tmux):
         _push_all()
 
 
-def _log_nudge_event(sid, gid, t, count):
-    """Append one auto-nudge fire to STATE/nudge-events.jsonl — {sid, gid, t, count} — for the timeline's
-    DEBUG judging band to render a per-nudge ⚡ marker and escalate at high counts (the view is business's)."""
+def _log_nudge_event(sid, gid, t, count, verdict="fired", ev_t=None):
+    """Append one auto-nudge event to STATE/nudge-events.jsonl — {sid, gid, t, count, verdict, evT} —
+    for the timeline's DEBUG judging band (per-nudge ⚡ marker) AND the redundancy accounting (the
+    user 2026-08-25): every decision the gate takes is a row — fired / skipped-redundant /
+    held-fresh-re-judged / force-fired-at-cap — carrying the evidence snapshot's timestamp, so
+    redundant fires are countable from the log alone (this decides later whether the freshness
+    guard must extend to the cap path). Additive fields; older readers key on sid/gid/t/count."""
     try:
         p = jd.STATE / "nudge-events.jsonl"
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a") as f:
-            f.write(json.dumps({"sid": sid, "gid": gid, "t": int(t), "count": count}) + "\n")
+            f.write(json.dumps({"sid": sid, "gid": gid, "t": int(t), "count": count,
+                                "verdict": verdict,
+                                **({"evT": int(ev_t)} if ev_t else {})}) + "\n")
     except Exception:
         pass
 
@@ -4698,9 +4704,18 @@ def _deferral_sweep_tick(now):
 
 
 def _last_assistant_text(path, cap=4000):
-    """The newest assistant message's text from the transcript TAIL — what the redundancy gate shows
-    the judge as "the session's most recent report". Tail-read only (the newest turn is always
-    recent); '' on any trouble, which fires the nudge as before."""
+    """The newest assistant message's text from the transcript TAIL — '' on any trouble."""
+    return _last_assistant_report(path, cap)[0]
+
+
+def _last_assistant_report(path, cap=4000):
+    """(text, epoch) of the newest assistant message from the transcript TAIL — what the redundancy
+    gate shows the judge as "the session's most recent report", WITH the record's own timestamp so
+    the fire-time freshness guard can tell whether the world moved while the judge deliberated
+    (the user 2026-08-25, the completion-vs-nudge collision: a due nudge and a completion report
+    meet at the end of every long autonomous run — the report landed 19s before a fire whose
+    redundancy check had read the PRE-report tail). Tail-read only; ('', 0) on any trouble, which
+    fires the nudge as before."""
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as f:
@@ -4719,10 +4734,16 @@ def _last_assistant_text(path, cap=4000):
             if isinstance(c, list):
                 txt = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
                 if txt.strip():
-                    return txt[-cap:]
-        return ""
+                    ts = 0
+                    try:
+                        ts = int(datetime.fromisoformat(
+                            (rec.get("timestamp") or "").replace("Z", "+00:00")).timestamp())
+                    except Exception:
+                        pass
+                    return txt[-cap:], ts
+        return "", 0
     except Exception:
-        return ""
+        return "", 0
 
 
 def _nudge_send_queued(sid, gid):
@@ -5027,6 +5048,9 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
                         if _nudge_deferred_ok(f[0], _why, now, sid, ev_t=_ev or None)]
         except Exception:
             pass
+    _verdicts, recent_ts = {}, None                  # per-goal fire verdicts + the evidence snapshot's
+    #                                                  timestamp — both ride every nudge-events row so
+    #                                                  redundant fires are countable from the log alone
     if to_fire:
         # REDUNDANCY GATE (the user 2026-08-23, approved via the optimizer's audit): the session's
         # own LAST message may already report exactly the status this nudge would ask for — 2 of 3
@@ -5035,34 +5059,58 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
         # report as the ANSWER (answeredAt: the ladder measures its next patience window from it,
         # exactly as it would from a real reply) and skips the fire. Any failure fires as before —
         # the gate is an optimization, the ladder is the job.
-        recent = _last_assistant_text(s["path"])
+        recent, recent_ts = _last_assistant_report(s["path"])
         if recent:
             try:
                 _nodes = jd.load_goals(sid).get("nodes", {})
             except Exception:
                 _nodes = {}
-            still = []
-            for f in to_fire:
-                gtxt = (_nodes.get(f[0]) or {}).get("text") or ""
-                rec0 = nudged.get(f[0]) or {}
-                skips = rec0.get("redundantSkips") or 0
-                try:
-                    # CAPPED at two consecutive skips (the user 2026-08-23, the same day the gate
-                    # shipped: on a status-heavy session every due nudge can read as redundant, and
-                    # each skip restarting the patience window is a forever-pause with no reviver —
-                    # the exact suppressed-without-reviver class the ladder exists to prevent). Past
-                    # the cap the nudge fires regardless; any real fire or answer resets the count.
-                    if skips < 2 and gtxt and jd.nudge_redundant(gtxt, recent):
-                        nudged[f[0]] = dict(rec0, answeredAt=int(now), redundantSkips=skips + 1)
+
+            def _judge_batch(cands, report, report_ts, held_pass):
+                keep = []
+                for f in cands:
+                    if held_pass and _verdicts.get(f[0], ("",))[0] == "force-fired-at-cap":
+                        keep.append(f)               # the cap path is UNCHANGED: it fires regardless,
+                        continue                     #   and never re-judges — only its log row says so
+                    gtxt = (_nodes.get(f[0]) or {}).get("text") or ""
+                    rec0 = nudged.get(f[0]) or {}
+                    skips = rec0.get("redundantSkips") or 0
+                    try:
+                        # CAPPED at two consecutive skips (the user 2026-08-23, the same day the gate
+                        # shipped: on a status-heavy session every due nudge can read as redundant, and
+                        # each skip restarting the patience window is a forever-pause with no reviver —
+                        # the exact suppressed-without-reviver class the ladder exists to prevent). Past
+                        # the cap the nudge fires regardless; any real fire or answer resets the count.
+                        if skips < 2 and gtxt and jd.nudge_redundant(gtxt, report):
+                            nudged[f[0]] = dict(rec0, answeredAt=int(now), redundantSkips=skips + 1)
+                            _put_nudged(f[0], nudged[f[0]])
+                            _v = "held-fresh-re-judged" if held_pass else "skipped-redundant"
+                            _log_nudge_event(sid, f[0], now, f[1], verdict=_v, ev_t=report_ts)
+                            continue
+                    except Exception:
+                        pass
+                    if skips >= 2:
+                        _verdicts[f[0]] = ("force-fired-at-cap", report_ts)
+                    if skips:
+                        nudged[f[0]] = dict(rec0, redundantSkips=0)   # firing (or an unjudgeable check) resets
                         _put_nudged(f[0], nudged[f[0]])
-                        continue
-                except Exception:
-                    pass
-                if skips:
-                    nudged[f[0]] = dict(rec0, redundantSkips=0)   # firing (or an unjudgeable check) resets
-                    _put_nudged(f[0], nudged[f[0]])
-                still.append(f)
-            to_fire = still
+                    keep.append(f)
+                return keep
+
+            to_fire = _judge_batch(to_fire, recent, recent_ts, held_pass=False)
+            # FIRE-TIME FRESHNESS GUARD (the user 2026-08-25, the completion-vs-nudge collision): a
+            # due nudge and a completion report meet at the end of every long autonomous run — the
+            # judge deliberated over a snapshot, and a report landing DURING that deliberation was
+            # invisible (the verified specimen: report 11:18:14, stop 11:18:32, fire 11:18:33). The
+            # writer-yields family, at the fire moment: the transcript's newest assistant timestamp
+            # having moved past the snapshot's IS the world outrunning the evidence — HOLD and
+            # re-judge ONCE against the fresh report (once by construction: one guarded re-read per
+            # tick, never a loop). A survivor fires; a fresh redundancy skips as held-fresh-re-judged.
+            if to_fire and recent_ts:
+                _fresh, _fresh_ts = _last_assistant_report(s["path"])
+                if _fresh and _fresh_ts and _fresh_ts > recent_ts:
+                    to_fire = _judge_batch(to_fire, _fresh, _fresh_ts, held_pass=True)
+                    recent_ts = _fresh_ts             # the fired rows carry the evidence they survived
     if len(to_fire) == 1:
         gid, count, stalled = to_fire[0]
         text = _nudge_text(count, stalled)             # variant by escalation count — a repeat re-asks in fresh words
@@ -5076,7 +5124,9 @@ def _auto_nudge_session(s, now, tmux, nudged, waitfor, alive_ids=None):
         _nudge_deferred_ok(gid, "", now, sid)        # the hold is over — drop any deferral record so a stale
         #                                              why can never outlive the wait it described
         _mark_auto_nudged(gid, arm_id, count, len(arm.get("atoms") or []), at=now)   # {count, lastTurnId, armAtoms, at} → re-arm only on the next GENUINE ended-working turn; a fresh record resets `failed`
-        _log_nudge_event(sid, gid, now, count)       # timeline romp-logo dot + escalation count
+        _log_nudge_event(sid, gid, now, count,       # timeline romp-logo dot + escalation count; the row
+                         verdict=_verdicts.get(gid, ("fired",))[0],   # says HOW it fired and what evidence
+                         ev_t=recent_ts)             # it survived (the 2026-08-25 instrumentation)
         nudged[gid] = {"count": count, "lastTurnId": arm_id}   # mirror in-memory for the rest of this tick
         fired = True
     if not fired:
