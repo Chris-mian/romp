@@ -8,7 +8,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { freezeDiff } from "./feed-freeze";
+import { freezeDiff, contentSig } from "./feed-freeze";
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
@@ -76,6 +76,33 @@ test("a local render that detaches or re-keys the hovered element heals the free
   assert.match(FEED, /if \(!hov\) \{ freezeKey = null; flushFreeze\(\); \}/);
   assert.match(FEED, /else \{ const k = kbHoverId\(hov\); if \(k && k !== freezeKey\) freezeKey = k; \}/,
     "a re-keyed card under a stationary pointer re-arms to the element actually hovered");
+});
+
+test("the self-note flags CONTENT changes only — the aging tint can never cry update (2026-08-25)", () => {
+  // the live specimen: a Completed card with its brief ready differed between builds ONLY in trgb
+  // (top level + inside every tree node) — the recency ramp aging, not content — yet the whole-item
+  // compare flagged it. The projection is an explicit list; volatile fields cannot silently rejoin.
+  const done = { itemId: "TESTSID:g1", text: "confirm changes under version control", column: "completed",
+    summary: "the brief", blockSummary: null, blocked: false, warns: null,
+    t: 100, mt: 200, last: 200, trgb: [19, 166, 216],
+    tree: [{ id: "TESTSID:g2", text: "step", status: "done", cleared: false, t: 100, mt: 150, trgb: [32, 175, 153] }] };
+  const aged = { ...done, trgb: [19, 166, 215], mt: 260, last: 260,
+    tree: [{ ...done.tree[0], trgb: [32, 175, 152], mt: 260 }] };
+  assert.equal(contentSig(done), contentSig(aged), "the user's exact shape: Completed + brief ready, tint aged → NO flag");
+  assert.notEqual(contentSig(done), contentSig({ ...done, summary: "a NEW brief" }), "real content still flags");
+  assert.notEqual(contentSig(done), contentSig({ ...done, column: "needs_input" }), "a column move flags");
+  assert.notEqual(contentSig(done),
+    contentSig({ ...done, tree: [{ ...done.tree[0], status: "open" }] }), "a sub-goal status change flags");
+  // identity stays strict: the compare joins by itemId (ask) / turnId member-set (group) — a
+  // SIBLING's change never flags the hovered card (each side signs only its own found item)
+  assert.match(FEED, /return contentSig\(asks\.find\(\(a\) => a\.itemId === key\) as any\) !== contentSig\(pend\.find\(\(a\) => a\.itemId === key\) as any\);/);
+  assert.match(FEED, /\.sort\(byId\)\.map\(\(a\) => contentSig\(a as any\)\)\.join\("\|"\)/,
+    "group compare: member-set content signatures, itemId-sorted");
+  const FRZ = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed-freeze.ts"), "utf8");
+  assert.match(FRZ, /const SELF_CONTENT = \["text", "column", "summary", "blockSummary", "blocked", "warns", "retrying", "nudgeFailed"\] as const;/,
+    "the explicit content list — new volatile fields cannot silently rejoin");
+  assert.match(FRZ, /o\.tree = tree\.map\(\(n\) => \[n\.id, n\.text, n\.status, n\.cleared\]\);/,
+    "sub-goals contribute identity/text/status only — never their own aging channels");
 });
 
 test("the badge hint mirrors the optimistic-restore overlay — a card the flush restores is no departure", () => {

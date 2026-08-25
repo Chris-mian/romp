@@ -10,7 +10,7 @@ import { distillText, distillInputs, applyDistillLine, distillPending, distillSt
 import { spinFor, KIND_WORD, waitedSuffix } from "./spin-caption";
 import { onlyTag, matchesOnly } from "./only-filter";
 import { searchMatches, searchSids } from "./feed-search";
-import { freezeDiff } from "./feed-freeze";
+import { freezeDiff, contentSig } from "./feed-freeze";
 import { hostNameNodes, hostPartsNodes, hostIsDown, hostDownNote, hostOf } from "./host-prefix";
 import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
@@ -4567,15 +4567,15 @@ function pendingSelfChanged(key: string): boolean {
   if (!pendingFeedPayload) return false;
   const pend = payloadView(pendingFeedPayload);
   const byId = (a: AskItem, b2: AskItem) => (a.itemId < b2.itemId ? -1 : 1);
+  // CONTENT-projected compares only (contentSig — the user 2026-08-25): the whole-item compare
+  // flagged the per-build recency-tint recompute as "this card updated" on nearly every card
   if (key.startsWith("g:")) {
     const tid = key.slice(2);
-    const cur = JSON.stringify(asks.filter((a) => a.turnId === tid).slice().sort(byId));
-    const nxt = JSON.stringify(pend.filter((a) => a.turnId === tid).slice().sort(byId));
+    const cur = asks.filter((a) => a.turnId === tid).slice().sort(byId).map((a) => contentSig(a as any)).join("|");
+    const nxt = pend.filter((a) => a.turnId === tid).slice().sort(byId).map((a) => contentSig(a as any)).join("|");
     return cur !== nxt;
   }
-  const cur = asks.find((a) => a.itemId === key);
-  const nxt = pend.find((a) => a.itemId === key);
-  return JSON.stringify(cur) !== JSON.stringify(nxt);
+  return contentSig(asks.find((a) => a.itemId === key) as any) !== contentSig(pend.find((a) => a.itemId === key) as any);
 }
 function paintFreezeBadges(): void {
   if (!pendingFeedPayload) {
