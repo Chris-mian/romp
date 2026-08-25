@@ -9818,7 +9818,7 @@ DISTILL_SYS = (
     "closely it names the goal. This line is parsed off and never shown.")
 
 
-def distill_llm(goal_text, work_text, done_why="", prior_summary="", items=None):
+def distill_llm(goal_text, work_text, done_why="", prior_summary="", items=None, frame=None):
     """The distiller's key-takeaway for one completed goal from the TRIAGE-tier model (Sonnet). '' on
     failure. done_why = the closer's completion verdict (the node's doneWhy), fed as <completed> ground
     truth so the summary reflects what was ACCOMPLISHED even when the work history is thin or mostly the
@@ -9830,6 +9830,17 @@ def distill_llm(goal_text, work_text, done_why="", prior_summary="", items=None)
     count-match gate stamps per-paragraph ages only when the model actually split."""
     mk = _mark()
     user = "%s\n%s" % (_sec("goal", goal_text, mk), _sec("work", work_text, mk))
+    if frame:
+        # the delegating request's framing (the user 2026-08-25): the card belongs to work HANDED
+        # to this session, and <work> speaks in the worker's implementation nouns — the frame is
+        # how the request was actually put (usually the user's own phrasing). Marked section, like
+        # every quoted why: sender-written text never rides romp's instruction prose.
+        user += ("\n%s"
+                 "\n<note>The <delegating-request> is how this work was framed when it was handed "
+                 "to this session — usually the requester's own words. Open the takeaway in those "
+                 "terms: what the request asked for and how it ended. Keep implementation nouns to "
+                 "the supporting detail; never open with them.</note>"
+                 % _sec("delegating-request", frame, mk))
     if done_why:
         user += "\n%s" % _sec("completed", done_why, mk)
     if items and len(items) > 1:
@@ -10048,7 +10059,7 @@ BLOCK_BRIEF_SYS = (
     "must be exactly SOURCE: mN. Do not stop at the takeaway; the SOURCE line always comes last.")
 
 
-def brief_llm(goal_text, work_text, owed):
+def brief_llm(goal_text, work_text, owed, frame=None):
     """The briefer's decision brief for one blocked goal from the TRIAGE-tier model (Sonnet). '' on
     failure. Logged as judge='briefer' — its own name, its own prompt (the user 2026-07-08). Its timeline
     mark still rides the distiller row: the kernel folds fine labels to role-family rows (_JUDGE_FAMILY),
@@ -10066,6 +10077,14 @@ def brief_llm(goal_text, work_text, owed):
     mk = _mark()
     user = "%s\n%s\n%s" % (_sec("goal", goal_text, mk), _sec("work", work_text, mk),
                            _sec("owed", owed_block, mk))
+    if frame:
+        # same enrichment as the distiller (the user 2026-08-25): state the owed decision in the
+        # delegating request's terms, not the worker's build vocabulary
+        user += ("\n%s"
+                 "\n<note>The <delegating-request> is how this work was framed when it was handed "
+                 "to this session — usually the requester's own words. State what is owed in those "
+                 "terms; keep implementation nouns to the supporting detail.</note>"
+                 % _sec("delegating-request", frame, mk))
     return _judge_run(_distill_model(), BLOCK_BRIEF_SYS, user, judge="briefer", tier="distill",
                       mark=mk).strip()   # caller splits SOURCE, then caps
 
@@ -10199,6 +10218,33 @@ def _live_prompt_since(fsid):
     except OSError:
         return None
     return since
+
+
+def _deleg_frame(store, nid):
+    """The context a delegated goal's summary writer should open with (the user 2026-08-25): the
+    mint-time `frame` (the delegating mail's cleaned first line, stored by apply_courier), plus the
+    SENDER's linked-ask title — the goal the dispatch was filed under on the sender's board — when
+    the origin points at a LOCAL sender whose store still holds the chain. "" for a non-delegated
+    goal (the enrichment never touches a session's own work), for cross-host origins (that kernel's
+    stores are not ours to read), and for pre-fix nodes minted before the frame existed (they
+    re-distill unchanged — absent frame is byte-identical to today)."""
+    nd = store.get("nodes", {}).get(nid) or {}
+    o = nd.get("origin")
+    if not isinstance(o, dict) or not o.get("peer") or not nd.get("frame"):
+        return ""                                      # no mint-time frame → BYTE-IDENTICAL to today,
+        #                                                including pre-fix delegated nodes re-distilling
+    parts = [str(nd["frame"])]
+    if o.get("goalId") and not o.get("peerHost"):
+        try:
+            snodes = dict(load_goal_archive(o["peer"]).get("nodes") or {})
+            snodes.update(load_goals(o["peer"]).get("nodes") or {})
+            tr = snodes.get(o["goalId"]) or {}
+            ask = (snodes.get(tr.get("parentId") or "") or {}).get("text") or ""
+            if ask and not str(ask).startswith("\u21aa"):
+                parts.append("the sender filed it under: %s" % str(ask)[:120])
+        except Exception:
+            pass                                       # a missing sender store just means less context
+    return " | ".join(p for p in parts if p)[:360]
 
 
 def _distill_due_t(store, nid, blocked):
@@ -10532,7 +10578,8 @@ def _distill_session(fsid, path, now):
             # direction"), and STALL_BRIEF_SYS restates <holding> faithfully rather than inventing an owed
             # decision from <work>. Stored as the card's blockSummary through the same fail/retry path.
             out = (stall_llm(nodes[top].get("text", ""), work, proc_whys[-1]) if proc_only
-                   else brief_llm(nodes[top].get("text", ""), work, owed))
+                   else brief_llm(nodes[top].get("text", ""), work, owed,
+                                  frame=_deleg_frame(store, top)))
             if not out:
                 if getattr(_judge_ctx, "paused", False):   # the call was SKIPPED (global retry-pause on), not
                     continue                               # tried — never count a pause-skip toward give-up, else
@@ -10613,7 +10660,8 @@ def _distill_session(fsid, path, now):
             # real re-distills: filtering loses no post-boundary coverage.
             _dsubs = [d for d in _dsubs if _done_since(d) > boundary_t]
         out = distill_llm(nodes[top].get("text", ""), work, nodes[top].get("doneWhy") or "", prior_summary=prior,
-                          items=[(d.get("text", ""), d.get("doneWhy", "")) for d in _dsubs])
+                          items=[(d.get("text", ""), d.get("doneWhy", "")) for d in _dsubs],
+                          frame=_deleg_frame(store, top))
         if not out:
             if getattr(_judge_ctx, "paused", False):   # pause-skip, not a real failure — don't count it toward
                 continue                               # give-up (leave summary null → re-enters once unpaused)
@@ -11154,15 +11202,16 @@ def _postal_row(mid):
     consumer contract). The sender may be a session of ANOTHER kernel (federated mail), so the local
     names registry cannot resolve it; the log row carries the name the sender wore, the origin host
     the bus stamped on cross-host delivery (2026-07-26), and the tracked report-back flag
-    (2026-08-24 — read off the row, never off message prose). ("", "", False) for None/unknown mids.
-    Memoized on the log file's (mtime, size)."""
+    (2026-08-24 — read off the row, never off message prose), and since 2026-08-25 the BODY —
+    whose cleaned first line is the delegating frame the card enrichment stores at mint.
+    ("", "", False, "") for None/unknown mids. Memoized on the log file's (mtime, size)."""
     if not mid:
-        return ("", "", False)
+        return ("", "", False, "")
     try:
         st = os.stat(MESSAGES)
         key = (st.st_mtime, st.st_size)
     except OSError:
-        return ("", "", False)
+        return ("", "", False, "")
     if _postal_from_memo["key"] != key:
         mp = {}
         try:
@@ -11172,11 +11221,31 @@ def _postal_row(mid):
                 except Exception:
                     continue
                 if r.get("ev") == "sent" and r.get("id"):
-                    mp[r["id"]] = (r.get("from") or "", r.get("from_host") or "", bool(r.get("tracked")))
+                    mp[r["id"]] = (r.get("from") or "", r.get("from_host") or "", bool(r.get("tracked")),
+                                   str(r.get("body") or ""))
         except OSError:
-            return ("", "", False)
+            return ("", "", False, "")
         _postal_from_memo["key"], _postal_from_memo["map"] = key, mp
-    return _postal_from_memo["map"].get(mid, ("", "", False))
+    return _postal_from_memo["map"].get(mid, ("", "", False, ""))
+
+
+def _frame_head(s):
+    """The delegating request's FIRST LINE, cleaned for card use: romp markers stripped (plumbing,
+    never display — the _provisional_card rule), whitespace collapsed, capped. The framing a
+    delegating manager writes in its opening line is usually the USER's own phrasing of the round
+    ("user asks (dictated): …"), which is exactly what the recipient card's summary should open
+    with (the user 2026-08-25: worker cards read as insider jargon because the summary writer
+    never saw the delegating thread)."""
+    s = re.sub(r"<!--.*?-->", "", str(s or ""), flags=re.S)
+    line = next((l.strip() for l in s.splitlines() if l.strip()), "")
+    line = re.sub(r"^USER ASKED:\s*", "", line)       # the unit-text framing prefix (segment-fallback
+    #                                                    path) is plumbing, never the request's words
+    return " ".join(line.split())[:220]
+
+
+def _postal_body_head(mid):
+    """The delegating mail's cleaned first line from its ledger row, "" when the row is unknown."""
+    return _frame_head(_postal_row(mid)[3])
 
 
 def _postal_from(mid):
@@ -11184,11 +11253,15 @@ def _postal_from(mid):
     return _postal_row(mid)[:2]
 
 
-def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None):
+def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None, frame=None):
     """Plant a top-level goal in the recipient's tree for a delegating message, with origin
     provenance. Idempotent by seg_id and origin.msgId (one planted goal per message). Returns nid.
     `prompt_uuid` (the user 2026-07-20, g200): the peer segment's anchor (its head record), so the
-    planted card's summary is landable like any other card — None left it silently unlinkable."""
+    planted card's summary is landable like any other card — None left it silently unlinkable.
+    `frame` (the user 2026-08-25, the confusing-worker-cards round): the delegating mail's cleaned
+    first line — usually the USER's own phrasing of the round — stored as the ADDITIVE node field
+    `frame` so the distiller/briefer open the card's summary in the user's terms instead of the
+    worker's implementation nouns. Absent on non-delegated goals; old payloads render unchanged."""
     nodes, placements = store["nodes"], store["placements"]
     mid = origin.get("msgId")
     if mid:
@@ -11198,9 +11271,12 @@ def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None):
                 return nid
     store["seq"] = store.get("seq", 0) + 1
     nid = "%s:g%d" % (store["rompUuid"], store["seq"])
-    nodes[nid] = GuardedNode({"id": nid, "text": (text or "(delegation)")[:120], "parentId": None,
-                  "nodeComplete": False, "blocked": False, "cleared": False,
-                  "trail": [seg_id], "t": seg_t, "origin": origin, "promptUuid": prompt_uuid, "log": []})
+    payload = {"id": nid, "text": (text or "(delegation)")[:120], "parentId": None,
+               "nodeComplete": False, "blocked": False, "cleared": False,
+               "trail": [seg_id], "t": seg_t, "origin": origin, "promptUuid": prompt_uuid, "log": []}
+    if frame:
+        payload["frame"] = frame
+    nodes[nid] = GuardedNode(payload)
     placements[seg_id] = nid
     store["lastNode"] = nid                            # the delegation is now the active focus
     return nid
@@ -11710,7 +11786,11 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
                 origin["peerName"] = pn
             if frm_host:                               # stamped only on cross-host delivery
                 origin["peerHost"] = frm_host
-            apply_courier(store, seg_id, seg_t, edit["text"], origin, prompt_uuid=anchor_uuid)
+            apply_courier(store, seg_id, seg_t, edit["text"], origin, prompt_uuid=anchor_uuid,
+                          frame=_postal_body_head(mid) or _frame_head(text))
+            #             ^ the ledger row's body is authoritative; a row the local ledger lacks
+            #               (some cross-host deliveries) falls back to the delivered segment's own
+            #               head — same content, one hop later
         else:
             store["placements"][seg_id] = "fyi"        # coordinating: no goal, but mark processed
         rollup_status(store, closed.get(fsid, False))

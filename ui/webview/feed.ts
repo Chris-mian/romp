@@ -1231,6 +1231,7 @@ function makeAskCard(it: AskItem): HTMLElement {
     pending = window.setTimeout(() => {
       pending = undefined;
       fullscreenAskId = it.itemId;
+      vscodeApi?.postMessage({ type: "cardOpened", itemId: it.itemId, sid: it.sid });   // the open-metric row (2026-08-25)
       vscodeApi?.postMessage({ type: "showAskPath", itemId: it.itemId, sid: it.sid, locate: false });
       render();
     }, 220);
@@ -2317,7 +2318,8 @@ function makeGroupCard(g: AskGroup): HTMLElement {
     pending = window.setTimeout(() => {
       pending = undefined;
       fullscreenAskId = fkey;
-      const m = m0(); if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: m.sid, locate: false });
+      const m = m0(); if (m) vscodeApi?.postMessage({ type: "cardOpened", itemId: m.itemId, sid: m.sid });   // the open-metric row (2026-08-25)
+      if (m) vscodeApi?.postMessage({ type: "showAskPath", itemId: m.itemId, sid: m.sid, locate: false });
       render();
     }, 220);
   });
@@ -4981,6 +4983,7 @@ window.addEventListener("message", (e: MessageEvent) => {
     // ask itemId, "i:<itemId>" standalone, "g:<turnId>" group). hl = the clicked
     // turn's event id: ring its row(s) and scroll the first one into view.
     fullscreenAskId = m.key;
+    vscodeApi?.postMessage({ type: "cardOpened", itemId: m.key, sid: "" });   // rail-dot opens count too (2026-08-25)
     if (typeof m.hl === "string" && m.hl) extHoverEid = m.hl;
     renderModal();
     applyExtHover();

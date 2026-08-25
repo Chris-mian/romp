@@ -28915,6 +28915,18 @@ class Handler(BaseHTTPRequestHandler):
                 _dok, _derr = False, (str(_e) or _e.__class__.__name__)
                 sys.stderr.write("redistill: %s\n" % traceback.format_exc())
             _send_to_app("feed", {"type": "redistillResult", "itemId": _dnid, "ok": _dok, "error": _derr})
+        elif msg and msg.get("type") == "cardOpened" and msg.get("itemId"):
+            # the card-open event (the user 2026-08-25, the metrics round): one append-only row per
+            # modal open, so cleared-WITHOUT-open — the confusion signal the clear log alone cannot
+            # see — becomes measurable. Best-effort: a failed write loses one metric row, never a
+            # gesture.
+            try:
+                p = jd.STATE / "card-opens.jsonl"
+                with open(p, "a") as f:
+                    f.write(json.dumps({"t": int(time.time()), "itemId": str(msg["itemId"])[:200],
+                                        "sid": str(msg.get("sid") or "")[:64]}) + "\n")
+            except OSError:
+                pass
         elif msg and msg.get("type") == "clearAll":
             d = build_feed(int(time.time()))
             _clear_all([a["itemId"] for a in d["asks"]] + [c["itemId"] for c in d["items"]])
