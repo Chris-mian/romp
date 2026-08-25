@@ -2879,17 +2879,9 @@ class TimelinePanel {
       const s = menu.createDiv();
       s.setAttribute('style', 'height:1px;margin:4px 6px;background:rgba(255,255,255,0.12);');
     };
-    // a CAPTIONED divider (the user 2026-08-25): the hairline carries a tiny italic dim label —
-    // the menu says which surface its selection governs. The sub-line scale (0.82em/0.6), never a
-    // new size; one shared idiom other menus adopt.
-    const capSep = (label) => {
-      const s = menu.createDiv();
-      s.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:4px 6px;');
-      const l1 = s.createDiv(); l1.setAttribute('style', 'height:1px;flex:0 0 8px;background:rgba(255,255,255,0.12);');
-      const t = s.createSpan({ text: label });
-      t.setAttribute('style', 'font-size:0.82em;opacity:0.6;font-style:italic;white-space:nowrap;');
-      const l2 = s.createDiv(); l2.setAttribute('style', 'height:1px;flex:1;background:rgba(255,255,255,0.12);');
-    };
+    // (the menu's scope caption retired 2026-08-25 — the user: the button's tooltip already says
+    // which surface this governs, so the menu opens straight onto its rows. The captioned-divider
+    // idiom itself lives on in the dialog's sections.)
     // MULTI-SELECT (the user 2026-08-25): rows are TOGGLES on this surface's lens — All exclusive
     // and a plain pick; (no tags) and every tag combine arbitrarily; the ✓ marks each selected row
     // and the menu STAYS OPEN across toggles (a settings panel, not a command — the gear's rule),
@@ -2909,7 +2901,6 @@ class TimelinePanel {
         this._setViews(nv);
         if (close) this._closeViewsMenu(); else build();
       };
-      capSep('filters this timeline');
       item('All', { current: lensAll(lens) }).addEventListener('click', () => apply({ all: true }, true));
       item('(no tags)', { current: !lensAll(lens) && !!lens.none })
         .addEventListener('click', () => apply(lensToggle(lens, 'none'), false));
@@ -2953,12 +2944,7 @@ class TimelinePanel {
       row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
       return row;
     };
-    const cap = menu.createDiv();
-    cap.setAttribute('style', 'display:flex;align-items:center;gap:6px;margin:4px 6px;');
-    cap.createDiv().setAttribute('style', 'height:1px;flex:0 0 8px;background:rgba(255,255,255,0.12);');
-    const capT = cap.createSpan({ text: 'how this timeline draws' });
-    capT.setAttribute('style', 'font-size:0.82em;opacity:0.6;font-style:italic;white-space:nowrap;');
-    cap.createDiv().setAttribute('style', 'height:1px;flex:1;background:rgba(255,255,255,0.12);');
+    // (no header — the user 2026-08-25: the menu is just its two entries)
     const flip = (key, cur) => {
       let s = {}; try { s = JSON.parse(localStorage.getItem('romp:settings') || '{}') || {}; } catch (e) {}
       s[key] = !cur;

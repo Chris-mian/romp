@@ -47,11 +47,11 @@ test("the chat strip and the outline both mount the shared component (source pin
   assert.match(RENDER, /function chatVisible\(id: string\): boolean/);
   assert.match(RENDER, /lensVisible\(surfaceLens\(v, "chat"\), viewTagUnion\(v\), id\)/,
     "tabs + peeks decide through actives.chat");
-  assert.match(RENDER, /tagMenuButton\("filter these tabs by tag"/);
-  assert.match(RENDER, /scopeCaption: "filters these tabs"/);
+  assert.match(RENDER, /tagMenuButton\("filter these tabs by tag"/,
+    "the tooltip names the surface — the ONE scope carrier since the menu caption retired (2026-08-25)");
   assert.match(RENDER, /Object\.assign\(\{\}, v\.actives, \{ chat: l \}\)/, "writes land on chat's lens only");
-  assert.match(FLEET, /tagMenuButton\("filter this outline by tag"/);
-  assert.match(FLEET, /scopeCaption: "filters this outline"/);
+  assert.match(FLEET, /tagMenuButton\("filter this outline by tag"/,
+    "ditto — the outline tooltip names its surface");
   assert.match(FLEET, /Object\.assign\(\{\}, v\.actives, \{ outline: l \}\)/);
   assert.match(FLEET, /if \(!lensVisible\(outlineLens, outlineUnions, s\.sid\)\) continue;/);
   assert.match(FLEET, /fleetViews = m\.views as SessionViews/, "the outline reads views off the feed payload");
@@ -66,11 +66,12 @@ test("every pane's Configure tags… routes to THE dialog on the timeline (sourc
     "routed to the SAME dashboard's timeline, like tagEditFailed");
 });
 
-test("the shared component: toggles stay open, scope caption, echo dismissal (source pins)", () => {
+test("the shared component: toggles stay open, no scope caption, echo dismissal (source pins)", () => {
   assert.match(MENU, /opts\.onApply\(toggleLens\(lens, \{ tag: u\.name \}\), false\); build\(\);/,
     "tag rows toggle and repaint in place");
   assert.match(MENU, /opts\.onApply\(\{ all: true \}, true\)/, "All is a plain pick");
-  assert.match(MENU, /font-size:0\.82em;opacity:0\.6;font-style:italic/, "the captioned divider, sub-line scale");
+  assert.ok(!MENU.includes("scopeCaption"),
+    "the scope caption retired 2026-08-25 (the user: the tooltip already says it) — the menu opens straight onto its rows");
   assert.match(MENU, /localStorage\.setItem\("romp:menu-echo"/, "every pane writes the pointerdown echo");
   assert.match(MENU, /e\.key === "romp:menu-echo" && e\.newValue/, "every open menu listens");
   assert.match(MENU, /btn\.addEventListener\("click", \(e\) => e\.stopPropagation\(\)\)/,

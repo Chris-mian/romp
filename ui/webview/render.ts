@@ -4519,7 +4519,6 @@ function renderTabs() {
         v.actives = Object.assign({}, v.actives, { chat: l });
         postViews(v);
       },
-      scopeCaption: "filters these tabs",
       onConfigure: () => { vscodeApi?.postMessage({ type: "openTagsDialog" }); },
     });
   });

@@ -3368,7 +3368,6 @@ function ensureTagLensBtn(): HTMLElement {
         lens: () => feedLens,
         unions: () => lensUnions(feedTagViews),
         onApply: (l) => { setFeedLens(l); render(); },
-        scopeCaption: "filters this feed",
         onConfigure: () => vscodeApi?.postMessage({ type: "openTagsDialog" }),
       });
     });

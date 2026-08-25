@@ -60,7 +60,7 @@ test("the mount is the SHARED component: tag glyph button, stay-open menu, Confi
   assert.match(FEED, /b = tagMenuButton\("filter this board by tag — combinations union; All shows everything", \(btn\) => \{/,
     "the shared monochrome tag glyph — identical across surfaces");
   assert.match(FEED, /openTagMenu\(btn, \{/);
-  assert.match(FEED, /scopeCaption: "filters this feed",/, "the captioned divider names the surface");
+  assert.ok(!FEED.includes("scopeCaption"), "the menu scope caption retired 2026-08-25 — the button tooltip carries the scope");
   assert.match(FEED, /onApply: \(l\) => \{ setFeedLens\(l\); render\(\); \},/);
   assert.match(FEED, /onConfigure: \(\) => vscodeApi\?\.postMessage\(\{ type: "openTagsDialog" \}\),/,
     "one management entry; creation lives in the dialog");
