@@ -157,14 +157,17 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   // read as the lanes and the feed. No model column, no instruction caption, no ellipsized names.
   assert.match(SRC, /font-weight:650;color:' \+ \(s\.color \|\| '#cccccc'\)/);
   assert.match(SRC, /font-style:italic;font-size:0\.88em;/);
-  assert.match(SRC, /text-decoration:line-through;/);
+  // closed sessions LEFT the membership table (the user 2026-08-25 revision) — live rows only,
+  // so the strike variant is gone with them
+  assert.match(SRC, /\.filter\(\(s\) => s\.live\)/, "the crossed-out ones don't show");
   const DLG = SRC.slice(SRC.indexOf('_openViewsDialog'), SRC.indexOf('_openLaneMenu('));
   assert.doesNotMatch(DLG, /s\.model/, "no model column");
   assert.doesNotMatch(SRC, /Tags mark specialized sessions/, "the display explains itself");
   // SEARCH (name or host — one string, the host prefix rides the name) + the bulk controls that
   // act on the FILTERED set: search is how a batch is selected (the user 2026-08-24)
   assert.match(SRC, /q\.placeholder = 'search name or host…';/);
-  assert.match(SRC, /const tagAll = bar\.createSpan\(\{ text: '\+ tag all' \}\);/);
+  // 'tag all' moved to its OWN line as plain text (the user 2026-08-25 revision: it surprised where it sat)
+  assert.match(SRC, /const tagAll = bulkLine\.createSpan\(\{ text: 'tag all' \}\);/);
   assert.ok(!SRC.includes("mute feed for all"), "the feed bulk control left the dialog (2026-08-25) — the flag lives on in the lane gear");
   assert.ok(!SRC.includes("const flagVal = ft.value(!anyOn);"), "the bulk feed wiring left with its control (2026-08-25)");
   // chips: outline in the tag's colour, dim separate ✕, hover changes colour (menu chrome)
@@ -194,6 +197,30 @@ test("the sessions dialog is a TABLE speaking romp's own conventions (the user 2
   assert.match(SRC, /item\('All',[\s\S]{0,300}item\('\(no tags\)',/, "All sits ABOVE (no tags) in the menu");
   assert.match(SRC, /item\('\(no tags\)',[\s\S]{0,600}for \(const g of viewTagUnion\(v\)\)/,
     "…and the tag rows come AFTER both built-ins — the DoD's menu order, pinned end to end (the rows are the NAME-KEYED union since the 2026-08-24 ruling)");
+});
+
+test("membership rows drag-reorder into the SHARED session order (the user 2026-08-25 revision)", () => {
+  // EXECUTED: a drop permutes only the VISIBLE rows within the full order (out-of-dialog sessions
+  // hold their absolute slots), applies optimistically, and persists through the ONE shared store
+  // (session-order.json — the same write the tab-drag and lane-drag use, so all three surfaces
+  // reorder together).
+  const p: any = Object.create(TimelinePanel.prototype);
+  p.data = { sessions: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }] };
+  // dialog shows a, c, d (b filtered out by search) — dragging d above a yields d,a,c with b fixed
+  assert.deepEqual(p._mergeVisibleOrder(["d", "a", "c"]), ["d", "b", "a", "c"],
+    "only the shown rows permute; the hidden one keeps its absolute slot");
+  p._applyOrderToData(["d", "b", "a", "c"]);
+  assert.deepEqual(p.data.sessions.map((s: any) => s.id), ["d", "b", "a", "c"], "optimistic — no snap-back before the next poll");
+  // the wiring: grab a NAME cell; the insertion cue moves WITHOUT rebuilding mid-drag (the
+  // redraw-eats-pointer rule) — the rebuild and the persist happen on the drop
+  assert.match(SRC, /nameCell\.setAttribute\('style', 'white-space:nowrap;cursor:grab;'\);/);
+  assert.match(SRC, /nameCell\._sid = s\.id;/);
+  assert.match(SRC, /cells\[toIdx\]\.style\[toIdx > fromIdx \? 'borderBottom' : 'borderTop'\] = '2px solid #9cd2ff';/,
+    "the accent insertion cue rides the target cell's border — no mid-drag rebuild");
+  assert.match(SRC, /const full = this\._mergeVisibleOrder\(vis\);\s*\/\/ only the shown rows permute within the full order\n\s*this\._applyOrderToData\(full\);[\s\S]{0,200}this\._persistOrder\(full\);/,
+    "drop = merge, apply, persist — the lane-drag's exact sequence");
+  assert.match(SRC, /renderRows\(\);\n\s*\};\n\s*nameCell\.addEventListener\('pointermove', onMove\);/,
+    "the rebuild happens on the drop, after the persist");
 });
 
 test("federation, NAME-KEYED (user ruling 2026-08-24): one name = one row/label/union — kernels are plumbing", () => {
@@ -305,8 +332,8 @@ test("executed: tagEditFailed reverts the optimistic copy and keeps the reason f
 
 test("federation v1+ruling source pins: header/chips route through the UNION dispatcher, loudly on failure", () => {
   // rename/recolor/delete fan out to EVERY home; chip ✕ removes everywhere; add prefers local
-  assert.match(SRC, /this\._editTagUnion\(open, \{ rename: nv2 \}\);/);
-  assert.match(SRC, /this\._editTagUnion\(open, \{ color: c \}\); build\(\);/);
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ rename: nv2 \}\);/);
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ color: c \}\); build\(\);/);
   assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\);/);
   assert.match(SRC, /this\._editTagUnion\(g, \{ remove: \[s\.id\] \}\); rebuild\(\);/);
   assert.match(SRC, /this\._editTagUnion\(g, \{ add: rowIds\.filter\(\(id\) => g\.members\.indexOf\(id\) < 0\) \}\); rebuild\(\);/);
@@ -428,8 +455,8 @@ test("the corner grew two icon buttons and the menus split (the user 2026-08-25)
     "caption at the sub-line scale — no new font sizes");
   assert.match(SRC, /item\('Configure tags…', \{ dim: true \}\)/, "one management entry");
   assert.ok(!/item\('New tag…', \{ dim: true \}\)/.test(SRC), "New tag left the menu…");
-  assert.match(SRC, /const newTag = bar\.createSpan\(\{ text: 'New tag…' \}\)/,
-    "…and lives in the dialog's bulk bar");
+  assert.match(SRC, /text: '\+ New tag'/,
+    "…and lives in the tag TABLE's final row (the 18:17 revision — the bulk-bar copy died)");
   assert.match(SRC, /apply\(lensToggle\(lens, \{ tag: g\.name \}\), false\)/,
     "tag rows TOGGLE and the menu stays open (repaint in place)");
   assert.match(SRC, /apply\(\{ all: true \}, true\)/, "All is a plain pick and closes");
@@ -457,17 +484,20 @@ test("dialog polish + reachable tag management (the user 2026-08-25)", () => {
   // tag management reachable from EVERY open: rows with rename/recolor/delete via the union dispatcher
   assert.match(SRC, /text: 'the tags'/);
   assert.match(SRC, /this\._editTagUnion\(tg, \{ delete: true \}\);\n\s*build\(\);/, "delete without a tag-scoped open");
-  assert.match(SRC, /this\._editTagUnion\(open, \{ color: c \}\); build\(\);/, "the identity-palette recolor");
+  assert.match(SRC, /this\._editTagUnion\(tg, \{ color: c \}\); build\(\);/, "the identity-palette recolor");
 });
 
-test("the dialog redesign: chip cloud, delete-✕ convention, five filter rows (the user 2026-08-25)", () => {
-  // TAGS: a compact chip cloud — click a chip to edit (rename+recolor), ✕ ON the chip DELETES the
-  // tag, wearing the destructive convention (red-tinted hover) so it can't be mistaken for a
-  // membership ✕; [+ New tag] closes the section in the rounded-rect anatomy
-  assert.match(SRC, /this\._tagEditorFor = this\._tagEditorFor === tg\.name \? null : tg\.name;/, "chip click toggles its editor");
-  assert.match(SRC, /dx\.style\.color = '#F85B5A'/, "the delete-✕ goes red on hover — destructive, unlike membership ✕");
-  assert.match(SRC, /DELETE the tag/, "the hover says what the ✕ does");
-  assert.match(SRC, /text: '\+ New tag'/, "creation closes the tag section");
+test("the dialog redesign: tag TABLE with delete/rename/color actions, five filter rows (the user 2026-08-25, revised same day)", () => {
+  // TAGS: a TABLE (the user's revision of the chip cloud) — each row the tag pill at normal size
+  // with NO ✕ on it, then delete | rename | color swatches as their own columns; delete wears the
+  // destructive convention (dim at rest, red on hover); [+ New tag] is the table's FINAL row
+  assert.match(SRC, /grid-template-columns:max-content max-content max-content 1fr;/, "the tag table's four columns");
+  assert.match(SRC, /the tag itself: the normal pill, NO ✕ — actions live beside it, never on it/);
+  assert.match(SRC, /this\._tagEditorFor = this\._tagEditorFor === tg\.name \? null : tg\.name;/, "rename toggles the pill into an input");
+  assert.match(SRC, /d\.style\.color = '#F85B5A'/, "delete goes red on hover — destructive, unlike membership ✕");
+  assert.match(SRC, /DELETE the tag/, "the hover says what delete does");
+  assert.match(SRC, /text: '\+ New tag'/, "creation is the table's final row");
+  assert.match(SRC, /grid-column:1 \/ -1;/, "…spanning the table's full width");
   // FILTERS: five rows — All surfaces / Chat / Sessions / Outline / Feed (the pane names), each
   // the full lens vocabulary as pills editing ONLY its surface; All-surfaces fans to all four
   assert.match(SRC, /\[\['All surfaces', '\*'\], \['Chat', 'chat'\], \['Sessions', 'timeline'\], \['Outline', 'outline'\], \['Feed', 'feed'\]\]/);
