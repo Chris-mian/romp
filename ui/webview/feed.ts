@@ -3373,12 +3373,17 @@ function ensureTagLensBtn(): HTMLElement {
       });
     });
     b.id = "feed-taglens";
-    b.classList.add("feed-modetoggle");
+    // FOOTER DRESS (the user 2026-08-25, round two: at rest the button outlined blue, and All faded
+    // it darker than its neighbours): the shared component ships its own inline style, and inline
+    // beats every class rule — strip it and wear the EXACT sibling vocabulary, so the resting state
+    // is the neighbours' computed style by construction and can never drift dark again. Active is
+    // the standard .on accent ONLY — the class the siblings use, never an inline colour.
+    b.removeAttribute("style");
+    b.className = "fdismiss ffollow feed-modetoggle";
     (document.getElementById("feed-foot") || document.body).appendChild(b);
   }
   const active = !lensAll(feedLens);
   b.classList.toggle("on", active);
-  b.style.color = active ? "var(--accent)" : "";   // the shared button's own gray otherwise
   b.setAttribute("aria-pressed", active ? "true" : "false");
   return b;
 }
