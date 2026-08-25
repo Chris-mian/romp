@@ -147,7 +147,7 @@ type ChatEvent = (
   // `held` DOES come from the kernel (_limit_hold): the queue is stuck on the ACCOUNT rather than on this
   // session — a usage limit or a monthly spend cap holds every send — so the head names what it is waiting
   // for, and how long is left when the API reported a reset (the user 2026-07-24).
-  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }
+  | { kind: "queued"; texts: { md: string; followUp?: boolean; goal?: string; fuCtx?: string; idx?: number; park?: number; cancelable?: boolean; optimistic?: boolean; imgPaths?: string[] }[]; ts?: string; uuid?: string; bare?: boolean; held?: { reason: string; resetsAt?: number | null; what: string; detail?: string } }   // imgPaths: an optimistic echo's dragged-image attachments → thumbnails, the landed form's own renderer (the user 2026-08-25)
   // The turn stopped on an API error (event-based: transcript isApiErrorMessage). The session is BLOCKED
   // until retried — a red-dot card at the bottom with a Retry button (the user 2026-06-16).
   | { kind: "apiError"; text: string; status?: number; ts?: string; uuid?: string }
@@ -282,7 +282,7 @@ const OPT_TAIL_SCAN = 30;     // the kernel's version (user atom / queued bubble
 // carried the text, so a resend — or any short message that substrings an older bubble ("continue",
 // "test") — retired its own entry in the very call that created it, and the send showed nothing at
 // all (the user 2026-08-09, who watched sends vanish for a beat before appearing).
-const pendingSent = new Map<string, { text: string; ts: number; base: number }[]>();
+const pendingSent = new Map<string, { text: string; ts: number; base: number; imgPaths?: string[] }[]>();
 const isOptimistic = (e: ChatEvent): boolean => !!e.uuid && e.uuid.startsWith(OPT_PREFIX);
 
 // The kernel's own queued group, if one is at the tail. Ours merges INTO it when present: the session is
@@ -296,7 +296,24 @@ function tailQueuedIdx(evs: ChatEvent[]): number {
 // Rebuild a session's optimistic tail: strip what we injected last push (kernel events are authoritative),
 // then re-add one per still-in-flight send — dropping those the kernel has now surfaced (a landed user atom
 // or a queued bubble carrying our text) or that have aged past the TTL backstop.
+// What each session's tail last SHOWED optimistically (texts, joined) — reconcileOptimistic compares
+// against it so the view repaints exactly when the visible echo set CHANGES, even though the event
+// COUNT may not: a landing frame that replaces the echo 1:1 (its user atom in, our bubble out) left
+// syncView's rendered===len fast path skipping the swap, so the dashed bubble lingered past its own
+// landing until some later push (found by the 2026-08-25 continuity harness). A map, not in-array
+// bookkeeping: upsert hands this function a FRESH events array, so the previous pass's injections
+// are only knowable from state that survives the frame.
+const echoShownSig = new Map<string, string>();
+
 function reconcileOptimistic(s: Session): void {
+  const settle = (after: string[]) => {
+    const sig = after.join("\u0000");
+    if ((echoShownSig.get(s.id) || "") !== sig) {
+      if (sig) echoShownSig.set(s.id, sig); else echoShownSig.delete(s.id);
+      const v = views.get(s.id);
+      if (v) v.stale = true;
+    }
+  };
   // undo our own injections. A standalone bare group is tail-appended (pop it); a kernel group we EXTENDED is
   // restored by dropping the optimistic texts off our clone — so `landed` below only ever sees kernel truth.
   while (s.events.length && isOptimistic(s.events[s.events.length - 1])) s.events.pop();
@@ -306,7 +323,7 @@ function reconcileOptimistic(s: Session): void {
     if (q.texts.some((t) => t.optimistic)) s.events[qi] = { ...q, texts: q.texts.filter((t) => !t.optimistic) };
   }
   const list = pendingSent.get(s.id);
-  if (!list || !list.length) return;
+  if (!list || !list.length) { settle([]); return; }
   const now = Date.now();
   const tail = s.events.slice(-OPT_TAIL_SCAN);
   // A LANDED copy of the text is a real user atom — never the kernel's own provisional echo, whose
@@ -330,8 +347,8 @@ function reconcileOptimistic(s: Session): void {
   const keep = list.filter((p) => now - p.ts < OPT_TTL_MS && landedCount(p.text) <= p.base);
   if (keep.length) pendingSent.set(s.id, keep); else pendingSent.delete(s.id);
   const inject = keep.filter((p) => !shownProvisional(p.text));
-  if (!inject.length) return;
-  const mk = (p: { text: string }) => ({ md: p.text, optimistic: true, cancelable: false });
+  if (!inject.length) { settle([]); return; }
+  const mk = (p: { text: string; imgPaths?: string[] }) => ({ md: p.text, optimistic: true, cancelable: false, imgPaths: p.imgPaths });
   const qj = tailQueuedIdx(s.events);
   if (qj >= 0) {
     // something IS queued here → ours queues behind it: show it in that group, under its header, counted
@@ -341,12 +358,13 @@ function reconcileOptimistic(s: Session): void {
     // nothing known-queued → a BARE dashed bubble: no "N queued messages" header to claim what we can't back
     s.events.push({ kind: "queued", bare: true, texts: inject.map(mk), uuid: OPT_PREFIX + inject[0].ts });
   }
+  settle(inject.map((p) => p.text));
 }
 
 // Record a composer send as in-flight and show its optimistic bubble NOW (before any kernel push).
-function registerOptimistic(id: string, text: string): void {
+function registerOptimistic(id: string, text: string, imgPaths?: string[]): void {
   const arr = pendingSent.get(id) || [];
-  arr.push({ text, ts: Date.now(), base: -1 });   // base is stamped by the reconcile just below
+  arr.push({ text, ts: Date.now(), base: -1, imgPaths });   // base is stamped by the reconcile just below
   pendingSent.set(id, arr);
   const s = sessions.get(id);
   if (!s) return;
@@ -3290,6 +3308,14 @@ function renderQueued(ev: Extract<ChatEvent, { kind: "queued" }>): HTMLElement {
       bubble.title = "queued in the session — it can't be recalled, and joins the conversation at the session's next step";
     const isCmd = renderSlashCmd(bubble, t.md);
     if (!isCmd) bubble.innerHTML = md(t.md);
+    // An optimistic echo's dragged images render as THUMBNAILS, not just their trailing paths (the
+    // user 2026-08-25: composer preview → path-only provisional → thumbnail landing flashed). Same
+    // machinery end to end: userImage with the landed form's exact "path:" shape — buildPathImg's
+    // (sid,path)-keyed cache then serves the LANDED bubble the same bytes, so the reconcile swap
+    // never re-fetches or flickers. pathInText: the send appends the paths to the text above.
+    if (t.imgPaths && t.imgPaths.length) {
+      for (const ip of t.imgPaths) bubble.appendChild(userImage({ src: "path:" + ip, path: ip }, true));
+    }
     // CANCELABLE — an explicit ✕ on the bubble (the user 2026-07-08; the old whole-bubble click was
     // undiscoverable AND hung on a node every push rebuilds, so mid-press rebuilds silently ate the
     // click). The ✕ carries data-act="qx" → the ONE document.body delegate (click-safe per CLAUDE.md);
@@ -9716,7 +9742,7 @@ try { stagedMsgs.restore(((vscodeApi?.getState?.() || {}) as any).staged); } cat
 // One routing owner for a user message (the deliver path and the staged flush both speak it): a goal
 // chip rides askFollowUp, quote chips wrap client-side, a bare message is a plain send with the
 // optimistic bubble (chip sends have their own kernel-side echo).
-function routeUserMessage(sid: string, text: string, cites: Citation[] | undefined): void {
+function routeUserMessage(sid: string, text: string, cites: Citation[] | undefined, imgPaths?: string[]): void {
   if (!vscodeApi) return;
   const goalCite = cites?.find((c) => c.itemId);
   const quoteCites = cites ? cites.filter((c) => c.quote) : [];
@@ -9725,9 +9751,9 @@ function routeUserMessage(sid: string, text: string, cites: Citation[] | undefin
   // inconsistency reported). The quote branch echoes the COMPOSED body, which is byte-identical to
   // what lands (quoteReplyBody IS the send path), so the reconcile's includes() match is exact; the
   // follow-up echoes the typed words, a substring of the goal-wrapped landing.
-  if (goalCite?.itemId) { vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid }); registerOptimistic(sid, text); }
-  else if (quoteCites.length) { const body = quoteReplyBody(quoteCites, text); vscodeApi.postMessage({ type: "sendMessage", id: sid, text: body }); registerOptimistic(sid, body); }
-  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text }); registerOptimistic(sid, text); }
+  if (goalCite?.itemId) { vscodeApi.postMessage({ type: "askFollowUp", itemId: goalCite.itemId, text, sid }); registerOptimistic(sid, text, imgPaths); }
+  else if (quoteCites.length) { const body = quoteReplyBody(quoteCites, text); vscodeApi.postMessage({ type: "sendMessage", id: sid, text: body }); registerOptimistic(sid, body, imgPaths); }
+  else { vscodeApi.postMessage({ type: "sendMessage", id: sid, text }); registerOptimistic(sid, text, imgPaths); }
 }
 
 /** Release the tab's staged stack (deliver's guards — host down, provisional — run before this in the
@@ -11261,7 +11287,7 @@ function setupComposer() {
           return;
         }
         provisionalQueue.push(text);
-        registerOptimistic(sid, text);
+        registerOptimistic(sid, text, attached.filter((p) => previewKind(p) === "img"));
         sendOnShip.delete(sid);                       // a send happened — any held one is superseded
         histWalk.delete(sid);                         // …and the history walk starts fresh
         if (attached.length) { composerFiles.delete(sid); if (sid === activeId) renderComposerFiles(sid); }
@@ -11288,7 +11314,7 @@ function setupComposer() {
       // uuid — nothing sent, no error, the card flashing to Working and back. The kernel keeps deriving
       // its sid from itemId, so this is inert locally; every other card op carries the sid the same way.
       const cites = composerCitations.get(activeId);
-      routeUserMessage(activeId, text, cites);
+      routeUserMessage(activeId, text, cites, attached.filter((p) => previewKind(p) === "img"));
       // (a citation follow-up/quote has its own kernel-side echo path; the optimistic bubble covers the plain send)
       if (cites) { composerCitations.delete(activeId); renderComposerChips(activeId); }   // consumed on send
       sendOnShip.delete(sid);                       // a send happened — any held one is superseded
