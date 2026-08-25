@@ -150,7 +150,22 @@ to narrate it. The closer supplies the missing verdicts; the unblocker retires t
 ones; the distiller and the briefer write what you read on the resolved card.
 
 **closer.** The turn-end completion backstop; it exists because agents
-rarely say "done". It audits only the goals the turn actually touched;
+rarely say "done". Since 2026-08-25 a delegated goal's report-back rides its
+audit: when a "delegated to" tracking item completes, the recipient's own
+resolution travels into the sender's tree (run_propagate) and the
+steps-finished nomination shows it to the closer as a marked
+"Delegation reports" section — before that, a delegated ask's only visible
+history was the dispatch, the closer correctly omitted, and the look-stamp
+sealed a finished question open forever (the auto-nudge then re-asked it
+seven times in 75 minutes). Two guardrails ride the same fix: the closer
+never completes a "delegated to" tracking item itself (its ending event is
+the recipient's completion — a dispatch-time done consumed the slot and
+starved the report), and on a status-reporting turn (nudge / follow-up /
+wrap-up) a cited UMBRELLA's open descendants ride the audit too — the
+umbrella's open leaf was otherwise reachable by no channel, since a nudge
+spliced into a busy session's running turn strips its own resolutions (a
+plain cited goal keeps the tops-only shape: the closer rules it directly).
+It audits only the goals the turn actually touched;
 verdict done, blocked, or omit, with "when in doubt, omit". Idempotent per
 turn. Its diary events carry src `closer`, so planner and closer verdicts
 stay distinguishable, and both defer to the user floor: a verdict computed
