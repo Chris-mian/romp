@@ -252,11 +252,23 @@ completed. Gated by its own signature, logged under its own name.
 The courier owns peer-message segments; the planners skip them. The sender
 declared each message delegate, coordinate, or question at send time
 (schema-required); the courier takes that as a strong prior and reads the
-body for whether work actually changed hands. Delegating plants a real goal
-in the recipient's tree (origin-stamped) plus a "delegated to" tracking
-node in the sender's; coordinating makes no card. The companion
-`run_propagate` is deterministic: when the recipient completes the plant,
-the sender's tracker checks itself off through the origin pointer.
+body for whether work actually changed hands. Since 2026-08-25 minting is
+CHAIN-ROOTED (the user's verdict, replacing a one-day view-side split):
+delegating plants a real goal in the recipient's tree (origin-stamped) only
+when the sender's linked goal traces to a human prompt — self-then-ancestors
+in the sender's store, origin hops into a local grand-sender's chain, the
+root record read against the sender's own session. An untraceable delegate
+files quietly instead: no recipient top (its work lives in that session's
+view and transcript, and a needs-you state still surfaces through the
+goal-independent hard-block floor), while the sender's "delegated to"
+tracking node plants either way — so the delegation stays one glance away on
+the sender's board. At mint time uncertainty files quiet; the burden of
+proof is on the mint, the inverse of a display filter's. Coordinating makes
+no card, ever. The companion `run_propagate` is deterministic: when the
+recipient completes the plant, the sender's tracker checks itself off
+through the origin pointer; a quiet-filed delegation's tracker (which no
+recipient goal can ever back-link) completes on the recipient's reply — the
+report-back event, the same rule cross-host handoffs have always used.
 
 ## When a judge fails
 

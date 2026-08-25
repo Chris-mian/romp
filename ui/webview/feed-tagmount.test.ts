@@ -40,8 +40,9 @@ test("the lens is its own slot in the view family; needs-you passes (the family'
     "the combobox/search scoping kept its own layer");
   assert.match(FEED, /return s\.filter\(\(a\) => lensVisible\(feedLens, u, a\.sid\) \|\| a\.column === "needs_input"\);/,
     "the same breakthrough the satellite and internals lens wear");
-  // hover-freeze counts through viewFiltered = viewBase (+ internals) — the badges stay honest free
-  assert.match(FEED, /const base = viewBase\(list\);/);
+  // hover-freeze counts through viewFiltered = viewBase — the badges stay honest for free (the
+  // team-internals slot retired 2026-08-25 on the user's verdict; the slot family stands)
+  assert.match(FEED, /return viewBase\(list\);/);
   assert.match(FEED, /function outsideLensCount\(list: AskItem\[\]\): number \{\s*\n\s*return lensAll\(feedLens\) \? 0 : viewScope\(list\)\.length - viewBase\(list\)\.length;/,
     "the disclosure counts exactly what the lens alone hides — breakthroughs already show");
 });
@@ -77,7 +78,7 @@ test("the mount is the SHARED component: tag glyph button, stay-open menu, Confi
   // class mode keeps the footer's .on mechanics, and the selection chips render beside the button
   assert.match(FEED, /syncTagFilter\(b, ch, feedLens, lensUnions\(feedTagViews\) as never, \(l\) => \{ setFeedLens\(l\); render\(\); \}, "class"\);/,
     "accent ONLY while the lens narrows — via the shared renderer");
-  const mnt = FEED.slice(FEED.indexOf("function ensureTagLensBtn"), FEED.indexOf("function ensureInternalLens"));
+  const mnt = FEED.slice(FEED.indexOf("function ensureTagLensBtn"), FEED.indexOf("// The footer VIEW MENU"));
   assert.ok(!mnt.includes("style.color"), "no inline colour survives in the mount");
 });
 
