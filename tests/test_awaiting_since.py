@@ -36,7 +36,7 @@ class SessionAwaitingSince(unittest.TestCase):
         km._bg_pending = lambda sid, path, tasks: []
         km._states_awaiting_overlay = lambda sid: None
         km._owned_yield_why = lambda sid, path: None
-        km._session_stamp_full = lambda sid: (None, 0, None, None)
+        km._session_stamp_full = lambda sid: (None, 0, None, None, ())
         km._session_delegated_why = lambda sid: None
 
     def tearDown(self):
@@ -66,7 +66,7 @@ class SessionAwaitingSince(unittest.TestCase):
         self.assertEqual(aw["since"], 4321)
 
     def test_judge_stamp_rides_its_awaitingAt(self):
-        km._session_stamp_full = lambda sid: ("g1", 8765, "waiting on the test suite", "task")
+        km._session_stamp_full = lambda sid: ("g1", 8765, "waiting on the test suite", "task", ())
         aw = km._session_awaiting(SID, "/tmp/x", True, stamp=True)
         self.assertEqual(aw["why"], "waiting on the test suite")
         self.assertEqual(aw["since"], 8765)

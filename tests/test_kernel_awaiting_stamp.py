@@ -157,7 +157,7 @@ class SessionLevelStamp(unittest.TestCase):
                          {"kind": "job", "why": "slurm 4821 regenerating the parts",
                           "since": 200})   # the stamp's awaitingAt → the chips' elapsed readout (the user 2026-08-23)
         self.assertEqual(km._session_stamp_full(SID),
-                         ("g1", 200, "slurm 4821 regenerating the parts", "job"))
+                         ("g1", 200, "slurm 4821 regenerating the parts", "job", ()))
 
     def test_session_stamp_takes_the_freshest_across_ALL_tops(self):
         # session-level, so it scans every goal (not one subtree like _goal_awaiting_stamp) for the newest
@@ -256,7 +256,8 @@ class SessionLevelDelegation(unittest.TestCase):
         self._seed(self._delegated_store())
         self.assertEqual(km._session_awaiting(SID, "/p", True, stamp=True),
                          {"kind": "peer", "why": "delegated to probe; waiting on their result",
-                          "since": None})   # the handoff graph has no single event time here → no duration
+                          "since": None,   # the handoff graph has no single event time here → no duration
+                          "peers": [{"name": "probe", "host": "", "sid": self.PEER, "color": None}]})
 
     def test_handoff_peer_identities_carry_name_host_and_colour_for_the_card(self):
         # the card's awaiting box names the peers the way the origin line does (the user 2026-08-23):
@@ -376,7 +377,7 @@ class KindScopedRules(unittest.TestCase):
     def test_the_goal_level_read_scopes_the_same_way(self):
         nodes = {"g1": dict(_node("g1", why="the wait", at=200), awaitingKind="job")}
         self.assertEqual(km._goal_awaiting_stamp_full(nodes, "g1", answered_at=900),
-                         (200, "the wait", "job"))
+                         (200, "the wait", "job", ()))
         nodes["g1"]["awaitingKind"] = "peer"
         self.assertIsNone(km._goal_awaiting_stamp_full(nodes, "g1", answered_at=900))
         nodes["g1"].pop("awaitingKind")
@@ -523,7 +524,7 @@ class AwaitingWake(unittest.TestCase):
     def test_stamp_full_exposes_gid_and_at(self):
         self._seed(at=500)
         self.assertEqual(km._session_stamp_full(SID),
-                         (self.gid, 500, "the trace it dispatched; reports when it returns", None))
+                         (self.gid, 500, "the trace it dispatched; reports when it returns", None, ()))
 
     def test_fires_past_the_window_and_records_the_episode(self):
         now = 1_000_000

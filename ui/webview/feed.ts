@@ -1858,11 +1858,22 @@ function updateAskCard(card: HTMLElement, it: AskItem) {
         const nm = el("span", "fask-waiton-name");
         nm.replaceChildren(...hostPartsNodes(p.host, p.name));
         if (p.color && p.color.bg) nm.style.color = p.color.bg;
+        if (p.sid) {
+          // the standard session-chip gesture (the handoffTo idiom above): click opens the session
+          nm.title = "waiting on " + p.name + " — click opens the session";
+          nm.style.cursor = "pointer";
+          nm.onclick = (ev: Event) => { ev.stopPropagation(); vscodeApi?.postMessage({ type: "openSession", id: p.sid }); };
+        }
         a._awaitWhy.appendChild(nm);
       });
       a._awaitWhy.append(waitedSuffix(it.awaiting && it.awaiting.since, Date.now() / 1000));
     } else a._awaitWhy.textContent = spinCaption;
     a._awaitSpin.title = spinTip || spinCaption;
+    // HONEST fallback (the user 2026-08-26): a peer-kind wait with no named session says WHY the
+    // name is missing, instead of presenting "peer" as a style — identity is only truly unknowable
+    // when the record predates identity capture or an older/offline kernel shipped the payload.
+    if (awaitingBg && !awPeers.length && it.awaiting && it.awaiting.kind === "peer")
+      a._awaitSpin.title += " (No session is named in this wait's record — it predates identity capture, or an older kernel shipped it.)";
   }
   // The swirl's "Analyzing…" caption + tooltip REPLACES the separate "↩ re-judging" chip (the user
   // 2026-06-29: don't show both) — drop the chip the recheck branch set above when the swirl is saying it.
