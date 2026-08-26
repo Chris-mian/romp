@@ -65,6 +65,34 @@ test("menus wear ONE vocabulary (CLAUDE.md): --radius-menu 6px + --shadow-menu o
   assert.match(CHAT, /\.meta-menu \{[^}]*font-family: var\(--sans\)/s, "the meta menus read in the menus' sans");
 });
 
+test("transient notices wear ONE treatment: --surface-raised + --radius-toast + --shadow-toast", () => {
+  // five toast variants had drifted (6/7/8/10px radii, four backgrounds, shadows from none to
+  // 0 10px 30px); the semantic BORDER colors stay per notice (locate amber, warn red). The
+  // kernel's #rstale/#rupd/#rdrift banners carry the same values as literals (no :root there).
+  for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
+    assert.match(css, /--surface-raised: #252526;/, name);
+    assert.match(css, /--radius-toast: 8px;/, name);
+    assert.match(css, /--shadow-toast: 0 8px 28px rgba\(0, 0, 0, 0\.45\);/, name);
+  }
+  for (const sel of [".locate-toast", ".warn-toast", "#seek-note"]) {
+    const at = CHAT.indexOf(sel + " {");
+    const rule = CHAT.slice(at, CHAT.indexOf("}", at));
+    assert.ok(rule.includes("var(--radius-toast)"), sel + " radius through the token");
+    assert.ok(rule.includes("var(--shadow-toast)"), sel + " shadow through the token");
+  }
+  {
+    const at = FEED.indexOf(".feed-toast {");
+    const rule = FEED.slice(at, FEED.indexOf("}", at));
+    assert.ok(rule.includes("var(--radius-toast)"), ".feed-toast radius through the token");
+    assert.ok(rule.includes("var(--shadow-toast)"), ".feed-toast shadow through the token");
+    assert.ok(rule.includes("var(--vscode-menu-background, var(--surface-raised))"), ".feed-toast surface");
+  }
+  // the retired one-off toast surfaces are gone from the sheets
+  for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
+    assert.doesNotMatch(css, /rgba\(28, 28, 28, 0\.9[46]\)|#26262a/, name);
+  }
+});
+
 test("ONE accent wash: every selected/hovered accent chrome resolves through --accent-wash at 0.12", () => {
   // 0.10 and 0.14 washes had drifted in beside the dominant 0.12 (three alphas for one meaning);
   // the token is declared in both self-sufficient :roots, and no bare wash literal remains in the

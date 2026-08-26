@@ -26095,8 +26095,8 @@ try{history.replaceState(null,'',u.pathname+(u.searchParams.toString()?'?'+u.sea
 # version only). Self-contained block (own style + node + script) so it injects at one point.
 _STALE_CSS = (
     "#rstale{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99999;display:none;"
-    "align-items:center;gap:12px;max-width:92vw;background:#2b2d30;border:1px solid #4a4d51;"
-    "border-radius:10px;padding:10px 14px;color:#e6e6e6;box-shadow:0 10px 30px #0000008a;"
+    "align-items:center;gap:12px;max-width:92vw;background:#252526;border:1px solid rgba(255,255,255,0.12);"
+    "border-radius:8px;padding:10px 14px;color:#e6e6e6;box-shadow:0 8px 28px rgba(0,0,0,0.45);"
     "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
     "#rstale.show{display:flex}#rstale .rs-msg{font-weight:500}"
     "#rstale button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 11px;"
@@ -26201,8 +26201,8 @@ def _stale_block(v):
 # "Not now" is page-scoped on purpose — the next kernel start re-offers (what the user asked for).
 _UPD_CSS = (
     "#rupd{position:fixed;top:56px;left:50%;transform:translateX(-50%);z-index:99999;display:none;"
-    "align-items:center;gap:12px;max-width:92vw;background:#2b2d30;border:1px solid #4a4d51;"
-    "border-radius:10px;padding:10px 14px;color:#e6e6e6;box-shadow:0 10px 30px #0000008a;"
+    "align-items:center;gap:12px;max-width:92vw;background:#252526;border:1px solid rgba(255,255,255,0.12);"
+    "border-radius:8px;padding:10px 14px;color:#e6e6e6;box-shadow:0 8px 28px rgba(0,0,0,0.45);"
     "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
     "#rupd.show{display:flex}#rupd .rup-msg{font-weight:500}"
     "#rupd button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 11px;"
@@ -26293,8 +26293,8 @@ _RDRIFT_CSS = (
 # used to overlap at 56/60px when a self-update offer and a remote-drift ask were both live (the user
 # 2026-08-15, whose screenshot showed exactly that pileup) — three claims, three targets, one spot.
     "#rdrift{position:fixed;top:104px;left:50%;transform:translateX(-50%);z-index:99998;display:none;"
-    "align-items:center;gap:10px;max-width:92vw;background:#2b2d30;border:1px solid #4a4d51;"
-    "border-radius:10px;padding:10px 14px;color:#e6e6e6;box-shadow:0 10px 30px #0000008a;"
+    "align-items:center;gap:10px;max-width:92vw;background:#252526;border:1px solid rgba(255,255,255,0.12);"
+    "border-radius:8px;padding:10px 14px;color:#e6e6e6;box-shadow:0 8px 28px rgba(0,0,0,0.45);"
     "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
     "#rdrift.show{display:flex}#rdrift .rd-msg{font-weight:500}"
     "#rdrift .rd-spin{width:14px;height:14px;flex:0 0 auto;display:none;"

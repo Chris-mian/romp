@@ -20,6 +20,9 @@
                        behind every selected/hovered accent chrome */
   --radius-menu: 6px;  /* the menu vocabulary (CLAUDE.md) — mirrors styles.css */
   --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --surface-raised: #252526;  /* the transient-notice vocabulary — mirrors styles.css */
+  --radius-toast: 8px;
+  --shadow-toast: 0 8px 28px rgba(0, 0, 0, 0.45);
   --st-working-bg: #e0b020; --st-working-fg: #332600;  /* the WORKING yellow — mirrors styles.css, same trap
                        as --err: .fask-stallbtn and .fask-interrupting referenced these while they lived only
                        in styles.css, so the "filled yellow so the stall is noticed" chip rendered as a quiet
@@ -1153,9 +1156,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .feed-toast {
   position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%) translateY(8px);
   z-index: 200; max-width: min(440px, 90vw); padding: 9px 13px;
-  background: var(--vscode-menu-background, #26262a); color: var(--fg);
-  border: 1px solid rgba(255, 255, 255, 0.12); border-left: 3px solid var(--warn); border-radius: 7px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45); font-size: 0.86em; line-height: 1.35;
+  background: var(--vscode-menu-background, var(--surface-raised)); color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.12); border-left: 3px solid var(--warn); border-radius: var(--radius-toast);
+  box-shadow: var(--shadow-toast); font-size: 0.86em; line-height: 1.35;
   opacity: 0; transition: opacity 0.18s ease, transform 0.18s ease; pointer-events: none;
 }
 .feed-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -1339,9 +1342,9 @@ a.fileview-btn[hidden] { display: none; }
    marks) is its own section under a hairline. pointer-events:none — it can never eat a click. */
 #age-tip {
   position: fixed; z-index: 210; display: none; max-width: min(440px, 92vw);
-  background: var(--vscode-menu-background, #26262a); color: var(--fg);
-  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 7px; padding: 7px 10px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45); font-size: 0.86em; line-height: 1.45;
+  background: var(--vscode-menu-background, var(--surface-raised)); color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: var(--radius-toast); padding: 7px 10px;
+  box-shadow: var(--shadow-toast); font-size: 0.86em; line-height: 1.45;
   pointer-events: none;
 }
 .age-tip-row { display: flex; column-gap: 10px; align-items: baseline; }
