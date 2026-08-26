@@ -74,6 +74,13 @@ body.scheme-solarized-dark {
   --surface-raised: #252526;
   --radius-toast: 8px;
   --shadow-toast: 0 8px 28px rgba(0, 0, 0, 0.45);
+  /* the centered-modal vocabulary (CLAUDE.md "Panels open as centered modals over a dimmed,
+     UNCHANGED dashboard") — one card radius/shadow and ONE backdrop dim; the picker, the feed's
+     dialogs and the file viewer had each drifted a step off it before 2026-08-26. Mirrored in
+     feed.css (own :root); gear.css and the shell panels carry the same values as literals. */
+  --radius-modal: 10px;
+  --shadow-modal: 0 12px 36px #000000aa;
+  --overlay-dim: rgba(0, 0, 0, 0.55);
   /* Comment-highlight yellow (the user 2026-08-13): the marked passage reads like a highlighter
      stroke, DISTINCT from both the accent blue (selection/chrome) and the working-status yellow
      chip. Text-highlight use only — comment chrome (badge, buttons, chips) stays var(--accent). */
@@ -2082,7 +2089,7 @@ pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity: 0.9; }
 /* ---------- session picker overlay (colored, Claude-Code-history style) ---------- */
 .picker-overlay {
   position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.55);   /* the one modal dim — same as the shell's network/Log/palette backdrops */
+  background: var(--overlay-dim);   /* the one modal dim — same as the shell's network/Log/palette backdrops */
   display: none; align-items: flex-start; justify-content: center;
   z-index: 1000; padding: 56px 16px 16px;
 }
@@ -2174,8 +2181,8 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   display: flex; flex-direction: column;
   background: var(--vscode-editorWidget-background, #252526);
   border: 1px solid var(--vscode-widget-border, var(--box-border));
-  border-radius: 8px;
-  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.55);
+  border-radius: var(--radius-modal);
+  box-shadow: var(--shadow-modal);
   overflow: hidden;
 }
 .picker-search {
@@ -2570,7 +2577,7 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   display: flex; align-items: center; justify-content: center; }
 .romp-lightbox-inner { display: flex; flex-direction: column; gap: 8px; max-width: 92vw; max-height: 90vh; }
 .romp-lightbox-img { max-width: 92vw; max-height: 82vh; object-fit: contain; border-radius: 8px;
-  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.6); }
+  box-shadow: var(--shadow-modal); }
 .romp-lightbox-inner.pdf { width: 88vw; height: 88vh; }
 .romp-lightbox-frame { flex: 1 1 auto; width: 100%; border: 0; border-radius: 8px; background: #fff; }
 .romp-lightbox-bar { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -2923,11 +2930,11 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
    pane, dimmed backdrop (the panels treatment: content behind stays visible, never hidden), ✕ top
    right, Esc/backdrop closes. Under the lightbox (1300) so an image opened FROM a viewed markdown
    file still presents above it. `body.fileview-open` stops the chat scrolling underneath. */
-#romp-fileview { position: fixed; inset: 0; z-index: 1200; background: rgba(0, 0, 0, 0.55);
+#romp-fileview { position: fixed; inset: 0; z-index: 1200; background: var(--overlay-dim);
   display: flex; align-items: center; justify-content: center; }
 .fileview { width: 95%; height: 95%; display: flex; flex-direction: column; overflow: hidden;
-  background: var(--bg, #1e1e1e); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px;
-  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.6); }
+  background: var(--bg, #1e1e1e); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: var(--radius-modal);
+  box-shadow: var(--shadow-modal); }
 body.fileview-open { overflow: hidden; }
 .fileview-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-width: 0;
   padding: 7px 10px; border-bottom: 1px solid var(--box-border); }

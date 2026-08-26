@@ -93,6 +93,31 @@ test("transient notices wear ONE treatment: --surface-raised + --radius-toast + 
   }
 });
 
+test("centered modals wear ONE card (CLAUDE.md): --radius-modal 10px + --shadow-modal + --overlay-dim 0.55", () => {
+  // the picker card wore 8px + its own shadow, the feed's card modal 12px, the confirm and resume
+  // dialogs their own shadows and a 0.5 dim, the file viewer 8px + 0 12px 44px, the analytics
+  // modal a 0.73 dim + 40px blur. All resolve through the vocabulary now (gear.css keeps unified
+  // literals — it loads standalone). The lightbox's 0.72 dim is a LIGHTBOX, deliberately darker.
+  for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
+    assert.match(css, /--radius-modal: 10px;/, name);
+    assert.match(css, /--shadow-modal: 0 12px 36px #000000aa;/, name);
+    assert.match(css, /--overlay-dim: rgba\(0, 0, 0, 0\.55\);/, name);
+    assert.doesNotMatch(css, /0 10px 36px|0 10px 40px|0 12px 44px/, name + " retired modal shadows gone");
+  }
+  for (const [sel, css, name] of [
+    [".picker-box", CHAT, "styles.css"], [".fileview", CHAT, "styles.css"],
+    [".fileview", FEED, "feed.css"], [".fconfirm-box", FEED, "feed.css"],
+    [".feed-modal-inner", FEED, "feed.css"], [".pickdlg-box", FEED, "feed.css"],
+  ] as const) {
+    // regex, not indexOf: a selector may have a second (e.g. mobile) rule that skips the box chrome
+    const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(css, new RegExp(esc + " \\{[^}]*var\\(--radius-modal\\)"), sel + " radius through the token (" + name + ")");
+    assert.match(css, new RegExp(esc + " \\{[^}]*var\\(--shadow-modal\\)"), sel + " shadow through the token (" + name + ")");
+  }
+  assert.match(GEAR, /#ranalytics-back \{[^}]*background: rgba\(0, 0, 0, 0\.55\)/, "analytics dim joins 0.55");
+  assert.match(GEAR, /#ranalytics \{[^}]*box-shadow: 0 12px 36px #000000aa/s, "analytics shadow joins the card");
+});
+
 test("ONE accent wash: every selected/hovered accent chrome resolves through --accent-wash at 0.12", () => {
   // 0.10 and 0.14 washes had drifted in beside the dominant 0.12 (three alphas for one meaning);
   // the token is declared in both self-sufficient :roots, and no bare wash literal remains in the

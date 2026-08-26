@@ -23,6 +23,9 @@
   --surface-raised: #252526;  /* the transient-notice vocabulary — mirrors styles.css */
   --radius-toast: 8px;
   --shadow-toast: 0 8px 28px rgba(0, 0, 0, 0.45);
+  --radius-modal: 10px;  /* the centered-modal vocabulary (CLAUDE.md) — mirrors styles.css */
+  --shadow-modal: 0 12px 36px #000000aa;
+  --overlay-dim: rgba(0, 0, 0, 0.55);
   --st-working-bg: #e0b020; --st-working-fg: #332600;  /* the WORKING yellow — mirrors styles.css, same trap
                        as --err: .fask-stallbtn and .fask-interrupting referenced these while they lived only
                        in styles.css, so the "filled yellow so the stall is noticed" chip rendered as a quiet
@@ -651,10 +654,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* ⛶ full-screen tree modal (deep hierarchies) */
 /* feedConfirm() overlay — a small yes/no (e.g. revive a closed session). Above
    #feed-modal so it can sit over an open card modal. */
-.fconfirm-back { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.55);
+.fconfirm-back { position: fixed; inset: 0; z-index: 200; background: var(--overlay-dim);
   display: flex; align-items: center; justify-content: center; padding: 4vh 4vw; }
 .fconfirm-box { background: var(--bg); border: 1px solid var(--card-border, rgba(255, 255, 255, 0.18));
-  border-radius: 10px; padding: 18px 20px; max-width: 380px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+  border-radius: var(--radius-modal); padding: 18px 20px; max-width: 380px; box-shadow: var(--shadow-modal); }
 .fconfirm-msg { color: var(--fg); line-height: 1.45; margin-bottom: 14px; overflow-wrap: anywhere; }
 .fconfirm-btns { display: flex; justify-content: flex-end; gap: 8px; }
 .fconfirm-btn { font: inherit; padding: 5px 13px; border-radius: 6px; cursor: pointer;
@@ -673,10 +676,10 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fwarn-meta { color: var(--dim); font-size: 0.78em; letter-spacing: 0.04em; margin-bottom: 6px; }
 .fwarn-detail { color: var(--fg); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.92em; }
 
-#feed-modal { position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, 0.55);
+#feed-modal { position: fixed; inset: 0; z-index: 100; background: var(--overlay-dim);
   display: flex; align-items: center; justify-content: center; padding: 4vh 4vw; }
 .feed-modal-inner { display: flex; flex-direction: column; width: 100%; max-width: 1280px; max-height: 92vh;
-  background: var(--bg); border: 1px solid var(--card-border); border-radius: 12px; overflow: hidden; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+  background: var(--bg); border: 1px solid var(--card-border); border-radius: var(--radius-modal); overflow: hidden; box-shadow: var(--shadow-modal); }
 .feed-modal-head { display: flex; align-items: baseline; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--card-border); }
 .feed-modal-title { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
 /* the modal title is a locate link, same affordance as the card title */
@@ -1122,7 +1125,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* ---- in-page resume-picker dialog (answerPicker without a native QuickPick) ---- */
 .pickdlg-overlay {
   position: fixed; inset: 0; z-index: 1200;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-dim);
   display: flex; align-items: center; justify-content: center; padding: 16px;
 }
 .pickdlg-box {
@@ -1130,8 +1133,8 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   display: flex; flex-direction: column; gap: 8px;
   background: var(--vscode-editorWidget-background, #252526);
   border: 1px solid var(--vscode-widget-border, #303031);
-  border-radius: 8px; padding: 16px 18px;
-  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.55);
+  border-radius: var(--radius-modal); padding: 16px 18px;
+  box-shadow: var(--shadow-modal);
 }
 .pickdlg-title { font-weight: 700; color: var(--vscode-foreground, #ccc); margin-bottom: 4px; }
 /* the quarantine dialog's title IS the card's route line, so opening a held message never re-words who
@@ -1181,11 +1184,11 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    file BROWSER (file-browse.ts) opens files through the same module. One treatment, two sheets: the
    ~95% card and dimmed backdrop mirror styles.css exactly (the panels treatment: the listing behind
    stays visible, never hidden). `body.fileview-open` stops the cards underneath scrolling behind it. */
-#romp-fileview { position: fixed; inset: 0; z-index: 1200; background: rgba(0, 0, 0, 0.55);
+#romp-fileview { position: fixed; inset: 0; z-index: 1200; background: var(--overlay-dim);
   display: flex; align-items: center; justify-content: center; }
 .fileview { width: 95%; height: 95%; display: flex; flex-direction: column; overflow: hidden;
-  background: var(--bg, #1e1e1e); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px;
-  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.6); }
+  background: var(--bg, #1e1e1e); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: var(--radius-modal);
+  box-shadow: var(--shadow-modal); }
 body.fileview-open { overflow: hidden; }
 .fileview-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-width: 0;
   padding: 7px 10px; border-bottom: 1px solid var(--box-border); }

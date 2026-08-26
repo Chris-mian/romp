@@ -108,13 +108,13 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 .ra-openbtn { margin-top: 8px; width: 100%; background: #2d2d2f; border: 1px solid #3a3a3a; border-radius: 6px;
   color: #cdd3da; font: 600 12px/1.4 -apple-system, sans-serif; padding: 7px; cursor: pointer; }
 .ra-openbtn:hover { background: #343436; color: #fff; }
-#ranalytics-back { position: fixed; inset: 0; z-index: 70; background: #000000bb; display: flex;
+#ranalytics-back { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, 0.55); display: flex;
   align-items: center; justify-content: center; }
 /* an explicit display rule beats the UA [hidden]{display:none}; restore hiding at higher
    specificity so the close / backdrop-click / Esc (which set .hidden) actually dismiss the modal */
 #ranalytics-back[hidden] { display: none; }
 #ranalytics { width: min(520px, 94vw); max-height: 90vh; overflow: auto; background: #252526;
-  border: 1px solid #3a3a3a; border-radius: 10px; padding: 14px 16px; box-shadow: 0 12px 40px #000000aa;
+  border: 1px solid #3a3a3a; border-radius: 10px; padding: 14px 16px; box-shadow: 0 12px 36px #000000aa;
   font: 12px/1.5 -apple-system, sans-serif; color: #ccc; }
 #ranalytics .ra-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 #ranalytics .ra-title { font-weight: 600; font-size: 14px; color: #e8eaed; }
