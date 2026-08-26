@@ -1425,10 +1425,10 @@ class PlanSubRef(unittest.TestCase):
 
 
 class Grouper(unittest.TestCase):
-    """The grouper judge (the user 2026-06-17): a separate pass after the planner that reshapes a
-    session's OPEN top goals into coherent trees — relinking one top under another, or minting a fresh
-    higher-level umbrella and nesting tops under it. Event-gated per session (groupedSig) so a stable
-    board is never re-grouped."""
+    """The grouper judge, post-T101 (the user 2026-08-26: the board's unit is the individual ask —
+    tops never nest, containers never mint): housekeeping only — merge true twins, split drifted
+    tangents, retitle outgrown cards. The retired mint/group ops parse away and are ignored if
+    hand-built. Event-gated per session (groupedSig) so a stable board is never re-examined."""
 
     def setUp(self):
         # _group_tops now consults STATE/cleared.jsonl (the view-cleared set) — sandbox STATE to a fresh
@@ -1444,85 +1444,52 @@ class Grouper(unittest.TestCase):
         return s, s["placements"]["s1"], s["placements"]["s2"]
 
     # ── parse ──
-    def test_parse_mint_group_and_empty(self):
-        self.assertEqual(jd._parse_group('{"ops":[{"why":"x","do":"group","goal":2,"under":1}]}', 3),
-                         [{"do": "group", "why": "x", "goal": 2, "under": 1}])
+    def test_parse_drops_the_retired_container_ops(self):
+        # T101 (the user 2026-08-26): mint + group parse away — an older cached reply that still
+        # emits them applies NOTHING; the housekeeping ops survive beside them
         ops = jd._parse_group('{"ops":[{"why":"u","do":"mint","text":"Umbrella"},'
-                              '{"why":"x","do":"group","goal":1,"ref":1}]}', 2)
-        self.assertEqual(ops[0], {"do": "mint", "why": "u", "text": "Umbrella"})
-        self.assertEqual(ops[1], {"do": "group", "why": "x", "goal": 1, "ref": 1}, "group via a same-reply ref")
-        self.assertEqual(jd._parse_group('{"ops":[{"why":"x","do":"group","goal":1,"under":1}]}', 3), [],
-                         "self-group (goal == under) is dropped")
-        self.assertEqual(jd._parse_group('{"ops":[]}', 3), [], "empty ops is valid: nothing to group")
+                              '{"why":"x","do":"group","goal":1,"under":2},'
+                              '{"why":"r","do":"retitle","goal":1,"text":"A, clarified"}]}', 3)
+        self.assertEqual([o["do"] for o in ops], ["retitle"])
+        self.assertEqual(jd._parse_group('{"ops":[]}', 3), [], "empty ops is valid: nothing to do")
         self.assertIsNone(jd._parse_group("not json", 3), "unusable JSON → None (retry)")
 
-    def test_parse_group_with_optional_retitle(self):
-        # the user 2026-07-01: a relink may ALSO retitle the child, now that continuous card identity in
-        # the UI (it visibly moves under the new parent) means a title change no longer reads as a new card.
-        ops = jd._parse_group('{"ops":[{"why":"x","do":"group","goal":2,"under":1,'
-                              '"retitle":"a clearer title"}]}', 3)
-        self.assertEqual(ops, [{"do": "group", "why": "x", "goal": 2, "under": 1, "retitle": "a clearer title"}])
-        # blank/whitespace-only retitle is dropped, same as an empty mint/sub text
-        ops2 = jd._parse_group('{"ops":[{"why":"x","do":"group","goal":2,"under":1,"retitle":"   "}]}', 3)
-        self.assertNotIn("retitle", ops2[0], "a blank retitle is dropped, not applied as an empty title")
-
     # ── apply ──
-    def test_relinks_a_top_under_another(self):
-        s, a, b = self._two_tops()
-        tops = jd._group_tops(s)                                  # [A, B] oldest-first
-        ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
-        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
-        n = jd.apply_group(s, tops, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai}], T0 + 20)
-        self.assertEqual(n, 1, "one relink applied")
-        self.assertEqual(s["nodes"][b]["parentId"], a, "B is relinked under A (its subtree moves with it)")
-        self.assertIsNone(s["nodes"][a]["parentId"], "A stays a top")
-
-    def test_relink_can_retitle_the_child(self):
+    def test_apply_ignores_the_retired_container_ops(self):
+        # T101: every top stays its own card — a hand-built group/mint op list applies NOTHING
         s, a, b = self._two_tops()
         tops = jd._group_tops(s)
         ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
         bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
-        jd.apply_group(s, tops, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai,
-                                  "retitle": "B, narrowed"}], T0 + 20)
-        self.assertEqual(s["nodes"][b]["text"], "B, narrowed", "the relink also retitled the child")
+        n = jd.apply_group(s, tops, [{"do": "mint", "why": "x", "text": "Umbrella X"},
+                                     {"do": "group", "why": "x", "goal": bi, "under": ai}], T0 + 20)
+        self.assertEqual(n, 0, "nothing applied")
+        self.assertIsNone(s["nodes"][a]["parentId"], "A stays its own card")
+        self.assertIsNone(s["nodes"][b]["parentId"], "B stays its own card")
+        self.assertFalse(any(nd.get("umbrella") for nd in s["nodes"].values()), "no container minted")
+
+    def test_retitle_still_applies_standalone(self):
+        s, a, b = self._two_tops()
+        tops = jd._group_tops(s)
+        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
+        n = jd.apply_group(s, tops, [{"do": "retitle", "why": "outgrown", "goal": bi,
+                                      "text": "B, narrowed"}], T0 + 20)
+        self.assertEqual(n, 1)
+        self.assertEqual(s["nodes"][b]["text"], "B, narrowed")
         self.assertEqual(s["nodes"][b]["mt"], T0 + 20)
 
-    def test_relink_without_retitle_leaves_the_childs_title_alone(self):
-        s, a, b = self._two_tops()
-        tops = jd._group_tops(s)
-        ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
-        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
-        jd.apply_group(s, tops, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai}], T0 + 20)
-        self.assertEqual(s["nodes"][b]["text"], "Goal B", "no retitle in the op -> title unchanged")
-
-    def test_two_tops_under_a_fresh_umbrella_with_anchor_backfill(self):
-        s, a, b = self._two_tops()
-        s["nodes"][a]["trail"] = ["s1"]                           # A has a real anchor seg; B has none
-        tops = jd._group_tops(s)
-        ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
-        bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
-        jd.apply_group(s, tops, [{"do": "mint", "why": "both serve X", "text": "Umbrella X"},
-                                 {"do": "group", "why": "x", "goal": ai, "ref": 1},
-                                 {"do": "group", "why": "x", "goal": bi, "ref": 1}], T0 + 20)
-        um = next(nd for nd in s["nodes"].values() if nd["text"] == "Umbrella X")
-        self.assertEqual(s["nodes"][a]["parentId"], um["id"], "A grouped under the fresh umbrella")
-        self.assertEqual(s["nodes"][b]["parentId"], um["id"], "B grouped under the fresh umbrella")
-        self.assertIsNone(um["parentId"], "the umbrella is the new top")
-        self.assertTrue(um.get("umbrella"), "a minted umbrella is tagged")
-        self.assertEqual(um["trail"], ["s1"], "umbrella inherits its earliest grouped child's anchor seg")
-
-    def test_refuses_a_cycle(self):
+    def test_group_ops_cannot_create_cycles_because_they_apply_nothing(self):
         s = _store()
         jd.apply_plan(s, "s1", T0, [{"do": "mint", "why": "x", "text": "Parent"}], [])
         jd.apply_plan(s, "s2", T0 + 10, [{"do": "sub", "why": "x", "under": 1, "text": "Child"}], jd.open_menu(s))
         parent, child = s["placements"]["s1"], s["placements"]["s2"]
-        tops = [s["nodes"][parent], s["nodes"][child]]            # force Child into the candidate list to exercise the guard
+        tops = [s["nodes"][parent], s["nodes"][child]]
         n = jd.apply_group(s, tops, [{"do": "group", "why": "x", "goal": 1, "under": 2}], T0 + 20)
-        self.assertEqual(n, 0, "the cyclic relink is refused")
-        self.assertIsNone(s["nodes"][parent]["parentId"], "grouping Parent under its own Child is refused (no cycle)")
+        self.assertEqual(n, 0, "retired op — nothing applies, no cycle possible")
+        self.assertIsNone(s["nodes"][parent]["parentId"])
         self.assertEqual(s["nodes"][child]["parentId"], parent, "Child stays under Parent")
 
-    def test_relink_clamps_at_max_depth(self):
+    def test_retired_group_op_never_deepens_a_tree(self):
         s = _store()
         jd.apply_plan(s, "s0", T0, [{"do": "mint", "why": "x", "text": "A"}], [])
         for i in range(1, jd.MAX_DEPTH + 1):                     # chain A -> step1 -> ... down to MAX_DEPTH
@@ -1535,9 +1502,9 @@ class Grouper(unittest.TestCase):
         b = s["placements"]["sb"]
         tops = [deepest, s["nodes"][b]]                          # group B under the deepest node
         jd.apply_group(s, tops, [{"do": "group", "why": "x", "goal": 2, "under": 1}], T0 + 60)
-        self.assertLessEqual(jd._depth(s["nodes"], b), jd.MAX_DEPTH, "B's relink is clamped to MAX_DEPTH")
+        self.assertIsNone(s["nodes"][b]["parentId"], "the retired op applies nothing — B stays a top")
 
-    def test_reopened_once_done_node_is_groupable_again(self):
+    def test_reopened_once_done_node_is_mergeable_again(self):
         # INVERTED 2026-07-06 (the user): the old never-move-an-everDone-node guard is REMOVED — a reopened
         # once-done top is live work again, so an erroneously split pair the user pushes back into Working
         # can be re-merged by the grouper. (The guard's original motive — a done card vanishing under an
@@ -1554,13 +1521,13 @@ class Grouper(unittest.TestCase):
         tops = jd._group_tops(s)                                  # B is an open top again
         ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
         bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
-        n = jd.apply_group(s, tops, [{"do": "group", "why": "both serve X", "goal": bi, "under": ai}], T0 + 30)
-        self.assertEqual(n, 1, "a reopened once-done top relinks like any other open top")
-        self.assertEqual(s["nodes"][b]["parentId"], a, "B nests under A — the split re-merges")
+        n = jd.apply_group(s, tops, [{"do": "merge", "why": "same work twice", "goal": bi, "into": ai}], T0 + 30)
+        self.assertEqual(n, 1, "a reopened once-done top merges like any other open top (T101: merge, not nest)")
+        self.assertNotIn(b, s["nodes"], "the twin folded into the keeper")
 
-    def test_once_done_node_can_still_be_an_umbrella_parent(self):
-        # the exemption blocks MOVING a once-done node, not nesting OTHERS under it: A (never done) groups
-        # under B (once done, reopened) fine — B is a valid relink TARGET, just never a source.
+    def test_nesting_stays_retired_even_onto_a_reopened_top(self):
+        # T101: no relink target exists at all — a once-done reopened top is live work again, but
+        # nothing nests under it (the ask-unit rule has no exceptions)
         s, a, b = self._two_tops()
         di = next(i for i, nd in enumerate(jd.open_menu(s), 1) if nd["id"] == b)
         jd.apply_plan(s, "sd", T0 + 15, [{"do": "done", "why": "shipped", "goal": di}], jd.open_menu(s))
@@ -1569,8 +1536,8 @@ class Grouper(unittest.TestCase):
         ai = next(i for i, nd in enumerate(tops, 1) if nd["id"] == a)
         bi = next(i for i, nd in enumerate(tops, 1) if nd["id"] == b)
         n = jd.apply_group(s, tops, [{"do": "group", "why": "x", "goal": ai, "under": bi}], T0 + 30)
-        self.assertEqual(n, 1, "A (never done) is relinked under B")
-        self.assertEqual(s["nodes"][a]["parentId"], b, "the once-done node serves as the parent")
+        self.assertEqual(n, 0)
+        self.assertIsNone(s["nodes"][a]["parentId"], "A stays its own card")
 
     def test_a_bottom_up_completed_top_is_not_a_grouper_candidate(self):
         # the user 2026-06-25: a goal the board shows as DONE must never be a grouper source/target — else it
@@ -1648,12 +1615,13 @@ class Grouper(unittest.TestCase):
 
         def fake_group(menu):
             calls.append(menu)
-            return '{"ops":[{"why":"both serve X","do":"group","goal":2,"under":1}]}'   # B under A
+            bi = 2 if "Goal B" in menu.splitlines()[1] else 1     # retitle B wherever it landed
+            return '{"ops":[{"why":"outgrown","do":"retitle","goal":%d,"text":"Goal B, narrowed"}]}' % bi
         jd.group_llm = fake_group
         now = T0 + 5000
         jd.run_group(now=now)
         st = jd.load_goals(SID)
-        self.assertEqual(st["nodes"][b]["parentId"], a, "B nested under A")
+        self.assertEqual(st["nodes"][b]["text"], "Goal B, narrowed", "the housekeeping op applied")
         self.assertEqual(len(calls), 1, "the grouper called the model once")
         self.assertTrue(st.get("groupedSig"), "groupedSig recorded")
         jd.run_group(now=now)
@@ -1676,10 +1644,12 @@ class Grouper(unittest.TestCase):
         self.assertEqual(len(calls), 0, "fewer than two tops → nothing to group, model not called")
         self.assertIsNotNone(jd.load_goals(SID).get("groupedSig"), "the (single-top) set is still recorded")
 
-    def test_prompt_carries_the_grouping_steer(self):
-        for phrase in ('"do":"group"', '"do":"mint"', "relink open top", "umbrella",
-                       "aggressive about grouping", "look-alike wording"):
+    def test_prompt_carries_the_ask_unit_steer(self):
+        # T101: the prompt no longer teaches containers or nesting; the ask-unit rule is explicit
+        for phrase in ("its own card by design", '"do":"merge"', '"do":"split"', '"do":"retitle"'):
             self.assertIn(phrase, jd.GROUP_SYS, phrase)
+        for gone in ('"do":"group"', '"do":"mint"', "umbrella"):
+            self.assertNotIn(gone, jd.GROUP_SYS, gone)
         self.assertNotIn("genuine", jd.GROUP_SYS.lower(), "the grouper prompt avoids 'genuine' too")
 
     def test_prompt_allows_doing_nothing(self):
@@ -1719,12 +1689,12 @@ class Grouper(unittest.TestCase):
 
             def fake_group(menu):
                 gcalls.append(menu)
-                return '{"ops":[{"why":"both serve X","do":"group","goal":2,"under":1}]}'   # B under A
+                return '{"ops":[{"why":"same work twice","do":"merge","goal":2,"into":1}]}'   # twins fold
             jd.group_llm = fake_group
             jd.run_plan(now=T0 + 5000)
             st = jd.load_goals(SID)
             tops = [nd for nd in st["nodes"].values() if nd["parentId"] is None]
-            self.assertEqual(len(tops), 1, "2nd top grouped under the 1st INLINE — no separate run_group needed")
+            self.assertEqual(len(tops), 1, "the twin merged INLINE after placement — no separate run_group needed")
             self.assertGreaterEqual(len(gcalls), 1, "the planner invoked the grouper after a placement")
         finally:
             (jd.NAMES, jd.PROJECTS, jd.GOALDIR, jd.plan_llm, jd.group_llm) = saved
@@ -1798,19 +1768,18 @@ class Consolidator(unittest.TestCase):
         self.assertEqual(ids, {SID + ":g2"}, "a top the user crossed off the feed is never re-grouped")
 
     # ── apply-level: done nodes relink unconditionally (the allow_done lift is gone with its guard) ──
-    def test_apply_group_moves_a_once_done_node(self):
-        # 2026-07-06 (the user): apply_group no longer carries the once-done guard or the allow_done
-        # parameter — the consolidator (all-done candidates) and the working grouper (open candidates,
-        # possibly reopened-once-done) both relink through the same unconditional path.
+    def test_apply_group_never_nests_done_cards_either(self):
+        # T101: the retired group op applies nothing in the done column too
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
         tops = jd._consolidate_tops(s)
         ops = [{"do": "group", "why": "both done parts of X", "goal": 2, "under": 1}]
-        self.assertEqual(jd.apply_group(s, tops, ops, T0 + 20), 1,
-                         "a completed node relinks with no special lift")
-        self.assertEqual(s["nodes"][SID + ":g2"]["parentId"], SID + ":g1")
+        self.assertEqual(jd.apply_group(s, tops, ops, T0 + 20), 0)
+        self.assertIsNone(s["nodes"][SID + ":g2"].get("parentId"), "B stays its own done card")
 
     # ── the session pass ──
-    def test_groups_completed_siblings_under_a_completed_umbrella(self):
+    def test_completed_siblings_stay_their_own_cards(self):
+        # T101: the consolidator no longer containers the done column — an older cached reply that
+        # still asks for it applies nothing, and both cards keep their own identity and status row
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
         self._setup(s, self._RECORDS)
         jd.group_llm = lambda menu, **k: ('{"ops":[{"why":"both finish X","do":"mint","text":"Umbrella X"},'
@@ -1818,32 +1787,31 @@ class Consolidator(unittest.TestCase):
                                      '{"why":"x","do":"group","goal":2,"ref":1}]}')
         jd.run_consolidate(now=T0 + 5000)
         st = jd.load_goals(SID)
-        um = next((nd for nd in st["nodes"].values() if nd.get("umbrella")), None)
-        self.assertIsNotNone(um, "a completed umbrella was minted")
-        self.assertEqual(st["nodes"][SID + ":g1"]["parentId"], um["id"], "A nested under the umbrella")
-        self.assertEqual(st["nodes"][SID + ":g2"]["parentId"], um["id"], "B nested under the umbrella")
-        self.assertEqual(st["status"].get(um["id"]), "completed",
-                         "the umbrella rolls up to completed (all children done) — nothing reverts to working")
-        self.assertNotIn(SID + ":g1", st["status"], "the grouped children drop off the top-level status map")
-        self.assertNotIn(SID + ":g2", st["status"])
-        self.assertEqual(um["trail"], ["sA"], "the umbrella inherits its earliest child's anchor (deep-links to the work)")
+        self.assertIsNone(next((nd for nd in st["nodes"].values() if nd.get("umbrella")), None),
+                          "no container minted")
+        self.assertIsNone(st["nodes"][SID + ":g1"].get("parentId"), "A stays its own card")
+        self.assertIsNone(st["nodes"][SID + ":g2"].get("parentId"), "B stays its own card")
+        self.assertEqual(st["status"].get(SID + ":g1"), "completed")
+        self.assertEqual(st["status"].get(SID + ":g2"), "completed")
 
-    def test_reopened_child_reverts_the_whole_umbrella_to_working(self):
-        # the user's choice 2026-06-19: re-poking a child of a completed group reverts the umbrella to working,
-        # together — driven entirely by rollup_status (an umbrella is complete only while ALL kids are).
+    def test_a_legacy_umbrella_dissolves_and_its_children_stand_alone(self):
+        # T101: the dissolution sweep (rollup pre-pass) un-containers legacy stores — a reopened
+        # child then moves only ITSELF back to working; its done sibling rests untouched
         s = self._completed_store([("g1", "A", ["sA"]), ("g2", "B", ["sB"])])
-        tops = jd._consolidate_tops(s)
-        jd.apply_group(s, tops, [{"do": "mint", "why": "x", "text": "Umb"},
-                                 {"do": "group", "why": "x", "goal": 1, "ref": 1},
-                                 {"do": "group", "why": "x", "goal": 2, "ref": 1}], T0 + 20)
+        uid = SID + ":u9"
+        s["nodes"][uid] = {"id": uid, "text": "Umb", "parentId": None, "nodeComplete": False,
+                           "blocked": False, "cleared": False, "trail": [], "t": T0, "mt": T0,
+                           "umbrella": True, "log": []}
+        s["nodes"][SID + ":g1"]["parentId"] = uid
+        s["nodes"][SID + ":g2"]["parentId"] = uid
         jd.rollup_status(s, True)
-        um = next(nd for nd in s["nodes"].values() if nd.get("umbrella"))
-        self.assertEqual(s["status"][um["id"]], "completed", "all children done → umbrella completed")
-        jd._reopen(s, SID + ":g1", by="followup")     # a follow-up reopens child A — the REAL reopen:
-        jd.rollup_status(s, True)                     # post-P3.3, a hand-flipped flag with no event is
-        #                                               simply restored from the verdict log
-        self.assertEqual(s["status"][um["id"]], "working",
-                         "one reopened child reverts the whole umbrella to working")
+        self.assertNotIn(uid, s["nodes"], "the container dissolved")
+        self.assertEqual(s["status"].get(SID + ":g1"), "completed")
+        self.assertEqual(s["status"].get(SID + ":g2"), "completed")
+        jd._reopen(s, SID + ":g1", by="followup")
+        jd.rollup_status(s, True)
+        self.assertEqual(s["status"].get(SID + ":g1"), "working", "the reopened ask moves alone")
+        self.assertEqual(s["status"].get(SID + ":g2"), "completed", "its sibling rests — no shared fate")
 
     # ── empty-umbrella cleanup ──
     def test_empty_umbrella_is_cleared_but_a_populated_one_is_not(self):
@@ -4134,16 +4102,14 @@ class FollowUp(unittest.TestCase):
                          "nothing was buried under the cited goal itself")
         top = next(nd for nd in st["nodes"].values() if nd.get("pivotFrom") == gid)
         self.assertEqual(top["text"], "Rework the export flow")
-        umb = st["nodes"][top["parentId"]]
-        self.assertTrue(umb.get("umbrella"), "the pivot goal lives under an umbrella, not loose on the board")
-        self.assertEqual(st["nodes"][gid]["parentId"], umb["id"],
-                         "the cited card sits under the same umbrella — followed-up work stays together")
-        self.assertEqual(umb["text"], "Ship the release", "the umbrella wears the cited card's title")
-        self.assertIsNone(umb["parentId"])
+        # T101 (the user 2026-08-26): the STRUCTURAL tie retired with the umbrella — the pivot's
+        # goal is its own card, and pivotFrom is the provenance display layers may group on
+        self.assertIsNone(top.get("parentId"), "the pivot goal is its own card")
+        self.assertFalse(any(nd.get("umbrella") for nd in st["nodes"].values()), "no container minted")
 
-    def test_followup_pivot_joins_the_cited_cards_existing_umbrella(self):
-        # the tie reuses an existing roof: when the cited card already lives under an umbrella, the pivot's
-        # goal relinks under THAT umbrella — no umbrella-of-umbrellas.
+    def test_a_pivot_on_a_legacy_umbrella_child_dissolves_the_container(self):
+        # T101: a legacy umbrella around the cited card dissolves on the pass's own rollup — the
+        # cited card and the pivot goal both end as their own cards, tied by pivotFrom provenance
         gid, uid = SID + ":g1", SID + ":g9"
         store = self._completed_top(gid)
         store["nodes"][uid] = {"id": uid, "text": "Release work", "parentId": None, "umbrella": True,
@@ -4158,9 +4124,9 @@ class FollowUp(unittest.TestCase):
         jd.run_plan(now=T0 + 5000)
         st = jd.load_goals(SID)
         top = next(nd for nd in st["nodes"].values() if nd.get("pivotFrom") == gid)
-        self.assertEqual(top["parentId"], uid, "the pivot goal joined the existing umbrella")
-        self.assertEqual(sum(1 for nd in st["nodes"].values() if nd.get("umbrella")), 1,
-                         "no second umbrella was minted")
+        self.assertIsNone(top.get("parentId"), "the pivot goal is its own card")
+        self.assertNotIn(uid, st["nodes"], "the legacy container dissolved on the pass's rollup")
+        self.assertIsNone(st["nodes"][gid].get("parentId"), "the cited card stands alone again")
 
     def test_pivot_clears_followup_pending_on_a_blocked_cited_goal(self):
         # the user 2026-07-03: the track card sat in Working with a "Re-judging…" swirl for 8+ hours.
@@ -4182,9 +4148,10 @@ class FollowUp(unittest.TestCase):
         self.assertNotIn("followupPending", st["nodes"][gid],
                          "the pivot verdict processed the follow-up — the optimistic flag drops")
         self.assertTrue(st["nodes"][gid]["blocked"], "the block stands on the cited goal")
-        umb = st["nodes"][st["nodes"][gid]["parentId"]]   # the 07-09 tie grouped the pivot with the cited card
-        self.assertEqual(st["status"][umb["id"]], "blocked",
-                         "the umbrella card carries the block to Needs-You, not a permanent Re-judging swirl")
+        self.assertIsNone(st["nodes"][gid].get("parentId"),
+                          "T101: no umbrella tie — the cited card is its own card")
+        self.assertEqual(st["status"][gid], "blocked",
+                         "the cited card itself carries the block to Needs-You, not a permanent Re-judging swirl")
 
     def test_followup_parse_failure_keeps_the_forced_sub_floor(self):
         # ambiguity never pivots: an unparseable planner reply falls to the forced-sub default, so an

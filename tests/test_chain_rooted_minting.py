@@ -234,21 +234,27 @@ class CourierMintMatrix(unittest.TestCase):
         jd.save_goals(MGR, st)
         self.mpath.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 
-    def test_a_user_rooted_delegate_mints_exactly_as_before(self):
+    def test_a_user_rooted_linked_delegate_links_into_the_ask_card(self):
+        # T101 (the user 2026-08-26) supersedes the mint here: the courier's link resolved to the
+        # sender's ask node, so the ASK CARD carries the dispatch — the tracker plants under it
+        # (quiet: the reply-sweep owns its ending) and the recipient gets NO standalone top. The
+        # mint survives only for the LINKLESS rooted shape (tests/test_ask_unit_cards.py holds
+        # that fallback plus the fan-out matrix).
         self._mgr_store("hu", [uline(T0 - 600, "please verify the staged run references", "hu"),
                                aline(T0 - 540, "Dispatching.", "ha", "hu")])
         jd.run_courier(now=NOW)
         w = jd.load_goals(WKR)
-        planted = [nd for nd in w["nodes"].values()
-                   if isinstance(nd.get("origin"), dict) and nd["origin"].get("msgId") == MID]
-        self.assertEqual(len(planted), 1, "the ask flowing down still mints the recipient top")
-        self.assertIsNone(planted[0].get("parentId"))
+        self.assertEqual([nd for nd in w["nodes"].values()
+                          if isinstance(nd.get("origin"), dict)], [],
+                         "no recipient top — the ask card is the unit")
+        self.assertIn("fyi", set(w["placements"].values()))
         m = jd.load_goals(MGR)
         trackers = [nd for nd in m["nodes"].values()
                     if isinstance(nd.get("handoff"), dict) and nd["handoff"].get("msgId") == MID]
         self.assertEqual(len(trackers), 1, "the sender tracking node plants either way")
-        self.assertFalse(trackers[0]["handoff"].get("quiet"),
-                         "a linked recipient goal exists — the origin back-link owns completion")
+        self.assertEqual(trackers[0].get("parentId"), MGR + ":g1", "…under the ask it serves")
+        self.assertTrue(trackers[0]["handoff"].get("quiet"),
+                        "no recipient goal will carry this msgId — the reply-sweep owns the ending")
 
     def test_an_untraceable_delegate_files_quiet(self):
         # the sender's linked goal roots at a COORDINATE mail record — team-internal, not the user

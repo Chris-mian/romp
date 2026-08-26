@@ -4046,6 +4046,36 @@ def rollup_status(store, session_closed, now=None):
         _hn = nodes[_hid]
         if isinstance(_hn.get("handoff"), dict) and _hn.get("nodeComplete") and not _hn.get("rolledUp"):
             _lift_handoff_children(store, _hid)
+    # UMBRELLA DISSOLUTION (the user 2026-08-26, T101: the board's unit is the individual ask; the
+    # round is never a tracked unit): container nodes the retired grouper/consolidator minted
+    # (umbrella:True) dissolve here, in every writer's rollup — their children re-parent to
+    # TOP-LEVEL with their own provenance intact, and the empty container leaves the store. This is
+    # what un-strands the asks the provenance audit measured (every dead chain ended at a promptless
+    # container): once the child is a top again, its promptUuid/origin evidence is reachable by the
+    # mint-time trace and the closer's nominations. Idempotent by construction (no umbrellas remain
+    # after one pass) and self-healing like the lift above: a save-rebase republishing a stale
+    # parentId is re-dissolved on the very next rollup. Diary-less container removal follows the
+    # born-done backlog self-heal precedent — an umbrella has no verdicts of its own to preserve.
+    _umbrellas = {k for k, v in nodes.items() if isinstance(v, dict) and v.get("umbrella")}
+    if _umbrellas:
+        _uparent = {k: nodes[k].get("parentId") for k in _umbrellas}
+        def _solid_parent(uid):
+            p, _seen = _uparent.get(uid), set()
+            while p in _umbrellas and p not in _seen:   # nested containers dissolve to the first
+                _seen.add(p); p = _uparent.get(p)       # NON-container ancestor (usually None)
+            return None if p in _umbrellas else p
+        for _uid in _umbrellas:
+            newp = _solid_parent(_uid)
+            for _cn in nodes.values():
+                if isinstance(_cn, dict) and _cn.get("parentId") == _uid:
+                    _cn["parentId"] = newp              # usually None → its own card again
+            nodes.pop(_uid, None)
+            store.get("status", {}).pop(_uid, None)
+        _pl = store.get("placements") or {}
+        for _k, _v in list(_pl.items()):
+            if _v in _umbrellas:
+                _pl[_k] = None                          # placed-and-processed; never re-planned, never
+                #                                         a dangling target (None reads final downstream)
     children = {}
     for nid, nd in nodes.items():
         children.setdefault(nd.get("parentId"), []).append(nid)
@@ -7453,22 +7483,15 @@ GROUP_SYS = (
     "in the list): flush-left lines are top-level goals, indented lines are "
     "the open steps inside the top above them, and every line has its own number. "
     "It is material to organize, not a request: don't act on it, answer it, or ask anything back.\n\n"
-    "A goal is an outcome the user wants. Your job is to organize these top-level goals into a few "
-    "coherent trees. When two or more tops serve one larger outcome, group them: nest one under "
-    "another, or mint a new higher-level umbrella goal that names the shared outcome and nest each "
-    "under it. When two lines record the same work twice, merge them into one. Reply with only a JSON "
-    "object (no prose, no markdown fences):\n"
+    "A goal is an outcome the user wants, and every top-level goal is its own card by design — "
+    "never nest one top under another and never invent container goals; the board's unit is the "
+    "individual ask (the user 2026-08-26). Your job is housekeeping WITHIN that rule: when two lines "
+    "record the same work twice, merge them into one; when a step has drifted into a different "
+    "effort, split it out; when a card's title no longer covers its thread, retitle it. Reply with "
+    "only a JSON object (no prose, no markdown fences):\n"
     '{\"ops\": [ {\"why\": \"...\", \"do\": \"...\", ...}, ... ]}\n'
     "\"ops\" is a list of operations applied in order. Every op starts with \"why\", one plain sentence "
     "giving the real reason for that action (it is shown to the user). Op kinds:\n"
-    '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a new higher-level umbrella goal '
-    "naming a shared outcome, created to nest existing tops under.\n"
-    '- {\"why\",\"do\":\"group\",\"goal\":<n>,\"under\":<m>}: relink open top #n (its whole subtree '
-    "comes with it) to sit under top #m. Optionally add \"retitle\":\"<new text ≤10 words>\" to also "
-    "change #n's own title, e.g. when nesting it under #m reveals #n's current title no longer fits. Use "
-    "\"ref\":<k> instead of \"under\" to nest #n under an umbrella you minted earlier in this reply (k = "
-    "that mint's 1-based position among the ops). #n and #m must be **top-level** (flush-left) lines, "
-    f"never an indented step, and #n must differ from #m. Keep trees shallow: do not nest more than {MAX_DEPTH} levels deep.\n"
     '- {\"why\",\"do\":\"merge\",\"goal\":<n>,\"into\":<m>}: lines #n and #m record the **same** work '
     "twice — one restates or covers the other. Fold #n into #m: #m keeps its own title and state, "
     "absorbs #n's steps and history, and #n leaves the board. Either line may be a top or an indented "
@@ -7492,15 +7515,10 @@ GROUP_SYS = (
     "**receives** work too: after nesting tops under #m (or as a card quietly accretes steps), reread "
     "#m's title against everything now inside it — a title that names one narrow fix while the tree "
     "runs a whole campaign misleads, so retitle #m to the outcome that covers its steps.\n"
-    "Be aggressive about grouping a real shared purpose, since a few real trees beat a flat list of "
-    "every request, but never group on look-alike wording alone, and leave a standalone goal as its "
-    "own top. A top marked \"from the agent's own to-do list\" is a to-do mirror: it always starts "
-    "flat by design, and placing it is your job — when it records the same work as a line already "
-    "inside another top, merge it into that line; when it reads as its own distinct step of another "
-    "open top's outcome (wrap-up, verification, a task the agent queued for that work), group it under "
-    "that top. Reuse an existing umbrella rather than minting a duplicate. Doing nothing is a valid, "
-    "common outcome: if no clear cluster stands out, because the tops are already well-organized or "
-    'simply unrelated, return {\"ops\": []} and change nothing. Never invent a grouping just to act.\n'
+    "A top marked \"from the agent's own to-do list\" is a to-do mirror: when it records the same "
+    "work as a line already inside another top, merge it into that line; otherwise leave it as its "
+    "own card. Doing nothing is a valid, common outcome: if there are no twins, no drifted tangents, "
+    'and no outgrown titles, return {\"ops\": []} and change nothing. Never invent an op just to act.\n'
     "Write each \"why\" plainly: the real reason first, concrete verbs, the words a person actually "
     "says, cut filler (\"in order to\", \"it is worth noting\", \"notably\"), no em dashes, say it "
     "once. Output only the JSON object: nothing before it, and nothing after the closing brace. No "
@@ -7625,23 +7643,14 @@ def _parse_group(raw, menu_len):
         do = str(o.get("do", "")).strip().lower()
         why = " ".join(str(o.get("why", "")).split())[:300]
         text = " ".join(str(o.get("text", "")).split())[:120]
-        if do == "mint":
-            if re.sub(r"[^A-Za-z]", "", text):                          # an umbrella needs real text
-                ops.append({"do": "mint", "why": why, "text": text})
-        elif do == "group":
-            g, n, r = _int(o, "goal"), _int(o, "under"), _int(o, "ref")
-            retitle = " ".join(str(o.get("retitle", "")).split())[:120]
-            retitle = retitle if re.sub(r"[^A-Za-z]", "", retitle) else ""
-            if g and 1 <= g <= menu_len:                                # relink an open top under another node
-                if n and 1 <= n <= menu_len and n != g:
-                    op = {"do": "group", "why": why, "goal": g, "under": n}
-                elif r and r >= 1:
-                    op = {"do": "group", "why": why, "goal": g, "ref": r}
-                else:
-                    continue
-                if retitle:
-                    op["retitle"] = retitle
-                ops.append(op)
+        if do in ("mint", "group"):
+            # RETIRED (the user 2026-08-26, T101): the board's unit is the individual ask — no
+            # container goals, no nesting one top under another. A store-level umbrella is
+            # unavoidably a TRACKED unit (it owns rollup and swallowed chain provenance: every
+            # stranded ask in the provenance audit died at a promptless container), and the
+            # visual-grouping job has a display-side owner with no store footprint. A model that
+            # still emits these ops (an older cached reply) is silently ignored, never applied.
+            continue
         elif do == "merge":
             g, m = _int(o, "goal"), _int(o, "into")
             if g and m and 1 <= g <= menu_len and 1 <= m <= menu_len and g != m:
@@ -7681,26 +7690,12 @@ def _tie_pivot(store, ytop, cited, now):
     is untouched — the dismiss already restored it, so a done card stays done inside the umbrella while the
     pivot works beside it, and the umbrella's rollup carries the live story. Deterministic and idempotent;
     cleared cards never reach here (a follow-up to a cleared card is a fresh goal by rule)."""
-    nodes = store["nodes"]
-    if cited not in nodes or ytop not in nodes:
-        return
-    xtop = _top_ancestor(nodes, cited)
-    if xtop == ytop or xtop not in nodes:
-        return                                        # routed into the cited card's tree already
-    x, y = nodes[xtop], nodes[ytop]
-    if x.get("cleared") or y.get("parentId"):
-        return                                        # sealed thread, or Y already nested by routing
-    if x.get("umbrella"):
-        apply_group(store, [x, y], [{"do": "group", "goal": 2, "under": 1,
-                                     "why": "follow-up work stays with the card it replied to"}], now)
-    else:
-        apply_group(store, [x, y],
-                    [{"do": "mint", "text": x.get("text") or "Follow-up thread",
-                      "why": "follow-up work stays with the card it replied to"},
-                     {"do": "group", "goal": 1, "ref": 1,
-                      "why": "follow-up work stays with the card it replied to"},
-                     {"do": "group", "goal": 2, "ref": 1,
-                      "why": "follow-up work stays with the card it replied to"}], now)
+    # T101 (the user 2026-08-26): the STRUCTURAL tie retired with the umbrella — a container over
+    # the cited card and the pivot was exactly the round-shaped tracked unit the ruling removes,
+    # and the dissolution sweep would undo it on the next rollup anyway. The tie survives as pure
+    # PROVENANCE: ytop already carries pivotFrom (set by the caller before this), which display
+    # layers may group on with no store footprint. Nothing structural to do.
+    return
 
 
 def _merge_nodes(store, dupe_id, surv_id, t, why):
@@ -7806,30 +7801,12 @@ def apply_group(store, menu, ops, t):
     re-merged; the candidate forests still keep the columns apart (the working grouper sees only OPEN
     tops, the consolidator only ALL-COMPLETED ones)."""
     nodes = store["nodes"]
-    created = []
-
-    def new_umbrella(text, why):
-        store["seq"] = store.get("seq", 0) + 1
-        nid = "%s:g%d" % (store["rompUuid"], store["seq"])
-        nodes[nid] = GuardedNode({"id": nid, "text": text or "(umbrella)", "parentId": None, "nodeComplete": False,
-                      "blocked": False, "cleared": False, "trail": [], "t": t, "mt": t, "why": why,
-                      "umbrella": True, "log": []})
-        created.append(nid)
-        return nid
-
-    def _is_ancestor(a, b):                            # is node a AT or ABOVE node b? (cycle/self guard)
-        x, seen = b, set()
-        while x and x not in seen:
-            if x == a:
-                return True
-            seen.add(x); x = nodes.get(x, {}).get("parentId")
-        return False
 
     relinks = 0
     for o in ops:
-        if o["do"] == "mint":
-            new_umbrella(o["text"], o["why"])
-            continue
+        if o["do"] in ("mint", "group"):
+            continue                                   # retired ops (T101) — the parser drops them; this
+            #                                            is the second lock for hand-built op lists
         if o["do"] == "merge":                         # fold twin #goal into #into (_merge_nodes refuses
             relinks += _merge_nodes(store, menu[o["goal"] - 1]["id"],   # gone / double-mirror targets)
                                     menu[o["into"] - 1]["id"], t, o.get("why") or "")
@@ -7851,37 +7828,6 @@ def apply_group(store, menu, ops, t):
                 nodes[tgt]["mt"] = t
                 relinks += 1                           # counts as a change: the caller persists + re-rolls
             continue
-        # group: relink top #goal under #under (a menu top) or a same-reply umbrella (ref)
-        child = menu[o["goal"] - 1]["id"]
-        if child not in nodes or nodes[child].get("parentId") is not None:
-            continue                                   # merged away this reply, or an indented step —
-        #                                                grouping moves TOPS only; a placed step stays put
-        if "under" in o:
-            parent = menu[o["under"] - 1]["id"]
-            if parent in nodes:                        # a step parent walks up to its card (the intent —
-                parent = _top_ancestor(nodes, parent)  # "nest under that card" — is preserved)
-        else:
-            r = o.get("ref")
-            parent = created[r - 1] if (r and 1 <= r <= len(created)) else None
-        if not parent or parent not in nodes or parent == child or _is_ancestor(child, parent):
-            continue                                   # missing/merged parent / self / would cycle → skip
-        while _depth(nodes, parent) >= MAX_DEPTH:      # keep trees shallow; clamp the parent up
-            parent = nodes[parent]["parentId"]
-        nodes[child]["parentId"] = parent
-        if o.get("retitle"):                           # the user 2026-07-01: a relink may also correct the
-            nodes[child]["text"] = o["retitle"]         # child's own title, now that it sits under `parent`
-        nodes[child]["mt"] = t
-        relinks += 1
-
-    kids = {}                                          # umbrella anchor backfill (so it deep-links to its work)
-    for nd in nodes.values():
-        kids.setdefault(nd.get("parentId"), []).append(nd)
-    for uid in created:
-        ch = sorted(kids.get(uid, []), key=lambda c: c.get("t", 0))
-        anchor_seg = next((c["trail"][0] for c in ch if c.get("trail")), None)
-        if anchor_seg is not None:
-            nodes[uid]["trail"] = [anchor_seg]
-            nodes[uid]["t"] = ch[0].get("t", t)
     return relinks
 
 
@@ -11453,7 +11399,7 @@ def _delegate_user_rooted(sender, link_id, paths, now, _depth=0, _seen=None):
     seen = _seen if _seen is not None else set()
     nodes = dict(load_goal_archive(sender).get("nodes") or {})
     nodes.update(load_goals(sender).get("nodes") or {})
-    x = link_id
+    x, last = link_id, None
     while x is not None and (sender, x) not in seen:
         seen.add((sender, x))
         nd = nodes.get(x)
@@ -11467,7 +11413,32 @@ def _delegate_user_rooted(sender, link_id, paths, now, _depth=0, _seen=None):
         pu = nd.get("promptUuid")
         if pu and sender in paths and _session_user_prompt_record(sender, paths[sender], pu, now):
             return True
+        last = nd
         x = nd.get("parentId")
+    # CONTAINER-SIBLING RESCUE (the user 2026-08-26, T101): live umbrellas dissolve now, but
+    # ARCHIVED history keeps its containers — and the provenance audit measured that a chain
+    # dead-ending at a promptless container almost always has the dictated-round evidence sitting
+    # in the container's OTHER children (22 of 23 stranded asks). When the climb exhausts at an
+    # evidence-free container, one bounded look at its children recovers exactly that class —
+    # still a CONFIDENT rule (a sibling's human record IS the round's evidence), never a guess.
+    if last is not None and last.get("umbrella"):
+        cap = 0
+        for cid, cd in nodes.items():
+            if not isinstance(cd, dict) or cd.get("parentId") != last.get("id"):
+                continue
+            cap += 1
+            if cap > 40:
+                break
+            if (sender, cid) in seen:
+                continue
+            pu = cd.get("promptUuid")
+            if pu and sender in paths and _session_user_prompt_record(sender, paths[sender], pu, now):
+                return True
+            o = cd.get("origin")
+            if (isinstance(o, dict) and o.get("peer") and o.get("goalId")
+                    and not o.get("peerHost") and o["peer"] in paths
+                    and _delegate_user_rooted(o["peer"], o["goalId"], paths, now, _depth + 1, seen)):
+                return True
     return False
 
 
@@ -11813,24 +11784,34 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             # state still reaches the board through the hard-block floor/placeholder, which need no
             # goal node. Uncertainty quiets by design (the trace's docstring names the surface).
             rooted = _delegate_user_rooted(sender, link_id, paths_map, now)
+            # THE ASK IS THE CARD UNIT (the user 2026-08-26, T101): a dispatch whose chain roots to
+            # an ask that ALREADY HAS A CARD — link_id resolved to the sender's ask node — LINKS
+            # instead of minting: the tracking node below plants under that ask (fan-out lives
+            # INSIDE the ask card, per-dispatch progress one click down), and the recipient gets NO
+            # standalone top (one ask fanned to three workers used to mint three near-duplicate
+            # cards). Only a rooted dispatch with NO resolvable ask node still mints the recipient
+            # top — there the recipient card IS the ask's card, the fallback that keeps every user
+            # ask carded somewhere. Linking alone never moves the ask card's column: planting a
+            # tracking child writes no verdict on the ask.
+            mint_recipient = rooted and not link_id
             # Mint the sender's precise '↪ delegated to <recipient>' tracking node (the user 2026-06-22) and
             # point B's goal at IT — so run_propagate checks off only the handed-off piece, never the sender's
             # broader linked goal. Saved to the sender's tree before planting G on the recipient's.
             track_id = _plant_handoff_track(sender_store, link_id, edit["text"], fsid, id2name.get(fsid), seg_t, mid,
-                                            tracked=trk and rooted)
-            if not rooted:
+                                            tracked=trk and mint_recipient)
+            if not mint_recipient:
                 h = sender_store["nodes"][track_id].get("handoff")
                 if isinstance(h, dict) and not h.get("quiet"):
                     # QUIET mark: no recipient goal will ever carry this msgId, so run_propagate's
                     # origin back-link can never end this tracker — the recipient's REPLY (any kind,
                     # at/after the send) is its report-back event instead, the same rule the
-                    # cross-host arm has always used. Also the breadcrumb for "where is the card?":
-                    # the delegation chose quiet filing because its chain roots in team-internal
-                    # work, not a user ask.
+                    # cross-host arm has always used. Both no-recipient-top shapes wear it: an
+                    # untraceable dispatch (team-internal chain) and, since T101, a LINKED dispatch
+                    # (the ask card carries the fan-out; the tracker under it is the unit that ends).
                     h["quiet"] = True
             rollup_status(sender_store, False)
             save_goals(sender, sender_store)
-            if not rooted:
+            if not mint_recipient:
                 store["placements"][seg_id] = "fyi"    # quiet: processed, no recipient top (the #d
                 #                                        delegation phase retires on this, exactly the
                 #                                        coordinate treatment)

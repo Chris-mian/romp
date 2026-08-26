@@ -229,23 +229,30 @@ the distiller.
 
 ## Board shape: the grouper and the consolidator
 
-As cards accumulate, related tops nest under umbrellas so the board stays
-glanceable. Both judges move whole subtrees and append no diary events:
+Since 2026-08-26 (T101, the user's ruling) the board's unit is the
+INDIVIDUAL ASK: every top-level goal is its own card, tops never nest under
+other tops, and container ("umbrella") goals are retired — a store-level
+container is unavoidably a tracked unit (it owns rollup and, measured in the
+provenance audit, swallowed the chain evidence of every stranded ask), while
+the visual-grouping job belongs to the feed's display-side group fold, which
+has no store footprint. Both judges keep only the housekeeping that serves
+the ask-unit rule, move whole subtrees, and append no diary events:
 structure, never status.
 
-**grouper.** Given the open top-level cards: nest one under another, or
-mint an umbrella when several serve one outcome, and "doing nothing is a
-valid, common outcome". Called only when the open-top set actually changed.
-Hard rules in `apply_group`: never touch a view-cleared card, no cycles,
-depth clamp 4, same-session only. A to-do-mirror top (planted flat by
-plan-sync) is explicitly the grouper's to nest.
+**grouper.** Given the open top-level cards: merge true twins into one line,
+split a drifted tangent out to its own card, retitle a card its thread
+outgrew — and "doing nothing is a valid, common outcome". Called only when
+the open-top set actually changed. Hard rules in `apply_group`: never touch
+a view-cleared card, same-session only; the retired `mint`/`group` ops are
+parsed away and ignored if hand-built. A to-do-mirror top that duplicates a
+line already inside another card is explicitly the grouper's to merge.
 
-**consolidator.** The same prompt over the completed column: it groups
-related all-completed sibling tops under a done umbrella. It exists because
-the grouper only ever sees open tops, so related goals that finish before
-they get grouped would pile up flat in Completed forever, and an umbrella
-minted over already-done tops adopts nothing. Safe by construction: every child is done, so the umbrella rolls up
-completed. Gated by its own signature, logged under its own name.
+**consolidator.** The same prompt over the completed column, now merge/
+retitle housekeeping only. Legacy umbrellas from either judge DISSOLVE in
+every writer's rollup (the pre-pass beside the handoff-children lift):
+children re-parent to top level with their own provenance intact, the empty
+container leaves the store, and placements that pointed at it retire —
+idempotent, self-healing against save-rebase republishes.
 
 ## Peer mail: the courier
 
@@ -257,7 +264,14 @@ CHAIN-ROOTED (the user's verdict, replacing a one-day view-side split):
 delegating plants a real goal in the recipient's tree (origin-stamped) only
 when the sender's linked goal traces to a human prompt — self-then-ancestors
 in the sender's store, origin hops into a local grand-sender's chain, the
-root record read against the sender's own session. An untraceable delegate
+root record read against the sender's own session — AND no ask card already
+exists: since 2026-08-26 (T101) a dispatch whose chain roots to an ask the
+courier LINKED (the sender's ask node) never mints a recipient top — the
+tracking node plants under that ask, fan-out lives inside the ask card
+(several dispatches, one card; several asks to one worker, several cards),
+and the recipient files quietly with the reply-sweep ending. Only a rooted
+dispatch with no resolvable ask node still mints the recipient top: there
+the recipient card IS the ask's card. An untraceable delegate
 files quietly instead: no recipient top (its work lives in that session's
 view and transcript, and a needs-you state still surfaces through the
 goal-independent hard-block floor), while the sender's "delegated to"
