@@ -78,7 +78,7 @@ color:var(--vscode-descriptionForeground,#9a9a9a);font-size:12px;user-select:non
 .fl-hover-state{color:var(--vscode-descriptionForeground,#9a9a9a);margin-bottom:3px}
 .fl-hover-title{font-weight:600;margin-bottom:2px;white-space:normal}
 .fl-hover-sec{margin-top:7px}
-.fl-hover-lab{font-size:10.5px;text-transform:uppercase;letter-spacing:0.4px;
+.fl-hover-lab{font-size:10.5px;text-transform:uppercase;letter-spacing:0.04em;
   color:var(--vscode-descriptionForeground,#9a9a9a);margin-bottom:2px}
 .fl-hover-body{white-space:pre-wrap}
 .fl-hover-sub{display:flex;gap:6px;align-items:baseline;margin-top:1px}

@@ -81,6 +81,9 @@ body.scheme-solarized-dark {
   --radius-modal: 10px;
   --shadow-modal: 0 12px 36px #000000aa;
   --overlay-dim: rgba(0, 0, 0, 0.55);
+  /* the true-pill radius (filter pills, the loading pill) — one name so new pills don't mint
+     another magic number. Mirrored in feed.css (own :root). */
+  --radius-pill: 999px;
   /* Comment-highlight yellow (the user 2026-08-13): the marked passage reads like a highlighter
      stroke, DISTINCT from both the accent blue (selection/chrome) and the working-status yellow
      chip. Text-highlight use only — comment chrome (badge, buttons, chips) stays var(--accent). */
@@ -1095,7 +1098,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .tx-loading-pill {
   position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50;
   background: rgba(20, 24, 33, 0.92); color: var(--accent, #9cd2ff); font-size: 12px; font-weight: 600;
-  padding: 4px 12px; border-radius: 999px; pointer-events: none;
+  padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: none;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4); border: 1px solid rgba(156, 210, 255, 0.25);
 }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */

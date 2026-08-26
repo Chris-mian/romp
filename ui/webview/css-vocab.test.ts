@@ -118,6 +118,31 @@ test("centered modals wear ONE card (CLAUDE.md): --radius-modal 10px + --shadow-
   assert.match(GEAR, /#ranalytics \{[^}]*box-shadow: 0 12px 36px #000000aa/s, "analytics shadow joins the card");
 });
 
+test("same-row badges wear the SAME metric set; micro-labels wear the section-header spec", () => {
+  // an ask card's status badges sit in ONE row and their comments claim 'same information type' —
+  // yet .fask-blocked alone wore 0.72em/700/6px/1px 8px against its siblings' 0.7em/800/5px/1px 6px
+  for (const sel of [".fask-blocked", ".fask-apierror", ".fask-retrying", ".fask-jauth"]) {
+    const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(FEED, new RegExp(esc + " \\{[^}]*font-size: 0\\.7em; font-weight: 800;"), sel + " size/weight");
+    assert.match(FEED, new RegExp(esc + " \\{[^}]*border-radius: 5px; padding: 1px 6px;"), sel + " box");
+  }
+  // .fcol-chip's comment says it reproduces the chat .chip — now its padding does too
+  assert.match(FEED, /\.fcol-chip \{[^}]*padding: 3px 10px;/s);
+  assert.match(CHAT, /\.chip \{[^}]*padding: 3px 10px;/s);
+  // uppercase section micro-labels: 10.5px/700/.08em (the .rs-sec spec, documented at the kernel's
+  // .rnet-khead) — .sn-khead is the same feature in the VS Code strip and had drifted off it
+  assert.match(STRIP, /\.sn-khead \{[^}]*font-weight: 700; letter-spacing: 0\.08em;/);
+  assert.match(GEAR, /\.rs-sec \{[^}]*font-weight: 700; letter-spacing: 0\.08em;/s);
+  // no px letter-spacing (an em value scales with its label; 0.4px was the one outlier)
+  const FLEET = read("fleet-pane.css");
+  assert.doesNotMatch(FLEET, /letter-spacing:0\.4px/);
+  // true pills resolve through --radius-pill (the .fitem:hover inset-999px fill trick is not a radius)
+  for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
+    assert.match(css, /--radius-pill: 999px;/, name);
+    assert.doesNotMatch(css, /border-radius: 999px/, name + " pills use the token");
+  }
+});
+
 test("ONE accent wash: every selected/hovered accent chrome resolves through --accent-wash at 0.12", () => {
   // 0.10 and 0.14 washes had drifted in beside the dominant 0.12 (three alphas for one meaning);
   // the token is declared in both self-sufficient :roots, and no bare wash literal remains in the

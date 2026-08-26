@@ -26,6 +26,7 @@
   --radius-modal: 10px;  /* the centered-modal vocabulary (CLAUDE.md) — mirrors styles.css */
   --shadow-modal: 0 12px 36px #000000aa;
   --overlay-dim: rgba(0, 0, 0, 0.55);
+  --radius-pill: 999px;  /* the true-pill radius — mirrors styles.css */
   --st-working-bg: #e0b020; --st-working-fg: #332600;  /* the WORKING yellow — mirrors styles.css, same trap
                        as --err: .fask-stallbtn and .fask-interrupting referenced these while they lived only
                        in styles.css, so the "filled yellow so the stall is noticed" chip rendered as a quiet
@@ -177,7 +178,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    webview, no shared :root). The neutral count sits dim beside the chip. */
 .fcol-chip {
   display: inline-flex; align-items: center;
-  padding: 2px 9px; border-radius: 11px;
+  padding: 3px 10px; border-radius: 11px;
   font-weight: 700; letter-spacing: 0.07em;
 }
 .fcol-chip-working   { background: #e0b020; color: #332600; }
@@ -436,43 +437,43 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 
 /* "Followed up" — optimistic reopen pending the judge's re-file (judges delegation, 2026-06-17); blue pill */
 .fask-followedup { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
-  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); }
 /* "done, confirming" — the done verdict is in, only the settle event is pending (the user 2026-07-24):
    a steady cue on the Working card, never an early column move (that flicker is what the settle gate
    prevents). Outline pill in the done-check blue (--check-bg), the same family as the ✓ it will wear. */
 .fask-doneconfirming { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
-  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   color: var(--check-bg); border: 1px solid rgba(30, 161, 235, 0.55); }
 /* "nudge failed" — the one auto-nudge didn't resolve the stall and is never re-asked (design/
    stalled-open-todos-nudge.md); red pill: this thread is waiting on the human now */
 .fask-nudgefailed { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
-  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   color: #ff6a6a; border: 1px solid rgba(255, 106, 106, 0.6); }
 /* "interrupted" — the user stopped this session mid-turn and hasn't re-engaged; auto-nudge holds
    off until their next message. WARNING yellow (the user 2026-07-06, was neutral gray and too easy
    to miss): the pause is user-chosen but the thread IS dangling — same yellow as the warn chip,
    one warning treatment across the card (see .fask-warnchip) */
 .fask-interrupted { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
-  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   color: #ffd166; border: 1px solid rgba(255, 209, 102, 0.6); }
 /* "interrupting…" — a stop is IN FLIGHT (the user 2026-07-07): the turn is still winding down, so this
    wears the WORKING treatment (filled yellow, faded) exactly like the chat chip's .chip-interrupting —
    an active state, visually distinct from the interrupted OUTLINE badge (paused/done). It holds steady
    from the click until the interrupt settles, then yields to .fask-interrupted. */
 .fask-interrupting { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
-  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   background: var(--st-working-bg); color: var(--st-working-fg); opacity: 0.75; }
 /* "warning" — a judge stamped an anomaly on this goal (judge _node_warn; the user 2026-07-02): yellow
    pill, a BUTTON — click opens the warn-detail overlay (what happened + why it's unexpected) */
 .fask-warnchip { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
-  padding: 1px 6px; border-radius: 999px; line-height: 1.4; font-family: inherit;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4; font-family: inherit;
   color: #ffd166; border: 1px solid rgba(255, 209, 102, 0.6); background: transparent; cursor: pointer; }
 .fask-warnchip:hover { background: rgba(255, 209, 102, 0.14); }
 /* "waiting on <peer>" — an unanswered message out to a live peer; held in Working, not stalled (the user
    2026-06-22); teal pill, red for a mutual-wait deadlock cycle */
 .fask-waiton { flex: 0 0 auto; font-size: 0.64em; font-weight: 700; letter-spacing: 0.04em;
-  padding: 1px 6px; border-radius: 999px; line-height: 1.4;
+  padding: 1px 6px; border-radius: var(--radius-pill); line-height: 1.4;
   color: #4ec9b0; border: 1px solid rgba(78, 201, 176, 0.6); }
 .fask-waiton-cycle { color: #ff6a6a; border-color: rgba(255, 106, 106, 0.7); }
 /* the chip's elapsed readout (" · 42m") — same size as the chip text, dimmed like a sub-line so the
@@ -614,7 +615,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .ftree-log-when { flex: 0 0 auto; color: var(--dim); white-space: nowrap; }
 .ftree-log-what { overflow-wrap: anywhere; }
 .ftree-followedup { flex: 0 0 auto; margin-left: 8px; font-size: 0.68em; font-weight: 700; letter-spacing: 0.03em;
-  padding: 0 6px; border-radius: 999px; line-height: 1.6; color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); white-space: nowrap; }
+  padding: 0 6px; border-radius: var(--radius-pill); line-height: 1.6; color: #5aa2ff; border: 1px solid rgba(90, 162, 255, 0.6); white-space: nowrap; }
 .ftree-node.repeat { opacity: 0.5; }
 
 /* grouped sibling-asks card: a member line per sub-ask under the title, each with
@@ -757,11 +758,13 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    permission prompt / picker for THIS card's work; click opens the session.
    Same red as the BLOCKED column header. */
 .fask-blocked {
-  flex: 0 0 auto; font-size: 0.72em; font-weight: 700; letter-spacing: 0.03em;
+  flex: 0 0 auto; font-size: 0.7em; font-weight: 800; letter-spacing: 0.03em;
   color: #c0392b; cursor: pointer; white-space: nowrap;
-  /* a rounded-rect outline in the badge's own red, mirroring the Clear button's chrome (.fdismiss)
-     so the permission/picker block reads as a contained pill, not loose text (the user 2026-06-16) */
-  border: 1px solid #c0392b; border-radius: 6px; padding: 1px 8px;
+  /* a rounded-rect outline in the badge's own red so the permission/picker block reads as a
+     contained pill, not loose text (the user 2026-06-16) — wearing the SAME metric set as its
+     same-row api-trouble siblings (.fask-apierror/.fask-retrying/.fask-jauth: same information
+     type, same size; it alone wore 0.72em/700/6px/1px 8px until 2026-08-26) */
+  border: 1px solid #c0392b; border-radius: 5px; padding: 1px 6px;
 }
 .fask-blocked:hover { color: #fff; background: #c0392b; border-color: #c0392b; }
 
