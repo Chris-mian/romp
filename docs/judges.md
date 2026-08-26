@@ -281,10 +281,20 @@ no card, ever. A planted goal also stores the delegating mail's cleaned
 first line as the additive node field `frame` (2026-08-25, part of the
 goal-node consumer contract): the distiller and briefer prepend it — with
 the sender's linked-ask title — to their prompts as a marked
-`<delegating-request>` section, so a delegated card's summary opens in the
-requester's phrasing (usually the user's own words) instead of the worker's
-implementation nouns. A goal without a frame (a session's own work, or a
-node minted before the field existed) distills byte-identically to before.
+`<delegating-request>` section. One hop down a team that framing is a
+MANAGER's restatement in implementation nouns, so the trace's root record
+(the human prompt the chain proved — text plus sid, returned in place of
+the old boolean) is stored too, shaped, as the additive field `userAsk`
+(2026-08-26): the writers render it as a marked `<user-ask>` section beside
+the frame and open the card's prose in the asker's own terms; a board's own
+prompt-minted top threads its verbatim `quote` through the same section
+when its promptUuid still resolves to a human record. The writers' prompts
+also carry a standing jargon gate (no coined or internal name in an opening
+sentence unless the `<user-ask>` itself uses it) and a source preference:
+a report the session already wrote TO the user outranks the root ask, the
+frame, and the raw work, in that order. A goal without a frame or root
+record (a session's own work, or a node minted before the fields existed)
+distills byte-identically to before.
 The companion `run_propagate` is deterministic: when the
 recipient completes the plant, the sender's tracker checks itself off
 through the origin pointer; a quiet-filed delegation's tracker (which no

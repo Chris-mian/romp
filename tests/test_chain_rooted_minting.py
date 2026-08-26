@@ -68,7 +68,9 @@ def _fake_session(atoms):
 
 class RecordRule(unittest.TestCase):
     """_session_user_prompt_record: only a human prompt (or the queued dictation an attachment
-    wraps) counts; everything else — mail, romp lines, interrupts, missing records — is False."""
+    wraps) counts — returned as the RECORD itself, text + sid (T105) — and everything else — mail,
+    romp lines, interrupts, missing records — is None. Truthiness pins here; the record's content
+    is tests/test_root_ask_anchor.py's."""
 
     def _probe(self, atom, uuid="u1"):
         saved = jd.parsed_session
@@ -108,8 +110,9 @@ class RecordRule(unittest.TestCase):
 
 
 class TraceRule(unittest.TestCase):
-    """_delegate_user_rooted over synthetic worlds: True ONLY on a chain that reaches a human
-    prompt; every dead-end/machine/mail/cross-host/cycle shape is False — uncertainty QUIETS."""
+    """_delegate_user_rooted over synthetic worlds: truthy (the ROOT record, T105) ONLY on a
+    chain that reaches a human prompt; every dead-end/machine/mail/cross-host/cycle shape is
+    None — uncertainty QUIETS."""
 
     def setUp(self):
         self._saved = jd.parsed_session
