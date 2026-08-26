@@ -366,12 +366,10 @@ WHY_TURN_IN_FLIGHT = "a judge has ruled on a turn that hasn't finished yet"
 # never-paint rule as the holds above; clears on the closer's next word (any newer judge row on the
 # goal) or the deferral backstop.
 WHY_UNBLOCK_UNSETTLED = "an unblock is awaiting the closer's next word on this goal"
-# The CONSOLIDATOR (the user 2026-06-19): the grouper's twin for the COMPLETED column. The working grouper
-# only ever sees OPEN tops, so related goals that finish before they get
-# grouped land as separate cards. The consolidator groups related ALL-COMPLETED sibling tops under a
-# completed umbrella (safe: every child is done, so the umbrella rolls up to completed — nothing reverts to
-# working), and clears any umbrella that ended up empty. A later reopen of a grouped child reverts the whole
-# umbrella to working via rollup_status (the user's choice). Toggle: ROMP_CONSOLIDATE=0 to disable.
+# The CONSOLIDATOR (the user 2026-06-19): the grouper's twin for the COMPLETED column. Post-T101
+# (2026-08-26, the ask-unit ruling) it is housekeeping only — merge completed twins, retitle — the
+# working grouper's surviving ops over the done column; container mints retired with the umbrella.
+# Toggle: ROMP_CONSOLIDATE=0 to disable.
 CONSOLIDATE_ON = os.environ.get("ROMP_CONSOLIDATE", "1") != "0"
 TEST_UNITS  = 12                         # --test: caption at most this many recent units
 
@@ -2018,7 +2016,7 @@ PLAN_SYS = (
     "awaiting the user\" is stopped on a question only the user can answer; filing new work under it "
     "declares that this segment takes up that ask and pulls the card back to working — when the "
     "segment is about something else, mint instead. (\"ref\":<k> files under a "
-    "node you minted earlier in this reply instead of \"under\", e.g. a fresh umbrella goal.)\n"
+    "node you minted earlier in this reply instead of \"under\".)\n"
     '- {\"why\",\"do\":\"done\",\"goal\":<n>}: open goal/step #n is now finished. Mark done eagerly: '
     "the moment a segment delivers a goal's outcome (committed, shipped, tested, or answered), done it "
     "in this reply; don't leave finished work open for a later pass to notice. If the segment "
@@ -7808,8 +7806,17 @@ def apply_group(store, menu, ops, t):
             continue                                   # retired ops (T101) — the parser drops them; this
             #                                            is the second lock for hand-built op lists
         if o["do"] == "merge":                         # fold twin #goal into #into (_merge_nodes refuses
-            relinks += _merge_nodes(store, menu[o["goal"] - 1]["id"],   # gone / double-mirror targets)
-                                    menu[o["into"] - 1]["id"], t, o.get("why") or "")
+            _n = _merge_nodes(store, menu[o["goal"] - 1]["id"],   # gone / double-mirror targets)
+                              menu[o["into"] - 1]["id"], t, o.get("why") or "")
+            if _n:
+                _surv = nodes.get(menu[o["into"] - 1]["id"])
+                if _surv is not None:                  # the grouper's lane mark (T103): the surviving ops
+                    _surv["groupOp"] = {"kind": "merge", "t": t}   # append no diary events by design, so the
+                    #                                    timeline judging band keys on this lightweight
+                    #                                    structure stamp — the umbrella flag it used to
+                    #                                    key on no longer mints (it survives read-side
+                    #                                    for ARCHIVED history only)
+            relinks += _n
             continue
         if o["do"] == "split":                         # promote step #goal (its whole subtree comes with
             child = menu[o["goal"] - 1]["id"]          # it) to a top-level card of its own — the inverse
@@ -7819,6 +7826,7 @@ def apply_group(store, menu, ops, t):
             if o.get("retitle"):                       # a step-phrased title may not stand alone as a card
                 nodes[child]["text"] = o["retitle"]
             nodes[child]["mt"] = t
+            nodes[child]["groupOp"] = {"kind": "split", "t": t}   # the lane mark (see merge above)
             relinks += 1
             continue
         if o["do"] == "retitle":                       # re-title a drifted CARD in place: its first-ask
@@ -7826,6 +7834,7 @@ def apply_group(store, menu, ops, t):
             if tgt in nodes and nodes[tgt].get("parentId") is None and o.get("text"):
                 nodes[tgt]["text"] = o["text"]
                 nodes[tgt]["mt"] = t
+                nodes[tgt]["groupOp"] = {"kind": "retitle", "t": t}   # the lane mark (see merge above)
                 relinks += 1                           # counts as a change: the caller persists + re-rolls
             continue
     return relinks
@@ -7961,34 +7970,15 @@ def _consolidate_tops(store, cap=20):
     return tops[-cap:] if len(tops) > cap else tops
 
 
-def _clear_empty_umbrellas(store):
-    """Mark cleared any umbrella goal that has no live (non-cleared, non-view-cleared) children — an umbrella
-    groups nothing once empty, so it is pure clutter. Heals an umbrella minted over tops it could not adopt
-    (e.g. every group op skipped as a would-be cycle) and one whose children were
-    all cleared. Returns True if it cleared any."""
-    nodes = store["nodes"]
-    vc = _view_cleared()
-    live = {}
-    for nd in nodes.values():
-        p = nd.get("parentId")
-        if p is not None and not nd.get("cleared") and nd["id"] not in vc:
-            live[p] = live.get(p, 0) + 1
-    changed = False
-    for nd in nodes.values():
-        if nd.get("umbrella") and not nd.get("cleared") and live.get(nd["id"], 0) == 0:
-            record_verdict(store, nd, "grouper", "clear", int(time.time()), why="empty umbrella")
-            changed = True
-    return changed
-
-
 def _consolidate_store(store, fsid, now):
-    """Group the session's COMPLETED tops in place + clear empty umbrellas; return True on any change (caller
-    persists + re-rolls status). EVENT-GATED by store["consolidatedSig"] (the completed-top id set) so a
-    stable completed column never re-asks the model. Reuses the grouper model/menu/parse + apply_group
-    (every candidate is done by construction, so the umbrella rolls up to completed)."""
+    """Housekeep the session's COMPLETED tops in place (merge twins, retitle — the post-T101 op set);
+    return True on any change (caller persists + re-rolls status). EVENT-GATED by
+    store["consolidatedSig"] (the completed-top id set) so a stable completed column never re-asks
+    the model. Reuses the grouper model/menu/parse + apply_group."""
     if not CONSOLIDATE_ON:
         return False
-    changed = _clear_empty_umbrellas(store)            # heal empties every pass, gated or not (no model call)
+    changed = False                                    # (empty-umbrella healing subsumed by the T101
+    #                                                    dissolution sweep in every writer's rollup)
     comp = _consolidate_tops(store)
     sig = sorted(nd["id"] for nd in comp)
     if len(comp) < 2 or sig == store.get("consolidatedSig"):
@@ -8027,8 +8017,8 @@ def _consolidate_session(fsid, path, now):
 
 
 def run_consolidate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
-    """One CONSOLIDATOR pass (triage tier), run after run_group / before run_distill so a newly minted
-    completed umbrella gets a distilled summary this same cycle. Event-gated per session. Returns the number
+    """One CONSOLIDATOR pass (triage tier), run after run_group / before run_distill so a card the
+    housekeeping touched re-distills this same cycle. Event-gated per session. Returns the number
     of sessions whose completed column changed."""
     if now is None:
         now = int(time.time())
@@ -8073,7 +8063,7 @@ CLOSER_SYS = (
     "state:\n"
     "- done: its outcome is now fully delivered, achieved with no real work left, even if no one said "
     "'done'. It is not done if any real work remains, even a small piece, and a broad or open-ended "
-    "goal (an umbrella with ongoing sub-work, or a standing 'keep doing X') is not done. An explanation "
+    "goal (one with ongoing sub-work, or a standing 'keep doing X') is not done. An explanation "
     "or answer fully given to the user is done, **unless** the turn ends by asking the user to approve or "
     "decide a clear next step it has lined up (see blocked): a thorough answer, plan, or scoping writeup "
     "that closes with \"want me to build this?\", \"which option?\", or \"shall I proceed?\" is **not** done, "
@@ -8468,7 +8458,8 @@ def _subtree_done_candidates(store):
             #                                            (2026-08-26 — a finished goal must not be uncompletable
             #                                            just because the user stopped the session)
         if nd.get("umbrella"):
-            continue                                   # a pure container completes structurally (is_complete's
+            continue                                   # transient pre-dissolution copy only (T101 dissolves
+            #                                            live containers every rollup; adopt-copies self-heal) —
             #                                            umbrella carve-out) — nothing to ask the closer
         kids = children.get(nid, [])
         if not kids or not all(nodes[c].get("nodeComplete") or nodes[c].get("cleared") for c in kids):
@@ -8610,37 +8601,9 @@ def _status_report_candidates(store, turn):
         if nd.get("umbrella") or _task_open_below(nodes, children, nid):
             continue
         out.append(nd)
-    # CITED-UMBRELLA OPEN DESCENDANTS (the user 2026-08-25, the re-asking umbrella): a nudge/
-    # follow-up names its goal and the reply accounts for THAT goal's work — and when the named
-    # goal is an UMBRELLA, the top itself is unrulable (a structural container, skipped above)
-    # while the open LEAF actually holding it at working rides NO channel: the turn menu needs
-    # placements (a nudge spliced into a busy session's running turn strips its dones, so nothing
-    # ever places), steps-finished needs all-children-done, starved needs an empty diary. Three
-    # "it's finished" replies filed nothing on the audited specimen. So a cited UMBRELLA's open
-    # descendants ride this same closer call, with the sibling channels' skips — handoff trackers
-    # stay run_propagate's (their ending event is the recipient's completion, not this reply),
-    # blocked stays the unblocker's, and an agentTask-open subtree stays the agent's own. A PLAIN
-    # cited goal keeps the 2026-07-26 shape exactly: the closer rules the goal itself, and its
-    # subs never ride (the widened-menu pin in test_judge StatusReportMenu).
-    seen_ids = {nd["id"] for nd in out}
-    cited = set()
-    for s in _segs(turn, store):
-        for tgt in _seg_followup_all(s) or []:
-            if tgt in nodes and (nodes[tgt] or {}).get("umbrella"):
-                cited.add(tgt)
-    for top in sorted(cited):
-        stack = list(children.get(top, []))
-        while stack:
-            cid = stack.pop()
-            stack.extend(children.get(cid, []))
-            cd = nodes.get(cid) or {}
-            if (cid in seen_ids or cd.get("nodeComplete") or cd.get("cleared") or cd.get("blocked")
-                    or cd.get("settledDone") or cd.get("umbrella")
-                    or isinstance(cd.get("handoff"), dict)
-                    or _task_open_below(nodes, children, cid)):
-                continue
-            seen_ids.add(cid)
-            out.append(cd)
+    # (The 2026-08-25 cited-umbrella descendants channel retired with T101/T103: live containers
+    # dissolve in every writer's rollup, so a stuck leaf IS a top now and rides the plain channel
+    # above; a nudge citing a dissolved container's id resolves to nothing and no-ops.)
     out.sort(key=lambda nd: nd.get("t", 0))
     return out
 

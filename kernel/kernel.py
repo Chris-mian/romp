@@ -17356,7 +17356,8 @@ def build_session(sid, now, tmux=None, path_override=None, tail_cap_t=None):
             _dmemo[nid] = False
             return False
         res = bool(nd.get("nodeComplete"))
-        if not res and nd.get("umbrella"):             # a grouper container completes structurally — the
+        if not res and nd.get("umbrella"):             # ARCHIVED pre-T101 container (mints retired; live
+            # ones dissolve every rollup) — history still renders structurally-complete: the
             # mint asserted "this node IS its children"; cleared kids are out of the closure either
             # way (neither done nor holding it open), mirroring build_feed's _closure_done
             kids = [c for c in gkids.get(nid, []) if not _cleared(c)]
@@ -18858,7 +18859,8 @@ def build_feed(now, tmux=None):
                 _cdone[nid] = False
                 return False
             res = bool(nd.get("nodeComplete"))
-            if not res and nd.get("umbrella"):         # a grouper container completes structurally — the
+            if not res and nd.get("umbrella"):         # ARCHIVED pre-T101 container — history renders
+                # structurally-complete (mints retired; live ones dissolve every rollup): the
                 kids = [c for c in children.get(nid, []) if not nodes[c].get("cleared")]
                 res = bool(kids) and all(_closure_done(c) for c in kids)
             _cdone[nid] = res
@@ -20650,10 +20652,19 @@ def _derive_judging(sid, caps, goals, t0, out, seg_ends=None):
             continue
         text = n.get("text", "")
         mt = n.get("mt") or t
+        go = n.get("groupOp")
+        if isinstance(go, dict) and (go.get("t") or 0) >= t0:
+            # the grouper's surviving housekeeping (T103): merge/split/retitle append no diary
+            # events by design, so the lane keys on the apply-time structure stamp — additive
+            # beside the node's own mint/plant mark (a merged survivor is both)
+            out.append({"judge": "grouper", "sid": sid, "t": go["t"],
+                        "kind": go.get("kind") or "group", "text": text})
         if n.get("origin"):                                   # courier planted it from a peer's handoff
             if t >= t0:
                 out.append({"judge": "courier", "sid": sid, "t": t, "kind": "plant", "text": text})
-        elif n.get("umbrella"):                               # grouper minted this umbrella
+        elif n.get("umbrella"):                               # ARCHIVED-history rendering only (T101
+            # retired every umbrella mint; live containers dissolve each rollup) — an archived
+            # pre-T101 container still shows the grouper mark it earned
             if mt >= t0:
                 out.append({"judge": "grouper", "sid": sid, "t": mt, "kind": "group", "text": text})
         elif t >= t0:                                         # planner placed it (top = mint, else a step)

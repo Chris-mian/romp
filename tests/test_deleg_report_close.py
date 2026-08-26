@@ -284,67 +284,27 @@ class CloserHandoffStandDown(World):
 NUDGE = ("<!-- romp-injected -->Status check please. <!-- romp-goal-id: U -->")
 
 
-class CitedLeafRide(World):
-    """_status_report_candidates leg: on a nudge/follow-up turn, the CITED goals' open descendants
-    ride the closer menu — the audited umbrella's open leaf was reachable by NO channel (turn menus
-    need placements and the spliced nudge reply's dones strip; steps-finished needs
-    all-children-done; starved needs an empty diary), so three 'it's finished' replies filed
-    nothing."""
+class CitedLeavesAreTopsNow(World):
+    """T103: the cited-umbrella descendants channel retired with containers — T101's dissolution
+    (every writer's rollup) makes a once-stranded leaf its own TOP, which rides the PLAIN
+    status-report channel. One pin end to end: the umbrella world dissolves and the leaf rides."""
 
-    def _store_with_umbrella(self):
+    def test_the_dissolved_leaf_rides_the_plain_channel(self):
         st = {"rompUuid": SENDER, "seq": 9, "nodes": {}, "placements": {}, "status": {}}
         st["nodes"]["U"] = _node("U", "Feed renders correctly", None, umbrella=True)
-        st["nodes"]["done1"] = _node("done1", "shipped piece", "U", nodeComplete=True)
-        st["nodes"]["leaf"] = _node("leaf", "Show cancellable seek indicator", "U",
-                                    trail=["seg1"], log=[{"ev_t": T, "src": "planner",
-                                                          "kind": "sub", "at": T}])
-        st["nodes"]["trk"] = _node("trk", "\u21aa delegated to web: seek indicator", "leaf",
-                                   handoff={"peer": RECIP, "msgId": MID})
-        st["nodes"]["blockedleaf"] = _node("blockedleaf", "decide the copy", "U", blocked=True)
-        return st
-
-    def _nudge_turn(self):
-        return _turn([
+        st["nodes"]["leaf"] = _node("leaf", "Show cancellable seek indicator", "U")
+        jd.rollup_status(st, False)                    # T101: the container dissolves here
+        self.assertNotIn("U", st["nodes"])
+        self.assertIsNone(st["nodes"]["leaf"].get("parentId"), "the leaf is its own card")
+        turn = _turn([
             {"type": "user", "timestamp": _iso(T + 600), "uuid": "n1", "parentUuid": None,
              "promptSource": "sdk", "message": {"role": "user", "content": NUDGE}},
             {"type": "assistant", "timestamp": _iso(T + 610), "uuid": "a1", "parentUuid": "n1",
              "message": {"role": "assistant", "content": [{"type": "text",
                          "text": "The seek indicator shipped and merged; suite green."}],
                          "stop_reason": "end_turn"}}])
-
-    def test_the_cited_umbrellas_open_leaf_rides(self):
-        st = self._store_with_umbrella()
-        got = [nd["id"] for nd in jd._status_report_candidates(st, self._nudge_turn())]
-        self.assertIn("leaf", got, "the open leaf holding the umbrella at working is now rulable")
-        self.assertNotIn("U", got, "the umbrella itself stays structural")
-        self.assertNotIn("trk", got, "handoff trackers stay run_propagate's")
-        self.assertNotIn("blockedleaf", got, "blocked stays the unblocker's")
-        self.assertNotIn("done1", got)
-
-    def test_a_plain_turn_rides_nothing_cited(self):
-        st = self._store_with_umbrella()
-        turn = _turn([
-            {"type": "user", "timestamp": _iso(T + 600), "uuid": "u1", "parentUuid": None,
-             "promptSource": "typed", "message": {"role": "user", "content": "carry on"}},
-            {"type": "assistant", "timestamp": _iso(T + 610), "uuid": "a1", "parentUuid": "u1",
-             "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}],
-                         "stop_reason": "end_turn"}}])
-        self.assertEqual(jd._status_report_candidates(st, turn), [],
-                         "no status trigger, no ride — the gate is unchanged")
-
-    def test_a_plain_cited_goal_keeps_the_tops_only_shape(self):
-        # the 2026-07-26 pin (test_judge StatusReportMenu): a PLAIN cited goal is rulable itself,
-        # so its subs never ride — only a cited UMBRELLA opens the descendant walk
-        st = self._store_with_umbrella()
-        st["nodes"]["U"].pop("umbrella")
-        got = [nd["id"] for nd in jd._status_report_candidates(st, self._nudge_turn())]
-        self.assertNotIn("leaf", got)
-
-    def test_an_agent_open_subtree_stays_the_agents(self):
-        st = self._store_with_umbrella()
-        st["nodes"]["leaf"]["agentTask"] = {"key": "3", "status": "open"}
-        got = [nd["id"] for nd in jd._status_report_candidates(st, self._nudge_turn())]
-        self.assertNotIn("leaf", got, "the authoritative tier: the agent says work is owed")
+        got = [nd["id"] for nd in jd._status_report_candidates(st, turn)]
+        self.assertIn("leaf", got, "a top rides the plain widened menu — no special channel needed")
 
 
 if __name__ == "__main__":

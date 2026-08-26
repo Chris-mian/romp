@@ -1813,8 +1813,8 @@ class Consolidator(unittest.TestCase):
         self.assertEqual(s["status"].get(SID + ":g1"), "working", "the reopened ask moves alone")
         self.assertEqual(s["status"].get(SID + ":g2"), "completed", "its sibling rests — no shared fate")
 
-    # ── empty-umbrella cleanup ──
-    def test_empty_umbrella_is_cleared_but_a_populated_one_is_not(self):
+    # ── empty-umbrella cleanup: subsumed by the T101 dissolution (T103 deleted the old helper) ──
+    def test_dissolution_subsumes_empty_umbrella_cleanup(self):
         s = _store()
         s["nodes"][SID + ":g1"] = {"id": SID + ":g1", "text": "Empty header", "parentId": None,
                                    "nodeComplete": True, "blocked": False, "cleared": False,
@@ -1826,10 +1826,11 @@ class Consolidator(unittest.TestCase):
                                    "nodeComplete": True, "blocked": False, "cleared": False, "trail": ["s"],
                                    "t": T0, "mt": T0}
         jd.migrate_store(s)                                # legacy-shaped fixture: adopt diaries first
-        self.assertTrue(jd._clear_empty_umbrellas(s), "an empty umbrella is cleared")
-        self.assertTrue(s["nodes"][SID + ":g1"]["cleared"], "the childless umbrella is crossed off")
-        self.assertFalse(s["nodes"][SID + ":g2"]["cleared"], "the umbrella with a live child is left alone")
-        self.assertFalse(jd._clear_empty_umbrellas(s), "idempotent: a second pass clears nothing new")
+        jd.rollup_status(s, False)
+        self.assertNotIn(SID + ":g1", s["nodes"], "the empty container is gone entirely")
+        self.assertNotIn(SID + ":g2", s["nodes"], "the populated one too — its child stands alone")
+        self.assertIsNone(s["nodes"][SID + ":g3"].get("parentId"), "the child is its own card")
+        self.assertFalse(hasattr(jd, "_clear_empty_umbrellas"), "the old helper is deleted, not orphaned")
 
     # ── event gating ──
     def test_stable_completed_set_does_not_re_call_the_model(self):
@@ -3625,21 +3626,17 @@ class StatusReportMenu(unittest.TestCase):
         blocked = _mknode(store, "waiting on the user"); blocked["blocked"] = True
         owed = _mknode(store, "agent still owes work")
         owed["agentTask"] = {"key": "k1", "status": "open"}
-        g1["umbrella"] = True                          # the cited goal is a CONTAINER here (see below)
         cited_sub = _mknode(store, "the cited goals own open leaf", parent=g1["id"])
         other_top = _mknode(store, "an unrelated top")
         other_sub = _mknode(store, "a sub of an uncited top", parent=other_top["id"])
         captured = self._spy('{"done": []}')
         jd._close_turn(store, turn)
         for absent in ("already finished", "waiting on the user", "agent still owes work",
-                       "a sub of an uncited top"):
+                       "a sub of an uncited top", "the cited goals own open leaf"):
             self.assertNotIn(absent, captured["mt"], "%r must not ride the widened menu" % absent)
-        # a cited UMBRELLA's open descendants DO ride since 2026-08-25 (the re-asking umbrella):
-        # the reply accounts for the named goal's work, and a container's top is unrulable — its
-        # open leaf, the node holding it at working, was reachable by no channel at all. A PLAIN
-        # cited goal keeps the tops-only menu exactly (the closer rules the goal itself;
-        # tests/test_deleg_report_close.py pins that shape).
-        self.assertIn("the cited goals own open leaf", captured["mt"])
+        # T103: the cited-umbrella descendants channel retired with containers (T101 dissolves
+        # them in every rollup, so a once-stranded leaf is its own TOP and rides the plain
+        # channel) — the widened menu is tops-only again, byte-identical to the 2026-07-26 shape
 
 
 class SweepSession(unittest.TestCase):
