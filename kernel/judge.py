@@ -11456,8 +11456,14 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
         now = int(time.time())
     n = 0
     for fsid, path, anchor, name in discover(now)[:sessions_cap]:
-        store = load_goals(fsid)
-        for nid, nd in list(store.get("nodes", {}).items()):
+        # live + ARCHIVE merged for the RECIPIENT-side scan (2026-08-26, the working-column audit):
+        # a recipient goal that completed and was then ARCHIVED (the user cleared the done card)
+        # vanished from the live-only scan, so the sender's tracker never checked off — a live
+        # specimen sat open seven hours with its completion event already fired and recorded.
+        # Read-only on this side: propagate writes SENDER stores only.
+        rnodes = dict(load_goal_archive(fsid).get("nodes") or {})
+        rnodes.update(load_goals(fsid).get("nodes") or {})
+        for nid, nd in list(rnodes.items()):
             if not nd.get("nodeComplete"):
                 continue                                # B hasn't finished it yet
             o = nd.get("origin")
@@ -11499,6 +11505,24 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
     # re-derive from the stored toName exactly as the wait maps do: the alias when the peer has
     # spoken (it must have, to reply), else the raw relay key.
     last_any, _la, alias = _postal_ask_maps()
+    _rmemo = {}                                        # recipient sid -> merged nodes (per-pass, read-only)
+
+    def _ref_goal(peer_sid, mid):
+        """The recipient goal a tracker's msgId joins to (origin or links), live+archive merged."""
+        if peer_sid not in _rmemo:
+            m = dict(load_goal_archive(peer_sid).get("nodes") or {})
+            m.update(load_goals(peer_sid).get("nodes") or {})
+            _rmemo[peer_sid] = m
+        for rd in _rmemo[peer_sid].values():
+            if not isinstance(rd, dict):
+                continue
+            o = rd.get("origin")
+            refs = ([o] if isinstance(o, dict) else []) + [l for l in (rd.get("links") or [])
+                                                           if isinstance(l, dict)]
+            if any(r.get("msgId") == mid for r in refs):
+                return rd
+        return None
+
     for fsid, path, anchor, name in discover(now)[:sessions_cap]:
         store = load_goals(fsid)
         changed = False
@@ -11507,14 +11531,26 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
             if not (isinstance(h, dict) and h.get("peer") and not nd.get("nodeComplete")):
                 continue
             pk = str(h["peer"])
-            if ":" not in pk and not h.get("quiet"):   # a LOCAL linked recipient: the origin back-link owns it
-                continue
+            dismissed = False
+            if ":" not in pk and not h.get("quiet"):
+                # a LOCAL LINKED recipient: the origin back-link owns it — UNLESS the user DISMISSED
+                # the recipient's card without completion (2026-08-26, the working-column audit: two
+                # trackers sat open 8.3h and 2.6h under a Working hub because the cleared recipient
+                # goal could never reach nodeComplete). A dismissal kills the back-link's event
+                # forever, so the recipient's reply becomes the honest report-back ending — the
+                # exact quiet/cross-host rule, why-stamped as the dismissal shape it is. A LIVE
+                # linked recipient still defers to the back-link: a reply alone must never end a
+                # delegation whose card is still being worked.
+                rg = _ref_goal(pk, h.get("msgId"))
+                if not (isinstance(rg, dict) and rg.get("cleared") and not rg.get("nodeComplete")):
+                    continue
+                dismissed = True
             if ":" not in pk:
                 # a LOCAL QUIET handoff (chain-rooted minting, the user 2026-08-25): no recipient
                 # goal exists BY DESIGN, so the origin back-link can never fire — the recipient's
                 # reply (any kind, at/after the send) is the report-back event, exactly the
                 # cross-host rule. Same coarseness, same honesty: completing on the reply, never on
-                # delivery.
+                # delivery. (The dismissed-linked shape above ends the same way.)
                 reply = last_any.get((pk, fsid), 0)
             else:
                 keys = {"peer:" + pk}
@@ -11522,8 +11558,10 @@ def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY,
                     keys.add(alias[pk])
                 reply = max((last_any.get((k, fsid), 0) for k in keys), default=0)
             if reply and reply >= (nd.get("t") or 0):
-                why = ("reported back by %s (delegated, quiet-filed)" % pk[:8] if ":" not in pk
-                       else "reported back by %s (delegated cross-host)" % pk)
+                why = (("reported back by %s (delegated; the recipient's card was dismissed)" % pk[:8])
+                       if dismissed else
+                       ("reported back by %s (delegated, quiet-filed)" % pk[:8] if ":" not in pk
+                        else "reported back by %s (delegated cross-host)" % pk))
                 if record_verdict(store, nd, "courier", "done", reply, why=why):
                     _mark_node_done(store, nid, why, reply, src="courier")
                     changed = True
