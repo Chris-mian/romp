@@ -69,12 +69,18 @@ test("THE BUTTON OUTLINE (the user 2026-08-25, round two): every mount wears the
   assert.equal(TAG_BTN_BORDER, "rgba(255,255,255,0.10)");
   assert.equal(TAG_BTN_WASH, "rgba(156,210,255,0.12)");
   assert.ok(flat.includes("--card-border:rgba(255,255,255,0.10)"), "the feed's hairline is the shared border literal");
-  assert.ok(flat.includes("background:rgba(156,210,255,0.12)"), "the feed .on's wash is the shared wash literal");
+  // the feed's .on rules resolve through var(--accent-wash) since 2026-08-26 — its :root literal
+  // is what must equal the shared constant
+  assert.ok(flat.includes("--accent-wash:rgba(156,210,255,0.12)"), "the feed's wash token is the shared wash literal");
+  assert.ok(flat.includes("background:var(--accent-wash)"), "the feed .on's wash resolves through the token");
   assert.ok(flat.includes("border-radius:6px"), "the feed's radius");
   assert.ok(flat.includes("#feed-foot.fdismiss{font-size:10.5px;padding:1px9px"), "the feed footer instance's padding");
   // the chat/outline builder states the same box inline (inline beats classes, so it must carry it itself)
-  assert.match(TAGMENU, /border:1px solid " \+ TAG_BTN_BORDER \+ ";"\s*\n\s*\+ "border-radius:6px;padding:1px 9px;/,
-    "tagMenuButton wears the box by the shared literals");
+  // the GLYPH button keeps the outline dress (border/radius/colors) but wears an ICON box —
+  // 4px 6px, taller and narrower than the word-buttons' 1px 9px, which read wide-and-short
+  // around the 14px glyph next to inputs and tabs (the user 2026-08-26)
+  assert.match(TAGMENU, /border:1px solid " \+ TAG_BTN_BORDER \+ ";"\s*\n\s*\+ "border-radius:6px;padding:4px 6px;/,
+    "tagMenuButton wears the outline dress with the icon box");
   assert.match(TAGMENU, /btn\.style\.borderColor = narrowed \? TAG_BTN_ACCENT : TAG_BTN_BORDER;/,
     "narrowed = accent border, at rest the hairline");
   assert.match(TAGMENU, /btn\.style\.background = narrowed \? TAG_BTN_WASH : "transparent";/,
@@ -84,14 +90,14 @@ test("THE BUTTON OUTLINE (the user 2026-08-25, round two): every mount wears the
   // side-by-side crops in review), wearing the identical literals:
   assert.match(TL, /border:1px solid rgba\(255,255,255,0\.10\);border-radius:6px;cursor:pointer;white-space:nowrap;opacity:0\.95;/,
     "the corner button carries the feed's hairline, radius, and footer opacity");
-  assert.match(TL, /font:inherit;font-size:10\.5px;padding:1px 9px;/,
-    "…and the footer instance's font scale and padding");
+  assert.match(TL, /font:inherit;font-size:10\.5px;padding:4px 6px;/,
+    "…and the footer's font scale with the icon box (glyph buttons, 2026-08-26)");
   assert.match(TL, /\.romp-tl-cbtn\.on\{[^}]*background:rgba\(156,210,255,0\.12\);opacity:1\}/,
     "narrowed = the .on wash at full strength");
 });
 
 test("timeline spacing grew (the user 2026-08-25: the corner controls were cramped)", () => {
-  assert.match(TL, /const GAP = 8, BTNW = 34;/,
-    "round three: the button slot IS the feed tag button's measured box (34px), the bar's flex gap 8");
+  assert.match(TL, /const GAP = 8, BTNW = 28;/,
+    "round three: the button slot IS the icon button's measured box (28px since the 2026-08-26 icon box), the bar's flex gap 8");
   assert.match(TL, /if \(hidden > 0\)/, "overflow chips collapse into a +N, one click from the menu");
 });

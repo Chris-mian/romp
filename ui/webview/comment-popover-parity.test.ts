@@ -52,7 +52,7 @@ test("the popover's bottom row IS a statusline: the chat's chip anatomy + counti
 
 test("the action buttons wear the chat's under-bubble family; Fork stays out by the user's call", () => {
   assert.match(CSS, /\.cmt-act \{\s*\n\s*background: rgba\(255, 255, 255, 0\.06\);\s*\n\s*border: 1px solid var\(--box-border\); color: var\(--dim\); border-radius: 5px; font-size: 0\.78em;\s*\n\s*padding: 1px 8px; cursor: pointer;\s*\n\}/);
-  assert.match(CSS, /\.cmt-act:hover \{ border-color: var\(--accent\); color: var\(--accent\); background: rgba\(156, 210, 255, 0\.12\); \}/);   // the feed word-button hover (2026-08-25): text+outline accent, never a fill
+  assert.match(CSS, /\.cmt-act:hover \{ border-color: var\(--accent\); color: var\(--accent\); background: var\(--accent-wash\); \}/);   // the feed word-button hover (2026-08-25): text+outline accent, never a fill
   // the popover's verbs stay Break out / Merge / Delete — the chat's Fork button is deliberately absent
   const pop = RENDER.split("function renderCommentPopover(")[1].split("\nfunction ")[0];
   assert.ok(!/data-act="fork"|showForkPrompt/.test(pop), "no fork button in the popover");

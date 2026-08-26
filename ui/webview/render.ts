@@ -9015,9 +9015,14 @@ function isCoarsePointer(): boolean {
 function composerRestingPlaceholder(): string {
   // the one canonical hint line (the user 2026-08-15): send, newline, stage, commands — and just
   // "/ for commands", not "type / for commands". The static skeletons carry the same string.
-  return isCoarsePointer()
-    ? "Message this session…"
-    : "Message this session…  (⏎ send · ⇧⏎ newline · ⌘⏎ stage · ↑ history · / for commands)";
+  // WIDTH-ADAPTIVE (the user 2026-08-26, whose narrow pane wrapped the full hint onto a clipped
+  // second line): below ~620px of box the hint drops to the core prompt + the one undiscoverable
+  // key ("/"); the full key chart stays a wide-desktop hint. Re-fitted event-based on pane resize
+  // (the ResizeObserver beside the composer's other wiring), never re-measured per keystroke.
+  if (isCoarsePointer()) return "Message this session…";
+  const ta = document.getElementById("composer-input");
+  if (ta && ta.clientWidth > 0 && ta.clientWidth < 620) return "Message this session…  (/ for commands)";
+  return "Message this session…  (⏎ send · ⇧⏎ newline · ⌘⏎ stage · ↑ history · / for commands)";
 }
 
 // How a message typed into the NORMAL composer should be routed while a live picker is up — the picker's
@@ -11858,6 +11863,15 @@ function setupComposer() {
     // a double-click on the handle resets to auto (one line) — a quick escape hatch without sending
     grip.addEventListener("dblclick", () => { composerManualH = null; growComposer(ta); });
   }
+
+  // ── width-adaptive resting placeholder (the user 2026-08-26) ── the pane resized across the
+  // short/long hint threshold → re-fit the placeholder, but ONLY while it is showing a resting
+  // form: a picker's "add your own answer…" or the closed-session notice must never be clobbered.
+  try {
+    new ResizeObserver(() => {
+      if (ta.placeholder.startsWith("Message this session…")) ta.placeholder = composerRestingPlaceholder();
+    }).observe(ta);
+  } catch (e) { /* tests: no ResizeObserver in the DOM shim */ }
 
   // ── slash-command autocomplete (the user 2026-06-29) ── a "/" at the START of the box opens a filterable,
   // arrow-navigable menu of THIS session's slash commands (name + description + arg hint), sourced from the

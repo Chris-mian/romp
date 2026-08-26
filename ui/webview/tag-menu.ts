@@ -129,7 +129,7 @@ export function tagMenuButton(title: string, open: (btn: HTMLElement) => void): 
   btn.type = "button";
   btn.title = title;
   btn.setAttribute("style", "background:transparent;border:1px solid " + TAG_BTN_BORDER + ";"
-    + "border-radius:6px;padding:1px 9px;cursor:pointer;color:#9aa0a6;display:inline-flex;align-items:center;");
+    + "border-radius:6px;padding:4px 6px;cursor:pointer;color:#9aa0a6;display:inline-flex;align-items:center;");
   btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none">'
     + '<path d="M2 7.5 L7.5 2.5 H14 V9 L8.5 14 Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>'
     + '<circle cx="11" cy="5.5" r="1.2" fill="currentColor"/></svg>';
@@ -165,7 +165,7 @@ export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement,
   for (const c of lensChips(lens, unions as never)) {
     const col = c.color || TAG_BTN_GRAY;
     const chip = document.createElement("span");
-    chip.setAttribute("style", "display:inline-flex;align-items:center;gap:5px;padding:1px 8px;"
+    chip.setAttribute("style", "display:inline-flex;align-items:center;gap:5px;padding:2px 7px;"
       + "border-radius:9px;font-size:0.82em;border:1px solid " + col + ";color:" + col + ";"
       + "background:transparent;white-space:nowrap;");
     chip.appendChild(document.createTextNode(c.label));

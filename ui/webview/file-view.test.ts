@@ -61,7 +61,7 @@ test("the viewer is a singleton MODAL over its pane: ~95% card, dimmed backdrop,
   assert.match(VIEW, /close\.addEventListener\("click", closeFileView\);/);
   assert.match(VIEW, /if \(e\.key !== "Escape" \|\| !document\.getElementById\("romp-fileview"\)\) return;/);
   // the panels treatment on the CHAT sheet: dimmed rgba(0,0,0,0.55) backdrop, the content behind visible
-  assert.match(CHAT_CSS, /#romp-fileview \{ position: fixed; inset: 0; z-index: 1200; background: rgba\(0, 0, 0, 0\.55\);/);
+  assert.match(CHAT_CSS, /#romp-fileview \{ position: fixed; inset: 0; z-index: 1200; background: var\(--overlay-dim\);/);
   assert.match(CHAT_CSS, /\.fileview \{ width: 95%; height: 95%;/);
   // …and mirrored on the FEED sheet, which still hosts the viewer when the file BROWSER opens a file
   // (one treatment, two sheets — the hljs-palette precedent below)

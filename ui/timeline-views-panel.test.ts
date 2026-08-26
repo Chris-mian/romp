@@ -92,7 +92,7 @@ test("an active tag is a REMOVABLE CHIP: outline only in its colour, a dim separ
   // and the ✕ is dim and SEPARATE, the composer context chip's read — never baked into the name
   assert.match(SRC, /chip\.style\.borderColor = c\.color; chip\.style\.color = c\.color;/,
     "outline + text in the pick's colour on the page's own ground");
-  assert.match(SRC, /\.romp-tl-chip\{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:9px;/,
+  assert.match(SRC, /\.romp-tl-chip\{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:9px;/,
     "the chip anatomy is the shared syncTagFilter chip's, by value");
   // a SENTINEL view's chip dims to the corner line's own gray at the N-more opacity (the user
   // 2026-08-24: at #cccccc it read bright as a tag) — real tag chips keep their tag colors, full strength
