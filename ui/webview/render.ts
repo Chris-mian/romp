@@ -11528,13 +11528,17 @@ window.addEventListener("message", (e: MessageEvent) => {
       t.tid.startsWith("pending:") && cmtCreateInFlight.has(t.tid.slice("pending:".length))
       && !threads.some((r) => r.anchorUuid === t.anchorUuid));
     commentThreads.set(sid, synths.length ? [...threads, ...synths] : threads);
-    // THE REPLY-ARRIVED EVENT (T102): a frame whose msgs hold MORE agent records than the send's
-    // base means THAT send's reply landed — the exchange latch clears here and nowhere else. A
-    // thread that left "open" (or errored) drops its latch too: green would lie about a reply
-    // that is no longer on the way.
+    // THE REPLY-COMPLETED EVENT (T102, sharpened by T112): a frame whose msgs hold MORE agent
+    // records than the send's base AND whose thread reads settled — the turn that produced the
+    // reply has ENDED, so what the reader sees is the answer, not a mid-turn interim. Counting
+    // records alone cleared 40s early on the specimen: the model wrote "checking…" first, ran
+    // tools, then answered — the interim record raised the count while the turn was still working
+    // and the pulse went yellow before the answer existed. threadBusy here can only DELAY the
+    // clear (the latch side never re-derives from state), so the boot-flap class T102 removed
+    // cannot re-green anything. Leaving "open" (or erroring) still clears immediately.
     for (const t of threads) {
       const base = cmtAwaitBase.get(t.tid);
-      if (base !== undefined && (agentCount(t) > base || t.status !== "open" || !!t.error)) cmtAwaitBase.delete(t.tid);
+      if (base !== undefined && ((agentCount(t) > base && !threadBusy(t.state)) || t.status !== "open" || !!t.error)) cmtAwaitBase.delete(t.tid);
     }
     for (const k of Array.from(cmtAwaitBase.keys()))
       if (!k.startsWith("pending:") && !threads.some((t) => t.tid === k)) cmtAwaitBase.delete(k);

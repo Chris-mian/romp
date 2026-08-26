@@ -508,7 +508,10 @@ test("busy latches at the SEND gesture and clears exactly on the reply-arrived r
   assert.match(UI, /if \(k\.startsWith\("pending:"\)\) \{ cmtAwaitBase\.set\(tid, cmtAwaitBase\.get\(k\)!\); cmtAwaitBase\.delete\(k\); \}/);
   // the ONE clearing site: the comments frame whose msgs carry MORE agent records than the base —
   // or the thread leaving "open"/erroring (green would lie about a reply no longer on the way)
-  assert.match(UI, /if \(base !== undefined && \(agentCount\(t\) > base \|\| t\.status !== "open" \|\| !!t\.error\)\) cmtAwaitBase\.delete\(t\.tid\);/);
+  assert.match(UI, /if \(base !== undefined && \(\(agentCount\(t\) > base && !threadBusy\(t\.state\)\) \|\| t\.status !== "open" \|\| !!t\.error\)\) cmtAwaitBase\.delete\(t\.tid\);/,
+    "T112: the clear is the reply-COMPLETED event — a new agent record AND the turn settled; a "
+    + "mid-turn interim (the specimen's 'checking…' text) must never clear the pulse early. "
+    + "threadBusy on the CLEAR side only delays; the latch side never re-derives from state.");
   // the mark's predicate: the latch, or (post-reload) the records' own owed reading; never state
   assert.match(UI, /return cmtAwaitBase\.has\(th\.tid\) \|\| replyOwed\(th\);/);
   assert.match(UI, /if \(th\.status !== "open" \|\| !!th\.error \|\| threadStuck\(th\.state\)\) return false;/);

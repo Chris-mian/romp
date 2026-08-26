@@ -60,6 +60,21 @@ class SalvageVerifiesTheDiskFirst(unittest.TestCase):
         self.be.retire_live_work(self.sid)
         self.assertEqual(self._markers(), [], "the uuid is on disk — the claim would be false")
 
+    def test_a_textless_twin_on_disk_does_not_eat_the_salvage(self):
+        # T112, guarding the 2026-07-28 class: the CLI persists a record under the SAME uuid with
+        # EMPTY text (a thinking-only twin) while the reply's text streamed only. Byte-containment
+        # alone refused the marker and the watched reply vanished everywhere; the check is
+        # text-aware now, mirroring landed_text_uuids.
+        import json
+        reg = sb.read_reg(self.be.state_dir, self.sid)
+        p = sb.transcript_path(reg.get("cwd") or "", reg.get("lastSid") or self.sid)
+        with open(p, "a") as f:
+            f.write(json.dumps({"type": "assistant", "uuid": "cccc3333-0000-0000-0000-000000000003",
+                                "message": {"content": [{"type": "thinking", "thinking": ""}]}}) + "\n")
+        self._live_reply("cccc3333-0000-0000-0000-000000000003", "the streamed text the twin dropped")
+        self.be.retire_live_work(self.sid)
+        self.assertEqual(len(self._markers()), 1, "the twin carries no text — the streamed reply must salvage")
+
     def test_a_genuinely_lost_reply_still_mints(self):
         self._live_reply("bbbb2222-0000-0000-0000-000000000002", "the discarded partial")
         self.be.retire_live_work(self.sid)
