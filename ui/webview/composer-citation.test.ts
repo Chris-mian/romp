@@ -236,7 +236,7 @@ test("context stages ALONE, and the chips strip carries the visible Stage button
   // neutral at rest (the user 2026-08-23): an accent outline beside the accent-blue chips read as
   // already-pressed. Rest = the button family's dress; the accent appears only on hover.
   assert.match(CSS, /\.composer-stage-btn \{ background: rgba\(255, 255, 255, 0\.06\);\n\s*border: 1px solid var\(--box-border\); color: var\(--dim\);/);
-  assert.match(CSS, /\.composer-stage-btn:hover \{ border-color: var\(--accent\); color: var\(--accent\); background: rgba\(156, 210, 255, 0\.12\); \}/);   // the feed word-button hover (2026-08-25)
+  assert.match(CSS, /\.composer-stage-btn:hover \{ border-color: var\(--accent\); color: var\(--accent\); background: var\(--accent-wash\); \}/);   // the feed word-button hover (2026-08-25)
   assert.doesNotMatch(CSS, /\.composer-stage-btn \{ position: absolute/,
     "no absolute pin — the button flows in the strip, immediately after what it acts on");
   assert.match(RENDER, /st\.title = "hold this context \(and anything typed\) for one combined send later — ⌘⏎ does the same";/);

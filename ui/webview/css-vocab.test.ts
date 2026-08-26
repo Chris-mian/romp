@@ -38,3 +38,22 @@ test("gear.css accent chrome references var(--accent) — never a re-hardcoded b
   assert.doesNotMatch(GEAR, /outline: 2px solid #9cd2ff/);
   assert.match(GEAR, /outline: 2px solid var\(--accent, #9cd2ff\)/);
 });
+
+test("ONE accent wash: every selected/hovered accent chrome resolves through --accent-wash at 0.12", () => {
+  // 0.10 and 0.14 washes had drifted in beside the dominant 0.12 (three alphas for one meaning);
+  // the token is declared in both self-sufficient :roots, and no bare wash literal remains in the
+  // sheets. The CodeMirror .cm-selectionMatch (editor-chunk.ts) keeps 0.14 — a text-match marker,
+  // not chrome — and shell-page inline CSS keeps unified 0.12 literals (no :root to share).
+  assert.match(CHAT, /--accent-wash: rgba\(156, 210, 255, 0\.12\);/);
+  assert.match(FEED, /--accent-wash: rgba\(156, 210, 255, 0\.12\);/);
+  for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
+    const bare = css.replace(/--accent-wash: rgba\(156, 210, 255, 0\.12\);/g, "");
+    assert.doesNotMatch(bare, /rgba\(156, ?210, ?255, ?0?\.1[024]\)/, name + " has no bare wash literal");
+  }
+  // the selected fileview toggle wears the app's ONE selected language in BOTH sheets: wash at
+  // rest, reverse-highlight on hover (styles.css's copy had drifted to a wash hover, 2026-08-25)
+  for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
+    assert.match(css, /\.fileview-btn\.on:hover \{ background: var\(--accent\); color: var\(--accent-fg\); border-color: var\(--accent\); \}/,
+      name + " reverse-highlights the selected viewer toggle");
+  }
+});

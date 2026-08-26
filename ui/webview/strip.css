@@ -77,7 +77,7 @@
 #strip-refresh:disabled { opacity: .35; cursor: default; }
 #strip-net.on { color: var(--accent, #9cd2ff); opacity: 1; }
 /* the popover-open acknowledgment: the button reacts the instant it's clicked */
-#strip-net.open { color: var(--accent, #9cd2ff); opacity: 1; background: rgba(156, 210, 255, 0.12); }
+#strip-net.open { color: var(--accent, #9cd2ff); opacity: 1; background: var(--accent-wash, rgba(156, 210, 255, 0.12)); }
 /* the remotes popover, anchored above the strip */
 #strip-net-pop { position: fixed; right: 8px; bottom: 34px; z-index: 80; width: min(340px, 92vw);
   background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 8px; padding: 8px;

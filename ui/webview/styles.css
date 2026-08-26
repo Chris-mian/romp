@@ -60,6 +60,9 @@ body.scheme-solarized-dark {
      (selected toggles, in-progress loading dots, the Fleet pill, focus) — NOT for STATUS colors, which keep
      their own meaning (--st-working-bg yellow = working, --st-blocked-bg red, etc.). --accent-fg reads on it. */
   --accent: #9cd2ff; --accent-fg: #0c1a2e;
+  /* THE faint accent wash — the one alpha behind every selected/hovered accent chrome (0.10 and 0.14
+     variants drifted in before 2026-08-26). Mirrored in feed.css (own :root). */
+  --accent-wash: rgba(156, 210, 255, 0.12);
   /* Comment-highlight yellow (the user 2026-08-13): the marked passage reads like a highlighter
      stroke, DISTINCT from both the accent blue (selection/chrome) and the working-status yellow
      chip. Text-highlight use only — comment chrome (badge, buttons, chips) stays var(--accent). */
@@ -668,7 +671,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .held-head { flex: 1 1 100%; }
 .staged-head .staged-go { margin-left: auto; background: none; border: 1px solid var(--accent); color: var(--accent);
   border-radius: 5px; font: inherit; padding: 1px 8px; cursor: pointer; }
-.staged-head .staged-go:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }   /* the feed word-button hover (2026-08-25) */
+.staged-head .staged-go:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }   /* the feed word-button hover (2026-08-25) */
 /* the chips strip's Stage button (the user 2026-08-23; moved 2026-08-24): it FOLLOWS the blue
    context chips in the strip's column — immediately after what it acts on, where its meaning reads;
    right-justified it floated detached. Exists exactly while context is held (the strip renders it,
@@ -681,7 +684,7 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 /* hover = the FEED's word-button treatment exactly (the user 2026-08-25: text + outline light up
    blue, like Clear/Undo — never a background fill; the wash values are the feed's .ftree-act-btn
    family, referenced not re-derived) */
-.composer-stage-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
+.composer-stage-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 .staged-chip { display: flex; flex-direction: column; gap: 2px; border: 1px dashed rgba(156, 210, 255, 0.45);
   border-left: 2px solid var(--accent); border-radius: 6px; padding: 2px 6px; font-size: 12px; color: var(--fg);
   cursor: pointer; }
@@ -2238,7 +2241,7 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .picker-dir-row:hover { background: rgba(255, 255, 255, 0.08); }
-.picker-dir-row.active { background: rgba(156, 210, 255, 0.14); color: var(--accent); }
+.picker-dir-row.active { background: var(--accent-wash); color: var(--accent); }
 .picker-dir-more { padding: 4px 10px; color: var(--dim); font-size: 0.82em; }
 /* per-session backend toggle in the + dialog (the user 2026-06-23): a tmux | SDK segmented control */
 .picker-backend { display: flex; align-items: center; gap: 6px; padding: 6px 14px 8px; }
@@ -2820,7 +2823,7 @@ mark.cmt-hl.hl-last { border-top-right-radius: 2px; border-bottom-right-radius: 
   border: 1px solid var(--box-border); color: var(--dim); border-radius: 5px; font-size: 0.78em;
   padding: 1px 8px; cursor: pointer;
 }
-.cmt-act:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }   /* the feed word-button hover (2026-08-25): Break out / Merge / Delete light up like Clear/Undo */
+.cmt-act:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }   /* the feed word-button hover (2026-08-25): Break out / Merge / Delete light up like Clear/Undo */
 .cmt-act.cmt-del.armed { border-color: var(--st-blocked-bg, #c94f4f); color: var(--st-blocked-bg, #c94f4f); }
 .cmt-note.cmt-err { color: var(--st-blocked-bg, #c94f4f); opacity: 0.9; }
 
@@ -3020,8 +3023,8 @@ body.filebrowse-open { overflow: hidden; }
    border + faint wash, gray = off (the .fask-secbtn.on / .feed-modetoggle.on treatment) — with the same
    reverse-highlight hover so a selected toggle never reads as dead. */
 .fileview-btn.on { color: var(--accent); border-color: var(--accent);
-  background: rgba(156, 210, 255, 0.10); font-weight: 600; }
-.fileview-btn.on:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }   /* the feed word-button hover (2026-08-25) */
+  background: var(--accent-wash); font-weight: 600; }
+.fileview-btn.on:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
 /* Wrap mode (the Wrap toggle, persisted per browser): long lines soft-wrap instead of scrolling
    sideways. The flat sibling gutter cannot survive that — one logical line becomes several visual lines

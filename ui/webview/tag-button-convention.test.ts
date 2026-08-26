@@ -69,7 +69,10 @@ test("THE BUTTON OUTLINE (the user 2026-08-25, round two): every mount wears the
   assert.equal(TAG_BTN_BORDER, "rgba(255,255,255,0.10)");
   assert.equal(TAG_BTN_WASH, "rgba(156,210,255,0.12)");
   assert.ok(flat.includes("--card-border:rgba(255,255,255,0.10)"), "the feed's hairline is the shared border literal");
-  assert.ok(flat.includes("background:rgba(156,210,255,0.12)"), "the feed .on's wash is the shared wash literal");
+  // the feed's .on rules resolve through var(--accent-wash) since 2026-08-26 — its :root literal
+  // is what must equal the shared constant
+  assert.ok(flat.includes("--accent-wash:rgba(156,210,255,0.12)"), "the feed's wash token is the shared wash literal");
+  assert.ok(flat.includes("background:var(--accent-wash)"), "the feed .on's wash resolves through the token");
   assert.ok(flat.includes("border-radius:6px"), "the feed's radius");
   assert.ok(flat.includes("#feed-foot.fdismiss{font-size:10.5px;padding:1px9px"), "the feed footer instance's padding");
   // the chat/outline builder states the same box inline (inline beats classes, so it must carry it itself)

@@ -26518,7 +26518,7 @@ def _landing():
             "padding:4px 9px;border-radius:5px;cursor:pointer;user-select:none;display:flex;align-items:center;"
             "justify-content:center;transition:color .1s,background .1s}"
             ".rail-btn:hover{color:#cfe6ff;background:rgba(255,255,255,0.06)}"
-            ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.10)}"
+            ".rail-btn.on{color:var(--accent);background:rgba(156,210,255,0.12)}"
             # the ↻ refresh + ⛭ settings actions sit in .rail-acts, pinned to the RIGHT (margin-left:auto on the
             # wrapper) of the bottom bar and ALWAYS visible — settings (⛭, last in the DOM) at the far right.
             ".rail-act{flex:0 0 auto;display:flex;align-items:center;justify-content:center;margin:1px 4px;padding:4px 0;"

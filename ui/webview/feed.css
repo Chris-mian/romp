@@ -16,6 +16,8 @@
   --accent: #9cd2ff;  /* the romp accent (CLAUDE.md Design) — feed.css has its OWN :root, so selected-state
                        chrome here needs it defined locally or var(--accent) silently falls back */
   --accent-fg: #0c1a2e;  /* dark text ON the accent (CLAUDE.md) — for the reverse-highlight on a selected toggle */
+  --accent-wash: rgba(156, 210, 255, 0.12);  /* THE faint accent wash — mirrors styles.css; one alpha
+                       behind every selected/hovered accent chrome */
   --st-working-bg: #e0b020; --st-working-fg: #332600;  /* the WORKING yellow — mirrors styles.css, same trap
                        as --err: .fask-stallbtn and .fask-interrupting referenced these while they lived only
                        in styles.css, so the "filled yellow so the stall is noticed" chip rendered as a quiet
@@ -325,7 +327,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    line; the "✓ Done — I did it" button greens on hover (it's a check-off). */
 .fq-send { flex: 0 0 auto; font: inherit; font-size: 0.85em; cursor: pointer; color: var(--fg);
   background: rgba(255, 255, 255, 0.08); border: 1px solid var(--card-border); border-radius: 6px; padding: 5px 12px; }
-.fq-send:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
+.fq-send:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 /* "didn't need me" — the false-awaiting teaching dismissal */
 
 /* drop-point lines on an asks-column card: where the work is currently parked */
@@ -371,7 +373,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    selected-state language across the whole app; gray = off, accent blue = on). Same wash alpha as the
    rail's .rail-btn.on. */
 .fask-secbtn.on { color: var(--accent); border-color: var(--accent);
-  background: rgba(156, 210, 255, 0.10); font-weight: 600; }
+  background: var(--accent-wash); font-weight: 600; }
 /* STALLED — the one toggle that keeps its OWN colour in every state. The others turn accent-blue when
    selected, which is the app's "this is the one you picked" language; a stall is not a preference, it
    is something wrong. It wears the PROBLEM-CHIP outline the card's other trouble chips wear (yellow
@@ -565,7 +567,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .ftree-act-done:hover,
 .ftree-act-status:hover,
 .ftree-act-fup:hover,
-.ftree-act-drop:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
+.ftree-act-drop:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 .ftree-act-btn:disabled { opacity: 0.55; cursor: default; }
 /* On a phone the modal row is too narrow to hold the reply text AND the nowrap Done/Drop/Check-status/
    Follow-up group on one line: .ftree-node has no flex-wrap, so the buttons kept their full width and the
@@ -878,7 +880,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .fdismiss { padding: 2px 10px; }
 /* One accent hover for every action button (the user 2026-07-21): Clear, Move to Working, Follow up,
    Clear all, Undo all share it — no red on any action, only on error/blocked STATUS. */
-.fdismiss:hover { border-color: var(--accent); color: var(--accent); background: rgba(156, 210, 255, 0.12); }
+.fdismiss:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 /* Undo — restorative, so it hovers BLUE like Follow up, not Clear's red. */
 /* The feed's DOCKED control bar (the user 2026-06-29): its own dedicated rectangle in normal flow at the
    bottom of the pane, NOT a floating overlay. The body is a column flex, so #feed-list flexes to fill above
@@ -932,7 +934,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    (blue text + border + faint wash), the same selected-state look the card section toggles use (the
    user 2026-07-07) */
 #feed-foot .feed-modetoggle.on { color: var(--accent); border-color: var(--accent);
-  background: rgba(156, 210, 255, 0.12); opacity: 1; }
+  background: var(--accent-wash); opacity: 1; }
 /* the SESSION list + chip identity treatment (the user 2026-08-08, now the combobox's list): one row
    per tab-order session written the way the tabs and session headers write it — .fsm-name BOLD in the
    session's identity colour (inline, from the payload), host: prefix quiet (.host-prefix, shared), the
@@ -946,7 +948,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 .feed-sessmenu .fsm-row { display: flex; align-items: center; gap: 7px; padding: 4px 9px;
   border-radius: 4px; cursor: pointer; font-size: 11.5px; white-space: nowrap; }
 .feed-sessmenu .fsm-row:hover { background: rgba(255, 255, 255, 0.07); }
-.feed-sessmenu .fsm-row.on { background: rgba(156, 210, 255, 0.12); }
+.feed-sessmenu .fsm-row.on { background: var(--accent-wash); }
 /* TAG CHIPS on the combobox's session rows (the user 2026-08-25 — the smaller unification variant):
    the dialog's own outline-pill vocabulary at the row's scale, NON-interactive (grouping made
    visible; the controls stay separate). The strip ellipsizes in the row's leftover space — names
@@ -1235,7 +1237,7 @@ a.fileview-btn[hidden] { display: none; }
    border + faint wash, gray = off (the .fask-secbtn.on / .feed-modetoggle.on treatment) — with the same
    reverse-highlight hover so a selected toggle never reads as dead. */
 .fileview-btn.on { color: var(--accent); border-color: var(--accent);
-  background: rgba(156, 210, 255, 0.10); font-weight: 600; }
+  background: var(--accent-wash); font-weight: 600; }
 .fileview-btn.on:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
 /* Wrap mode (the Wrap toggle, persisted per browser): long lines soft-wrap instead of scrolling
@@ -1503,7 +1505,7 @@ body.filebrowse-open { overflow: hidden; }
    name + working dot + ✕ back to typing. The accent-wash pill the .on state already wears
    everywhere; the footer's own 10.5px, no new sizes. */
 #feed-sess-chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 4px 1px 7px;
-  border: 1px solid var(--accent); border-radius: 6px; background: rgba(156, 210, 255, 0.12);
+  border: 1px solid var(--accent); border-radius: 6px; background: var(--accent-wash);
   font-size: 10.5px; white-space: nowrap; }
 #feed-sess-chip[hidden] { display: none; }
 #feed-search:not(.open) #feed-sess-chip { display: none; }   /* same backstop as the ✕: chips live on an open bar */
