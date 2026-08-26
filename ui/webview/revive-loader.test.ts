@@ -23,7 +23,7 @@ test("the loader is the romp treatment: wordmark + swirl + pulsing dots + captio
   // ONE shared builder (rompLoaderInner) carries the anatomy — the revive loader and the comment
   // popover's boot both wear it, per the loading-states rule
   assert.match(RENDER, /function rompLoaderInner\(caption: string, opts\?: \{ wordmark\?: boolean \}\): HTMLElement/);   // parameterized, never forked (the popover drops the wordmark; everything else keeps it)
-  assert.match(RENDER, /const word = el\("div", "rl-word"\)/, "reuses the boot-splash .rl-* styles already on the page");
+  assert.match(RENDER, /const word = el\("div", "rl-word"\)/, "the shared .rl-* anatomy");
   assert.match(RENDER, /swirl\.src = mediaSrc\("romp-swirl-o\.svg"\)/);
   assert.match(RENDER, /const dots = el\("div", "rl-dots"\)/);
   assert.match(RENDER, /o\.appendChild\(rompLoaderInner\(`reviving “\$\{name\}”…`\)\);/);
@@ -74,4 +74,16 @@ test("the loader has styles: dimming backdrop + caption; the error-box family is
   assert.match(CSS, /#revive-loader \{ position: fixed; z-index: 65; display: flex;/);
   assert.match(CSS, /#revive-loader \.revive-cap \{/);
   assert.doesNotMatch(CSS, /revive-err/);
+});
+
+test("the .rl-* anatomy lives in styles.css itself — the VS Code chat page loads this sheet ALONE", () => {
+  // kernel-served pages also inject _LOADER_CSS, but the VS Code webview never sees that block:
+  // without these rules the revive loader rendered as an unstyled div stack there (2026-08-26)
+  assert.match(CSS, /\.rl-in \{ display: flex; flex-direction: column; align-items: center; gap: 18px; \}/);
+  assert.match(CSS, /\.rl-word \{ font-family: 'RompAnta', var\(--sans\);/);
+  assert.match(CSS, /\.rl-o \{[^}]*animation: rl-spin 7s linear infinite/);
+  assert.match(CSS, /\.rl-dots i \{[^}]*background: var\(--accent\)/);
+  assert.match(CSS, /@keyframes rl-bnc/);
+  assert.match(CSS, /@keyframes rl-spin/);
+  assert.match(CSS, /@font-face \{ font-family: 'RompAnta'; src: url\(\.\.\/media\/Anta-Regular\.ttf\)/);
 });
