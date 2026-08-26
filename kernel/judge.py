@@ -10889,9 +10889,56 @@ def rearm_failed_summaries(now=None, auto=False):
     return n
 
 
+def _drain_undiscovered(now, fleet_sids):
+    """Stragglers the fleet walk can't reach (the user 2026-08-26, T110): a completed top whose
+    summary is still null in a store whose SESSION the pass never visits — outside discover's
+    recency window, or its transcripts gone — never meets the distiller, so its card reads
+    "Distilling…" forever. The dissolution wave surfaced the class (re-parented completed children
+    drain through the normal event gate, but only in stores a pass actually visits); the hole is
+    older than the wave. Keyed on the exact owed predicate (completed/confirming top, summary is
+    None, not cleared), never on age: a pass scans only ABSENT stores, and only when one still owes
+    does it pay for the windowless discover walk to resolve transcripts by direct sid lookup — a
+    session merely outside the window still gets its REAL summary; a transcript-less one settles
+    through _distill_session's own no-work branch, the "" sentinel plus the history-unreadable
+    warn, loud instead of an eternal spinner. Self-retiring: the sentinel is non-null, so a drained
+    store never re-enters the predicate and the steady state costs one status read per absent
+    store. Returns goals distilled."""
+    stuck = []
+    for f in sorted(GOALDIR.glob("*.json")):
+        sid = f.stem
+        if sid in fleet_sids:
+            continue
+        try:
+            store = load_goals(sid)
+        except Exception:
+            continue
+        status, nodes = store.get("status", {}), store.get("nodes", {})
+        confirming = set(store.get("confirming") or ())
+        if any((st == "completed" or nid in confirming)
+               and isinstance(nodes.get(nid), dict)
+               and not nodes[nid].get("cleared")
+               and nodes[nid].get("summary") is None
+               for nid, st in status.items()):
+            stuck.append(sid)
+    if not stuck:
+        return 0
+    paths = {fsid: str(path) for fsid, path, _anchor, _name in discover(now, window=now)}
+    n = 0
+    for sid in stuck:
+        try:
+            n += _distill_session(sid, paths.get(sid) or os.devnull, now)
+        except Exception as e:
+            _log_judge_error("distiller", sid, "pass-crash",
+                             note="straggler drain: %r" % e)
+    return n
+
+
 def run_distill(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
     """One DISTILLER pass (triage tier), run after the closer/grouper: store a key-takeaway summary on each
-    newly-(re)completed top goal's card. Event-gated per goal. Returns goals distilled."""
+    newly-(re)completed top goal's card. Event-gated per goal. Also drains stores the fleet walk
+    can't reach (_drain_undiscovered) and logs a session pass that dies instead of swallowing it —
+    one poisoned goal used to kill a whole store's distills with zero calls and zero errors, the
+    undiagnosable shape of the T110 report. Returns goals distilled."""
     if now is None:
         now = int(time.time())
     fleet = discover(now)[:sessions_cap]
@@ -10901,8 +10948,9 @@ def run_distill(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
         for fut in as_completed(futs):
             try:
                 n += fut.result()
-            except Exception:
-                pass
+            except Exception as e:                     # fail LOUDLY, never silently skip the store
+                _log_judge_error("distiller", futs[fut], "pass-crash", note=repr(e))
+    n += _drain_undiscovered(now, {fsid for fsid, _p, _a, _n2 in fleet})
     if verbose:
         sys.stderr.write("romp-judge: distiller summarized %d completed goals\n" % n)
     return n
