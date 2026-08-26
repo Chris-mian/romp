@@ -143,6 +143,26 @@ test("same-row badges wear the SAME metric set; micro-labels wear the section-he
   }
 });
 
+test("the transcript's rhythm: 7px turns, 11px user turns, ONE bubble padding, dots on the first line", () => {
+  // slightly-more-compact pass (the user 2026-08-26): turn padding 9→7 and user turns 14→11, with
+  // the rail dots/time markers moved the same distance so they keep sitting on the first line;
+  // the outgoing-bubble family (user / romp / follow-up / queued) had three paddings for one
+  // shape (9px 14px / 7px 14px / 7px 13px) and now wears one.
+  assert.match(CHAT, /\.turn \{ position: relative; padding-left: 24px; padding-top: 7px; padding-bottom: 7px;/);
+  assert.match(CHAT, /\.dot \{ position: absolute; left: 6px; top: 13px;/);
+  assert.match(CHAT, /\.time-marker \{\n  position: absolute; top: 13px;/);
+  assert.match(CHAT, /\.turn-user \{ padding-top: 11px; padding-bottom: 11px; \}/);
+  assert.match(CHAT, /\.turn-user \.dot, \.turn-user \.time-marker \{ top: 17px; \}/);
+  assert.equal((CHAT.match(/border-radius: 14px; padding: 7px 12px;/g) || []).length, 4,
+    "user, follow-up, romp, queued bubbles share the one padding");
+});
+
+test("the sessions-pane header is ONE flex row: search shrinks, the tag button never drops alone", () => {
+  const SESSIONS = read("fleet-pane.css");   // the Sessions pane sheet (file keeps its legacy name)
+  assert.match(SESSIONS, /#fleet-search-bar\{flex:0 0 auto;display:flex;align-items:center;flex-wrap:wrap;gap:6px;/);
+  assert.match(SESSIONS, /#fleet-search-wrap\{position:relative;flex:1 1 140px;min-width:140px\}/);
+});
+
 test("ONE accent wash: every selected/hovered accent chrome resolves through --accent-wash at 0.12", () => {
   // 0.10 and 0.14 washes had drifted in beside the dominant 0.12 (three alphas for one meaning);
   // the token is declared in both self-sufficient :roots, and no bare wash literal remains in the

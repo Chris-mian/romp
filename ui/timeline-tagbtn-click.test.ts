@@ -110,7 +110,7 @@ test("executed: the whole button IS the hit target, wearing the feed's box by va
   // the injected corner CSS states the feed footer's values — the executed style node carries them
   const styles = (g.document.head.children || []).filter((c: any) => c.tag === "style").map((c: any) => c.textContent).join("");
   for (const lit of [
-    ".romp-tl-cbtn{display:inline-flex;align-items:center;font:inherit;font-size:10.5px;padding:1px 9px;",
+    ".romp-tl-cbtn{display:inline-flex;align-items:center;font:inherit;font-size:10.5px;padding:4px 6px;",
     "border:1px solid rgba(255,255,255,0.10);border-radius:6px;",
     "color:var(--vscode-descriptionForeground,#9a9a9a);",
   ]) assert.ok(styles.includes(lit), "corner CSS carries: " + lit);

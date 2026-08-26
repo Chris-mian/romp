@@ -831,14 +831,14 @@ class TimelinePanel {
           + 'pointer-events:none;font-size:13px;'
           + 'font-family:var(--vscode-font-family,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif)}'
           + '.romp-tl-corner>*{pointer-events:auto}'
-          + '.romp-tl-cbtn{display:inline-flex;align-items:center;font:inherit;font-size:10.5px;padding:1px 9px;'
+          + '.romp-tl-cbtn{display:inline-flex;align-items:center;font:inherit;font-size:10.5px;padding:4px 6px;'
           + 'color:var(--vscode-descriptionForeground,#9a9a9a);background:transparent;'
           + 'border:1px solid rgba(255,255,255,0.10);border-radius:6px;cursor:pointer;white-space:nowrap;opacity:0.95;'
           + 'transition:color 0.12s ease,border-color 0.12s ease,background 0.12s ease}'
           + '.romp-tl-cbtn svg{display:block}'
           + '.romp-tl-cbtn:hover{border-color:var(--accent,#9cd2ff);color:var(--accent,#9cd2ff);background:rgba(156,210,255,0.12)}'
           + '.romp-tl-cbtn.on{color:var(--accent,#9cd2ff);border-color:var(--accent,#9cd2ff);background:rgba(156,210,255,0.12);opacity:1}'
-          + '.romp-tl-chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:9px;'
+          + '.romp-tl-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:9px;'
           + 'font-size:0.82em;border:1px solid;background:transparent;white-space:nowrap}'
           + '.romp-tl-chipx{cursor:pointer;opacity:0.75;color:#9aa0a6;font-size:0.9em}'
           + '.romp-tl-ctail{color:#9aa0a6;opacity:0.7;font-size:12px;cursor:pointer;user-select:none;white-space:nowrap}';
@@ -2788,7 +2788,7 @@ class TimelinePanel {
       }
       for (const n of (lens.tags || [])) if (picked[n]) chips.push({ label: n, color: MODEL_FG, pick: { tag: n } });
     }
-    const GAP = 8, BTNW = 34;   // the bar's flex gap; the feed tag button's measured box width
+    const GAP = 8, BTNW = 28;   // the bar's flex gap; the icon button's measured box (14 glyph + 12 pad + 2 border)
     const tailStr = more ? more + ' more' : '';
     const chipW = (c) => 18 + this.labelWidth(c.label) + 6 + 8;   // pad+border + name + gap + ✕ (the 12px measure over-covers the 10.7px render)
     const budget = this.M.left - PADL - (BTNW * 2 + GAP) - (tailStr ? GAP + this.labelWidth(tailStr) : 0);
