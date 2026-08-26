@@ -6485,6 +6485,18 @@ function adoptCommentThread(sid: string, tid: string): void {
   applyCommentMarks(sid);
 }
 
+/** The popover's unconfirmed sends, rendered through the CHAT'S OWN queued idiom — renderQueued's
+ *  bare optimistic group, the exact component an unconfirmed chat send wears (T104, the user
+ *  2026-08-26: the thread-local echo was a washed-gray one-off pill, the "third look" the chat
+ *  killed 2026-07-16 reborn in the popover; "I really want to be inheriting all the stuff for how
+ *  the chat normally renders"). Inherited, never restyled: the dashed bubble, the sent-just-now
+ *  title, the no-header bare form all come from the one code path. */
+function cmtPendingQueued(pend: { text: string; t: number }[]): HTMLElement {
+  return renderQueued({ kind: "queued", bare: true,
+    texts: pend.map((p) => ({ md: p.text, optimistic: true, cancelable: false })),
+    uuid: OPT_PREFIX + pend[0].t } as Extract<ChatEvent, { kind: "queued" }>);
+}
+
 function commentMsgEl(who: "you" | "agent", text: string): HTMLElement {
   const n = el("div", "cmt-msg " + who);
   if (who === "agent") n.innerHTML = md(text);
@@ -6523,11 +6535,7 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): voi
     const boot = el("div", "cmt-boot");
     boot.appendChild(rompLoaderInner("opening the thread…", { wordmark: false }));
     list.appendChild(boot);
-    for (const pb of pend) {
-      const n = commentMsgEl("you", pb.text);
-      n.classList.add("pending");
-      list.appendChild(n);
-    }
+    if (pend.length) list.appendChild(cmtPendingQueued(pend));
     list.scrollTop = list.scrollHeight;
     return;
   }
@@ -6594,11 +6602,7 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): voi
       list.closest(".cmt-pop")?.querySelector(":scope > .cmt-quote")?.remove();
     }
   } else for (const m of th.msgs) list.appendChild(commentMsgEl(m.who, m.text));
-  for (const p of pend) {
-    const n = commentMsgEl("you", p.text);
-    n.classList.add("pending");
-    list.appendChild(n);
-  }
+  if (pend.length) list.appendChild(cmtPendingQueued(pend));
   // (the typing dots that rendered here while the thread was busy are RETIRED — the user 2026-08-24:
   // the await-green highlight carries the in-flight signal, and the reply's arrival is announced by
   // the green→yellow settle; the pending bubble still acknowledges the user's own send)

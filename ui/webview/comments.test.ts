@@ -465,6 +465,20 @@ test("the popover's typing dots are retired — the green highlight is the only 
   assert.match(UI, /the pending bubble IS the acknowledgement/);
 });
 
+// ── T104 (the user 2026-08-26, screenshot): the popover's pending echo wore a one-off washed-gray
+// pill — the "third look" the chat killed 2026-07-16, reborn thread-locally — while the chip read
+// Ready off one stale relayed frame, so it read as a stuck queued thing with no queued dress. The
+// echo now RIDES the chat's own component: renderQueued's bare optimistic group, inherited. ──────
+test("the popover's pending echo IS the chat's queued idiom — one component, both boot and live", () => {
+  assert.match(UI, /function cmtPendingQueued\(pend: \{ text: string; t: number \}\[\]\): HTMLElement \{\s*\n\s*return renderQueued\(\{ kind: "queued", bare: true,/);
+  assert.match(UI, /texts: pend\.map\(\(p\) => \(\{ md: p\.text, optimistic: true, cancelable: false \}\)\),/);
+  const sites = (UI.match(/cmtPendingQueued\(pend\)/g) || []).length;
+  assert.equal(sites, 2, "both render sites — the boot view and the live list — share it");
+  // the one-off is gone root and branch: no .pending class minted, no washed-gray CSS
+  assert.doesNotMatch(UI, /classList\.add\("pending"\)/);
+  assert.doesNotMatch(CSS, /\.cmt-msg\.pending/);
+});
+
 // ── THE EXCHANGE LATCH (T102, the user 2026-08-26 — replacing the push-count settle): busy latches
 // at the SEND GESTURE (cmtAwaitBase.set in render.ts, before any kernel round-trip — thread-open is
 // never the start trigger) and clears ONLY on the reply-arrived event: th.msgs holding MORE

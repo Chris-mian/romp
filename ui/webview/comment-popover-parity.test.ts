@@ -73,9 +73,10 @@ test("a fresh thread boots on the romp loader, then renders its final format ONC
   // …with the can't-trap backstop: past it, the hold releases and the projection paints after all
   assert.match(RENDER, /const CMT_BOOT_BACKSTOP_MS = 8000;/);
   assert.match(RENDER, /window\.setTimeout\(\(\) => \{ if \(openCommentKey\?\.tid === tid\) refillOpenCommentPop\(\); \}, CMT_BOOT_BACKSTOP_MS \+ 50\);/);
-  // the user's own pending sends still acknowledge under the loader
+  // the user's own pending sends still acknowledge under the loader — through the CHAT'S queued
+  // idiom (T104: the one-off gray pill is gone; cmtPendingQueued IS renderQueued's bare group)
   const gate = RENDER.split("cmtBootHolds(th.tid)) {")[1].split("return;")[0];
-  assert.ok(gate.includes('commentMsgEl("you", pb.text)'), "pending bubbles ride the boot view");
+  assert.ok(gate.includes("cmtPendingQueued(pend)"), "pending bubbles ride the boot view, chat-idiom");
 });
 
 test("the pulse is exchange-scoped (T102): send-gesture latch, reply-record clear — no push counts", () => {
