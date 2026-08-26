@@ -5229,7 +5229,24 @@ class SdkBackend:
             with open(p, "rb") as f:
                 if size > 4_000_000:
                     f.seek(size - 4_000_000)
-                return uuid.encode() in f.read()
+                data = f.read()
+            if uuid.encode() not in data:
+                return False
+            # TEXT-AWARE (T112, guarding the 2026-07-28 textless-twin class): the CLI can persist a
+            # record under the SAME uuid with EMPTY text (a thinking-only twin) while the text the
+            # user watched streamed only. Byte-containment alone then refused the salvage marker and
+            # the reply vanished everywhere. Only a record that actually CARRIES text counts as
+            # landed — mirroring landed_text_uuids, the build-time dedup's own rule.
+            for ln in data.split(b"\n"):
+                if uuid.encode() not in ln or not ln.strip():
+                    continue
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                if r.get("uuid") == uuid and r.get("type") == "assistant" and _atom_text(r).strip():
+                    return True
+            return False
         except OSError:
             return False
 

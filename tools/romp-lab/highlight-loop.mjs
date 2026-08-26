@@ -65,6 +65,20 @@ const dropped = await page.evaluate(async (want) => {
   return "ok";
 }, MODEL);
 console.log("model drop:", dropped);
+// bypass permissions in the HERMETIC lab so the thread's tool step never parks on an ask — the
+// thread inherits the parent's mode at fork, and the clear-timing phase needs a real tool pause
+const moded = await page.evaluate(async () => {
+  const btn = document.querySelector('#statusline .meta-btn[data-kind="mode"]');
+  if (!btn) return "no-mode-badge";
+  btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 200));
+  const item = Array.from(document.querySelectorAll(".meta-menu .meta-item"))
+    .find((i) => i.textContent.toLowerCase().includes("bypass"));
+  if (!item) return "no-bypass-item";
+  item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  return "ok";
+});
+console.log("mode bypass:", moded);
 
 // ── a REAL turn: ask for a stable, selectable sentence ──
 await page.fill("#composer-input", `Reply with exactly this sentence and nothing else: ${PASSAGE}`);
@@ -114,16 +128,38 @@ await page.waitForFunction(() => !document.querySelector("mark.cmt-hl.busy"), un
   .catch(async () => check("3-clear-on-reply-record", false, "still busy 12s after the reply rendered"));
 await shot("settled-yellow");
 
-// PHASE 4: a follow-up re-latches until ITS reply
-await page.fill(".cmt-pop .cmt-input", "And one more short sentence about it?");
+// PHASE 4 (T112's specimen shape, permanent): the follow-up forces an INTERIM text record, a real
+// tool pause, then the final answer — the clear must wait for the reply to be VISIBLE, never firing
+// on the interim record the way the specimen did.
+const FINAL = "FINAL ANSWER: the moon is airless.";
+await page.fill(".cmt-pop .cmt-input",
+  "Do exactly this, in order: first reply with only the sentence 'checking the sources first.' — then run the bash command `echo verified` — then give a final message containing exactly this phrase: " + FINAL);
 await page.keyboard.press("Enter");
 await page.waitForTimeout(250);
 check("4-follow-up-relatch", (await busy()) === true);
 await shot("followup-latched");
-const agentTurns = () => page.evaluate(() => document.querySelectorAll(".cmt-pop .cmt-msgs .turn-assistant, .cmt-pop .cmt-msgs .cmt-msg.agent").length);
-const before = await agentTurns();
-await page.waitForFunction((n) => document.querySelectorAll(".cmt-pop .cmt-msgs .turn-assistant, .cmt-pop .cmt-msgs .cmt-msg.agent").length > n, before, { timeout: 240000 });
-await page.waitForFunction(() => !document.querySelector("mark.cmt-hl.busy"), undefined, { timeout: 12000 })
+// CLEAR-TIMING (permanent, T112): sample continuously — the mark may never read settled while the
+// rendered thread lacks the final answer text (the reader's own view is the arbiter).
+const violations = { count: 0, samples: 0 };
+const timer = setInterval(async () => {
+  try {
+    violations.samples++;
+    const st = await page.evaluate((f) => ({
+      busy: !!document.querySelector("mark.cmt-hl.busy"),
+      hasFinal: Array.from(document.querySelectorAll(".cmt-pop .cmt-msgs .turn-assistant"))
+        .some((e) => e.textContent.includes(f)) }), FINAL);
+    if (!st.busy && !st.hasFinal) violations.count++;
+  } catch { /* page busy */ }
+}, 100);
+// FULL-TEXT (permanent, T112): the rendered thread must converge to the complete reply
+await page.waitForFunction((f) => Array.from(document.querySelectorAll(".cmt-pop .cmt-msgs .turn-assistant"))
+  .some((e) => e.textContent.includes(f)), FINAL, { timeout: 300000 })
+  .then(() => check("4c-full-text-renders", true))
+  .catch(() => check("4c-full-text-renders", false, "the final answer text never rendered in the thread"));
+clearInterval(timer);
+check("4d-clear-never-precedes-visible-reply", violations.count === 0,
+  `${violations.count}/${violations.samples} samples read settled before the answer was visible`);
+await page.waitForFunction(() => !document.querySelector("mark.cmt-hl.busy"), undefined, { timeout: 15000 })
   .then(() => check("4b-follow-up-clears-on-its-reply", true))
   .catch(async () => check("4b-follow-up-clears-on-its-reply", false, "still busy after the follow-up's reply"));
 await shot("followup-settled");
