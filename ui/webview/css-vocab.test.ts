@@ -134,8 +134,8 @@ test("same-row badges wear the SAME metric set; micro-labels wear the section-he
   assert.match(STRIP, /\.sn-khead \{[^}]*font-weight: 700; letter-spacing: 0\.08em;/);
   assert.match(GEAR, /\.rs-sec \{[^}]*font-weight: 700; letter-spacing: 0\.08em;/s);
   // no px letter-spacing (an em value scales with its label; 0.4px was the one outlier)
-  const FLEET = read("fleet-pane.css");
-  assert.doesNotMatch(FLEET, /letter-spacing:0\.4px/);
+  const SESSIONS = read("fleet-pane.css");   // the Sessions pane sheet (file keeps its legacy name)
+  assert.doesNotMatch(SESSIONS, /letter-spacing:0\.4px/);
   // true pills resolve through --radius-pill (the .fitem:hover inset-999px fill trick is not a radius)
   for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
     assert.match(css, /--radius-pill: 999px;/, name);
