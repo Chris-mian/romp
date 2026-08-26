@@ -121,8 +121,8 @@ handles four more phases: a live re-plan after you clear a card mid-work,
 nudge resolution (resolve the named goal, done or block, no plain step),
 delegation follow-on (file the recipient's work under the courier's plant),
 and tagged follow-ups (file under the cited goal unless the reply starts a
-different thread — and even then the new goal groups with the cited card
-under one umbrella: the follow-up tie). A segment opened by an
+different thread — the pivot's goal is then its own card with `pivotFrom`
+provenance; the structural tie retired with containers, T101). A segment opened by an
 untargeted kernel notice (restart or resume) carries a housekeeping note:
 pure verification sweeps file nothing. Since 2026-08-25 that is also a
 mechanical floor, not just a request: a work-run whose segment was opened by
@@ -161,10 +161,9 @@ seven times in 75 minutes). Two guardrails ride the same fix: the closer
 never completes a "delegated to" tracking item itself (its ending event is
 the recipient's completion — a dispatch-time done consumed the slot and
 starved the report), and on a status-reporting turn (nudge / follow-up /
-wrap-up) a cited UMBRELLA's open descendants ride the audit too — the
-umbrella's open leaf was otherwise reachable by no channel, since a nudge
-spliced into a busy session's running turn strips its own resolutions (a
-plain cited goal keeps the tops-only shape: the closer rules it directly).
+wrap-up) every open working top rides the audit (the cited-umbrella
+descendants channel served containers and retired with them, T103: a
+once-stranded leaf is its own top now and rides the plain channel).
 It audits only the goals the turn actually touched;
 verdict done, blocked, or omit, with "when in doubt, omit". Idempotent per
 turn. Its diary events carry src `closer`, so planner and closer verdicts

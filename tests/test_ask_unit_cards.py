@@ -286,6 +286,24 @@ class UmbrellaDissolution(unittest.TestCase):
         finally:
             jd.parsed_session = saved
 
+    def test_a_peer_adopted_container_dissolves_on_the_very_next_rollup(self):
+        # the ADOPT copy route (T103 audit): _rebase_onto_disk adopts a concurrent writer's nodes
+        # wholesale, so a pre-T101 peer save can re-introduce an umbrella VERBATIM — including one
+        # carrying diary rows. The dissolution is self-healing: the next rollup (any writer's)
+        # dissolves it regardless of its payload, and its children stand alone with provenance.
+        st = {"rompUuid": MGR, "seq": 3, "nodes": {
+            MGR + ":u9": _node(MGR + ":u9", "adopted container", None, umbrella=True,
+                               log=[{"ev_t": T0, "src": "romp", "kind": "settle", "at": T0}]),
+            MGR + ":a9": _node(MGR + ":a9", "the adopted ask", MGR + ":u9", promptUuid="hu9")},
+            "placements": {}, "status": {}}
+        jd.rollup_status(st, False)
+        self.assertNotIn(MGR + ":u9", st["nodes"])
+        self.assertIsNone(st["nodes"][MGR + ":a9"].get("parentId"))
+        self.assertEqual(st["nodes"][MGR + ":a9"].get("promptUuid"), "hu9")
+        snap = json.dumps(st["nodes"], sort_keys=True, default=dict)
+        jd.rollup_status(st, False)
+        self.assertEqual(json.dumps(st["nodes"], sort_keys=True, default=dict), snap, "idempotent")
+
     def test_provenance_survives_dissolution(self):
         st = self._legacy()
         jd.rollup_status(st, False)
