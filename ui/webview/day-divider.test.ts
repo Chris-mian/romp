@@ -34,10 +34,11 @@ test("the divider is a sibling of the turn, never a child (the dot anchors to th
 });
 
 test("every append path emits the divider, so scrolling back can't disagree with the live tail", () => {
-  // three call sites: windowed rebuild, incremental tail append, cleared-episode fold
+  // four call sites: windowed rebuild, incremental tail append, cleared-episode fold, and the
+  // comment popover's chat-parity loop (the parity bundle, 2026-08-26)
   // (the `function dayDividerFor(` definition is excluded, hence the negative lookbehind)
   const calls = RENDER.match(/(?<!function )dayDividerFor\(/g) ?? [];
-  assert.equal(calls.length, 3, `expected 3 dayDividerFor() call sites, found ${calls.length}`);
+  assert.equal(calls.length, 4, `expected 4 dayDividerFor() call sites, found ${calls.length}`);
 });
 
 test("the windowed divider carries data-unit so the scroll-to-unit map still resolves it", () => {

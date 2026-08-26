@@ -60,7 +60,7 @@ test("a cancelable queued bubble carries an explicit ✕ — messages AND parked
 test("the delegated qx handler cancels click-safely: kernel op + composer restore for messages only", () => {
   // one handler on document.body (stable across every per-push rebuild) — never a per-render listener
   assert.match(RENDER, /qx: \(el\) => \{/);
-  assert.match(RENDER, /\{ type: "cancelQueued", id: activeId, md: qmd \}/, "the body rides along as the kernel's drift guard");
+  assert.match(RENDER, /\{ type: "cancelQueued", id: owningSidOf\(el\), md: qmd \}/, "the body rides along as the kernel's drift guard; owner-scoped for the popover (2026-08-26)");
   assert.match(RENDER, /if \(el\.dataset\.qidx !== undefined\) msg\.idx = Number\(el\.dataset\.qidx\);/);
   assert.match(RENDER, /if \(el\.dataset\.qpark !== undefined\) msg\.park = Number\(el\.dataset\.qpark\);/);
   // a MESSAGE returns to the composer to re-edit; a slash COMMAND (qcmd) just cancels

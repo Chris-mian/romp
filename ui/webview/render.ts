@@ -3493,8 +3493,9 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
       // (the kernel gate is for the auto-loop only); without it "Retry now" was a dead no-op on a suppressed
       // session (the user 2026-07-06). Acknowledge the click AT ONCE — disable + "Retrying…" — so it never
       // reads as unresponsive; the next render (a fresh error card, or the turn resuming) restores it.
-      if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id: activeId, manual: true });
-      if (activeId) apiRetryNext.set(activeId, Date.now() + API_RETRY_MS);   // restart the countdown
+      const own = owningSidOf(retry);
+      if (vscodeApi) vscodeApi.postMessage({ type: "apiRetry", id: own, manual: true });
+      if (own) apiRetryNext.set(own, Date.now() + API_RETRY_MS);   // restart the countdown
       retry.disabled = true;
       retry.textContent = "Retrying…";
       setTimeout(() => { if (retry.isConnected) { retry.disabled = false; retry.textContent = "Retry now"; } }, 2500);
@@ -3506,7 +3507,7 @@ function renderApiError(ev: Extract<ChatEvent, { kind: "apiError" }>): HTMLEleme
     dismiss.textContent = "Dismiss dialog";
     dismiss.title = "the terminal is showing the spend-limit menu — send Esc to close it (cancels; changes no billing setting)";
     dismiss.addEventListener("click", () => {
-      if (vscodeApi) vscodeApi.postMessage({ type: "dismissDialog", id: activeId });
+      if (vscodeApi) vscodeApi.postMessage({ type: "dismissDialog", id: owningSidOf(dismiss) });
       dismiss.disabled = true;
       dismiss.textContent = "Dismissing…";
       setTimeout(() => { if (dismiss.isConnected) { dismiss.disabled = false; dismiss.textContent = "Dismiss dialog"; } }, 2500);
@@ -6123,7 +6124,10 @@ function showForkPrompt(sid: string, uuid: string): void {
 // drifts, so a thread is never unreachable. State lives in module maps keyed by sid/tid, so every
 // re-render (the transcript rebuilds constantly) reapplies it — the openFolds pattern.
 const commentThreads = new Map<string, CommentThread[]>();          // parent sid → last frame's threads
-const commentPending = new Map<string, { text: string; t: number }[]>(); // tid → optimistic sends
+const commentPending = new Map<string, { text: string; t: number; imgPaths?: string[] }[]>(); // tid → optimistic sends (+ shipped image paths → echo thumbnails, the parity bundle 2026-08-26)
+// image paths shipped into the OPEN popover's box (the droppedPath ack) and not yet sent — the next
+// send attaches them to its pending entry so the echo renders the same thumbnails the chat's does
+let cmtShippedImgs: string[] = [];
 // THE EXCHANGE LATCH (T102, the user 2026-08-26): tid → the agent-message count at the newest SEND.
 // Set at the send GESTURE (create seeds 0 under the synth tid, transferred on adopt; a reply stamps
 // the count at its send), cleared ONLY by the reply-arrived event — the agent's reply record landing
@@ -6524,9 +6528,9 @@ function adoptCommentThread(sid: string, tid: string): void {
  *  killed 2026-07-16 reborn in the popover; "I really want to be inheriting all the stuff for how
  *  the chat normally renders"). Inherited, never restyled: the dashed bubble, the sent-just-now
  *  title, the no-header bare form all come from the one code path. */
-function cmtPendingQueued(pend: { text: string; t: number }[]): HTMLElement {
+function cmtPendingQueued(pend: { text: string; t: number; imgPaths?: string[] }[]): HTMLElement {
   return renderQueued({ kind: "queued", bare: true,
-    texts: pend.map((p) => ({ md: p.text, optimistic: true, cancelable: false })),
+    texts: pend.map((p) => ({ md: p.text, optimistic: true, cancelable: false, imgPaths: p.imgPaths })),
     uuid: OPT_PREFIX + pend[0].t } as Extract<ChatEvent, { kind: "queued" }>);
 }
 
@@ -6547,7 +6551,16 @@ function openCommentThread(): { sid: string; th: CommentThread } | null {
 
 /** The popover's conversation area, (re)filled in place — shared by the full build and the
  *  frame-driven refresh so an update never rebuilds the composer under the user's caret. */
+/** The OWNING session of a control's DOM at click time: the thread root (chat views) or the
+ *  popover's list (stamped with the THREAD sid below) — so in-turn controls rendered through the
+ *  shared path (queued ✕, api-error Retry) act on the session that owns them, never on whichever
+ *  tab is active (the parity bundle, 2026-08-26; the render-time twin is renderingOwnerSid). */
+function owningSidOf(el0: HTMLElement | null): string | null {
+  return (el0?.closest("[data-session]") as HTMLElement | null)?.dataset.session || activeId;
+}
+
 function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): void {
+  list.dataset.session = th.tid;   // the THREAD owns its queue/errors — in-turn controls resolve to it
   const prevScroll = list.scrollTop;
   // the slack rule (the user 2026-08-25, same word as the chat's appendActive): while the thread's
   // content hasn't overflowed the fixed box, streaming writes in place — no follow, no jump; once
@@ -6599,7 +6612,15 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): voi
     const items: DisplayItem[] = settings.compact
       ? compactDisplay(evs.map((e) => e.kind), evs.map((e) => e.kind === "tool" ? e.name : undefined))
       : evs.map((_, i) => ({ kind: "event", index: i } as DisplayItem));
+    const thWorking = threadBusy(th.state);
     for (const it of items) {
+      // a new day opens with the chat's own divider (the parity bundle, 2026-08-26) — same helper,
+      // same placement idiom as appendItem
+      const dayOpen = eventEpoch(evs[itemFirstEvent(it)]);
+      if (dayOpen != null) {
+        const dv = dayDividerFor(dayOpen, prev);
+        if (dv) list.appendChild(dv);
+      }
       if (it.kind === "toolgroup") {
         const tools = it.indices.map((ix) => evs[ix]) as Extract<ChatEvent, { kind: "tool" }>[];
         const key = toolGroupKey(tools[0]);
@@ -6607,7 +6628,7 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): voi
         list.appendChild(renderToolGroup(tools, prev, key, open));
         if (open) {
           it.indices.forEach((ix, j) => {   // the tools only — it.indices already excludes thinking
-            const child = renderEvent(evs[ix], prev, null);
+            const child = renderEvent(evs[ix], prev, turnWorkedSecs(evs, ix, thWorking));
             child.classList.add("tg-child"); if (j === it.indices.length - 1) child.classList.add("tg-last");
             list.appendChild(child);
             const ep = eventEpoch(evs[ix]); if (ep != null) prev = ep;
@@ -6618,7 +6639,9 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): voi
         continue;
       }
       const ev = evs[it.index];
-      const node = renderEvent(ev, prev, null);
+      // the "worked Ns" footer rides exactly as in the chat (the parity bundle) — the same
+      // turnWorkedSecs, with the thread session's own busy reading standing in for `working`
+      const node = renderEvent(ev, prev, turnWorkedSecs(evs, it.index, thWorking));
       list.appendChild(node);
       if (!quoteHost && ev.kind === "user") quoteHost = node;
       const ep = eventEpoch(ev);
@@ -6830,7 +6853,9 @@ function commentSendFromPop(pop: HTMLElement): void {
   cur.th.state = "working";                     // optimistic: the pulse rides the SEND, not the
   applyCommentMarks(cur.sid);                   // round-trip (the kernel's next frame confirms)
   const pl = commentPending.get(cur.th.tid) || [];
-  pl.push({ text, t: Date.now() / 1000 });
+  pl.push({ text, t: Date.now() / 1000,
+            imgPaths: cmtShippedImgs.filter((p2) => text.includes(p2)) });   // only paths still in the sent text
+  cmtShippedImgs = [];
   commentPending.set(cur.th.tid, pl);
   commentDrafts.delete(cur.th.tid);
   box.value = "";
@@ -11452,6 +11477,7 @@ window.addEventListener("message", (e: MessageEvent) => {
       retirePendingShip(m.path);
       cbox.value = (cbox.value ? cbox.value.trimEnd() + " " : "") + m.path + " ";
       cbox.dispatchEvent(new Event("input"));   // the draft listener persists it
+      if (previewKind(m.path) === "img") cmtShippedImgs.push(m.path);   // the echo's thumbnail ride
       cbox.focus();
       return;
     }
@@ -12478,7 +12504,7 @@ setupSettings();
     qx: (el) => {
       if (!activeId || !vscodeApi) return;
       const qmd = (el as any)._qmd as string | undefined;
-      const msg: Record<string, unknown> = { type: "cancelQueued", id: activeId, md: qmd };
+      const msg: Record<string, unknown> = { type: "cancelQueued", id: owningSidOf(el), md: qmd };
       if (el.dataset.qidx !== undefined) msg.idx = Number(el.dataset.qidx);
       if (el.dataset.qpark !== undefined) msg.park = Number(el.dataset.qpark);
       vscodeApi.postMessage(msg);

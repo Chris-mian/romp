@@ -14,7 +14,7 @@ const H = (RENDER.match(/const retry = el\("button", "apierror-retry"\)[\s\S]*?h
 
 test("Retry now posts an explicit MANUAL override so it fires even when auto-retry is paused/suppressed", () => {
   assert.ok(H, "found the Retry button block");
-  assert.match(H, /vscodeApi\.postMessage\(\{ type: "apiRetry", id: activeId, manual: true \}\)/);
+  assert.match(H, /vscodeApi\.postMessage\(\{ type: "apiRetry", id: own, manual: true \}\)/);   // owner-scoped: inside the popover the card acts on the THREAD (the parity bundle, 2026-08-26)
 });
 
 test("Retry now acknowledges the click immediately (disabled + 'Retrying…'), then self-restores", () => {

@@ -385,7 +385,7 @@ test("while the thread is WRITING the passage holds the await-green tint and NOT
 
 test("the popover renders the thread with the CHAT's own renderer from the branch point", () => {
   assert.match(UI, /renderingSid = th\.tid;/);
-  assert.match(UI, /const node = renderEvent\(ev, prev, null\);\s*\n\s*list\.appendChild\(node\);/);
+  assert.match(UI, /const node = renderEvent\(ev, prev, turnWorkedSecs\(evs, it\.index, thWorking\)\);\s*\n\s*list\.appendChild\(node\);/);   // + the chat's worked footers (the parity bundle, 2026-08-26)
   assert.match(KERNEL, /def _thread_events\(tsid, cut_uuid, now, tmux\):/);
   assert.match(KERNEL, /evs = evs\[at \+ 1:\]/, "sliced to AFTER the branch point — the head system card never rides");
   // the thread's own statusline posts the chat's own ops through the SHARED menu, keyed to the
@@ -470,8 +470,12 @@ test("the popover's typing dots are retired — the green highlight is the only 
 // Ready off one stale relayed frame, so it read as a stuck queued thing with no queued dress. The
 // echo now RIDES the chat's own component: renderQueued's bare optimistic group, inherited. ──────
 test("the popover's pending echo IS the chat's queued idiom — one component, both boot and live", () => {
-  assert.match(UI, /function cmtPendingQueued\(pend: \{ text: string; t: number \}\[\]\): HTMLElement \{\s*\n\s*return renderQueued\(\{ kind: "queued", bare: true,/);
-  assert.match(UI, /texts: pend\.map\(\(p\) => \(\{ md: p\.text, optimistic: true, cancelable: false \}\)\),/);
+  assert.match(UI, /function cmtPendingQueued\(pend: \{ text: string; t: number; imgPaths\?: string\[\] \}\[\]\): HTMLElement \{\s*\n\s*return renderQueued\(\{ kind: "queued", bare: true,/);
+  assert.match(UI, /texts: pend\.map\(\(p\) => \(\{ md: p\.text, optimistic: true, cancelable: false, imgPaths: p\.imgPaths \}\)\),/);
+  // the parity bundle (2026-08-26): a shipped image rides the pending entry, so the echo renders
+  // the SAME thumbnails the chat's echo does — event-sourced from the drop ack, never text-parsed
+  assert.match(UI, /if \(previewKind\(m\.path\) === "img"\) cmtShippedImgs\.push\(m\.path\);/);
+  assert.match(UI, /imgPaths: cmtShippedImgs\.filter\(\(p2\) => text\.includes\(p2\)\) \}\);/);
   const sites = (UI.match(/cmtPendingQueued\(pend\)/g) || []).length;
   assert.equal(sites, 2, "both render sites — the boot view and the live list — share it");
   // the one-off is gone root and branch: no .pending class minted, no washed-gray CSS
@@ -563,8 +567,15 @@ test("a create refused by parse lag holds its mark and retries on the frame even
   const KERNELSRC = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
   assert.match(KERNELSRC, /ANCHOR_LAG_ERR = "that message isn't in the transcript yet; try again in a moment"/);
   assert.match(KERNELSRC, /"transient": err == ANCHOR_LAG_ERR,/);
-  assert.match(KERNELSRC, /if err != ANCHOR_LAG_ERR:\s*\n\s*client\["send"\]\(json\.dumps\(\{"type": "warn", "text": err\}\)\)/,
+  assert.match(KERNELSRC, /else:\s*\n\s*client\["send"\]\(json\.dumps\(\{"type": "warn", "text": err\}\)\)/,
     "no toast for plumbing the retry makes moot; real refusals stay loud");
+  // …and the kernel PARKS the lag-refused create and retries it per pusher cycle (the file it is
+  // waiting on is its own): a settled session emits no further frames, so the client-side re-post
+  // alone starved — the park covers that; the client's frame-keyed belt covers a restart's lost park
+  assert.match(KERNELSRC, /_parked_creates\.append\(\{"sid": sid, "uuid": str\(msg\["uuid"\]\)/);
+  assert.match(KERNELSRC, /def _retry_parked_creates\(\):/);
+  assert.match(KERNELSRC, /_retry_parked_creates\(\)   # lag-parked comment creates ride every pusher cycle \(T106\)/);
+  assert.match(KERNELSRC, /_PARK_MAX_TRIES = 30/);
   // the client holds the payload at send and re-posts when a session frame proves the parse caught up
   assert.match(UI, /cmtCreateInFlight\.set\(create\.uuid, \{ sid: create\.sid,/);
   assert.match(UI, /retryCmtCreates\(String\(msg\.id \|\| ""\)\);\s+\/\/ a session frame = the kernel re-parsed/);
@@ -585,4 +596,15 @@ test("the optimistic synth thread survives comments frames until superseded or f
 test("the pending echo prunes against EVENTS too — a landed user turn never double-shows", () => {
   assert.match(UI, /const evUserMsgs = \(\(th\.events \|\| \[\]\) as ChatEvent\[\]\)/);
   assert.match(UI, /prunePending\(commentPending\.get\(th\.tid\) \|\| \[\], \[\.\.\.th\.msgs, \.\.\.evUserMsgs\]\);/);
+});
+
+test("the parity bundle (2026-08-26): dividers, owner-scoped in-turn controls, the sid stamp", () => {
+  // day dividers open new days in the popover exactly as in the chat (same helper, same idiom)
+  assert.match(UI, /const dayOpen = eventEpoch\(evs\[itemFirstEvent\(it\)\]\);\s*\n\s*if \(dayOpen != null\) \{\s*\n\s*const dv = dayDividerFor\(dayOpen, prev\);/);
+  // the popover's list is stamped with the THREAD sid, and in-turn controls resolve their owner
+  // from the DOM at click time — queued ✕ and the api-error card act on the thread, never the tab
+  assert.match(UI, /list\.dataset\.session = th\.tid;/);
+  assert.match(UI, /function owningSidOf\(el0: HTMLElement \| null\): string \| null \{/);
+  assert.match(UI, /\{ type: "cancelQueued", id: owningSidOf\(el\), md: qmd \}/);
+  assert.match(UI, /\{ type: "dismissDialog", id: owningSidOf\(dismiss\) \}/);
 });
