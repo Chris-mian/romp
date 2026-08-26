@@ -6583,12 +6583,45 @@ def _comment_markers(sid):
     return out
 
 
-# The one TRANSIENT create refusal (T106 lab find, 2026-08-26): the anchor record streamed to the
-# client but this kernel's parse hasn't caught up yet. The ws handler sends a typed nack with
-# transient=True for exactly this string; the client keeps its optimistic mark and re-posts when the
-# next session frame proves the parse caught up — so a comment made seconds after a reply lands is
-# never dropped on the floor with a try-again toast.
+# The one TRANSIENT create refusal (T106 lab find, 2026-08-26): the reply the user just commented
+# on rendered from the LIVE STREAM, and the CLI flushes the transcript file a beat later — so the
+# kernel's (fresh) file read genuinely lacks the record for a second or two. The ws handler parks
+# the create HERE and the pusher retries it each cycle until the file catches up (the kernel owns
+# the file it is waiting on — a settled session emits no further frames, so a client-side retry
+# alone starves; the client's frame-keyed re-post stays as the belt for a kernel restart that loses
+# this in-memory park). The typed transient nack keeps the client's optimistic mark alive meanwhile.
 ANCHOR_LAG_ERR = "that message isn't in the transcript yet; try again in a moment"
+_parked_creates = []                       # [{sid,uuid,exact,text,name,model,effort,color,tries}]
+_PARK_MAX_TRIES = 30                       # pusher cycles (~15-90s) — past this the record isn't coming
+
+
+def _retry_parked_creates():
+    """One pusher cycle's pass over lag-parked comment creates: re-run each against the (now
+    possibly caught-up) transcript; success acks commentCreated + a fresh comments frame to every
+    chat client (the creating client's socket may be gone — the adopt keys on the uuid, and clients
+    without a matching pending simply ignore it). Still lagging → keep, bounded; any OTHER error →
+    drop (the client's own attempt cap surfaces the failure honestly)."""
+    if not _parked_creates:
+        return
+    for pk in list(_parked_creates):
+        pk["tries"] += 1
+        err, tid = _comment_create(pk["sid"], pk["uuid"], pk["exact"], pk["text"], name=pk["name"],
+                                   model=pk["model"], effort=pk["effort"], color=pk["color"])
+        if err == ANCHOR_LAG_ERR and pk["tries"] < _PARK_MAX_TRIES:
+            continue
+        _parked_creates.remove(pk)
+        if not err:
+            fr = _comments_frame(pk["sid"])
+            with _clients_lock:
+                targets = [c for c in _clients if c.get("app") == "chat"]
+            for c in targets:
+                try:
+                    if fr:
+                        c["send"](json.dumps(fr))
+                    c["send"](json.dumps({"type": "commentCreated", "id": pk["sid"], "tid": tid,
+                                          "uuid": pk["uuid"]}))
+                except Exception:
+                    pass
 
 
 def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", color="", now=None):
@@ -7827,9 +7860,17 @@ def _drive(msg, client):
                                    model=str(msg.get("model") or ""), effort=str(msg.get("effort") or ""),
                                    color=str(msg.get("color") or ""))
         if err:
-            # a TRANSIENT refusal (parse lag) is the client's cue to hold + retry — no toast for
-            # plumbing the retry makes moot; every real refusal stays loud (fail loudly)
-            if err != ANCHOR_LAG_ERR:
+            # a TRANSIENT refusal (the live-streamed reply's file flush lagging) PARKS the create —
+            # the pusher retries it each cycle until the transcript catches up — and the typed nack
+            # keeps the client's optimistic mark alive; no toast for plumbing the retry makes moot.
+            # Every real refusal stays loud (fail loudly).
+            if err == ANCHOR_LAG_ERR:
+                _parked_creates.append({"sid": sid, "uuid": str(msg["uuid"]), "exact": str(msg["exact"]),
+                                        "text": str(msg["text"]), "name": str(msg.get("name") or ""),
+                                        "model": str(msg.get("model") or ""),
+                                        "effort": str(msg.get("effort") or ""),
+                                        "color": str(msg.get("color") or ""), "tries": 0})
+            else:
                 client["send"](json.dumps({"type": "warn", "text": err}))
             client["send"](json.dumps({"type": "commentCreateFailed", "id": sid,
                                        "uuid": str(msg["uuid"]), "transient": err == ANCHOR_LAG_ERR,
@@ -23144,6 +23185,7 @@ def _push(targets, connect=False, tmux=None):
                     _built_chat.pop(sid, None)
                     _prev_chat_events.pop(sid, None)
                     _prev_chat_ledger.pop(sid, None)
+            _retry_parked_creates()   # lag-parked comment creates ride every pusher cycle (T106)
             # COMMENT THREADS: one {type:"comments"} frame per session that has ever had one (its
             # comments/ store exists — an ~free stat for everyone else). Each frame rides its OWN
             # per-sid dedup slot, never the chat delta baseline (the 2026-07-28 stranded-delta rule):

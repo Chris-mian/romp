@@ -24,7 +24,7 @@ test("a tmux spend cap offers Dismiss dialog, posting the dismissDialog op", () 
   // refusal-gated: the Esc-sender is for the CLI's spend-limit dialog — a refusal parks no menu
   assert.match(apiErr, /\} else if \(st\?\.backend === "tmux" && !refusal\) \{/);
   assert.match(apiErr, /dismiss\.textContent = "Dismiss dialog";/);
-  assert.match(apiErr, /vscodeApi\.postMessage\(\{ type: "dismissDialog", id: activeId \}\)/);
+  assert.match(apiErr, /vscodeApi\.postMessage\(\{ type: "dismissDialog", id: owningSidOf\(dismiss\) \}\)/);   // owner-scoped (the parity bundle, 2026-08-26)
   // acknowledges the click at once (disable + "Dismissing…"), like every other card control
   assert.match(apiErr, /dismiss\.textContent = "Dismissing…";/);
 });
