@@ -195,7 +195,7 @@ class LlmBuildersCarryTheFrame(unittest.TestCase):
     def test_distill_without_frame_is_byte_identical(self):
         u0 = self._capture(jd.distill_llm, "goal", "work", "done")
         self.assertNotIn("delegating-request", u0)
-        u1 = self._capture(jd.distill_llm, "goal", "work", "done", frame=None)
+        u1 = self._capture(jd.distill_llm, "goal", "work", "done", frame=None, user_ask=None)
         self.assertEqual(u0.replace(jd._mark() if False else "", ""), u0)   # sanity
         # marks differ per call; compare shape by stripping the random mark
         import re as _re

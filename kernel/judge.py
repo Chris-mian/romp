@@ -392,6 +392,8 @@ CAPTION_SYS = (
     "rest. For example, 'Validated the parser, fixed a compaction bug' becomes 'Reworked the parser's "
     "compaction handling'; 'Renamed the file and updated its imports' becomes 'Renamed the module'; "
     "'Explained the edit and offered to revert' becomes 'Explained the edit'.\n"
+    "Never use a coined or internal name (an engine, a module, a codename, a team shorthand) the "
+    "unit's own messages don't use; say it in plain words instead.\n"
     "Describe what the reply delivered, not the user's state or question: 'User asked about "
     "batch-marking' is wrong. If the unit shows no finished assistant work, reply with an empty line, "
     "nothing at all. Output only the phrase: no surrounding quotes, no JSON, no notes, no markdown.")
@@ -1297,6 +1299,8 @@ GIST_SYS = (
     "past-tense result and not a restatement of the whole sentence. Examples: 'a dark-mode toggle for "
     "settings'; 'the feed card recency tint'; 'why the parser drops compaction boundaries'; 'a regression "
     "test for the planner'.\n"
+    "Keep the request's own vocabulary: never import a coined or internal name the request itself "
+    "does not use.\n"
     "When the request rambles or bundles several things, name the single most salient topic. Output only "
     "the phrase.")
 
@@ -1989,7 +1993,9 @@ PLAN_SYS = (
     "self-narration (\"The assistant…\", \"The segment…\"): say what happened or what's needed, the "
     "real reason first, concrete verbs, the words a person actually says. Cut filler (\"in order to\", "
     "\"it is worth noting\", \"notably\"), no em dashes, state facts plainly and hedge only actual "
-    "guesses, say it once. Most segments do one thing, but emit more ops when the segment actually did "
+    "guesses, say it once. Goal text speaks the requester's vocabulary: never a coined or internal "
+    "name (an engine, a module, a codename, a team shorthand) unless the user's own message uses "
+    "it; say what the work is in plain words. Most segments do one thing, but emit more ops when the segment actually did "
     "more (e.g. finished one goal and started another). Op kinds:\n"
     '- {\"why\",\"do\":\"mint\",\"text\":\"<outcome ≤10 words>\"}: a new top-level request from the '
     "user. Be selective: only a real new ask mints a top-level goal — but a **distinct deliverable** "
@@ -7764,6 +7770,8 @@ def _merge_nodes(store, dupe_id, surv_id, t, why):
         surv["quote"] = dupe["quote"]
     if not surv.get("promptUuid") and dupe.get("promptUuid"):
         surv["promptUuid"] = dupe["promptUuid"]
+    if not surv.get("userAsk") and dupe.get("userAsk"):
+        surv["userAsk"] = dupe["userAsk"]
     surv["t"] = min(surv.get("t") or t, dupe.get("t") or t)
     surv["mt"] = t
     # chained merges keep every tombstone: the dupe's own mergedFrom rides along, so an id merged
@@ -9725,6 +9733,16 @@ DISTILL_SYS = (
     "one-clause definition at its first mention: the reader may be seeing the name for the first "
     "time, and a digest that assumes the name costs them a question just to understand it (write "
     "'the run registry, the shared index of capture runs', never a bare 'the run registry').\n\n"
+    "The reader is the person who asked, not the team that built it. When a <user-ask> section is "
+    "present, it is their ask in their own words: anchor on its vocabulary. Never use a coined or "
+    "internal name (an engine, a module, a codename, a team shorthand) in an opening sentence "
+    "unless the <user-ask> itself uses it; gloss any internal noun you keep in plain words, and a "
+    "noun you cannot explain from the material given stays out.\n\n"
+    "When <work> contains a message the assistant wrote to the person as its finished report, a "
+    "wrap-up addressed to them rather than to a teammate, condense that report as the takeaway's "
+    "primary source: it was already written for their eyes, and it outranks your own reading of "
+    "the raw work. Prefer sources in this order: that report, then the <user-ask>, then the "
+    "<delegating-request>, then the rest of <work>.\n\n"
     "BACKGROUND: orientation for you returning days later, the thread forgotten. Say what you had asked "
     "for and the context the takeaway leans on: what prompted the ask, or an approach or constraint "
     "settled along the way. One or two sentences. Never the outcome; that belongs to the takeaway.\n\n"
@@ -9753,7 +9771,8 @@ DISTILL_SYS = (
     "closely it names the goal. This line is parsed off and never shown.")
 
 
-def distill_llm(goal_text, work_text, done_why="", prior_summary="", items=None, frame=None):
+def distill_llm(goal_text, work_text, done_why="", prior_summary="", items=None, frame=None,
+                user_ask=None):
     """The distiller's key-takeaway for one completed goal from the TRIAGE-tier model (Sonnet). '' on
     failure. done_why = the closer's completion verdict (the node's doneWhy), fed as <completed> ground
     truth so the summary reflects what was ACCOMPLISHED even when the work history is thin or mostly the
@@ -9762,20 +9781,37 @@ def distill_llm(goal_text, work_text, done_why="", prior_summary="", items=None,
     done first — rendered as a numbered <completed-items> list so a multi-outcome goal MAY split its
     takeaway one paragraph per item in that order (DISTILL_SYS leaves it the model's call: a single
     story stays one takeaway). The caller stamps summaryParts in the same order; the feed's
-    count-match gate stamps per-paragraph ages only when the model actually split."""
+    count-match gate stamps per-paragraph ages only when the model actually split.
+    `user_ask` (the user 2026-08-26, T105): the ROOT human ask (shaped text, _user_ask_text) — the
+    frame is an intermediary's restatement one hop up a team chain, so anchoring on it alone still
+    speaks the manager's implementation nouns; the root is what the person actually asked."""
     mk = _mark()
     user = "%s\n%s" % (_sec("goal", goal_text, mk), _sec("work", work_text, mk))
+    if user_ask:
+        # the ROOT ask (the user 2026-08-26, T105): one hop down a team, the frame is a MANAGER's
+        # restatement in implementation nouns — the writers faithfully anchored one hop up instead
+        # of at the person who asked. Marked section, like every quoted why.
+        user += "\n%s" % _sec("user-ask", user_ask, mk)
     if frame:
         # the delegating request's framing (the user 2026-08-25): the card belongs to work HANDED
         # to this session, and <work> speaks in the worker's implementation nouns — the frame is
         # how the request was actually put (usually the user's own phrasing). Marked section, like
         # every quoted why: sender-written text never rides romp's instruction prose.
-        user += ("\n%s"
-                 "\n<note>The <delegating-request> is how this work was framed when it was handed "
+        user += "\n%s" % _sec("delegating-request", frame, mk)
+    if user_ask:
+        user += ("\n<note>The <user-ask> is what the person this board belongs to actually asked, "
+                 "in their own words."
+                 + (" The <delegating-request> is an intermediary's restatement, a manager handing "
+                    "the work on." if frame else "")
+                 + " Open the takeaway in the <user-ask>'s terms: what they asked for and how it "
+                 "ended; use " + ("<delegating-request> and <work>" if frame else "<work>")
+                 + " for supporting detail only.</note>")
+    elif frame:
+        # frame without a root record: the pre-T105 note, byte-identical
+        user += ("\n<note>The <delegating-request> is how this work was framed when it was handed "
                  "to this session — usually the requester's own words. Open the takeaway in those "
                  "terms: what the request asked for and how it ended. Keep implementation nouns to "
-                 "the supporting detail; never open with them.</note>"
-                 % _sec("delegating-request", frame, mk))
+                 "the supporting detail; never open with them.</note>")
     if done_why:
         user += "\n%s" % _sec("completed", done_why, mk)
     if items and len(items) > 1:
@@ -9983,6 +10019,15 @@ BLOCK_BRIEF_SYS = (
     "repeat.\n\n"
     "If something apart from the decision is still open and worth knowing, it gets the last paragraph, "
     "alone, in one short sentence with no label. Never attach it to a paragraph about the decision.\n\n"
+    "The reader is the person who asked, not the team that built it. When a <user-ask> section is "
+    "present, it is their ask in their own words: anchor on its vocabulary. Never use a coined or "
+    "internal name (an engine, a module, a codename, a team shorthand) in an opening sentence "
+    "unless the <user-ask> itself uses it; gloss any internal noun you keep in plain words, and a "
+    "noun you cannot explain from the material given stays out.\n\n"
+    "When <work> contains a message the assistant wrote to the person about this decision, laid "
+    "out for their eyes rather than a teammate's, condense it as the primary source; the owed "
+    "decision still leads. Prefer sources in this order: that message, then the <user-ask>, then "
+    "the <delegating-request>, then the rest of <work>.\n\n"
     "Assistant messages in <work> may carry [mN] labels. When they do, your reply is complete **only** "
     "with a third element after the takeaway: a final line that is exactly SOURCE: mN, nothing before it "
     "on the line and nothing after it. Never omit it while labels are present, and never invent a label "
@@ -9994,7 +10039,7 @@ BLOCK_BRIEF_SYS = (
     "must be exactly SOURCE: mN. Do not stop at the takeaway; the SOURCE line always comes last.")
 
 
-def brief_llm(goal_text, work_text, owed, frame=None):
+def brief_llm(goal_text, work_text, owed, frame=None, user_ask=None):
     """The briefer's decision brief for one blocked goal from the TRIAGE-tier model (Sonnet). '' on
     failure. Logged as judge='briefer' — its own name, its own prompt (the user 2026-07-08). Its timeline
     mark still rides the distiller row: the kernel folds fine labels to role-family rows (_JUDGE_FAMILY),
@@ -10012,14 +10057,25 @@ def brief_llm(goal_text, work_text, owed, frame=None):
     mk = _mark()
     user = "%s\n%s\n%s" % (_sec("goal", goal_text, mk), _sec("work", work_text, mk),
                            _sec("owed", owed_block, mk))
+    if user_ask:
+        # same root anchoring as the distiller (the user 2026-08-26, T105)
+        user += "\n%s" % _sec("user-ask", user_ask, mk)
     if frame:
         # same enrichment as the distiller (the user 2026-08-25): state the owed decision in the
         # delegating request's terms, not the worker's build vocabulary
-        user += ("\n%s"
-                 "\n<note>The <delegating-request> is how this work was framed when it was handed "
+        user += "\n%s" % _sec("delegating-request", frame, mk)
+    if user_ask:
+        user += ("\n<note>The <user-ask> is what the person this board belongs to actually asked, "
+                 "in their own words."
+                 + (" The <delegating-request> is an intermediary's restatement, a manager handing "
+                    "the work on." if frame else "")
+                 + " State what is owed in the <user-ask>'s terms; keep implementation nouns to "
+                 "the supporting detail.</note>")
+    elif frame:
+        # frame without a root record: the pre-T105 note, byte-identical
+        user += ("\n<note>The <delegating-request> is how this work was framed when it was handed "
                  "to this session — usually the requester's own words. State what is owed in those "
-                 "terms; keep implementation nouns to the supporting detail.</note>"
-                 % _sec("delegating-request", frame, mk))
+                 "terms; keep implementation nouns to the supporting detail.</note>")
     return _judge_run(_distill_model(), BLOCK_BRIEF_SYS, user, judge="briefer", tier="distill",
                       mark=mk).strip()   # caller splits SOURCE, then caps
 
@@ -10153,6 +10209,52 @@ def _live_prompt_since(fsid):
     except OSError:
         return None
     return since
+
+
+def _ask_head(s, cap=700):
+    """A dictated ask shaped for the <user-ask> section (T105): romp comment markers stripped, a
+    quoted `> …` context block dropped, the courier's "USER ASKED:" prefix removed, blank runs
+    collapsed — but NEWLINES KEPT, unlike _frame_head's first-line cut: a dictated round holds
+    several asks on several lines and the relevant one may not be the first. Head-capped at `cap`
+    chars on a word boundary (the section is grounding, not an archive)."""
+    t = re.sub(r"<!--.*?-->", "", str(s or ""), flags=re.S)
+    lines, prev_blank = [], True
+    for ln in t.split("\n"):
+        if ln.lstrip().startswith(">"):
+            continue
+        ln = " ".join(ln.split())
+        if ln:
+            lines.append(ln)
+            prev_blank = False
+        elif not prev_blank:
+            lines.append("")
+            prev_blank = True
+    t = re.sub(r"^USER ASKED:\s*", "", "\n".join(lines).strip())
+    if len(t) > cap:
+        t = (t[:cap].rsplit(None, 1)[0] or t[:cap]).rstrip(" ,.;:") + " …"
+    return t
+
+
+def _user_ask_text(store, nid, fsid=None, path=None, now=None):
+    """The ROOT human ask a card's prose should anchor on (the user 2026-08-26, T105: the cards
+    that make sense are the ones anchored in what THEY asked — a manager's dispatch restates the
+    ask in implementation nouns, so the frame alone anchors one hop up, not at the root). Two
+    CONFIDENT sources, else "": the mint-time `userAsk` the courier's chain trace proved human
+    (multi-hop), or — for a board's own prompt-minted tops — the node's verbatim `quote`, gated on
+    its promptUuid resolving to a human record in the CACHED parse (a quote can be an injected
+    peer body: mail rides user-type atoms; continuation stubs refused via junk_quote). Absent
+    evidence returns "" and the writers' prompts are byte-identical to before — the frame
+    rollout's discipline: uncertainty enriches nothing rather than guessing."""
+    nd = store.get("nodes", {}).get(nid) or {}
+    ua = nd.get("userAsk")
+    if isinstance(ua, dict) and str(ua.get("text") or "").strip():
+        return _ask_head(str(ua["text"]))
+    q = str(nd.get("quote") or "").strip()
+    pu = nd.get("promptUuid")
+    if q and pu and fsid and path and not junk_quote(q) \
+            and _session_user_prompt_record(fsid, path, pu, now):
+        return _ask_head(q)
+    return ""
 
 
 def _deleg_frame(store, nid):
@@ -10514,7 +10616,8 @@ def _distill_session(fsid, path, now):
             # decision from <work>. Stored as the card's blockSummary through the same fail/retry path.
             out = (stall_llm(nodes[top].get("text", ""), work, proc_whys[-1]) if proc_only
                    else brief_llm(nodes[top].get("text", ""), work, owed,
-                                  frame=_deleg_frame(store, top)))
+                                  frame=_deleg_frame(store, top),
+                                  user_ask=_user_ask_text(store, top, fsid, path, now)))
             if not out:
                 if getattr(_judge_ctx, "paused", False):   # the call was SKIPPED (global retry-pause on), not
                     continue                               # tried — never count a pause-skip toward give-up, else
@@ -10596,7 +10699,8 @@ def _distill_session(fsid, path, now):
             _dsubs = [d for d in _dsubs if _done_since(d) > boundary_t]
         out = distill_llm(nodes[top].get("text", ""), work, nodes[top].get("doneWhy") or "", prior_summary=prior,
                           items=[(d.get("text", ""), d.get("doneWhy", "")) for d in _dsubs],
-                          frame=_deleg_frame(store, top))
+                          frame=_deleg_frame(store, top),
+                          user_ask=_user_ask_text(store, top, fsid, path, now))
         if not out:
             if getattr(_judge_ctx, "paused", False):   # pause-skip, not a real failure — don't count it toward
                 continue                               # give-up (leave summary null → re-enters once unpaused)
@@ -10871,7 +10975,9 @@ COURIER_SYS = (
     "The sender's lead word is a hint, not the verdict: DELEGATE:/HANDOFF: usually means delegating; "
     "COORDINATE:/FYI: means coordinating; QUESTION:/Q: means coordinating; ASK: is ambiguous, so read "
     "the body and decide by whether B actually ends up owning work. Write text in plain concrete words "
-    "(the outcome itself, no filler or stock AI phrasing, no em dashes). Output only the JSON object.")
+    "(the outcome itself, no filler or stock AI phrasing, no em dashes). When the body names its "
+    "subject by a coined or internal name, prefer the plain words around it: the outcome in words "
+    "anyone can read. Output only the JSON object.")
 
 
 def _seg_peer(seg):
@@ -11188,7 +11294,7 @@ def _postal_from(mid):
     return _postal_row(mid)[:2]
 
 
-def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None, frame=None):
+def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None, frame=None, user_ask=None):
     """Plant a top-level goal in the recipient's tree for a delegating message, with origin
     provenance. Idempotent by seg_id and origin.msgId (one planted goal per message). Returns nid.
     `prompt_uuid` (the user 2026-07-20, g200): the peer segment's anchor (its head record), so the
@@ -11196,7 +11302,11 @@ def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None, frame=No
     `frame` (the user 2026-08-25, the confusing-worker-cards round): the delegating mail's cleaned
     first line — usually the USER's own phrasing of the round — stored as the ADDITIVE node field
     `frame` so the distiller/briefer open the card's summary in the user's terms instead of the
-    worker's implementation nouns. Absent on non-delegated goals; old payloads render unchanged."""
+    worker's implementation nouns. Absent on non-delegated goals; old payloads render unchanged.
+    `user_ask` (the user 2026-08-26, T105): the ROOT human prompt record the chain trace proved
+    ({"text","sid"}) — the frame is an INTERMEDIARY's restatement one hop up, and a manager's
+    dispatch speaks implementation nouns, so the writers also need the root. Stored shaped
+    (_ask_head). A non-dict truthy (tests stub the trace with literal True) stores nothing."""
     nodes, placements = store["nodes"], store["placements"]
     mid = origin.get("msgId")
     if mid:
@@ -11211,6 +11321,8 @@ def apply_courier(store, seg_id, seg_t, text, origin, prompt_uuid=None, frame=No
                "trail": [seg_id], "t": seg_t, "origin": origin, "promptUuid": prompt_uuid, "log": []}
     if frame:
         payload["frame"] = frame
+    if isinstance(user_ask, dict) and str(user_ask.get("text") or "").strip():
+        payload["userAsk"] = {"text": _ask_head(str(user_ask["text"])), "sid": user_ask.get("sid")}
     nodes[nid] = GuardedNode(payload)
     placements[seg_id] = nid
     store["lastNode"] = nid                            # the delegation is now the active focus
@@ -11315,39 +11427,48 @@ def _lift_handoff_children(store, hid):
 
 
 def _session_user_prompt_record(sender, path, uuid, now):
-    """True only when `uuid` in the sender's session is a HUMAN prompt record — read from the
-    CACHED stitched parse (parsed_session: fork-aware, author-stamped with the SDK-human channel
-    applied), so the courier pays no extra parse. author 'human' minus the CLI's interrupt
-    artifacts is the rule the board audit used; an attachment record (a queued_command wrapping
-    what the user dictated mid-turn) counts as human exactly when it carries no postal or
-    romp-injected marker. Everything else — mail, romp's own lines, machine input, a record the
-    stitched chain no longer holds — is False."""
+    """The HUMAN prompt record behind `uuid` in the sender's session — {"text","sid"}, always
+    truthy — or None. Read from the CACHED stitched parse (parsed_session: fork-aware,
+    author-stamped with the SDK-human channel applied), so the courier pays no extra parse. author
+    'human' minus the CLI's interrupt artifacts is the rule the board audit used; an attachment
+    record (a queued_command wrapping what the user dictated mid-turn) counts as human exactly when
+    it carries no postal or romp-injected marker. Everything else — mail, romp's own lines, machine
+    input, a record the stitched chain no longer holds — is None. The record carries the atom's RAW
+    text (markers and all; shape it with _ask_head at the point of use): returning the record
+    instead of True is T105 — the prose writers anchor at the ROOT ask, so the trace must carry the
+    evidence up the chain, not just the verdict."""
     try:
         s = parsed_session(sender, [str(path)], now)
     except Exception:
-        return False
+        return None
     for turn in s.get("turns") or []:
         for a in turn.get("atoms") or []:
             if a.get("uuid") != uuid:
                 continue
             if a.get("author") == "human":
-                return not em.is_interrupt_record(a)
+                if em.is_interrupt_record(a):
+                    return None
+                c = (a.get("message") or {}).get("content")
+                # human prompt records carry content as a plain string; block lists ride _atom_text
+                txt = c if isinstance(c, str) else (_atom_text(a) or str(a.get("text") or ""))
+                return {"text": txt, "sid": sender}
             if a.get("type") == "attachment":
                 txt = _atom_text(a) or str(a.get("text") or "")
                 if em.postal_pairs(txt) or NUDGE_MARKER_RE.search(txt):
-                    return False
-                return bool(txt.strip())
-            return False
-    return False
+                    return None
+                return {"text": txt, "sid": sender} if txt.strip() else None
+            return None
+    return None
 
 
 def _delegate_user_rooted(sender, link_id, paths, now, _depth=0, _seen=None):
     """MINT-TIME chain trace (the user 2026-08-25 ~19:4x, who wants team-internal cards not
-    CREATED rather than foldable behind a lens): True only when the SENDER's linked goal traces
+    CREATED rather than foldable behind a lens): the ROOT HUMAN PROMPT RECORD ({"text","sid"},
+    always truthy; record-not-boolean is T105) when the SENDER's linked goal traces
     to a HUMAN prompt — self-then-ancestors in the sender's store (live+archive merged), an
     origin hop into a LOCAL grand-sender's chain first (a mid-chain worker's ask was itself
     courier-planted), then the node's own promptUuid read against the sender's stitched parse
-    (_session_user_prompt_record). EVERYTHING ELSE IS FALSE — no link at all, a machine/mail/
+    (_session_user_prompt_record). EVERYTHING ELSE IS None — no link at all, a machine/mail/
     romp root, a missing store/node/record, a cross-host hop (that kernel's stores are not ours
     to read), a cycle, the depth cap: at mint time uncertainty files QUIET, the inverse of the
     retired display split's default (uncertainty SHOWED there; the user's verdict is that the
@@ -11358,7 +11479,7 @@ def _delegate_user_rooted(sender, link_id, paths, now, _depth=0, _seen=None):
     needs-you state (the hard-block floor + placeholder synthesize a board card from the live
     prompt with zero goal nodes; interrupt only when the human is the bottleneck)."""
     if not link_id or _depth >= 8:
-        return False
+        return None
     seen = _seen if _seen is not None else set()
     nodes = dict(load_goal_archive(sender).get("nodes") or {})
     nodes.update(load_goals(sender).get("nodes") or {})
@@ -11367,15 +11488,18 @@ def _delegate_user_rooted(sender, link_id, paths, now, _depth=0, _seen=None):
         seen.add((sender, x))
         nd = nodes.get(x)
         if not isinstance(nd, dict):
-            return False
+            return None
         o = nd.get("origin")
         if (isinstance(o, dict) and o.get("peer") and o.get("goalId")
                 and not o.get("peerHost") and o["peer"] in paths):
-            if _delegate_user_rooted(o["peer"], o["goalId"], paths, now, _depth + 1, seen):
-                return True
+            rec = _delegate_user_rooted(o["peer"], o["goalId"], paths, now, _depth + 1, seen)
+            if rec:
+                return rec
         pu = nd.get("promptUuid")
-        if pu and sender in paths and _session_user_prompt_record(sender, paths[sender], pu, now):
-            return True
+        if pu and sender in paths:
+            rec = _session_user_prompt_record(sender, paths[sender], pu, now)
+            if rec:
+                return rec
         last = nd
         x = nd.get("parentId")
     # CONTAINER-SIBLING RESCUE (the user 2026-08-26, T101): live umbrellas dissolve now, but
@@ -11395,14 +11519,17 @@ def _delegate_user_rooted(sender, link_id, paths, now, _depth=0, _seen=None):
             if (sender, cid) in seen:
                 continue
             pu = cd.get("promptUuid")
-            if pu and sender in paths and _session_user_prompt_record(sender, paths[sender], pu, now):
-                return True
+            if pu and sender in paths:
+                rec = _session_user_prompt_record(sender, paths[sender], pu, now)
+                if rec:
+                    return rec
             o = cd.get("origin")
             if (isinstance(o, dict) and o.get("peer") and o.get("goalId")
-                    and not o.get("peerHost") and o["peer"] in paths
-                    and _delegate_user_rooted(o["peer"], o["goalId"], paths, now, _depth + 1, seen)):
-                return True
-    return False
+                    and not o.get("peerHost") and o["peer"] in paths):
+                rec = _delegate_user_rooted(o["peer"], o["goalId"], paths, now, _depth + 1, seen)
+                if rec:
+                    return rec
+    return None
 
 
 def run_propagate(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, verbose=False):
@@ -11795,7 +11922,8 @@ def run_courier(now=None, sessions_cap=PLAN_SESSIONS, concurrency=CONCURRENCY, v
             if frm_host:                               # stamped only on cross-host delivery
                 origin["peerHost"] = frm_host
             apply_courier(store, seg_id, seg_t, edit["text"], origin, prompt_uuid=anchor_uuid,
-                          frame=_postal_body_head(mid) or _frame_head(text))
+                          frame=_postal_body_head(mid) or _frame_head(text),
+                          user_ask=rooted if isinstance(rooted, dict) else None)
             #             ^ the ledger row's body is authoritative; a row the local ledger lacks
             #               (some cross-host deliveries) falls back to the delivered segment's own
             #               head — same content, one hop later
