@@ -6270,7 +6270,7 @@ def _comment_cut_target(path, sid, anchor_uuid):
     context the anchor asked for; the quote still names the passage exactly."""
     ad = _anchor_adapter(path, sid)
     if anchor_uuid not in ad.by_uuid:
-        return None, 0, "that message isn't in the transcript yet; try again in a moment"
+        return None, 0, ANCHOR_LAG_ERR
     is_boundary = lambda r: r is not None and r.get("type") == "system" and r.get("subtype") == "compact_boundary"
     u, hops, on_active = ad.leaf_uuid, 0, False
     while u is not None and hops < 500000:
@@ -6579,6 +6579,14 @@ def _comment_markers(sid):
                     "uuid": th.get("anchorUuid") or "", "tid": th.get("tid"),
                     "status": th.get("status") or "open"})
     return out
+
+
+# The one TRANSIENT create refusal (T106 lab find, 2026-08-26): the anchor record streamed to the
+# client but this kernel's parse hasn't caught up yet. The ws handler sends a typed nack with
+# transient=True for exactly this string; the client keeps its optimistic mark and re-posts when the
+# next session frame proves the parse caught up — so a comment made seconds after a reply lands is
+# never dropped on the floor with a try-again toast.
+ANCHOR_LAG_ERR = "that message isn't in the transcript yet; try again in a moment"
 
 
 def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", color="", now=None):
@@ -7817,7 +7825,13 @@ def _drive(msg, client):
                                    model=str(msg.get("model") or ""), effort=str(msg.get("effort") or ""),
                                    color=str(msg.get("color") or ""))
         if err:
-            client["send"](json.dumps({"type": "warn", "text": err}))
+            # a TRANSIENT refusal (parse lag) is the client's cue to hold + retry — no toast for
+            # plumbing the retry makes moot; every real refusal stays loud (fail loudly)
+            if err != ANCHOR_LAG_ERR:
+                client["send"](json.dumps({"type": "warn", "text": err}))
+            client["send"](json.dumps({"type": "commentCreateFailed", "id": sid,
+                                       "uuid": str(msg["uuid"]), "transient": err == ANCHOR_LAG_ERR,
+                                       "text": err}))
         else:
             # the FRAME rides ahead of the ack: the ack's handler adopts the new thread from the
             # client's thread map, so the thread must be in it first (reversed, the popover looked

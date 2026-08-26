@@ -556,3 +556,33 @@ test("everything that re-renders the chat's units refills the open popover live"
   assert.match(UI, /refillOpenCommentPop\(\);   \/\/ the popover renders the same units — its copy of this run must flip too/);
   assert.match(UI, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\); refillOpenCommentPop\(\); \}\);/);
 });
+
+// ── T106 (the user 2026-08-26, found by the romp-lab loop's first full pass): three seam fixes ────
+test("a create refused by parse lag holds its mark and retries on the frame event — never dropped", () => {
+  // the kernel's typed nack: transient (the anchor record hasn't hit its parse yet) vs real
+  const KERNELSRC = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+  assert.match(KERNELSRC, /ANCHOR_LAG_ERR = "that message isn't in the transcript yet; try again in a moment"/);
+  assert.match(KERNELSRC, /"transient": err == ANCHOR_LAG_ERR,/);
+  assert.match(KERNELSRC, /if err != ANCHOR_LAG_ERR:\s*\n\s*client\["send"\]\(json\.dumps\(\{"type": "warn", "text": err\}\)\)/,
+    "no toast for plumbing the retry makes moot; real refusals stay loud");
+  // the client holds the payload at send and re-posts when a session frame proves the parse caught up
+  assert.match(UI, /cmtCreateInFlight\.set\(create\.uuid, \{ sid: create\.sid,/);
+  assert.match(UI, /retryCmtCreates\(String\(msg\.id \|\| ""\)\);\s+\/\/ a session frame = the kernel re-parsed/);
+  assert.match(UI, /const CMT_CREATE_MAX_TRIES = 12;/);
+  // the ack retires the hold; a REAL refusal drops the synth honestly
+  assert.match(UI, /if \(m\.uuid\) cmtCreateInFlight\.delete\(String\(m\.uuid\)\);\s+\/\/ the ack retires the retry hold/);
+  assert.match(UI, /else \{ cmtCreateInFlight\.delete\(String\(m\.uuid\)\); dropSynthThread\(held\.sid, held\.uuid\); \}/);
+});
+
+test("the optimistic synth thread survives comments frames until superseded or failed", () => {
+  // the frame used to WIPE it: every create's mark blinked between the gesture and the real
+  // thread's first frame, and a lag-refused create erased the comment entirely
+  assert.match(UI, /const synths = \(commentThreads\.get\(sid\) \|\| \[\]\)\.filter\(\(t\) =>\s*\n\s*t\.tid\.startsWith\("pending:"\) && cmtCreateInFlight\.has\(t\.tid\.slice\("pending:"\.length\)\)/);
+  assert.match(UI, /&& !threads\.some\(\(r\) => r\.anchorUuid === t\.anchorUuid\)\);/,
+    "a real thread on the same anchor supersedes the synth");
+});
+
+test("the pending echo prunes against EVENTS too — a landed user turn never double-shows", () => {
+  assert.match(UI, /const evUserMsgs = \(\(th\.events \|\| \[\]\) as ChatEvent\[\]\)/);
+  assert.match(UI, /prunePending\(commentPending\.get\(th\.tid\) \|\| \[\], \[\.\.\.th\.msgs, \.\.\.evUserMsgs\]\);/);
+});
