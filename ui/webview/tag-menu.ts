@@ -26,7 +26,11 @@ export interface TagMenuOpts {
 }
 
 let echoInstalled = false;
-/** Every pane writes the pointerdown echo ONCE per document — sibling panes' open menus close on it. */
+/** Every pane writes the pointerdown echo ONCE per document — sibling panes' open menus close on it.
+ *  Installed AT MODULE LOAD by the guard below, never lazily (the user 2026-08-26: a menu opened
+ *  from the sessions panel stood through clicks in the chat — the chat imports this module but had
+ *  never opened a menu, so its document held no writer). Exported for documents that mount no tag
+ *  menu at all (the shell page's palette-main) to compose the same writer explicitly. */
 export function installMenuEcho(): void {
   if (echoInstalled) return;
   echoInstalled = true;
@@ -43,6 +47,7 @@ export function closeTagMenu(): void {
 // module-level closers, guarded: the model half of this module (and its constants) is importable
 // from non-DOM contexts (the node test runner) — only a real document wires the listeners
 if (typeof document !== "undefined") {
+  installMenuEcho();   // the WRITER rides every bundle at load — a pane must broadcast before it ever opens a menu
   document.addEventListener("click", () => closeTagMenu());
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTagMenu(); });
   try {
@@ -53,7 +58,6 @@ if (typeof document !== "undefined") {
 /** Open (or toggle shut) the lens menu anchored under `anchor`. The ctx-family skin — the chat
  *  pane's .ctx-menu is the reference spec (CLAUDE.md menu vocabulary). */
 export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
-  installMenuEcho();
   const reopen = !!openMenu && openMenu.dataset.tagMenu === "1";
   closeTagMenu();
   if (reopen) return;
