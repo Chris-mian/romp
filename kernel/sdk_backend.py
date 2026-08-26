@@ -2513,7 +2513,7 @@ class SdkSession:
                     last = self._last_usage_totals.get(k, 0)
                     turn_u[k] = v - last if v >= last else v
                     self._last_usage_totals[k] = v
-                self.backend._record_spend(delta, turn_u, keyed=self.api_key_auth)   # the rail's spend
+                self.backend._record_spend(delta, turn_u, keyed=self.api_key_auth, sid=self.sid)   # the rail's spend
                 #   + token readout; keyed = THIS session's init-reported auth, so the API sum stays
                 #   honest on a mixed host (see _record_spend)
             self.retrying = False
@@ -3518,7 +3518,7 @@ class SdkBackend:
         self._log("usage refresh: %d live session(s), none with a loop to run it on — the rail bars "
                   "keep their last reading" % len(live), problem=True)
 
-    def _record_spend(self, cost, usage=None, keyed=False) -> None:
+    def _record_spend(self, cost, usage=None, keyed=False, sid=None) -> None:
         """Accumulate a turn's total_cost_usd AND its token counts into spend.json, keyed by LOCAL date —
         the rail's spend readout where the subscription bars sat, under API-key auth (the user
         2026-08-04; tokens added the same day, who wanted them beside the dollars). Recorded on every
@@ -3529,7 +3529,14 @@ class SdkBackend:
         rail's API readout must sum ONLY the key's turns — a login turn's computed cost there would be
         dollars nobody is billed (the user 2026-08-08). Token fields mirror the ResultMessage usage
         dict: input/output plus the two cache flavors, kept separately so the tooltip can break them
-        down. Pruned to the last 90 days; atomic."""
+        down. Pruned to the last 90 days; atomic.
+        PER-SESSION ATTRIBUTION (T100, the nightly optimizer's accepted ask 2026-08-24: key-billed
+        cost per session — 63%% of a day was untraceable): each bucket carries a `bySid` sub-map,
+        {sid: {usd, turns, tok, key:{usd,turns,tok}}} — SID-keyed (rename-proof; names flap), the
+        keyed split carried PER SID because that split is the point. Living inside the buckets, the
+        maps inherit the prune and the atomic write; rows without bySid stay readable (lossless
+        legacy, the T18 discipline). Inherited edge, unrecoverable here: a restart-killed turn
+        never emits its ResultMessage, so its cost is missing from every dimension alike."""
         if not isinstance(cost, (int, float)) or cost <= 0:
             return
         u = usage if isinstance(usage, dict) else {}
@@ -3556,12 +3563,26 @@ class SdkBackend:
                      "tokCacheR": int(e.get("tokCacheR") or 0) + _tok("cache_read_input_tokens"),
                      "tokCacheW": int(e.get("tokCacheW") or 0) + _tok("cache_creation_input_tokens")}
                 ke = e.get("key") if isinstance(e.get("key"), dict) else {}
+                tok_total = sum(_tok(k) for k in ("input_tokens", "output_tokens",
+                                                  "cache_read_input_tokens", "cache_creation_input_tokens"))
                 if keyed or ke:   # carry an existing key split forward even on a login turn
                     n["key"] = {"usd": round(float(ke.get("usd") or 0) + (float(cost) if keyed else 0), 6),
                                 "turns": int(ke.get("turns") or 0) + (1 if keyed else 0),
-                                "tok": int(ke.get("tok") or 0) + (sum(_tok(k) for k in (
-                                    "input_tokens", "output_tokens", "cache_read_input_tokens",
-                                    "cache_creation_input_tokens")) if keyed else 0)}
+                                "tok": int(ke.get("tok") or 0) + (tok_total if keyed else 0)}
+                by = e.get("bySid") if isinstance(e.get("bySid"), dict) else {}
+                if sid:
+                    se = by.get(sid) if isinstance(by.get(sid), dict) else {}
+                    sn = {"usd": round(float(se.get("usd") or 0) + float(cost), 6),
+                          "turns": int(se.get("turns") or 0) + 1,
+                          "tok": int(se.get("tok") or 0) + tok_total}
+                    ske = se.get("key") if isinstance(se.get("key"), dict) else {}
+                    if keyed or ske:   # the keyed split rides each sid too — carried forward on login turns
+                        sn["key"] = {"usd": round(float(ske.get("usd") or 0) + (float(cost) if keyed else 0), 6),
+                                     "turns": int(ske.get("turns") or 0) + (1 if keyed else 0),
+                                     "tok": int(ske.get("tok") or 0) + (tok_total if keyed else 0)}
+                    by[sid] = sn
+                if by:   # a sid-less fold (a non-rail caller) must not drop the attribution already there
+                    n["bySid"] = by
                 buckets[key] = n
                 for k in sorted(buckets)[:-keep]:
                     buckets.pop(k, None)
