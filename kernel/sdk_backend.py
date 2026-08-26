@@ -1228,6 +1228,28 @@ def _expected_auth() -> str:
     return v if v in ("key", "login") else ""
 
 
+def _declared_auth(state_dir) -> tuple:
+    """The EFFECTIVE box-wide auth expectation and where it came from: ("key"|"login"|"", "pick"|"env"|"").
+    One explicit gear Billing pick makes ROMP_EXPECTED_AUTH INERT (Q3, 2026-08-26): set_auth is the
+    ONLY writer of the remembered auth default, so that entry existing IS "the user has picked
+    billing by hand at least once" — from then on the remembered pick is the box's expectation and
+    the env declaration stops speaking (it described the box's unpicked design; once billing is
+    hand-managed it is stale doctrine, and its per-init alarms fought the user's own choice on
+    every re-seeded spawn). A SPAWN re-seeding reg.auth from the remembered default never counts
+    as explicit — inertness keys on the PICK EVENT's durable trace (the defaults entry), never on
+    any session's seeded state; hand-editing sdk-defaults.json stays the sanctioned escape hatch
+    (the mode precedent)."""
+    try:
+        d = read_sdk_defaults(Path(state_dir))
+    except Exception:
+        d = {}
+    a = d.get("auth")
+    if a in ("key", "login"):
+        return a, "pick"
+    v = _expected_auth()
+    return v, ("env" if v else "")
+
+
 # ---------------------------------------------------------------------------
 # Fast-mode permission for key-billed sessions — ask the account that PAYS.
 # ---------------------------------------------------------------------------
@@ -3506,7 +3528,7 @@ class SdkBackend:
                 self._usage_all_keyed = True
                 self._log("usage refresh: %d live session(s), all billing API keys — no session can "
                           "poll the subscription windows, so rate-limit telemetry is unavailable"
-                          % len(connected), problem=_expected_auth() != "key")
+                          % len(connected), problem=_declared_auth(self.state_dir)[0] != "key")
             return
         if any(s.auth_live == "login" for s in live):
             # Re-armed only by an init that CONFIRMED a login — a fresh spawn's default-False flag
@@ -3631,12 +3653,14 @@ class SdkBackend:
         # the box's UNPICKED design, while set_auth's contract is that the next init confirms the
         # PICK — judged (and worded) against what the pick launched, so a landing honoring the pick
         # stays quiet whatever the box declares, and one contradicting it still rings.
-        exp = "" if sess.auth in ("login", "key") else _expected_auth()
+        exp, exp_src = ("", "") if sess.auth in ("login", "key") else _declared_auth(self.state_dir)
         if keyed != ((exp == "key") if exp else sess._launched_keyed):
             if exp:
-                self._log("auth (%s): ROMP_EXPECTED_AUTH=%s but the CLI reports apiKeySource=%r — this "
+                what = ("ROMP_EXPECTED_AUTH=%s" % exp) if exp_src == "env" \
+                    else ("the remembered Billing pick is %s" % exp)
+                self._log("auth (%s): %s but the CLI reports apiKeySource=%r — this "
                           "session is billing the %s. Check the helper and service.env."
-                          % (sess.name, exp, source, "API key" if keyed else "login"), problem=True)
+                          % (sess.name, what, source, "API key" if keyed else "login"), problem=True)
             else:
                 self._log("auth (%s): launched for %s but the CLI reports apiKeySource=%r — this session "
                           "is billing the %s. Check the login (claude /login) and service.env."
