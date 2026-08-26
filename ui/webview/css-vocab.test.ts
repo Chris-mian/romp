@@ -39,6 +39,32 @@ test("gear.css accent chrome references var(--accent) — never a re-hardcoded b
   assert.match(GEAR, /outline: 2px solid var\(--accent, #9cd2ff\)/);
 });
 
+test("menus wear ONE vocabulary (CLAUDE.md): --radius-menu 6px + --shadow-menu on every dropdown", () => {
+  // .meta-menu and .tab-tip had drifted onto 0 4px 16px/0.45; .slash-pop onto 8px + 0 6px 22px;
+  // .feed-sessmenu onto 0 6px 24px. All resolve through the tokens now. .tab-tip keeps its mono
+  // (a statusline tooltip, not a dropdown); .meta-menu joins the menus' sans per the spec.
+  assert.match(CHAT, /--radius-menu: 6px;\n  --shadow-menu: 0 4px 12px rgba\(0, 0, 0, 0\.35\);/);
+  assert.match(FEED, /--radius-menu: 6px;/);
+  assert.match(FEED, /--shadow-menu: 0 4px 12px rgba\(0, 0, 0, 0\.35\);/);
+  for (const sel of [".ctx-menu", ".meta-menu", ".tab-tip", ".slash-pop"]) {
+    const at = CHAT.indexOf(sel + " {");
+    const rule = CHAT.slice(at, CHAT.indexOf("}", at));
+    assert.ok(rule.includes("var(--radius-menu)"), sel + " radius through the token");
+    assert.ok(rule.includes("var(--shadow-menu)"), sel + " shadow through the token");
+  }
+  for (const sel of [".ctx-menu", ".feed-sessmenu"]) {
+    const at = FEED.indexOf(sel + " {");
+    const rule = FEED.slice(at, FEED.indexOf("}", at));
+    assert.ok(rule.includes("var(--radius-menu)"), sel + " radius through the token (feed)");
+    assert.ok(rule.includes("var(--shadow-menu)"), sel + " shadow through the token (feed)");
+  }
+  // the retired drift shadows appear nowhere in the sheets
+  for (const [name, css] of [["styles.css", CHAT], ["feed.css", FEED]] as const) {
+    assert.doesNotMatch(css, /0 4px 16px rgba\(0, 0, 0, 0\.45\)|0 6px 2[24]px rgba\(0, 0, 0, 0\.45\)/, name);
+  }
+  assert.match(CHAT, /\.meta-menu \{[^}]*font-family: var\(--sans\)/s, "the meta menus read in the menus' sans");
+});
+
 test("ONE accent wash: every selected/hovered accent chrome resolves through --accent-wash at 0.12", () => {
   // 0.10 and 0.14 washes had drifted in beside the dominant 0.12 (three alphas for one meaning);
   // the token is declared in both self-sufficient :roots, and no bare wash literal remains in the

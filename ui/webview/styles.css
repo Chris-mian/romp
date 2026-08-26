@@ -63,6 +63,11 @@ body.scheme-solarized-dark {
   /* THE faint accent wash — the one alpha behind every selected/hovered accent chrome (0.10 and 0.14
      variants drifted in before 2026-08-26). Mirrored in feed.css (own :root). */
   --accent-wash: rgba(156, 210, 255, 0.12);
+  /* the menu vocabulary (CLAUDE.md "Menus and dropdowns wear ONE vocabulary") — every dropdown's
+     radius and shadow resolve through these; two menus had drifted onto their own shadows before
+     2026-08-26. Mirrored in feed.css (own :root). */
+  --radius-menu: 6px;
+  --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.35);
   /* Comment-highlight yellow (the user 2026-08-13): the marked passage reads like a highlighter
      stroke, DISTINCT from both the accent blue (selection/chrome) and the working-status yellow
      chip. Text-highlight use only — comment chrome (badge, buttons, chips) stays var(--accent). */
@@ -288,8 +293,8 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
   position: fixed; z-index: 100; min-width: 110px; padding: 4px;
   background: var(--vscode-menu-background, #252526);
   color: var(--vscode-menu-foreground, var(--fg));
-  border: 1px solid var(--box-border); border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--box-border); border-radius: var(--radius-menu);
+  box-shadow: var(--shadow-menu);
   font-size: 0.92em;
 }
 .ctx-item { padding: 4px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
@@ -346,8 +351,9 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .tab-tip {
   position: fixed; z-index: 70; display: none; pointer-events: none;
   background: var(--vscode-editorWidget-background, #252526);
-  border: 1px solid var(--box-border); border-radius: 6px;
-  padding: 7px 10px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--box-border); border-radius: var(--radius-menu);
+  padding: 7px 10px; box-shadow: var(--shadow-menu);
+  /* mono ON PURPOSE (unlike the menus' sans): the body is paths/branch/model, the statusline's own voice */
   font-family: var(--mono); font-size: 0.82em; line-height: 1.55;
   /* span the full chat pane width (the user 2026-06-25) so the recent-activity names don't get clipped — the
      positioner (render.ts) clamps it to a small left margin once it's this wide; short tips stay content-sized. */
@@ -727,8 +733,8 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .slash-pop {
   position: fixed; z-index: 120; max-height: 46vh; overflow-y: auto;
   background: var(--vscode-menu-background, #252526);
-  border: 1px solid var(--box-border); border-radius: 8px;
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45); padding: 4px;
+  border: 1px solid var(--box-border); border-radius: var(--radius-menu);
+  box-shadow: var(--shadow-menu); padding: 4px;
   font-size: 12.5px;
 }
 .slash-row { display: flex; align-items: baseline; gap: 9px; padding: 5px 9px; border-radius: 5px; cursor: pointer; }
@@ -968,9 +974,9 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .meta-menu {
   position: fixed; z-index: 60; min-width: 96px;
   background: var(--vscode-editorWidget-background, #252526);
-  border: 1px solid var(--box-border); border-radius: 6px;
-  padding: 4px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
-  font-family: var(--mono); font-size: 0.92em;
+  border: 1px solid var(--box-border); border-radius: var(--radius-menu);
+  padding: 4px; box-shadow: var(--shadow-menu);
+  font-family: var(--sans); font-size: 0.92em;
 }
 .meta-item {
   padding: 4px 22px 4px 8px; border-radius: 4px; cursor: pointer;

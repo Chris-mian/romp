@@ -18,6 +18,8 @@
   --accent-fg: #0c1a2e;  /* dark text ON the accent (CLAUDE.md) — for the reverse-highlight on a selected toggle */
   --accent-wash: rgba(156, 210, 255, 0.12);  /* THE faint accent wash — mirrors styles.css; one alpha
                        behind every selected/hovered accent chrome */
+  --radius-menu: 6px;  /* the menu vocabulary (CLAUDE.md) — mirrors styles.css */
+  --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.35);
   --st-working-bg: #e0b020; --st-working-fg: #332600;  /* the WORKING yellow — mirrors styles.css, same trap
                        as --err: .fask-stallbtn and .fask-interrupting referenced these while they lived only
                        in styles.css, so the "filled yellow so the stall is noticed" chip rendered as a quiet
@@ -942,9 +944,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    untouched. The list opens UPWARD from the bar (position from the wrap rect, feed.ts). */
 .fsm-name { font-weight: 600; }
 .feed-sessmenu { position: fixed; z-index: 60; min-width: 150px; max-height: 60vh; overflow-y: auto;
-  padding: 4px; border: 1px solid var(--card-border); border-radius: 6px;
+  padding: 4px; border: 1px solid var(--card-border); border-radius: var(--radius-menu);
   background: var(--vscode-editorWidget-background, #252526);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45); }
+  box-shadow: var(--shadow-menu); }
 .feed-sessmenu .fsm-row { display: flex; align-items: center; gap: 7px; padding: 4px 9px;
   border-radius: 4px; cursor: pointer; font-size: 11.5px; white-space: nowrap; }
 .feed-sessmenu .fsm-row:hover { background: rgba(255, 255, 255, 0.07); }
@@ -1367,8 +1369,8 @@ a.fileview-btn[hidden] { display: none; }
   position: fixed; z-index: 100; min-width: 110px; padding: 4px;
   background: var(--vscode-menu-background, #252526);
   color: var(--vscode-menu-foreground, var(--fg));
-  border: 1px solid var(--box-border); border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--box-border); border-radius: var(--radius-menu);
+  box-shadow: var(--shadow-menu);
   font-size: 0.92em;
 }
 .ctx-item { padding: 4px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
