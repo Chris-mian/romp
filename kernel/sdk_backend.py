@@ -5196,7 +5196,17 @@ class SdkBackend:
                     # /clear streams one) — nothing the user watched, nothing to salvage. Persisted, it
                     # resurfaced as a worked reply on the bare command turn (the user 2026-07-27); the
                     # parse-side guard in synthesize_orphans covers markers already written.
-                    if txt.strip() and txt.strip() != "(no content)":
+                    # VERIFIED AT THE WRITE MOMENT (the user 2026-08-26): a marker claims "this reply
+                    # is on disk nowhere", and the claim's precondition — prune_live retired every
+                    # landed atom — holds only for sessions the chat BUILDS. A comment thread is never
+                    # built (hidden by design), so its landed replies were still live at settle and
+                    # EVERY thread reply minted a spurious marker: states/ litter, and the judge's
+                    # per-push marker scan grows with it. One tail read of the sid's own transcript
+                    # per would-be marker (settles are rare; healthy sessions already pruned) keeps
+                    # the salvage honest for every hidden-session shape, threads and future ones. A
+                    # genuinely-lost reply (the API-error discard) is on disk nowhere and still mints.
+                    if txt.strip() and txt.strip() != "(no content)" \
+                            and not self._reply_on_disk(sid, a.get("uuid") or ""):
                         try:
                             append_orphan_reply(self.state_dir, sid, a.get("uuid") or "", txt, t=a.get("t"))
                         except Exception:
@@ -5204,6 +5214,24 @@ class SdkBackend:
                 del d[k]
         if not d:
             self._live.pop(sid, None)
+
+    def _reply_on_disk(self, sid: str, uuid: str) -> bool:
+        """Does the sid's transcript already hold this uuid? The orphan salvage's own precondition,
+        checked against the file it makes claims about (see retire_live_work). Tail-windowed: the
+        settle runs moments after the write, so a landed reply sits near the end; a discarded one's
+        uuid appears nowhere at any offset that matters."""
+        if not uuid:
+            return False
+        try:
+            reg = read_reg(self.state_dir, sid) or {}
+            p = transcript_path(reg.get("cwd") or "", reg.get("lastSid") or sid)
+            size = os.path.getsize(p)
+            with open(p, "rb") as f:
+                if size > 4_000_000:
+                    f.seek(size - 4_000_000)
+                return uuid.encode() in f.read()
+        except OSError:
+            return False
 
     def live_atom_kinds(self, sid: str) -> list:
         """Read-only DEBUG summary of the sid's live-tail atoms: uuid/type + the flags that decide their
