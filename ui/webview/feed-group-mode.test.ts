@@ -44,7 +44,7 @@ test("a name+dot header entry opens each session's run; only runs that exist get
   assert.match(FEED, /setWorkDot\(nm, dotFor\(e\.name\)\);/);   // work OR awaiting dot — await-green when idle-but-awaiting (the user 2026-07-13)
   // headers aren't cards — but a FOLDED one stands in for its run, so the chip counts what it hides;
   // the column must report the board, not what the reader happens to have open (2026-07-31)
-  assert.match(FEED, /const nCards = \(es: Entry\[\]\) => es\.reduce\(\(n, e\) => n \+ \(e\.kind === "sess" \? e\.folded : 1\), 0\);/);
+  assert.match(FEED, /const nCards = \(es: Entry\[\]\) => es\.reduce\(\(n, e\) => n \+ entryCards\(e\), 0\);/);
   // flex-wrap: the header hosts the background-process chip's expandable list on its own full-width
   // line (feed-bg-service-chip.test.ts, the user 2026-07-24)
   assert.match(CSS, /\.feed-sess-head \{ display: flex; flex-wrap: wrap; align-items: center;/);
