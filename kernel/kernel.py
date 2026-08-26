@@ -26612,7 +26612,7 @@ def _landing():
             # A mismatched pair is the state that used to be invisible until mail quarantined, so it
             # wears a warm tint; matched reads as quiet metadata.
             ".rnet-back{color:#6e7681;font-size:11px;white-space:nowrap}"
-            ".rnet-back.rnet-mismatch{color:#d29922}"
+            ".rnet-back.rnet-mismatch{color:#d7a23a}"
             ".rnet-mirror{background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;border-radius:6px;padding:1px 7px;font-size:11px;cursor:pointer}"
             ".rnet-mirror:disabled{opacity:0.55;cursor:default}"
             ".rnet-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}"

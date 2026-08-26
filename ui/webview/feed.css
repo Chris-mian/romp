@@ -8,6 +8,8 @@
   --green: #74c991;
   --err: #c0392b;   /* the block-red — mirrors styles.css; feed.css has its OWN :root, so the ⏸ block marks
                        (and the modal's red ⏸-ring) need it defined HERE or var(--err) falls back to gray */
+  --warn: #d7a23a;  /* the heads-up amber — mirrors styles.css; ONE amber for "attention, not an error":
+                       the toast's left rule, the judge-warnings head (two near-twin hexes before 2026-08-26) */
   --box-border: rgba(255, 255, 255, 0.12);  /* mirrors styles.css — same trap as --err: an undefined var()
                        in a border SHORTHAND voids the whole declaration, so the section-toggle circles and
                        the await-paused outline rendered with NO border at all (the user 2026-07-02) */
@@ -1148,7 +1150,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%) translateY(8px);
   z-index: 200; max-width: min(440px, 90vw); padding: 9px 13px;
   background: var(--vscode-menu-background, #26262a); color: var(--fg);
-  border: 1px solid rgba(255, 255, 255, 0.12); border-left: 3px solid #e0a020; border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12); border-left: 3px solid var(--warn); border-radius: 7px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45); font-size: 0.86em; line-height: 1.35;
   opacity: 0; transition: opacity 0.18s ease, transform 0.18s ease; pointer-events: none;
 }
@@ -1157,7 +1159,7 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* debug-mode judge warnings (the user 2026-07-09): the card modal's failure-inspection section.
    0.72em heads, 0.82em body rows (labels match labels). */
 .fmodal-warns { margin-top: 12px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
-.fmodal-warns-head { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: #e0b341; margin-bottom: 6px; }
+.fmodal-warns-head { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--warn); margin-bottom: 6px; }
 .fmodal-warn-row { margin-bottom: 6px; }
 .fmodal-warn-line { font-size: 0.82em; color: var(--fg); overflow-wrap: anywhere; }
 .fmodal-warn-det { margin: 2px 0 0 14px; }

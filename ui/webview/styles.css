@@ -54,6 +54,8 @@ body.scheme-solarized-dark {
   --box-bg: rgba(255, 255, 255, 0.03);
   --box-border: var(--vscode-editorHoverWidget-border, rgba(255, 255, 255, 0.12));
   --err: #c0392b;   /* unified with the awaiting/blocked red (the user 2026-06-24): one "needs you" red. API-error (--st-blocked-bg #e5484d) stays distinct. */
+  --warn: #d7a23a;  /* the heads-up amber — "attention, not an error". Was referenced with fallbacks but never
+                       defined (a phantom token) until 2026-08-26; mirrored in feed.css (own :root). */
   /* THE romp accent — light blue (the user 2026-06-24). Use var(--accent) for accent/highlight chrome
      (selected toggles, in-progress loading dots, the Fleet pill, focus) — NOT for STATUS colors, which keep
      their own meaning (--st-working-bg yellow = working, --st-blocked-bg red, etc.). --accent-fg reads on it. */

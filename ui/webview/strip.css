@@ -85,9 +85,9 @@
   color: #ccc; }
 #strip-net-pop[hidden] { display: none; }
 #strip-net-pop .sn-attach { display: flex; gap: 6px; margin-bottom: 8px; }
-#strip-net-pop select { flex: 1 1 auto; min-width: 0; background: #2a2a2b; color: #ccc;
+#strip-net-pop select { flex: 1 1 auto; min-width: 0; background: #2a2a2a; color: #ccc;
   border: 1px solid #3a3a3a; border-radius: 5px; padding: 3px 4px; }
-#strip-net-pop button { background: #2a2a2b; border: 1px solid #3a3a3a; border-radius: 5px; color: #cdd3da;
+#strip-net-pop button { background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 5px; color: #cdd3da;
   font: 600 11px -apple-system, sans-serif; padding: 3px 9px; cursor: pointer; white-space: nowrap; }
 #strip-net-pop button:hover { background: #333; color: #fff; }
 #strip-net-pop button:disabled { opacity: .5; cursor: default; }
