@@ -625,7 +625,7 @@ _TOKEN_LOGIN_HTML = """<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>romp</title>
 <body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;\
-background:#101418;color:#dfe7ee;font:15px/1.5 -apple-system,system-ui,sans-serif">
+background:#101418;color:#dfe7ee;font:15px/1.5 system-ui,-apple-system,sans-serif">
 <form style="text-align:center;max-width:26em;padding:2em" onsubmit="\
 location.replace('/?token='+encodeURIComponent(document.getElementById('t').value.trim()));return false">
   <div style="font-size:1.6em;letter-spacing:.04em;margin-bottom:.4em">romp</div>
@@ -23983,8 +23983,8 @@ def _pusher():
 
 
 # ───────────────────────── HTTP / page serving ─────────────────────────
-THEME_CSS = """:root{--vscode-font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
---vscode-editor-font-family:Menlo,Monaco,"Courier New",monospace;--vscode-chat-font-family:var(--vscode-font-family);
+THEME_CSS = """:root{--vscode-font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+--vscode-editor-font-family:ui-monospace,"SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;--vscode-chat-font-family:var(--vscode-font-family);
 --vscode-chat-font-size:13px;--vscode-foreground:#cccccc;--vscode-descriptionForeground:rgba(204,204,204,.7);
 --vscode-errorForeground:#f48771;--vscode-editor-background:#1e1e1e;--vscode-editorWidget-background:#252526;
 --vscode-editorHoverWidget-border:#454545;--vscode-sideBar-background:#252526;--vscode-widget-border:#303031;
@@ -24023,7 +24023,7 @@ function netState(s){try{if(window.parent!==window)window.parent.postMessage({ro
 // directly) has no shell, so self-inject a minimal top bar with the same Reload action.
 function selfBar(t,kind){try{if(document.getElementById("romp-stale-self"))return;
 var b=document.createElement("div");b.id="romp-stale-self";b.dataset.kind=kind||"conn";
-b.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;display:flex;gap:12px;align-items:center;justify-content:center;background:#2b2d30;color:#e6e6e6;border-bottom:1px solid #4a4d51;padding:9px 14px;font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
+b.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;display:flex;gap:12px;align-items:center;justify-content:center;background:#2b2d30;color:#e6e6e6;border-bottom:1px solid #4a4d51;padding:9px 14px;font:13px/1.4 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
 var m=document.createElement("span");m.textContent=t;b.appendChild(m);
 var r=document.createElement("button");r.textContent="Reload";
 r.style.cssText="font:inherit;cursor:pointer;border-radius:6px;padding:4px 11px;font-weight:600;background:#54B204;color:#0c1a00;border:1px solid #3f8a00";
@@ -24142,7 +24142,7 @@ _CHAT_MOBILE_CSS = (
     "#mhdr{display:flex;align-items:stretch;gap:6px;width:100%}"
     "#mcur{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer;"
     "background:#2a2a2a;color:#dddddd;border:1px solid #3a3a3a;border-radius:6px;padding:7px 10px;"
-    "font:600 13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    "font:600 13px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}"
     # colored session: the identity color reads as the NAME (bold) on the same grey chip as the +/madd
     # button, with a hairline color border, not the color as a fill (the user 2026-07-22).
     "#mcur.colored{background:#2a2a2a;color:var(--cbg);border-color:var(--cbg)}"
@@ -24158,7 +24158,7 @@ _CHAT_MOBILE_CSS = (
     "box-shadow:0 8px 24px #000000aa}"
     "#mlist.open{display:block}"
     ".mrow{display:flex;align-items:center;gap:9px;padding:10px 12px;cursor:pointer;"
-    "border-bottom:1px solid #ffffff12;font:600 13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    "border-bottom:1px solid #ffffff12;font:600 13px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}"
     ".mrow:last-child{border-bottom:0}"
     # match desktop: the session's identity color tints the NAME text (set inline, like the Fleet list and
     # the colored tab label), and the only dot is the gold WORKING dot, shown just for working sessions.
@@ -24302,7 +24302,7 @@ _LOADER_CSS = (
     # (baseline + x-height/2). Geometry from assets/make_wordmark.py: the swirl-o glyph is the
     # CENTERED 102..820 crop, sized SWIRL_EM=0.65em, with side margins -(0.65-0.583)/2 = -0.0335em so its
     # advance equals Anta's 'o' (0.583em) and m/p land where a real "o" puts them.
-    ".rl-word{font-family:'RompAnta',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:38px;"
+    ".rl-word{font-family:'RompAnta',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:38px;"
     "line-height:1;white-space:nowrap}"
     ".rl-o{width:.65em;height:.65em;vertical-align:middle;margin:0 -.0335em;animation:rl-spin 7s linear infinite}"
     ".rl-dots{display:flex;gap:7px}"
@@ -24420,7 +24420,7 @@ def _fleet_page():
     try:
         fleet_css = (UI / "webview" / "fleet-pane.css").read_text()
     except OSError:
-        return ("<!DOCTYPE html><html><body style='font-family:-apple-system,sans-serif;color:#999;"
+        return ("<!DOCTYPE html><html><body style='font-family:system-ui,-apple-system,sans-serif;color:#999;"
                 "background:#1e1e1e;padding:12px'>romp outline needs the ui/ modules "
                 "(webview/fleet-pane.css).</body></html>")
     v = _dist_ver()
@@ -24495,7 +24495,7 @@ def _timeline_page():
         view_js = (UI / "romp-timeline-view.js").read_text()
         tl_css = (UI / "webview" / "timeline-pane.css").read_text()
     except OSError:
-        return ("<!DOCTYPE html><html><body style='font-family:-apple-system,sans-serif;color:#999;"
+        return ("<!DOCTYPE html><html><body style='font-family:system-ui,-apple-system,sans-serif;color:#999;"
                 "background:#1e1e1e;padding:12px'>romp timeline needs the ui/ modules "
                 "(romp-timeline-view.js + webview/timeline-pane.css).</body></html>")
     v = _dist_ver()
@@ -26097,7 +26097,7 @@ _STALE_CSS = (
     "#rstale{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:99999;display:none;"
     "align-items:center;gap:12px;max-width:92vw;background:#252526;border:1px solid rgba(255,255,255,0.12);"
     "border-radius:8px;padding:10px 14px;color:#e6e6e6;box-shadow:0 8px 28px rgba(0,0,0,0.45);"
-    "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    "font:13px/1.4 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}"
     "#rstale.show{display:flex}#rstale .rs-msg{font-weight:500}"
     "#rstale button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 11px;"
     "border:1px solid transparent;white-space:nowrap}"
@@ -26203,7 +26203,7 @@ _UPD_CSS = (
     "#rupd{position:fixed;top:56px;left:50%;transform:translateX(-50%);z-index:99999;display:none;"
     "align-items:center;gap:12px;max-width:92vw;background:#252526;border:1px solid rgba(255,255,255,0.12);"
     "border-radius:8px;padding:10px 14px;color:#e6e6e6;box-shadow:0 8px 28px rgba(0,0,0,0.45);"
-    "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    "font:13px/1.4 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}"
     "#rupd.show{display:flex}#rupd .rup-msg{font-weight:500}"
     "#rupd button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 11px;"
     "border:1px solid transparent;white-space:nowrap}"
@@ -26295,7 +26295,7 @@ _RDRIFT_CSS = (
     "#rdrift{position:fixed;top:104px;left:50%;transform:translateX(-50%);z-index:99998;display:none;"
     "align-items:center;gap:10px;max-width:92vw;background:#252526;border:1px solid rgba(255,255,255,0.12);"
     "border-radius:8px;padding:10px 14px;color:#e6e6e6;box-shadow:0 8px 28px rgba(0,0,0,0.45);"
-    "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+    "font:13px/1.4 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}"
     "#rdrift.show{display:flex}#rdrift .rd-msg{font-weight:500}"
     "#rdrift .rd-spin{width:14px;height:14px;flex:0 0 auto;display:none;"
     "background:url(/media/romp-swirl-glyph.svg) center/contain no-repeat;animation:rd-spin 2.4s linear infinite}"
@@ -26514,7 +26514,7 @@ def _landing():
             ".rail-scroll::-webkit-scrollbar{width:0;height:0}"
             ".rail-acts{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:6px;margin-left:auto}"   # compact: tight row of refresh/network/settings   # pinned to the RIGHT of the bottom bar, always visible
             ".rail-btn{flex:0 0 auto;letter-spacing:.04em;line-height:1;"
-            "font:600 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8a8a;margin:0;"
+            "font:600 11px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#8a8a8a;margin:0;"
             "padding:4px 9px;border-radius:5px;cursor:pointer;user-select:none;display:flex;align-items:center;"
             "justify-content:center;transition:color .1s,background .1s}"
             ".rail-btn:hover{color:#cfe6ff;background:rgba(255,255,255,0.06)}"
@@ -26710,7 +26710,7 @@ def _landing():
             # the windows sit side-by-side. Full detail (elapsed %, reset countdown, age) stays in the hover panel.
             "#rail-usage{flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:16px}"
             ".ru-w{display:flex;flex-direction:row;align-items:center;gap:7px;cursor:default}"
-            ".ru-name{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#9aa4ad;letter-spacing:.02em;white-space:nowrap}"
+            ".ru-name{font:600 10px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#9aa4ad;letter-spacing:.02em;white-space:nowrap}"
             ".ru-bars{display:flex;flex-direction:column;gap:2px;flex:0 0 auto}"   # used bar stacked over elapsed bar
             ".ru-track{position:relative;width:54px;height:5px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;flex:0 0 auto}"
             ".ru-fill{position:absolute;left:0;top:0;height:100%;border-radius:3px;transition:width .3s ease}"
@@ -26718,7 +26718,7 @@ def _landing():
             # drawn on the bar AT ALL — only what we know shows there. The last-known reading survives in
             # the tooltip, labelled "last known" and faded, which is honest because it says what it is.
             ".ru-tip-row.ru-unk i{opacity:.3}.ru-tip-row.ru-unk .ru-tip-k,.ru-tip-row.ru-unk .ru-tip-v{color:#8a97a6}"
-            ".ru-pct{font:600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;white-space:nowrap}"
+            ".ru-pct{font:600 10px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#cfe6ff;font-variant-numeric:tabular-nums;white-space:nowrap}"
             # ONE shared hover panel for BOTH windows (the user 2026-06-26): it reproduces exactly the used/
             # elapsed bars that used to sit under the timeline — per window, a "used" bar (selected colormap)
             # over an "elapsed" bar (slate) with the % + reset countdown, and nothing else (no prose).
@@ -26738,7 +26738,7 @@ def _landing():
             "#ru-back{position:fixed;inset:0;z-index:290;display:none;background:rgba(0,0,0,0.4)}"
             "#ru-back.on{display:block}"
             "#ru-tip{position:fixed;z-index:300;background:#1e1e1e;border:1px solid #3a3a3a;border-radius:7px;"
-            "padding:8px 10px;font:500 11px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#cfd6dd;"
+            "padding:8px 10px;font:500 11px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#cfd6dd;"
             "box-shadow:0 5px 18px rgba(0,0,0,0.45);pointer-events:none;line-height:1.4}"
             ".ru-tip-win{margin-bottom:8px}#ru-tip .ru-tip-win:last-child{margin-bottom:0}"
             # Multi-host breakdown: one COLUMN per host, side by side (the user 2026-08-08 — not one
@@ -26770,13 +26770,13 @@ def _landing():
             # aggregates one set of bars + one API cell, and the per-host story lives in the hover, whose
             # .ru-tip-host heading keeps the quiet lowercase-italic treatment a federated session's name
             # wears in the chat tabs.)
-            ".ru-tip-host{font:italic 400 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            ".ru-tip-host{font:italic 400 10px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;"
             "color:#9aa0a6;text-transform:lowercase;margin:0 0 4px}"
             "#ru-tip .ru-tip-host:not(:first-child){margin-top:10px;padding-top:8px;"
             "border-top:1px solid rgba(255,255,255,0.08)}"
             # the login the window bars belong to (the user 2026-08-09) — quiet, above the sections,
             # the host heading's size without its lowercase-italic host vocabulary
-            ".ru-tip-acct{font:400 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            ".ru-tip-acct{font:400 10px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;"
             "color:#9aa0a6;margin:0 0 4px}"
             # the three TOP panes flex-grow by a per-pane var (resized by the gutters, persisted); toggling one
             # off hides it AND the now-orphaned gutters. Fixed order: chat, fleet, feed. Timeline is the band.
@@ -26858,7 +26858,7 @@ def _landing():
             # which includes this padding, so .col's reservation tracks it for free.
             "html.ios-standalone #mtabs{padding-bottom:env(safe-area-inset-bottom,0px)}"
             "#mtabs button{flex:1;border:0;background:none;cursor:pointer;-webkit-tap-highlight-color:transparent;"
-            "color:#9aa0a6;font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "color:#9aa0a6;font:600 12px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;"
             "padding:6px 0;display:flex;align-items:center;justify-content:center}"
             "#mtabs button.on{color:#4da4ff}"
             # action buttons: dimmer + fixed-width so the four pane tabs keep the room; thin divider between
