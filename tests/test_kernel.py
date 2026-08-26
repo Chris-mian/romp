@@ -7564,7 +7564,7 @@ class WaitGraphDelegatesAndStampSupersede(unittest.TestCase):
         # the peer's reply lands (also busts the postal-key on the stamp cache) → the stamp view lifts
         self._log(self._msg(self.B, self.A, NOW - 100, "coordinate", body="built and merged"))
         full, tops, _deleg = km._session_stamp_read(self.A)
-        self.assertEqual(full, (None, None, None, None), "the answered handoff supersedes the older stamp")
+        self.assertEqual(full, (None, None, None, None, ()), "the answered handoff supersedes the older stamp")
         self.assertEqual(tops, frozenset())
 
 

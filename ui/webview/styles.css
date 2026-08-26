@@ -869,6 +869,8 @@ body.composer-resizing { cursor: ns-resize; user-select: none; }
 .chip-ready { background: var(--st-ready-bg); color: var(--st-ready-fg); }
 .chip-needsInput { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }
 .chip-awaiting { background: var(--st-awaiting-bg); color: var(--st-awaiting-fg); }   /* legacy name — an older remote kernel */
+/* the awaiting chip's peer-identity dot (2026-08-26): the named session's colour beside its name */
+.chip-peer-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin: 0 4px 0 1px; }
 .chip-awaitingBg { background: var(--st-awaitbg-bg); color: var(--st-awaitbg-fg); }
 /* retrying = a SOFT 'blocked on the API' (rate-limit / overload auto-retry) — not a hang, not working. Amber/
    orange, deliberately distinct from working-yellow and blocked-red (the user via api 2026-06-23). */
