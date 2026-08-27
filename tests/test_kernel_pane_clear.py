@@ -17,6 +17,7 @@ semantics; the live-CLI measurement is what it stands in for. Synthetic pane tex
 XDG_STATE_HOME is redirected before the kernel loads so no test state leaks into the live store."""
 import os
 import tempfile
+import threading
 import unittest
 from importlib.machinery import SourceFileLoader
 
@@ -93,6 +94,17 @@ class ClearPaneInput(unittest.TestCase):
         self.assertEqual(pane.keys_sent, [])
         self.assertEqual(pane.captures, 1)
 
+    def test_a_draft_with_a_BLANK_line_still_clears(self):
+        # The change detector compares the RAW box region, not the stripped text: a press that pops an
+        # emptied or blank LINE moves the region but not the text, and a blank line in the draft produces
+        # two such presses in a row — which the stripped compare read as a dead binding, refusing a
+        # perfectly clearable box (PR-741 review, 2026-08-27). A multi-paragraph restored prompt is the
+        # exact shape the clear exists for, so this is the case that must never refuse.
+        pane = _FakePane(["paragraph one", "", "paragraph two"])
+        self.assertTrue(self._run_clear(pane))
+        self.assertEqual(km._box_text(_pane(pane.box_lines)), "")
+        self.assertEqual(set(pane.keys_sent), {("C-u",)}, "nothing but the kill was ever pressed")
+
     def test_a_box_that_will_not_empty_is_a_REFUSAL_not_a_false_clear(self):
         # the regression's shape — the keystroke lands and nothing changes. Answering True here is what
         # let a send paste onto the leftover for two months.
@@ -154,6 +166,60 @@ class SendRefusesToConcatenate(unittest.TestCase):
         self.assertEqual(pane.buffers, ["the composer message"])
         self.assertEqual(pane.pastes, [SESSION])
         self.assertIn(("Enter",), pane.keys_sent)
+
+
+class PaneLockSerializesInterruptAndSend(unittest.TestCase):
+    """The interrupt's post-Esc kill loop and a send's clear+paste+Enter ran unserialized on one pane, so
+    the loop could read a just-pasted message as leftover and C-u it away in the pre-Enter gap — Enter
+    then submitted an empty box (PR-741 review, 2026-08-27). Both sequences now hold the pane's lock;
+    these pin that each side actually waits for it."""
+
+    def setUp(self):
+        self._saved_tmux = km._TMUX
+        km._pane_io_locks.clear()
+
+    def tearDown(self):
+        km._TMUX = self._saved_tmux
+        km._pane_io_locks.clear()
+
+    def test_a_send_waits_out_the_lock_holder_and_the_paste_is_never_sniped(self):
+        pane = SendRefusesToConcatenate._RecordingPane(["an interrupt-restored prompt"])
+        km._TMUX = pane
+        lock = km._pane_io_lock(SESSION)
+        lock.acquire()                                  # stand in for an interrupt mid-drain
+        t = threading.Thread(target=km._tmux_send, args=(SESSION, "the composer message"),
+                             kwargs={"_async": False}, daemon=True)
+        try:
+            t.start()
+            t.join(0.4)
+            self.assertTrue(t.is_alive(), "the send is waiting on the pane lock")
+            self.assertEqual(pane.pastes, [], "nothing pastes while another sequence owns the pane")
+        finally:
+            lock.release()
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(pane.buffers, ["the composer message"])
+        self.assertIn(("Enter",), pane.keys_sent, "released → the send completes intact")
+
+    def test_an_interrupt_stops_the_turn_at_once_but_clears_under_the_lock(self):
+        # Esc rides OUTSIDE the lock on purpose — the user's Stop must not wait behind a send mid-paste —
+        # while the wipe of the restored prompt serializes like any other read-decide-keystroke sequence.
+        pane = _FakePane(["a restored prompt"])
+        km._TMUX = pane
+        lock = km._pane_io_lock(SESSION)
+        lock.acquire()                                  # stand in for a send mid-sequence
+        t = threading.Thread(target=km._interrupt, args=(SESSION,), kwargs={"_async": False}, daemon=True)
+        try:
+            t.start()
+            t.join(0.6)                                 # past the 0.15s restore beat
+            self.assertIn(("Escape",), pane.keys_sent, "the Stop lands immediately")
+            self.assertNotIn(("C-u",), pane.keys_sent, "the wipe waits for the pane")
+        finally:
+            lock.release()
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertIn(("C-u",), pane.keys_sent, "released → the wipe runs")
+        self.assertEqual(km._box_text(_pane(pane.box_lines)), "")
 
 
 if __name__ == "__main__":

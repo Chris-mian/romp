@@ -12058,28 +12058,52 @@ def _clear_pane_input(name):
     prompt the user never wrote. Ctrl+U measurably empties the box (the killed text stays in the CLI's own
     kill ring — Ctrl+Y — so this destroys nothing the human cannot get back).
 
-    Verified EVENT-BASED per press (the box text changing), never a fixed sleep; an empty box costs one
+    Verified EVENT-BASED per press (the box REGION changing), never a fixed sleep; an empty box costs one
     capture and zero keystrokes, so the ordinary send is cheaper than it was before. False when the box
     cannot be READ at all (no locatable prompt box) — the caller must not paste on a maybe — and false
-    once presses stop moving the box, which is the shape the Ctrl+A regression itself had."""
+    once presses stop moving the box, which is the shape the Ctrl+A regression itself had.
+
+    The change detector compares the RAW box region (lines, count included), never the stripped text: a
+    press that pops an emptied or blank LINE moves the region but not the text, so the stripped compare
+    read two structural pops in a row — any draft holding a blank line — as a dead binding and refused a
+    perfectly clearable box (PR-741 review, 2026-08-27). Raw-region compares also return the instant a
+    pop lands instead of burning the full wait on an 'unchanged' press, so a multi-line clear is fast
+    again."""
     if not name:
         return False
     unchanged = 0
     for _ in range(_CLEAR_KILL_PRESSES):
         cap = _TMUX.capture(name, colour=True)
-        if _box_region(cap) is None:
+        region = _box_region(cap)
+        if region is None:
             return False                                            # can't see the box → can't claim it's clear
-        held = _box_text(cap)
-        if not held:
+        if not _box_text(cap):
             return True
+        held = list(region)
         _TMUX.send_keys(name, "C-u")
-        if _deliver_wait(lambda: _box_text(_TMUX.capture(name, colour=True)) != held, 1.0):
+        if _deliver_wait(lambda: _box_region(_TMUX.capture(name, colour=True)) != held, 1.0):
             unchanged = 0
         else:
             unchanged += 1
             if unchanged >= _CLEAR_UNCHANGED_GIVE_UP:
                 return False
     return False
+
+
+# One lock per pane serializing the read-decide-keystroke sequences: _interrupt's post-Esc wipe and
+# _tmux_send's clear+paste+Enter ran as unserialized daemon threads on the same pane, so an interrupt's
+# kill loop still draining a restored prompt could read a send's JUST-PASTED message as leftover and
+# C-u it away inside the pre-Enter gap — Enter then submitted an empty box (PR-741 review, 2026-08-27:
+# Stop, then Send within the drain window). Whichever sequence acquires second now rules on the pane's
+# true state instead of a snapshot the other thread is mid-way through changing. Never pruned — a lock
+# is a few bytes and the key space is the live session list.
+_pane_io_locks = {}
+_pane_io_locks_guard = threading.Lock()
+
+
+def _pane_io_lock(name):
+    with _pane_io_locks_guard:
+        return _pane_io_locks.setdefault(str(name), threading.Lock())
 
 
 def _interrupt(name, _async=True):
@@ -12091,11 +12115,14 @@ def _interrupt(name, _async=True):
         return
 
     def go():
+        # Esc itself rides OUTSIDE the pane lock: stopping the turn must not wait behind a send mid-paste
+        # (the user's Stop is the higher-priority gesture), and the restore beat gives the lock a window.
         _TMUX.send_keys(name, "Escape")
         time.sleep(0.15)                              # let Claude Code restore the recalled prompt before we wipe it
-        if not _clear_pane_input(name):               # loud, but nothing is pasted here — the next send's own
-            #                                           guard is what refuses to concatenate onto the leftover
-            sys.stderr.write("interrupt: %s still holds the recalled prompt after the input clear\n" % name)
+        with _pane_io_lock(name):
+            if not _clear_pane_input(name):           # loud, but nothing is pasted here — the next send's own
+                #                                       guard is what refuses to concatenate onto the leftover
+                sys.stderr.write("interrupt: %s still holds the recalled prompt after the input clear\n" % name)
     threading.Thread(target=go, daemon=True).start() if _async else go()
 
 
@@ -12295,6 +12322,10 @@ def _tmux_send(name, text, model_cmd=False, _async=True):
         return
 
     def go():
+      # The whole clear→paste→Enter sequence holds the pane lock: an interrupt's kill loop running beside
+      # it read the just-pasted message as leftover and C-u'd it away in the pre-Enter gap, so Enter
+      # submitted an empty box (PR-741 review, 2026-08-27). Under the lock the paste cannot be sniped.
+      with _pane_io_lock(name):
         if _TMUX.pane_in_mode(name):
             _TMUX.send_keys(name, "-X", "cancel", t=2)              # exit copy-mode so paste+Enter land
         # Leftover in the box (an interrupt-restored prompt, or text typed straight into the terminal) must
