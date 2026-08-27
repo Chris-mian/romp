@@ -11935,7 +11935,20 @@ def _socket_deliver(sock_path, text, timeout=3.0):
 PROMPT_GLYPH = "❯"
 _SGR_RE = re.compile(r"\x1b\[[0-9;]*m")                      # any SGR colour code
 _DIM_RE = re.compile(r"\x1b\[2m.*?(?:\x1b\[(?:0|22)m|$)")    # a dim (ghost-suggestion) span
-_RULE_RE = re.compile("─{10,}")                              # the box's ───… borders
+_RULE_RE = re.compile("─{10,}")                              # the box's ───… borders (wide panes)
+# A rule line is counted by its TOTAL ─ characters, not by one long run: the CLI prints the session name
+# INTO the top rule ("───── web ──"), so in a NARROW pane every run falls under _RULE_RE's 10 and the box
+# stops being locatable at all (measured live 2026-08-27 in a 23-column pane: runs of 7 and 2). Box-drawing
+# ─ (U+2500) is not the em dash (U+2014) prose uses, so a transcript line cannot reach this count by
+# accident. _RULE_RE stays as the fast path for the ordinary wide rule.
+_RULE_MIN_DASHES = 5
+
+
+def _is_rule_line(line):
+    """True when `line` is one of the prompt box's ─── borders, labelled or not, at any pane width."""
+    if _RULE_RE.search(line):
+        return True
+    return _SGR_RE.sub("", line or "").count("─") >= _RULE_MIN_DASHES
 _PICKER_STRICT = ("resume from summary", "resume full session as-is")   # Claude's resume-picker option labels
 _PICKER_LOOSE = re.compile(r"summ", re.I)                   # the picker is the only pre-prompt screen with a "summary"
 
@@ -11954,7 +11967,7 @@ def _box_region(cap):
     """The raw lines of the prompt box (between its last two ─── rules), or None if it can't be located — in
     which case the caller must NOT inject (it can't tell whether a draft is present)."""
     lines = cap.split("\n")
-    rules = [i for i, l in enumerate(lines) if _RULE_RE.search(l)]
+    rules = [i for i, l in enumerate(lines) if _is_rule_line(l)]
     if len(rules) < 2:
         return None
     return lines[rules[-2] + 1:rules[-1]]
@@ -12040,6 +12053,10 @@ _CLEAR_KILL_PRESSES = 40
 # isn't landing, and pressing on cannot fix that — so two consecutive no-change presses end it. Two, not
 # one, because a single slow repaint is not evidence of a dead binding.
 _CLEAR_UNCHANGED_GIVE_UP = 2
+# Presses for the BLIND sweep, used only when the box cannot be read: two per line covers a couple of
+# wrapped lines, which is what an unparseable narrow pane realistically holds, and Ctrl+U on an already
+# empty input is a no-op — so overshooting costs nothing.
+_CLEAR_BLIND_PRESSES = 6
 
 
 def _clear_pane_input(name):
@@ -12059,16 +12076,24 @@ def _clear_pane_input(name):
     kill ring — Ctrl+Y — so this destroys nothing the human cannot get back).
 
     Verified EVENT-BASED per press (the box REGION changing), never a fixed sleep; an empty box costs one
-    capture and zero keystrokes, so the ordinary send is cheaper than it was before. False when the box
-    cannot be READ at all (no locatable prompt box) — the caller must not paste on a maybe — and false
-    once presses stop moving the box, which is the shape the Ctrl+A regression itself had.
+    capture and zero keystrokes, so the ordinary send is cheaper than it was before. False only once presses
+    stop moving a box we CAN read, which is the shape the Ctrl+A regression itself had, and the one case
+    where pasting would demonstrably corrupt the submission.
 
     The change detector compares the RAW box region (lines, count included), never the stripped text: a
     press that pops an emptied or blank LINE moves the region but not the text, so the stripped compare
     read two structural pops in a row — any draft holding a blank line — as a dead binding and refused a
     perfectly clearable box (PR-741 review, 2026-08-27). Raw-region compares also return the instant a
     pop lands instead of burning the full wait on an 'unchanged' press, so a multi-line clear is fast
-    again."""
+    again.
+
+    An UNREADABLE box does NOT refuse (the user 2026-08-27, furious, and rightly). Returning False there
+    made every send into a pane whose box could not be parsed vanish with only a stderr line, while the chat
+    showed the message as an ordinary sent bubble — messages silently eaten, which is worse than any paste.
+    A narrow pane did exactly that: the CLI prints the session name into the top rule, so at 23 columns no
+    dash run reached the old rule pattern and the box became unlocatable. Unreadable now means a BLIND
+    bounded sweep and proceed: Ctrl+U is inert on an empty input and recoverable (kill ring) on a full one,
+    so the sweep costs nothing when there was nothing to clear and still probably clears when there was."""
     if not name:
         return False
     unchanged = 0
@@ -12076,7 +12101,11 @@ def _clear_pane_input(name):
         cap = _TMUX.capture(name, colour=True)
         region = _box_region(cap)
         if region is None:
-            return False                                            # can't see the box → can't claim it's clear
+            sys.stderr.write("clear: %s has no locatable prompt box — blind Ctrl+U sweep, then sending "
+                             "anyway (an unverified clear beats an eaten message)\n" % name)
+            for _ in range(_CLEAR_BLIND_PRESSES):
+                _TMUX.send_keys(name, "C-u")
+            return True
         if not _box_text(cap):
             return True
         held = list(region)

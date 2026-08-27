@@ -115,16 +115,56 @@ class ClearPaneInput(unittest.TestCase):
         self.assertEqual(set(pane.keys_sent), {("C-u",)})
         self.assertLess(km._CLEAR_UNCHANGED_GIVE_UP, km._CLEAR_KILL_PRESSES)
 
-    def test_an_unreadable_box_is_a_refusal_and_sends_nothing(self):
-        # no locatable prompt box (a loading screen, a picker): the box may hold anything, so a clear that
-        # cannot READ it must not claim it, and must not fire keystrokes into whatever IS up
+    def test_an_unreadable_box_sweeps_blind_and_lets_the_send_THROUGH(self):
+        # The 2026-08-27 incident in one assertion. This case used to return False, which refused the send
+        # — so a pane whose box could not be parsed ate every message with only a stderr line, while the
+        # chat drew them as ordinary sent bubbles. An unverified clear is the lesser evil by a mile: Ctrl+U
+        # is a no-op on an empty input, so the sweep costs nothing when there was nothing to clear.
         km._TMUX = _FakePane([""])
         km._TMUX.capture = lambda name, join=False, colour=False, t=2.5: "no rules here at all"
-        self.assertFalse(km._clear_pane_input(SESSION))
-        self.assertEqual(km._TMUX.keys_sent, [])
+        self.assertTrue(km._clear_pane_input(SESSION), "never eat a message over a parsing gap")
+        self.assertEqual(set(km._TMUX.keys_sent), {("C-u",)})
+        self.assertEqual(len(km._TMUX.keys_sent), km._CLEAR_BLIND_PRESSES, "and the sweep is bounded")
 
     def test_no_session_name_is_a_refusal(self):
         self.assertFalse(km._clear_pane_input(""))
+
+
+class NarrowPaneRules(unittest.TestCase):
+    """A NARROW pane's box was unlocatable (the user 2026-08-27): the CLI prints the session name into the
+    top rule, so at ~23 columns its dash runs were 7 and 2 — under the 10-run the old pattern required —
+    and only the bottom rule matched. One rule is not a box, so `_box_region` returned None on a perfectly
+    ordinary prompt, and every send into that session was dropped. Counting TOTAL ─ characters holds at any
+    width: box-drawing ─ (U+2500) is not the em dash (U+2014) that prose uses."""
+
+    def test_a_labelled_narrow_rule_is_still_a_rule(self):
+        self.assertTrue(km._is_rule_line("───── web ──"))
+        self.assertTrue(km._is_rule_line("─" * 23), "the plain wide rule keeps matching")
+
+    def test_prose_is_not_a_rule(self):
+        self.assertFalse(km._is_rule_line("  the fix — measured live — landed"), "em dashes are not ─")
+        self.assertFalse(km._is_rule_line("❯ a message about ── two dashes"))
+        self.assertFalse(km._is_rule_line(""))
+
+    def test_the_box_is_locatable_in_a_narrow_pane(self):
+        narrow = "\n".join(["  an earlier reply", "───── web ──", km.PROMPT_GLYPH + " a held draft", "─" * 23])
+        self.assertEqual(km._box_region(narrow), [km.PROMPT_GLYPH + " a held draft"])
+        self.assertEqual(km._box_text(narrow), "a held draft")
+        self.assertTrue(km._is_prompt_box(narrow))
+
+    def test_a_narrow_pane_send_is_not_dropped(self):
+        # end to end over the fake: the exact shape that ate the user's messages now delivers
+        pane = SendRefusesToConcatenate._RecordingPane([""])
+        pane.capture = lambda name, join=False, colour=False, t=2.5: "\n".join(
+            ["  an earlier reply", "───── web ──", km.PROMPT_GLYPH + " ", "─" * 23])
+        saved, km._TMUX = km._TMUX, pane
+        try:
+            km._tmux_send(SESSION, "the message that used to vanish", _async=False)
+        finally:
+            km._TMUX = saved
+        self.assertEqual(pane.buffers, ["the message that used to vanish"])
+        self.assertEqual(pane.pastes, [SESSION])
+        self.assertIn(("Enter",), pane.keys_sent)
 
 
 class SendRefusesToConcatenate(unittest.TestCase):
