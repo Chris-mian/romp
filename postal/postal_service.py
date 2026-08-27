@@ -72,6 +72,9 @@ NAMES_DIR = Path(os.environ.get("ROMP_STATE_DIR")
                  or Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "romp") / "names"
 TLDIR = STATE.parent / "timeline"     # append-only logs for the timeline view (messages.jsonl)
 SESSION_FLAGS = STATE.parent / "session-flags.json"   # the kernel's per-session view flags {sid:{flag:true}}; we honour postalServiceOff (legacy: postalOff)
+# The reserved key in that file carrying MASTER defaults per-session entries override — a uuid can never
+# collide with it. Must stay identical to kernel.POSTAL_ALL_KEY: both files read the one store.
+POSTAL_ALL_KEY = "*"
 
 
 # ── serve-token gate (Jupyter's model; the same 0600 file the kernel mints) ─────
@@ -662,15 +665,26 @@ def present_count():
     return len(all_agents())
 
 def _postal_off(sid):
-    """True if the session toggled POSTAL ISOLATION on (the timeline lane's mailbox icon → postalServiceOff): it's
-    invisible to list_agents, can't send, and can't receive — for working privately. Reads the kernel's
-    shared session-flags.json. Back-compat: also honours the legacy `postalOff` key so sessions isolated
-    before the rename stay isolated. Best-effort: any error → not isolated (fail OPEN, never wedge messaging)."""
+    """True if the session is in POSTAL ISOLATION: invisible to list_agents, can't send, can't receive.
+
+    Resolved most-specific-wins against the kernel's shared session-flags.json, mirroring
+    kernel._postal_isolated exactly — the session's own override (the timeline lane's mailbox icon, legacy
+    `postalOff` included) if it set one, else the MASTER default under the reserved POSTAL_ALL_KEY. The two
+    readers MUST agree: were only the kernel to honour the master, this service would go on advertising
+    peers and accepting sends that the kernel then treats as isolated.
+
+    Best-effort: any error → not isolated (fail OPEN, never wedge messaging)."""
     if not sid:
         return False
     try:
-        f = json.loads(SESSION_FLAGS.read_text()).get(sid)
-        return bool(isinstance(f, dict) and (f.get("postalServiceOff") or f.get("postalOff")))
+        flags = json.loads(SESSION_FLAGS.read_text())
+        own = flags.get(sid)
+        if isinstance(own, dict):
+            for key in ("postalServiceOff", "postalOff"):
+                if key in own:
+                    return bool(own[key])
+        master = flags.get(POSTAL_ALL_KEY)
+        return bool(isinstance(master, dict) and master.get("postalServiceOff"))
     except Exception:
         return False
 

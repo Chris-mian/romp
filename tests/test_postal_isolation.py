@@ -58,6 +58,37 @@ class PostalOff(unittest.TestCase):
         pm.SESSION_FLAGS.write_text("{not valid json")
         self.assertFalse(pm._postal_off(SID), "a corrupt flags file must NOT wedge messaging (fail open)")
 
+    def _write_flags(self, flags):
+        pm.SESSION_FLAGS.parent.mkdir(parents=True, exist_ok=True)
+        pm.SESSION_FLAGS.write_text(json.dumps(flags))
+
+    def test_the_master_key_isolates_every_session_with_no_opinion(self):
+        # The master default (the user 2026-08-27): separate sessions a person opened are separate pieces
+        # of work, so cross-session mail is off unless a session opts in. Reserved "*" — never a uuid.
+        self._write_flags({pm.POSTAL_ALL_KEY: {"postalServiceOff": True}})
+        self.assertTrue(pm._postal_off(SID), "a session with no override follows the master")
+        self.assertTrue(pm._postal_off("22222222-3333-4444-5555-666666666666"), "…and so does any other")
+
+    def test_a_session_can_opt_IN_over_a_master_default(self):
+        # most-specific-wins, the notify bell's rule: an explicit False outranks a master True, so a
+        # genuinely collaborating group keeps its mail while everything else stays quiet
+        self._write_flags({pm.POSTAL_ALL_KEY: {"postalServiceOff": True},
+                           SID: {"postalServiceOff": False}})
+        self.assertFalse(pm._postal_off(SID))
+
+    def test_a_session_override_still_isolates_with_the_master_off(self):
+        self._write_flags({pm.POSTAL_ALL_KEY: {"postalServiceOff": False},
+                           SID: {"postalServiceOff": True}})
+        self.assertTrue(pm._postal_off(SID))
+
+    def test_this_reader_and_the_kernels_cannot_drift(self):
+        # One store, two readers, and a disagreement is a live hazard: were only the kernel to honour the
+        # master, this service would go on advertising peers and taking sends the kernel calls isolated.
+        self.assertEqual(pm.POSTAL_ALL_KEY, "*")
+        kernel_src = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
+        self.assertIn('POSTAL_ALL_KEY = "*"', kernel_src)
+        self.assertIn("master = _session_flags().get(POSTAL_ALL_KEY)", kernel_src)
+
     def test_read_box_holds_mail_while_isolated(self):
         box = pm.MAILROOT / SID / "new"
         box.mkdir(parents=True, exist_ok=True)

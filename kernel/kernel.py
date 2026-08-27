@@ -2159,6 +2159,10 @@ def _set_session_flag(sid, flag, value):
 # whose card left the feed are pruned on write (the card is gone; a fresh card is a fresh id), so
 # the file tracks the live feed instead of growing forever.
 NOTIFY_ALL_KEY = "*"
+# The same reserved-key trick in session-flags.json: "*" is not a session id (sids are uuids), so it
+# carries MASTER defaults that per-session entries override. Postal isolation reads it — see
+# _postal_isolated. Only ever accessed by an explicit .get, never by iterating the file as sessions.
+POSTAL_ALL_KEY = "*"
 _notify_cards_cache = {}   # str(path) -> ((mtime_ns,size), dict)
 
 
@@ -12743,8 +12747,23 @@ def _postal_shaped(text):
 
 
 def _postal_isolated(sid):
-    """The session's postal-isolation flag (the timeline lane's mailbox icon), legacy key included."""
-    return bool(_session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff"))
+    """Whether this session is cut off from the Romp Postal Service — invisible to peers, unable to send,
+    unable to receive. Resolved most-specific-wins, exactly like the notify bell: the session's own
+    override (the timeline lane's mailbox icon, legacy `postalOff` included) if it has one, else the
+    MASTER DEFAULT under the reserved "*" key in session-flags.json.
+
+    The master exists because isolation is the sane DEFAULT for many setups, not an exception (the user
+    2026-08-27): separate sessions a person opened are separate pieces of work, and peers messaging each
+    other — or worse, telling the user to go look at another session — turns one lane of attention into
+    several. Per-session opt-IN still works: an explicit False on a session overrides a master ON, so a
+    genuinely collaborating group can keep mail while everything else stays quiet. Agents inside ONE
+    session are a different mechanism entirely (the Agent tool) and are never touched by this."""
+    for key in ("postalServiceOff", "postalOff"):
+        v = _session_flag_raw(sid, key)
+        if v is not None:
+            return v
+    master = _session_flags().get(POSTAL_ALL_KEY)
+    return bool(isinstance(master, dict) and master.get("postalServiceOff"))
 
 
 _FOLLOWUP_GOAL_RE = re.compile(r"romp-goal-id:\s*([^\s>]+)")

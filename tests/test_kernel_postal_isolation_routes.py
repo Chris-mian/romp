@@ -62,6 +62,29 @@ class PostalIsolated(unittest.TestCase):
         self._flags({})
         self.assertFalse(km._postal_isolated(SID))
 
+    def _raw_flags(self, flags):
+        (km.jd.STATE / "session-flags.json").write_text(json.dumps(flags))
+
+    def test_the_master_key_isolates_a_session_with_no_override(self):
+        # The master default (the user 2026-08-27): sessions a person opened separately are separate work,
+        # so cross-session mail is off unless a session opts in. "*" can never collide with a sid.
+        self._raw_flags({km.POSTAL_ALL_KEY: {"postalServiceOff": True}})
+        self.assertTrue(km._postal_isolated(SID))
+        self.assertTrue(km._postal_isolated("99999999-8888-7777-6666-555555555555"))
+
+    def test_a_session_opt_IN_beats_the_master(self):
+        # most-specific-wins, the notify bell's rule — an explicit False is a real answer, not an absence
+        self._raw_flags({km.POSTAL_ALL_KEY: {"postalServiceOff": True}, SID: {"postalServiceOff": False}})
+        self.assertFalse(km._postal_isolated(SID))
+
+    def test_a_session_override_isolates_with_the_master_absent(self):
+        self._raw_flags({SID: {"postalServiceOff": True}})
+        self.assertTrue(km._postal_isolated(SID))
+
+    def test_no_flags_at_all_leaves_the_postal_service_on(self):
+        self._raw_flags({})
+        self.assertFalse(km._postal_isolated(SID), "romp's shipped default is unchanged — mail works")
+
 
 class RouteGates(unittest.TestCase):
     """Source pins: both routes gate on isolation, with the intended semantics."""
