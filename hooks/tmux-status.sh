@@ -20,7 +20,15 @@ session_name=""
 # and state via its own registry. (kernel/judge.py scrubs $TMUX from judge subprocesses for this same reason;
 # the durable companion fix is to scrub it in the SDK session spawn / the manager env too.)
 if [[ -n "${TMUX:-}" && "${CLAUDE_CODE_ENTRYPOINT:-}" != sdk* ]]; then
-    session_name=$(tmux display-message -p '#S')
+    # Resolve THIS PROCESS'S OWN session, via the pane tmux put in its environment. A bare
+    # `display-message -p '#S'` answers for the ATTACHED (or most-recently-used) session, which is a
+    # different session whenever the human is looking elsewhere — so a second CLI running under tmux
+    # wrote its state, and re-anchored @romp-session-id, onto whichever lane happened to be in front.
+    # One session's identity then pointed at another conversation's transcript and its chat lost every
+    # turn of its own history. TMUX_PANE is set by tmux in every pane and inherited by its children;
+    # the unscoped form remains the fallback for the odd process that has $TMUX but no pane.
+    session_name=$(tmux display-message -p -t "${TMUX_PANE:-}" '#S' 2>/dev/null \
+                   || tmux display-message -p '#S')
     # Only act on romp sessions — identified by the @romp flag, not the name.
     is_romp=$(tmux show -t "$session_name" -v @romp 2>/dev/null || true)
     [[ -n "$is_romp" ]] || exit 0

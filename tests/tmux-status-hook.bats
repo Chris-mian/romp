@@ -14,9 +14,16 @@ setup() {
     cat > "$MOCK_DIR/tmux" << 'MOCK'
 #!/usr/bin/env bash
 echo "tmux $*" >> "$MOCK_LOG"
-# display-message -p '#S' → return session name from env
+# display-message -p -t PANE '#S' → the session CONTAINING that pane. Real tmux errors on an empty
+# target, which is exactly what makes the hook fall back; model that faithfully.
+if [[ "$1" == "display-message" && "$2" == "-p" && "$3" == "-t" ]]; then
+    [[ -n "$4" ]] || exit 1
+    echo "${MOCK_PANE_SESSION:-${MOCK_SESSION_NAME:-test}}"
+    exit 0
+fi
+# display-message -p '#S' → the ATTACHED session, which is not necessarily this pane's
 if [[ "$1" == "display-message" && "$2" == "-p" && "$3" == "#S" ]]; then
-    echo "${MOCK_SESSION_NAME:-test}"
+    echo "${MOCK_ATTACHED_SESSION:-${MOCK_SESSION_NAME:-test}}"
 fi
 # show -t NAME -v @romp → the romp marker (empty = not a romp session)
 if [[ "$1" == "show" && "$5" == "@romp" ]]; then
@@ -424,6 +431,42 @@ run_hook() {
 
 @test "an interactive (non-SDK) tmux session is unaffected by the guard" {
     export CLAUDE_CODE_ENTRYPOINT="cli"           # not sdk* → normal tmux display path
+    run run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t test @claude-state working' "$MOCK_LOG"
+}
+
+# ── the hook writes to ITS OWN pane's session, not the one you happen to be looking at ─────────────
+# A bare `display-message -p '#S'` answers for the ATTACHED (or most-recently-used) session. Any second
+# CLI running under tmux therefore wrote its state — and re-anchored @romp-session-id — onto whichever
+# lane was in front, so one session's identity came to point at another conversation's transcript and
+# its chat lost every turn of its own history. TMUX_PANE is tmux's own answer to "which pane am I".
+
+@test "state is written to the pane's OWN session, not the attached one" {
+    export TMUX_PANE="%7"
+    export MOCK_PANE_SESSION="mine"          # this hook's pane lives here…
+    export MOCK_ATTACHED_SESSION="elsewhere" # …while the human is looking at another lane
+    run run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t mine @claude-state working' "$MOCK_LOG"
+    ! grep -q 'tmux set -t elsewhere' "$MOCK_LOG"
+}
+
+@test "the re-anchor lands on the pane's own session" {
+    export TMUX_PANE="%7"
+    export MOCK_PANE_SESSION="mine"
+    export MOCK_ATTACHED_SESSION="elsewhere"
+    export MOCK_SESSION_ID="old-fsid"
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    run run_hook '{"hook_event_name":"SessionStart","source":"resume","session_id":"new-fsid","cwd":"/tmp"}'
+    [ "$status" -eq 0 ]
+    grep -q 'tmux set -t mine @romp-session-id new-fsid' "$MOCK_LOG"
+    ! grep -q 'tmux set -t elsewhere @romp-session-id' "$MOCK_LOG"
+}
+
+@test "with no TMUX_PANE the attached session is still the fallback" {
+    unset TMUX_PANE
+    export MOCK_ATTACHED_SESSION="test"
     run run_hook '{"hook_event_name":"UserPromptSubmit","cwd":"/tmp"}'
     [ "$status" -eq 0 ]
     grep -q 'tmux set -t test @claude-state working' "$MOCK_LOG"

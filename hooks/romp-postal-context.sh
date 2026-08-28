@@ -7,13 +7,16 @@
 # coordination detail) to the romp-postal skill, loaded on demand. Non-romp /
 # non-tmux sessions get nothing (gated on @romp); SDK sessions get the norms from
 # the postal MCP's own instructions instead. Keep this in sync with SKILL.md.
-[ "$(tmux show -v @romp 2>/dev/null)" = "1" ] || exit 0
+# Pane-scoped: an unscoped `tmux show` answers for the ATTACHED session, so this would read another
+# lane's vars whenever the human is looking at a different one (see tmux-status.sh).
+tmux_var() { tmux show -t "${TMUX_PANE:-}" -v "$1" 2>/dev/null || tmux show -v "$1" 2>/dev/null; }
+[ "$(tmux_var @romp)" = "1" ] || exit 0
 # An ISOLATED session is told nothing about peers (the user 2026-08-27). Its sends are refused and its
 # mail is held either way, so advertising the tools only teaches it to reach sideways, hit the refusal,
 # and narrate that at the user — or, worse, to point the user at another session to go read. Resolved
 # exactly as kernel._postal_isolated resolves it: this session's own override, else the "*" master.
 ROMP_STATE_ROOT="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"
-if python3 - "$ROMP_STATE_ROOT/session-flags.json" "$(tmux show -v @romp-session-id 2>/dev/null)" <<'PY'
+if python3 - "$ROMP_STATE_ROOT/session-flags.json" "$(tmux_var @romp-session-id)" <<'PY'
 import json, sys
 flags_path, sid = sys.argv[1], sys.argv[2]
 try:
