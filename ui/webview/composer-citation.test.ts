@@ -12,6 +12,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const SKELETON = fs.readFileSync(path.resolve(process.cwd(), "src", "page-skeleton.ts"), "utf8");
+const FILEVIEW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "file-view.ts"), "utf8");
 
 test("the composer has a chip strip above the textarea", () => {
   assert.match(SKELETON, /<div id="composer-chips" style="display:none"><\/div><textarea id="composer-input"/);
@@ -118,7 +119,7 @@ test("highlighting transcript text seeds a QUOTE chip — the same chip, reply-c
   assert.match(RENDER, /const a = turnOf\(r\.startContainer\), f = turnOf\(r\.endContainer\);/);
   assert.match(RENDER, /if \(!a \|\| !f\) return null;/);
   assert.match(RENDER, /document\.addEventListener\("selectionchange", \(\) => \{/);
-  assert.match(RENDER, /if \(!q\) return;\s*\n\s*seedTranscriptQuote\(activeId, q\.text, q\.uuid\);/);   // never clears chips, never touches the gesture
+  assert.match(RENDER, /if \(q\) \{ seedTranscriptQuote\(activeId, q\.text, q\.uuid\); return; \}/);   // never clears chips, never touches the gesture
   // seeding NEVER focuses the composer — a focus steal would collapse the selection mid-drag
   const seeder = RENDER.split("function seedTranscriptQuote(")[1].split("\n}")[0];
   assert.doesNotMatch(seeder, /focusComposer/);
@@ -278,4 +279,23 @@ test("deselecting in the editor (editorSelectionCleared) drops the editor chip, 
   // clears state + re-renders, but NEVER steals focus back to the composer (the user is in the editor)
   assert.match(fn, /if \(kept\.length\) composerCitations\.set\(id, kept\); else composerCitations\.delete\(id\);/);
   assert.doesNotMatch(fn, /focusComposer/);
+});
+
+test("highlighting the FILE VIEWER seeds a quote chip, and right-click offers the menu there", () => {
+  // The viewer is a modal OUTSIDE #content, so a highlight in a rendered doc qualified for nothing:
+  // no chip, and the browser's own context menu instead of romp's. Both surfaces now cite.
+  assert.match(RENDER, /function fileViewSelection\(\): \{ text: string; src: string \} \| null/);
+  assert.match(RENDER, /return e\?\.closest\?\.\(".fileview-body"\) \?\? null;/);
+  assert.match(RENDER, /if \(!a \|\| a !== f\) return null;/);   // one viewer body, both endpoints
+  assert.match(RENDER, /const src = \(a\.closest\(".fileview"\) as HTMLElement \| null\)\?\.dataset\.path;/);
+  assert.match(RENDER, /return src \? \{ text, src \} : null;/);
+  // it rides the EDITOR chip: one src-bearing context, updated in place, transcript quotes untouched
+  assert.match(RENDER, /const doc = fileViewSelection\(\);\s*\n\s*if \(doc\) seedEditorQuote\(activeId, doc\.text, doc\.src\);/);
+  // the viewer stamps the path the citation reads
+  assert.match(FILEVIEW, /box\.dataset\.path = path;/);
+  // and the selection menu reaches the modal: document-level binding + a gate that admits the viewer
+  assert.match(RENDER, /document\.addEventListener\("contextmenu", showSelectionMenu\);/);
+  assert.doesNotMatch(RENDER, /getElementById\("content"\)\?\.addEventListener\("contextmenu"/);
+  assert.match(RENDER, /const inFileView = !!anchorEl\?\.closest\?\.\(".fileview-body"\);/);
+  assert.match(RENDER, /if \(!inFileView && !\(content && content\.contains\(sel\.anchorNode\)\)\) return;/);
 });

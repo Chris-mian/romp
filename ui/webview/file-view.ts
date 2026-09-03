@@ -203,6 +203,8 @@ export function openFileView(path: string, sid?: string | null): void {
   wrap.id = "romp-fileview";
   wrap.onclick = (ev) => { if (ev.target === wrap) closeFileView(); };
   const box = el("div", "fileview");
+  // The path a selection inside this viewer cites (render.ts's fileViewSelection).
+  box.dataset.path = path;
   document.body.classList.add("fileview-open");
 
   const bar = el("div", "fileview-bar");
