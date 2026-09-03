@@ -4599,9 +4599,19 @@ function showSelectionMenu(e: MouseEvent) {
   // about the passage — and Quote is the lighter one. Comment only when the selection sits in a real
   // transcript turn (transcriptSelection's uuid) on a real session.
   const q = transcriptSelection();
-  if (q?.uuid && activeId && !isProvisionalId(activeId) && sessions.get(activeId)) {
-    const sid = activeId, uuid = q.uuid, qtext = q.text;
+  const liveSid = activeId && !isProvisionalId(activeId) && sessions.get(activeId) ? activeId : null;
+  if (q?.uuid && liveSid) {
+    const sid = liveSid, uuid = q.uuid, qtext = q.text;
     mk("Comment", () => openCommentComposer(sid, uuid, qtext, e.clientX, e.clientY));
+  } else if (liveSid) {
+    // A FILE passage has no message of its own to fork at, so the thread cuts at the conversation's
+    // tip — the same shape a cut behind a restart seam already takes — and its opening message names
+    // the file it is quoting.
+    const doc = fileViewSelection(), tip = latestTurnUuid(liveSid);
+    if (doc && tip) {
+      const sid = liveSid, qtext = doc.text, src = doc.src;
+      mk("Comment", () => openCommentComposer(sid, tip, qtext, e.clientX, e.clientY, src));
+    }
   }
   // "Quote" is the CHIP, and only the chip (the user 2026-08-23, consolidating the three verbs —
   // Comment / Quote / Stage — by removal): the selection already seeded it (selectionchange), so
@@ -6144,7 +6154,7 @@ const cmtAwaitBase = new Map<string, number>();
 // next session frame for the sid arrives (frames are built from the kernel's parse — a new frame IS
 // the parse catching up). Bounded by attempts, not time; a real refusal or the ack drops the hold.
 const cmtCreateInFlight = new Map<string, { sid: string; uuid: string; exact: string; text: string;
-  name: string; model: string; effort: string; color: string; tries: number }>();
+  name: string; model: string; effort: string; color: string; src?: string; tries: number }>();
 const CMT_CREATE_MAX_TRIES = 12;
 
 function retryCmtCreates(sid: string): void {
@@ -6158,7 +6168,7 @@ function retryCmtCreates(sid: string): void {
     }
     c.tries++;
     vscodeApi?.postMessage({ type: "commentCreate", id: c.sid, uuid: c.uuid, exact: c.exact,
-      text: c.text, name: c.name, model: c.model, effort: c.effort, color: c.color });
+      text: c.text, name: c.name, model: c.model, effort: c.effort, color: c.color, src: c.src || "" });
   }
 }
 
@@ -6192,7 +6202,7 @@ function cmtBootHolds(tid: string): boolean {
   return Date.now() - t0 < CMT_BOOT_BACKSTOP_MS;
 }
 let openCommentKey: { sid: string; tid: string } | null = null;     // the open thread popover
-let pendingCommentAnchor: { sid: string; uuid: string; exact: string;
+let pendingCommentAnchor: { sid: string; uuid: string; exact: string; src?: string;
   model?: string; effort?: string; color?: string } | null = null; // create mode (+ the thread's own picks)
 let pendingAdoptTid: string | null = null;                          // commentCreated ack that beat its frame
 let commentPopPos: { x: number; y: number } | null = null;
@@ -6484,8 +6494,8 @@ function pickThreadColor(sid: string): string {
   return free || paletteColors.find((c) => c.toLowerCase() !== parent) || "#e8b220";
 }
 
-function openCommentComposer(sid: string, uuid: string, exact: string, x: number, y: number): void {
-  pendingCommentAnchor = { sid, uuid, exact, color: pickThreadColor(sid) };
+function openCommentComposer(sid: string, uuid: string, exact: string, x: number, y: number, src?: string): void {
+  pendingCommentAnchor = { sid, uuid, exact, src, color: pickThreadColor(sid) };
   openCommentKey = null;
   commentPopPos = { x, y };
   renderCommentPopover();
@@ -6823,10 +6833,10 @@ function commentSendFromPop(pop: HTMLElement): void {
     applyCommentMarks(create.sid);
     vscodeApi.postMessage({ type: "commentCreate", id: create.sid, uuid: create.uuid, exact: create.exact,
       text, name: nm, model: create.model || "", effort: create.effort || "",
-      color: create.color || "" });
+      color: create.color || "", src: create.src || "" });
     cmtCreateInFlight.set(create.uuid, { sid: create.sid, uuid: create.uuid, exact: create.exact,
       text, name: nm, model: create.model || "", effort: create.effort || "",
-      color: create.color || "", tries: 0 });
+      color: create.color || "", src: create.src || "", tries: 0 });
     return;
   }
   const cur = openCommentThread();
@@ -10672,6 +10682,14 @@ function transcriptSelection(): { text: string; uuid: string | null } | null {
   if (!text) return null;
   return { text, uuid: a.getAttribute("data-uuid") };
 }
+/** The newest anchorable record in a session's rendered transcript, for a thread with no message of its own to cut at. */
+function latestTurnUuid(sid: string): string | null {
+  const view = views.get(sid);
+  if (!view) return null;
+  const anchored = view.el.querySelectorAll<HTMLElement>(".turn[data-uuid]");
+  return anchored.length ? anchored[anchored.length - 1].dataset.uuid || null : null;
+}
+
 /**
  * A selection inside the FILE VIEWER, with the path it came from — the same reply affordance the
  * transcript has, for a rendered doc. Null unless both endpoints sit in one viewer body, so a

@@ -6401,22 +6401,26 @@ def _comment_cut_target(path, sid, anchor_uuid):
 
 
 _COMMENT_FRAME_HEAD = "About this part of the conversation:"
+_COMMENT_FRAME_HEAD_FILE = "About this part of %s:"   # a passage highlighted in a FILE, not the chat
+_COMMENT_FRAME_FILE_PREFIX = _COMMENT_FRAME_HEAD_FILE.split("%s")[0]   # what _comment_strip_frame matches on
 
 
-def _comment_first_message(exact, comment):
+def _comment_first_message(exact, comment, src=""):
     """The thread's opening message — romp-authored FRAMING around the user's own words, read by an
     agent that has the conversation up to the highlight and no idea it is being tracked, so it
     speaks as the person it works for quoting the conversation back (test_injected_voice scans it;
-    it must never name romp machinery)."""
+    it must never name romp machinery). `src` names the FILE a passage came from, when the highlight
+    was in a viewer rather than the chat."""
     q = "\n".join("> " + ln for ln in str(exact or "").splitlines()).strip() or "> …"
-    return "%s\n\n%s\n\n%s" % (_COMMENT_FRAME_HEAD, q, str(comment or "").strip())
+    head = _COMMENT_FRAME_HEAD_FILE % str(src).strip() if str(src or "").strip() else _COMMENT_FRAME_HEAD
+    return "%s\n\n%s\n\n%s" % (head, q, str(comment or "").strip())
 
 
 def _comment_strip_frame(text):
     """The opening message, shown as the user's COMMENT alone — the framing + quote it was wrapped
     in for the thread's agent already sit in the popover header, so rendering them again would say
     everything twice."""
-    if not text.startswith(_COMMENT_FRAME_HEAD):
+    if not (text.startswith(_COMMENT_FRAME_HEAD) or text.startswith(_COMMENT_FRAME_FILE_PREFIX)):
         return text
     lines = text.splitlines()
     i = 1
@@ -6692,7 +6696,7 @@ def _comment_markers(sid):
 ANCHOR_LAG_ERR = "that message isn't in the transcript yet; try again in a moment"
 
 
-def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", color="", now=None):
+def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", effort="", color="", src="", now=None):
     """Anchor a new comment thread: fork the parent at the highlighted message (inclusive) as a
     threadOf fork — no names/ entry, so no judge seeding is needed until promotion — and send the
     opening message. Returns (error, tid): error is the warn-toast string (tid None), success is
@@ -6725,7 +6729,7 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
     tsid = str(uuid.uuid4())
     row = {"tid": tsid, "sid": tsid, "anchorUuid": str(anchor_uuid), "cutUuid": cut,
            "anchorT": cut_t,   # the commented message's own time — the timeline square's x
-           "exact": str(exact)[:2000], "status": "open",
+           "exact": str(exact)[:2000], "src": str(src or "")[:512], "status": "open",
            "createdT": int(now), "lastSeenT": int(now)}
     with _comments_lock:
         data = _load_comments(parent_sid)
@@ -6740,7 +6744,7 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
         be.fork(nm, parent_sid, cut, bg=col, fg=(pal.fg_for(col) if col else ""), sid=tsid, thread_of=parent_sid,
                 model=str(model or ""), effort=str(effort or ""))
         be.connect(tsid)
-        be.send(tsid, _comment_first_message(exact, text))
+        be.send(tsid, _comment_first_message(exact, text, src))
     except Exception as e:
         with _comments_lock:                       # loud + lossless: no half-born thread row
             data = _load_comments(parent_sid)
@@ -7926,7 +7930,7 @@ def _drive(msg, client):
         err, tid = _comment_create(sid, str(msg["uuid"]), str(msg["exact"]), str(msg["text"]),
                                    name=str(msg.get("name") or ""),
                                    model=str(msg.get("model") or ""), effort=str(msg.get("effort") or ""),
-                                   color=str(msg.get("color") or ""))
+                                   color=str(msg.get("color") or ""), src=str(msg.get("src") or ""))
         if err:
             # a TRANSIENT refusal (parse lag) is the client's cue to hold + retry — no toast for
             # plumbing the retry makes moot; every real refusal stays loud (fail loudly)

@@ -299,3 +299,19 @@ test("highlighting the FILE VIEWER seeds a quote chip, and right-click offers th
   assert.match(RENDER, /const inFileView = !!anchorEl\?\.closest\?\.\(".fileview-body"\);/);
   assert.match(RENDER, /if \(!inFileView && !\(content && content\.contains\(sel\.anchorNode\)\)\) return;/);
 });
+
+test("Comment works on a FILE passage — the thread cuts at the conversation tip and names the file", () => {
+  // A file passage has no message of its own to fork at, so the anchor is the newest anchorable
+  // record; the kernel already supports that shape (a cut behind a restart seam takes the tip too).
+  assert.match(RENDER, /function latestTurnUuid\(sid: string\): string \| null/);
+  assert.match(RENDER, /const anchored = view\.el\.querySelectorAll<HTMLElement>\("\.turn\[data-uuid\]"\);/);
+  assert.match(RENDER, /const doc = fileViewSelection\(\), tip = latestTurnUuid\(liveSid\);/);
+  assert.match(RENDER, /mk\("Comment", \(\) => openCommentComposer\(sid, tip, qtext, e\.clientX, e\.clientY, src\)\);/);
+  // src rides the anchor, the create post, and the retry post — a refused create must not lose the file
+  assert.match(RENDER, /function openCommentComposer\(sid: string, uuid: string, exact: string, x: number, y: number, src\?: string\): void/);
+  assert.match(RENDER, /pendingCommentAnchor = \{ sid, uuid, exact, src, color: pickThreadColor\(sid\) \};/);
+  assert.match(RENDER, /color: create\.color \|\| "", src: create\.src \|\| "" \}\);/);
+  assert.match(RENDER, /name: c\.name, model: c\.model, effort: c\.effort, color: c\.color, src: c\.src \|\| "" \}\);/);
+  // the transcript path is untouched: a real turn selection still anchors on its own uuid
+  assert.match(RENDER, /if \(q\?\.uuid && liveSid\) \{/);
+});

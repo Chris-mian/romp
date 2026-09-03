@@ -276,6 +276,23 @@ class OpeningMessage(unittest.TestCase):
     def test_strip_leaves_an_unframed_message_alone(self):
         self.assertEqual(km._comment_strip_frame("plain reply"), "plain reply")
 
+    def test_a_FILE_passage_names_the_file_in_the_frame(self):
+        # A highlight in the file viewer carries its path, so the thread's agent is told what it is
+        # quoting instead of being pointed at "the conversation" it cannot find the passage in.
+        body = km._comment_first_message("Kept gates:", "Which of these still matter?",
+                                         src="~/notes/decisions.md")
+        self.assertTrue(body.startswith("About this part of ~/notes/decisions.md:"))
+        self.assertIn("> Kept gates:", body)
+        self.assertTrue(body.endswith("Which of these still matter?"))
+
+    def test_an_empty_src_keeps_the_conversation_frame(self):
+        body = km._comment_first_message("a passage", "a comment", src="")
+        self.assertTrue(body.startswith(km._COMMENT_FRAME_HEAD))
+
+    def test_the_file_frame_still_strips_to_the_comment_alone(self):
+        body = km._comment_first_message("a passage", "just my comment", src="~/notes/x.md")
+        self.assertEqual(km._comment_strip_frame(body), "just my comment")
+
 
 # ── the transcript → popover projection ───────────────────────────────────────────────────────────
 
