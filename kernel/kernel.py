@@ -6717,6 +6717,13 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
     sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
     if not sess:
         return "no transcript for this session yet, so nothing to comment on.", None
+    # No anchor uuid: a FILE passage has no message of its own, and the client cannot always name one
+    # (the chat WINDOWS its transcript, so the newest turn may not be in the DOM at all). The leaf is
+    # the honest anchor and the kernel is the only side that always knows it.
+    if not str(anchor_uuid or "").strip():
+        anchor_uuid = _anchor_adapter(sess["path"], parent_sid).leaf_uuid
+        if not anchor_uuid:
+            return "no transcript for this session yet, so nothing to anchor a thread on.", None
     cut, cut_t, err = _comment_cut_target(sess["path"], parent_sid, str(anchor_uuid))
     if err:
         return err, None
@@ -7923,7 +7930,7 @@ def _drive(msg, client):
         err = _fork_session(sid, str(msg.get("uuid") or ""), str(msg["name"]), client=client)
         if err:
             client["send"](json.dumps({"type": "warn", "text": err}))
-    elif t == "commentCreate" and msg.get("uuid") and msg.get("exact") and msg.get("text"):
+    elif t == "commentCreate" and (msg.get("uuid") or msg.get("src")) and msg.get("exact") and msg.get("text"):
         # Anchor a comment thread on a highlighted passage (the user 2026-08-13). LOUD on refusal; on
         # success a commentCreated ack names the new thread (the popover adopts exactly it — never a
         # guess) and the fresh {type:"comments"} frame rides straight back, ahead of the pusher cycle.

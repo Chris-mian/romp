@@ -4606,11 +4606,13 @@ function showSelectionMenu(e: MouseEvent) {
   } else if (liveSid) {
     // A FILE passage has no message of its own to fork at, so the thread cuts at the conversation's
     // tip — the same shape a cut behind a restart seam already takes — and its opening message names
-    // the file it is quoting.
-    const doc = fileViewSelection(), tip = latestTurnUuid(liveSid);
-    if (doc && tip) {
+    // the file it is quoting. The anchor is left EMPTY for the kernel to resolve: reading the newest
+    // rendered turn out of the DOM made the item vanish silently on any windowed transcript, which
+    // is most of them.
+    const doc = fileViewSelection();
+    if (doc) {
       const sid = liveSid, qtext = doc.text, src = doc.src;
-      mk("Comment", () => openCommentComposer(sid, tip, qtext, e.clientX, e.clientY, src));
+      mk("Comment", () => openCommentComposer(sid, "", qtext, e.clientX, e.clientY, src));
     }
   }
   // "Quote" is the CHIP, and only the chip (the user 2026-08-23, consolidating the three verbs —
@@ -10682,14 +10684,6 @@ function transcriptSelection(): { text: string; uuid: string | null } | null {
   if (!text) return null;
   return { text, uuid: a.getAttribute("data-uuid") };
 }
-/** The newest anchorable record in a session's rendered transcript, for a thread with no message of its own to cut at. */
-function latestTurnUuid(sid: string): string | null {
-  const view = views.get(sid);
-  if (!view) return null;
-  const anchored = view.el.querySelectorAll<HTMLElement>(".turn[data-uuid]");
-  return anchored.length ? anchored[anchored.length - 1].dataset.uuid || null : null;
-}
-
 /**
  * A selection inside the FILE VIEWER, with the path it came from — the same reply affordance the
  * transcript has, for a rendered doc. Null unless both endpoints sit in one viewer body, so a

@@ -745,3 +745,18 @@ class ExchangeLatchReplacedThePushCount(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnchorlessCreate(unittest.TestCase):
+    """A FILE passage carries no message uuid, and the client cannot always name one — the chat WINDOWS
+    its transcript, so the newest turn may not be in the DOM at all. Resolving the anchor kernel-side is
+    what keeps the affordance from silently disappearing on a long conversation."""
+
+    def test_the_handler_accepts_a_create_with_src_and_no_uuid(self):
+        src = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
+        self.assertIn('elif t == "commentCreate" and (msg.get("uuid") or msg.get("src"))', src)
+
+    def test_an_empty_anchor_resolves_to_the_transcript_leaf(self):
+        src = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
+        self.assertIn('anchor_uuid = _anchor_adapter(sess["path"], parent_sid).leaf_uuid', src)
+        self.assertIn("no transcript for this session yet, so nothing to anchor a thread on.", src)

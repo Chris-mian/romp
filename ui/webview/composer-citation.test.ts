@@ -13,6 +13,7 @@ const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", 
 const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
 const SKELETON = fs.readFileSync(path.resolve(process.cwd(), "src", "page-skeleton.ts"), "utf8");
 const FILEVIEW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "file-view.ts"), "utf8");
+const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 
 test("the composer has a chip strip above the textarea", () => {
   assert.match(SKELETON, /<div id="composer-chips" style="display:none"><\/div><textarea id="composer-input"/);
@@ -303,10 +304,12 @@ test("highlighting the FILE VIEWER seeds a quote chip, and right-click offers th
 test("Comment works on a FILE passage — the thread cuts at the conversation tip and names the file", () => {
   // A file passage has no message of its own to fork at, so the anchor is the newest anchorable
   // record; the kernel already supports that shape (a cut behind a restart seam takes the tip too).
-  assert.match(RENDER, /function latestTurnUuid\(sid: string\): string \| null/);
-  assert.match(RENDER, /const anchored = view\.el\.querySelectorAll<HTMLElement>\("\.turn\[data-uuid\]"\);/);
-  assert.match(RENDER, /const doc = fileViewSelection\(\), tip = latestTurnUuid\(liveSid\);/);
-  assert.match(RENDER, /mk\("Comment", \(\) => openCommentComposer\(sid, tip, qtext, e\.clientX, e\.clientY, src\)\);/);
+  // the anchor is left EMPTY for the KERNEL to resolve: reading the newest rendered turn out of the
+  // DOM made the item vanish silently on a windowed transcript, which is most of them
+  assert.match(RENDER, /mk\("Comment", \(\) => openCommentComposer\(sid, "", qtext, e\.clientX, e\.clientY, src\)\);/);
+  assert.doesNotMatch(RENDER, /latestTurnUuid/, "no DOM lookup can silently withhold the item");
+  assert.match(KERNEL, /elif t == "commentCreate" and \(msg\.get\("uuid"\) or msg\.get\("src"\)\)/);
+  assert.match(KERNEL, /anchor_uuid = _anchor_adapter\(sess\["path"\], parent_sid\)\.leaf_uuid/);
   // src rides the anchor, the create post, and the retry post — a refused create must not lose the file
   assert.match(RENDER, /function openCommentComposer\(sid: string, uuid: string, exact: string, x: number, y: number, src\?: string\): void/);
   assert.match(RENDER, /pendingCommentAnchor = \{ sid, uuid, exact, src, color: pickThreadColor\(sid\) \};/);
