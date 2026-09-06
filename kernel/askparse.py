@@ -104,6 +104,22 @@ def gap_is_skippable(lines, a, b):
     return True
 
 
+def _options_complete(lines, block):
+    """Whether the parsed block is the picker's WHOLE list, by its own numbering.
+
+    The picker numbers its rows 1..N. A pane too narrow for the CLI's layout wraps them, breaking the
+    contiguity option_block needs, so the block can start partway down and the parse returns a SUBSET
+    that still claims success — and every index the UI sends then addresses a different option than
+    the one clicked. Answering the wrong question is worse than showing no picker, so a block that
+    does not begin at 1 and run unbroken is refused (measured: a 24-column pane, split by the CLI for
+    its own subagents, read 3 of 5 options).
+
+    Scoped to the block, never the whole pane: a transcript above the picker may hold its own numbered
+    list, and counting those rows would refuse a perfectly good picker."""
+    nums = [int(m.group(2)) for m in (OPT_RE.match(lines[i]) for i in block) if m]
+    return bool(nums) and nums == list(range(1, len(nums) + 1))
+
+
 def option_block(lines, end_idx):
     """The contiguous block of numbered option rows nearest end_idx (exclusive),
     excluding earlier prose numbering (gaps must be blank/rule/description)."""
@@ -255,7 +271,7 @@ def parse_ask_pane(pane, cols=None):
                 k -= 1
             question = " ".join(reversed(q_lines)) if q_lines else None
             opts = parse_options(lines, block, foot_idx)
-            if opts["options"]:
+            if opts["options"] and _options_complete(lines, block):
                 # ONLY checkbox rows mean multi-select — the ✔ Submit tab bar also
                 # tops the multi-question wizard, whose per-question screens are
                 # single-select.

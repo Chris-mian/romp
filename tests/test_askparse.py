@@ -423,3 +423,55 @@ class TestAskParse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NarrowPaneRefusal(unittest.TestCase):
+    """A pane too narrow for the CLI's layout wraps the option rows, breaking the contiguity
+    option_block needs — so the parse returned a SUBSET and still claimed success, and every index the
+    UI sent then addressed a different option than the one clicked. Measured on a live 24-column pane
+    (the CLI splits panes for its own subagents): 3 of 5 options read as a complete picker. Refusing
+    is the only safe answer; a missing picker is visible, a mis-indexed one silently answers wrong."""
+
+    def test_a_block_that_does_not_start_at_one_is_refused(self):
+        pane = "\n".join([
+            "Which approach?",
+            "  1. Get the doc",
+            "  2. Behind config",
+            "Some prose the wrap left stranded between the rows.",
+            "  3. Inbound only",
+            "  4. Type something.",
+            "  5. Chat about this",
+            FOOTER,
+        ])
+        self.assertIsNone(parse(pane), "a partial read must not render as a picker")
+
+    def test_the_same_options_parse_when_the_block_is_whole(self):
+        pane = "\n".join([
+            "Which approach?",
+            "❯ 1. Get the doc",
+            "  2. Behind config",
+            "  3. Inbound only",
+            "  4. Type something.",
+            "  5. Chat about this",
+            FOOTER,
+        ])
+        ask = parse(pane)
+        self.assertIsNotNone(ask)
+        self.assertEqual(len(ask["options"]), 5)
+        self.assertEqual(ask["options"][0]["label"], "Get the doc")
+
+    def test_prose_numbering_above_a_picker_still_parses(self):
+        # the guard reads the BLOCK's numbering, not the pane's — a numbered list in the transcript
+        # above the picker must not read as missing options
+        pane = "\n".join([
+            "Here is my plan:",
+            "1. refactor the parser",
+            "2. add tests",
+            "Do you want to proceed?",
+            "❯ 1. Yes, proceed",
+            "  2. No, revise it",
+            FOOTER,
+        ])
+        ask = parse(pane)
+        self.assertIsNotNone(ask)
+        self.assertEqual(len(ask["options"]), 2)
