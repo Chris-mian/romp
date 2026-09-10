@@ -14,6 +14,7 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 const SKELETON = fs.readFileSync(path.resolve(process.cwd(), "src", "page-skeleton.ts"), "utf8");
 const FILEVIEW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "file-view.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+const FEEDCSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
 
 test("the composer has a chip strip above the textarea", () => {
   assert.match(SKELETON, /<div id="composer-chips" style="display:none"><\/div><textarea id="composer-input"/);
@@ -120,7 +121,7 @@ test("highlighting transcript text seeds a QUOTE chip — the same chip, reply-c
   assert.match(RENDER, /const a = turnOf\(r\.startContainer\), f = turnOf\(r\.endContainer\);/);
   assert.match(RENDER, /if \(!a \|\| !f\) return null;/);
   assert.match(RENDER, /document\.addEventListener\("selectionchange", \(\) => \{/);
-  assert.match(RENDER, /if \(q\) \{ seedTranscriptQuote\(activeId, q\.text, q\.uuid\); return; \}/);   // never clears chips, never touches the gesture
+  assert.match(RENDER, /if \(!q\) return;\s*\n\s*seedTranscriptQuote\(activeId, q\.text, q\.uuid\);/);   // never clears chips, never touches the gesture
   // seeding NEVER focuses the composer — a focus steal would collapse the selection mid-drag
   const seeder = RENDER.split("function seedTranscriptQuote(")[1].split("\n}")[0];
   assert.doesNotMatch(seeder, /focusComposer/);
@@ -282,39 +283,23 @@ test("deselecting in the editor (editorSelectionCleared) drops the editor chip, 
   assert.doesNotMatch(fn, /focusComposer/);
 });
 
-test("highlighting the FILE VIEWER seeds a quote chip, and right-click offers the menu there", () => {
-  // The viewer is a modal OUTSIDE #content, so a highlight in a rendered doc qualified for nothing:
-  // no chip, and the browser's own context menu instead of romp's. Both surfaces now cite.
-  assert.match(RENDER, /function fileViewSelection\(\): \{ text: string; src: string \} \| null/);
-  assert.match(RENDER, /return e\?\.closest\?\.\(".fileview-body"\) \?\? null;/);
-  assert.match(RENDER, /if \(!a \|\| a !== f\) return null;/);   // one viewer body, both endpoints
-  assert.match(RENDER, /const src = \(a\.closest\(".fileview"\) as HTMLElement \| null\)\?\.dataset\.path;/);
-  assert.match(RENDER, /return src \? \{ text, src \} : null;/);
-  // it rides the EDITOR chip: one src-bearing context, updated in place, transcript quotes untouched
-  assert.match(RENDER, /const doc = fileViewSelection\(\);\s*\n\s*if \(doc\) seedEditorQuote\(activeId, doc\.text, doc\.src\);/);
-  // the viewer stamps the path the citation reads
-  assert.match(FILEVIEW, /box\.dataset\.path = path;/);
-  // and the selection menu reaches the modal: document-level binding + a gate that admits the viewer
-  assert.match(RENDER, /document\.addEventListener\("contextmenu", showSelectionMenu\);/);
-  assert.doesNotMatch(RENDER, /getElementById\("content"\)\?\.addEventListener\("contextmenu"/);
-  assert.match(RENDER, /const inFileView = !!anchorEl\?\.closest\?\.\(".fileview-body"\);/);
-  assert.match(RENDER, /if \(!inFileView && !\(content && content\.contains\(sel\.anchorNode\)\)\) return;/);
-});
-
-test("Comment works on a FILE passage — the thread cuts at the conversation tip and names the file", () => {
-  // A file passage has no message of its own to fork at, so the anchor is the newest anchorable
-  // record; the kernel already supports that shape (a cut behind a restart seam takes the tip too).
-  // the anchor is left EMPTY for the KERNEL to resolve: reading the newest rendered turn out of the
-  // DOM made the item vanish silently on a windowed transcript, which is most of them
-  assert.match(RENDER, /mk\("Comment", \(\) => openCommentComposer\(sid, "", qtext, e\.clientX, e\.clientY, src\)\);/);
-  assert.doesNotMatch(RENDER, /latestTurnUuid/, "no DOM lookup can silently withhold the item");
-  assert.match(KERNEL, /elif t == "commentCreate" and \(msg\.get\("uuid"\) or msg\.get\("src"\)\)/);
-  assert.match(KERNEL, /anchor_uuid = _anchor_adapter\(sess\["path"\], parent_sid\)\.leaf_uuid/);
-  // src rides the anchor, the create post, and the retry post — a refused create must not lose the file
-  assert.match(RENDER, /function openCommentComposer\(sid: string, uuid: string, exact: string, x: number, y: number, src\?: string\): void/);
-  assert.match(RENDER, /pendingCommentAnchor = \{ sid, uuid, exact, src, color: pickThreadColor\(sid\) \};/);
-  assert.match(RENDER, /color: create\.color \|\| "", src: create\.src \|\| "" \}\);/);
-  assert.match(RENDER, /name: c\.name, model: c\.model, effort: c\.effort, color: c\.color, src: c\.src \|\| "" \}\);/);
-  // the transcript path is untouched: a real turn selection still anchors on its own uuid
-  assert.match(RENDER, /if \(q\?\.uuid && liveSid\) \{/);
+test("the FILE VIEWER owns its own selection menu, so every pane that mounts it can comment", () => {
+  // It lived in render.ts, which is the CHAT bundle only — the file browser opens the same viewer in
+  // the FEED pane, whose bundle never loaded a line of it, so commenting a doc worked on one surface
+  // and silently did nothing on the other. file-view.ts is imported by both.
+  assert.match(FILEVIEW, /box\.addEventListener\("contextmenu", \(ev: MouseEvent\) => \{/);
+  assert.match(FILEVIEW, /item\("Comment", \(\) => openCommentBox\(picked, ev\.clientX, ev\.clientY\)\);/);
+  assert.match(FILEVIEW, /if \(editing \|\| !sid\) return;/, "an edit gesture, or no session to hang a thread on");
+  // routed to the sid the file was opened FOR, matching the quote chip's rule — never the active tab
+  assert.match(FILEVIEW, /post\(\{ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body,/);
+  assert.match(FILEVIEW, /src: quoteSrcLabel\(path, text, picked\) \}\);/);
+  // the chat bundle keeps the TRANSCRIPT menu and nothing else — one owner per surface, no duplicate
+  assert.doesNotMatch(RENDER, /fileViewSelection/);
+  assert.match(RENDER, /if \(!content \|\| !sel \|\| !sel\.anchorNode \|\| !content\.contains\(sel\.anchorNode\) \|\| !text\.trim\(\)\) return;/);
+  assert.match(RENDER, /document\.getElementById\("content"\)\?\.addEventListener\("contextmenu", showSelectionMenu\);/);
+  // both sheets carry the skin: the viewer renders in the chat pane and the feed pane
+  assert.match(CSS, /\.fileview-ctx \{/);
+  assert.match(CSS, /\.fileview-cmt \{/);
+  assert.match(FEEDCSS, /\.fileview-ctx \{/);
+  assert.match(FEEDCSS, /\.fileview-cmt \{/);
 });

@@ -188,6 +188,13 @@ export function closeFileView(): void {
 }
 
 /** Show `path` in a modal over this pane. Re-opening replaces whatever is up — never stacks. */
+const CTX_MENU_WIDTH_PX = 160;
+const CTX_MENU_HEIGHT_PX = 90;
+const CMT_POP_WIDTH_PX = 360;
+const CMT_POP_HEIGHT_PX = 200;
+const CMT_QUOTE_MAX_CHARS = 240;
+const CMT_SENT_CLOSE_MS = 700;
+
 export function openFileView(path: string, sid?: string | null): void {
   // The replace path bypasses closeFileView, so it needs the same dirty ask: opening file B over an
   // edited-but-unsaved file A must not silently eat A's buffer.
@@ -203,8 +210,6 @@ export function openFileView(path: string, sid?: string | null): void {
   wrap.id = "romp-fileview";
   wrap.onclick = (ev) => { if (ev.target === wrap) closeFileView(); };
   const box = el("div", "fileview");
-  // The path a selection inside this viewer cites (render.ts's fileViewSelection).
-  box.dataset.path = path;
   document.body.classList.add("fileview-open");
 
   const bar = el("div", "fileview-bar");
@@ -406,6 +411,70 @@ export function openFileView(path: string, sid?: string | null): void {
         catch { /* messaging our own window cannot really fail */ }
       });
   });
+
+  // Comment on a passage, owned by the viewer so every pane that mounts it gets the affordance — the
+  // chat bundle and the feed bundle both bind `post`. Routes to the sid the file was opened for.
+  const menuEl = { cur: null as HTMLElement | null };
+  const dropMenu = () => { menuEl.cur?.remove(); menuEl.cur = null; };
+  box.addEventListener("contextmenu", (ev: MouseEvent) => {
+    if (editing || !sid) return;
+    const sel = window.getSelection();
+    const picked = sel && !sel.isCollapsed && sel.anchorNode && box.contains(sel.anchorNode)
+      ? sel.toString().trim() : "";
+    if (!picked) return;
+    ev.preventDefault();
+    dropMenu();
+    const menu = el("div", "fileview-ctx");
+    const item = (label: string, fn: () => void) => {
+      const row = el("div", "fileview-ctx-item");
+      row.textContent = label;
+      row.addEventListener("click", (e) => { e.stopPropagation(); dropMenu(); fn(); });
+      menu.appendChild(row);
+    };
+    item("Comment", () => openCommentBox(picked, ev.clientX, ev.clientY));
+    item("Copy", () => { try { void navigator.clipboard?.writeText(picked); } catch { /* no clipboard */ } });
+    menu.style.left = Math.min(ev.clientX, window.innerWidth - CTX_MENU_WIDTH_PX) + "px";
+    menu.style.top = Math.min(ev.clientY, window.innerHeight - CTX_MENU_HEIGHT_PX) + "px";
+    document.body.appendChild(menu);
+    menuEl.cur = menu;
+    setTimeout(() => document.addEventListener("click", dropMenu, { once: true }), 0);
+  });
+
+  /** The viewer's own comment box, so commenting never depends on a composer the pane may not have. */
+  function openCommentBox(picked: string, x: number, y: number): void {
+    const pop = el("div", "fileview-cmt");
+    pop.style.left = Math.min(x, window.innerWidth - CMT_POP_WIDTH_PX) + "px";
+    pop.style.top = Math.min(y, window.innerHeight - CMT_POP_HEIGHT_PX) + "px";
+    const quote = el("div", "fileview-cmt-quote");
+    quote.textContent = picked.length > CMT_QUOTE_MAX_CHARS ? picked.slice(0, CMT_QUOTE_MAX_CHARS) + "…" : picked;
+    const ta = el("textarea", "fileview-cmt-input") as HTMLTextAreaElement;
+    ta.placeholder = "Comment on this passage…";
+    const acts = el("div", "fileview-cmt-acts");
+    const send = el("button", "fileview-btn") as HTMLButtonElement;
+    send.type = "button"; send.textContent = "Comment";
+    const cancel = el("button", "fileview-btn") as HTMLButtonElement;
+    cancel.type = "button"; cancel.textContent = "Cancel";
+    const close = () => pop.remove();
+    cancel.addEventListener("click", close);
+    send.addEventListener("click", () => {
+      const body = ta.value.trim();
+      if (!body) { ta.focus(); return; }
+      send.disabled = true; send.textContent = "Sending…";
+      // An empty anchor asks the kernel to resolve it to the transcript leaf: a file passage has none.
+      post({ type: "commentCreate", id: sid, uuid: "", exact: picked, text: body,
+             src: quoteSrcLabel(path, text, picked) });
+      send.textContent = "Sent";
+      setTimeout(close, CMT_SENT_CLOSE_MS);
+    });
+    ta.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); close(); }
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send.click(); }
+    });
+    acts.appendChild(send); acts.appendChild(cancel);
+    pop.appendChild(quote); pop.appendChild(ta); pop.appendChild(acts);
+    document.body.appendChild(pop);
+    ta.focus();
+  }
 
   // ── edit mode (the raw-mode slice) ── a plain textarea holding the raw bytes: an embedded editor
   // is a different project, and a textarea that keeps your changes beats a half-editor. The kernel's

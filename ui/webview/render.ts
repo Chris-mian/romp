@@ -4580,12 +4580,8 @@ function showSelectionMenu(e: MouseEvent) {
   const content = document.getElementById("content");
   const sel = window.getSelection();
   const text = sel ? sel.toString() : "";
-  if (!sel || !sel.anchorNode || !text.trim()) return;
-  const anchorEl = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode.parentElement;
-  // The file VIEWER is a modal outside #content, so a highlight there fell through to the browser's
-  // own menu and the reply affordance looked broken. Its selections get the same menu.
-  const inFileView = !!anchorEl?.closest?.(".fileview-body");
-  if (!inFileView && !(content && content.contains(sel.anchorNode))) return;
+  // Transcript selections only: the file viewer mounts its own menu, on every pane that hosts it.
+  if (!content || !sel || !sel.anchorNode || !content.contains(sel.anchorNode) || !text.trim()) return;
   e.preventDefault();
   dismissTabMenu();
   const menu = el("div", "ctx-menu");
@@ -4603,17 +4599,6 @@ function showSelectionMenu(e: MouseEvent) {
   if (q?.uuid && liveSid) {
     const sid = liveSid, uuid = q.uuid, qtext = q.text;
     mk("Comment", () => openCommentComposer(sid, uuid, qtext, e.clientX, e.clientY));
-  } else if (liveSid) {
-    // A FILE passage has no message of its own to fork at, so the thread cuts at the conversation's
-    // tip — the same shape a cut behind a restart seam already takes — and its opening message names
-    // the file it is quoting. The anchor is left EMPTY for the kernel to resolve: reading the newest
-    // rendered turn out of the DOM made the item vanish silently on any windowed transcript, which
-    // is most of them.
-    const doc = fileViewSelection();
-    if (doc) {
-      const sid = liveSid, qtext = doc.text, src = doc.src;
-      mk("Comment", () => openCommentComposer(sid, "", qtext, e.clientX, e.clientY, src));
-    }
   }
   // "Quote" is the CHIP, and only the chip (the user 2026-08-23, consolidating the three verbs —
   // Comment / Quote / Stage — by removal): the selection already seeded it (selectionchange), so
@@ -10684,38 +10669,14 @@ function transcriptSelection(): { text: string; uuid: string | null } | null {
   if (!text) return null;
   return { text, uuid: a.getAttribute("data-uuid") };
 }
-/**
- * A selection inside the FILE VIEWER, with the path it came from — the same reply affordance the
- * transcript has, for a rendered doc. Null unless both endpoints sit in one viewer body, so a
- * selection straying into the chrome around it cites nothing.
- */
-function fileViewSelection(): { text: string; src: string } | null {
-  const sel = window.getSelection();
-  if (!sel || !sel.rangeCount) return null;
-  const r = sel.getRangeAt(sel.rangeCount - 1);
-  if (r.collapsed) return null;
-  const bodyOf = (n: Node | null) => {
-    const e = n instanceof Element ? n : n?.parentElement;
-    return e?.closest?.(".fileview-body") ?? null;
-  };
-  const a = bodyOf(r.startContainer), f = bodyOf(r.endContainer);
-  if (!a || a !== f) return null;
-  const text = r.toString().trim();
-  if (!text) return null;
-  const src = (a.closest(".fileview") as HTMLElement | null)?.dataset.path;
-  return src ? { text, src } : null;
-}
 document.addEventListener("selectionchange", () => {
   if (!activeId) return;
   const q = transcriptSelection();
   // Never clear chips on a collapse — and never touch the GESTURE either: a mid-drag tick can flicker
   // non-qualifying (endpoint in the gap between turns), and ending the gesture there made the next tick
   // append a second copy of the same context (the user 2026-08-04). Gestures end at the next mousedown.
-  if (q) { seedTranscriptQuote(activeId, q.text, q.uuid); return; }
-  // A highlight in the file viewer rides the EDITOR chip (one src-bearing context, updated in place),
-  // so quoting a doc reads like quoting highlighted code and never wipes stacked transcript quotes.
-  const doc = fileViewSelection();
-  if (doc) seedEditorQuote(activeId, doc.text, doc.src);
+  if (!q) return;
+  seedTranscriptQuote(activeId, q.text, q.uuid);
 });
 
 // Dismiss a citation — via its chip's ✕ (that exact chip, by index) or Backspace at the very start of an
@@ -12696,9 +12657,7 @@ setupSettings();
   window.addEventListener("blur", releaseTabs);
 })();
 // right-click a selection in the transcript → Reply (quote it) / Copy
-// Document-level, not on #content: the file viewer is a modal outside it, and showSelectionMenu
-// itself decides which selections qualify.
-document.addEventListener("contextmenu", showSelectionMenu);
+document.getElementById("content")?.addEventListener("contextmenu", showSelectionMenu);
 // The chat document hosts the viewer itself (openPath), so it boots the viewer's listener with the
 // same WS poster the feed hands it: Edit/Save round-trips and the GitHub-link ask ride post(), and
 // the kernel's replies come back as window MessageEvents via the pane shim — either document, one
