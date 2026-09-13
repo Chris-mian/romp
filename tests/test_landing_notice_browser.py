@@ -109,8 +109,10 @@ const afterDrop5 = await state();
 const aroundBefore5 = await sentOf("loadAround");
 // the gap is not wedged: a later deep link into the head gap asks again (the wsdown cleared landingGaps and loadingOlder, so the
 // ask is not refused with pointer-fetch-busy nor blocked by gapHasAsk) and the notice shows once more
-const deep5b = "11111111-2222-3333-4444-" + pad(2 * 12);
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep5b, anchorT: cfg.base + 2 * 12 });
+// the SAME target whose ask the socket ate (turn 25): its window was never inserted, so it is still in a gap — re-focusing it must ask
+// again (the wedge is gone), not be refused or land resident
+await page.waitForFunction((u) => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; return true; }, deep5, { timeout: 500 }).catch(() => {});
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep5, anchorT: cfg.base + 2 * 25 });
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore5, { timeout: 8000 }).catch(() => {});
 const reask5 = (await sentOf("loadAround")) - aroundBefore5;
 const reNotice5 = (await state()).notice;
