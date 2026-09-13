@@ -1862,10 +1862,13 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   backend's own liveness record), never from the pass's alive set, which is
   older than the key, so the verdict and the key come from one file and a
   revival landing between the two cannot record a memo that owes nothing;
-  a row that cannot be read, or parses without an alive bit, is unproven,
-  not dead: the ask is kept and the look notes None under
+  a row that cannot be read or decoded, or parses without an alive bit, is
+  unproven, neither dead nor alive: the look notes None under
   `askerRowUnproved`, so one transient read fault never latches a
-  skippable memo (a missing row is dead, the key's absent marker); a keyed
+  skippable memo, and the ask follows the pass's alive set, the backend's
+  own answer over that row or its last good content, so the reminder never
+  asks a debtor to answer a peer the backend calls dead (a missing row is
+  dead, the key's absent marker); a keyed
   dead asker notes nothing and the debtor skips like any quiet session;
   any asker beyond the eight keyed rows notes None under `askerOverflow`,
   alive or not, since its row is outside the key. The pass stats the postal

@@ -3131,9 +3131,11 @@ def _debt_asks(sid, alive_ids):
             row_alive = _asker_row_alive(f)            # the asker's registry row is in the debtor's key, so its content decides
             if row_alive is False:                     #  (round two, medium: the pass's alive set is older than the key; a
                 continue                               #  revival landing between the two would record a memo that owes nothing)
-            if row_alive is None:                      # a row that cannot be read or carries no alive bit is UNPROVEN, not dead
-                _nudge_clock(None, "askerRowUnproved")   #  (round three, medium): the ask is kept and the memo is never
-        elif f not in (alive_ids or ()):               #  skippable on that evidence
+            if row_alive is None:                      # a row that cannot be read or carries no alive bit is UNPROVEN: the memo is
+                _nudge_clock(None, "askerRowUnproved")   #  never skippable on that evidence (round three), and the ASK is decided by
+                if f not in (alive_ids or ()):         #  the alive set, the backend's own row-or-last-good-row answer (round four:
+                    continue                           #  keeping it unconditionally sent a reminder to answer a dead peer)
+        elif f not in (alive_ids or ()):
             continue                                   # not keyed: the alive set decides, as before the rows were keyed
         ts = rec[0]
         if last_any.get((t_, f), 0) >= ts:
@@ -10142,15 +10144,17 @@ def _asker_row_alive(asker):
     and not a comment thread (the SDK backend's live_sessions rule), False for a MISSING row (the key carries the absent
     marker) or an explicit alive false, and None, UNPROVEN, for a row that cannot be read (EACCES, EIO, EMFILE: the class the
     backend's own list_regs serves its last good row over) or parses without an alive bit (a gutted row _backend_rows keeps
-    alive while its driver runs). Unproven is never dead: the caller keeps the ask and notes the look unbounded, so one
-    transient read fault cannot latch a skippable memo under an unmoved key (round three, medium)."""
+    alive while its driver runs). Unproven is neither dead nor alive: the caller notes the look unbounded (so one transient
+    read fault cannot latch a skippable memo under an unmoved key, round three) and decides the ask by the alive set, the
+    backend's own answer over the same row or its last good content (round four), so the send agrees with the backend in
+    both directions."""
     p = jd.STATE / "sdk" / (str(asker) + ".json")
     try:
         text = p.read_text(encoding="utf-8")
     except FileNotFoundError:
         return False
-    except OSError:
-        return None
+    except (OSError, ValueError):                       # a read fault, or bytes that are not UTF-8 (UnicodeDecodeError is a
+        return None                                     #  ValueError: uncaught it aborted the look, round four medium 2)
     try:
         reg = json.loads(text)
     except ValueError:
@@ -13318,7 +13322,7 @@ _NUDGE_FILE_KEYED_ROADS = {       # the functions each marked verdict's road rea
 #   log, the store with its override journal and archive, the episode log, the clears log, the postal log, the kernel's
 #   downtime log, the nudge ledger, ten in all), marked so that a
 #   look ending in one may record a skippable memo. Every OTHER exit of the look, marked or not, records an unbounded memo
-#   (None) by default: the SDK overlay, the backend's queue, an armed rollback, a store fault, a dead asker beyond the keyed rows, a peer's
+#   (None) by default: the SDK overlay, the backend's queue, an armed rollback, a store fault, an asker beyond the keyed rows (alive or not), a peer's
 #   bounce (T401 (2) round three: the class, not the instances; an unmarked road can never silence a session). The full goal
 #   walk's own completion is marked at its return, after every declining leg has noted its clock or None.
 

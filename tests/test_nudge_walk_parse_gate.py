@@ -310,20 +310,21 @@ class NudgeWalkParseGate(unittest.TestCase):
         finally:
             km.jd._rebind_state(saved_state)
 
-    def test_an_unreadable_or_gutted_asker_row_is_unproven_and_keeps_the_ask(self):
+    def test_an_unreadable_or_gutted_asker_row_is_unproven_and_the_alive_set_decides_the_ask(self):
         """Round three, medium: an unreadable or gutted row read DEAD, while the backend's own reader serves the last good row
-        over a read fault and keeps a session alive whose row came back gutted; one transient fault suppressed a real reminder
-        and latched a skippable memo under an unmoved key. A row that cannot be read, or parses without an alive bit, is
-        UNPROVEN: the ask is kept and the look notes None under askerRowUnproved, so the next look parses again. A missing row
-        stays dead (the key carries the absent marker)."""
+        over a read fault; one transient fault latched a skippable memo under an unmoved key. Round four, medium 1: keeping
+        the ask UNCONDITIONALLY on an unproven row sent the debtor a reminder to answer a dead peer (a gutted reg whose driver
+        is not running is dead to the backend). A row that cannot be read, or parses without an alive bit, is UNPROVEN: the
+        look notes None under askerRowUnproved (the memo cannot skip on that evidence) and the ask is decided by the alive
+        set, the backend's own answer. A missing row stays dead (the key carries the absent marker)."""
         now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
         try:
             r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
             reg = km.jd.STATE / "sdk" / (SID_NEW + ".json"); reg.parent.mkdir(parents=True, exist_ok=True)
             reg.write_text(json.dumps({"sid": SID_NEW, "field": 1}))          # the gutted shape: no alive bit
             before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
-            self._dead_asker_look(r, now, calls, quiet)
-            self.assertEqual(sent, [[SID_NEW]], "the ask is kept: the row proves nothing either way")
+            self._dead_asker_look(r, now, calls, quiet)                        # the asker is absent from the alive set
+            self.assertEqual(sent, [[]], "no reminder to answer a peer the backend calls dead")
             memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
             self.assertIsNone(memo[-2], "the memo is unbounded on that evidence")
             by = km._NUDGE_WALK_STATS["unboundedBy"]
@@ -337,6 +338,8 @@ class NudgeWalkParseGate(unittest.TestCase):
                 reg.write_text(json.dumps({"sid": SID_NEW, "alive": True})); os.chmod(reg, 0)
                 try:
                     self.assertIsNone(km._asker_row_alive(SID_NEW), "unreadable: unproven, never dead")
+                    self._dead_asker_look(r, now + 2, calls, quiet, alive_ids={SID_OLD, SID_NEW})   # the backend says alive
+                    self.assertEqual(sent[-1], [SID_NEW], "the ask is kept when the alive set has the asker (round two's case)")
                 finally:
                     os.chmod(reg, 0o600)
             reg.write_text(json.dumps({"sid": SID_NEW, "alive": False}))
@@ -346,9 +349,29 @@ class NudgeWalkParseGate(unittest.TestCase):
         finally:
             km.jd._rebind_state(saved_state)
 
+    def test_an_undecodable_asker_row_does_not_abort_the_look(self):
+        """Round four, medium 2: a row that is not UTF-8 raised UnicodeDecodeError (a ValueError, not an OSError) out of
+        read_text, uncaught, through _debt_asks and the reminder, aborting the look: no memo ever recorded, a traceback per
+        pass. It is unproven like any unreadable row: the look completes, notes the leg and decides the ask by the alive set."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            reg = km.jd.STATE / "sdk" / (SID_NEW + ".json"); reg.parent.mkdir(parents=True, exist_ok=True)
+            reg.write_bytes(b"\xff\xfe{")
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self.assertIsNone(km._asker_row_alive(SID_NEW), "undecodable: unproven")
+            self._dead_asker_look(r, now, calls, quiet)                        # must not raise
+            self.assertEqual(calls, [SID_OLD], "the look completed over the undecodable row")
+            self.assertEqual(sent, [[]], "and decided the ask by the alive set (the asker absent)")
+            self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"].get("askerRowUnproved", 0), before.get("askerRowUnproved", 0) + 1)
+            self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "unbounded")
+        finally:
+            km.jd._rebind_state(saved_state)
+
     def test_an_alive_ninth_asker_notes_the_overflow_too(self):
         """Round three, low 3: the overflow note fired only for an asker absent from the alive set, so with the ninth asker
-        alive nothing noted and the memo was skippable while that row sat outside the key; any overflow asker notes None."""
+        alive nothing noted and the memo was skippable while that row sat outside the key; any overflow asker notes None
+        under askerOverflow (its earlier name, deadAskerOverflow, said what it no longer meant)."""
         now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
         try:
             askers = ["%08d-2222-3333-4444-0000000000%02d" % (i, i) for i in range(km._NUDGE_ASKER_ROWS_MAX + 1)]
@@ -371,9 +394,41 @@ class NudgeWalkParseGate(unittest.TestCase):
         src = inspect.getsource(km._auto_nudge_pass)
         self.assertLess(src.index("messages.jsonl"), src.index("_nudge_asks_by_target()"), "the stat precedes the index")
 
+    def test_an_ask_landing_between_the_index_build_and_the_key_ends_the_skip(self):
+        """Round four, low 3 (the behavioural red for round three's low 5): an ask appended to the postal log AFTER the asker
+        index read it and BEFORE the key loop statted the log gave the key a log newer than the selection, so the next pass
+        skipped a debtor whose new asker's row was never keyed. The key carries the pre-index stat, so that pass parses."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([], now)
+            log = km.jd.STATE / "timeline" / "messages.jsonl"; log.parent.mkdir(parents=True, exist_ok=True); log.write_text("")
+            real_index = km._nudge_asks_by_target; landed = []
+            def index_then_ask():
+                out = real_index()
+                if not landed:                                                 # the window: an ask lands after the index read the log
+                    landed.append(1)
+                    with open(log, "a", encoding="utf-8") as f:
+                        f.write(json.dumps({"kind": "question", "from_id": SID_NEW, "to_sid": SID_OLD, "t": time.time()}) + "\n")
+                return out
+            passq = dict(quiet, _alive_sessions=lambda now_, live_map: [r], _auto_nudge_data=lambda: {}, _auto_nudge_resume=lambda: None,
+                         _wait_for_graph=lambda now_, ids: {}, _cleared_ids=lambda: set(), _auto_nudge_on=lambda: True,
+                         _compact_suggest_tick=lambda sid, live, now_: False, _relay_tick=lambda now_, ids: None,
+                         _debt_backstop_tick=lambda now_: None, _dead_wait_sweep=lambda ids, nudged, now_: None,
+                         _awaiting_wake_outcomes=lambda now_, ids: False, _push_soon=lambda: None, _pop_walk_gate=lambda k: None,
+                         _nudge_asks_by_target=index_then_ask)
+            for i in range(2):
+                with mock.patch.multiple(km, **passq), \
+                     mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
+                     mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now_: (calls.append(sid), {"turns": STOPPED})[1]), \
+                     mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
+                    km._auto_nudge_pass(now + i, {}, True)
+            self.assertEqual(calls, [SID_OLD, SID_OLD], "the log moved after the key's stat of it: the second pass parsed")
+        finally:
+            km.jd._rebind_state(saved_state)
+
     def test_askers_beyond_the_eight_keyed_rows_note_an_unbounded_release_under_their_own_leg(self):
         """The key carries at most _NUDGE_ASKER_ROWS_MAX asker rows (oldest asks first); a debtor with more notes None for
-        the rest under deadAskerOverflow, so a session flooded with asks never grows a key without bound."""
+        the rest under askerOverflow, so a session flooded with asks never grows a key without bound."""
         now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
         try:
             askers = ["%08d-2222-3333-4444-0000000000%02d" % (i, i) for i in range(km._NUDGE_ASKER_ROWS_MAX + 1)]
