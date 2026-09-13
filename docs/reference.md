@@ -3406,6 +3406,40 @@ journaled and the next run folds them first. A standing correction of a day's
 first cumulative row is kept as it was made, so the day's later rows never
 rewrite it.
 
+## The Task tracking switch
+
+Task tracking has one master switch, at the top of Settings, Task tracking, on by default. It is a kernel-side,
+per-install setting: `~/.local/state/romp/task-tracking.json`, `{"enabled": false, "gt": <gesture stamp>}`. An absent,
+unreadable or malformed file reads ON; only the literal `false` turns tracking off, and reading never creates the file.
+The gear's click posts `setTaskTracking` with a gesture stamp; the setter follows the ordering, echo and stale rules every
+gesture-stamped setting uses, and an applied flip is echoed to the socket that made it (a `taskTracking` frame), which is
+when the gear greys its dependents and tells the shell. A refused write (a full disk, a read-only state directory) is
+told on the same socket instead (a `settingStale` frame naming the fault and the kept value), so the gear snaps back to
+the kernel's value and the rail and the panes stay as they were. It is one value across attached machines: the click
+reaches every attached kernel, and a kernel attached later adopts the newest stamp, the road Auto Nudge, Suggest
+/compact and file editing take.
+
+**Off, the kernel stands down** the two judge tiers (the producer starts no index and no triage thread: no
+kernel-initiated model call, no `judge-usage.jsonl` row), the feed and outline builds (the panes receive one frame with
+`off` and show a notice in place of their list; the `/feed` and `/fleet` pages render the notice, and its button opens the
+settings at Task tracking, through the shell when the pane sits in one, else by sending a standalone page to the
+dashboard with `#settings=tasks`), and the goal nudges, which wait, since their redundancy read is a judge call. A call in
+flight when the switch flips finishes; the next pass starts nothing. The stores stay on disk; on again resumes from them.
+
+**Off, these carry on:** the chat and the Sessions pane (its judging band is empty), the sessions' working and awaiting
+dots in the chat (derived from the transcripts, outside the feed build), the compaction suggestion, and the reminders
+about unanswered messages from other sessions, which need no judge and follow Auto Nudge's own switch. The producer's
+episode settle, goals snapshot and evidence frame still run as store bookkeeping, and a rewind's reconcile runs as before.
+
+The shell hides the Outline and Feed buttons and phone tabs (`body.no-task-tracking`) and closes an open pane of theirs
+in memory (the stored pane set stands); the gear greys the judge rows, the two pane toggles and the Judging-bands boxes
+with the tooltip "Enable task tracking to use this (Settings, Task tracking)."
+
+Where to read it: `/version` carries `taskTracking` at the top level and in `settings`, with its stamp under
+`settingsGt` as `task-tracking`; `/perf` carries `judge.tierStarts`, the count of judge tier threads started, flat while
+off. `kernel/judge.py` `MODEL_CALLERS` is the census of every judge that makes a model call, each declaring its relation
+to the switch; an ast test holds it to the module's call sites, and the entry point refuses an undeclared name.
+
 ## Switches
 
 Effective immediately, no restart.

@@ -21,6 +21,7 @@ import { TIP_GRACE_MS } from "./tip";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, installPrLinkOpener } from "./pr-links";
 import { listenForFrames } from "./frame-listener";
+import { openGear } from "./gear-host";
 
 type Color = { bg: string; fg: string } | null;
 interface LedgerNode {
@@ -763,7 +764,14 @@ listenForFrames(perfFrameHandler("fleet", (m) => vscodeApi?.postMessage(m), (e: 
   const ttOff = document.getElementById("tt-off"), ttList = document.getElementById("fleet-list");
   if (ttOff) ttOff.hidden = !m.off;
   if (ttList) ttList.hidden = !!m.off;
-  if (m.off) return;
+  if (m.off) {
+    // the notice IS this frame's content (T404 round two, medium 1): the page is loaded, so _keepLoader below stops
+    // re-asserting the romp loader over it past its failsafe, and the loader itself goes now (its observer watches the
+    // list, which the off frame leaves empty)
+    loaded = true;
+    document.getElementById("pane-spin")?.classList.add("gone");
+    return;
+  }
   // "loaded" means the kernel actually BUILT the fleet's ledgers (the key is present, even if []) — NOT merely
   // that some feed message arrived. A feed push can reach us before the (cold) ledger build finishes; treating
   // that as loaded would drop the loader onto an empty pane (the user 2026-06-29). Until ledgers land, keep the
@@ -1054,7 +1062,10 @@ const _keepLoader = setInterval(() => {
 
 export {};   // module scope — keep its globals off feed.ts's (a global script)
 
-// the notice's button while the Task tracking switch is off (T404): asks the shell to open the settings on Task tracking
+// the notice's button while the Task tracking switch is off (T404): the settings on Task tracking
 document.getElementById("tt-off-btn")?.addEventListener("click", () => {
-  try { (window.parent !== window ? window.parent : window).postMessage({ romp: "openSettings", tab: "tasks" }, "*"); } catch { /* no shell to ask */ }
+  // through gear-host's one road (the shell forwards it into the settings iframe at the Task tracking tab); a standalone
+  // /feed or /fleet page has no shell to ask and hosts no gear, so it goes to the dashboard with the tab named in the hash,
+  // which the landing opens (T404 round two, medium 2: the bare post reached nothing on the only page where the notice shows)
+  if (!openGear(window, { tab: "tasks" })) window.location.assign("/" + window.location.search + "#settings=tasks");
 });

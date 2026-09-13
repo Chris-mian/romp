@@ -271,6 +271,11 @@ The feed is Romp's task-management layer: a card for each task. Romp's
 [judges](judges.md) watch each session's work, split it into those tasks, and
 keep every card current.
 
+Task tracking has a master switch at the top of Settings, Task tracking, on by
+default. Off, the judges do not run and spend nothing, the feed and the outline
+are not shown, and Romp is a chat-only tool: the chat, the Sessions pane and
+the postal service carry on.
+
 Cards sit in three columns:
 
 - <span class="romp-chip romp-chip-working">Working</span> — the session is

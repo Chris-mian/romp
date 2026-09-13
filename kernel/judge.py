@@ -2031,7 +2031,8 @@ _KILL_RC = -signal.SIGALRM               # the other kill shape: the perl `alarm
 # Every kernel-initiated model call goes through _judge_run, and every caller names its judge. MODEL_CALLERS
 # lists each judge name with its relation to the kernel's master switch: "tracking" stands down while the
 # switch is off (the producer starts no tier; this gate catches any path that still asks, the nudge's
-# redundancy check among them). A judge with NO entry proceeds but says so loudly (a judge-errors row), and
+# redundancy check among them). A judge with NO entry is REFUSED, with a judge-errors row saying why (T404 round
+# two, low 3: letting it out defeated the switch for any caller that forgot the table), and
 # tests/test_task_tracking_switch.py holds this table to an ast census of _judge_run's call sites, so a new
 # caller cannot ship undeclared; a call that names no judge at all (a harness, a direct probe) is not gated.
 # The kernel installs its _task_tracking_on as TASK_TRACKING_ON at boot; the romp-judge CLI runs with the
@@ -2048,15 +2049,15 @@ MODEL_CALLERS = {
 
 def _model_call_allowed(judge):
     """Whether a model call by `judge` may go out now: a declared "tracking" judge only while the Task tracking switch
-    is on; a declared "user" judge always; an undeclared NAME proceeds but files a judge-errors row (the census test
-    is the gate that refuses it, at merge time); an unnamed call is not this gate's business."""
+    is on; a declared "user" judge always; an undeclared NAME is refused and files a judge-errors row (the census test
+    catches it at merge time; this is the running kernel's belt); an unnamed call is not this gate's business."""
     if judge is None:
         return True
     rel = MODEL_CALLERS.get(judge)
     if rel is None:
         _log_judge_error(judge, getattr(_judge_ctx, "fsid", None), "unregistered-caller",
-                         note="judge %r is not in judge.py MODEL_CALLERS: declare its relation to the Task tracking switch" % (judge,))
-        return True
+                         note="judge %r is not in judge.py MODEL_CALLERS: declare its relation to the Task tracking switch; the call was refused" % (judge,))
+        return False
     return rel != "tracking" or bool(TASK_TRACKING_ON())
 
 

@@ -777,9 +777,12 @@ function initGear(post, opts) {
   // membership), so it neither queues for nor reaches another machine. Stamped all the same: two
   // dashboards on one kernel still race, and the kernel orders every setting by `gt`.
   if (ths) ths.addEventListener('change', function () { post({ type: 'setThinkingSummaries', enabled: ths.checked, gt: gclock.stamp('thinking-summaries') }); });
-  // THE TASK TRACKING SWITCH (T404): the kernel's setting (gt-gated, a KERNEL_SETTING across machines); the shell hears the flip
-  // at once (a taskTracking message: the rail's Outline and Feed buttons and any open pane of theirs), ahead of its next /version
-  // read; the dependent controls dress on the same click
+  // THE TASK TRACKING SWITCH (T404): the kernel's setting (gt-gated, a KERNEL_SETTING across machines). The click POSTS and
+  // nothing more: the dependent controls dress and the shell hears the flip (a taskTracking message: the rail's Outline and
+  // Feed buttons and any open pane of theirs, ahead of its next /version read) on the KERNEL'S ECHO, the taskTracking frame
+  // the applying kernel answers on this socket, so a refused write (a settingStale frame with why) leaves the shell and the
+  // panes as they were and fill() snaps the box back (T404 round two, medium 4: the gear and the shell went off 6 ms after
+  // a click the kernel had refused, and the judges kept spending behind a switch that read off)
   var TT_OFF_TIP = 'Enable task tracking to use this (Settings, Task tracking).';
   function dressTracking(on) {
     var rows = Array.prototype.slice.call(document.querySelectorAll('#rsettings .rs-pane[data-pane=tasks] .rs-row')).filter(function (r) { return !r.querySelector('#rs-tasktrack'); });   // the judge rows; never the switch's own row
@@ -794,7 +797,14 @@ function initGear(post, opts) {
     if (sc1) sc1.hidden = !!on;
   }
   function tellShellTracking(on) { try { (window.parent !== window ? window.parent : window).postMessage({ romp: 'taskTracking', on: !!on }, '*'); } catch (e) {} }
-  if (tk) tk.addEventListener('change', function () { post({ type: 'setTaskTracking', enabled: tk.checked, gt: gclock.stamp('task-tracking') }); tellShellTracking(tk.checked); dressTracking(tk.checked); });
+  if (tk) tk.addEventListener('change', function () { post({ type: 'setTaskTracking', enabled: tk.checked, gt: gclock.stamp('task-tracking') }); });
+  window.addEventListener('message', function (e) {
+    var m = e.data;
+    if (!m || m.type !== 'taskTracking' || typeof m.on !== 'boolean') return;   // the kernel's echo of an applied flip
+    if (tk) tk.checked = m.on;
+    dressTracking(m.on);
+    tellShellTracking(m.on);
+  });
   // Auto Nudge / judge tiers are SERVER-SIDE (the kernel runs them): post the
   // change; the controls re-initialize from /version on every open (fill()).
   // Each attached kernel keeps its own copy, so the post goes to all of them
@@ -1158,7 +1168,7 @@ function initGear(post, opts) {
   // refused pick as applied (fill() runs only on open), and with every kernel AGREEING on the
   // kept value the mixed marks show nothing. Event-keyed: the frame IS the deciding event — toast
   // it in plain words and re-read the kernel's actual values if the modal is up. No polling.
-  var STALE_LABELS = { 'auto-nudge': 'Auto Nudge', 'compact-suggest': 'Suggest /compact',
+  var STALE_LABELS = { 'auto-nudge': 'Auto Nudge', 'compact-suggest': 'Suggest /compact', 'task-tracking': 'Task tracking',
     'file-editing': 'File editing',
     'update-mode': 'Automatic updates', 'judge-model': 'Triage model', 'judge-effort': 'Triage effort',
     'index-model': 'Indexing model', 'index-effort': 'Indexing effort', 'judge-concurrency': 'Judge concurrency',

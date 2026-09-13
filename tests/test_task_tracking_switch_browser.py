@@ -6,7 +6,11 @@ own socket and tells the shell), and the page is read: the shell wears body.no-t
 kernel's /version reports the switch off, the feed pane's frame carries the off flag and the pane shows the kernel's notice
 in place of its list, a fresh /feed page renders the notice unhidden, the judge rows and the pane toggles wear rs-off with
 the one tooltip and their inputs are disabled, the Automation rows show their waiting note, and /perf's tierStarts stays flat
-across the wait while it grew before and grows again after. Flipped back, the buttons return, /version reads on and the notice hides. The producer's gate
+across the wait while it grew before and grows again after. Flipped back, the buttons return, /version reads on and the notice hides.
+Round two: the Outline pane is turned on first so its page is loaded, and after the flip both panes show the notice ON TOP with
+the romp loader gone within seconds, not at its 30 s failsafe (the outline's _keepLoader used to re-assert it forever); a write
+the kernel refuses (a directory where the file goes) leaves the switch, the shell and the kernel on and draws the stale toast
+with the kept value; the notice's button on a standalone /feed page opens the dashboard at Task tracking. The producer's gate
 itself is executed with stubs in tests/test_task_tracking_switch.py (this boot's session is live to the kernel, so
 the counter moves while on and stands still while off: the switch's proof on the real producer). Skips LOUDLY without the
 extension deps or a browser (a failure under ROMP_SERVED_TESTS_REQUIRE=1, the file name being a served module's).
@@ -68,13 +72,75 @@ const kernel = async () => { const v = await page.evaluate(async (u) => (await f
   return { taskTracking: v.taskTracking, settingsTaskTracking: v.settings && v.settings.taskTracking, tierStarts: p.judge ? p.judge.tierStarts : null, feedNoticeShown: /id=tt-off class=tt-off style=/.test(feedPage), feedNoticeHidden: /class=tt-off hidden/.test(feedPage) }; };
 const feedPane = () => feedF ? feedF.evaluate(() => { const o = document.getElementById("tt-off"), l = document.getElementById("feed-list"); return { present: !!o, noticeShown: !!o && !o.hidden, listHidden: !!l && l.hidden }; }) : Promise.resolve(null);
 const out = {};
-out.before = { shell: await shell(), gear: await gear(), kernel: await kernel(), feedPane: await feedPane() };
+// the Outline pane on (its default is off, so its page is not loaded): the gear's Panes toggle, a same-origin storage event the
+// shell's reconcile hears, loads the iframe; the outline's page must be up for its loader to be measured after the flip
+await setF.evaluate(() => { const b = document.getElementById("rs-pane-fleet"); if (b && !b.checked) b.click(); });
+const fleetF = await frameBy("/fleet");
+if (fleetF) await fleetF.waitForSelector("#fleet-list", { timeout: 15000 }).catch(() => {});
+await page.waitForTimeout(1500);   // the outline's first frame lands (its loader hides on real data)
+const paneRead = (f) => f ? f.evaluate(() => {
+  const o = document.getElementById("tt-off"), l = document.getElementById("feed-list") || document.getElementById("fleet-list"), sp = document.getElementById("pane-spin");
+  let onTop = null;
+  let hitDesc = null;
+  if (o && !o.hidden) { const t = o.querySelector("p") || o; const r = t.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    onTop = !!hit && (hit === o || o.contains(hit)); hitDesc = hit ? (hit.tagName + "#" + hit.id + "." + hit.className) : "nothing"; }
+  return { present: !!o, noticeShown: !!o && !o.hidden, listHidden: !!l && l.hidden, spinGone: !!sp && sp.classList.contains("gone"), noticeOnTop: onTop, hit: hitDesc };
+}) : Promise.resolve(null);
+out.before = { shell: await shell(), gear: await gear(), kernel: await kernel(), feedPane: await feedPane(), fleetPane: await paneRead(fleetF) };
+// A REFUSED WRITE (round two, medium 4): a directory where the file goes; the read still says on (malformed reads on), the write
+// cannot replace it. The click must leave the switch, the shell and the kernel on, and say so in the gear's stale toast.
+fs.mkdirSync(cfg.stateFile);
+await setF.click("#rs-tasktrack");
+const toastText = await setF.waitForFunction(() => { const t = document.querySelector(".rs-stale-toast-msg"); return t ? t.textContent : null; }, null, { timeout: 10000 }).then((h) => h.jsonValue()).catch(() => null);
+await setF.waitForFunction(() => document.getElementById("rs-tasktrack").checked === true, null, { timeout: 10000 }).catch(() => {});
+await page.waitForTimeout(700);   // time enough for a shell apply that must not come
+out.refused = { toast: toastText, gear: await gear(), shell: await shell(), kernel: await kernel(), feedPane: await feedPane() };
+fs.rmdirSync(cfg.stateFile);
+await setF.evaluate(() => { Array.from(document.querySelectorAll(".rs-stale-toast")).forEach((t) => t.remove()); });
+// a gear that flipped its box on the click whatever the kernel did (round one's) leaves it unchecked here while the kernel is on:
+// put it back, so the flip below starts from on on every head and each test fails on its own assertion, not on a garbled sequence
+if (!(await setF.evaluate(() => document.getElementById("rs-tasktrack").checked))) { await setF.click("#rs-tasktrack"); await page.waitForTimeout(600); }
 // THE FLIP, in the gear: a real click on the switch
+const flipAt = Date.now();
 await setF.click("#rs-tasktrack");
 await page.waitForFunction(() => document.body.classList.contains("no-task-tracking"), null, { timeout: 10000 }).catch(() => {});
 await page.waitForFunction(async (u) => (await (await fetch(u, { cache: "no-store" })).json()).taskTracking === false, cfg.version, { timeout: 10000 }).catch(() => {});
 if (feedF) await feedF.waitForFunction(() => { const o = document.getElementById("tt-off"); return !!o && !o.hidden; }, null, { timeout: 15000 }).catch(() => {});
-out.off = { shell: await shell(), gear: await gear(), kernel: await kernel(), feedPane: await feedPane(), feedFrames: await feedFrames() };
+// the loaders (round two, medium 1): gone within seconds of the off frame, the notice on top; the outline's would otherwise
+// be re-asserted every second past its 30 s failsafe
+let fleetSpinGoneMs = null;
+if (fleetF) { await fleetF.waitForFunction(() => { const o = document.getElementById("tt-off"), sp = document.getElementById("pane-spin"); return !!o && !o.hidden && !!sp && sp.classList.contains("gone"); }, null, { timeout: 12000 }).then(() => { fleetSpinGoneMs = Date.now() - flipAt; }).catch(() => {}); }
+if (feedF) await feedF.waitForFunction(() => { const sp = document.getElementById("pane-spin"); return !!sp && sp.classList.contains("gone"); }, null, { timeout: 12000 }).catch(() => {});
+await page.waitForTimeout(2500);   // two more _keepLoader ticks: a loader re-asserted would show here
+out.off = { shell: await shell(), gear: await gear(), kernel: await kernel(), feedPane: await feedPane(), feedFrames: await feedFrames(),
+            fleetPane: await paneRead(fleetF), feedPaneLoader: await paneRead(feedF), fleetSpinGoneMs };
+// THE STANDALONE PAGE (round two, medium 2): /feed on its own, while off, shows the notice; its button has no shell to ask and
+// no gear here, so it goes to the dashboard at Task tracking
+const p2 = await ctx.newPage();
+await p2.goto(cfg.feedPage);
+await p2.waitForFunction(() => { const o = document.getElementById("tt-off"); return !!o && !o.hidden; }, null, { timeout: 15000 }).catch(() => {});
+// the standalone pages are where the notice is SEEN (the shell closes the panes while off): the loader must be gone and stay gone
+// past several _keepLoader ticks, with the notice under the pointer (round two, medium 1: the outline's loader sat over it forever)
+const probeStandalone = (pg) => pg.evaluate(() => { const o = document.getElementById("tt-off"), sp = document.getElementById("pane-spin");
+  let onTop = null, hitDesc = null;
+  if (o && !o.hidden) { const t = o.querySelector("p") || o; const r = t.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    onTop = !!hit && (hit === o || o.contains(hit)); hitDesc = hit ? (hit.tagName + "#" + hit.id + "." + hit.className) : "nothing"; }
+  return { noticeShown: !!o && !o.hidden, spinGone: !!sp && sp.classList.contains("gone"), noticeOnTop: onTop, hit: hitDesc, url: location.pathname }; });
+await p2.waitForTimeout(3500);
+const standaloneBefore = await probeStandalone(p2);
+const p3 = await ctx.newPage();
+await p3.goto(cfg.fleetPage);
+await p3.waitForFunction(() => { const o = document.getElementById("tt-off"); return !!o && !o.hidden; }, null, { timeout: 15000 }).catch(() => {});
+await p3.waitForTimeout(3500);
+out.fleetStandalone = await probeStandalone(p3);
+await p3.close();
+await p2.click("#tt-off-btn", { timeout: 5000 }).catch(() => {});   // a hidden button (a page that shows no notice) is this test's red, not a crash
+await p2.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
+let tasksPane = null;
+{ let sf = p2.frames().find((x) => x.url().includes("/settings")); for (let i = 0; i < 50 && !sf; i++) { await p2.waitForTimeout(100); sf = p2.frames().find((x) => x.url().includes("/settings")); }
+  if (sf) tasksPane = await sf.waitForFunction(() => { const pane = document.querySelector("#rsettings .rs-pane[data-pane=tasks]"); return !!pane && !pane.hidden; }, null, { timeout: 10000 }).then(() => true).catch(() => false); }
+out.standalone = { before: standaloneBefore, url: p2.url(), settingsOpen: await p2.evaluate(() => document.body.classList.contains("settings-open")), tasksPane };
+await p2.close();
 await page.waitForTimeout(4000);   // several producer passes' worth of wall time while off: the counter must not move
 out.afterWait = await kernel();
 // BACK ON
@@ -98,7 +164,8 @@ class ServedTaskTrackingSwitch(QueuedLab):
             cfg = os.path.join(self.lab, "cfg.json")
             with open(cfg, "w") as f:
                 json.dump({"landing": base + "/?token=" + self.token, "version": base + "/version", "perf": base + "/perf?token=" + self.token,
-                           "feedPage": base + "/feed?token=" + self.token, "sid": SID}, f)
+                           "feedPage": base + "/feed?token=" + self.token, "fleetPage": base + "/fleet?token=" + self.token, "sid": SID,
+                           "stateFile": os.path.join(self.state, "task-tracking.json")}, f)
             driver = os.path.join(self.lab, "driver_tt.mjs")
             with open(driver, "w") as f:
                 f.write(DRIVER)
@@ -164,6 +231,48 @@ class ServedTaskTrackingSwitch(QueuedLab):
         self.assertGreater(r["before"]["kernel"]["tierStarts"], 0, "tiers start in this boot while on, so the flat count below means something" + table)
         self.assertEqual(r["afterWait"]["tierStarts"], r["off"]["kernel"]["tierStarts"], "tierStarts flat while off" + table)
         self.assertGreater(r["on"]["kernel"]["tierStarts"], r["off"]["kernel"]["tierStarts"], "…and growing once on again" + table)
+
+    def test_off_both_panes_show_the_notice_on_top_with_the_loader_gone_within_seconds(self):
+        # round two, medium 1: the Outline page showed the romp loader forever over the notice (_keepLoader re-asserting it past the
+        # 30 s failsafe, the off frame's early return never marking the page loaded); /feed hid its notice under its loader for 30 s
+        r = self._result(); o = r["off"]; table = "\n  fleet: " + json.dumps(o.get("fleetPane")) + " feed: " + json.dumps(o.get("feedPaneLoader")) + " ms: " + json.dumps(o.get("fleetSpinGoneMs")) + " before: " + json.dumps(r["before"].get("fleetPane"))
+        self.assertIsNotNone(o.get("fleetPane"), "the Outline pane is loaded (turned on in the gear before the flip)" + table)
+        for key in ("fleetPane", "feedPaneLoader"):   # the panes in the shell (closed by the apply, so no pointer can reach them): the class says
+            p = o[key]
+            self.assertTrue(p and p["present"] and p["noticeShown"] and p["listHidden"], key + ": the notice in place of the list" + table)
+            self.assertTrue(p["spinGone"], key + ": the romp loader is gone" + table)
+        self.assertIsNotNone(o.get("fleetSpinGoneMs"), "the outline's loader went within the wait" + table)
+        self.assertLess(o["fleetSpinGoneMs"], 12000, "…within seconds of the flip, not at the 30 s failsafe" + table)
+        # the standalone pages, where the notice is seen: read 3.5 s after it showed, past several _keepLoader ticks
+        for key, p in (("feed", r["standalone"]["before"]), ("outline", r.get("fleetStandalone"))):
+            tb = table + "\n  " + key + " standalone: " + json.dumps(p)
+            self.assertTrue(p and p["noticeShown"], key + ": the standalone page shows the notice" + tb)
+            self.assertTrue(p["spinGone"], key + ": the loader is gone and stays gone" + tb)
+            self.assertTrue(p["noticeOnTop"], key + ": the notice is what the pointer hits, not the loader (hit: %s)" % p.get("hit") + tb)
+
+    def test_a_write_the_kernel_refuses_leaves_the_switch_the_shell_and_the_kernel_on_and_says_so(self):
+        # round two, medium 4: the gear and the shell went off 6 ms after the click while the kernel kept tracking on
+        r = self._result()["refused"]; table = "\n  " + json.dumps(r)[:1800]
+        self.assertIsNotNone(r["toast"], "the gear's stale toast drew" + table)
+        self.assertIn("Task tracking: off was not applied", r["toast"], "the setting by name, the refused value, not applied (low 1)" + table)
+        self.assertIn("Keeping on", r["toast"], "the kept value is named" + table)
+        self.assertIn("write failed", r["toast"], "and the fault" + table)
+        self.assertTrue(r["gear"]["checked"], "the box reads on again (the modal re-read the kernel)" + table)
+        self.assertEqual(r["gear"]["jrowsOff"], 0, "no dependent greyed" + table)
+        self.assertFalse(r["shell"]["noTracking"], "the shell never went off" + table)
+        self.assertTrue(r["shell"]["fleetBtn"] and r["shell"]["feedBtn"], "the buttons stayed" + table)
+        self.assertTrue(r["kernel"]["taskTracking"], "/version says on" + table)
+        self.assertFalse(r["feedPane"] and r["feedPane"]["noticeShown"], "the feed pane shows no notice" + table)
+
+    def test_the_notices_button_on_a_standalone_feed_page_opens_the_dashboard_at_task_tracking(self):
+        # round two, medium 2: the button posted to its own window, and nothing listened
+        r = self._result()["standalone"]; table = "\n  " + json.dumps(r)
+        self.assertTrue(r["before"]["noticeShown"], "the standalone page shows the notice" + table)
+        self.assertTrue(r["before"]["spinGone"], "…with no loader over it" + table)
+        self.assertTrue(r["settingsOpen"], "the dashboard opened with the settings up" + table)
+        self.assertTrue(r["tasksPane"], "…at the Task tracking tab" + table)
+        self.assertNotIn("#settings", r["url"], "the hash was dropped once opened, so a reload does not reopen it" + table)
+        self.assertTrue(r["url"].split("?")[0].endswith("/"), "the landing, not the pane" + table)
 
     def test_back_on_restores_the_buttons_the_controls_and_the_panes(self):
         o = self._result()["on"]; table = "\n  " + json.dumps(o)[:1500]

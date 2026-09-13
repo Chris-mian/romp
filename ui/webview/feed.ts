@@ -5968,7 +5968,12 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     const ttOff = document.getElementById("tt-off"), ttList = document.getElementById("feed-list");
     if (ttOff) ttOff.hidden = !m.off;
     if (ttList) ttList.hidden = !!m.off;
-    if (m.off) return;
+    if (m.off) {
+      // the notice IS this frame's content: the romp loader, whose observer watches the list the off frame leaves empty,
+      // would otherwise sit over the notice to its 30 s failsafe (T404 round two, medium 1)
+      document.getElementById("pane-spin")?.classList.add("gone");
+      return;
+    }
     // HOVER-FREEZE: a hovered card must not move on screen — queue the payload (newest wins) and
     // hint the deferred churn on the headers instead; mouseleave/blur flush it (see freezeEnter).
     if (freezeKey || tabScopeKey) { pendingFeedPayload = m; paintFreezeBadges(); return; }
@@ -6354,7 +6359,10 @@ initFileBrowse((m) => vscodeApi?.postMessage(m));   // …and a Browse files ask
 
 vscodeApi?.postMessage({ type: "ready" });
 
-// the notice's button while the Task tracking switch is off (T404): asks the shell to open the settings on Task tracking
+// the notice's button while the Task tracking switch is off (T404): the settings on Task tracking
 document.getElementById("tt-off-btn")?.addEventListener("click", () => {
-  try { (window.parent !== window ? window.parent : window).postMessage({ romp: "openSettings", tab: "tasks" }, "*"); } catch { /* no shell to ask */ }
+  // through gear-host's one road (the shell forwards it into the settings iframe at the Task tracking tab); a standalone
+  // /feed or /fleet page has no shell to ask and hosts no gear, so it goes to the dashboard with the tab named in the hash,
+  // which the landing opens (T404 round two, medium 2: the bare post reached nothing on the only page where the notice shows)
+  if (!openGear(window, { tab: "tasks" })) window.location.assign("/" + window.location.search + "#settings=tasks");
 });

@@ -24,8 +24,14 @@ test("the gear: the master row opens Task tracking, checked by default, with the
   assert.ok(tasks.indexOf("id=rs-tasktrack") < tasks.indexOf("<div class=rs-sec>Judges</div>"), "the switch above the Judges");
 });
 
-test("the gear: the flip posts setTaskTracking with a stamp, tells the shell, and dresses the dependents on the same click", () => {
-  assert.match(GEAR, /if \(tk\) tk\.addEventListener\('change', function \(\) \{ post\(\{ type: 'setTaskTracking', enabled: tk\.checked, gt: gclock\.stamp\('task-tracking'\) \}\); tellShellTracking\(tk\.checked\); dressTracking\(tk\.checked\); \}\);/);
+test("the gear: the flip posts setTaskTracking with a stamp and nothing more; the kernel's echo dresses the dependents and tells the shell", () => {
+  // round two, medium 4: the gear and the shell went off on the click while the kernel had refused the write
+  assert.match(GEAR, /if \(tk\) tk\.addEventListener\('change', function \(\) \{ post\(\{ type: 'setTaskTracking', enabled: tk\.checked, gt: gclock\.stamp\('task-tracking'\) \}\); \}\);/);
+  assert.doesNotMatch(GEAR, /gclock\.stamp\('task-tracking'\) \}\); tellShellTracking/, "no shell message on the click");
+  assert.match(GEAR, /if \(!m \|\| m\.type !== 'taskTracking' \|\| typeof m\.on !== 'boolean'\) return;[^\n]*\n\s*if \(tk\) tk\.checked = m\.on;\s*\n\s*dressTracking\(m\.on\);\s*\n\s*tellShellTracking\(m\.on\);/,
+    "the echo frame sets the box, dresses, and tells the shell");
+  assert.match(KERNEL, /_reply\(client, \{"type": "taskTracking", "on": bool\(enabled\), "gt": stamp\}\)/, "the kernel answers an applied flip on the delivering socket");
+  assert.match(GEAR, /'task-tracking': 'Task tracking',/, "the stale toast names the setting (round two, low 1)");
   assert.match(GEAR, /function tellShellTracking\(on\) \{ try \{ \(window\.parent !== window \? window\.parent : window\)\.postMessage\(\{ romp: 'taskTracking', on: !!on \}, '\*'\); \} catch \(e\) \{\} \}/);
   assert.match(GEAR, /'task-tracking': 'setTaskTracking'/, "the stale map names the type (a stood-down gesture re-issues it)");
   assert.match(GEAR, /\['compactSuggest', csg\], \['taskTracking', tk\],/, "the mixed mark rides the generic kernel-setting comparison");
@@ -44,15 +50,26 @@ test("the gear: dressTracking greys the judge rows, the Outline and Feed pane to
   assert.match(GEAR_CSS, /#rsettings \.rs-row\.rs-off > \*, #rsettings \.rs-jrow\.rs-off > \* \{ pointer-events: none; \}/, "the row keeps its hover (the tooltip); its controls take no pointer");
 });
 
-test("the panes: the feed frame's off flag shows the kernel's notice in place of the list and applies nothing; the button asks the shell for the Task tracking tab", () => {
+test("the panes: the feed frame's off flag shows the kernel's notice in place of the list, drops the loader, and applies nothing; the button opens the settings through openGear, or the dashboard standalone", () => {
   for (const [src, list] of [[FEED, "feed-list"], [FLEET, "fleet-list"]] as const) {
-    assert.match(src, new RegExp('const ttOff = document\\.getElementById\\("tt-off"\\), ttList = document\\.getElementById\\("' + list + '"\\);\\s*\\n\\s*if \\(ttOff\\) ttOff\\.hidden = !m\\.off;\\s*\\n\\s*if \\(ttList\\) ttList\\.hidden = !!m\\.off;\\s*\\n\\s*if \\(m\\.off\\) return;'));
-    assert.match(src, /document\.getElementById\("tt-off-btn"\)\?\.addEventListener\("click", \(\) => \{\s*\n\s*try \{ \(window\.parent !== window \? window\.parent : window\)\.postMessage\(\{ romp: "openSettings", tab: "tasks" \}, "\*"\); \}/);
+    assert.match(src, new RegExp('const ttOff = document\\.getElementById\\("tt-off"\\), ttList = document\\.getElementById\\("' + list + '"\\);\\s*\\n\\s*if \\(ttOff\\) ttOff\\.hidden = !m\\.off;\\s*\\n\\s*if \\(ttList\\) ttList\\.hidden = !!m\\.off;\\s*\\n\\s*if \\(m\\.off\\) \\{'));
+    // round two, medium 2: the bare post to the pane's own window reached nothing on the standalone page, the only place the notice shows
+    assert.match(src, /document\.getElementById\("tt-off-btn"\)\?\.addEventListener\("click", \(\) => \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*if \(!openGear\(window, \{ tab: "tasks" \}\)\) window\.location\.assign\("\/" \+ window\.location\.search \+ "#settings=tasks"\);\s*\n\s*\}\);/);
+    assert.doesNotMatch(src, /postMessage\(\{ romp: "openSettings", tab: "tasks" \}/, "no hand-rolled relay past gear-host");
   }
-  assert.ok(FEED.indexOf("if (m.off) return;") < FEED.indexOf("if (freezeKey || tabScopeKey) { pendingFeedPayload = m;"), "the off check precedes the hover-freeze queue: an off frame is never queued as a payload");
-  assert.ok(FLEET.indexOf("if (m.off) return;") < FLEET.indexOf("if (m.views && typeof m.views === \"object\") fleetViews"), "…and precedes the outline's reads of the payload");
+  // round two, medium 1: the loader sat over the notice (the outline's to forever, _keepLoader re-asserting it past the failsafe)
+  assert.match(FEED, /if \(m\.off\) \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*document\.getElementById\("pane-spin"\)\?\.classList\.add\("gone"\);\s*\n\s*return;\s*\n\s*\}/);
+  assert.match(FLEET, /if \(m\.off\) \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*loaded = true;\s*\n\s*document\.getElementById\("pane-spin"\)\?\.classList\.add\("gone"\);\s*\n\s*return;\s*\n\s*\}/, "the outline marks itself loaded on the off frame");
+  assert.match(FLEET, /^import \{ openGear \} from "\.\/gear-host";$/m);
+  assert.ok(FEED.indexOf("if (m.off) {") < FEED.indexOf("if (freezeKey || tabScopeKey) { pendingFeedPayload = m;"), "the off check precedes the hover-freeze queue: an off frame is never queued as a payload");
+  assert.ok(FLEET.indexOf("if (m.off) {") < FLEET.indexOf("if (m.views && typeof m.views === \"object\") fleetViews"), "…and precedes the outline's reads of the payload");
 });
 
+test("the landing opens the settings named in the URL's hash, once, and drops the hash (a standalone page's road to Task tracking)", () => {
+  assert.match(KERNEL, /if\(location\.hash\.indexOf\('#settings'\)===0\)\{var sh=location\.hash\.slice\(9\);if\(sh\.charAt\(0\)==='='\)sh=sh\.slice\(1\);/);
+  assert.match(KERNEL, /history\.replaceState\(null,'',location\.pathname\+location\.search\);/);
+  assert.match(KERNEL, /var so=function\(\)\{window\.__rompOpenSettings\(sh\|\|undefined\);\};if\(document\.readyState==='complete'\)setTimeout\(so,0\);else window\.addEventListener\('load',so\);/);
+});
 test("federation: setTaskTracking is a KERNEL_SETTING (one value across machines, queued per host, flushed on reconnect)", () => {
   const set = FED.slice(FED.indexOf("const KERNEL_SETTING = new Set(["), FED.indexOf("]);", FED.indexOf("const KERNEL_SETTING = new Set([")));
   assert.match(set, /"setTaskTracking"/);

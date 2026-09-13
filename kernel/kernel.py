@@ -1618,7 +1618,7 @@ def _version_info():
             # per-install: SDK sessions ask for reasoning summaries (gear checkbox). Top-level only — not
             # in the "settings" sub-dict below, whose mixed marks promise a cross-machine write this never makes
             "thinkingSummaries": _thinking_summaries_on(),
-            "taskTracking": _task_tracking_on(),   # the master switch (T404): the gear's row and the shell's rail read it
+            "taskTracking": _mv["taskTracking"],   # the master switch (T404): the gear's row and the shell's rail read it; one snapshot with its stamp
             "updateMode": _update_mode(),    # ask|auto|off (the boot release check) → the gear dropdown
             "updateAvail": _UPDATE_AVAIL[0],   # newer release the boot check found ("" = none/unknown)
             "judgeModel": jd._triage_model(), "indexModel": jd._index_model(),      # current per-tier judge models → the gear dropdowns
@@ -1643,7 +1643,7 @@ def _version_info():
             # froze on both machines (the change's second review).
             "settings": {"autoNudge": _mv["autoNudge"], "updateMode": _update_mode(),
                          "conserveMemory": _conserve_on(),
-                         "taskTracking": _task_tracking_on(),   # one value across machines (T404)
+                         "taskTracking": _mv["taskTracking"],   # one value across machines (T404): adopted by a peer, one snapshot with its stamp
                          "compactSuggest": _mv["compactSuggest"],   # default OFF; one value across machines (T248)
                          "fileEditing": _mv["fileEditing"],
                          "judgeModel": jd._triage_model(), "judgeEffort": jd._triage_effort(),
@@ -7340,7 +7340,7 @@ def _pop_stale_notice():
     return d
 
 
-def _note_refused_gesture(name, gt, enabled, snap, why=None):
+def _note_refused_gesture(name, gt, enabled, snap, why=None, known=None):
     """A gt-gated toggle's write was REFUSED because its ledger read was unproved (the snapshot carries
     UNPROVED — the file could not be read, so the writer would not persist a copy of it). Recorded on this
     thread the way _setting_stale records a stand-down, so the WS branch that delivered the gesture can tell
@@ -7352,11 +7352,14 @@ def _note_refused_gesture(name, gt, enabled, snap, why=None):
     only when one is cached; otherwise it is the default, and the frame must not present that as kept.
     `why` given: the WRITE itself failed (the snapshot was proved; the publish raised) — the same frame, the
     fault named, and `write` set so the reply files no second error-center row: the writer already filed the
-    episode's one (the maintainer's fold on PR #1019: a refused write is told, once per episode)."""
+    episode's one (the maintainer's fold on PR #1019: a refused write is told, once per episode). `known` given
+    overrides the auto-nudge blob's rule: a store whose read is always proved (the Task tracking switch, whose absent
+    file reads on by design) names its kept value whatever the blob's cache holds (T404 round two)."""
     _stale_seen.refused = {"setting": name, "gt": gt, "refused": "on" if enabled else "off",
                            "why": str(why or snap.get(UNPROVED) or "the ledger could not be read"),
                            "write": why is not None,
-                           "known": str(jd.STATE / "auto-nudge.json") in _autonudge_cache}   # kept: None → the
+                           "known": (bool(known) if known is not None
+                                     else str(jd.STATE / "auto-nudge.json") in _autonudge_cache)}   # kept: None → the
     #                                                                                gear drops "Keeping …"
 
 
@@ -7930,10 +7933,27 @@ def _set_task_tracking(enabled, gt=None):
         stamp = gt if gt is not None else int(time.time() * 1000)
         try:
             _atomic_write(jd.STATE / TASK_TRACKING_FILE, json.dumps({"enabled": bool(enabled), "gt": stamp}))
-        except OSError as e:
-            sys.stderr.write("setting task-tracking: write failed (%s) — nothing applied\n" % e)
-            return None
+        except OSError as e:                          # a refused write (ENOSPC, EROFS, a directory in the file's place) is TOLD: the
+            sys.stderr.write("setting task-tracking: write failed (%s) — nothing applied\n" % e)   # delivering socket hears it as
+            _note_refused_gesture("task-tracking", gt, enabled, {}, why="write failed: %s" % _errno_text(e), known=True)   # its
+            return None                                #  siblings' refusals (T404 round two, medium 4); the kept value is always known here
         return stamp
+
+
+def _task_tracking_gt():
+    """The switch's last-applied gesture stamp, 0 when the file is absent or garbled: /version's settingsGt (the gear's
+    clock pre-learns it), the stale frame's storedGt, and a peer's adoption check (T404 round two, low 2 and medium 5)."""
+    try:
+        d = json.loads((jd.STATE / TASK_TRACKING_FILE).read_text())
+        return _gt_int(d.get("gt")) if isinstance(d, dict) else 0
+    except Exception:
+        return 0
+
+
+# The judge module's model-call gate reads THIS store (judge.py _model_call_allowed): installed at kernel import, not in
+# the SDK backend's constructor, so the backstop holds in every process that loads the kernel whether or not a backend
+# is ever built (T404 round two, low 7). romp-judge, the hand-run CLI, loads judge.py alone and keeps its default (on).
+jd.TASK_TRACKING_ON = _task_tracking_on
 
 
 # ── automatic updates of THIS machine (the user 2026-08-09) ───────────────────────────────────────
@@ -11799,7 +11819,8 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
         # ticks over two days before anyone noticed; every session after the bad one in the
         # iteration lost its nudges. The failure still logs loudly, per session.
         try:
-            r = _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids, wake_only=not on or not tracking, cleared=cleared)
+            r = _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids, wake_only=not on or not tracking, cleared=cleared,
+                                    reminders=on)    # the debt reminders ride the toggle alone: they go out while tracking is off (T404 round two)
             fired = (r is True) or fired
             # the walk->sweep handoff journal (the user 2026-08-24): a session gate names itself as
             # the return value; the sweep owns gate-held records by the GATE'S CLASS, never by age
@@ -13712,7 +13733,7 @@ def _nudge_look_gated(fn):
     off) neither skips nor records, since the toggle is not a file of the session. A decorator, so the look's own source
     stays what the pinning tests read."""
     @functools.wraps(fn)
-    def gated(s, now, live_map, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None):
+    def gated(s, now, live_map, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None, reminders=None):
         sid = str(s.get("sid") or "")
         _NUDGE_WALK_STATS["looks"] += 1
         files_st = None
@@ -13729,7 +13750,7 @@ def _nudge_look_gated(fn):
         _keyed, _over = _NUDGE_LOOK_ASKERS.get(sid, ((), ()))
         _NUDGE_HORIZON.keyed_askers, _NUDGE_HORIZON.over_askers = set(_keyed), set(_over)   # for the debt leg: the keyed askers'
         try:                                                                                #  rows decide, the overflow ones note
-            r = fn(s, now, live_map, nudged, waitfor, alive_ids, wake_only, cleared)
+            r = fn(s, now, live_map, nudged, waitfor, alive_ids, wake_only, cleared, reminders)
         finally:
             notes, parsed = getattr(_NUDGE_HORIZON, "notes", []) or [], getattr(_NUDGE_HORIZON, "parsed", False)
             _NUDGE_HORIZON.notes = None
@@ -13748,16 +13769,29 @@ def _nudge_look_gated(fn):
     return gated
 
 
+def _debt_leg_open(fired, wake_only, reminders=None):
+    """Whether a session's look reaches the DEBT REMINDER leg: nothing fired above it, and the reminders are on. The
+    reminders ride the nudge toggle alone (`reminders`, the toggle's value, handed down by the pass): they need no judge,
+    so the Task tracking switch off, which makes the goal walk wake-only (the judges no longer update the goals it is
+    about), does not drop them (T404 round two, medium 3: the manager's ruling under the user's no-extra-tokens rule; the
+    Auto Nudge row's note says they still go out, and this makes it true). A caller handing down no `reminders` (an
+    older harness) keeps the old rule: the leg follows the walk."""
+    if fired:
+        return False
+    return (not wake_only) if reminders is None else bool(reminders)
+
+
 @_nudge_look_gated
-def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None):
+def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None, reminders=None):
     """One session's slice of the auto-nudge tick: the session-level gates, then the fire/stamp
     walk over its still-'working' top goals. Split from _auto_nudge_tick so the tick isolates
     failures per session (see the tick's loop). Mutates `nudged` (the tick's in-memory mirror);
     returns True when it fired a nudge or stamped a failure — the tick pushes once at the end.
     `wake_only` (auto-nudge OFF, 2026-09-05): the same session gates, but the goal loop takes only
     its awaiting branch — the dead-man (which then files a lift, never an injection) and the wake
-    outcome leg — and never the plain nudge, the stall escalation or the debt reminder (see the
-    tick's and _wake_goal's docstrings).
+    outcome leg — and never the plain nudge or the stall escalation (see the tick's and _wake_goal's
+    docstrings); the debt reminder follows `reminders` (the nudge toggle alone, _debt_leg_open), so it
+    still goes out while the Task tracking switch, not the toggle, made the walk wake-only (T404 round two).
     Same-tick fires COALESCE: every goal due this tick goes out as ONE bundled message (see
     _nudge_bundle_body), after a last-moment store re-read drops any goal the judges resolved
     while the tick was deciding (_nudge_fire_list — the user 2026-07-24). After the goal walk,
@@ -14253,7 +14287,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
                          ev_t=recent_ts)             # it survived (the 2026-08-25 instrumentation)
         nudged[gid] = {"count": count, "lastTurnId": arm_id}   # mirror in-memory for the rest of this tick
         fired = True
-    if not fired and not wake_only:
+    if _debt_leg_open(fired, wake_only, reminders):
         # DEBT REMINDER (the user 2026-07-26): this idle session asked for nothing itself, but it may
         # OWE a reply that is silently parking a peer ("Awaiting <us>" on their cards, which the goal
         # nudge deliberately skips). Same gates as the goal nudge (we only reach here idle, judged,
@@ -17171,7 +17205,7 @@ def _sdk_locked():
             # ends, so an idle fleet's usage.json goes stale — measured ~15h — and the rate gate is
             # only as good as that file); the backend picks any live login session to ask
             jd._USAGE_REFRESH_FN = getattr(_sdk_backend, "refresh_usage", None)   # best-effort hook (judge guards None)
-            jd.TASK_TRACKING_ON = _task_tracking_on   # the Task tracking switch (T404): judge.py's model-call gate reads the kernel's store
+            # (jd.TASK_TRACKING_ON, the Task tracking switch's judge-side gate, is installed at kernel import beside _task_tracking_on)
             # the ONE billing resolver (T380): a judge on a session with no pick of its own bills what the launch and
             # the status resolve for it, the machine's explicit default when this box can bill it, else the helper rule
             # (default_auth over the reg applies auth_unavailable_why); the judge guards None and falls to its file rule
@@ -38744,6 +38778,28 @@ def _feed_off_frame(now):
     return f
 
 
+def _chat_dots_off(now, live_map):
+    """The chat's working and awaiting dot names while the feed is not built (the Task tracking switch off, T404 round
+    two, low 9): the off frame's empty lists blanked the peers' dots, against the copy that the chat carries on. The same
+    two signals _feed_session_entry derives, from the same helpers and none of the judges' stores: WORKING when the
+    session's last turn is open (_session_working over the cached, live-merged parse), AWAITING when it is idle and
+    _session_awaiting names a wait. Cache-only parses, as the feed's: a cold session shows no dot until the warm; a
+    failing session is skipped, never the list."""
+    working, awaiting = [], []
+    for s in _alive_sessions(now, live_map):
+        try:
+            ps = _parse_cached(s["path"]) if s.get("path") else None
+            if ps is not None:
+                ps = _merge_live_atoms(ps, s["sid"])
+            if ps is not None and _session_working(ps["turns"]):
+                working.append(s["name"])
+            elif ps is not None and _session_awaiting(s["sid"], s["path"], True):
+                awaiting.append(s["name"])
+        except Exception:
+            sys.stderr.write("chat dots (tracking off): %s\n" % traceback.format_exc())
+    return working, awaiting
+
+
 def build_feed(now, live_map=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
@@ -45839,6 +45895,8 @@ def _setting_kept_value(name):
         return _update_mode()
     if name == "thinking-summaries":
         return _thinking_summaries_on()
+    if name == "task-tracking":
+        return _task_tracking_on()
     return jd._state_str(name, "")   # the judge-tier stores are bare value files
 
 
@@ -45856,18 +45914,21 @@ def _setting_kept_value(name):
 # adopted too, for its stamp: the dashboard mints its next gesture above the LOCAL kernel's stamps only
 # (gear.js learnAll on /version's settingsGt), so a lagging stamp let a later local click apply here,
 # stand down on the peer, and be adopted away again one pass later (the first cut's review). Equal
-# stamps write nothing; a peer that sends no stamps (an older kernel) or junk teaches nothing. Scope: the three
+# stamps write nothing; a peer that sends no stamps (an older kernel) or junk teaches nothing. Scope: the four
 # boolean settings that ride the browser broadcast and have no other propagation leg (the judge tiers
-# fan out over /judge-settings; update mode is a per-install boot policy by design).
+# fan out over /judge-settings; update mode is a per-install boot policy by design). The Task tracking switch
+# joined with T404 round two (medium 5): a kernel attached after the flip kept tracking on with its default while
+# the gear showed off with the mixed mark, and its judges spent.
 _MESH_ADOPTED_SETTINGS = (("compactSuggest", "compact-suggest", _set_compact_suggest),
                           ("autoNudge", "auto-nudge", _set_auto_nudge),
-                          ("fileEditing", "file-editing", _set_file_editing))
+                          ("fileEditing", "file-editing", _set_file_editing),
+                          ("taskTracking", "task-tracking", _set_task_tracking))
 
 
 def _mesh_settings_snapshot():
-    """(values, stamps) for the three mesh-adopted stores, each store read ONCE so a value and its stamp
+    """(values, stamps) for the four mesh-adopted stores, each store read ONCE so a value and its stamp
     are one snapshot: the auto-nudge blob carries autoNudge/compactSuggest and both stamps, file-editing.json
-    carries fileEditing and its stamp. /version serves these for a polling peer's _adopt_peer_settings, which
+    carries fileEditing and its stamp, task-tracking.json carries taskTracking and its stamp (absent reads on). /version serves these for a polling peer's _adopt_peer_settings, which
     takes the pair as one fact — two reads let a click landing between them hand the peer (old value, new
     stamp), a pair it persisted and the equal-stamp rule then froze on both machines."""
     d = _auto_nudge_data()
@@ -45876,10 +45937,16 @@ def _mesh_settings_snapshot():
     except Exception:
         fe = None
     fe = fe if isinstance(fe, dict) else {}
+    try:
+        tt = json.loads((jd.STATE / TASK_TRACKING_FILE).read_text())
+    except Exception:
+        tt = None
+    tt = tt if isinstance(tt, dict) else {}
     values = {"autoNudge": bool(d.get("enabled")), "compactSuggest": bool(d.get("compactSuggestEnabled")),
-              "fileEditing": bool(fe.get("enabled"))}
+              "fileEditing": bool(fe.get("enabled")),
+              "taskTracking": tt.get("enabled", True) is not False}   # _task_tracking_on's rule: only the literal false is off
     stamps = {"auto-nudge": _gt_int(d.get("gt")), "compact-suggest": _gt_int(d.get("compactSuggestGt")),
-              "file-editing": _gt_int(fe.get("gt"))}
+              "file-editing": _gt_int(fe.get("gt")), "task-tracking": _gt_int(tt.get("gt"))}
     return values, stamps
 
 
@@ -46006,7 +46073,7 @@ def _adopt_peer_settings(host, rver):
 
 # Every gt-gated store, by the name _setting_stale is called with — the vocabulary the settingStale
 # frame and the gear's STALE_LABELS already share, so /version's settingsGt speaks the same one.
-_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries",
+_GT_STORES = ("auto-nudge", "compact-suggest", "file-editing", "update-mode", "thinking-summaries", "task-tracking",
               "judge-model", "index-model", "judge-effort", "index-effort", "judge-concurrency",
               "distill-model", "distill-effort", "comment-model", "comment-effort", "comment-fast",
               "judge-fast", "distill-fast", "index-fast")
@@ -46029,6 +46096,8 @@ def _setting_stored_gt(name):
             return _gt_int(d.get("gt")) if isinstance(d, dict) else 0
         except Exception:
             return 0
+    if name == "task-tracking":
+        return _task_tracking_gt()
     return _judge_state_gt(name)   # the judge-tier stores keep theirs in a `<name>.gt` sidecar
 
 
@@ -48221,7 +48290,7 @@ def _push(targets, connect=False, live_map=None):
             # for a fleet with no sessions — so the fleet can tell "the build ran, here's the data (maybe none)"
             # from "no data yet, still loading" and keep its loader up until real data lands (the user
             # 2026-06-29). Without this, an empty/ledger-less push looked identical to a not-yet-built one.
-            if chat_sessions or want_fleet:
+            if (chat_sessions or want_fleet) and not feed.get("off"):   # off (T404 round two, low 4): the outline shows its notice; no ledgers, no archived tops
                 feed["ledgers"] = [{"sid": m["id"], "name": m["name"], "color": m.get("color"),
                                     "status": m.get("status"),
                                     **_mail_off_fields(m["id"]),   # the Sessions pane shows a mail-off session and why (T356), from one derivation
@@ -48231,10 +48300,13 @@ def _push(targets, connect=False, live_map=None):
                                     "ledger": ({**m["ledger"], "archivedTops": _fleet_archived_tops(m["id"])}
                                                if isinstance(m.get("ledger"), dict)
                                                else m.get("ledger"))} for m in chat_sessions]
+            if feed.get("off"):                          # the chat's dots carry on while the feed is not built (T404 round two,
+                _dots_w, _dots_a = _chat_dots_off(now, live_map)   # low 9): the same two signals, derived outside the feed build
+            else:
+                _dots_w, _dots_a = feed["working"], feed.get("awaiting") or []
             for c in chat_clients:                       # the working-dot list (chat reads feed["working"]);
                 #                                          awaiting rides along for the await-green dots (2026-07-13)
-                _send_client(c, ("working",), {"type": "working", "names": feed["working"],
-                                               "awaiting": feed.get("awaiting") or []})
+                _send_client(c, ("working",), {"type": "working", "names": _dots_w, "awaiting": _dots_a})
         # TIMELINE in two messages (the user 2026-06-25): the LANES SKELETON ({type:"data"}) flushes FIRST —
         # cheap, so the lanes/status paint instantly — THEN the heavy bars+judging ride a {type:"bars"} message
         # (the ~95% of the payload). On a COLD connect the skeleton is on the wire before the expensive
@@ -51961,7 +52033,9 @@ def _chat_page():
 
 def _tt_off_notice(pane):
     """The pane's words while the Task tracking switch is off (T404): one sentence and a button that opens the settings
-    on Task tracking through the shell relay (the pane's script posts openSettings up). Always in the page, hidden while
+    on Task tracking (ui/webview/gear-host.ts openGear with the tab named: through the shell when the pane sits in one; a
+    standalone /feed or /fleet page has no shell to ask, so it goes to the dashboard with #settings=tasks, which the
+    landing opens, T404 round two). Always in the page, hidden while
     tracking is on; the pane's script shows or hides it on the feed frame's `off`, so an open pane swaps live."""
     what = "feed" if pane == "feed" else "outline"
     return ("<div id=tt-off class=tt-off%s style='padding:22px 16px;color:var(--dim, #999);font-size:13px;line-height:1.5'>"
@@ -53934,6 +54008,11 @@ if(!f.getAttribute('src')){var u=f.getAttribute('data-src');if(!u)return;sPend=t
     if(sPend){sPend=false;open();}});return;}
 if(sPend)return;
 open();};
+// #settings=<tab> in the URL (T404 round two): a standalone /feed or /fleet page's off notice lands here with the tab named,
+// since that page has no shell to ask and hosts no gear; opened once the page is up, and the hash dropped so a reload does not reopen it
+try{if(location.hash.indexOf('#settings')===0){var sh=location.hash.slice(9);if(sh.charAt(0)==='=')sh=sh.slice(1);
+try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}
+var so=function(){window.__rompOpenSettings(sh||undefined);};if(document.readyState==='complete')setTimeout(so,0);else window.addEventListener('load',so);}}catch(e){}   // a harness without a location object runs the rest
 window.addEventListener('message',function(e){var m=e.data;if(!m)return;
 if(m.romp==='settings'){document.body.classList.toggle('settings-open',!!m.on);
 // closing hides the iframe that held the keyboard, which drops focus onto the shell body; put it back in the
@@ -60288,13 +60367,17 @@ class Handler(BaseHTTPRequestHandler):
             if ferr:
                 _refuse_ws_flag(client, msg["type"], ferr, "enabled", msg.get("enabled"))
                 return
-            if _set_task_tracking(enabled, gt=_gesture_ms(msg)) is None:
-                _tell_stale_gesture(client, msg)
+            stamp = _set_task_tracking(enabled, gt=_gesture_ms(msg))
+            if stamp is None:
+                _tell_stale_gesture(client, msg)       # a stale stand-down or a refused write, told on this socket
             else:
                 _views_dirty[0] = time.time()          # the feed cache serves its warmed build while the view signature stands: the flip is
                 _drop_pure_feed()                      # a kernel-side mutation the signature cannot see, so it marks the views dirty (the
                 _producer_wake.set()                   # optimistic-mutation door) and drops the GET copy; the next push builds the off frame
                 _push_soon()
+                # THE KERNEL'S ECHO (T404 round two, medium 4): the gear dresses its dependents and tells the shell on this
+                # frame, never on the click, so a refusal above leaves the rail and the panes as the kernel has them
+                _reply(client, {"type": "taskTracking", "on": bool(enabled), "gt": stamp})
         elif msg and msg.get("type") == "askClear" and msg.get("itemId"):
             # a cleared card drops any composer citation chip pointing INTO it (the user 2026-07-01) — the
             # goal is gone, so following up on it makes no sense. Chips can cite a SUB-goal of the card
@@ -60405,7 +60488,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
         elif msg and msg.get("type") == "clearAll":
-            d = build_feed(int(time.time()))
+            d = build_feed(int(time.time())) if _task_tracking_on() else _feed_off_frame(int(time.time()))   # off (T404 round two, low 8): no build; nothing to clear
             # `items` (the old stream deliverables) is no longer a payload key; indexing it raised before
             # _clear_all ever ran, so Clear-all cleared nothing and only the receive loop's stderr line knew
             _gesture_store_refusal(client, "clear",

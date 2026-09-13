@@ -131,7 +131,7 @@ class NudgeWalkParseGate(unittest.TestCase):
         d = tempfile.mkdtemp()
         older, newer = _row(d, SID_OLD, old=True), _row(d, SID_NEW, old=False)
         seen = []; cold_for = {SID_NEW}                                  # only the newer session is cold, and it STAYS cold (a parse
-        def look(s, now, live_map, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None):   # that never caches)
+        def look(s, now, live_map, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None, reminders=None):   # that never caches)
             seen.append(s["sid"])
             if s["sid"] in cold_for:
                 km._NUDGE_HORIZON.cold = getattr(km._NUDGE_HORIZON, "cold", 0) + 1; km._NUDGE_HORIZON.cold_last = True

@@ -7,7 +7,12 @@ off frame in place of a build (the builder stubbed to raise: a call would be the
 on, shown while off), the nudge pass walking wake-only while off (the goal nudges wait; the compaction suggestion and the
 debt ladder keep the nudge toggle), and the CENSUS: every model-call site in kernel/judge.py names a judge that
 judge.py MODEL_CALLERS declares, and the entry point refuses an undeclared judge and stands a tracking judge down while the
-switch is off. Synthetic everything: hermetic XDG state, no network, no browser.
+switch is off. Round two (the read at 7a105ade): the judge-side gate is installed at kernel import; a refused write is
+told on the socket with the kept value, and an applied flip is echoed to it (the gear dresses on the echo, never the
+click); the switch is a mesh-adopted setting with its stamp in every table; the debt reminders ride the nudge toggle alone
+and go out while tracking is off; the census resolves a judge name bound in the function and flags one it cannot, and the
+entry point refuses an undeclared judge; the push attaches no ledgers while off and the chat's dots are derived outside
+the feed build; the clear-all op builds no feed while off. Synthetic everything: hermetic XDG state, no network, no browser.
 """
 import ast
 import json
@@ -43,12 +48,15 @@ class _Base(unittest.TestCase):
         km.jd.STATE = Path(self._td)
         km.jd._state_cache.clear()
         Path(self._td, "session-hosts").write_text("off")
-        self._saved_hook = km.jd.TASK_TRACKING_ON
-        km.jd.TASK_TRACKING_ON = km._task_tracking_on
+        self._saved_hook = km.jd.TASK_TRACKING_ON   # installed by the kernel's own load (TheJudgeHook); tests that stub it restore it
         km._stale_seen.last = None
         km._stale_seen.refused = None
+        self.replies = []                            # every frame a socket op answered on its delivering socket
+        self._saved_reply = km._reply
+        km._reply = lambda client, m: self.replies.append(m)
 
     def tearDown(self):
+        km._reply = self._saved_reply
         km.jd.TASK_TRACKING_ON = self._saved_hook
         km.jd.STATE = self._saved_state
         km.jd._state_cache.clear()
@@ -95,6 +103,16 @@ class TheSetter(_Base):
         self.assertEqual(km._stale_seen.last["setting"], "task-tracking")
         self.assertFalse(km._task_tracking_on(), "the stored value held")
 
+    def test_a_refused_write_applies_nothing_and_is_told_with_the_kept_value(self):
+        # a directory where the file goes: the read falls to on (malformed reads on) and the atomic write's replace refuses
+        self._file().mkdir()
+        self.assertIsNone(km._set_task_tracking(False, gt=5000))
+        self.assertTrue(km._task_tracking_on(), "nothing applied: the store still reads on")
+        rf = km._stale_seen.refused
+        self.assertIsNotNone(rf, "the refusal is recorded for the delivering socket (its siblings' road)")
+        self.assertEqual((rf["setting"], rf["refused"], rf["write"], rf["known"]), ("task-tracking", "off", True, True), rf)
+        self.assertTrue(rf["why"].startswith("write failed"), rf["why"])
+
     def test_an_unstamped_flip_applies_with_the_clock(self):
         stamp = km._set_task_tracking(False)
         self.assertIsInstance(stamp, int)
@@ -116,6 +134,27 @@ class TheSocketArm(_Base):
         km.Handler._dispatch_ws(types.SimpleNamespace(), {"type": "setTaskTracking", "enabled": True, "gt": 1999}, {})
         self.assertFalse(km._task_tracking_on(), "a stale stamp stood down")
         self.assertFalse(km._producer_wake.is_set(), "a stood-down gesture is not new information: no wake")
+
+    def test_an_applied_flip_is_echoed_to_the_delivering_socket_and_a_refusal_is_told_with_why_and_the_kept_value(self):
+        km.Handler._dispatch_ws(types.SimpleNamespace(), {"type": "setTaskTracking", "enabled": False, "gt": 2000}, {})
+        self.assertEqual(self.replies, [{"type": "taskTracking", "on": False, "gt": 2000}],
+                         "the kernel's echo: the gear dresses its dependents and tells the shell on this frame, never on the click")
+        self.replies.clear()
+        km.Handler._dispatch_ws(types.SimpleNamespace(), {"type": "setTaskTracking", "enabled": True, "gt": 1500}, {})
+        self.assertEqual(len(self.replies), 1, self.replies)
+        st = self.replies[0]
+        self.assertEqual((st["type"], st["setting"], st["storedGt"], st["gt"], st["kept"]), ("settingStale", "task-tracking", 2000, 1500, False),
+                         "a stale stand-down names the kept value (off), so the toast's Keeping clause reads: %r" % st)
+        self.assertEqual(st["gesture"], {"type": "setTaskTracking", "enabled": True})
+        self.replies.clear()
+        self._file().unlink()
+        self._file().mkdir()                         # the refused write: nothing applied, the socket hears why and what is kept
+        km.Handler._dispatch_ws(types.SimpleNamespace(), {"type": "setTaskTracking", "enabled": False, "gt": 3000}, {})
+        self.assertEqual(len(self.replies), 1, self.replies)
+        rf = self.replies[0]
+        self.assertEqual((rf["type"], rf["setting"], rf["kept"], rf["gt"]), ("settingStale", "task-tracking", True, 3000), rf)
+        self.assertTrue(rf["why"].startswith("write failed"), rf)
+        self.assertTrue(km._task_tracking_on(), "the kernel keeps tracking on: the shell and the gear follow it, not the click")
 
 
 class TheProducerGate(_Base):
@@ -218,10 +257,22 @@ class ThePanesNotice(_Base):
         self.assertFalse(v["settings"]["taskTracking"])
 
 
-def _census():
+def _consts(node):
+    """The constants an expression can evaluate to: a constant itself, or either arm of a conditional (nested too)."""
+    if isinstance(node, ast.Constant):
+        return {node.value}
+    if isinstance(node, ast.IfExp):
+        return _consts(node.body) | _consts(node.orelse)
+    return set()
+
+
+def _census(src=None):
     """Every function in judge.py that calls _judge_run, and every judge name those calls carry: a constant `judge=`,
-    the function's own default for a `judge` parameter, and every constant a caller passes for that parameter."""
-    tree = ast.parse(JUDGE_SRC)
+    the function's own default for a `judge` parameter, every constant a caller passes for that parameter, and every
+    constant the function binds to that name itself (`which = "planner"`, a conditional between constants). A name that
+    resolves to no constant at all is flagged `<unnamed:function:name>` so the census FAILS on it rather than passing
+    over a caller it cannot read (round two, low 3: a local passed as the judge was silently skipped)."""
+    tree = ast.parse(JUDGE_SRC if src is None else src)
     fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     def defaults(fn):
         a = fn.args; d = {}
@@ -239,14 +290,19 @@ def _census():
                 if isinstance(jv, ast.Constant):
                     names.add(jv.value)
                 elif isinstance(jv, ast.Name):
+                    found = set()
                     dv = defaults(fn).get(jv.id)
                     if isinstance(dv, ast.Constant):
-                        names.add(dv.value)
+                        found.add(dv.value)
                     for n2 in ast.walk(tree):
                         if isinstance(n2, ast.Call) and getattr(n2.func, "id", None) == fname:
                             for k in n2.keywords:
                                 if k.arg == jv.id and isinstance(k.value, ast.Constant):
-                                    names.add(k.value.value)
+                                    found.add(k.value.value)
+                    for n3 in ast.walk(fn):                       # the function's own bindings of the name
+                        if isinstance(n3, ast.Assign) and any(isinstance(t, ast.Name) and t.id == jv.id for t in n3.targets):
+                            found |= _consts(n3.value)
+                    names |= found if found else {"<unnamed:%s:%s>" % (fname, jv.id)}
                 else:
                     names.add("<unnamed:%s>" % fname)
     return callers, names
@@ -261,7 +317,22 @@ class TheCensus(_Base):
         self.assertTrue(all(v in ("tracking", "user") for v in km.jd.MODEL_CALLERS.values()), km.jd.MODEL_CALLERS)
         self.assertEqual({v for v in km.jd.MODEL_CALLERS.values()}, {"tracking"}, "today every kernel-initiated judge stands down with the switch")
 
-    def test_the_entry_point_stands_a_tracking_judge_down_while_off_and_lets_an_undeclared_or_unnamed_call_through_loudly(self):
+    def test_the_census_resolves_a_name_bound_in_the_function_and_flags_one_it_cannot(self):
+        snippet = (
+            "def a():\n    which = 'alpha'\n    return _judge_run('m', 's', 'u', judge=which)\n"
+            "def b(mode):\n    which = 'beta' if mode else 'gamma'\n    return _judge_run('m', 's', 'u', judge=which)\n"
+            "def c(name):\n    return _judge_run('m', 's', 'u', judge=name)\n"
+            "def d():\n    which = pick()\n    return _judge_run('m', 's', 'u', judge=which)\n"
+            "def e(judge='epsilon'):\n    return _judge_run('m', 's', 'u', judge=judge)\n"
+            "def f():\n    return e(judge='zeta')\n")
+        callers, names = _census(snippet)
+        self.assertEqual(callers, {"a", "b", "c", "d", "e"})
+        self.assertEqual({n for n in names if not str(n).startswith("<")}, {"alpha", "beta", "gamma", "epsilon", "zeta"},
+                         "a local constant, both arms of a conditional, a default and a caller's constant all count")
+        self.assertIn("<unnamed:c:name>", names, "a parameter no caller fills and no default names is flagged")
+        self.assertIn("<unnamed:d:which>", names, "a local bound to a call cannot be read: flagged, never silently skipped")
+
+    def test_the_entry_point_stands_a_tracking_judge_down_while_off_and_refuses_an_undeclared_name_while_an_unnamed_call_passes(self):
         class Reached(Exception):
             pass
         saved_engine = km.jd._judge_engine
@@ -279,18 +350,104 @@ class TheCensus(_Base):
             km.jd.TASK_TRACKING_ON = lambda: True
             with self.assertRaises(Reached, msg="on: a declared judge reaches the engine"):
                 km.jd._judge_run("m", "sys", "user", judge="planner")
-            with self.assertRaises(Reached, msg="an undeclared NAME proceeds…"):
-                km.jd._judge_run("m", "sys", "user", judge="not-a-judge")
+            self.assertEqual(km.jd._judge_run("m", "sys", "user", judge="not-a-judge"), "", "an undeclared NAME is refused (round two, low 3)…")
+            self.assertTrue(km.jd._judge_ctx.paused, "…as a stand-down, never a failure to count")
             after = errs.read_text() if errs.exists() else ""
-            self.assertIn("unregistered-caller", after[len(before):], "…but says so in judge-errors.jsonl; the census test is the gate that refuses it")
+            self.assertIn("unregistered-caller", after[len(before):], "…and says so in judge-errors.jsonl")
         finally:
             km.jd._judge_engine = saved_engine
 
-    def test_the_kernel_installs_its_store_as_the_judge_modules_hook_at_boot(self):
-        src = Path(BIN, "romp-kernel").read_text() if Path(BIN, "romp-kernel").exists() else ""
+    def test_the_kernel_installs_its_store_as_the_judge_modules_hook_at_import(self):
+        # a fresh load of the kernel module, no backend built (round two, low 7: the install sat in the SDK backend's constructor)
+        import re
+        saved = km.jd.TASK_TRACKING_ON
+        km.jd.TASK_TRACKING_ON = lambda: True
+        try:
+            fresh = load_source("romp_kernel_tasktrack_fresh", os.path.join(BIN, "romp-kernel"))
+            self.assertIs(fresh.jd.TASK_TRACKING_ON, fresh._task_tracking_on, "installed by the module's own load, beside the reader")
+        finally:
+            km.jd.TASK_TRACKING_ON = saved
         ksrc = Path(ROOT, "kernel", "kernel.py").read_text()
-        self.assertIn("jd.TASK_TRACKING_ON = _task_tracking_on", ksrc)
+        self.assertEqual(len(re.findall(r"^jd\.TASK_TRACKING_ON = _task_tracking_on$", ksrc, re.M)), 1, "one install, at module level")
+        self.assertEqual(ksrc.count("jd.TASK_TRACKING_ON = _task_tracking_on"), 1, "…and no second copy in a constructor")
         self.assertIn("TASK_TRACKING_ON = lambda: True", JUDGE_SRC, "the module's default: a hand-run judge pass is the user's")
+
+
+class TheMeshRoad(_Base):
+    """A kernel attached after the flip kept tracking on with its default while the gear showed off with the mixed mark
+    (round two, medium 5): the switch rides the adoption road its siblings take, with its stamp in every table."""
+    def test_the_switch_is_a_mesh_adopted_setting_with_its_stamp_in_every_table(self):
+        self.assertIn(("taskTracking", "task-tracking", km._set_task_tracking), km._MESH_ADOPTED_SETTINGS)
+        self.assertIn("task-tracking", km._GT_STORES, "the gear's clock pre-learns the stamp from /version's settingsGt (low 2)")
+        self.assertEqual(km._setting_stored_gt("task-tracking"), 0, "no file: nothing to outrank")
+        self.assertIs(km._setting_kept_value("task-tracking"), True, "no file: on is what a stood-down gesture keeps")
+        km._set_task_tracking(False, gt=4000)
+        values, stamps = km._mesh_settings_snapshot()
+        self.assertEqual((values["taskTracking"], stamps["task-tracking"]), (False, 4000))
+        self.assertEqual(km._setting_stored_gt("task-tracking"), 4000)
+        self.assertIs(km._setting_kept_value("task-tracking"), False)
+        v = km._version_info()
+        self.assertEqual((v["taskTracking"], v["settings"]["taskTracking"], v["settingsGt"]["task-tracking"]), (False, False, 4000),
+                         "/version reports the value twice and the stamp once, all from the one snapshot")
+
+    def test_a_kernel_attached_after_the_flip_adopts_the_peers_newer_off_and_an_older_stamp_teaches_nothing(self):
+        self.assertTrue(km._task_tracking_on())
+        out = km._adopt_peer_settings("TESTHOST", {"settings": {"taskTracking": False}, "settingsGt": {"task-tracking": 7000}})
+        self.assertIn("task-tracking", out)
+        self.assertFalse(km._task_tracking_on(), "adopted: this kernel's judges stand down too")
+        self.assertEqual(km._setting_stored_gt("task-tracking"), 7000, "…under the peer's stamp")
+        out = km._adopt_peer_settings("TESTHOST", {"settings": {"taskTracking": True}, "settingsGt": {"task-tracking": 6000}})
+        self.assertEqual(out, [], "an older stamp teaches nothing")
+        self.assertFalse(km._task_tracking_on())
+
+
+class ThePushWhileOff(_Base):
+    """The off frame carried the outline's real ledgers and ran the archived-tops walk on every push, and its empty
+    working and awaiting lists blanked the chat's dots (round two, lows 4 and 9)."""
+    def test_the_ledgers_attach_and_the_archived_tops_are_gated_and_the_chat_dots_are_derived_outside_the_build(self):
+        ksrc = Path(ROOT, "kernel", "kernel.py").read_text()
+        self.assertIn('if (chat_sessions or want_fleet) and not feed.get("off"):', ksrc)
+        self.assertIn("_dots_w, _dots_a = _chat_dots_off(now, live_map)", ksrc)
+        self.assertIn('_send_client(c, ("working",), {"type": "working", "names": _dots_w, "awaiting": _dots_a})', ksrc)
+        self.assertNotIn('"names": feed["working"]', ksrc, "the chat's dots no longer read the frame's list directly")
+
+    def test_the_chat_dots_read_the_sessions_turns_and_waits_without_the_feed_build(self):
+        saved = {k: getattr(km, k) for k in ("_alive_sessions", "_parse_cached", "_merge_live_atoms", "_session_working", "_session_awaiting", "build_feed")}
+        try:
+            km._alive_sessions = lambda now, live_map: [{"sid": "s1", "name": "web", "path": "/p1"}, {"sid": "s2", "name": "api", "path": "/p2"},
+                                                         {"sid": "s3", "name": "tests", "path": "/p3"}, {"sid": "s4", "name": "docs", "path": None}]
+            km._parse_cached = lambda path: None if path == "/p3" else {"turns": [path]}
+            km._merge_live_atoms = lambda ps, sid, shown_texts=(): ps
+            km._session_working = lambda turns: turns == ["/p1"]
+            km._session_awaiting = lambda sid, path, idle, stamp=False: {"why": "a delegate"} if sid == "s2" else None
+            def boom(*a, **k):
+                raise AssertionError("build_feed called")
+            km.build_feed = boom
+            self.assertEqual(km._chat_dots_off(0, {}), (["web"], ["api"]),
+                             "web works, api awaits; a cold parse (tests) and a pathless row (docs) show no dot; nothing built")
+        finally:
+            for k, v in saved.items():
+                setattr(km, k, v)
+
+
+class TheClearAllOp(_Base):
+    def test_clear_all_builds_no_feed_while_off_and_clears_nothing(self):
+        # round two, low 8: the op called build_feed bare, outside the two gated seams
+        km._set_task_tracking(False, gt=1)
+        saved = (km.build_feed, km._clear_all, km._gesture_store_refusal, km._send_to_app, km._mark_views_dirty)
+        calls = []
+        def boom(*a, **k):
+            raise AssertionError("build_feed called while task tracking is off")
+        km.build_feed = boom
+        km._clear_all = lambda ids: calls.append(("clear", list(ids))) or {"ok": True}
+        km._gesture_store_refusal = lambda client, what, res: calls.append(("refusal", what))
+        km._send_to_app = lambda app, m: calls.append(("app", m.get("type")))
+        km._mark_views_dirty = lambda: calls.append(("dirty",))
+        try:
+            km.Handler._dispatch_ws(types.SimpleNamespace(), {"type": "clearAll"}, {})
+        finally:
+            km.build_feed, km._clear_all, km._gesture_store_refusal, km._send_to_app, km._mark_views_dirty = saved
+        self.assertIn(("clear", []), calls, calls)
 
 
 class TheNudgePass(_Base):
@@ -306,7 +463,7 @@ class TheNudgePass(_Base):
         km._nudge_asks_by_target = lambda: {}
         km._nudge_look_stat = lambda s, asks, pstat: (("k",), False, False)
         km._auto_nudge_data = lambda: {"enabled": True, "nudged": {}}
-        km._auto_nudge_session = lambda s, now, live_map, nudged, waitfor, alive_ids, wake_only=False, cleared=None: self.calls.append(("session", wake_only))
+        km._auto_nudge_session = lambda s, now, live_map, nudged, waitfor, alive_ids, wake_only=False, cleared=None, reminders=None: self.calls.append(("session", wake_only, reminders))
         km._compact_suggest_tick = lambda sid, s, now: self.calls.append(("compact", None))
         km._debt_backstop_tick = lambda now: self.calls.append(("debt", None))
         km._dead_wait_sweep = lambda alive_ids, nudged, now: self.calls.append(("sweep", None))
@@ -319,17 +476,49 @@ class TheNudgePass(_Base):
             setattr(km, k, v)
         super().tearDown()
 
-    def test_off_walks_wake_only_and_keeps_the_compaction_suggestion_and_the_debt_ladder(self):
+    def test_off_walks_wake_only_with_the_reminders_on_and_keeps_the_compaction_suggestion_and_the_debt_ladder(self):
         km._set_task_tracking(False, gt=1)
         km._auto_nudge_pass(int(time.time()), {}, True)
-        kinds = [k for k, _ in self.calls]
-        self.assertIn(("session", True), self.calls, "the goal walk ran wake-only: %r" % self.calls)
+        kinds = [c[0] for c in self.calls]
+        self.assertIn(("session", True, True), self.calls, "the goal walk ran wake-only, the debt reminders handed the toggle (on): %r" % self.calls)
         self.assertIn("compact", kinds, "the compaction suggestion keeps the nudge toggle")
         self.assertIn("debt", kinds, "the debt ladder keeps the nudge toggle")
 
+    def test_the_nudge_toggle_off_hands_the_reminders_off_whatever_the_switch(self):
+        km._auto_nudge_on = lambda: False
+        km._auto_nudge_pass(int(time.time()), {}, True)
+        self.assertIn(("session", True, False), self.calls, self.calls)
+
     def test_on_walks_the_goals(self):
         km._auto_nudge_pass(int(time.time()), {}, True)
-        self.assertIn(("session", False), self.calls, self.calls)
+        self.assertIn(("session", False, True), self.calls, self.calls)
+
+
+class TheDebtLeg(_Base):
+    """The reminders about unanswered messages from other sessions need no judge, so the Task tracking switch off does not
+    drop them (round two, medium 3: the Auto Nudge row's note said only they still go out, and none did)."""
+    def test_the_reminders_ride_the_nudge_toggle_alone(self):
+        self.assertTrue(km._debt_leg_open(False, True, True), "tracking off made the walk wake-only; the toggle is on: the reminder goes out")
+        self.assertFalse(km._debt_leg_open(False, True, False), "the toggle off: no reminder")
+        self.assertFalse(km._debt_leg_open(False, False, False), "…whatever the walk")
+        self.assertTrue(km._debt_leg_open(False, False, True))
+        self.assertFalse(km._debt_leg_open(True, False, True), "a goal nudge fired this tick: the reminder yields, as before")
+        self.assertFalse(km._debt_leg_open(False, True), "no toggle handed down (an older harness): the leg follows the walk")
+        self.assertTrue(km._debt_leg_open(False, False))
+
+    def test_the_session_walk_reaches_the_debt_leg_through_it_and_the_pass_hands_the_toggle_down(self):
+        ksrc = Path(ROOT, "kernel", "kernel.py").read_text()
+        body = ksrc[ksrc.index("def _auto_nudge_session("):]
+        body = body[:body.index("\ndef ", 1)]
+        self.assertIn("if _debt_leg_open(fired, wake_only, reminders):", body)
+        self.assertLess(body.index("if _debt_leg_open(fired, wake_only, reminders):"), body.index("_debt_reminder_outcomes(sid, lt, now)"))
+        self.assertIn("fired = _fire_debt_reminder(sid, now, alive_ids)", body)
+        self.assertNotIn("if not fired and not wake_only:", body, "the old gate is gone")
+        passsrc = ksrc[ksrc.index("def _auto_nudge_pass("):]
+        passsrc = passsrc[:passsrc.index("\ndef ", 1)]
+        self.assertIn("wake_only=not on or not tracking, cleared=cleared,", passsrc)
+        self.assertIn("reminders=on)", passsrc, "the pass hands the toggle down beside the walk's own gate")
+        self.assertIn("r = fn(s, now, live_map, nudged, waitfor, alive_ids, wake_only, cleared, reminders)", ksrc, "the look decorator forwards it")
 
 
 if __name__ == "__main__":

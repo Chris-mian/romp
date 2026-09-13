@@ -818,7 +818,7 @@ class VersionReportsEveryStoredStamp(_Base):
     def test_a_fresh_install_reports_every_store_at_zero(self):
         gts = km._version_info()["settingsGt"]
         self.assertEqual(set(gts), set(km._GT_STORES), "one key per gt-gated store, no more, no less")
-        self.assertEqual(len(km._GT_STORES), 18, "five toggles/modes + thirteen kernel-side stores (judge-concurrency since T277, judge-fast with the judges' fast mode, distill-fast and index-fast with T300's box per tier; the terminal-backend store went with that backend, T332)")
+        self.assertEqual(len(km._GT_STORES), 19, "six toggles/modes (the task-tracking switch since T404) + thirteen kernel-side stores (judge-concurrency since T277, judge-fast with the judges' fast mode, distill-fast and index-fast with T300's box per tier; the terminal-backend store went with that backend, T332)")
         self.assertEqual(set(gts.values()), {0}, "nothing applied yet reads 0 — nothing to outrank")
         self.assertEqual(json.loads(json.dumps(gts)), gts, "plain JSON — ints, no paths, nothing to redact")
 
@@ -858,6 +858,7 @@ class VersionReportsEveryStoredStamp(_Base):
         newer = [{"type": "setAutoNudge", "enabled": False}, {"type": "setCompactSuggest", "enabled": True},
                  {"type": "setFileEditing", "enabled": True}, {"type": "setUpdateMode", "mode": "auto"},
                  {"type": "setThinkingSummaries", "enabled": True}, {"type": "setJudgeModel", "model": "fable"},
+                 {"type": "setTaskTracking", "enabled": False},
                  {"type": "setIndexModel", "model": "fable"}, {"type": "setJudgeEffort", "effort": "high"},
                  {"type": "setIndexEffort", "effort": "high"}, {"type": "setJudgeConcurrency", "value": "4"},
                  {"type": "setDistillModel", "model": "haiku"},
@@ -868,6 +869,7 @@ class VersionReportsEveryStoredStamp(_Base):
         older = [{"type": "setAutoNudge", "enabled": True}, {"type": "setCompactSuggest", "enabled": False},
                  {"type": "setFileEditing", "enabled": False}, {"type": "setUpdateMode", "mode": "off"},
                  {"type": "setThinkingSummaries", "enabled": False}, {"type": "setJudgeModel", "model": "opus"},
+                 {"type": "setTaskTracking", "enabled": True},
                  {"type": "setIndexModel", "model": "opus"}, {"type": "setJudgeEffort", "effort": "low"},
                  {"type": "setIndexEffort", "effort": "low"}, {"type": "setJudgeConcurrency", "value": "2"},
                  {"type": "setDistillModel", "model": "triage"},
@@ -881,7 +883,7 @@ class VersionReportsEveryStoredStamp(_Base):
                 km.Handler._dispatch_ws(types.SimpleNamespace(), dict(o, gt=T_OLD), client)
         named = {m["setting"] for m in sent if m.get("type") == "settingStale"}
         self.assertEqual(named, set(km._version_info()["settingsGt"]), "frames and the report share one vocabulary")
-        self.assertEqual(len(named), 18)   # thirteen kernel-side stores: T300's box per judge tier, minus the terminal-backend store (T332)
+        self.assertEqual(len(named), 19)   # thirteen kernel-side stores (T300's box per judge tier, minus the terminal-backend store, T332) + six toggles/modes (the task-tracking switch since T404)
 
 
 class ASkewedClockCannotLockTheStore(_Base):
@@ -1112,7 +1114,7 @@ class AutoNudgeTickIsSingleFlight(_Base):
             setattr(km, n, v)
         super().tearDown()
 
-    def _walk(self, s, now, live_map, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None):   # #936 adds the kwarg (toggle off → wake-only walk); T267d hands the pass's clear set
+    def _walk(self, s, now, live_map, nudged, waitfor, alive_ids=None, wake_only=False, cleared=None, reminders=None):   # #936 adds the kwarg (toggle off → wake-only walk); T267d hands the pass's clear set
         """The per-session walk standing in for the SEND: the first pass to reach it holds here,
         mid-send, until the test releases it; every later pass records and returns at once."""
         self.sends.append(now)
