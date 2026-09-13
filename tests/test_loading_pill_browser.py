@@ -537,7 +537,7 @@ class ServedLoadingPill(WindowLab):
         self.assertEqual(r["reattachAfterA13"], 0, "reply A (cancelled) did not re-base while B was live: %r reattach" % r["reattachAfterA13"])
         self.assertTrue(r["landedB13"] and r["landedB13"]["visible"], "reply B landed the reader on the message they opened: %r" % r["landedB13"])
         self.assertTrue(r["stripB13"], "…detached on window B with the strip up (a replace with moreAfter is detached whatever connected says)")
-        self.assertTrue(r["afterLive13"]["onB"] and not r["afterLive13"]["atBottom"], "the live turn did not snap the reader to the bottom; they stayed on B: %r" % r["afterLive13"])
+        self.assertTrue(r["afterLive13"]["onB"] and r["afterLive13"]["onB"]["visible"], "the live turn did not snap the reader off the message they opened; B is still on screen (the measured bug had rowB gone): %r" % r["afterLive13"])
 
     def test_a_served_stranger_window_for_a_background_tab_re_bases_that_session(self):
         # round seven, medium 2: a served window for a non-active attached session must re-base it, or its tail freezes silently
