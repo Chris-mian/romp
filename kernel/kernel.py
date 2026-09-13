@@ -53591,8 +53591,8 @@ if(m.romp==='picker'){
   if(m.on&&lf){lf.classList.add('lifted');if(lf.parentElement)lf.parentElement.classList.add('lifted');}
   document.body.classList.toggle('picker-open',!!m.on);}
 // A file link clicked in the chat and routed to the FILES pane (ui/webview/file-route.ts fileLinkRoute,
-// decided at the click in render.ts openPath: the pane is on screen, or the gear's "File links open in"
-// names it) posts viewFile up with pane:'pane'. The shell brings that pane forward, the click being the
+// decided at the click in render.ts openPath: the pane is on screen; no setting names a closed pane since
+// T404) posts viewFile up with pane:'pane'. The shell brings that pane forward, the click being the
 // one gesture that moves it, and forwards the click with the session's identity the chat resolved (name
 // and colour: the pane has no session list to name the file's session by; files.ts caches it for the
 // viewer's chip). The pane STAYS up, so nothing is owed back to the shell: no was-off flag, no ack, no
@@ -53620,7 +53620,7 @@ if(m.romp==='filesViewerClosed'){var back=window.__rompFilesTabFrom;window.__rom
 // A folder clicked in the chat (the folder under the transcript, the system context card's Directory row, a
 // tab menu's Browse files, a chat-hosted viewer's directory link; render.ts openBrowse) walks the file link's
 // ladder (ui/webview/file-route.ts browseRoute) and, routed to the FILES pane (the pane is on screen, or the
-// gear's "File links open in" names it), posts browseFiles up with pane:'pane'. The shell brings that pane
+// the open pane is the route since T404), posts browseFiles up with pane:'pane'. The shell brings that pane
 // forward, the click being the one gesture that moves it, and forwards the ask with the session's identity
 // the chat resolved (files.ts caches it, so a file picked from the listing names its session in the chip).
 // The pane STAYS up, so none of the feed route's was-off flag or browseClosed restore below applies; on a
@@ -54977,7 +54977,7 @@ _LANDING_COLLAPSE_JS = """
   // shell still hears the current set (the focus ring's "wire now + on every (re)load", _LANDING_FOCUS_JS),
   // and from _LANDING_MOBILE_JS on a tab switch or a layout flip (what is on screen changed with no toggle).
   // The chat routes a file-link click by it (ui/webview/file-route.ts fileLinkRoute: an OPEN Files pane takes
-  // the click whatever the "File links open in" setting says, since the pane being open IS the intent), and a
+  // the click, since the pane being open IS the intent; the setting that once named a closed pane is gone, T404), and a
   // folder click the same way (browseRoute, render.ts openBrowse).
   var KEYS=""" + json.dumps([k for k, _ in _PANE_ORDER]) + """;
   // on[k] is "this pane is on screen", not the po flag: in the mobile layout (one tab at a time, the po-*

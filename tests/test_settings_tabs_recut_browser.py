@@ -60,7 +60,9 @@ const cfg = JSON.parse(fs.readFileSync(process.env.CFG, "utf8"));
 let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
-const MOVED = ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-keys-web", "rs-updates", "rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver", "rs-autonudge", "rs-judgemodel", "rs-feedcollapsed", "rs-activeonly"];
+const MOVED = ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-keys-web", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates",
+               "rs-compact", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-thinksum", "rs-widgets", "rs-feedcollapsed", "rs-defaultdir", "rs-backend", "rs-autonudge", "rs-suggestcompact", "rs-judgemodel", "rs-judgeconc",
+               "rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver", "rs-filelink", "rs-activeonly", "rs-collapsegaps"];   // the last three must be GONE (T404)
 // open the landing in a fresh context, seeded with a remembered tab when given; hand back the settings frame once the panel is up
 async function openPanel(seedTab, ask) {
   const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
@@ -109,18 +111,20 @@ const out = {};
       await page.screenshot({ path: cfg.shots + "-" + tab + "-" + theme + ".png", clip: { x: fr.x + card.x, y: fr.y + card.y, width: card.width, height: card.height } });
     };
     out.bar = {};
-    for (const theme of ["dark", "light"]) { await shot("general", theme); out.bar[theme] = (await readPanel(setF)).bar; await shot("debug", theme); }
+    for (const theme of ["dark", "light"]) { await shot("general", theme); out.bar[theme] = (await readPanel(setF)).bar; await shot("chat", theme); await shot("debug", theme); }
     for (const f of [page, setF]) await f.evaluate(() => document.body.classList.remove("theme-light"));
     await setF.click('#rsettings .rs-tab[data-tab="debug"]'); await setF.waitForTimeout(150);
     out.debug = await readPanel(setF);
     await setF.click('#rsettings .rs-tab[data-tab="tasks"]'); await setF.waitForTimeout(150);
     out.tasks = await readPanel(setF);
+    await setF.click('#rsettings .rs-tab[data-tab="automation"]'); await setF.waitForTimeout(150);
+    out.automation = await readPanel(setF);
   }
   await page.close(); await ctx.close();
 }
 // 2. the remembered tab under the OLD names: a browser that last used Automatic or System comes up on Task tracking or Debug, and the store is rewritten
 out.mapping = {};
-for (const old of ["automatic", "system", "tabs"]) {
+for (const old of ["automatic", "system", "tabs", "appearance"]) {
   const { ctx, page, setF } = await openPanel(old, null);
   out.mapping[old] = setF ? await readPanel(setF) : { open: false };
   await page.close(); await ctx.close();
@@ -251,18 +255,21 @@ class ServedSettingsTabs(unittest.TestCase):
             Path(os.environ["SETTINGS_TABS_DUMP"]).write_text(json.dumps(result, indent=1) + "\n")
         return result
 
-    def test_the_pills_read_general_chat_feed_sessions_task_tracking_appearance_debug_in_that_order(self):
+    def test_the_pills_read_general_chat_feed_sessions_automation_task_tracking_debug_in_that_order(self):
+        # T404 (the user 2026-09-13): Automation is new, Appearance folded into General
         g = self._run()["general"]
         table = "\n  " + json.dumps(g)[:1500]
         self.assertTrue(g["open"], table)
-        self.assertEqual([x["tab"] for x in g["pills"]], ["general", "chat", "feed", "sessions", "tasks", "appearance", "debug"], table)
-        self.assertEqual([x["text"] for x in g["pills"]], ["General", "Chat", "Feed", "Sessions", "Task tracking", "Appearance", "Debug"], table)
+        self.assertEqual([x["tab"] for x in g["pills"]], ["general", "chat", "feed", "sessions", "automation", "tasks", "debug"], table)
+        self.assertEqual([x["text"] for x in g["pills"]], ["General", "Chat", "Feed", "Sessions", "Automation", "Task tracking", "Debug"], table)
         self.assertEqual(g["shown"], ["general"], "the ask for General shows General alone" + table)
-        self.assertEqual(g["heads"]["general"], ["Account", "Panes", "Keyboard shortcuts"], table)
-        self.assertEqual(g["heads"]["debug"], ["Updates", "Judging bands", "Diagnostics"], table)
-        self.assertEqual(g["heads"]["tasks"], ["Sessions", "Judges"], "Task tracking keeps Automatic's sections, the judges under it" + table)
-        self.assertEqual(g["heads"]["feed"], ["Cards"], "the judges' debug views left the Feed tab" + table)
-        self.assertEqual(g["heads"]["sessions"], ["New sessions", "Sessions pane"], "the Panes section left the Sessions tab" + table)
+        self.assertEqual(g["heads"]["general"], ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"], table)
+        self.assertEqual(g["heads"]["chat"], ["Display", "Comments", "Thinking", "Tab widgets"], "Transcript is Display; the text scheme and the strip row joined it; Thinking creates, so it is Chat's" + table)
+        self.assertEqual(g["heads"]["debug"], ["Judging bands", "Diagnostics"], "Updates went to General" + table)
+        self.assertEqual(g["heads"]["tasks"], ["Judges"], "Task tracking keeps the judges alone" + table)
+        self.assertEqual(g["heads"]["automation"], ["Nudges"], table)
+        self.assertEqual(g["heads"]["feed"], ["Cards"], table)
+        self.assertEqual(g["heads"]["sessions"], ["New sessions"], "the Sessions-pane rows left settings: the pane carries them" + table)
 
     def test_the_seven_pills_sit_on_one_row_of_the_card_in_both_themes(self):
         # round one, LOW 1: at 10px of side padding the seven needed 528px against 518 available, and Debug alone dropped to a second
@@ -278,14 +285,17 @@ class ServedSettingsTabs(unittest.TestCase):
     def test_each_moved_row_lives_in_its_new_home_with_its_id_kept(self):
         g = self._run()["general"]
         self.assertTrue(g["open"], json.dumps(g)[:300])
-        expect = {"rs-billing": "general", "rs-login-btn": "general", "rs-panes-sec": "general", "rs-pane-timeline": "general", "rs-pane-fleet": "general", "rs-pane-feed": "general",
-                  "rs-keys-web": "general", "rs-updates": "debug", "rs-judges-index": "debug", "rs-judges-triage": "debug", "ra-open": "debug", "rs-log-open": "debug", "rsver": "debug",
-                  "rs-autonudge": "tasks", "rs-judgemodel": "tasks", "rs-feedcollapsed": "feed", "rs-activeonly": "sessions"}
-        self.assertEqual(g["homes"], expect, "every id in its new home, none missing: " + json.dumps(g["homes"]))
+        gen = ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-keys-web", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"]
+        chat = ["rs-compact", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-thinksum", "rs-widgets"]
+        expect = dict([(i, "general") for i in gen] + [(i, "chat") for i in chat] + [("rs-feedcollapsed", "feed"), ("rs-defaultdir", "sessions"), ("rs-backend", "sessions"),
+                       ("rs-autonudge", "automation"), ("rs-suggestcompact", "automation"), ("rs-judgemodel", "tasks"), ("rs-judgeconc", "tasks"),
+                       ("rs-judges-index", "debug"), ("rs-judges-triage", "debug"), ("ra-open", "debug"), ("rs-log-open", "debug"), ("rsver", "debug"),
+                       ("rs-filelink", "missing"), ("rs-activeonly", "missing"), ("rs-collapsegaps", "missing")])   # the three rows that left settings (T404): no element
+        self.assertEqual(g["homes"], expect, "every id in its new home, none missing, the three gone: " + json.dumps(g["homes"]))
 
     def test_an_older_remembered_tab_comes_up_on_its_new_tab_and_is_rewritten_never_a_blank_card(self):
         m = self._run()["mapping"]
-        for old, new in (("automatic", "tasks"), ("system", "debug"), ("tabs", "chat")):
+        for old, new in (("automatic", "tasks"), ("system", "debug"), ("tabs", "chat"), ("appearance", "general")):
             r = m[old]
             table = "\n  " + old + ": " + json.dumps(r)[:600]
             self.assertTrue(r["open"], "the rail's gear opened the panel" + table)
@@ -298,6 +308,8 @@ class ServedSettingsTabs(unittest.TestCase):
         self.assertEqual(r["debug"]["shown"], ["debug"], json.dumps(r["debug"]["shown"]))
         self.assertEqual(r["debug"]["remembered"], "debug")
         self.assertEqual(r["tasks"]["shown"], ["tasks"], json.dumps(r["tasks"]["shown"]))
+        self.assertEqual(r["automation"]["shown"], ["automation"], json.dumps(r["automation"]["shown"]))
+        self.assertEqual(r["automation"]["remembered"], "automation")
         self.assertEqual(r["tasks"]["remembered"], "tasks")
 
 

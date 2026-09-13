@@ -78,7 +78,7 @@ test("dismissal is event-based: outside click, Escape, the sibling dropdown, and
 test("both pickers build on the ONE dropdown, and repaint on every settings open", () => {
   assert.match(GEAR, /var csDrop = housePick\(cs, 'scheme', schemeRowHTML,/);
   assert.match(GEAR, /var ttDrop = housePick\(tt, 'theme', themeRowHTML,/);
-  assert.match(GEAR, /tcPaint\(\); paintWidgets\(\); csPaint\(\); ttPaint\(\); if \(cg\)/,
+  assert.match(GEAR, /tcPaint\(\); paintWidgets\(\); csPaint\(\); ttPaint\(\); if/,
     "openSettings repaints ALL closed rows (and the widget rows, T379) — a pick made in another pane shows current on open");
 });
 
