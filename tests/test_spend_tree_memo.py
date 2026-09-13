@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -49,6 +50,37 @@ class SpendTreeMemo(unittest.TestCase):
 
     def _window(self, since):
         return km._spend_window_files(self.leaf, since, now=time.time())
+
+    def test_a_moved_directory_whose_listing_fails_still_dirties_the_memo(self):
+        """1589 low 1: the directory loop assigned the new mtime and left the dirtying to the listing, which marks dirty only when
+        its scandir succeeds; a listing that fails left a memo whose recorded mtime moved unwritten (self-repairing, but the
+        persisted copy lagged). The assignment dirties."""
+        far = time.time() + 10 ** 6
+        self._window(far); km._persist_spend_trees(force=True); km._SPEND_TREE_CACHE.clear()
+        for _ in range(5):                                                 # the next process loads the memo and drains its re-stat
+            self._window(far); km._persist_spend_trees(force=True)         #  list (each drain step dirties and is written): a clean,
+        m = list(km._SPEND_TREE_CACHE.values())[0]                         #  drained memo is the starting point
+        self.assertNotIn("restat", m); self.assertFalse(m.get("dirty"), "clean and drained before the directory moves")
+        now = time.time(); os.utime(self.sub, (now, now))                  # the top directory's mtime moves
+        with mock.patch("os.scandir", side_effect=OSError("EIO")):        # and its listing fails
+            self._window(far)
+        self.assertEqual(m["dirs"][self.sub], os.stat(self.sub).st_mtime, "the moved mtime is recorded")
+        self.assertTrue(m.get("dirty"), "and the memo is dirty at the assignment")
+        self.assertEqual(km._persist_spend_trees(), 1, "so the persist writes it without force")
+
+    def test_the_persist_stages_under_a_per_writer_tmp_name(self):
+        """1589 low 2: the tmp name was per process, so the exit's force write and the pusher's persist on one leaf shared a
+        staged file and the unlink on a failed replace could remove the other writer's tmp: pid AND thread id now."""
+        far = time.time() + 10 ** 6
+        self._window(far)
+        seen = []
+        real = os.replace
+        def capture(a, b): seen.append(str(a)); return real(a, b)
+        with mock.patch("os.replace", side_effect=capture):
+            self.assertEqual(km._persist_spend_trees(force=True), 1)
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0].endswith(".tmp.%d.%x" % (os.getpid(), threading.get_ident())), seen[0])
+        self.assertEqual(list(Path(km._spend_tree_path(self.leaf)).parent.glob("*.tmp.*")), [], "no tmp left behind")
 
     def test_a_boot_with_a_standing_memo_stats_directories_and_lists_no_file(self):
         """The first process lists the tree whole and persists the memo at exit; the next process loads it lazily at the
@@ -182,7 +214,8 @@ class SpendTreeMemo(unittest.TestCase):
         import io
         self._window(time.time() + 10 ** 6)
         p = km._spend_tree_path(self.leaf); p.parent.mkdir(parents=True, exist_ok=True)
-        blocker = p.with_name(p.name + ".tmp.%d" % os.getpid()); blocker.mkdir()      # the tmp path is a directory: write_text raises
+        blocker = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident())); blocker.mkdir()   # the tmp path is a
+        #                                                                                                   directory: write_text raises
         err = io.StringIO()
         try:
             with mock.patch.object(km, "_SPEND_TREE_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err):

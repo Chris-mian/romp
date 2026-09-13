@@ -161,7 +161,12 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         moved = _row(d, SID_NEW, old=True)               # settled, then moved in the gap before this boot
         skip, st = km._tick_job_check("interrupt-block", settled); km._tick_job_done("interrupt-block", settled, st)
         skip, st = km._tick_job_check("interrupt-block", moved); km._tick_job_done("interrupt-block", moved, st)
-        self.assertTrue(km._persist_tick_seen(), "dirty → written")
+        seen = []; real = os.replace
+        def capture(a, b): seen.append(str(a)); return real(a, b)
+        with mock.patch("os.replace", side_effect=capture):
+            self.assertTrue(km._persist_tick_seen(), "dirty → written")
+        self.assertTrue(seen and seen[0].endswith(".tmp.%d.%x" % (os.getpid(), threading.get_ident())),
+                        "staged under a per-WRITER tmp (pid and thread id): the exit's force write runs beside the pusher's (1589 low 2): %r" % seen)
         self.assertFalse(km._persist_tick_seen(), "clean → nothing to write")
         # the gap: a stop lands in `moved` after the previous kernel's last tick, before this boot (mtime still < _STARTED)
         with open(moved["path"], "a") as f:
@@ -401,8 +406,21 @@ class TickJobsKeyOnAChange(unittest.TestCase):
                           "_interrupt_focus_top", "_intr_block_stands", "_lift_interrupt_block"),
                          "the road's exact members: the key builder, the verdict's readers and the arms' store readers (round two)")
         self.assertEqual(km._INTERRUPT_BLOCK_UNREAD, (5, 7), "the constant positions: the episode log and the postal log; the clears log is real")
-        km._tick_job_done("interrupt-block", r, None)
-        self.assertNotIn(("interrupt-block", me + "-never"), km._TICK_SEEN, "a None key records nothing")
+        with km._TICK_SEEN_LOCK:
+            km._TICK_SEEN.pop(("interrupt-block", me), None); km._TICK_SEEN_DIRTY[0] = False
+        km._tick_job_done("interrupt-block", r, None)                       # the REAL key with no stat: nothing recorded (1595 low 1)
+        with km._TICK_SEEN_LOCK:
+            self.assertNotIn(("interrupt-block", me), km._TICK_SEEN, "a None key records nothing for this session")
+            self.assertFalse(km._TICK_SEEN_DIRTY[0], "and dirties nothing")
+        with km._TICK_SEEN_LOCK:                                           # the mutation the guard prevents: a None entry makes the
+            km._TICK_SEEN[("interrupt-block", me)] = None; km._TICK_SEEN_DIRTY[0] = True   #  persist's json.dumps raise (list(None))
+        try:
+            with self.assertRaises(TypeError, msg="a None entry makes the persist RAISE under its lock (a raise per cycle, caught only by the "
+                                                  "pusher's guard): what the `if st is None: return` keeps out"):
+                km._persist_tick_seen()
+        finally:
+            with km._TICK_SEEN_LOCK:
+                km._TICK_SEEN.pop(("interrupt-block", me), None); km._TICK_SEEN_DIRTY[0] = False
 
     def test_jobs_keep_separate_memos(self):
         d = tempfile.mkdtemp()
