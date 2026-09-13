@@ -10121,7 +10121,9 @@ def _nudge_clock(t, leg=None):
             by = _NUDGE_WALK_STATS.get("unboundedBy")
             if not isinstance(by, dict):
                 by = _NUDGE_WALK_STATS["unboundedBy"] = {}
-            by[leg or "unnamed"] = by.get(leg or "unnamed", 0) + 1
+            if leg is None:                             # every None note names its leg (a source census pins it); a nameless one is
+                raise ValueError("_nudge_clock(None) without a leg")   # a bug, never an `unnamed` bucket that absorbs it (low 5)
+            by[leg] = by.get(leg, 0) + 1
 
 
 def _nudge_look_check(s, now):

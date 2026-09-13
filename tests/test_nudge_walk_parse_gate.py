@@ -73,7 +73,7 @@ class NudgeWalkParseGate(unittest.TestCase):
         km._NUDGE_HORIZON.notes = None
         km._nudge_clock(5.0)                                             # outside a look: a no-op
         km._NUDGE_HORIZON.notes = []
-        km._nudge_clock(7.0); km._nudge_clock(None)
+        km._nudge_clock(7.0); km._nudge_clock(None, "storeFault")
         self.assertEqual(km._NUDGE_HORIZON.notes, [7.0, None])
         km._NUDGE_HORIZON.notes = None
 
@@ -468,6 +468,30 @@ class NudgeWalkParseGate(unittest.TestCase):
                    _pending_ops={SID_OLD: [1]})
         self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"], {"storeFault": 1, "unmarked:queued-input": 1}, km._NUDGE_WALK_STATS["unboundedBy"])
         self.assertIn("unboundedBy", km._PERF_STATS.snapshot()["memos"]["nudgeWalk"])
+
+    def test_every_unbounded_note_site_names_its_leg(self):
+        """Round three, low 5: `leg or "unnamed"` absorbed a future None site with no name and nothing failed. A nameless None
+        note raises, and a source census over every `_nudge_clock(None` call in the kernel requires a second, literal argument."""
+        import ast, inspect
+        src = open(os.path.join(os.path.dirname(HERE), "bin", "romp-kernel"), encoding="utf-8").read()
+        sites, bad = 0, []
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_nudge_clock":
+                first = node.args[0] if node.args else None
+                may_be_none = (isinstance(first, ast.Constant) and first.value is None) or isinstance(first, ast.IfExp)
+                if not may_be_none:
+                    continue
+                sites += 1
+                if len(node.args) < 2 or not (isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)):
+                    bad.append(node.lineno)
+        self.assertGreaterEqual(sites, 14, "the census found the None note sites: %d" % sites)
+        self.assertEqual(bad, [], "every None note names its leg with a literal")
+        km._NUDGE_HORIZON.notes = []
+        try:
+            with self.assertRaises(ValueError):
+                km._nudge_clock(None)
+        finally:
+            km._NUDGE_HORIZON.notes = None
 
     def test_the_pass_keeps_its_stats_in_a_side_map_and_leaves_the_shared_rows_untouched(self):
         """Follow-up, low 1: the pass wrote _look_stat into the session rows _sessions memoises per cycle and hands out read-only;
