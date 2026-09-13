@@ -24,6 +24,7 @@
 var gclock = require('./gesture-clock.js');   // every `gt` below is minted here (see that file)
 var BN = require('./backend-names.ts');   // the backends' user-facing names and the offer rule (T288)
 var TW = require('./tab-widgets.ts');   // the tab-title widgets (T379): the registry the Tab widgets section's rows render from, the strip's own module
+var LS = require('./landing-settle.ts');   // gestureEvidence: the chat's rule for telling the user's scroll from the browser's own (the section ask ends only on input, T379 follow-up)
 function kb() { return (typeof window !== 'undefined' && window.__rompKernelBase) || ''; }
 function ku(path) {
   var tok = (typeof window !== 'undefined' && window.__rompKernelToken) || '';
@@ -531,6 +532,8 @@ function initGear(post, opts) {
   function showSection(section) {
     if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
     sectionAsk = null;
+    var card0 = document.querySelector('#rsettings .rs-card');
+    if (card0) card0.removeAttribute('data-section-landed');   // a new ask's landing is its own: the earlier mark goes with the earlier ask
     if (typeof section !== 'string' || !section) return;
     var sec = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="' + section + '"]');
     var card = document.querySelector('#rsettings .rs-card');
@@ -547,21 +550,28 @@ function initGear(post, opts) {
       // sized to the cap, the card lands exactly there in one pass, whatever the window. A second measurement after the
       // write takes up rounding, or a cap the computed style did not resolve to pixels.
       var below = function () { return pane.getBoundingClientRect().bottom - sec.getBoundingClientRect().top; };
+      var land = function () {
+        card.scrollTop = card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - padT;
+        card.setAttribute('data-section-landed', section);   // the landing's mark: what a lab waits for before it measures (never a delay)
+      };
       var capH = parseFloat(cs.maxHeight);
-      var content = isFinite(capH) && capH > 0 ? capH : (card.clientHeight - padT - padB);
+      if (!isFinite(capH) || capH <= 0) { pane.style.paddingBottom = ''; land(); return; }   // no cap (not this sheet's case: the card is capped at 88vh): the card fits its content, nothing to room for
+      // the cap is a BORDER box on the served page (feed.css: every element is border-box), so the content the room fills is the
+      // cap less the paddings and borders; under a content box (no such rule) the cap is the content itself
+      var edges = cs.boxSizing === 'border-box' ? padT + padB + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0) : 0;
+      var content = capH - edges;
       var missing = content - below();
       pane.style.paddingBottom = missing > 0 ? Math.ceil(missing) + 'px' : '';
-      var short = (card.clientHeight - padT - padB) - below();
+      var short = (card.clientHeight - padT - padB) - below();   // measured ONCE after the write: rounding
       if (short > 0) pane.style.paddingBottom = Math.ceil(Math.max(missing, 0) + short) + 'px';
-      card.scrollTop = card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - padT;
-      ask.top = card.scrollTop;   // what this ask set: a scroll event landing elsewhere is the user's, and ends the ask
-      card.setAttribute('data-section-landed', section);   // the landing's mark: what a lab waits for before it measures (never a delay)
+      land();
     };
-    var ask = { top: -1 };
+    var ask = {};
     sectionAsk = ask;
     if (card.clientHeight > 0) go();   // laid out already: an open panel, or a host that never hides this document
-    // The ask STANDS until the user scrolls, a pill changes the pane, or the panel closes: the scroll re-lands the head
-    // whenever the pane's or the card's size changes. Two reasons, both events, never timers: in the shell this document
+    // The ask STANDS until the user's own input scrolls the card, a pill changes the pane, or the panel closes: the scroll
+    // re-lands the head whenever the pane's or the card's size changes, whatever scroll events came before (a browser's scroll
+    // anchoring nudge, the clamp a taller window applies: neither is the user's). Two reasons, both events, never timers: in the shell this document
     // sits in an iframe that is display:none until the shell hears the settings-open message feedFull just posted, and
     // a scroll set on a box with no size clamps to zero (the served lab measured 0 on the first open), so the card
     // gaining a size is the first landing; and a layout that settles AFTER that first size (a web font arriving, a list
@@ -572,10 +582,25 @@ function initGear(post, opts) {
     sectionRO.observe(card);
     sectionRO.observe(pane);
   }
-  // the user's own scroll ends a standing section ask (a scroll event that lands where the ask put it is the ask's own)
+  // The USER's scroll ends a standing section ask; the browser's never does. A scroll event is the user's only with INPUT
+  // evidence: a wheel, a key or a touch on the card within the settle rule's window before it, or a pointer holding the
+  // scroller itself (a thumb drag), the chat's own rule (landing-settle.ts gestureEvidence). A scroll delta is no evidence:
+  // Chrome's scroll anchoring moved the card 2px after a late layout settle, and a taller window's clamp moved it 143px,
+  // and both were read as the user's, killing the ask (the follow-up's review, 2026-09-13).
   (function () {
     var card = document.querySelector('#rsettings .rs-card');
-    if (card) card.addEventListener('scroll', function () { if (sectionAsk && Math.abs(card.scrollTop - sectionAsk.top) > 1) { if (sectionRO) { sectionRO.disconnect(); sectionRO = null; } sectionAsk = null; } });
+    if (!card) return;
+    var inputAt = 0, held = false;
+    ['wheel', 'keydown', 'touchstart'].forEach(function (k) { card.addEventListener(k, function () { inputAt = performance.now(); }, { passive: true }); });
+    card.addEventListener('pointerdown', function (e) { inputAt = performance.now(); if (e.target === card) held = true; });
+    window.addEventListener('pointerup', function () { held = false; });
+    window.addEventListener('pointercancel', function () { held = false; });
+    card.addEventListener('scroll', function () {
+      if (!sectionAsk || !LS.gestureEvidence(inputAt, performance.now(), held)) return;
+      if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
+      sectionAsk = null;
+      card.removeAttribute('data-section-landed');
+    });
   })();
 
   // ── THE WIDGET ROWS (T379) ── one per registered widget: the live demo (a miniature tab rendering the widget over a

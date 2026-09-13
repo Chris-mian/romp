@@ -112,7 +112,6 @@ await setF.evaluate(() => (document.fonts && document.fonts.ready) || null).catc
 // the landing's own mark, never a delay: the gear stamps the card when the section scroll lands (CI, 2026-09-13: a fixed wait read before it)
 const landed = (frame) => frame.waitForSelector('#rsettings .rs-card[data-section-landed="tabwidgets"]', { timeout: 10000 }).then(() => true).catch(() => false);
 out.landed0 = await landed(setF);
-await setF.waitForTimeout(150);
 const readPanel = () => setF.evaluate(() => {
   const p = document.getElementById("rsettings");
   if (!p || p.hidden) return { open: false };
@@ -166,7 +165,7 @@ await setF.click('#rsettings .rs-tab[data-tab="chat"]'); await setF.waitForTimeo
 out.pillBack = await readPanel();
 // an ask on an OPEN panel (through the shell's relay, the path the glyph's message takes; the lifted settings iframe covers the
 // strip while the panel is open, so the glyph itself is not reachable by a pointer then): switches back to Chat and scrolls
-await page.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets")); out.landedReask = await landed(setF); await setF.waitForTimeout(150);
+await page.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets")); out.landedReask = await landed(setF);
 out.reask = await readPanel();
 // the screenshots: the strip with the glyph and the Chat tab at its Tab widgets section, dark then light
 const shot = async (theme) => {
@@ -250,14 +249,27 @@ for (const mode of ["always", "never"]) {
   for (let i = 0; i < 50 && !sf3; i++) { await p3.waitForTimeout(100); sf3 = p3.frames().find((f) => f.url().includes("/settings")); }
   await sf3.waitForSelector("#rsettings:not([hidden])", { timeout: 15000 }).catch(() => {});
   await sf3.evaluate(() => (document.fonts && document.fonts.ready) || null).catch(() => {});
-  out.tallLanded = await landed(sf3); await sf3.waitForTimeout(150);
+  out.tallLanded = await landed(sf3);
   const readSec = () => sf3.evaluate(() => { const card = document.querySelector("#rsettings .rs-card"); const sec = document.querySelector('#rsettings .rs-sec[data-section="tabwidgets"]');
     if (!card || !sec) return null; const cr = card.getBoundingClientRect(), sr = sec.getBoundingClientRect();
     return { top: sr.top, cardTop: cr.top, cardBottom: cr.bottom, pad: parseFloat(getComputedStyle(card).paddingTop), scrollTop: card.scrollTop, overflow: card.scrollHeight - card.clientHeight,
              room: parseFloat(getComputedStyle(sec.closest(".rs-pane")).paddingBottom) || 0, cardH: cr.height, viewportH: window.innerHeight, inChat: true, paneHidden: sec.closest(".rs-pane").hidden }; });
   out.tall = { open: await readSec() };
-  await p3.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets")); await landed(sf3); await sf3.waitForTimeout(150);
+  await p3.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets")); out.tall.reaskLanded = await landed(sf3);
   out.tall.reask = await readSec();
+  // the review's oracles (round two): the ask STANDS across the browser's own scrolls and re-lands on size changes; only the user's input ends it
+  const clearMark = () => sf3.evaluate(() => { const c = document.querySelector("#rsettings .rs-card"); if (c) c.removeAttribute("data-section-landed"); });
+  const landedSoon = (frame, ms) => frame.waitForSelector('#rsettings .rs-card[data-section-landed="tabwidgets"]', { timeout: ms }).then(() => true).catch(() => false);
+  await clearMark(); await p3.setViewportSize({ width: 1200, height: 900 });    // SHORTER: the card shrinks to the new cap (Chrome's anchoring nudges the scroll)
+  out.tall.shorter = { landed: await landedSoon(sf3, 10000), sec: await readSec() };
+  await clearMark(); await p3.setViewportSize({ width: 1200, height: 1400 });   // TALLER: the card grows to the new cap and the browser clamps the scroll first
+  out.tall.taller = { landed: await landedSoon(sf3, 10000), sec: await readSec() };
+  const fr3 = await p3.evaluate(() => { const f = document.getElementById("f-settings").getBoundingClientRect(); return { x: f.left, y: f.top }; });
+  const cr3 = await sf3.evaluate(() => { const r = document.querySelector("#rsettings .rs-card").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  await p3.mouse.move(fr3.x + cr3.x, fr3.y + cr3.y); await p3.mouse.wheel(0, -120); await sf3.waitForTimeout(250);   // a real WHEEL over the card: the user's scroll
+  const afterWheel = await readSec();
+  await clearMark(); await p3.setViewportSize({ width: 1200, height: 1500 });   // a growth after the user's scroll: no re-land, the ask ended
+  out.tall.wheel = { afterWheel, landedAfterGrowth: await landedSoon(sf3, 2500), sec: await readSec() };
   await p3.close(); await c3.close();
 }
 fs.writeFileSync(cfg.out, JSON.stringify(out));
@@ -436,6 +448,7 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertTrue(all(x["rows"] > 0 for x in p["panes"]), "every pane holds rows" + table)
         self.assertEqual(p["remembered"], "chat", table)
         self.assertTrue(r["landed0"], "the gear marked the landing before the measurement (the lab waits for the event, never a delay)")
+        self.assertTrue(r["landedReask"], "…and marked the re-ask's landing afresh (the earlier mark is cleared with the earlier ask)")
         self._assert_scrolled_to_the_section(p, table)
 
     def test_each_widget_row_shows_a_live_demo_drawn_by_the_strips_render_a_sliding_switch_and_its_options(self):
@@ -529,13 +542,29 @@ class ServedTabWidgets(unittest.TestCase):
     def test_a_tall_window_lands_the_head_under_the_padding_too(self):
         # the follow-up's round one, MEDIUM: below its cap the card grew under the room and the head stopped 152px short at a
         # 1200px window; the room is sized to the card's cap now, so the first open and a re-ask land the head at the top
-        t = self._run()["tall"]
+        r = self._run(); t = r["tall"]
+        self.assertTrue(r["tallLanded"] and t["reaskLanded"], "both landings marked: " + json.dumps([r["tallLanded"], t["reaskLanded"]]))
         for k in ("open", "reask"):
             sec = t[k]
             table = "\n  " + json.dumps(sec)
             self.assertIsNotNone(sec, k + ": the tall scene ran" + table)
             self.assertGreaterEqual(sec["viewportH"], 1200, table)
             self.assertLess(abs(sec["top"] - (sec["cardTop"] + sec["pad"])), 3, k + ": the head sits under the card's padding at 1200px" + table)
+
+    def test_the_ask_stands_across_the_browsers_own_scrolls_and_ends_only_on_the_users_input(self):
+        # round two, MEDIUM: a shorter window (Chrome's anchoring nudges the scroll after the settle) and a taller window (the browser
+        # clamps the scroll before the resize observation) both re-land the head and re-room; a real wheel over the card ends the ask,
+        # so a growth after it lands nothing
+        t = self._run()["tall"]
+        for k in ("shorter", "taller"):
+            sc = t[k]; table = "\n  " + k + ": " + json.dumps(sc)
+            self.assertTrue(sc["landed"], k + ": the ask re-landed after the resize" + table)
+            self.assertLess(abs(sc["sec"]["top"] - (sc["sec"]["cardTop"] + sc["sec"]["pad"])), 3, k + ": the head under the padding again" + table)
+            self.assertGreater(sc["sec"]["room"], 0, k + ": re-roomed" + table)
+        self.assertLess(t["shorter"]["sec"]["viewportH"], t["taller"]["sec"]["viewportH"], json.dumps([t["shorter"]["sec"]["viewportH"], t["taller"]["sec"]["viewportH"]]))
+        w = t["wheel"]; table = "\n  wheel: " + json.dumps(w)
+        self.assertGreaterEqual(abs(w["afterWheel"]["top"] - (w["afterWheel"]["cardTop"] + w["afterWheel"]["pad"])), 3, "the wheel moved the head off the top" + table)
+        self.assertFalse(w["landedAfterGrowth"], "the ask ended on the user's input: a growth after it lands nothing" + table)
 
 
 if __name__ == "__main__":

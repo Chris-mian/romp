@@ -14,6 +14,7 @@ const GEAR = fs.readFileSync(path.join(UI, "gear.js"), "utf8");
 const GEAR_CSS = fs.readFileSync(path.join(UI, "gear.css"), "utf8");
 const RENDER = fs.readFileSync(path.join(UI, "render.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
+const FEED_CSS = fs.readFileSync(path.join(UI, "feed.css"), "utf8");
 
 const TABS = ["chat", "feed", "sessions", "automatic", "appearance", "system"];
 // the panes, cut from the markup string by their openers (each pane opens with the literal below and the next pane's opener ends it)
@@ -82,16 +83,19 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   assert.match(GEAR, /if \(e\.data && e\.data\.romp === 'openSettings'\) openSettings\(typeof e\.data\.tab === 'string' \? e\.data\.tab : undefined, typeof e\.data\.section === 'string' \? e\.data\.section : undefined\);/, "the tab and the section ride the message");
   // the SECTION anchor (the user's amendment 2026-09-12): looked up in the shown pane only; the card, the modal's one scroll box, scrolls so the head
   // sits under its padding (never scrollIntoView, which would scroll the host document too); after the panel is shown, since rects exist only then
-  assert.match(GEAR, /function showSection\(section\) \{\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}\s*\n\s*sectionAsk = null;\s*\n\s*if \(typeof section !== 'string' \|\| !section\) return;\s*\n\s*var sec = document\.querySelector\('#rsettings \.rs-pane:not\(\[hidden\]\) \.rs-sec\[data-section="' \+ section \+ '"\]'\);/);
+  assert.match(GEAR, /function showSection\(section\) \{\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}\s*\n\s*sectionAsk = null;\s*\n\s*var card0 = [^\n]*\n\s*if \(card0\) card0\.removeAttribute\('data-section-landed'\);[^\n]*\n\s*if \(typeof section !== 'string' \|\| !section\) return;\s*\n\s*var sec = document\.querySelector\('#rsettings \.rs-pane:not\(\[hidden\]\) \.rs-sec\[data-section="' \+ section \+ '"\]'\);/);
   assert.match(GEAR, /card\.scrollTop = card\.scrollTop \+ sec\.getBoundingClientRect\(\)\.top - card\.getBoundingClientRect\(\)\.top - padT;/);
   // round two, LOW 1: room at the pane's end so the head reaches the top even for the last section; LOW 2 and 7: one pending ask,
   // disconnected on close and before a new ask, and a plain open resets the card and the room
   assert.match(GEAR, /var go = function \(\) \{\s*\n\s*pane\.style\.paddingBottom = '';/, "the room is cleared before the measurement (a re-ask must not read its own earlier room)");
   // the follow-up's round one, MEDIUM: the room is sized to the card's CAP (max-height, a content box), since below the cap the card
   // grows under the room and the head stops short on tall windows; a second measurement after the write takes up rounding
-  assert.match(GEAR, /var capH = parseFloat\(cs\.maxHeight\);\s*\n\s*var content = isFinite\(capH\) && capH > 0 \? capH : \(card\.clientHeight - padT - padB\);\s*\n\s*var missing = content - below\(\);\s*\n\s*pane\.style\.paddingBottom = missing > 0 \? Math\.ceil\(missing\) \+ 'px' : '';\s*\n\s*var short = \(card\.clientHeight - padT - padB\) - below\(\);\s*\n\s*if \(short > 0\) pane\.style\.paddingBottom = Math\.ceil\(Math\.max\(missing, 0\) \+ short\) \+ 'px';/);
+  // the follow-up's round two: the cap is a BORDER box on the served page (feed.css makes every element one), so the room fills the cap
+  // less paddings and borders; no cap means nothing to room for (the fallback that doubled the room is gone); one measurement after the write
+  assert.match(FEED_CSS, /^\* \{ box-sizing: border-box; \}/m, "the served page's rule the arithmetic answers to");
+  assert.match(GEAR, /var capH = parseFloat\(cs\.maxHeight\);\s*\n\s*if \(!isFinite\(capH\) \|\| capH <= 0\) \{ pane\.style\.paddingBottom = ''; land\(\); return; \}/);
+  assert.match(GEAR, /var edges = cs\.boxSizing === 'border-box' \? padT \+ padB \+ \(parseFloat\(cs\.borderTopWidth\) \|\| 0\) \+ \(parseFloat\(cs\.borderBottomWidth\) \|\| 0\) : 0;\s*\n\s*var content = capH - edges;\s*\n\s*var missing = content - below\(\);\s*\n\s*pane\.style\.paddingBottom = missing > 0 \? Math\.ceil\(missing\) \+ 'px' : '';\s*\n\s*var short = \(card\.clientHeight - padT - padB\) - below\(\);[^\n]*\n\s*if \(short > 0\) pane\.style\.paddingBottom = Math\.ceil\(Math\.max\(missing, 0\) \+ short\) \+ 'px';\s*\n\s*land\(\);/);
   assert.match(GEAR_CSS, /\n\.rs-card \{ width: min\(560px, 94%\); max-height: 88vh; overflow: auto;/, "the cap the room is sized to");
-  assert.doesNotMatch(GEAR_CSS.match(/\n\.rs-card \{[^}]*\}/)![0], /box-sizing/, "a content box: max-height caps the content, which is what the room fills");
   assert.match(GEAR, /selectTab\(b\.getAttribute\('data-tab'\)\); clearSectionScroll\(\); \}\); \}\);/, "a pill change clears the room and starts at the top (LOW 1)");
   assert.match(GEAR, /function clearSectionScroll\(\) \{\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}\s*\n\s*sectionAsk = null;\s*\n\s*var card = document\.querySelector\('#rsettings \.rs-card'\);\s*\n\s*if \(card\) \{ card\.scrollTop = 0; card\.removeAttribute\('data-section-landed'\); \}/);
   assert.match(GEAR, /function showSection\(section\) \{\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}/, "a new ask retires the pending one");
@@ -99,10 +103,17 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   // the ask STANDS: the head re-lands on every size change of the card or the pane (a font arriving, a list filling), until the
   // user's own scroll, a pill change or the close ends it (CI 2026-09-13: the head landed neither at the top nor at the end)
   assert.match(GEAR, /sectionRO = new ResizeObserver\(function \(\) \{ if \(sectionAsk === ask && card\.clientHeight > 0\) go\(\); \}\);\s*\n\s*sectionRO\.observe\(card\);\s*\n\s*sectionRO\.observe\(pane\);/);
-  assert.match(GEAR, /ask\.top = card\.scrollTop;/, "the ask remembers what it set, so its own scroll event is not the user's");
   assert.match(GEAR, /card\.setAttribute\('data-section-landed', section\);/, "a landing is marked on the card, so a lab waits for the event, never a delay");
   assert.match(GEAR, /if \(card\) \{ card\.scrollTop = 0; card\.removeAttribute\('data-section-landed'\); \}/, "…and the mark goes with the ask");
-  assert.match(GEAR, /card\.addEventListener\('scroll', function \(\) \{ if \(sectionAsk && Math\.abs\(card\.scrollTop - sectionAsk\.top\) > 1\) \{ if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \} sectionAsk = null; \} \}\);/, "the user's scroll ends the ask");
+  // the follow-up's round two, MEDIUM: only the user's INPUT ends the ask (the chat's gestureEvidence rule: a wheel, key or touch within
+  // the window before the scroll, or a pointer holding the scroller); a scroll delta is no evidence (the browser's anchoring and a
+  // taller window's clamp both moved the card and were read as the user's)
+  assert.match(GEAR, /^var LS = require\('\.\/landing-settle\.ts'\);/m, "one rule, the chat's");
+  assert.match(GEAR, /\['wheel', 'keydown', 'touchstart'\]\.forEach\(function \(k\) \{ card\.addEventListener\(k, function \(\) \{ inputAt = performance\.now\(\); \}, \{ passive: true \}\); \}\);/);
+  assert.match(GEAR, /card\.addEventListener\('pointerdown', function \(e\) \{ inputAt = performance\.now\(\); if \(e\.target === card\) held = true; \}\);/, "a press on the scroller itself is a thumb drag");
+  assert.match(GEAR, /card\.addEventListener\('scroll', function \(\) \{\s*\n\s*if \(!sectionAsk \|\| !LS\.gestureEvidence\(inputAt, performance\.now\(\), held\)\) return;\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}\s*\n\s*sectionAsk = null;\s*\n\s*card\.removeAttribute\('data-section-landed'\);/);
+  assert.doesNotMatch(GEAR.slice(GEAR.indexOf("function showSection(section) {"), GEAR.indexOf("function closeSettings()")), /sectionAsk\.top|Math\.abs\(card\.scrollTop/, "no scroll-delta reading anywhere in the ask");
+  assert.match(GEAR, /var card0 = document\.querySelector\('#rsettings \.rs-card'\);\s*\n\s*if \(card0\) card0\.removeAttribute\('data-section-landed'\);/, "a new ask clears the earlier landing's mark (LOW 3)");
   // the first open in the shell: this document has no layout until the shell lifts its iframe on the settings-open message, so a
   // scroll set then clamps to zero (measured); the card gaining a size is the event, observed once, never a timer
   assert.match(GEAR, /if \(card\.clientHeight > 0\) go\(\);   \/\/ laid out already/, "the first landing when the panel already has a layout; the ask then stands (no return: the observer still watches)");
