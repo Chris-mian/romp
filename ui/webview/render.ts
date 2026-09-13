@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
+import { GEAR_GLYPH, ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -27,7 +27,7 @@ import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./sub
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS, openRowsMenu } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext, DayWalk } from "./time-marker";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
@@ -6603,7 +6603,7 @@ function renderTabs() {
   // the active tab. Captured before the tab rule below, which keeps its pinned two-line shape.
   const focusedEl = document.activeElement as HTMLElement | null;
   const focusedGroup = (focusedEl?.closest(".tab-group-head") as HTMLElement | null)?.dataset.group;
-  const focusedLock = !!focusedEl?.closest(".tab-lock");   // a keyboard press on the lock rebuilt the strip: the lock keeps the focus (T395 round one)
+  const focusedGear = !!focusedEl?.closest(".tab-widgets-gear");   // a keyboard press on the gear rebuilt the strip (its menu toggled the lock): the gear keeps the focus (T395 round one, moved by T405)
   const refocusTab = bar.contains(document.activeElement);
   bar.replaceChildren();
   // A session under several tags has a COPY in each group (T264b, the user 2026-09-08: tags are
@@ -6712,23 +6712,8 @@ function renderTabs() {
   add.title = titleWithKey("Open a session", "session.new");
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
-  // THE TAB LOCK (T395, the user 2026-09-12): right after the + tab and before the tags box, in a little rounded box like
-  // the tags box (the user says the position may move later): the padlock the Sessions pane shows at its bottom (icons.ts,
-  // one drawing). A press freezes every tab move until the next press (setTabsLocked); locked, the box wears the menu
-  // vocabulary's current dress, the accent on the glyph and its outline, never a fill. The state is in the strip's
-  // signature, so the toggle repaints through it; the click is the node's own, click-safe because the strip is rebuilt
-  // only when its signature changes.
-  const lockBox = el("span", "tab-lockbox");
-  const lock = el("button", "tab-lock" + (settings.tabsLocked ? " on" : "")) as HTMLButtonElement;
-  lock.type = "button";
-  lock.innerHTML = settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN;
-  lock.title = settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again";
-  lock.setAttribute("aria-label", "Lock tabs");
-  lock.style.setProperty("--tab-lock-border", TAG_BTN_BORDER_CSS);   // the tag button's border, from its one source (tag-menu.ts): the themed token, so the two boxes match in every theme
-  lock.setAttribute("aria-pressed", settings.tabsLocked ? "true" : "false");
-  lock.addEventListener("click", (e) => { e.stopPropagation(); setTabsLocked(!settings.tabsLocked); });
-  lockBox.appendChild(lock);
-  bar.appendChild(lockBox);
+  // (THE TAB LOCK's button left the strip 2026-09-13, T405, the user: the lock is a row inside the strip's gear below; its
+  // state, its drag rules and its saveSettings road are unchanged, only where it is toggled moved.)
   // the shared TAG-ICON filter (the user 2026-08-25): identical across surfaces, opening the one
   // multi-select lens menu — this instance governs the TAB STRIP (actives.chat)
   const tagBtn = tagMenuButton("filter these tabs by tag", (btn) => {
@@ -6755,27 +6740,43 @@ function renderTabs() {
   tagBox.appendChild(tagBtn);
   // THE BUTTON CONVENTION (the user 2026-08-25): gray alone at rest; accent + the chips of
   // everything selected when narrowed — the shared renderer, identical on every mount
+  // T405 (the user 2026-09-13): the strip's control no longer DISPLAYS what it filters to, no "(no tags)" and no tag chips
+  // beside the button: with Group tabs by tag on the tags show in the strip's sections anyway, and otherwise whoever is
+  // interested clicks the button, which still wears the accent while narrowed. The filter itself is unchanged; the chips
+  // host stays for the shared sync's signature and is never appended
   const tagChipsHost = el("span", "tab-tagchips");
-  tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
-  tagBox.appendChild(tagChipsHost);
-  // THE TAB-WIDGETS GEAR (T379, the user 2026-09-12): one glyph at the strip's right end, inside the tag box so it
-  // takes no extra height, opening the settings on the Chat tab scrolled to its Tab widgets section (the widget rows;
-  // the user's amendment 2026-09-12: no tab of their own). The ask rides the openSettings
-  // message every opener uses, with the tab named: to the shell when this pane sits in one (the kernel's
-  // __rompOpenSettings relays it into the settings iframe), else to this window (the VS Code chat hosts its own
-  // gear). A standalone /chat with neither has no gear to open, so it shows no glyph (an honest absence, never a
-  // dead control). Built once per strip paint like the tag button beside it; the click is its own, click-safe
-  // because the strip is rebuilt only when its signature changes.
-  if ((window as any).__rompShowStrip || inRompShell()) {
+  bar.appendChild(tagBox);
+  // THE STRIP'S GEAR (T379, the user 2026-09-12; T405, the user 2026-09-13): ONE glyph, the shell's own settings gear
+  // (icons.ts GEAR_GLYPH, the character the rail wears at the bottom right of every romp page, read by the kernel from the
+  // same file), in a box of its own appended LAST and pushed to the strip's farthest right (styles.css .tab-gearbox,
+  // margin-left auto on the last flex line). It opens a small menu in the house vocabulary (tag-menu.ts openRowsMenu):
+  // "Lock the tabs in place", the tab lock's toggle row with the two titles the strip's button wore (T395: the state,
+  // its drag rules and its saveSettings road are unchanged); and "Tab widgets…", the settings on the Chat tab scrolled to
+  // its Tab widgets section (T379's ask, through the shell or this window's own gear as before), that row only where a
+  // settings gear can be reached (an honest absence elsewhere); the strip's gear itself is everywhere the strip is, since
+  // the lock's button was. Built once per strip paint; the click is its own, click-safe because the strip is rebuilt
+  // only when its signature changes; a keyboard press on the gear then on the row keeps the focus on the row.
+  {
+    const settingsReachable = !!((window as any).__rompShowStrip || inRompShell());
+    const gearBox = el("span", "tab-gearbox");
     const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
     gear.type = "button";
-    gear.title = "Tab widgets…";
-    gear.setAttribute("aria-label", "Tab widgets");
-    gear.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
-    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("chat", "tabwidgets"); });
-    tagBox.appendChild(gear);
+    gear.title = "Tab strip: lock, widgets…";
+    gear.setAttribute("aria-label", "Tab strip settings");
+    gear.setAttribute("aria-haspopup", "menu");
+    gear.textContent = GEAR_GLYPH;
+    gear.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRowsMenu(gear, () => [
+        { label: "Lock the tabs in place", current: settings.tabsLocked, glyph: settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN,
+          title: settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again",
+          press: () => { setTabsLocked(!settings.tabsLocked); return false; } },
+        ...(settingsReachable ? [{ label: "Tab widgets…", dim: true, press: () => { openSettingsOn("chat", "tabwidgets"); } }] : []),
+      ]);
+    });
+    gearBox.appendChild(gear);
+    bar.appendChild(gearBox);
   }
-  bar.appendChild(tagBox);
   {
     const v = effViews();
     syncTagFilter(tagBtn, tagChipsHost, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
@@ -6819,7 +6820,7 @@ function renderTabs() {
     const h = Array.from(bar.querySelectorAll<HTMLElement>(".tab-group-head")).find((x) => x.dataset.group === focusedGroup);
     // the group gone, or now holding the active tab (no stop): the old rule
     if (h && h.tabIndex >= 0) h.focus(); else focusActiveTab();
-  } else if (focusedLock) (bar.querySelector(".tab-lock") as HTMLElement | null)?.focus();   // not the active tab: Enter again would drop the caret into the composer
+  } else if (focusedGear) (bar.querySelector(".tab-widgets-gear") as HTMLElement | null)?.focus();   // not the active tab: Enter again would drop the caret into the composer
   else if (refocusTab) focusActiveTab();
   stripAftermath(visibleIds, ids);
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
@@ -7242,7 +7243,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
             row.appendChild(bodyE);
             // the tab lock (T395): a move row is a tab move, so it reads held (the label dims, the row answers nothing); the + beside
             // it still tags (adding is not a move), so it keeps its strength and says so itself (round one, LOW 1)
-            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock in the tab strip"; }
+            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock is in the tab strip's gear menu"; }
             const plus = el("button", "ctx-tag-x ctx-tag-plus") as HTMLButtonElement;
             plus.type = "button"; plus.textContent = "+";
             plus.title = "add this tag too (the session keeps its other tags)" + (settings.tabsLocked ? ": adding is not a move, so the lock does not hold it" : "");

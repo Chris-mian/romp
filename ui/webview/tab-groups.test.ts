@@ -578,7 +578,7 @@ test("the header's structure and gestures read as a label: the tag's chip, then 
     "role, expanded state, the current mark, tab stop and key handler together");
   assert.match(head, /if \(e\.key === "Enter" \|\| e\.key === " "\) \{ e\.preventDefault\(\); head\.click\(\); \}\s*\n\s*\}\);/, "Enter and Space press the header");
   // a push mid-read must not kick focus off the header: renderTabs re-focuses the same group after the rebuild
-  assert.match(RENDER, /const focusedGroup = \(focusedEl\?\.closest\("\.tab-group-head"\) as HTMLElement \| null\)\?\.dataset\.group;\s*\n\s*const focusedLock = !!focusedEl\?\.closest\("\.tab-lock"\);[^\n]*\n\s*const refocusTab = bar\.contains\(document\.activeElement\);/,
+  assert.match(RENDER, /const focusedGroup = \(focusedEl\?\.closest\("\.tab-group-head"\) as HTMLElement \| null\)\?\.dataset\.group;\s*\n\s*const focusedGear = !!focusedEl\?\.closest\("\.tab-widgets-gear"\);[^\n]*\n\s*const refocusTab = bar\.contains\(document\.activeElement\);/,
     "captured before the tab rule (chat-focus-model.test pins that rule's two-line shape)");
   assert.match(RENDER, /if \(h && h\.tabIndex >= 0\) h\.focus\(\); else focusActiveTab\(\);/,
     "…falling back to the active tab when the group is gone or now holds it");

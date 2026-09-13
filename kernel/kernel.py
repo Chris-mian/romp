@@ -55199,7 +55199,7 @@ function refusal(f,sid){try{var w=f&&f.contentWindow&&f.contentWindow.__rompMove
 function busy(f){try{var b=f&&f.contentWindow&&f.contentWindow.__rompColumnBusy;return typeof b==='function'&&!!b();}catch(e){return false;}}
 function loaded(f){try{return !!(f&&f.contentWindow&&typeof f.contentWindow.__rompTakeSessionState==='function');}catch(e){return false;}}   // the page's bundle has evaluated, so a posted message is heard
 var BUSY='A session is still being created in this column.';
-var LOCKED='The tabs are locked: unlock them with the padlock in the tab strip to move this session.';
+var LOCKED='The tabs are locked: unlock them in the tab strip\\u2019s gear menu (Lock the tabs in place) to move this session.';
 function make(n,sid,state){var have=document.getElementById(frameId(n));if(have)return have;
 var g=document.createElement('div');g.className='gv gv-chat';g.id='gv-chat-'+n;
 var p=document.createElement('div');p.className='pane chat-col';p.id=paneId(n);p.setAttribute('data-col',String(n));
@@ -55589,6 +55589,33 @@ _REFRESH_SVG = (
     # the arrowhead must READ at 18px (the user 2026-07-27: the first cut's ~3px triangle was invisible) —
     # a 4.4-wide, 3.4-deep triangle straddling the arc's end point, pointing along its clockwise tangent
     "<path d='M9.5 5.4 L11.7 1.6 L13.5 5.2 Z' fill='currentColor'/></svg>")
+
+
+_GEAR_GLYPH_FALLBACK = "\u26ed"   # the failure mode only (the UI tree unreadable): pinned equal to icons.ts GEAR_GLYPH by strip-chrome.test.ts
+_gear_glyph_memo = {}
+
+
+def _gear_glyph():
+    """THE settings gear's character (T405, the user 2026-09-13: one gear, one glyph, from one source): read from
+    ui/webview/icons.ts GEAR_GLYPH, the constant the chat strip's gear renders, so the rail's glyph at the bottom right of
+    every romp page and the strip's cannot drift. Read once per kernel life (the UI tree is the checkout's); an unreadable
+    or unparseable file falls to the same character as a literal, said in the log."""
+    if "glyph" in _gear_glyph_memo:
+        return _gear_glyph_memo["glyph"]
+    glyph = _GEAR_GLYPH_FALLBACK
+    try:
+        src = (UI / "webview" / "icons.ts").read_text(encoding="utf-8")
+        # \x22 is the double quote: no literal one in this pattern, because ui/webview/api-health-axis.test.ts pairs the
+        # module's double quotes to find the landing's stylesheet rules, and an odd count here would flip that pairing
+        m = re.search(r'export const GEAR_GLYPH = \x22((?:\\u[0-9a-fA-F]{4}|[^\x22\\])+)\x22;', src)
+        if m:
+            glyph = re.sub(r"\\u([0-9a-fA-F]{4})", lambda mm: chr(int(mm.group(1), 16)), m.group(1))
+        else:
+            print("[rail] icons.ts declares no GEAR_GLYPH; the rail wears the fallback character", file=sys.stderr)
+    except OSError as e:
+        print("[rail] icons.ts unreadable (%s); the rail wears the fallback character" % e, file=sys.stderr)
+    _gear_glyph_memo["glyph"] = glyph
+    return glyph
 
 
 def _rail_buttons_html():
@@ -56720,7 +56747,7 @@ def _landing():
             " fill='none' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/>"
             "<path d='M6.5 13 A1.7 1.7 0 0 0 9.5 13' fill='none' stroke='currentColor' stroke-width='1.2'/>"
             "<line class='bell-slash' x1='2.8' y1='2.2' x2='13.2' y2='13.8' stroke='currentColor' stroke-width='1.2' stroke-linecap='round'/></svg></div>"
-            "<div class=rail-act id=rail-gear data-keycmd=settings.open title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
+            "<div class=rail-act id=rail-gear data-keycmd=settings.open title=Settings aria-label=Settings>" + _gear_glyph() + "</div>"   # the gear-without-hub the user prefers (restored 2026-06-29), read from icons.ts (T405: one glyph, one source)
             "</div>"   # /.rail-acts
             "</div>"   # /.pane-rail (bottom bar)
             "</div>"
