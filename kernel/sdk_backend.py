@@ -4504,8 +4504,8 @@ def flag_settings_path(state_dir, sid: str, *, ultracode: bool = False, fast: bo
 
     Four keys ride here, all per-session:
     - `apiKeyHelper: "<bin>/romp-login-helper <id> <state dir>"` (T346, `helper_cmd`): a launch billed to a
-      STORED login names that login's own helper, which runs the token command its record holds (1Password's
-      `op read` is the documented example), so the CLI fetches the login's setup-token per request and no
+      STORED login names that login's own helper, which runs the token command its record holds (a secret
+      manager's read command, typically), so the CLI fetches the login's setup-token per request and no
       credential rides romp's files or environment (docs/reference.md, "Several Claude logins").
     - `apiKeyHelper: ""` (2026-09-08, `no_helper`): a LOGIN-billed launch disables the box's apiKeyHelper for
       this one process. In the CLI's precedence the helper outranks every login form, so without this a
@@ -12046,7 +12046,7 @@ class SdkBackend:
             # A launch billed to a STORED login (T346): the per-session settings layer above named THAT login's
             # helper (apiKeyHelper: bin/romp-login-helper <id> <state dir>, flag_settings_path's helper_cmd)
             # instead of disabling the box's; the CLI runs it per request and it runs the login's token command
-            # (1Password's op read is the documented example) into the CLI's pipe and nowhere else. No credential rides romp's
+            # (a secret manager's read command, typically) into the CLI's pipe and nowhere else. No credential rides romp's
             # files or environment, and the machine's own login tokens are NOT restored into this launch (a
             # bearer outranks the helper in the CLI's precedence and would bill the machine's account). The
             # door rules stand: env_request_error still refuses credential names from any client payload and

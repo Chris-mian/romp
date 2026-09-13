@@ -2,7 +2,7 @@
 
 # `romp login add | list | remove` (T346; docs/reference.md "Several Claude logins"): the CLI door to the stored
 # Claude logins. Run against a mock curl (the kernel's /logins answers), recording its calls: `add` hands the kernel
-# a label and the COMMAND that prints the token (or the 1Password reference shorthand), never a token; `list`
+# a label and the COMMAND that prints the token, never a token and no store's shorthand (the user 2026-09-13); `list`
 # prints labels only.
 
 ROMP_SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../bin" && pwd)/romp"
@@ -67,16 +67,14 @@ teardown() { rm -rf "$TEST_DIR"; }
     grep -q '"add": {"label": "Work", "tokenCmd": "cat ~/.secrets/enterprise-token"}' "$MOCK_LOG"
 }
 
-@test "login add --op hands the kernel the 1Password reference shorthand" {
-    run "$ROMP_SCRIPT" login add Work --op 'op://Private/claude setup-token/credential'
-    [ "$status" -eq 0 ]
-    grep -q '"add": {"label": "Work", "opRef": "op://Private/claude setup-token/credential"}' "$MOCK_LOG"
-    # one of the two, never both, never neither
+@test "login add takes --cmd only: a store's shorthand is a usage error, and no command is a usage error" {
+    run "$ROMP_SCRIPT" login add Work --op 'op://Vault/item/credential'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"usage: romp login add <label> --cmd"* ]]
+    ! grep -q 'opRef' "$MOCK_LOG"
     run "$ROMP_SCRIPT" login add Work
     [ "$status" -eq 2 ]
-    [[ "$output" == *"give ONE of --cmd"* ]]
-    run "$ROMP_SCRIPT" login add Work --cmd 'cat x' --op 'op://a/b/c'
-    [ "$status" -eq 2 ]
+    [[ "$output" == *"--cmd '<shell line that prints the token>' is required"* ]]
 }
 
 @test "login remove relays the kernel's answer; usage errors exit 2" {

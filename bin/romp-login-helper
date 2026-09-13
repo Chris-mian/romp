@@ -3,8 +3,8 @@
 # Claude login (T346; docs/reference.md "Several Claude logins"). The kernel writes
 # `apiKeyHelper: "<this script> <id> <state dir>"` into that session's per-session settings layer; the CLI runs
 # it per request (refreshing on its own TTL), and it runs the login's own TOKEN COMMAND, recorded in the login's
-# record (STATE/logins/<id>.json, field tokenCmd; 1Password's `op read op://vault/item/field` is the documented
-# example, and romp assumes nothing about it), whose output is the login's setup-token, to stdout only.
+# record (STATE/logins/<id>.json, field tokenCmd; typically a secret manager's read command or a private file's cat,
+# and romp assumes nothing about it), whose output is the login's setup-token, to stdout only.
 #
 # The command runs the way Claude Code runs an apiKeyHelper and the kernel runs the box's own
 # (kernel/credentials.py run_helper): under a WHITELISTED environment (PATH, HOME, USER, LOGNAME, TMPDIR, LANG,

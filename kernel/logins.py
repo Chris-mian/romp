@@ -12,8 +12,8 @@ STATE/logins/<id>.json, metadata only:
 knows about one it never sees); `email`, `org` and `kind` ("personal" | "enterprise") ride only when the
 add flow could read them from the CLI's own record. The credential itself, a `claude setup-token` bearer,
 lives WHEREVER the user keeps it and nowhere in romp (the user 2026-09-11): `tokenCmd` is a shell command
-that prints the token on demand (1Password's `op read op://vault/item/field` is the documented example;
-romp never imports or assumes 1Password, it only runs the command), and a session billed to the login gets,
+that prints the token on demand (a secret manager's read command, a private file's cat: romp never imports or
+assumes any store, it only runs the command; the user 2026-09-13), and a session billed to the login gets,
 in its per-session settings layer, an apiKeyHelper naming bin/romp-login-helper with the record id, which
 runs that command for the CLI per request. Nothing in this module reads, logs, returns or formats a token;
 a record's availability is its metadata alone (a command recorded, not refused, not a year old).
@@ -29,9 +29,6 @@ from pathlib import Path
 
 LOGINS_DIR = "logins"
 ID_RE = re.compile(r"^[0-9a-f]{12}$")
-# a 1Password secret reference, the documented example of a token command's target: op://<vault>/<item>/<field>,
-# or with a section op://<vault>/<item>/<section>/<field> (`romp login add --op <ref>` writes `op read` for it)
-OP_REF_RE = re.compile(r"^op://[^/\r\n\t]+/[^/\r\n\t]+/[^/\r\n\t]+(?:/[^/\r\n\t]+)?$")   # item titles may carry spaces
 TOKEN_CMD_MAX = 500                 # one shell line: the command the helper runs to print the token
 # A credential's SHAPE inside a command's text, an ADD-TIME rule only (a stored record is never re-read against it:
 # the rule may tighten later, and a record's sessions must not fall off their login for it): a setup-token's prefix;
@@ -96,17 +93,10 @@ def token_cmd_error(cmd) -> str:
         # said at the moment the value has already reached the shell's history and this command's argument list
         return ("the command text looks like it carries the credential itself (a token-shaped run); if it does, that "
                 "value is already exposed (the shell's history, the command's argument list): rotate it, then keep the "
-                "new token in a store and have the command read it (--op <reference>, or --cmd 'cat <private file>')")
+                "new token in a store and have the command read it (--cmd 'cat <private file>', or your secret manager's read command)")
     return ""
 
 
-def op_read_command(ref) -> str:
-    """The token command for a 1Password secret reference (the documented example): `op read --no-newline <ref>`,
-    shell-quoted. "" for anything that is not a reference."""
-    ref = str(ref or "").strip()
-    if not OP_REF_RE.match(ref):
-        return ""
-    return "op read --no-newline %s" % shlex.quote(ref)
 # The CLI's subscriptionType words, folded to the one distinction the user draws (design decision 1):
 # "team"/"enterprise" read enterprise, "pro"/"max" read personal. Any other word, or none, is NO kind
 # word: the kind is never guessed from an organisation's presence.

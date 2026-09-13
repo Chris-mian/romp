@@ -7,7 +7,7 @@ The mechanics under test:
     kind word, the COMMAND that prints the token), the pick vocabulary "login" | "key" | "login:<id>", the
     display label, the reasons a login is unavailable (refused, a year old, no command), and the helper command
     a session billed to one carries. No token anywhere: the credential lives wherever the user keeps it, and
-    romp only runs the command (1Password's `op read` is the documented example, never assumed).
+    romp only runs the command (a secret manager's read command, typically; no store is ever assumed or named).
   * The machine's own login record grows the organisation (name + a digest of its uuid) and the kind word read
     from Claude Code's credentials file (subscriptionType folded: pro/max personal, team/enterprise enterprise,
     never guessed); nothing else of that file leaves the kernel.
@@ -75,9 +75,9 @@ def _stage_helper(cfg, out=FAKE_KEY):
 
 
 def _rec(state, label="Work", **kw):
-    """One stored-login record under `state`, its token command the documented 1Password example."""
+    """One stored-login record under `state`, its token command a secret manager's read, by a synthetic tool name."""
     rec = {"id": kw.pop("id", None) or lg.mint_id(), "label": label,
-           "tokenCmd": kw.pop("tokenCmd", lg.op_read_command("op://Vault/romp login %s/credential" % label)),
+           "tokenCmd": kw.pop("tokenCmd", "token-read 'romp login %s'" % label),
            "addedAt": kw.pop("addedAt", int(time.time()) - 86400)}
     rec.update(kw)
     lg.write_record(state, rec)
@@ -171,9 +171,9 @@ class Registry(unittest.TestCase):
         src = open(os.path.join(ROOT, "kernel", "logins.py")).read()
         for word in ("token_path", "store_token", "token_env", "import subprocess"):
             self.assertNotIn(word, src, word)
-        self.assertEqual(lg.op_read_command("op://Vault/romp login Work/credential"),
-                         "op read --no-newline 'op://Vault/romp login Work/credential'")
-        self.assertEqual(lg.op_read_command("not a reference"), "")
+        # no store's shorthand inside romp (the user 2026-09-13): the module names none and offers no read-command helper
+        self.assertFalse(hasattr(lg, "op_read_command"))
+        self.assertNotIn("1Password", src); self.assertNotIn("op://", src); self.assertNotIn("OP_REF", src)
         self.assertEqual(lg.token_cmd_error(""), "a token command (a shell line that prints the token) is required")
         self.assertIn("one line", lg.token_cmd_error("cat x\ncat y"))
         self.assertEqual(lg.token_cmd_error("cat ~/.secrets/enterprise-token"), "", "any command; romp runs it, never reads it")
@@ -202,7 +202,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(lg.token_cmd_error("gpg2 -d -r %s ~/.secrets/token.gpg" % fp), "")
         self.assertEqual(lg.token_cmd_error("some-tool --recipient=%s" % fp), "")
         self.assertIn("looks like it carries the credential", lg.token_cmd_error("echo " + fp), "a bare hex run is still refused")
-        self.assertEqual(lg.token_cmd_error(lg.op_read_command("op://Vault/romp login Work/credential")), "")
+        self.assertEqual(lg.token_cmd_error("token-read 'romp login Work'"), "", "a secret manager's read with a spaced item name")
 
     def test_a_stored_record_is_never_re_read_against_the_shape_rule(self):
         import tempfile
@@ -227,17 +227,16 @@ class Registry(unittest.TestCase):
 
 class TheHelperScript(unittest.TestCase):
     """bin/romp-login-helper runs the record's token command and prints what it prints, to stdout only; every
-    failure of its own is a stderr line naming the login id and never a value. The command here is the
-    documented 1Password example, answered by a fake `op` on PATH."""
+    failure of its own is a stderr line naming the login id and never a value. The command here is a secret
+    manager's read by a synthetic tool name (token-read), answered by a fake of it on PATH."""
 
     def setUp(self):
         self.state = Path(tempfile.mkdtemp())
         self.bin = tempfile.mkdtemp()
         self.tok = _token_shaped()
-        fake_op = Path(self.bin) / "op"
-        # the fake op prints the synthetic bearer for the one reference it knows and refuses any other
-        fake_op.write_text("#!/bin/sh\n[ \"$1\" = read ] || exit 3\nshift\n[ \"$1\" = --no-newline ] && shift\n"
-                           "[ \"$1\" = 'op://Vault/romp login Work/credential' ] || { echo 'op: no such item' >&2; exit 1; }\n"
+        fake_op = Path(self.bin) / "token-read"
+        # the fake tool prints the synthetic bearer for the one item it knows and refuses any other
+        fake_op.write_text("#!/bin/sh\n[ \"$1\" = 'romp login Work' ] || { echo 'token-read: no such item' >&2; exit 1; }\n"
                            "printf '%s' '" + self.tok + "'\n")
         fake_op.chmod(0o700)
         self.env = dict(os.environ, PATH=self.bin + ":" + os.environ.get("PATH", ""))
@@ -298,7 +297,7 @@ class TheHelperScript(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertEqual(p.stdout, "")
 
-    def test_any_command_serves_not_only_1password(self):
+    def test_any_command_serves(self):
         # a token kept in a private file, read by a plain command: romp assumes nothing about the store
         priv = Path(tempfile.mkdtemp()) / "enterprise-token"
         priv.write_text(self.tok)
@@ -905,7 +904,7 @@ class StoredLoginPick(_Backend):
 class UsersShape(_Backend):
     """The user's own setup (2026-09-11), the exact shape: the PERSONAL account on the ordinary Claude Code login
     as now (Max, so 'personal'), and the ENTERPRISE account as a stored login whose command reads a setup-token
-    from 1Password. Both listed with their kinds, each pickable per session, the stored one's launch carrying
+    from their secret manager. Both listed with their kinds, each pickable per session, the stored one's launch carrying
     its helper and the machine one's launch exactly as before."""
 
     def setUp(self):
@@ -921,7 +920,7 @@ class UsersShape(_Backend):
         km._ACCT_CACHE["mtime"] = -2.0
         km._KIND_CACHE["mtime"] = -2.0
         self.ent = _rec(self.be.state_dir, "Enterprise", org="Acme", kind="enterprise",
-                        tokenCmd=lg.op_read_command("op://Work/claude setup-token/credential"))
+                        tokenCmd="token-read 'claude setup-token'")
         self.saved = (km._sdk, km.jd._cred.helper_source)
         km._sdk = lambda: self.be
         self._state = km.jd.STATE
@@ -1004,22 +1003,23 @@ class Doors(unittest.TestCase):
         st, d = self._req("/logins")
         self.assertEqual((st, d["ok"], d["logins"]), (200, True, []))
         self.assertIn("machine", d)
+        # a store's shorthand is not a door (the user 2026-09-13): a body with a reference and no command is refused
         st, d = self._req("/logins", {"add": {"label": "Work", "opRef": "op://Vault/romp login Work/credential", "kind": "team"}})
+        self.assertEqual(st, 400, "no shorthand: only tokenCmd adds a login")
+        self.assertIn("a token command", d["error"])
+        st, d = self._req("/logins", {"add": {"label": "Work", "tokenCmd": "token-read 'romp login Work'", "kind": "team"}})
         self.assertEqual((st, d["ok"]), (200, True))
         lid = d["id"]
         self.assertTrue(lg.ID_RE.match(lid))
         self.assertEqual(d["display"], "Work · enterprise")
-        self.assertEqual(lg.read_record(self.state, lid)["tokenCmd"], "op read --no-newline 'op://Vault/romp login Work/credential'",
-                         "the 1Password shorthand records op read of the reference")
+        self.assertEqual(lg.read_record(self.state, lid)["tokenCmd"], "token-read 'romp login Work'", "the command is recorded verbatim")
         st, d = self._req("/logins")
         self.assertEqual([r["label"] for r in d["logins"]], ["Work"])
         self.assertEqual(d["logins"][0]["hasCmd"], True)
-        self.assertNotIn("op read", json.dumps(d), "the command itself never rides the list")
+        self.assertNotIn("token-read", json.dumps(d), "the command itself never rides the list")
         st, d = self._req("/logins", {"add": {"label": "Work", "tokenCmd": "cat x"}})
         self.assertEqual((st, d["ok"]), (200, False))
         self.assertIn("exists", d["error"])
-        st, d = self._req("/logins", {"add": {"label": "Bad", "opRef": "not-a-reference"}})
-        self.assertEqual(st, 400)
         st, d = self._req("/logins", {"add": {"label": "Bad", "tokenCmd": "two\nlines"}})
         self.assertEqual(st, 400)
         st, d = self._req("/logins", {"add": {"tokenCmd": "cat x"}})
@@ -1028,7 +1028,7 @@ class Doors(unittest.TestCase):
         self.assertEqual(st, 400, "a credential pasted as the command is refused at the door")
         self.assertIn("looks like it carries the credential", d["error"])
         st, d = self._req("/logins", {"add": {"label": "Plain", "tokenCmd": "cat ~/.secrets/enterprise-token"}})
-        self.assertEqual((st, d["ok"]), (200, True), "any command, not only 1Password")
+        self.assertEqual((st, d["ok"]), (200, True), "any command that prints the token")
         self.assertTrue(lg.remove(self.state, d["id"]))
         st, d = self._req("/logins", {"remove": "Nope"})
         self.assertEqual((st, d["ok"]), (200, False))

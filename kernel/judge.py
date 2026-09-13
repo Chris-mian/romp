@@ -1754,8 +1754,8 @@ def _is_login_auth(auth) -> bool:
 def _login_helper_cmd(login_id):
     """The apiKeyHelper for a judge call billed to a STORED login (T346): bin/romp-login-helper with the record
     id and this state directory, the same command the session's own launch carries (sdk_backend
-    flag_settings_path's helper_cmd), so the judge runs the login's own token command per request (1Password's
-    `op read` is the documented example) and nothing rides this process's files or environment."""
+    flag_settings_path's helper_cmd), so the judge runs the login's own token command per request (a secret
+    manager's read command, typically) and nothing rides this process's files or environment."""
     return "%s %s %s" % (shlex.quote(str(HERE.parent / "bin" / "romp-login-helper")), login_id, shlex.quote(str(STATE)))
 
 

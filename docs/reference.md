@@ -48,7 +48,7 @@ These are for scripting and for agents rather than daily use:
 | `romp move <session> <dir>` | Move a session's working directory to `<dir>` (the folder must already exist); the conversation, name, mail and history stay with the session. Quiet session → moves now; open turn → queued, fires when the turn ends. See [Moving a session to another folder](#moving-a-session-to-another-folder) |
 | `romp checkin <host>` / `romp checkout <host>` | Publish this machine to an attached hub, or withdraw it. The hub files this machine under the name it declares only when that name is a machine name (letters, digits, dots, hyphens or underscores, starting with a letter or digit, at most 128 characters). Any other declared name is refused with a 400 that states the rule and echoes nothing, is recorded nowhere, and is said once on both machines: on the hub, one stderr line and one Log entry under the `refused` kind, naming the value as a clipped repr; on this machine, one stderr line, one dial-log record and one Log entry carrying the hub's reason, after which the same name is not re-sent until it, or the hub's kernel, changes. A hub's `POST /tunnels/trust` for a host it has never seen (the remembered-hosts entry that tiers relayed mail by origin) holds the wider rule that registry's writers share, a machine name or an ssh alias (letters, digits, dots, hyphens, underscores, at-signs, colons or square brackets, not starting with a hyphen, at most 255 characters), because a hub keys an attached peer by its ssh alias and carries that alias when you set trust between two of your machines; anything else is refused the same way, on the hub, with nothing recorded. `ROMP_HOST_NAME` (the kernel) and `ROMP_POSTAL_HOST` (the postal bus) override the declared name only when they clear the same rule; an unusable value (a space, an at-sign, a trailing newline) is set aside once, on stderr or in the bus log, and the derived name (the short hostname, else the platform's machine name, else a minted id) is used |
 | `romp default-dir [PATH]` | The default working directory for new sessions; no argument prints it, `""` clears it |
-| `romp login add <label> (--cmd '<shell line>' \| --op <reference>)`, `romp login list`, `romp login remove <label>` | The stored Claude logins a session can be billed to beside the machine's own (see [Several Claude logins](#several-claude-logins)): `add` records the command that prints the login's setup-token on demand (`--op` is the 1Password shorthand for `op read`); `list` and `remove` print labels only, never a token |
+| `romp login add <label> --cmd '<shell line>'`, `romp login list`, `romp login remove <label>` | The stored Claude logins a session can be billed to beside the machine's own (see [Several Claude logins](#several-claude-logins)): `add` records the command that prints the login's setup-token on demand (`--op` is the 1Password shorthand for `op read`); `list` and `remove` print labels only, never a token |
 | `romp debug [on\|off\|status]` | Judge debug mode, where rejection rows carry the full input and reply |
 | `romp refresh --quiet` | Refresh at the next quiet window instead — waits for sessions to finish their turns (15-min backstop). The ONLY door to the quiet window: a deploy (a peer's `romp update`, a release self-update, an automatic converge) restarts immediately, by the user's 2026-09-08 decision |
 | `romp down --wait <s>`, `romp down --now` | How long `romp down` waits for turns in flight to finish (0 to 600 seconds; default 5), or no wait at all |
@@ -463,9 +463,9 @@ organisation's presence), and the COMMAND that prints the credential. The
 credential itself is a `claude setup-token` bearer (a one-year token) and
 lives wherever the user keeps it, nowhere in romp: no file under romp's state
 directory holds it, and it never rides romp's environment or a log line. Romp
-assumes nothing about where it is kept; it only runs the recorded command.
-1Password's `op read op://vault/item/field` is the documented example, and
-`romp login add --op <reference>` writes exactly that command.
+assumes nothing about where it is kept; it only runs the recorded command
+(a secret manager's read command, a private file's `cat`: the choice, and the
+setup that puts the token there, are the user's own, outside romp).
 
 A session billed to a stored login reaches the token the way a key-billed
 session reaches the key today, through Claude Code's `apiKeyHelper` contract:
@@ -495,10 +495,9 @@ session; with its standard input closed; and with its standard error
 discarded, since a secret manager's diagnostics can quote the value it read
 and the CLI's standard error is kept in the session's registry row and the
 kernel log. Anything the tool needs beyond that, the command provides itself:
-on a headless machine `op read` needs a 1Password service-account token or a
-signin session, so the command is `. ~/.config/op/env && op read --no-newline
-'<reference>'` with that private file (mode 0600) holding it, while a desktop's
-1Password app session serves as is. The login records themselves are written
+on a headless machine a secret manager's CLI needs its own session or service
+credential, so the command sources that from a private file (mode 0600) before
+the read, while a desktop's unlocked app serves as is. The login records themselves are written
 at mode 0600 in a 0700 directory.
 
 A failing command is loud, never a quiet fall onto another account. The
@@ -545,7 +544,7 @@ A machine or session with no stored login works exactly as today: the ordinary
 Claude Code login and the API key path are untouched, and the stored logins
 are an addition beside them. The user's own shape is the case the tests pin:
 the personal account on the ordinary login as now, and the enterprise account
-as a stored login whose command reads a setup-token from 1Password.
+as a stored login whose command reads a setup-token from the user's secret manager.
 
 Three things to know plainly. The judges bill the SAME account as the session
 they judge: a session billed to a stored login has its planner, closer and
@@ -554,15 +553,15 @@ usage on that login; a session on the machine default is unchanged. A pasted
 token's label is the user's word: romp cannot read an account or an
 organisation out of a token it never sees, so a login added from the command
 line carries only the label typed for it. And the tool the command calls must
-work non-interactively for the user who runs romp (a signed-in `op`, for the
-example), as the machine's key helper already must.
+work non-interactively for the user who runs romp (a signed-in secret manager
+CLI, for example), as the machine's key helper already must.
 
-Two doors add a login. `romp login add <label> --cmd '<shell line>'` records
-the command that prints the token; `romp login add <label> --op
-op://vault/item/field` records `op read` of that reference. Neither reads,
-prints or stores the token. The gear's Account section will run `claude
-setup-token` under a scratch configuration directory and hand the printed token
-to a store the user names, so the user never handles it. `romp login list`
+One door adds a login. `romp login add <label> --cmd '<shell line>'` records
+the command that prints the token; romp never reads, prints or stores the
+token. Minting the token and putting it in a store is the user's own setup,
+outside romp (a script of their own that runs `claude setup-token` under a
+scratch configuration directory, hands the printed token to their store, and
+ends by calling this command). `romp login list`
 prints the labels, `romp login remove <label>` forgets a record (a label two
 records share is refused; name the id instead); the token stays wherever it
 was kept.

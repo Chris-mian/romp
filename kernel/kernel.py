@@ -59273,10 +59273,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": True, "id": tsid, "bg": bg,
                                                    "fg": pal.fg_for(bg)}), "application/json")
             if u.path == "/logins":
-                # The stored logins' two writes (T346). {"add": {label, tokenCmd | opRef, email?, org?, kind?}}
+                # The stored logins' two writes (T346). {"add": {label, tokenCmd, email?, org?, kind?}}
                 # records a login: the label is the user's word, tokenCmd the shell line that prints its
-                # setup-token on demand (opRef, a 1Password secret reference, is the documented shorthand and
-                # becomes `op read` of it), and no token ever rides this body. {"remove": <id or label>} forgets
+                # setup-token on demand (how the user keeps the token is theirs: no store's shorthand here, the
+                # user 2026-09-13), and no token ever rides this body. {"remove": <id or label>} forgets
                 # one (logins.remove: the record goes, the token stays wherever the user keeps it); a label two
                 # records share is refused naming the count, never picked from.
                 b, berr = _json_object_body(raw_body)
@@ -59287,14 +59287,14 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(add, dict):
                         return self._send(400, json.dumps({"ok": False, "error": "add must be an object"}), "application/json")
                     label = " ".join(str(add.get("label") or "").split())
-                    token_cmd = str(add.get("tokenCmd") or "").strip() or lg.op_read_command(add.get("opRef"))
+                    token_cmd = str(add.get("tokenCmd") or "").strip()
                     if not label or len(label) > 80:
                         return self._send(400, json.dumps({"ok": False, "error":
                             "add.label (1 to 80 characters, the login's name in every menu) required"}), "application/json")
                     cerr = lg.token_cmd_error(token_cmd)
                     if cerr:
                         return self._send(400, json.dumps({"ok": False, "error":
-                            "add.tokenCmd: %s (or add.opRef, a 1Password secret reference op://vault/item/field)" % cerr}),
+                            "add.tokenCmd: %s" % cerr}),
                             "application/json")
                     if any(str(r.get("label") or "") == label for r in lg.records(jd.STATE)):
                         return self._send(200, json.dumps({"ok": False, "error":
@@ -59319,7 +59319,7 @@ class Handler(BaseHTTPRequestHandler):
                 ref = str(b.get("remove") or "").strip()
                 if not ref:
                     return self._send(400, json.dumps({"ok": False, "error":
-                        "add {label, tokenCmd or opRef} or remove (a stored login's id or label) required"}), "application/json")
+                        "add {label, tokenCmd} or remove (a stored login's id or label) required"}), "application/json")
                 lid, err = lg.resolve(jd.STATE, ref)
                 if err:
                     return self._send(200, json.dumps({"ok": False, "error": err}), "application/json")
