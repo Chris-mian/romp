@@ -17239,7 +17239,7 @@ const wireKey = (sid: string, kind: AskKind, key: string): string => sid + "\u00
 function matchAsk(sid: string, kind: AskKind, key: string | null | undefined): "live" | "cancelled" | "none" {
   if (key == null) return "none";
   const live = liveAskKey.get(sid);
-  if (live && live.kind === kind && live.key === String(key)) return "live";
+  if (live && live.kind === kind && live.key === String(key)) return "live";   // the live ask by its key
   return cancelledWire.delete(wireKey(sid, kind, String(key))) ? "cancelled" : "none";
 }
 // T402 round three (medium 1): the click's cancel LATCHES for the tab. The reader sat at the older edge when they clicked, the click
@@ -17254,7 +17254,7 @@ function olderLatched(sid: string): boolean {
   return true;
 }
 function syncLoadingPill(): void { if (activeId && readerWaits.has(activeId)) showLoadingPill(); else hideLoadingPill(); }
-function noteAsk(sid: string, reader: boolean, kind: AskKind, key: string | number | null | undefined): void { loadingOlder.add(sid); askedGen.set(sid, askGen); liveAskKey.set(sid, { kind, key: String(key ?? "") }); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); }
+function noteAsk(sid: string, reader: boolean, kind: AskKind, key: string | number | null | undefined): void { loadingOlder.add(sid); askedGen.set(sid, askGen); cancelledWire.delete(wireKey(sid, kind, String(key ?? ""))); liveAskKey.set(sid, { kind, key: String(key ?? "") }); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); }   // a fresh ask supersedes a cancelled twin of its key (round six, low 2)
 function endAsk(sid: string): void { loadingOlder.delete(sid); askedGen.delete(sid); liveAskKey.delete(sid); readerWaits.delete(sid); syncLoadingPill(); }
 const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to re-anchor on when the chunk lands
 // sid → the on-screen y that uuid must come back to. PRESENT ⇒ the fetch was a scroll-back (requestOlder) and
@@ -17264,8 +17264,16 @@ const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to r
 const pendingOlderKeepY = new Map<string, number>();
 function chatHead(msg: any) {
   // the reply answers the ask whose key it carries (round five, medium): a clicked-away older ask's late reply, or one from before a
-  // flip, matches no live ask and may not read the marks a LATER ask (a card's window) set, end that ask, or toast at the reader
-  const which = matchAsk(msg.id, "older", typeof msg.beforeUuid === "string" ? msg.beforeUuid : (msg.before != null ? String(msg.before) : null));
+  // flip, matches no live ask and may not read the marks a LATER ask (a card's window) set, end that ask, or toast at the reader.
+  // The proto-2 wire echoes the ask's uuid (beforeUuid); the index wire (proto 1) clamps its numeric `before` and cannot be key-matched
+  // (round six, low 1), so it is matched by the live ask's kind, keeping the branch's own `before !== headFrom` staleness guard below.
+  // a reply the kernel could not key back verbatim (round six, low 1): the index wire clamps its numeric `before` to the build length,
+  // and a proto-2 fault for a null-key ask carries beforeUuid null; neither can be key-matched, so both are matched by the live ask's
+  // kind (a cancelled older ask left no live older key, so its late keyless reply still stays silent), keeping the index branch's own
+  // `before !== headFrom` staleness guard below. A proto-2 reply that DOES echo its uuid is keyed as round five made it.
+  const keyed = typeof msg.beforeUuid === "string";
+  const which = keyed ? matchAsk(msg.id, "older", msg.beforeUuid)
+                      : (liveAskKey.get(msg.id)?.kind === "older" ? "live" : "none");
   if (which !== "live") return;   // cancelled (consumed) or a stranger: silent, nothing ends; the reader clicked to stop waiting, the next scroll asks again
   const hadWait = readerWaits.has(msg.id);
   const deepLink = pendingOlderAnchor.has(msg.id) && !pendingOlderKeepY.has(msg.id);   // a deep link's fetch (fetchOlderForAnchor), not a scroll-back's
@@ -17407,7 +17415,19 @@ function chatWindow(msg: any) {
   // LATER ask's, which this reply may not end), or the ask on the books, whose recorded wait keys the stand-downs below (round three,
   // medium 2: landActive clears pendingAnchor at the end of every landing pass, so the landing's own mark cannot be the key)
   const which = matchAsk(msg.id, "around", typeof msg.anchor === "string" ? msg.anchor : null);   // by the ask's key (round five, medium)
-  if (which === "none") return;   // a stranger (an ask from before a flip, a reply for no ask of this page's): silent, nothing ends
+  if (which === "none") {
+    // a stranger: no live ask of this page's matches this window's anchor (an unasked window the kernel pushed, an ask from before a
+    // flip). It shows the reader nothing and adopts nothing — but a SERVED window moved this client's per-client base, so an ATTACHED
+    // active reader must re-base the kernel on the tail (the base's reattachLive road), or the kernel believes the client holds a window
+    // it does not (round six, the CI red on the never-detaches road). A fault or a missing window served nothing: no re-base. A later
+    // live ask's marks are untouched (a stranger never reads or ends them).
+    const st = sessions.get(msg.id);
+    if (st && st.proto === 2 && !st.detached && msg.id === activeId && !msg.fault && !msg.missing && Array.isArray(msg.events) && msg.events.length) {
+      landTrail.push("window-stranger");
+      reattachLive(msg.id, true);
+    }
+    return;
+  }
   const cancelled = which === "cancelled";
   const later = cancelled && loadingOlder.has(msg.id);   // a later ask of this tab's is in flight: its marks are not this reply's to end (round four, medium 2)
   const hadWait = !cancelled && readerWaits.has(msg.id);
