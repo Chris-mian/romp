@@ -13,7 +13,8 @@ two-line stamps never overlap the next stamp; and the vocabulary's widest forms 
 theme at the default 13px chat font and at 14px, for the record the user asked for (the one-line forms fit the slot at
 13px; at 14px the two-digit minute forms are wider than the slot and pre-line wraps them at their space, so nothing ever
 overhangs toward the dot). Across the tick a marker whose label did not change is not touched at all (no mutation
-records; a selection spanning its stamp survives): the painter writes only what differs. Then the page's clock is
+records; a selection inside its stamp survives, where a replaced text node would collapse it): the painter writes only
+what differs. Then the page's clock is
 paused and jumped past the next clock-minute boundary: the rail's ONE minute timer fires, the labels move by a minute (the
 row "now" reads "1 min ago"; the row at 59 minutes reads "1 hour ago", the same as the row before it, so its stamp goes
 quiet), the yesterday markers do
@@ -206,7 +207,10 @@ await page.evaluate(() => {
   const t = rel[0], m = t.querySelector(":scope > .time-marker");
   const c = document.getElementById("content");
   const scroll0 = c.scrollTop;
-  const range = document.createRange(); range.setStart(m.firstChild, 0); range.setEndAfter(t.lastChild);
+  // the selection lies wholly INSIDE the stamp's text: a range running on through the turn is re-pointed at the marker
+  // element when the text node is replaced and reads the same string either way (round three), only a range inside the
+  // node collapses, so this is the probe that is red against an unguarded write
+  const range = document.createRange(); range.setStart(m.firstChild, 0); range.setEnd(m.firstChild, m.firstChild.length);
   const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
   w.__t406.selBefore = sel.toString();
   w.__t406.scroll = [scroll0, c.scrollTop];   // the pane must not move for a programmatic selection
@@ -238,29 +242,37 @@ out.web.quiet = await page.evaluate(() => {
   return { records: w.__t406.records, selBefore: w.__t406.selBefore, atJump: w.__t406.atJump, selAfterFrame: sel.toString(),
            scroll: w.__t406.scroll.concat([document.getElementById("content").scrollTop]), steps: w.__t406.steps };
 });
-// the sticky over a today turn: a short pane, the second today turn scrolled 20px past the top line, so its own stamp has crossed above and the sticky leads with its label
+// the sticky over a today turn, in a short pane. Two legs: (1) the one-hour turn scrolled 20px past the top line, so
+// its own one-line stamp has crossed above and the sticky leads with "1 hour ago"; (2) the one-hour turn parked 7px
+// BELOW the top line, so the two-hour turn above it is the tracked one (its two-line stamp crossed above) and the
+// sticky leads with "2 hours" over "ago" while the incoming one-hour stamp (13px under its turn's top, 20px under the
+// pane's) sits inside the sticky's two-line band although below the slot line: hidden only because the band is the
+// sticky's OWN height (stampH), never the first marker's one-line height
 await page.setViewportSize({ width: 1100, height: 330 });
-await page.evaluate(() => {
-  const turns = Array.from(document.querySelectorAll("#content .turn")).filter((t) => t.offsetParent !== null && t.querySelector(":scope > .time-marker.rel"));
-  const t = turns[1];
-  const c = document.getElementById("content");
-  c.style.paddingBottom = c.clientHeight + "px";
-  // an INSTANT scroll: the page's clock is paused, so a smooth scroll (the pane's scroll-behavior) would never arrive
-  c.scrollTo({ top: c.scrollTop + t.getBoundingClientRect().top - c.getBoundingClientRect().top + 20, behavior: "instant" });
-});
-await page.waitForTimeout(300);   // the scroll event is the browser's own frame, real time; only then does the handler ask for a (fake) animation frame
-await page.clock.runFor(400);     // ...which the paused clock delivers here: the sticky's paint
-await page.waitForTimeout(100);
-out.web.stickyRun = await page.evaluate(() => {
-  const turns = Array.from(document.querySelectorAll("#content .turn")).filter((t) => t.offsetParent !== null && t.querySelector(":scope > .time-marker.rel"));
-  const t = turns[1], m = t.querySelector(":scope > .time-marker");
-  const s = document.querySelector(".rail-sticky"); const sr = s.getBoundingClientRect();
-  const c = document.getElementById("content"), cr = c.getBoundingClientRect();
-  return { tracked: { marker: m.textContent, epoch: m.dataset.epoch, hidden: getComputedStyle(m).visibility === "hidden", top: t.getBoundingClientRect().top - cr.top },
-           pane: [c.scrollTop, c.scrollHeight, c.clientHeight],
-           sticky: getComputedStyle(s).display !== "none" ? { text: s.textContent, rel: s.classList.contains("rel"), height: sr.height, width: sr.width } : null,
-           now: Date.now() };
-});
+const stickyAt = async (idx, offset) => {   // the idx-th today turn's top `offset` px below the pane's top (negative: above)
+  await page.evaluate(([i, off]) => {
+    const turns = Array.from(document.querySelectorAll("#content .turn")).filter((t) => t.offsetParent !== null && t.querySelector(":scope > .time-marker.rel"));
+    const t = turns[i], c = document.getElementById("content");
+    c.style.paddingBottom = c.clientHeight + "px";
+    // an INSTANT scroll: the page's clock is paused, so a smooth scroll (the pane's scroll-behavior) would never arrive
+    c.scrollTo({ top: c.scrollTop + t.getBoundingClientRect().top - c.getBoundingClientRect().top - off, behavior: "instant" });
+  }, [idx, offset]);
+  await page.waitForTimeout(300);   // the scroll event is the browser's own frame, real time; only then does the handler ask for a (fake) animation frame
+  await page.clock.runFor(400);     // ...which the paused clock delivers here: the sticky's paint
+  await page.waitForTimeout(100);
+  return page.evaluate(() => {
+    const turns = Array.from(document.querySelectorAll("#content .turn")).filter((t) => t.offsetParent !== null && t.querySelector(":scope > .time-marker.rel"));
+    const c = document.getElementById("content"), cr = c.getBoundingClientRect();
+    const s = document.querySelector(".rail-sticky"); const sr = s.getBoundingClientRect();
+    const markers = turns.slice(0, 2).map((t) => { const m = t.querySelector(":scope > .time-marker"); const mr = m.getBoundingClientRect();
+      return { marker: m.textContent, epoch: m.dataset.epoch, hidden: getComputedStyle(m).visibility === "hidden", turnTop: t.getBoundingClientRect().top - cr.top, top: mr.top - cr.top }; });
+    return { markers, pane: [c.scrollTop, c.scrollHeight, c.clientHeight],
+             sticky: getComputedStyle(s).display !== "none" ? { text: s.textContent, rel: s.classList.contains("rel"), height: sr.height, width: sr.width, top: sr.top - cr.top, bottom: sr.bottom - cr.top } : null,
+             now: Date.now() };
+  });
+};
+out.web.stickyRun = await stickyAt(1, -20);
+out.web.stickyTwoLine = await stickyAt(1, 7);
 if (cfg.shots) fs.writeFileSync(cfg.shots + "/t406-measure.json", JSON.stringify({ font: { dark: out.web.dark.font, light: out.web.light.font }, slot: out.web.dark.slot, dotGap: 3,
   widthsAt13px: { dark: out.web.dark.widths, light: out.web.light.widths }, widthsAt14px: { dark: out.web.dark.widths14, light: out.web.light.widths14 } }, null, 1));   // the fit the user asked to have measured, beside the screenshots
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
@@ -425,19 +437,35 @@ class ServedRailRelative(unittest.TestCase):
         # a marker whose label did not change across the boundary is not touched: no mutation records on the two-hour and
         # one-hour rows, and the selection laid across the two-hour turn before the tick reads the same after it
         q = r["web"]["quiet"]
-        self.assertTrue(q["selBefore"].startswith("2 hours"), "the selection began on the two-hour stamp: %r" % q)
+        self.assertEqual(q["selBefore"], "2 hours\nago", "the selection is the two-hour stamp's own text, nothing beyond it: %r" % q)
         self.assertEqual(q["scroll"][0], q["scroll"][1], "a programmatic selection does not scroll the pane: %r" % q["scroll"])
         self.assertEqual(q["atJump"]["records"], {"0": [], "1": []}, "an unchanged label is not rewritten by the tick (text node, class, title, data-hm): %r" % q)
-        self.assertEqual((q["atJump"]["ranges"], q["atJump"]["sel"]), (1, q["selBefore"]), "a selection spanning an untouched stamp survives the tick: %r" % q)
+        self.assertEqual((q["atJump"]["ranges"], q["atJump"]["sel"]), (1, q["selBefore"]), "a selection inside an untouched stamp survives the tick (it collapses to the empty string when the text node is replaced): %r" % q)
         self.assertEqual(q["records"], {"0": [], "1": []}, "...and nothing touched those markers in the frame after either: %r" % q)
         # the sticky over a today turn scrolled past the top line wears the same two-line label as the stamp it stands in for
         st = r["web"]["stickyRun"]
-        self.assertTrue(st["tracked"]["hidden"], "the tracked turn's own stamp crossed above the line and hid: %r" % st)
+        tracked = st["markers"][1]
+        self.assertTrue(tracked["hidden"], "leg 1: the one-hour turn's own stamp crossed above the line and hid: %r" % st)
         self.assertIsNotNone(st["sticky"], "...so the sticky leads: %r" % st)
-        want = relative_label(int(st["tracked"]["epoch"]), st["now"])
-        self.assertEqual((st["sticky"]["text"], st["sticky"]["rel"]), (relative_lines(want), True), "the sticky reads the turn's own label: %r" % st)
+        want = relative_label(int(tracked["epoch"]), st["now"])
         self.assertEqual(want, "1 hour ago", "the second today turn is the one-hour row: %r" % st)
+        self.assertEqual((st["sticky"]["text"], st["sticky"]["rel"]), (relative_lines(want), True), "the sticky reads the turn's own label: %r" % st)
         self.assertLess(st["sticky"]["height"], 15, "one line tall, as '1 hour ago' fits the slot: %r" % st["sticky"])
+        # leg 2: the two-line sticky, and its band. The one-hour turn's top sits 7px below the pane's top (the slot line is
+        # 6px down), so the two-hour turn is the tracked one and the sticky wears its two-line label; the one-hour stamp,
+        # 13px under its turn's top, is BELOW the slot line yet inside the sticky's band and must be hidden under it: the
+        # band is the sticky's own height (two lines), which a one-line first marker's height would not reach
+        st2 = r["web"]["stickyTwoLine"]
+        two, nxt = st2["markers"]
+        self.assertTrue(two["hidden"], "leg 2: the two-hour turn's own stamp crossed above the line and hid: %r" % st2)
+        self.assertIsNotNone(st2["sticky"], "...so the sticky leads: %r" % st2)
+        self.assertEqual(relative_label(int(two["epoch"]), st2["now"]), "2 hours ago", "the first today turn is the two-hour row: %r" % st2)
+        self.assertEqual((st2["sticky"]["text"], st2["sticky"]["rel"]), ("2 hours\nago", True), "the sticky reads the two-line label: %r" % st2)
+        self.assertGreater(st2["sticky"]["height"], 15, "two lines tall: %r" % st2["sticky"])
+        self.assertGreaterEqual(nxt["turnTop"], 6.5, "the one-hour turn's top is below the slot line, so it is not the tracked turn: %r" % st2)
+        self.assertGreaterEqual(nxt["top"], 6, "...and its stamp did not cross above the line: %r" % nxt)
+        self.assertLess(nxt["top"], st2["sticky"]["bottom"], "...but sits inside the sticky's two-line band: %r vs %r" % (nxt, st2["sticky"]))
+        self.assertTrue(nxt["hidden"], "...so it is hidden under the sticky (the band is the sticky's own height, not the first marker's): %r" % st2)
 
 
 if __name__ == "__main__":
