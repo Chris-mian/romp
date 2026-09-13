@@ -1204,8 +1204,10 @@ def _interrupt_marks_facts(turns):
     kind the classifier may need the BODY of (the resume notice that names a machine cut, _interrupt_cause), but only
     the notice _machine_cut_cause's forward scan from a stop record actually reaches; so a romp row's light facts carry
     its container and slot (`_slot`), and _interrupt_cause builds that row on demand when the scan reads it (T401 (3b):
-    the deploy boot's cold pass built every romp row of every transcript, 3,220 atoms hydrated from disk, for the few
-    notices a stop ever reaches; a stop-free transcript now builds nothing). The list is what _interrupt_marks_atoms
+    the deploy boot's cold pass BUILT every romp row of every transcript from the document rows, 3,220 atoms, their
+    allocation and LRU residency and their row decodes, though the scan reaches about a fifth of the romp rows offered
+    (1,268 of 6,061 on the local corpus); a build reads no body, so no disk byte is saved: the notices reached are
+    hydrated exactly as before; a stop-free transcript now builds nothing). The list is what _interrupt_marks_atoms
     consumes, so the tally over rows equals the tally over atoms by construction (a test runs both over every golden)."""
     users = []
     for turn in turns:
