@@ -127,7 +127,7 @@ test("render.ts asks for older history only on an upward move, marks each window
   // two raisers, both a re-land of the READER's own row: keepPlaceAcrossWindow's landing across a rebuild, and chatWindow's window asked
   // around the reader's row after they clicked a landing's ask away (T402 round two, medium 2), whose reply restores that row at its offset
   assert.equal((RENDER.match(/relandAsk = true;/g) || []).length, 2, "nothing else raises the flag");
-  assert.match(RENDER, /relandAsk = true;\s*\n\s*try \{ requestAround\(msg\.id, anchorUuid\); \} finally \{ relandAsk = false; \}/, "the cancelled ask's re-land holds the flag only around its own ask");
+  assert.match(RENDER, /relandAsk = true;\s*\n\s*let went = false;\s*\n\s*try \{ went = requestAround\(msg\.id, anchorUuid\); \} finally \{ relandAsk = false; \}/, "the cancelled ask's re-land holds the flag only around its own ask, and says whether it went out (T402 round five, low 3)");
   assert.ok(around.includes('scrollDiagRow("windowask", {'), "…and files a diagnostic row under the scroll rows' per-minute budget: the report's rows had the landing but not the ask");
   assert.ok(RENDER.includes('| "unitchange" | "windowask", data: any): void {'), "the budgeted row kinds include it");
   assert.ok(around.indexOf("pendingWindowNav.set(sid, { nav,") < around.indexOf('type: "loadAround"'), "the mark is set before the ask goes out");

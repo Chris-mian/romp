@@ -150,6 +150,7 @@ function liftWorld(): (hooks: Hooks, mod: typeof MOD, doc: ReturnType<typeof fak
     const showLoadingPill = () => { H.pillShown++; };
     const readerWaits = new Map(), askedGen = new Map(); let askGen = 0;   // the per-tab wait set (T402 round two): the slices call noteAsk/endAsk
     const olderCancelled = new Map();   // the click's latch (round three): the deep-link ask clears it
+    const matchAsk = () => "live";      // the reply answers the ask on the books (round five): these slices drive one ask at a time
     const syncLoadingPill = () => { if (activeId && readerWaits.has(activeId)) showLoadingPill(); else hideLoadingPill(); };
     const noteAsk = (sid, reader) => { loadingOlder.add(sid); askedGen.set(sid, askGen); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); };
     const endAsk = (sid) => { loadingOlder.delete(sid); askedGen.delete(sid); readerWaits.delete(sid); syncLoadingPill(); };

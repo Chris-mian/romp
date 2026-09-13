@@ -11433,8 +11433,11 @@ function settleInput(e: Event): void {
   settleLastInput = Date.now();
   // the evidence the older edge's latch waits for: the same inputs, once past the editable-field and the scroller's-own-box returns above, so a
   // keystroke into the composer or a hover never counts; a pointer counts only as a grab of the scrollbar (a press on the pill never reaches here as one)
-  if (e.type === "wheel" || e.type === "keydown" || e.type.startsWith("touch") || (e.type === "pointerdown" && settleScrollerHeld)) noteOlderEvidence(activeId);
+  const navKey = e.type === "keydown" && NAV_KEYS.has((e as KeyboardEvent).key) && (!document.activeElement || document.activeElement === document.body || !!(c && c.contains(document.activeElement)));
+  const drag = e.type === "pointermove" && !!(e as PointerEvent).buttons;   // a selection or middle-click autoscroll inside the transcript is the reader's own move (round five, low 2)
+  if (e.type === "wheel" || navKey || e.type.startsWith("touch") || drag || (e.type === "pointerdown" && settleScrollerHeld)) noteOlderEvidence(activeId);
 }
+const NAV_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);   // the keys that scroll the transcript; any other key (an Escape on the body) moves nothing and is no evidence (round five, low 1)
 for (const ev of ["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchmove", "wheel", "keydown"]) window.addEventListener(ev, settleInput, { capture: true, passive: true });
 // a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round four, low 1): the hold ends
 // with the page's focus or visibility as well
@@ -13750,9 +13753,10 @@ function cancelOlderWait(why: "click" | "flip"): void {
     const waitingLanding = pendingOlderAnchor.get(sid);
     const wasLanding = waitingLanding != null && !pendingOlderKeepY.has(sid);   // a deep link's ask (a scroll-back keeps its offset)
     releaseSeekFetch(sid);   // the fetch's anchor becomes the reader's own row (before the in-flight mark goes: the move reads it)
-    if (why === "click" && pendingWindowNav.has(sid)) cancelledAsks.add(sid);   // a window ask: its reply keeps the reader where they are (chatWindow)
+    const live = liveAskKey.get(sid);
+    if (why === "click" && live) cancelledWire.set(wireKey(sid, live.kind, live.key), { sid, kind: live.kind, key: live.key });   // clicked away, whatever its kind: still on the wire, its own reply consumes it silently (round five)
     if (why === "click") olderCancelled.set(sid, Date.now());                  // the cancel latches at the edge until the reader's own evidence (round three, medium 1)
-    loadingOlder.delete(sid); askedGen.delete(sid); readerWaits.delete(sid); pendingWindowNav.delete(sid);
+    loadingOlder.delete(sid); askedGen.delete(sid); liveAskKey.delete(sid); readerWaits.delete(sid); pendingWindowNav.delete(sid);
     if (why === "click" && wasLanding) {
       landTrail.push("cancelled");
       vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: waitingLanding, anchorT: pendingAnchorT ?? undefined, kind: pendingAnchorKind ?? undefined, cancelled: true });
@@ -13767,14 +13771,14 @@ function cancelOlderWait(why: "click" | "flip"): void {
 // in frame order like the skeleton machine's socket-flip marker, ends the waits asked before it; a redial the shim abandoned fires no
 // wsdown, so the frame moves the generation itself when none did (T402 round two, low 4)
 window.addEventListener("romp:wsdown", () => { askGen++; flipPending = true; });
-function onSocketFlipFrame(): void { if (!flipPending) askGen++; flipPending = false; cancelledAsks.clear(); cancelOlderWait("flip"); }   // a window ask clicked away before the flip is gone with it (round three, low 1)
+function onSocketFlipFrame(): void { if (!flipPending) askGen++; flipPending = false; cancelledWire.clear(); cancelOlderWait("flip"); }   // a window ask clicked away before the flip is gone with it (round three, low 1)
 /** The VS Code pipe has no socket-flip frame (its edge is pipeState): its DOWN edge ends every ask in flight the same way (round three, low 3). */
-function onPipeDown(): void { askGen++; flipPending = true; cancelledAsks.clear(); cancelOlderWait("flip"); }
+function onPipeDown(): void { askGen++; flipPending = true; cancelledWire.clear(); cancelOlderWait("flip"); }
 // the served geometry lab (tests/test_loading_pill_anchor_browser.py) shows the pill on demand: its real
 // showings last the span of a fetch, too brief to measure against the strip
 if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLoadingPill(); else hideLoadingPill(); };
 // the served labs read the older edge's latch on demand: the click's time, this tab's last evidence, and the verdict (T402 round four)
-if (typeof window !== "undefined") (window as any).__rompLatch = (): unknown => { const sid = activeId || ""; return { at: olderCancelled.get(sid) ?? null, evidence: olderEvidence.get(sid) ?? null, latched: !!sid && olderLatched(sid), loading: !!sid && loadingOlder.has(sid), wait: !!sid && readerWaits.has(sid) }; };
+if (typeof window !== "undefined") (window as any).__rompLatch = (): unknown => { const sid = activeId || ""; const at = olderCancelled.get(sid) ?? null; return { at, evidence: olderEvidence.get(sid) ?? null, latched: at != null && !((olderEvidence.get(sid) ?? 0) > at), loading: !!sid && loadingOlder.has(sid), wait: !!sid && readerWaits.has(sid), live: liveAskKey.get(sid) ?? null }; };   // read without the delete olderLatched performs (round five, low 4)
 
 // ---- ledger box (rolling per-session digest, just below the tabs) ----
 
@@ -17222,7 +17226,22 @@ const readerWaits = new Map<string, number>();          // sid → askGen at the
 const askedGen = new Map<string, number>();             // sid → askGen at the ask, for every history ask in loadingOlder
 let askGen = 0;                                         // bumped at the socket's death (romp:wsdown) or, failing that, at its reopen frame
 let flipPending = false;                                // a wsdown seen since the last wsup frame
-const cancelledAsks = new Set<string>();                // sids whose window ask the reader clicked away: its reply may not move them (round two, medium 2)
+/** The ask on the wire for a session, by the KEY its reply echoes (T402 round five, medium): a loadOlder by its `before` (chatHead's
+ *  beforeUuid on proto 2, `before` on the index wire), a loadAround by its uuid (chatWindow's anchor), a loadNewer by its `after`
+ *  (chatMore's afterUuid). A reply answers the ask whose key it carries and no other. An ask the reader clicked away stays on the wire
+ *  (the kernel answers every ask), marked here as cancelled until its own reply consumes it silently; a reply matching no ask, live or
+ *  cancelled, is a stranger: silent, and it ends nothing. */
+type AskKind = "older" | "around" | "newer";
+const liveAskKey = new Map<string, { kind: AskKind; key: string }>();            // sid → the live ask's identity (one live ask per session: loadingOlder gates the next)
+const cancelledWire = new Map<string, { sid: string; kind: AskKind; key: string }>();   // wireKey → an ask clicked away, still on the wire
+const wireKey = (sid: string, kind: AskKind, key: string): string => sid + "\u0000" + kind + "\u0000" + key;
+/** Which ask a reply answers: the live one (its key matches), a cancelled one (consumed here), or none. */
+function matchAsk(sid: string, kind: AskKind, key: string | null | undefined): "live" | "cancelled" | "none" {
+  if (key == null) return "none";
+  const live = liveAskKey.get(sid);
+  if (live && live.kind === kind && live.key === String(key)) return "live";
+  return cancelledWire.delete(wireKey(sid, kind, String(key))) ? "cancelled" : "none";
+}
 // T402 round three (medium 1): the click's cancel LATCHES for the tab. The reader sat at the older edge when they clicked, the click
 // itself is input the gesture classifier accepts, and the virtualiser re-asked within the frame, so the pill was back. No older ask
 // goes out for a latched tab until the reader's OWN scroll evidence arrives after the click: a wheel, a key, a touch, or a grab of
@@ -17235,8 +17254,8 @@ function olderLatched(sid: string): boolean {
   return true;
 }
 function syncLoadingPill(): void { if (activeId && readerWaits.has(activeId)) showLoadingPill(); else hideLoadingPill(); }
-function noteAsk(sid: string, reader: boolean): void { loadingOlder.add(sid); askedGen.set(sid, askGen); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); }
-function endAsk(sid: string): void { loadingOlder.delete(sid); askedGen.delete(sid); readerWaits.delete(sid); syncLoadingPill(); }
+function noteAsk(sid: string, reader: boolean, kind: AskKind, key: string | number | null | undefined): void { loadingOlder.add(sid); askedGen.set(sid, askGen); liveAskKey.set(sid, { kind, key: String(key ?? "") }); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); }
+function endAsk(sid: string): void { loadingOlder.delete(sid); askedGen.delete(sid); liveAskKey.delete(sid); readerWaits.delete(sid); syncLoadingPill(); }
 const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to re-anchor on when the chunk lands
 // sid → the on-screen y that uuid must come back to. PRESENT ⇒ the fetch was a scroll-back (requestOlder) and
 // the arrival is POSITION PRESERVATION; ABSENT ⇒ it was a deep-link (fetchOlderForAnchor) and the arrival is a
@@ -17244,6 +17263,10 @@ const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to r
 // jumped (the user 2026-08-02).
 const pendingOlderKeepY = new Map<string, number>();
 function chatHead(msg: any) {
+  // the reply answers the ask whose key it carries (round five, medium): a clicked-away older ask's late reply, or one from before a
+  // flip, matches no live ask and may not read the marks a LATER ask (a card's window) set, end that ask, or toast at the reader
+  const which = matchAsk(msg.id, "older", typeof msg.beforeUuid === "string" ? msg.beforeUuid : (msg.before != null ? String(msg.before) : null));
+  if (which !== "live") return;   // cancelled (consumed) or a stranger: silent, nothing ends; the reader clicked to stop waiting, the next scroll asks again
   const hadWait = readerWaits.has(msg.id);
   const deepLink = pendingOlderAnchor.has(msg.id) && !pendingOlderKeepY.has(msg.id);   // a deep link's fetch (fetchOlderForAnchor), not a scroll-back's
   endAsk(msg.id);
@@ -17303,8 +17326,9 @@ function fetchOlderForAnchor(sid: string, uuid: string): boolean {
   pendingOlderAnchor.set(sid, uuid);
   olderCancelled.delete(sid);   // a deep link is the reader's own intent: the click's latch ends with it (round three)
   pendingOlderKeepY.delete(sid);   // a DEEP-LINK: land it properly (top-align + flash), not offset-preserved
-  noteAsk(sid, true);
-  vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.proto === 2 ? s.firstUuid : s.headFrom });
+  const before = s.proto === 2 ? s.firstUuid : s.headFrom;
+  noteAsk(sid, true, "older", before);
+  vscodeApi?.postMessage({ type: "loadOlder", id: sid, before });
   return true;
 }
 
@@ -17331,8 +17355,9 @@ function requestOlder(sid: string, v: View, content: HTMLElement): void {
   // keepY on EITHER branch: this arrival must never jump. With no capture (nothing visible at the viewport
   // top) 0 restores the fallback row to the top, which is where it already is.
   if (anchor) { pendingOlderAnchor.set(sid, anchor); pendingOlderKeepY.set(sid, keep?.y ?? 0); }
-  noteAsk(sid, true);
-  vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.proto === 2 ? s.firstUuid : s.headFrom });
+  const before = s.proto === 2 ? s.firstUuid : s.headFrom;
+  noteAsk(sid, true, "older", before);
+  vscodeApi?.postMessage({ type: "loadOlder", id: sid, before });
 }
 
 // ── the uuid-anchored wire's other two requests (T323 stage 4b, proto 2) ──────────────────────────────────
@@ -17365,7 +17390,7 @@ function requestAround(sid: string, uuid: string): boolean {
   scrollDiagRow("windowask", { sid, nav, kind, keep: pendingAnchorKeepY != null, reland: relandAsk, trail: landTrail.slice(-4), detached: !!s.detached, atBottom: !!cAsk && atBottom(cAsk) });
   pendingOlderAnchor.set(sid, uuid);
   pendingOlderKeepY.delete(sid);
-  noteAsk(sid, nav);   // the reader's own ask waits (the pill); a re-land of their row is the page's, and shows nothing (round three, low 2)
+  noteAsk(sid, nav, "around", uuid);   // the reader's own ask waits (the pill); a re-land of their row is the page's, and shows nothing (round three, low 2)
   vscodeApi?.postMessage({ type: "loadAround", id: sid, uuid });
   return true;
 }
@@ -17374,14 +17399,16 @@ function requestAround(sid: string, uuid: string): boolean {
 function requestNewer(sid: string): void {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || !s.detached || !s.lastUuid || loadingOlder.has(sid)) return;
-  noteAsk(sid, false);   // no pill, and no hold on it either: the walk toward the tail is the page's own ask, not a reader waiting on older history (T402)
+  noteAsk(sid, false, "newer", s.lastUuid);   // no pill, and no hold on it either: the walk toward the tail is the page's own ask, not a reader waiting on older history (T402)
   vscodeApi?.postMessage({ type: "loadNewer", id: sid, after: s.lastUuid });
 }
 function chatWindow(msg: any) {
   // the reply answers ONE ask: the one the reader clicked away (cancelled: its marks went with the click, and whatever stands now is a
   // LATER ask's, which this reply may not end), or the ask on the books, whose recorded wait keys the stand-downs below (round three,
   // medium 2: landActive clears pendingAnchor at the end of every landing pass, so the landing's own mark cannot be the key)
-  const cancelled = cancelledAsks.delete(msg.id);
+  const which = matchAsk(msg.id, "around", typeof msg.anchor === "string" ? msg.anchor : null);   // by the ask's key (round five, medium)
+  if (which === "none") return;   // a stranger (an ask from before a flip, a reply for no ask of this page's): silent, nothing ends
+  const cancelled = which === "cancelled";
   const later = cancelled && loadingOlder.has(msg.id);   // a later ask of this tab's is in flight: its marks are not this reply's to end (round four, medium 2)
   const hadWait = !cancelled && readerWaits.has(msg.id);
   if (!cancelled) endAsk(msg.id);
@@ -17424,8 +17451,9 @@ function chatWindow(msg: any) {
     landTrail.push("window-cancelled");
     if (!wasDetached) { anchorPendingOlder = false; reattachLive(msg.id, true); updateLivePaused(); return; }
     relandAsk = true;
-    try { requestAround(msg.id, anchorUuid); } finally { relandAsk = false; }
-    pendingOlderKeepY.set(msg.id, keepY ?? 0);   // the re-land's reply restores the reader's row at its offset
+    let went = false;
+    try { went = requestAround(msg.id, anchorUuid); } finally { relandAsk = false; }
+    if (went) pendingOlderKeepY.set(msg.id, keepY ?? 0);   // the re-land's reply restores the reader's row at its offset; a later ask in flight refused it, and keeps its own marks (round five, low 3)
     updateLivePaused();
     return;
   }
@@ -17472,6 +17500,7 @@ function edgeCheckAfterWindow(sid: string): void {
   virtualizeToViewport();
 }
 function chatMore(msg: any) {
+  if (matchAsk(msg.id, "newer", typeof msg.afterUuid === "string" ? msg.afterUuid : null) !== "live") return;   // by the ask's key (round five)
   endAsk(msg.id);
   const s = sessions.get(msg.id);
   if (!s) return;

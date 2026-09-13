@@ -297,6 +297,29 @@ await page.waitForFunction(() => !!document.querySelector(".locate-toast"), null
 out.step = "9:faulted";
 out.faulted9 = { pill: await pill(), toast: await page.evaluate(() => { const t = document.querySelector(".locate-toast"); return t ? t.textContent : null; }) };
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; window.__drop.delete("loadOlder"); });
+// ROAD 10 (round five, medium): a reply answers the ask whose key it carries. Road 9's dropped older ask is clicked away (cancelled, still
+// on the wire with no reply); a card click asks for a window (HELD) and the pill is that ask's; then the OLD ask's fault arrives, a chatHead
+// naming the older ask's own key: silent, the card's wait and pill untouched, no toast; the card's window released, its landing succeeds
+out.step = "10:start";
+const staleBefore = await page.evaluate(() => { const asks = window.__sent.filter((m) => m.type === "loadOlder"); return asks.length ? asks[asks.length - 1].before : null; });   // the dropped ask's key
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // the older ask clicked away
+await pillHidden();
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const deep10 = "11111111-2222-3333-4444-" + pad(2 * 3);   // turn 3: history the page does not hold
+const aroundBefore10 = await sentOf("loadAround");
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep10, anchorT: cfg.base + 2 * 3 });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore10, { timeout: 8000 }).catch(() => {});
+await pillShown();
+out.asked10 = { pill: await pill(), latch: await latch(), staleBefore };
+await page.evaluate(([sid, before]) => window.postMessage({ type: "chatHead", id: sid, beforeUuid: before, before, events: [], more: true, missing: true, fault: true, error: "synthetic fault" }, "*"), [cfg.sid, staleBefore]);
+await page.waitForFunction(() => !!document.querySelector(".locate-toast"), null, { timeout: 1200 }).catch(() => {});   // a bounded negative: no toast should come
+out.stale10 = { pill: await pill(), latch: await latch(), toast: await page.evaluate(() => { const t = document.querySelector(".locate-toast"); return t ? t.textContent : null; }), seekNote: await page.evaluate(() => !!document.getElementById("seek-note")) };
+await page.evaluate(() => { window.__hold.delete("loadAround"); });
+out.released10 = await page.evaluate(() => window.__release());
+await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return r.bottom > c.top && r.top < c.bottom; }, deep10, { timeout: 10000 }).catch(() => {});
+await pillHidden();
+out.landed10 = { pill: await pill(), target: await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { visible: r.bottom > c.top && r.top < c.bottom }; }, deep10), toast: await page.evaluate(() => { const t = document.querySelector(".locate-toast"); return t ? t.textContent : null; }) };
+out.step = "10:done";
 } catch (e) { out.roadError = String(e && e.message || e); }
 process.stdout.write("RESULT:" + JSON.stringify({ ...out, pageEvents, start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
 try { await browser.close(); } catch (e) { /* the page may already be gone */ }
@@ -419,6 +442,20 @@ class ServedLoadingPill(WindowLab):
         f = r["faulted9"]
         self.assertIsNone(f["toast"], "the cancelled ask's fault toasts nothing at the reader: %r" % f)
         self.assertTrue(f["pill"]["visible"], "…and ends nothing the later ask holds: the pill stays on: %r" % f)
+
+    def test_a_stale_reply_for_an_older_ask_clicked_away_is_silent_and_the_card_ask_it_would_have_ended_lands(self):
+        # round five, medium: chatHead answers the ask its key names, never whichever ask is on the books
+        r = self._result()
+        self.assertIn("landed10", r, "the road did not complete: %r" % r.get("roadError"))
+        self.assertIsNotNone(r["asked10"]["staleBefore"], "the clicked-away older ask left its key on the wire")
+        self.assertTrue(r["asked10"]["pill"]["visible"], "the card's window ask shows the pill: %r" % r["asked10"])
+        st = r["stale10"]
+        self.assertTrue(st["pill"]["visible"], "the stale fault for the older ask ended nothing: the card's pill stays on: %r" % st)
+        self.assertIsNone(st["toast"], "…and toasts nothing over a live deep link: %r" % st)
+        self.assertEqual(r["released10"], 1, "the held window ask was released")
+        self.assertTrue(r["landed10"]["target"] and r["landed10"]["target"]["visible"], "the card's landing then succeeds: %r" % r["landed10"])
+        self.assertFalse(r["landed10"]["pill"]["visible"], "…and its own reply ends its wait: %r" % r["landed10"])
+        self.assertIsNone(r["landed10"]["toast"], "no toast after the landing either: %r" % r["landed10"])
 
     def test_a_fault_on_the_ordinary_deep_link_road_stands_the_landing_down_at_once(self):
         # round three, medium 2: the stand-down keys on the wait the ask recorded, not on the landing's mark landActive clears
