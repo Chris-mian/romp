@@ -896,10 +896,17 @@ def _thread_stacks(limit=40):
     return out
 
 
+_ROUTE_TWO_SEGMENTS = ("push", "tunnels", "usage")   # prefixes whose roads differ by their second segment (/push/relay, /tunnels/dial,
+#                                                      /usage/fleet): the mark keeps both, so eight push roads never share one row
+
 def _route_seg(path):
-    """A request path's first segment, the stage mark's route: "/chat/x" -> "chat", "/ws" -> "ws", "/remote/h/ws" -> "remote",
-    "/" -> "root" (T401 (5a): a request handler's reads, builds and hydrations count under http.<METHOD>.<segment>)."""
-    seg = str(path or "").split("?", 1)[0].strip("/").split("/", 1)[0]
+    """A request path's route for the stage mark: its first segment ("/chat/x" -> "chat", "/ws" -> "ws", "/remote/h/ws" -> "remote",
+    "/" -> "root"), or its first two for the prefixes above ("/push/relay" -> "push.relay", "/usage/fleet" -> "usage.fleet";
+    T401 (5a): a request handler's reads, builds and hydrations count under http.<METHOD>.<route>)."""
+    parts = str(path or "").split("?", 1)[0].strip("/").split("/")
+    seg = parts[0] if parts else ""
+    if seg in _ROUTE_TWO_SEGMENTS and len(parts) > 1 and parts[1]:
+        return seg + "." + parts[1]
     return seg or "root"
 
 
@@ -921,6 +928,7 @@ def _stage_marked(name):
 
 
 em.set_read_stage_provider(_current_read_stage)   # T401: the thread's stage mark, so reads and hydrations count per (stage, caller)
+em.set_stage_provider(_set_stage)                 # T401 (5a): the setter's pair, so the judge's pool workers carry their tier's mark
 
 
 

@@ -1685,6 +1685,29 @@ def _read_stage():
         return fn()
     except Exception:
         return None
+
+
+_SET_STAGE_FN = [None]            # T401 (5a): the kernel's setter for the calling thread's stage mark, so a module that fans work into
+#                                   a pool (the judge's _TimedPool) can carry the submitter's mark into the worker: thread-locals do
+#                                   not cross into pool workers on their own
+
+
+def set_stage_provider(fn):
+    """Install fn(name) -> None, the kernel's per-thread stage setter (the pair of set_read_stage_provider): a pool's submit reads
+    the submitter's mark through _read_stage and its worker sets the same mark through this, restoring the worker's previous mark
+    on exit, so a build or a hydration inside a pool worker counts under the tier that submitted it, never under `none`."""
+    _SET_STAGE_FN[0] = fn
+
+
+def _set_stage_mark(name):
+    """Set the calling thread's stage mark through the kernel's setter; a no-op without one (a module used on its own)."""
+    fn = _SET_STAGE_FN[0]
+    if fn is None:
+        return
+    try:
+        fn(name)
+    except Exception:
+        pass
 _WHOLE_READ_PASSTHROUGH = set()   # the CODE objects of the parse family every walker shares (this module's parse_session, the judges'
 #                                   parsed_session, parse_cached and _parse_store, the kernel's _parse, each registered where it is
 #                                   defined): the whole-read row names the first caller beyond them, the real walker. Matched by code

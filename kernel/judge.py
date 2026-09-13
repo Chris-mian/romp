@@ -54,13 +54,19 @@ class _TimedPool(ThreadPoolExecutor):
         super().__init__(*args, **kwargs)                 #  stack sample keys them by tier, never as an anonymous pool (T401)
 
     def submit(self, fn, /, *args, **kwargs):
+        stage = em._read_stage()                          # the submitter's stage mark (judge.<tier> on a tier thread) rides the submit
+        #                                                   the same way the pass frame does: a build or a hydration inside the worker
+        #                                                   counts under the tier, never under `none` (T401 (5a) round two)
         def run():
             _judge_ctx.in_pass = True
+            prev = em._read_stage()
+            em._set_stage_mark(stage)
             c0 = time.thread_time()
             try:
                 return fn(*args, **kwargs)
             finally:
                 _judge_cpu_add(time.thread_time() - c0)
+                em._set_stage_mark(prev)                  # the worker's previous mark restored on every exit
         return super().submit(run)
 
 

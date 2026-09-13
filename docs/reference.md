@@ -1781,12 +1781,21 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `materializedBy` (per consumer), `materializedByStage` (the same builds
   under the calling thread's stage mark beside the consumer, as
   `hydratedByStage` does for bodies: `push`, `connect`, `jobs.<job>`,
-  `judge.<tier>`, `http.<METHOD>.<route segment>` for every request and
-  the socket it may become, `warm.parse`, `warm.boot`, `producer`,
-  `revive`, `rewind.migration`, `rewind.holds`, `move`,
-  `remote-ws`; `none` names a thread that carries no mark, which the
-  kernel's thread census keeps empty), `resident` (the process-wide LRU, `cap`
-  20000 atoms across every session; eviction drops the memo, never a field in
+  `judge.<tier>` for a tier thread and every worker of the pools it
+  submits to (the mark rides the submit, as the pass frame does, since a
+  thread-local does not cross into a pool worker), `http.<METHOD>.<route>`
+  for every request and the socket a GET becomes (the route is the path's
+  first segment, or its first two under `/push`, `/tunnels` and `/usage`,
+  whose roads differ by the second), `warm.parse`, `warm.boot`,
+  `producer`, `revive`, `rewind.migration`, `rewind.holds`, `move`,
+  `remote-ws`, `federation.push`, `federation.pull`, `federation.ask`,
+  `ask-poll`; `none` means the build ran on a thread with no mark, which
+  should not happen: the kernel's thread census (every Thread, Timer and
+  pool construction site in the kernel and the judge, walked by the ast)
+  holds every thread marked or listed as a pure I/O helper, and a `none`
+  row on a live `/perf` names a thread the census missed), `resident` (the
+  process-wide LRU, `cap` atoms across every session: the machine's memory
+  over 32 KiB, never under 500,000; eviction drops the memo, never a field in
   place), `evictions`, and `restoredTurns`.
 - `skillLoadIndex`: the judge's skill-load boot pass (the tops older stores minted from
   the harness's own skill load): `filesRead` and `bytesRead` (transcripts read raw this
