@@ -198,13 +198,13 @@ test("run: render.ts's paneHidden() over window stand-ins says hidden when the p
 });
 
 test("requestFullSession(id, why): every ask names its why, from the fixed vocabulary", () => {
-  assert.match(RENDER, /type NeedFullWhy = "gap" \| "nobase" \| "skeleton-click" \| "prefetch" \| "skeleton-delta" \| "reattach";/);   // reattach: a proto-2 window back at the tail (T323 stage 4b)
+  assert.match(RENDER, /type NeedFullWhy = "gap" \| "nobase" \| "skeleton-click" \| "prefetch" \| "skeleton-delta";/);   // reattach retired with the detached client (T386 stage 2)
   assert.match(RENDER, /function requestFullSession\(id: string, why: NeedFullWhy\): void \{\s*\n\s*if \(!id \|\| awaitingFull\.has\(id\)\) return;\s*\n\s*awaitingFull\.add\(id\);\s*\n\s*vscodeApi\?\.postMessage\(\{ type: "needFull", id, why \}\);/);
   const calls = [...RENDER.matchAll(/requestFullSession\(([^()]*?)\)/g)].map((m) => m[1]).filter((a) => !a.startsWith("id: string"));
   assert.ok(calls.length >= 9, "the gap ×3, no-base ×2 (chatTail and update; statusOnly holds a status for its strip instead, 2026-09-11), skeleton-delta ×2, skeleton-click and prefetch sites (the reattach site and a missing chatMore's gap retired with the detached client, T386 stage 2)");
   for (const c of calls) assert.match(c, /, "(gap|nobase|skeleton-click|prefetch|skeleton-delta)"$/, `call site without a why: requestFullSession(${c})`);
   const why = (w: string) => RENDER.split(`, "${w}")`).length - 1;
-  assert.equal(why("gap"), 3); assert.equal(why("nobase"), 2); assert.equal(why("skeleton-delta"), 2); assert.equal(why("reattach"), 0);   // no detached client, no re-attach (T386 stage 2)   // gap ×4: the index tail's, the uuid tail's, a missing chatHead's and a missing chatMore's (an anchor gone from the transcript); nobase ×2: chatTail and update (statusOnly holds a status for its strip instead)
+  assert.equal(why("gap"), 3); assert.equal(why("nobase"), 2); assert.equal(why("skeleton-delta"), 2); assert.equal(why("reattach"), 0);   // no detached client, no re-attach (T386 stage 2)   // gap ×3: the index tail's, the uuid tail's and a missing chatHead's (an anchor gone from the transcript; chatMore is retired); nobase ×2: chatTail and update (statusOnly holds a status for its strip instead)
   assert.equal(why("skeleton-click"), 1); assert.equal(why("prefetch"), 1);
 });
 

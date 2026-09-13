@@ -144,7 +144,7 @@ test("round two/three code fixes each carry a pin (T386 stage 2, low 1)", () => 
   const win = RENDER.slice(winStart, RENDER.indexOf("\nfunction ", winStart + 1));
   const cTurns = RENDER.slice(RENDER.indexOf("function chatTurns(msg: any)"), RENDER.indexOf("function chatHead(msg: any)") >= 0 ? RENDER.indexOf("function chatHead(msg: any)") : winStart);
   // the socket death clears every in-flight ask's state, not the glyph alone (medium 1)
-  assert.match(RENDER, /window\.addEventListener\("romp:wsdown", \(\) => \{[\s\S]*?gapLoading\.clear\(\); landingGaps\.clear\(\); loadingOlder\.clear\(\);[\s\S]*?hideLandingNotice\(\);/, "wsdown clears the landing's gap, the older-ask set and the notice");
+  assert.match(RENDER, /window\.addEventListener\("romp:wsdown", \(\) => \{[\s\S]*?gapLoading\.clear\(\); windowAsks\.clear\(\); loadingOlder\.clear\(\);[\s\S]*?hideLandingNotice\(\);/, "wsdown clears the landing's gap, the older-ask set and the notice");
   // sizeSpacers does not average the gap element (medium 3, round one)
   const pxBlock = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
   assert.match(pxBlock, /if \(c\.classList\.contains\("tx-spacer"\) \|\| c\.classList\.contains\("tx-gap"\) \|\| !c\.classList\.contains\("turn"\)\) continue;/, "the px-per-turn measure skips the gap element and every non-turn child (pinned inside its own block; round four low 3, round five)");
@@ -155,9 +155,9 @@ test("round two/three code fixes each carry a pin (T386 stage 2, low 1)", () => 
   assert.doesNotMatch(cTurns, /v\.winEnd = 0; v\.avgTurnH = undefined;/, "…without clearing the measured average (the fill keeps it, low 1)");
   assert.doesNotMatch(win, /v\.winEnd = 0; v\.avgTurnH = undefined;/, "chatWindow's fill keeps the measured average too (low 1)");
   // a second deep link while one is on the wire is refused with a cue, not silently repointed (low 6, low 4)
-  assert.match(RENDER, /if \(loadingOlder\.has\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}/, "the busy refusal toasts a cue");
+  assert.match(RENDER, /if \(loadingOlder\.has\(activeId\) \|\| liveWindowAsk\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}/, "the busy refusal toasts a cue");
   // the cancelled mark is read once before any early return (low 2)
-  assert.ok(win.indexOf("const cancelledFor = cancelledLandings.get(msg.id);") >= 0 && win.indexOf("const cancelledFor = cancelledLandings.get(msg.id);") < win.indexOf("!Array.isArray(msg.span)"), "the cancelled mark is read before the missing/span-less return");
+  assert.ok(win.indexOf("const rec = takeWindowAsk(msg.id,") >= 0 && win.indexOf("const rec = takeWindowAsk(msg.id,") < win.indexOf("!Array.isArray(msg.span)"), "the cancelled mark is read before the missing/span-less return");
   // a mid-transcript gap keeps headTotal null (low 7)
   assert.match(RENDER, /s\.regions && s\.regions\.some\(\(r\) => r\.kind === "gap"\)\)\) s\.headTotal/, "chatTail keeps no head total while a gap holds older history");
 });
@@ -172,10 +172,10 @@ test("round four and five fixes each carry a pin (T386 stage 2, round five low 1
   assert.doesNotMatch(fill, /heightAbove/, "the view-coordinate tautology is gone");
   assert.match(RENDER, /function turnUnderTop\(v: View, s: Session, items: DisplayItem\[\], turns: number\[\], content: HTMLElement, top: number\): number \| null \{/, "the turn-under-top helper");
   assert.match(RENDER, /function yOfTurn\(v: View, s: Session, items: DisplayItem\[\], turns: number\[\], content: HTMLElement, t: number\): number \| null \{/, "the turn-to-scroll helper");
-  assert.match(RENDER, /gapLoading\.clear\(\); landingGaps\.clear\(\); loadingOlder\.clear\(\); cancelledLandings\.clear\(\);/, "the socket death clears the cancelled mark too (medium 2)");
-  assert.match(RENDER, /const liveLanding = !!landingNoticeSid \|\| Array\.from\(landingGaps\.keys\(\)\)\.some\(\(sid\) => !cancelledLandings\.has\(sid\)\);/, "the wsdown toast fires only for a landing the reader had not cancelled (low 1)");
+  assert.match(RENDER, /gapLoading\.clear\(\); windowAsks\.clear\(\); loadingOlder\.clear\(\);/, "the socket death clears the cancelled mark too (medium 2)");
+  assert.match(RENDER, /const liveLanding = !!landingNoticeSid \|\| Array\.from\(windowAsks\.values\(\)\)\.some\(\(a\) => a\.some\(\(r\) => !r\.cancelled && !!r\.gap\)\);/, "the wsdown toast fires only for a landing the reader had not cancelled (low 1)");
   assert.match(RENDER, /const nospan = !msg\.missing && Array\.isArray\(msg\.events\) && msg\.events\.length > 0 && !Array\.isArray\(msg\.span\);/, "missing is tested first; only a reply with events and no span is an older host (medium 3; round five low 3)");
-  assert.match(RENDER, /const preJumpOrigin = preJumpFrom\.get\(msg\.id\); preJumpFrom\.delete\(msg\.id\);/, "the pre-jump origin is consumed by every window reply (low 2)");
+  assert.match(RENDER, /const preJumpOrigin = rec\.origin;/, "the pre-jump origin is consumed by every window reply (low 2)");
   const px = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
   assert.match(px, /\|\| !c\.classList\.contains\("turn"\)\) continue;/, "px-per-turn counts turn rows only, never cards or dividers (round five)");
 });
@@ -217,16 +217,24 @@ test("round seven fixes each carry a pin (T386 stage 2): a fault has its own wor
   assert.ok(win.indexOf("if (msg.fault) {") >= 0 && win.indexOf("if (msg.fault) {") < win.indexOf("if (msg.missing || !(msg.events || []).length || !Array.isArray(msg.span)) {"), "chatWindow tests fault before missing (a fault carries missing too)");
   assert.match(win, /if \(msg\.fault\) \{[\s\S]*?landTrail\.push\("window-fault"\);\s*\n\s*vscodeApi\?\.postMessage\(\{ type: "locateDiag", id: msg\.id, ok: false, trail: landTrail\.slice\(\), anchor: anchorUuid, kind: "fault"[^\n]*\n\s*landToast\("the history could not be loaded just now"\);\s*\n\s*clearSeek\(\);/, "a fault files kind fault, says the history could not be loaded just now, and ends the seek");
   assert.match(win, /landToast\(nospan \? "this session's host is an older version; open it there to jump" : "couldn't locate this in the transcript"\);\s*\n\s*clearSeek\(\);/, "the honest end ends the seek too");
-  // medium 3: the notice's click clears the busy meaning at the cancel; the reply still fills in place under the cancelled mark
+  // medium 3 (round seven), re-shaped in round eight: the landing's state is one record per ask; the cancel marks its own record only
   const cancel = RENDER.slice(RENDER.indexOf("function cancelLanding(): void {"), RENDER.indexOf("\n/**", RENDER.indexOf("function cancelLanding(): void {")));
-  assert.match(cancel, /if \(loadingOlder\.has\(sid\)\) cancelledLandings\.set\(sid, target \?\? pendingAnchor \?\? ""\);[\s\S]*?loadingOlder\.delete\(sid\); landingGaps\.delete\(sid\);/, "the cancelled mark is set from the older-ask state under the ask's anchor, then both busy marks go");
-  // …so two replies of one session can be on the wire: the cancelled one is told by its anchor, fills in place and leaves the live ask's marks alone
-  assert.match(win, /^\s*const liveAnchor = pendingOlderAnchor\.get\(msg\.id\), cancelledFor = cancelledLandings\.get\(msg\.id\), replyAnchor = typeof msg\.anchor === "string" \? msg\.anchor : undefined;\s*\n\s*if \(cancelledFor != null && replyAnchor != null && replyAnchor === cancelledFor && liveAnchor != null && liveAnchor !== replyAnchor\) \{/m, "a cancelled reply under a live later ask is matched by anchor");
-  assert.ok(win.indexOf("landTrail.push(\"stray-cancelled\");") < win.indexOf("loadingOlder.delete(msg.id);"), "…and returns before any of the live ask's marks is consumed");
-  assert.match(win, /const cancelled = cancelledFor != null && \(typeof msg\.anchor !== "string" \|\| msg\.anchor === cancelledFor\);\s*\n\s*if \(cancelled\) cancelledLandings\.delete\(msg\.id\);/, "the cancelled mark is consumed only by the reply it names");
-  assert.match(RENDER, /const cancelledLandings = new Map<string, string>\(\);/, "the mark carries the anchor");
-  assert.match(cancel, /for \(const g of Array\.from\(gv\.el\.querySelectorAll\("\.tx-gap\.tx-gap-loading"\)\) as HTMLElement\[\]\) \{ if \(!gapHasAsk\(sid, \{ lo: Number\(g\.dataset\.lo\), hi: Number\(g\.dataset\.hi\) \}\)\) g\.classList\.remove\("tx-gap-loading"\); \}/, "…and every gap no ask names any more sheds its glyph (the truth, not the held record)");
-  assert.match(RENDER, /if \(loadingOlder\.has\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\);/, "the busy gate still reads the older-ask mark (a live landing is busy)");
+  assert.match(cancel, /const rec = liveWindowAsk\(sid\);[\s\S]*?if \(rec\) \{ rec\.cancelled = true; rec\.origin = null; rec\.gap = null; \}/, "the cancel marks the live ask's record and consumes its origin and gap, nothing else's");
+  assert.match(cancel, /for \(const g of Array\.from\(gv\.el\.querySelectorAll\("\.tx-gap\.tx-gap-loading"\)\) as HTMLElement\[\]\) \{ if \(!gapHasAsk\(sid, \{ lo: Number\(g\.dataset\.lo\), hi: Number\(g\.dataset\.hi\) \}\)\) g\.classList\.remove\("tx-gap-loading"\); \}/, "…and every gap no ask names any more sheds its glyph (the truth, not a held record)");
+  assert.match(RENDER, /if \(loadingOlder\.has\(activeId\) \|\| liveWindowAsk\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\);/, "the busy gate reads an older fetch or a LIVE window ask (a cancelled one is not busy)");
+  // round eight: one record per ask, resolved only by its own reply, superseded only by a newer ask on its anchor, expired by the socket death
+  assert.match(RENDER, /^interface WindowAsk \{ anchor: string; nav: boolean; named: boolean; t: number \| null; kind: string \| null; origin: number \| null; gap: \{ lo: number; hi: number \} \| null; cancelled: boolean; \}$/m, "the record carries every mark an ask writes");
+  assert.match(RENDER, /const i = anchor == null \? 0 : a\.findIndex\(\(r\) => r\.anchor === anchor\);\s*\n\s*if \(i < 0\) return null;\s*\n\s*const \[rec\] = a\.splice\(i, 1\);/, "a reply takes the OLDEST record on its anchor, or the oldest of all when it names none, and never another's");
+  const around = RENDER.slice(RENDER.indexOf("function requestAround(sid: string, uuid: string): boolean {"), RENDER.indexOf("\nfunction chatWindow(msg: any) {"));
+  assert.match(around, /if \(!s \|\| s\.proto !== 2 \|\| loadingOlder\.has\(sid\) \|\| liveWindowAsk\(sid\)\) return false;/, "a live ask makes the session busy; a cancelled one does not");
+  assert.match(around, /for \(let i = arr\.length - 1; i >= 0; i--\) if \(arr\[i\]\.cancelled && arr\[i\]\.anchor === uuid\) arr\.splice\(i, 1\);\s*\/\/[^\n]*\n\s*const rec: WindowAsk = \{ anchor: uuid, nav,/, "a fresh ask on the anchor supersedes a cancelled twin, then leaves its own record");
+  assert.match(around, /preJumpIntoGap\(sid, pendingAnchorT, rec\);/, "the pre-jump writes the ask's own record");
+  assert.match(RENDER, /if \(rec\) \{ rec\.gap = \{ lo: r\.lo, hi: r\.hi \}; rec\.origin = content\.scrollTop; \}/, "…its gap and its origin");
+  assert.match(win, /^\s*const rec = takeWindowAsk\(msg\.id, typeof msg\.anchor === "string" \? msg\.anchor : undefined\);\s*\n\s*const s = sessions\.get\(msg\.id\);\s*\n\s*if \(!rec\) \{/m, "chatWindow resolves the reply to its record first; a reply with no record merges in place and moves nothing");
+  assert.ok(win.indexOf('landTrail.push("window-stray");') > 0 && win.indexOf('landTrail.push("window-stray");') < win.indexOf("const cancelled = rec.cancelled;"), "…and says so in the trail");
+  assert.match(win, /const wasLanding = !cancelled && landingNoticeSid === msg\.id;/, "a cancelled ask's reply leaves the notice to the live ask");
+  assert.match(RENDER, /for \(const r of windowAsks\.get\(sid\) \?\? \[\]\) if \(!r\.cancelled && r\.gap && r\.gap\.lo === gap\.lo && r\.gap\.hi === gap\.hi\) return true;/, "gapHasAsk reads the live records");
+  assert.doesNotMatch(RENDER, /\b(cancelledLandings|preJumpFrom|pendingWindowNav)\b|const landingGaps\b/, "no per-session slot for a landing's state remains");
   // low 7: the older edge's evidence writers lost their reader with the pill's latch and are off the scroll hot path
   assert.doesNotMatch(RENDER, /olderEvidence|noteOlderEvidence|NAV_KEYS/, "no dead evidence writer on wheel, touch, key or drag");
   // low 6: the notice has the hover cue the pill had; nothing styles the retired pill

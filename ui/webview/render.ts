@@ -1281,7 +1281,7 @@ function revealProgressPaint(): void {
 function revealProgressTick(scrolled: boolean, attAnchor: string | null): void {
   if (revealProgress) {
     const p = revealProgress;
-    const inFlight = loadingOlder.has(p.sid) && pendingOlderAnchor.get(p.sid) === p.uuid;
+    const inFlight = (loadingOlder.has(p.sid) && pendingOlderAnchor.get(p.sid) === p.uuid) || (windowAsks.get(p.sid) ?? []).some((r) => !r.cancelled && r.anchor === p.uuid);   // an older fetch, or a live window ask on this anchor (round eight)
     // the END: this loop's own anchor landed (another anchor's landing in the same session leaves a loop whose fetch is
     // still on the wire alone), the tab changed, or the pass neither kicked nor waits on a fetch for the anchor
     if ((scrolled && attAnchor === p.uuid) || p.sid !== activeId || (!anchorPendingOlder && !inFlight)) { revealProgressEnd(); return; }
@@ -11259,10 +11259,8 @@ function scrollToAnchor(uuid: string): boolean {
                 || v.el.querySelector(`.turn[data-uuids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
     } else if (s && s.proto === 2 && (olderOnServer(s) || (s.regions && s.regions.some((r) => r.kind === "gap")))) {
       // proto 2 (T323 stage 4b): the anchor is outside the resident run — ONE window around it (chatWindow lands it)
-      if (loadingOlder.has(activeId)) { landTrail.push("pointer-fetch-busy"); landToast("still going to the earlier message"); return false; }   // a landing is already on the wire (T386 stage 2, low 6): the first stands, the second is refused with a cue (low 4), not silently repointed
-      if (requestAround(activeId, uuid)) {
-        pendingOlderAnchor.set(activeId, uuid);
-        pendingOlderKeepY.delete(activeId);
+      if (loadingOlder.has(activeId) || liveWindowAsk(activeId)) { landTrail.push("pointer-fetch-busy"); landToast("still going to the earlier message"); return false; }   // a LIVE landing is already on the wire (T386 stage 2, low 6; a cancelled one is not busy, round seven): the first stands, the second is refused with a cue (low 4), not silently repointed
+      if (requestAround(activeId, uuid)) {   // the ask's record holds the anchor (round eight); the older wire's marks below are chatHead's alone
         pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-window"); return false;
       }
     } else if (s && (s.headFrom ?? 0) > 0) {
@@ -11468,10 +11466,9 @@ let settleLastInput = 0;
  *  SETTLE_INPUT_MS made every scroll a sample, and land-realign wrote the reader back). While the hold stands every scroll is
  *  the reader's, whatever the clock says; the timed window stays for wheels, keys, touches and drags inside the content. */
 let settleScrollerHeld = false;
-/** sid → when the reader last gave SCROLL EVIDENCE on that tab (T402 round four, medium 1): an input the settle machinery accepts over
- *  #content (a wheel, a touch, a key outside an editable field, a grab of the scrollbar) or a reader writer's own write (a trail or
- *  fragment-link jump, the live-tail chip). Per tab and per surface: a keystroke into the composer, or a gesture on another tab's
- *  transcript, is no evidence for this tab's older edge. A cancelled ask's latch (olderLatched) waits for it. */
+/** The reader's input over #content, for the landing settle (T386): stamps settleLastInput for a wheel, a touch, a key outside an
+ *  editable field or a pointer, and holds settleScrollerHeld while the scrollbar is grabbed. (The older edge's evidence map and its
+ *  latch that once read these inputs retired with the loading pill.) */
 function settleInput(e: Event): void {
   const c = document.getElementById("content");
   if (e.type === "pointerup" || e.type === "pointercancel") { settleScrollerHeld = false; return; }
@@ -13848,9 +13845,7 @@ function virtualizeToViewport(): void {
 // alone, whatever the row count and however it changes while the pill shows. Idempotent; no pointer events.
 let landingNoticeEl: HTMLElement | null = null;
 let landingNoticeSid: string | null = null;
-const cancelledLandings = new Map<string, string>();   // sid → the anchor of the landing the notice's click cancelled while its window was on the wire; the reply carrying that anchor fills in place
-const landingGaps = new Map<string, { lo: number; hi: number }>();   // sid -> the gap a landing's window is on the wire for (its glyph shows while it is)
-const preJumpFrom = new Map<string, number>();   // sid -> the scrollTop before the pre-jump, restored when a span-less or missing reply cannot land (T386 stage 2, low 2)
+// the landing's state lives in ONE RECORD PER ASK (WindowAsk, beside requestAround below; round eight): no per-session slot here
 /** The ONE notice (T386 stage 2, the user 2026-09-12): "Going to the message from 7:41 AM, click to stay here", at the pill's old
  *  anchor before #content, while a landing's window is on the wire; a scroll-driven gap fill shows the glyph inside the gap and no
  *  notice. Clicking it is the ONLY cancel: the reader's own scroll during the wait does not cancel the landing. */
@@ -13880,13 +13875,14 @@ function hideLandingNotice(): void { if (landingNoticeEl) landingNoticeEl.style.
 function cancelLanding(): void {
   const sid = landingNoticeSid;
   if (!sid) return;   // no notice showing: nothing to cancel
-  const target = pendingOlderAnchor.get(sid);
+  const rec = liveWindowAsk(sid);   // the notice is the live ask's
+  const target = rec?.anchor;
   hideLandingNotice();
-  if (loadingOlder.has(sid)) cancelledLandings.set(sid, target ?? pendingAnchor ?? "");   // the reply still comes, under this anchor: it fills in place
-  // a cancelled landing is not busy (round seven, medium 3): the older-ask mark and the landing's held gap go now, not when the reply
-  // lands, or the reader's next card click is refused as "still going" and dropped; the glyph on that gap goes with them unless a page
-  // ask of its own is on the wire for it
-  loadingOlder.delete(sid); landingGaps.delete(sid);
+  // the cancel marks ITS record and consumes only that record's origin and held gap (round eight): the reply still comes and fills in
+  // place, a cancelled landing is not busy (round seven, medium 3: the live-ask gate frees now, so the reader's next click asks), the
+  // reader stays where they are, and a later dead end never restores this landing's origin; the gap's glyph goes unless a page ask of
+  // its own is on the wire for it
+  if (rec) { rec.cancelled = true; rec.origin = null; rec.gap = null; }
   // the glyphs follow the truth, not the held record: every gap of the view that no ask names any more sheds its glyph (CI's page kept one
   // on a gap the record no longer matched, round seven)
   const gv = views.get(sid);
@@ -13899,7 +13895,7 @@ function cancelLanding(): void {
 /** The view jumps STRAIGHT to where the target will be (the user 2026-09-12): the anchor's time against the runs' times picks the
  *  gap it falls in and its place inside it (chat-regions.ts gapFraction), so the reader sees the loading glyph in the empty space
  *  the words will fill. With no time, or a gap not on screen, the view does not move until the reply. */
-function preJumpIntoGap(sid: string, t: number | null | undefined): void {
+function preJumpIntoGap(sid: string, t: number | null | undefined, rec: WindowAsk | null): void {
   const s = sessions.get(sid), v = views.get(sid), content = document.getElementById("content");
   if (t == null || !s || !s.regions || !v || !content || sid !== activeId) { landTrail.push(t == null ? "pre-jump-notime" : "pre-jump-noview"); return; }
   const rs = s.regions;
@@ -13913,8 +13909,7 @@ function preJumpIntoGap(sid: string, t: number | null | undefined): void {
     if (below) for (let k = 0; k < below.length && tAfter == null; k++) tAfter = eventEpoch(below[k] as ChatEvent);
     if ((tBefore != null && t < tBefore) || (tAfter != null && t > tAfter)) continue;
     const frac = gapFraction(t, tBefore, tAfter);
-    landingGaps.set(sid, { lo: r.lo, hi: r.hi });   // the gap wears the glyph while the window is on the wire (gapHasAsk)
-    preJumpFrom.set(sid, content.scrollTop);   // the reader's place before the jump, to restore if the reply cannot land (T386 stage 2, low 2)
+    if (rec) { rec.gap = { lo: r.lo, hi: r.hi }; rec.origin = content.scrollTop; }   // the ask's own record: the gap wears the glyph while its window is on the wire (gapHasAsk), the origin is restored if its reply cannot land (T386 stage 2, low 2; per ask, round eight)
     const g = v.el.querySelector(`.tx-gap[data-lo="${r.lo}"][data-hi="${r.hi}"]`) as HTMLElement | null;
     let y: number;
     if (g) {
@@ -13941,7 +13936,7 @@ function preJumpIntoGap(sid: string, t: number | null | undefined): void {
 // the served labs read the session's regions on demand (a gap inside a spacer has no element to read): kind, span, and a run's event count
 if (typeof window !== "undefined") (window as any).__rompRegions = (sid?: string): unknown => { const s = sessions.get(sid || activeId || ""); return s?.regions ? s.regions.map((r) => r.kind === "gap" ? { kind: "gap", lo: r.lo, hi: r.hi } : { kind: "run", lo: r.lo, hi: r.hi, n: r.events.length, first: keyOf(r.events[0] as { uuid?: string; key?: string }) ?? null, last: keyOf(r.events[r.events.length - 1] as { uuid?: string; key?: string }) ?? null }) : null; };
 if (typeof window !== "undefined") (window as any).__rompTurnUnderTop = (): number | null => { const sid = activeId || ""; const s = sessions.get(sid), v = views.get(sid), c = document.getElementById("content"); if (!s || !v || !c) return null; return turnUnderTop(v, s, displayItems(s), turnOfEvents(s), c, c.scrollTop); };   // the lab reads the point under the viewport top as a turn (round five)
-(window as any).__rompAskState = (sid?: string): unknown => { const id = sid || activeId || ""; const s = sessions.get(id); return { loadingOlder: loadingOlder.has(id), gapLoading: gapLoading.size, gapKeys: Array.from(gapLoading), landingGaps: landingGaps.size, hasGap: !!(s && s.regions && s.regions.some((r) => r.kind === "gap")), olderOnServer: !!(s && olderOnServer(s)) }; };
+(window as any).__rompAskState = (sid?: string): unknown => { const id = sid || activeId || ""; const s = sessions.get(id); return { loadingOlder: loadingOlder.has(id), gapLoading: gapLoading.size, gapKeys: Array.from(gapLoading), landingGaps: Array.from(windowAsks.values()).reduce((n, a) => n + a.filter((r) => !r.cancelled && !!r.gap).length, 0), asks: (windowAsks.get(id) ?? []).map((r) => ({ anchor: r.anchor.slice(-6), nav: r.nav, cancelled: r.cancelled, gap: r.gap, origin: r.origin })), hasGap: !!(s && s.regions && s.regions.some((r) => r.kind === "gap")), olderOnServer: !!(s && olderOnServer(s)) }; };
 // the served geometry lab shows the notice on demand: its real showings last the span of a fetch, too brief to measure against the strip
 if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLandingNotice(activeId || "", null); else hideLandingNotice(); };
 
@@ -17268,13 +17263,13 @@ function notifyShell(kind: string, text: string, sid?: string): void {
 // every 0.5-3s and would otherwise re-ask on every rejected delta until the reply lands. Cleared in upsert(),
 // so the next gap can ask again.
 const awaitingFull = new Set<string>();
-const pendingFullWhy = new Map<string, NeedFullWhy>();   // sid → why this client asked: upsert merges a re-attach's answer only
+const pendingFullWhy = new Map<string, NeedFullWhy>();   // sid → why this client asked (kept for the reconnect's diagnostics; every full frame merges into the held runs, T386 stage 2)
 const emptyFrameDiagSent = new Set<string>();   // sids whose empty session frame was filed once (see upsert / frame-merge.ts)
 // `why` is a one-word diagnostic the kernel ignores (2026-09-07): gap = a delta past what we hold; nobase = a
 // delta for a session we hold nothing of; skeleton-click = the active tab is a skeleton; prefetch = the idle
 // chain; skeleton-delta = a delta for a tab held as skeleton (a contract violation). The return-to-tab harness
 // counts asks by it — a nobase on a reconnect row means the skeleton branch missed a frame type.
-type NeedFullWhy = "gap" | "nobase" | "skeleton-click" | "prefetch" | "skeleton-delta" | "reattach";   // reattach: a proto-2 window walked back to the tail (T323 stage 4b)
+type NeedFullWhy = "gap" | "nobase" | "skeleton-click" | "prefetch" | "skeleton-delta";   // (reattach retired with the detached client, T386 stage 2)
 function requestFullSession(id: string, why: NeedFullWhy): void {
   if (!id || awaitingFull.has(id)) return;
   awaitingFull.add(id);
@@ -17299,8 +17294,8 @@ window.addEventListener("romp:wsdown", () => {
   // in-flight ask's state (T386 stage 2, medium 1), not the glyph alone, or a landing's gap stays unable to ask for the page's life and its
   // notice stands forever. gapLoading and its glyphs, the landing's held gap, the older-ask set, and the notice all go; a landing in flight
   // is told once the jump was lost. A gap met again on the healed socket asks anew.
-  const liveLanding = !!landingNoticeSid || Array.from(landingGaps.keys()).some((sid) => !cancelledLandings.has(sid));   // a jump the reader already cancelled owes no toast (round four, low 1)
-  gapLoading.clear(); landingGaps.clear(); loadingOlder.clear(); cancelledLandings.clear();   // the cancelled mark too (medium 2): it would refuse the reader's NEXT card click silently
+  const liveLanding = !!landingNoticeSid || Array.from(windowAsks.values()).some((a) => a.some((r) => !r.cancelled && !!r.gap));   // a jump the reader already cancelled owes no toast (round four, low 1)
+  gapLoading.clear(); windowAsks.clear(); loadingOlder.clear();   // every window ask's record too (round eight): its reply comes on no socket, and a cancelled one left standing would eat the next landing on its anchor
   document.querySelectorAll("#content .tx-gap-loading").forEach((g) => g.classList.remove("tx-gap-loading"));
   hideLandingNotice();
   pendingAnchor = null; anchorPendingOlder = false;
@@ -17433,8 +17428,7 @@ function insertRegionRun(s: Session, lo: number, hi: number, events: ChatEvent[]
 const gapLoading = new Set<string>();                                        // "sid:lo:hi" of the page asks in flight
 const gapKey = (sid: string, lo: number, hi: number): string => sid + ":" + lo + ":" + hi;
 function gapHasAsk(sid: string, gap: { lo: number; hi: number }): boolean {
-  const lg = landingGaps.get(sid);
-  if (lg && lg.lo === gap.lo && lg.hi === gap.hi) return true;   // a landing's window on the wire for this gap (the pre-jump)
+  for (const r of windowAsks.get(sid) ?? []) if (!r.cancelled && r.gap && r.gap.lo === gap.lo && r.gap.hi === gap.hi) return true;   // a live landing's window on the wire for this gap (the pre-jump; per ask, round eight)
   for (const k of gapLoading) {   // a page ask whose span lies inside the gap
     const [ksid, a, b] = k.split(":");
     if (ksid === sid && Number(a) >= gap.lo && Number(b) <= gap.hi) return true;
@@ -17781,61 +17775,64 @@ function olderOnServer(s: Session): boolean {
 // CLICK of the reader's (a card, a lane, a deep link, a notch, a reply chip, a comment tick: any anchor landing with no keep
 // offset), which the strip names as the message they opened, with its time when the frame carried one; the reload restore
 // of their own saved place arms a keep offset and keeps the plain sentence (verifier low, round two)
-const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null; kind: string | null }>();
+// …and every one of those marks, with the pre-jump's origin and gap and the notice's cancel, lives in ONE RECORD PER ASK (T386 stage 2,
+// round eight; the manager's rule, T402's keyed asks in the regions' form): round seven freed the busy gate at the notice's cancel, so
+// two window asks of one session can be on the wire, and every mark kept in a per-session slot collided (a second cancel overwrote the
+// first's, a cancelled ask's origin outlived it, a cancelled mark whose reply never came ate the next landing on its anchor). A reply
+// resolves to its own record, the OLDEST on its anchor (the kernel answers in order), and to nothing else; the cancel marks only its
+// record; a fresh ask on the same anchor supersedes a cancelled twin; the records expire with the socket-death clear.
+interface WindowAsk { anchor: string; nav: boolean; named: boolean; t: number | null; kind: string | null; origin: number | null; gap: { lo: number; hi: number } | null; cancelled: boolean; }
+const windowAsks = new Map<string, WindowAsk[]>();   // sid → the window asks on the wire, oldest first
+function windowAsksOf(sid: string): WindowAsk[] { let a = windowAsks.get(sid); if (!a) { a = []; windowAsks.set(sid, a); } return a; }
+/** The live (not cancelled) ask of a session, if one is on the wire: the busy gate and the notice are its. */
+function liveWindowAsk(sid: string): WindowAsk | null { const a = windowAsks.get(sid); if (!a) return null; for (let i = a.length - 1; i >= 0; i--) if (!a[i].cancelled) return a[i]; return null; }
+/** The record a reply resolves to, removed: the OLDEST on the reply's anchor, or the oldest of all when the reply names none; null when no ask stands. */
+function takeWindowAsk(sid: string, anchor: string | undefined): WindowAsk | null {
+  const a = windowAsks.get(sid); if (!a || !a.length) return null;
+  const i = anchor == null ? 0 : a.findIndex((r) => r.anchor === anchor);
+  if (i < 0) return null;
+  const [rec] = a.splice(i, 1); if (!a.length) windowAsks.delete(sid); return rec;
+}
 function requestAround(sid: string, uuid: string): boolean {
   const s = sessions.get(sid);
-  if (!s || s.proto !== 2 || loadingOlder.has(sid)) return false;
+  if (!s || s.proto !== 2 || loadingOlder.has(sid) || liveWindowAsk(sid)) return false;   // an older fetch or a LIVE window ask in flight: busy (a cancelled ask is not)
   const nav = !relandAsk;
   const kind = pendingAnchorKind ?? pendingAnchorIntent ?? null;
-  pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null, kind: nav ? kind : null });   // t and kind ride to the adoption (T386)
+  const arr = windowAsksOf(sid);
+  for (let i = arr.length - 1; i >= 0; i--) if (arr[i].cancelled && arr[i].anchor === uuid) arr.splice(i, 1);   // a fresh ask on the anchor supersedes a cancelled twin: its reply, if it still comes, lands this ask
+  const rec: WindowAsk = { anchor: uuid, nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null, kind: nav ? kind : null, origin: null, gap: null, cancelled: false };   // t and kind ride to the adoption (T386)
+  arr.push(rec);
   // every window ask leaves a diagnostic row (T366: the rows of the report had the reply's landing but nothing said
   // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked;
   // under the same per-minute budget as the other scroll rows (verifier low 5)
   const cAsk = document.getElementById("content");
   scrollDiagRow("regionask", { sid, why: "landing", nav, kind, keep: pendingAnchorKeepY != null, reland: relandAsk, trail: landTrail.slice(-4), notice: landingNoticeSid === sid, atBottom: !!cAsk && atBottom(cAsk) });   // the T366 window-ask row, renamed with the regions (T386 stage 2)
-  pendingOlderAnchor.set(sid, uuid);
-  pendingOlderKeepY.delete(sid);
-  loadingOlder.add(sid);
-  if (nav) { showLandingNotice(sid, pendingAnchorT); preJumpIntoGap(sid, pendingAnchorT); }   // the one notice and the jump into the gap (T386 stage 2); a re-land shows nothing
+  if (nav) { showLandingNotice(sid, pendingAnchorT); preJumpIntoGap(sid, pendingAnchorT, rec); }   // the one notice and the jump into the gap (T386 stage 2); a re-land shows nothing
   vscodeApi?.postMessage({ type: "loadAround", id: sid, uuid });
   return true;
 }
 function chatWindow(msg: any) {
-  // the reply of a landing the reader cancelled while a LATER ask of the same session is live (round seven, medium 3: the cancel frees the
-  // next click, so two replies of one session can be on the wire): it fills in place under its own anchor and leaves the live ask's marks
-  // alone, or the live landing would lose its navigation, its held gap and its notice to a reply that is not its own
-  {
-    const liveAnchor = pendingOlderAnchor.get(msg.id), cancelledFor = cancelledLandings.get(msg.id), replyAnchor = typeof msg.anchor === "string" ? msg.anchor : undefined;
-    if (cancelledFor != null && replyAnchor != null && replyAnchor === cancelledFor && liveAnchor != null && liveAnchor !== replyAnchor) {
-      cancelledLandings.delete(msg.id);
-      const s0 = sessions.get(msg.id);
-      if (s0 && !msg.missing && !msg.fault && Array.isArray(msg.span) && (msg.events || []).length) {
-        stripOptimistic(s0); insertRegionRun(s0, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]); reconcileOptimistic(s0);
-        const v0 = views.get(msg.id);
-        if (v0) { v0.rendered = 0; v0.winStart = 0; v0.winEnd = 0; v0.spacerCount = undefined; v0.spacerCountBot = undefined; v0.unitTotal = undefined; v0.edgeTop = undefined; v0.edgeUp = undefined; v0.stale = true; }
-        if (msg.id === activeId) fillInPlace(msg.id, v0); else schedulePrebuild();
-      }
-      landTrail.push("stray-cancelled");
-      return;
-    }
-  }
-  loadingOlder.delete(msg.id);
-  landingGaps.delete(msg.id);
-  const wasLanding = landingNoticeSid === msg.id;   // a notice was up for this session (captured before hideLandingNotice clears it): a span-less or missing reply must tell the reader, not drop them
-  if (landingNoticeSid === msg.id) hideLandingNotice();
+  // the reply resolves to ITS OWN ask's record and to nothing else (round eight): the oldest record on the reply's anchor. With no record
+  // (the socket-death clear expired it, or a duplicate) the window is merged in place and nothing else moves.
+  const rec = takeWindowAsk(msg.id, typeof msg.anchor === "string" ? msg.anchor : undefined);
   const s = sessions.get(msg.id);
-  const anchorUuid = pendingOlderAnchor.get(msg.id);
-  const keepY = pendingOlderKeepY.get(msg.id);   // present ⇒ the anchor is the READER's own row and the arrival preserves its offset (a cancelled ask, medium 2)
-  pendingOlderAnchor.delete(msg.id); pendingOlderKeepY.delete(msg.id);
+  if (!rec) {
+    if (s && !msg.missing && !msg.fault && Array.isArray(msg.span) && (msg.events || []).length) {
+      stripOptimistic(s); insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]); reconcileOptimistic(s);
+      const v0 = views.get(msg.id);
+      if (v0) { v0.rendered = 0; v0.winStart = 0; v0.winEnd = 0; v0.spacerCount = undefined; v0.spacerCountBot = undefined; v0.unitTotal = undefined; v0.edgeTop = undefined; v0.edgeUp = undefined; v0.stale = true; }
+      if (msg.id === activeId) fillInPlace(msg.id, v0); else schedulePrebuild();
+    }
+    landTrail.push("window-stray");
+    return;
+  }
+  const cancelled = rec.cancelled;
+  const wasLanding = !cancelled && landingNoticeSid === msg.id;   // the notice is the LIVE ask's: a cancelled ask's reply leaves it standing for a later live ask
+  if (wasLanding) hideLandingNotice();
+  const anchorUuid: string | undefined = rec.anchor;
   if (!s) return;
-  const ask = pendingWindowNav.get(msg.id) ?? null;
-  pendingWindowNav.delete(msg.id);
-  const preJumpOrigin = preJumpFrom.get(msg.id); preJumpFrom.delete(msg.id);   // consumed by every reply, the landing's success included (round four, low 2): a later dead end never restores a stale origin
-  // the cancelled mark is read once, before any return (T386 stage 2, low 2), and by the ask's ANCHOR (round seven): a reply carrying another
-  // anchor is a later ask's own, and a reply with no anchor is taken as the cancelled one; a missing or span-less reply must not leak the mark
-  const cancelledFor = cancelledLandings.get(msg.id);
-  const cancelled = cancelledFor != null && (typeof msg.anchor !== "string" || msg.anchor === cancelledFor);
-  if (cancelled) cancelledLandings.delete(msg.id);
+  const ask = { nav: rec.nav, named: rec.named, t: rec.t, kind: rec.kind };
+  const preJumpOrigin = rec.origin;   // a live ask's pre-jump origin, put back when its reply cannot land; the cancel consumed a cancelled ask's
   if (msg.fault) {
     // the kernel could not answer THIS TIME (T402 round two, low 3; the merge into the regions dropped this branch and round seven restored
     // it): a fault is no verdict on the anchor, so the reader is not told the message is gone; the landing stands down with its own word,
@@ -17883,19 +17880,16 @@ function chatWindow(msg: any) {
   const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
   // a NAVIGATION's window lands (the ask's own mark, as before the regions: landActive clears the landing's mark while the ask is in
   // flight, so that mark cannot be the key); the notice's click stands the landing down and the window appears in place instead
-  if (target && ask?.nav && !cancelled) {
+  if (target && ask.nav && !cancelled) {
     // the landing re-armed on the window's anchor, so the click's time and kind ride through (T386: the landing row keeps the datum that ties it to the click)
-    pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = ask?.t ?? null; pendingAnchorKind = ask?.kind ?? null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
+    pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = ask.t; pendingAnchorKind = ask.kind; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
     showActive();
     return;
   }
   fillInPlace(msg.id, v);   // nobody is going to this window (the notice was clicked, or the ask was the page's own): it appears in place
 }
 
-// ── the detached client's way back (review find M) ──────────────────────────────────────────────────────────
-// A proto-2 client reading an older window gets no live delta: a strip says so and offers the return; the jump chip
-// returns too. The return is a full frame (needFull "reattach"): upsert merges it into the held run when they
-// overlap, so the pages the reader walked stay resident.
+// ── (the detached client's way back, review find M, retired with T386 stage 2: no window detaches a client; a full frame merges into the held runs) ──
 
 // The awaiting fields the #bg-tasks box renders from (renderBgTasks — the header words, the rows, the awaited-row outline) — one
 // key per status, so a status-only frame re-renders the box exactly when THESE change (the chip's own

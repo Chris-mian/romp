@@ -121,7 +121,7 @@ test("render.ts wiring: landOn ends follow mode, feeds the rule from the page's 
   assert.match(RENDER, /window\.addEventListener\("blur", \(\) => \{ settleScrollerHeld = false; \}\);\s*\n\s*document\.addEventListener\("visibilitychange", \(\) => \{ settleScrollerHeld = false; \}\);/, "the hold ends with the page's focus or visibility (round four, low 1)");
   assert.match(RENDER, /if \(after !== before && landSettling && !landSettling\.done && writer !== "land-on" && writer !== "land-realign"\) \{/, "another writer's move during the settle is a sample, so the rule re-lands");
   assert.match(RENDER, /if \(scrolled && landSettling && !landSettling\.done && landTrail\[landTrail\.length - 1\] === "pointer-exact"\) \{ landSettling\.row = row; settleSample\(\); \}[^\n]*\n\s*else vscodeApi\?\.postMessage\(row\);/, "an exact landing's row waits for the settle; every other outcome files at once");
-  assert.match(RENDER, /pendingAnchorT = ask\?\.t \?\? null; pendingAnchorKind = ask\?\.kind \?\? null;/, "the click's time and kind ride through the window's adoption");
+  assert.match(RENDER, /pendingAnchorT = ask\.t; pendingAnchorKind = ask\.kind;/, "the click's time and kind ride through the window's adoption");
 });
 
 test("render.ts wiring, round one: the gesture verdict ends the settle by any input; a superseded landing files its row; the clamp is measured", () => {

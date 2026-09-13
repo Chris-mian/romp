@@ -142,7 +142,7 @@ function liftWorld(): (hooks: Hooks, mod: typeof MOD, doc: ReturnType<typeof fak
     let pendingAnchor = null, pendingAnchorIntent = null, pendingAnchorT = null, pendingAnchorKind = null, pendingAnchorKeepY = null, flashedAnchor = null;
     let anchorPendingOlder = false;
     let seek = null;
-    const loadingOlder = new Set(), pendingOlderAnchor = new Map(), pendingOlderKeepY = new Map();
+    const loadingOlder = new Set(), pendingOlderAnchor = new Map(), pendingOlderKeepY = new Map(), windowAsks = new Map();   // windowAsks: the per-ask records revealProgressTick reads (round eight)
     const H = HOOKS;
     const vscodeApi = { postMessage: (m) => H.posts.push(m) };
     let loadingPillEl = null;
@@ -182,7 +182,7 @@ function liftWorld(): (hooks: Hooks, mod: typeof MOD, doc: ReturnType<typeof fak
         if ("anchorPendingOlder" in p) anchorPendingOlder = p.anchorPendingOlder; if ("pendingAnchor" in p) pendingAnchor = p.pendingAnchor;
         if ("clearInFlight" in p) { loadingOlder.clear(); pendingOlderAnchor.clear(); }
       },
-      get: (k) => ({ pendingAnchor, anchorPendingOlder, loadingOlder, pendingOlderAnchor, seek })[k],
+      get: (k) => ({ pendingAnchor, anchorPendingOlder, loadingOlder, pendingOlderAnchor, seek, windowAsks })[k],
     };
   `;
   return new Function("HOOKS", "MOD", "document", prelude + release + note + region + head + fetch + epilogue) as any;

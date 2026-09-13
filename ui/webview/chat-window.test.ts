@@ -69,13 +69,13 @@ test("render.ts asks for older history only on an upward move, marks each window
   assert.ok(RENDER.includes("edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean;"), "the view remembers the top the last edge check saw, the last verdict and the gesture mark");
   assert.ok(RENDER.includes("v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }"), "a window rebuild forgets both: the first check after a rebuild may ask");
   const around = RENDER.slice(RENDER.indexOf("function requestAround(sid: string, uuid: string): boolean {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function requestAround(sid: string, uuid: string): boolean {")));
-  assert.ok(around.includes("const nav = !relandAsk;") && around.includes("pendingWindowNav.set(sid, { nav,"), "a window ask records whether a navigation made it: every anchor landing but the re-land of the reader's own row across a rebuild");
+  assert.ok(around.includes("const nav = !relandAsk;") && around.includes("const rec: WindowAsk = { anchor: uuid, nav,"), "a window ask records whether a navigation made it: every anchor landing but the re-land of the reader's own row across a rebuild");
   const keep = RENDER.slice(RENDER.indexOf("function keepPlaceAcrossWindow("), RENDER.indexOf("\n}\n", RENDER.indexOf("function keepPlaceAcrossWindow(")));
   assert.ok(keep.includes("relandAsk = true;\n  let landed = false;\n  try { landed = scrollToAnchor(keep.uuid); } finally { relandAsk = false; }"), "the re-land's own flag is set only around its landing (the reload restore shares the keep offset and must land)");
   assert.equal((RENDER.match(/relandAsk = true;/g) || []).length, 1, "nothing else raises the flag");
   assert.ok(around.includes('scrollDiagRow("regionask", { sid, why: "landing",'), "…and files a diagnostic row under the scroll rows' per-minute budget: the report's rows had the landing but not the ask (the T366 window-ask row, regionask since the regions)");
   assert.ok(RENDER.includes('| "unitchange" | "regionask", data: any): void {'), "the budgeted row kinds include it, and the window-ask kind is gone");
-  assert.ok(around.indexOf("pendingWindowNav.set(sid, { nav,") < around.indexOf('type: "loadAround"'), "the mark is set before the ask goes out");
+  assert.ok(around.indexOf("const rec: WindowAsk = { anchor: uuid, nav,") < around.indexOf('type: "loadAround"'), "the mark is set before the ask goes out");
   // a refused window leaves the kernel's base on the window until the re-attach lands; a tail pushed meanwhile misses its
   // anchor and asks for a full frame as a gap, which must not overwrite the pending reattach reason (a replace, not a merge)
   const full = RENDER.slice(RENDER.indexOf("function requestFullSession(id: string, why: NeedFullWhy): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function requestFullSession(id: string, why: NeedFullWhy): void {")));
@@ -83,7 +83,7 @@ test("render.ts asks for older history only on an upward move, marks each window
 });
 
 test("a window ask carries the navigation's time and kind to its reply; the three direct landings (a notch, a reply chip, a comment tick) arm neither (T366)", () => {
-  assert.ok(RENDER.includes("pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null, kind: nav ? kind : null });"), "the ask carries the navigation's time to the reply, and whether it was a click (any anchor landing without a keep offset; the reload restore of the reader's own place arms one)");
+  assert.ok(RENDER.includes("const rec: WindowAsk = { anchor: uuid, nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null, kind: nav ? kind : null, origin: null, gap: null, cancelled: false };"), "the ask carries the navigation's time to the reply, and whether it was a click (any anchor landing without a keep offset; the reload restore of the reader's own place arms one)");
   assert.match(RENDER, /markjump: \(elx\) => \{\s*\n\s*const uuid = elx\.dataset\.uuid;\s*\n\s*if \(!uuid \|\| !activeId\) return;\s*\n\s*flashedAnchor = null;\s*\n\s*scrollToAnchor\(uuid\);/, "the notch lands directly");
   assert.match(RENDER, /replyjump: \(elx\) => \{[\s\S]*?flashedAnchor = null;[^\n]*\n\s*if \(scrollToAnchor\(uuid\)\) \{/, "the reply chip lands directly");
   assert.match(RENDER, /cmtjump: \(elx\) => \{[\s\S]*?flashedAnchor = null;\s*\n\s*scrollToAnchor\(uuid\);/, "the comment tick lands directly");

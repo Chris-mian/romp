@@ -119,29 +119,30 @@ function liftAsk(relandAsk: boolean, keepY: number | null, anchorT: number | nul
     loadingOlder: new Set<string>(), relandAsk, pendingAnchorKeepY: keepY, pendingAnchorT: anchorT, pendingAnchorKind: kind, pendingAnchorIntent: null,
     document: { getElementById: () => null }, atBottom: () => false, landTrail: ["pointer-fetch-window"],
     scrollDiagRow: (k: string, d: any) => rows.push({ k, d }), pendingOlderAnchor: new Map(), pendingOlderKeepY: new Map(),
-    showLoadingPill: () => undefined, vscodeApi: { postMessage: (m: any) => posted.push(m) },
+    showLandingNotice: () => undefined, preJumpIntoGap: () => undefined, landingNoticeSid: null, vscodeApi: { postMessage: (m: any) => posted.push(m) },
   };
-  const js = liftBetween("const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null; kind: string | null }>();", "\nfunction chatWindow(msg: any) {");
-  const api = liftWith(js, scope, ["requestAround", "pendingWindowNav"]);
+  const js = liftBetween("interface WindowAsk {", "\nfunction chatWindow(msg: any) {");
+  const api = liftWith(js, scope, ["requestAround", "windowAsks"]);
+  (api as any).mark = (anchor: string) => { const r = (api.windowAsks as Map<string, any[]>).get("A")!.find((x) => x.anchor === anchor); return { nav: r.nav, named: r.named, t: r.t, kind: r.kind }; };   // the ask's record, the four mark fields (round eight)
   return { api, rows, posted };
 }
 
 test("the reload restore's window ask (a keep offset, no re-land) is a navigation and lands; the re-land's is refused; a card's carries its time (T366)", () => {
   const restore = liftAsk(false, 12, null, null);
   assert.equal(restore.api.requestAround("A", "u1"), true);
-  assert.deepEqual(restore.api.pendingWindowNav.get("A"), { nav: true, named: false, t: null, kind: null }, "the reader's saved place is theirs to get back: a navigation, and no click (the plain strip sentence)");
+  assert.deepEqual(restore.api.mark("u1"), { nav: true, named: false, t: null, kind: null }, "the reader's saved place is theirs to get back: a navigation, and no click (the plain strip sentence)");
   const reland = liftAsk(true, 12, null, null);
   reland.api.requestAround("A", "u2");
-  assert.deepEqual(reland.api.pendingWindowNav.get("A"), { nav: false, named: false, t: null, kind: null }, "the re-land of the reader's own row is the one ask that is no navigation");
+  assert.deepEqual(reland.api.mark("u2"), { nav: false, named: false, t: null, kind: null }, "the re-land of the reader's own row is the one ask that is no navigation");
   const card = liftAsk(false, null, 1700000000, null);
   card.api.requestAround("A", "u3");
-  assert.deepEqual(card.api.pendingWindowNav.get("A"), { nav: true, named: true, t: 1700000000, kind: null }, "a card's or lane's frame carried the message's time: named, and the strip says the clock; the time rides to the adoption (T386)");
+  assert.deepEqual(card.api.mark("u3"), { nav: true, named: true, t: 1700000000, kind: null }, "a card's or lane's frame carried the message's time: named, and the strip says the clock; the time rides to the adoption (T386)");
   const kindOnly = liftAsk(false, null, null, "prompt");
   kindOnly.api.requestAround("A", "u4");
-  assert.deepEqual(kindOnly.api.pendingWindowNav.get("A"), { nav: true, named: true, t: null, kind: "prompt" }, "a kind without a time: named, and the strip says the message was opened without a clock; the kind rides to the adoption (T386)");
+  assert.deepEqual(kindOnly.api.mark("u4"), { nav: true, named: true, t: null, kind: "prompt" }, "a kind without a time: named, and the strip says the message was opened without a clock; the kind rides to the adoption (T386)");
   const notch = liftAsk(false, null, null, null);
   notch.api.requestAround("A", "u5");
-  assert.deepEqual(notch.api.pendingWindowNav.get("A"), { nav: true, named: true, t: null, kind: null }, "a notch, a reply chip or a comment tick arm neither kind, time nor keep offset: still a click the strip names (verifier low, round two)");
+  assert.deepEqual(notch.api.mark("u5"), { nav: true, named: true, t: null, kind: null }, "a notch, a reply chip or a comment tick arm neither kind, time nor keep offset: still a click the strip names (verifier low, round two)");
   assert.equal(restore.rows.length, 1); assert.equal(restore.rows[0].k, "regionask"); assert.equal(restore.rows[0].d.why, "landing");
   assert.deepEqual({ nav: restore.rows[0].d.nav, keep: restore.rows[0].d.keep, reland: restore.rows[0].d.reland, trail: restore.rows[0].d.trail }, { nav: true, keep: true, reland: false, trail: ["pointer-fetch-window"] }, "the ask's diagnostic row names the keep offset and the re-land flag apart, under the scroll rows' budget");
   assert.deepEqual(restore.posted, [{ type: "loadAround", id: "A", uuid: "u1" }], "the ask itself goes out after the mark");
