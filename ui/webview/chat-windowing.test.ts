@@ -157,7 +157,7 @@ test("round two/three code fixes each carry a pin (T386 stage 2, low 1)", () => 
   // a second deep link while one is on the wire is refused with a cue, not silently repointed (low 6, low 4)
   assert.match(RENDER, /if \(loadingOlder\.has\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}/, "the busy refusal toasts a cue");
   // the cancelled mark is read once before any early return (low 2)
-  assert.ok(win.indexOf("const cancelled = cancelledLandings.delete(msg.id);") >= 0 && win.indexOf("const cancelled = cancelledLandings.delete(msg.id);") < win.indexOf("!Array.isArray(msg.span)"), "the cancelled mark is read before the missing/span-less return");
+  assert.ok(win.indexOf("const cancelledFor = cancelledLandings.get(msg.id);") >= 0 && win.indexOf("const cancelledFor = cancelledLandings.get(msg.id);") < win.indexOf("!Array.isArray(msg.span)"), "the cancelled mark is read before the missing/span-less return");
   // a mid-transcript gap keeps headTotal null (low 7)
   assert.match(RENDER, /s\.regions && s\.regions\.some\(\(r\) => r\.kind === "gap"\)\)\) s\.headTotal/, "chatTail keeps no head total while a gap holds older history");
 });
@@ -219,7 +219,12 @@ test("round seven fixes each carry a pin (T386 stage 2): a fault has its own wor
   assert.match(win, /landToast\(nospan \? "this session's host is an older version; open it there to jump" : "couldn't locate this in the transcript"\);\s*\n\s*clearSeek\(\);/, "the honest end ends the seek too");
   // medium 3: the notice's click clears the busy meaning at the cancel; the reply still fills in place under the cancelled mark
   const cancel = RENDER.slice(RENDER.indexOf("function cancelLanding(): void {"), RENDER.indexOf("\n/**", RENDER.indexOf("function cancelLanding(): void {")));
-  assert.match(cancel, /if \(loadingOlder\.has\(sid\)\) cancelledLandings\.add\(sid\);[\s\S]*?const held = landingGaps\.get\(sid\);\s*\n\s*loadingOlder\.delete\(sid\); landingGaps\.delete\(sid\);/, "the cancelled mark is set from the older-ask state, then both busy marks go");
+  assert.match(cancel, /if \(loadingOlder\.has\(sid\)\) cancelledLandings\.set\(sid, target \?\? pendingAnchor \?\? ""\);[\s\S]*?const held = landingGaps\.get\(sid\);\s*\n\s*loadingOlder\.delete\(sid\); landingGaps\.delete\(sid\);/, "the cancelled mark is set from the older-ask state under the ask's anchor, then both busy marks go");
+  // …so two replies of one session can be on the wire: the cancelled one is told by its anchor, fills in place and leaves the live ask's marks alone
+  assert.match(win, /^\s*const liveAnchor = pendingOlderAnchor\.get\(msg\.id\), cancelledFor = cancelledLandings\.get\(msg\.id\), replyAnchor = typeof msg\.anchor === "string" \? msg\.anchor : undefined;\s*\n\s*if \(cancelledFor != null && replyAnchor != null && replyAnchor === cancelledFor && liveAnchor != null && liveAnchor !== replyAnchor\) \{/m, "a cancelled reply under a live later ask is matched by anchor");
+  assert.ok(win.indexOf("landTrail.push(\"stray-cancelled\");") < win.indexOf("loadingOlder.delete(msg.id);"), "…and returns before any of the live ask's marks is consumed");
+  assert.match(win, /const cancelled = cancelledFor != null && \(typeof msg\.anchor !== "string" \|\| msg\.anchor === cancelledFor\);\s*\n\s*if \(cancelled\) cancelledLandings\.delete\(msg\.id\);/, "the cancelled mark is consumed only by the reply it names");
+  assert.match(RENDER, /const cancelledLandings = new Map<string, string>\(\);/, "the mark carries the anchor");
   assert.match(cancel, /if \(g && !gapLoading\.has\(gapKey\(sid, held\.lo, held\.hi\)\)\) g\.classList\.remove\("tx-gap-loading"\);/, "…and the gap's glyph unless a page ask of its own is on the wire");
   assert.match(RENDER, /if \(loadingOlder\.has\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\);/, "the busy gate still reads the older-ask mark (a live landing is busy)");
   // low 7: the older edge's evidence writers lost their reader with the pill's latch and are off the scroll hot path

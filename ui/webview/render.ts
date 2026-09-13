@@ -13795,7 +13795,7 @@ function virtualizeToViewport(): void {
 // alone, whatever the row count and however it changes while the pill shows. Idempotent; no pointer events.
 let landingNoticeEl: HTMLElement | null = null;
 let landingNoticeSid: string | null = null;
-const cancelledLandings = new Set<string>();   // sids whose landing the notice's click cancelled while the window was on the wire
+const cancelledLandings = new Map<string, string>();   // sid → the anchor of the landing the notice's click cancelled while its window was on the wire; the reply carrying that anchor fills in place
 const landingGaps = new Map<string, { lo: number; hi: number }>();   // sid -> the gap a landing's window is on the wire for (its glyph shows while it is)
 const preJumpFrom = new Map<string, number>();   // sid -> the scrollTop before the pre-jump, restored when a span-less or missing reply cannot land (T386 stage 2, low 2)
 /** The ONE notice (T386 stage 2, the user 2026-09-12): "Going to the message from 7:41 AM, click to stay here", at the pill's old
@@ -13829,7 +13829,7 @@ function cancelLanding(): void {
   if (!sid) return;   // no notice showing: nothing to cancel
   const target = pendingOlderAnchor.get(sid);
   hideLandingNotice();
-  if (loadingOlder.has(sid)) cancelledLandings.add(sid);   // the reply still comes: it fills in place
+  if (loadingOlder.has(sid)) cancelledLandings.set(sid, target ?? pendingAnchor ?? "");   // the reply still comes, under this anchor: it fills in place
   // a cancelled landing is not busy (round seven, medium 3): the older-ask mark and the landing's held gap go now, not when the reply
   // lands, or the reader's next card click is refused as "still going" and dropped; the glyph on that gap goes with them unless a page
   // ask of its own is on the wire for it
@@ -17746,6 +17746,24 @@ function requestAround(sid: string, uuid: string): boolean {
   return true;
 }
 function chatWindow(msg: any) {
+  // the reply of a landing the reader cancelled while a LATER ask of the same session is live (round seven, medium 3: the cancel frees the
+  // next click, so two replies of one session can be on the wire): it fills in place under its own anchor and leaves the live ask's marks
+  // alone, or the live landing would lose its navigation, its held gap and its notice to a reply that is not its own
+  {
+    const liveAnchor = pendingOlderAnchor.get(msg.id), cancelledFor = cancelledLandings.get(msg.id), replyAnchor = typeof msg.anchor === "string" ? msg.anchor : undefined;
+    if (cancelledFor != null && replyAnchor != null && replyAnchor === cancelledFor && liveAnchor != null && liveAnchor !== replyAnchor) {
+      cancelledLandings.delete(msg.id);
+      const s0 = sessions.get(msg.id);
+      if (s0 && !msg.missing && !msg.fault && Array.isArray(msg.span) && (msg.events || []).length) {
+        stripOptimistic(s0); insertRegionRun(s0, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]); reconcileOptimistic(s0);
+        const v0 = views.get(msg.id);
+        if (v0) { v0.rendered = 0; v0.winStart = 0; v0.winEnd = 0; v0.spacerCount = undefined; v0.spacerCountBot = undefined; v0.unitTotal = undefined; v0.edgeTop = undefined; v0.edgeUp = undefined; v0.stale = true; }
+        if (msg.id === activeId) fillInPlace(msg.id, v0); else schedulePrebuild();
+      }
+      landTrail.push("stray-cancelled");
+      return;
+    }
+  }
   loadingOlder.delete(msg.id);
   landingGaps.delete(msg.id);
   const wasLanding = landingNoticeSid === msg.id;   // a notice was up for this session (captured before hideLandingNotice clears it): a span-less or missing reply must tell the reader, not drop them
@@ -17758,7 +17776,11 @@ function chatWindow(msg: any) {
   const ask = pendingWindowNav.get(msg.id) ?? null;
   pendingWindowNav.delete(msg.id);
   const preJumpOrigin = preJumpFrom.get(msg.id); preJumpFrom.delete(msg.id);   // consumed by every reply, the landing's success included (round four, low 2): a later dead end never restores a stale origin
-  const cancelled = cancelledLandings.delete(msg.id);   // read once, before any return (T386 stage 2, low 2): a missing or span-less reply must not leak the mark onto the next navigation
+  // the cancelled mark is read once, before any return (T386 stage 2, low 2), and by the ask's ANCHOR (round seven): a reply carrying another
+  // anchor is a later ask's own, and a reply with no anchor is taken as the cancelled one; a missing or span-less reply must not leak the mark
+  const cancelledFor = cancelledLandings.get(msg.id);
+  const cancelled = cancelledFor != null && (typeof msg.anchor !== "string" || msg.anchor === cancelledFor);
+  if (cancelled) cancelledLandings.delete(msg.id);
   if (msg.fault) {
     // the kernel could not answer THIS TIME (T402 round two, low 3; the merge into the regions dropped this branch and round seven restored
     // it): a fault is no verdict on the anchor, so the reader is not told the message is gone; the landing stands down with its own word,
