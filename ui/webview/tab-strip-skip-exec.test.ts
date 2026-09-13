@@ -23,7 +23,7 @@ const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview"
 class FakeEl {
   tag: string; className: string; children: FakeEl[] = []; parent: FakeEl | null = null;
   dataset: Record<string, string> = {}; styleProps: Record<string, string> = {}; attrs: Record<string, string> = {};
-  listeners: Record<string, Function[]> = {}; textContent = ""; title = ""; tabIndex = -1; draggable = false; innerHTML = "";   // innerHTML: the pinned tab's pushpin is set as markup (2026-09-11)
+  listeners: Record<string, Function[]> = {}; textContent = ""; title = ""; tabIndex = -1; draggable = false;
   wipes = 0;   // replaceChildren() calls: the strip's rebuild count when this is #tabs
   style: any; classList: any;
   constructor(tag: string, cls = "") {
@@ -61,7 +61,6 @@ type Hooks = {
   notes: Record<string, string>; keyHint: string; lens: unknown; unions: TagUnion[]; tips: unknown[];
   aftermaths: [number, number][]; rowPaints: number; tagSyncs: number; placeholders: number;
   groupsRaw: string | null;   // the stored tab-groups blob the plan reads (localStorage's, in the page)
-  pins: Map<string, number>;           // the pinned set (romp:tabpins, sid → slot): a pinned tab wears the pushpin and does not drag
   phone: boolean;             // the phone layout: the plan is the flat strip there
   heads: HeadCall[];          // every group header the paint minted, in order
   planStrip: typeof planStrip; parseTabGroups: typeof parseTabGroups; headWords: typeof headWords;
@@ -148,9 +147,6 @@ function lift(): (hooks: Hooks) => Api {
     const hostNameNodes = (name) => [document.createTextNode(name)]; const fadedColor = (h) => h;
     const tabCtxGauge = () => el("span", "tab-ctx"); const pickTone = (a, b) => b ?? a;
     const fedMissing = false;   // the page has its federation manager (render.ts fedMissing, 2026-09-10): tabs drag as before
-    const loadTabPins = () => H.pins;   // the pinned set (2026-09-10), read once per render
-    const pinSvg = (size) => '<svg data-pin="' + size + '"></svg>';   // the pushpin drawing the pinned tab wears (2026-09-11): a stand-in, its size recorded
-    const localStorage = null;          // the store handle the paint passes to loadTabPins; the knob above answers instead
     const showTabTip = (tab, s) => { H.tips.push(s); }; const toggleLedgerCollapsed = () => {}; const showTabMenu = () => {}; const openPicker = () => {};
     const tagMenuButton = () => el("span", "tag-btn"); const openTagMenu = () => {}; const postLens = () => {}; const vscodeApi = null;
     const ICON_LOCK = "<svg data-lock=seated></svg>"; const ICON_LOCK_OPEN = "<svg data-lock=open></svg>"; const setTabsLocked = () => {};   // the tab lock (T395): the strip builds the button; its press is outside this slice
@@ -184,7 +180,7 @@ const groups = (patch: Record<string, unknown>) => JSON.stringify({ on: true, co
 function world(): { H: Hooks; api: Api; sessions: Map<string, any>; tabMeta: Map<string, any>; settings: any } {
   const H: Hooks = { FakeEl, bar: new FakeEl("div"), mslot: null, only: "", hidden: new Set(), down: new Set(), notes: {},
                      keyHint: "Open a session (K)", lens: { all: true }, unions: [], tips: [], aftermaths: [], rowPaints: 0, tagSyncs: 0, placeholders: 0,
-                     groupsRaw: null, phone: false, heads: [], pins: new Map(),
+                     groupsRaw: null, phone: false, heads: [],
                      planStrip, parseTabGroups, headWords, tabStateClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
                      newSkeletonState, renderKind, skeletons: 0, timers: [], activated: [] };
   const api = lift()(H);
@@ -262,9 +258,6 @@ test("every input the strip paints repaints it, once, when it changes", () => {
     ["a placeholder's name", () => { H.hidden.delete("p"); api.renderTabs(); tabMeta.get("p").name = "tests2"; }],
     ["a placeholder's color", () => { tabMeta.get("p").color = { bg: "#445566", fg: "#000000" }; }],
     ["a placeholder's session landing", () => { sessions.set("p", session("tests2", "opening")); }],
-    // a pin (2026-09-10): on, and off again
-    ["a tab pinned", () => { H.pins = new Map([["a", 0]]); }],
-    ["the tab unpinned", () => { H.pins = new Map(); }],
   ];
   for (const [what, change] of changes) repaintsOnce(H, api, what, change);
 });
@@ -466,27 +459,4 @@ test("executed: the restore's fire-time membership is the paint's own rule: a ta
   assert.equal(H.timers.length, 1, "the placeholder-only tab is visible, so the restore is scheduled");
   H.timers[0]();
   assert.deepEqual(H.activated, ["a"], "…and fires: it paints, so it restores");
-});
-
-test("a pinned tab wears the pushpin after the name's widgets, the pinned class and no draggable flag; the others drag as before", () => {
-  const { H, api } = world();
-  const tab = (id: string) => H.bar.tabs().find((t) => t.dataset.id === id)!;
-  api.renderTabs();
-  assert.equal(tab("a").draggable, true); assert.equal(tab("a").has("pinned"), false);
-  assert.equal(tab("a").children.filter((c) => c.has("tab-pin")).length, 0, "no pin, no glyph");
-  H.pins = new Map([["a", 0]]);
-  api.renderTabs();
-  assert.equal(tab("a").has("pinned"), true);
-  assert.equal(tab("a").draggable, false, "a pinned tab starts no drag");
-  const pin = tab("a").children.filter((c) => c.has("tab-pin"));
-  assert.equal(pin.length, 1);
-  assert.equal(pin[0].title, "Pinned — it stays where it is");
-  assert.equal(pin[0].innerHTML, '<svg data-pin="11"></svg>', "the menu's pushpin, at the tab's size");
-  const kids = tab("a").children.map((c) => c.className);
-  assert.equal(kids[kids.findIndex((k) => k.includes("tab-pin")) + 1], "tab-close", "after the name's widgets and before the close ×: " + kids.join(","));
-  assert.equal(tab("b").draggable, true, "the other tab is untouched"); assert.equal(tab("b").has("pinned"), false);
-  H.pins = new Map();
-  api.renderTabs();
-  assert.equal(tab("a").has("pinned"), false); assert.equal(tab("a").draggable, true);
-  assert.equal(tab("a").children.filter((c) => c.has("tab-pin")).length, 0, "unpinned: the glyph goes");
 });

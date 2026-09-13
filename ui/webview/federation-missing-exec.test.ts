@@ -22,7 +22,6 @@ function lift(fedMissing: boolean, locked = false): Lifted {
     let order = ["a", "b", "c"]; let tabDragJustCommitted = false; let renders = 0;
     const writes = []; const writeViewOrder = (o) => { writes.push(o.slice()); };
     const renderTabs = () => { renders++; };
-    const holdPinnedSlots = () => false;   // the pinned-tab hold reorderTo runs after its splice (tab-pins.ts): no pins in the lift
     const fedMissing = FED;
     const settings = { tabsLocked: LOCKED };   // the tab lock (T395): a drop after another window locked mid-drag commits nothing
   `;

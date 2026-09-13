@@ -410,42 +410,6 @@ await dialogGone("Esc never closed the solo recorder");
 await waitFn(() => document.activeElement && document.activeElement.id === "f-chat-2" && document.getElementById("f-chat-2").contentDocument.activeElement.id === "composer-input", null, "the focus never came back after Esc");
 out.hk.cancelled = { afterCancel: await whereFocus("f-chat-2"), badgeB: await badgeOf("f-chat-2", cfg.sidB), ...(await stores()), dialogRows: await hotkeyRows() };   // the focus first: listing the dialog's rows opens (and closes) it
 
-// ---- 2d. pin a tab (the user 2026-09-10): B's tab, pinned from its menu in column 2, wears the pushpin and is not draggable;
-// the pin holds B's slot in the board's order when the browser's arrangement is rewritten under it (what a drag elsewhere or
-// another dashboard window does), while column 1, with no pin, follows the rewrite; Unpin takes it back ----
-const pinState = (fid, sid) => page.evaluate(([fid, sid]) => { const t = document.getElementById(fid).contentDocument.querySelector('#tabs .tab[data-id="' + sid + '"]');
-  return t ? { pinned: t.classList.contains("pinned"), draggable: t.draggable, pin: !!t.querySelector(".tab-pin svg") } : null; }, [fid, sid]);
-const pinnedIn = (fid, sid, want) => waitFn(([fid, sid, want]) => { const t = document.getElementById(fid).contentDocument.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!t && t.classList.contains("pinned") === want; }, [fid, sid, want], "B's tab never showed pinned=" + want);
-const stripOrder = (fid) => page.evaluate((fid) => Array.from(document.getElementById(fid).contentDocument.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.dataset.id), fid);
-const arrangement = () => page.evaluate(() => JSON.parse(localStorage.getItem("romp:vieworder") || "null"));
-const rewriteArrangement = (ids) => page.evaluate((ids) => localStorage.setItem("romp:vieworder", JSON.stringify(ids)), ids);   // the shell document's write: a real storage event in every column
-const stripsShow = (want, why) => waitFn((want) => Object.keys(want).every((fid) => JSON.stringify(Array.from(document.getElementById(fid).contentDocument.querySelectorAll("#tabs .tab[data-id]")).map((t) => t.dataset.id)) === JSON.stringify(want[fid])), want, why);
-const over = (arr, members) => arr.filter((id) => members.includes(id));   // a column's strip as the arrangement orders its members
-const arrBefore = await arrangement();
-const orderBefore = { col1: await stripOrder("f-chat"), col2: await stripOrder("f-chat-2"), arrangement: arrBefore };
-if (!Array.isArray(arrBefore) || !orderBefore.col1.concat(orderBefore.col2).every((id) => arrBefore.includes(id))) await die("no arrangement over every tab to rewrite: romp:vieworder reads " + JSON.stringify(arrBefore) + " for strips " + JSON.stringify(orderBefore));
-await pickTabMenu("f-chat-2", cfg.sidB, "Pin tab");
-await pinnedIn("f-chat-2", cfg.sidB, true);
-out.pin = { b: await pinState("f-chat-2", cfg.sidB), c: await pinState("f-chat-2", cfg.sidC), a: await pinState("f-chat", cfg.sidA),
-            store: JSON.parse(await page.evaluate(() => localStorage.getItem("romp:tabpins"))), orderBefore };
-const reversed = arrBefore.slice().reverse();
-await rewriteArrangement(reversed);
-await stripsShow({ "f-chat": over(reversed, orderBefore.col1) }, "column 1 never re-derived its strip from the rewritten arrangement");   // no pin there: the strip follows the rewrite
-await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));   // column 2 heard the same event: read it
-out.pin.orderHeld = { col1: await stripOrder("f-chat"), col2: await stripOrder("f-chat-2"), arrangement: await arrangement() };
-out.pin.menu = await pickTabMenu("f-chat-2", cfg.sidB, "Unpin tab");
-await pinnedIn("f-chat-2", cfg.sidB, false);
-out.pin.after = { b: await pinState("f-chat-2", cfg.sidB), store: JSON.parse(await page.evaluate(() => localStorage.getItem("romp:tabpins"))) };
-// with the pin gone the same rewrite moves B (the pin was what held it); then it is restored. The arrangement still holds the
-// reverse from above (the hold never writes it back), and a value written unchanged raises no event — so restore first, then rewrite
-await rewriteArrangement(arrBefore);
-await stripsShow({ "f-chat": orderBefore.col1, "f-chat-2": orderBefore.col2 }, "the restore never showed in both columns");
-await rewriteArrangement(reversed);
-await stripsShow({ "f-chat": over(reversed, orderBefore.col1), "f-chat-2": over(reversed, orderBefore.col2) }, "unpinned, the rewritten arrangement never showed in both columns");
-out.pin.orderReleased = { col1: await stripOrder("f-chat"), col2: await stripOrder("f-chat-2") };
-await rewriteArrangement(arrBefore);
-await stripsShow({ "f-chat": orderBefore.col1, "f-chat-2": orderBefore.col2 }, "the arrangement never came back to where it started");
-
 // ---- 2e. the session bell from the keyboard (the user 2026-09-11): the palette's "Toggle notifications for this session"
 // flips the ACTIVE session's bell in the focused column — the same override the tab menu's bell row writes — a toast says so,
 // the menu's row reads the other way at once, ANOTHER WINDOW on the same kernel learns it from the kernel's push (the flags ride
@@ -607,11 +571,11 @@ out.s9.afterDrop = await page.evaluate(() => { const g = document.getElementById
 out.s9.col1Tabs = await tabsIn("f-chat"); out.s9.col2Tabs = await tabsIn("f-chat-2"); out.s9.col1Active = await activeIn("f-chat");
 out.s9.pane1W = await width("chat-pane"); out.s9.pane2W = await width("chat-pane-2");
 // …and back: B's tab from column 2 (its only member: no edge zone) onto column 1's pane. The column is a fresh page:
-// its tab drags only once its manager is up (fedMissing) and nothing holds it (the lock, a pin), so wait for the
+// its tab drags only once its manager is up (fedMissing) and nothing holds it (the lock), so wait for the
 // draggable flag the story assumes, and if the zone still never comes, say what the tab looked like (a CI-only
 // timeout here on 2026-09-13 left no trace)
 const tabStateIn = (fid, sid) => page.evaluate(([fid, sid]) => { const f = document.getElementById(fid); const d = f && f.contentDocument; const t = d && d.querySelector('#tabs .tab[data-id="' + sid + '"]');
-  return { tab: !!t, draggable: !!(t && t.draggable), cls: t ? t.className : null, settings: localStorage.getItem("romp:settings"), pins: localStorage.getItem("romp:tabpins"), zones: document.querySelectorAll(".col-drop").length, frames: window.__rompChatFrameIds(), log: (window.__shellLog || []).slice(-6) }; }, [fid, sid]);
+  return { tab: !!t, draggable: !!(t && t.draggable), cls: t ? t.className : null, settings: localStorage.getItem("romp:settings"), zones: document.querySelectorAll(".col-drop").length, frames: window.__rompChatFrameIds(), log: (window.__shellLog || []).slice(-6) }; }, [fid, sid]);
 await waitFn(([fid, sid]) => { const f = document.getElementById(fid); const d = f && f.contentDocument; const t = d && d.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!(t && t.draggable); }, ["f-chat-2", cfg.sidB], "B's tab in the new column never became draggable");
 await dragStart("f-chat-2", cfg.sidB);
 if (!(await page.waitForFunction(() => !!document.querySelector('#chat-pane > .col-drop'), null, { timeout: T }).then(() => true).catch(() => false))) {
@@ -1022,7 +986,7 @@ class ServedChatSplit(unittest.TestCase):
 
     def test_8_the_whole_story_runs_in_well_under_half_a_minute(self):
         r = self._r()
-        # 30 s before the hot-key, pin and bell steps joined (2026-09-13): three more steps and a second browser window (the
+        # 30 s before the hot-key and bell steps joined (2026-09-13): three more steps and a second browser window (the
         # bell's other-window check) added about a third locally, and the CI runner is slower again
         self.assertLess(r["msStory"], 40000, "the driver waits on conditions, never on fixed sleeps: %d ms" % r["msStory"])
         # steps 11 and 12 each wait past the close backstop by design (shortened to CLOSE_ACK_MS_LAB), so they are bounded apart
@@ -1192,27 +1156,6 @@ class ServedChatSplit(unittest.TestCase):
         p = os.path.join(self.lab, "xdg", "romp", "session-flags.json")
         flags = json.load(open(p)) if os.path.exists(p) else {}
         self.assertFalse((flags.get(SID_A) or {}).get("notify", False), "the override is off in the kernel's flags file: %r" % flags)
-
-    def test_a_pinned_tab_wears_the_pushpin_is_not_draggable_and_holds_its_slot_through_an_arrangement_rewrite(self):
-        # the user 2026-09-10: pin a tab so it stays where it is (the pushpin says so); per browser. Under the partition the
-        # slot held is the tab's place in the board's order, and its column's strip is that order over the column's members
-        p = self._r()["pin"]
-        self.assertEqual(p["b"], {"pinned": True, "draggable": False, "pin": True}, "pinned from column 2's menu: %r" % p)
-        self.assertEqual(p["c"], {"pinned": False, "draggable": True, "pin": False}, "its neighbour is untouched")
-        self.assertEqual(p["a"], {"pinned": False, "draggable": True, "pin": False}, "…and so is column 1's tab")
-        ob = p["orderBefore"]; arr = ob["arrangement"]
-        over = lambda ids, members: [x for x in ids if x in members]
-        self.assertEqual(ob["col2"], over(arr, [SID_B, SID_C]), "column 2's strip is the arrangement's order over its members: %r" % ob)
-        self.assertEqual(p["store"], {SID_B: arr.index(SID_B)}, "pinned AT its slot in the board's order")
-        rev = list(reversed(arr))
-        held = [x for x in rev if x != SID_B]; held.insert(arr.index(SID_B), SID_B)   # the reverse with B put back at its slot, the rest flowing around
-        self.assertEqual(p["orderHeld"]["arrangement"], rev, "the arrangement was rewritten to the reverse…")
-        self.assertEqual(p["orderHeld"]["col1"], over(rev, ob["col1"]), "…column 1, with no pin, follows it")
-        self.assertEqual(p["orderHeld"]["col2"], over(held, ob["col2"]), "…and column 2 keeps B at its slot: %r" % p["orderHeld"])
-        self.assertIn("Unpin tab", p["menu"]); self.assertNotIn("Pin tab", p["menu"])
-        self.assertEqual(p["after"]["b"], {"pinned": False, "draggable": True, "pin": False}, "unpinned from the same menu: %r" % p["after"])
-        self.assertEqual(p["after"]["store"], {})
-        self.assertEqual(p["orderReleased"], {"col1": over(rev, ob["col1"]), "col2": over(rev, ob["col2"])}, "unpinned, the same rewrite moves the tab: the pin was what held it")
 
 
 if __name__ == "__main__":

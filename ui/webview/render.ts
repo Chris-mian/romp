@@ -53,7 +53,6 @@ import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from ".
 import { composeTabWidgets, tabHotkey, miniChord } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry; miniChord dresses the tab menu's hot-key row from the same store (2026-09-13)
 import { titleWithKey, keyHint, chordOf, effectiveChord, loadOverrides, saveOverride, KEYS_EVENT } from "./keybindings";
 import { hotkeyCommandId, loadTabKeys, rememberTabKey, forgetTabKey, goneTabKeys, renamedTabKeys } from "./tab-keys";   // per-tab hot keys (2026-09-10): the set and its bookkeeping; the keycap on the tab is the T379 widget, read from the same store
-import { TABPINS_KEY, TABPINS_EVENT, loadTabPins, writeTabPins, setTabPinned, placePinned, adoptPinSlots, prunePins } from "./tab-pins";   // pinned tabs (2026-09-10)
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
@@ -5700,7 +5699,6 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   order.length = 0;
   for (const id of next) order.push(id);
   for (const id of kernelOrder) kernelListed.add(id);
-  holdPinnedSlots();
   // T357: the tab the user was on is re-listed (a host re-attach, a relay redial) → focus goes back to it; the
   // skeleton branch of showActive asks for its frame. Another session's tab appearing does nothing here.
   const back = vanishedId || wantActive;   // …or the tab this page showed before a reload, awaited since boot
@@ -5717,31 +5715,6 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   if (localStrip(report)) tabOrderSeen = true;
   renderTabs();
   syncTabKeysWithStrip();
-  syncTabPinsWithStrip();
-}
-// Pinned tabs hold their slots through EVERY rewrite of the order (the user 2026-09-10: whatever else reshuffles,
-// a pinned tab must not move): after a kernel push or an arrangement re-emission has rebuilt `order`, after a drag
-// has spliced it, and when a pin is set or heard from a sibling column, each pinned id goes back to the index it
-// holds (tab-pins.ts placePinned). This column's strip only: the shared arrangement is NOT written back (the user,
-// the same day, who did not want the columns forced onto one order) — a drag's own commit carries the held order,
-// nothing else does — and the audit files the permutation as pin-explained. A pin stored with no slot yet (the
-// store's first shape) adopts the index it has now, so an existing pin holds where it was pinned.
-function holdPinnedSlots(): boolean {
-  const pins = loadTabPins(localStorage);
-  if (!pins.size) return false;
-  const adopted = adoptPinSlots(pins, order);
-  if (adopted) writeTabPins(localStorage, adopted);
-  const held = placePinned(order, adopted || pins);
-  if (held.length === order.length && held.every((id, i) => id === order[i])) return false;
-  order.length = 0;
-  for (const id of held) order.push(id);
-  tabPinJustHeld = true;
-  return true;
-}
-// A pin whose session left the strip goes with it (there is no slot to hold); an empty strip drops nothing.
-function syncTabPinsWithStrip(): void {
-  const kept = prunePins(loadTabPins(localStorage), order);
-  if (kept) writeTabPins(localStorage, kept);
 }
 // The hot-key set follows the strip (review, 2026-09-10): a session whose tab is gone loses its "Switch to" command
 // and its chord — there is nothing to switch to — and a renamed one is re-titled, so the shortcuts dialog never
@@ -5782,7 +5755,6 @@ function noteSkeletonTabOrder(m: any): void {
 // A user drag permutes legitimately; it's tagged (drag:true) so the log separates it from the bug.
 let lastTabIds: string[] = [];
 let tabDragJustCommitted = false;
-let tabPinJustHeld = false;   // the last order change put pinned tabs back at their slots (holdPinnedSlots): explained, like a drag
 function auditTabOrder(ids: string[]) {
   const both = new Set(ids.filter((id) => lastTabIds.includes(id)));
   const prev = JSON.stringify(lastTabIds.filter((id) => both.has(id)));
@@ -5790,12 +5762,11 @@ function auditTabOrder(ids: string[]) {
   if (prev !== next) {
     const stack = new Error("tab order permuted").stack || "";
     const rec = { type: "orderAudit", surface: "chat-tabs", old: lastTabIds.slice(), new: ids.slice(),
-                  stack, drag: tabDragJustCommitted, pin: tabPinJustHeld };
+                  stack, drag: tabDragJustCommitted };
     console.warn("[romp] tab order permuted", rec);
     if (vscodeApi) vscodeApi.postMessage(rec);
   }
   tabDragJustCommitted = false;
-  tabPinJustHeld = false;
   lastTabIds = ids.slice();
 }
 let draggedId: string | null = null;
@@ -5867,9 +5838,6 @@ function reorderTo(dragId: string, targetId: string, after: boolean): boolean { 
   const ti = order.indexOf(targetId);
   if (ti < 0) order.push(dragId);
   else order.splice(after ? ti + 1 : ti, 0, dragId);
-  // pinned tabs keep their slots (the user 2026-09-10): the drag's result is re-laid with each pinned id back at its
-  // slot, the others flowing around them — so a drop beside a pinned tab lands past it, never displacing it
-  holdPinnedSlots();   // commitTabOrder below writes the held order: the drag's own write carries it
   tabDragJustCommitted = true;   // the next render's permutation is this drag, not the bug (order audit)
   commitTabOrder();
   renderTabs();
@@ -6607,7 +6575,6 @@ function renderTabs() {
   // folds one frame's pushes into one call; this is the complement, for the call that finds nothing
   // changed. Any input the strip gains later joins this list — tab-strip-skip.test.ts is the list, and an
   // input missing here is a repaint that never happens.
-  const pins = loadTabPins(localStorage);   // the pinned set, read once per render: a pinned tab's fold and its draggable flag (2026-09-10)
   const stripSig = JSON.stringify([
     activeId, peekId, ids, visibleIds, activeId ? tabInView(activeId) : null, plan.items,
     settings.tabCtx, settings.stripGroupRows, settings.tabsLocked, settings.theme, settings.colormap, settings.tabWidgets, titleWithKey("Open a session", "session.new"),   // tabWidgets: which widgets a tab carries, their order and options (T379); tabsLocked: the tab lock (T395)
@@ -6623,7 +6590,7 @@ function renderTabs() {
       if (!s) { const m = tabMeta.get(id); return ["p", m?.name, m?.color?.bg, m?.color?.fg, down, note]; }   // makePlaceholderTab's reads
       const st = s.status;
       return [s.name, s.color?.bg, s.color?.fg, st.state, tabStateClass(st), !!st.faded,
-              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id), pins.has(id)];   // + the hot-key keycap's chord (T379): a rebind repaints; + the tab's pin (2026-09-10)
+              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints
     }),
   ]);
   const mslotEl = document.getElementById("mtag-slot");
@@ -6690,14 +6657,9 @@ function renderTabs() {
     if (copyGroup !== undefined) tab.dataset.copy = copyGroup ?? "";   // sectioned strip: which group this copy sits in
     tab.dataset.act = "select";  // click → setActive, via the stable #tabs delegate (./actions), not a per-node handler
     tab.addEventListener("keydown", onTabKey);
-    // A PINNED tab (the user 2026-09-10) stays where it is: it starts no drag, and another tab's drag flows around
-    // its slot (reorderTo holds it). It says so with a folded top-right corner — the strip's background above the
-    // diagonal, the flap below, painted by CSS on one absolutely placed child (tab-pins.ts owns the set).
-    const pinned = pins.has(id);
-    if (pinned) tab.classList.add("pinned");   // the glyph itself sits after the hot key, below
     // drag-to-reorder (synced with the timeline via the shared session-order file). A subagent viewer
     // stays put: it is client-only, and a reorder would post its id into the kernel's order.
-    tab.draggable = !s.sub && !pinned && !fedMissing && !isProvisionalId(id) && !settings.tabsLocked;   // …nor a pinned tab (2026-09-10); the tab lock (T395) holds every tab; a create in flight and a page without its manager (fedMissing) offer no drag either
+    tab.draggable = !s.sub && !fedMissing && !isProvisionalId(id) && !settings.tabsLocked;   // the tab lock (T395) holds every tab; …and a page without its manager offers no drag at all (fedMissing); a create in flight has no session to move yet (the chat split: a zone's drop would open a column on an id the kernel does not know)
     wireTabDrag(tab, id);   // the dragstart/dragend pair, shared with the skeleton tab (2026-09-07)
     if (s.color) {
       tab.style.setProperty("--chip-bg", s.color.bg);
@@ -6724,9 +6686,6 @@ function renderTabs() {
     }
     tab.appendChild(label);
     appendTabAfterWidgets(tab, s);   // the context gauge and the hot-key keycap, the after-the-name widgets (T379), shared with the skeleton tab (2026-09-07)
-    // The pin (the user 2026-09-11, replacing the folded corner): the tab menu's own pushpin after the name and the widgets
-    // (the gauge, the hot key), dim like the keycap and brighter with the tab — the tab wears the icon the user clicked to pin it
-    if (pinned) { const pn = el("span", "tab-pin"); pn.innerHTML = pinSvg(11); pn.title = "Pinned — it stays where it is"; pn.setAttribute("role", "img"); pn.setAttribute("aria-label", pn.title); tab.appendChild(pn); }
     // Rich hover tooltip (custom DOM — a native title can't colour/bold): backend in its own colour, the
     // full dir path, and mode/model/effort/context each on a line (the user 2026-06-23). See showTabTip.
     if (!s.sub) {   // the rich tip reads a real session's dir/branch/model; a viewer has none of them
@@ -6995,13 +6954,7 @@ function setSessionColor(id: string, bg: string) {
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
-// The pushpin (the user 2026-09-11, replacing the folded corner): a flat head, a body tapering to the plate, the needle. ONE
-// drawing for the tab menu's Pin row and the pinned tab itself, so the tab wears the icon the user clicked.
-const PIN_PATHS = '<path d="M6.2 2.5 H9.8 L9.3 6.4 L11.4 8.4 V9.4 H4.6 V8.4 L6.7 6.4 Z"/><line x1="8" y1="9.4" x2="8" y2="13.5"/>';
-function pinSvg(size: number): string {
-  return '<svg viewBox="0 0 16 16" width="' + size + '" height="' + size + '" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + PIN_PATHS + "</svg>";
-}
-function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil" | "key" | "pin", off: boolean): HTMLElement {
+function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil" | "key", off: boolean): HTMLElement {
   const span = el("span", "ctx-icon" + (off ? " off" : ""));
   const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
   const body = kind === "feed"
@@ -7016,8 +6969,6 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
           ? '<path d="M2 3.4 A1.4 1.4 0 0 1 3.4 2 L7.6 2 A1.4 1.4 0 0 1 8.6 2.4 L13.6 7.4 A1.4 1.4 0 0 1 13.6 9.4 L9.4 13.6 A1.4 1.4 0 0 1 7.4 13.6 L2.4 8.6 A1.4 1.4 0 0 1 2 7.6 Z"/><circle cx="5.4" cy="5.4" r="1.1"/>'  // luggage tag (session tags)
         : kind === "key"
           ? '<rect x="1.5" y="4" width="13" height="8" rx="1.5"/><line x1="4.5" y1="9.5" x2="11.5" y2="9.5"/>'  // a keycap (the tab's hot key)
-        : kind === "pin"
-          ? PIN_PATHS                                                             // the pushpin (pin the tab; the pinned tab wears the same)
         : kind === "pencil"
           ? '<path d="M3 13 L3.6 10.4 L10.8 3.2 A1.3 1.3 0 0 1 12.8 5.2 L5.6 12.4 Z"/><line x1="9.8" y1="4.2" x2="11.8" y2="6.2"/>'  // pencil (rename)
           : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
@@ -7119,23 +7070,6 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     rename.appendChild(bodyEl);
     rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id, copy); });
     menu.appendChild(rename);
-  }
-  // Pin (the user 2026-09-10): the tab stays where it is — not draggable, other tabs' drags flow around its slot —
-  // and wears the menu's pushpin (2026-09-11). Sits with Rename and the colours: how THIS tab shows and holds on the strip. Per browser, like the order it holds a place in (tab-pins.ts). Every surface: the
-  // order is this browser's on all of them.
-  {
-    const on = loadTabPins(localStorage).has(id);
-    const pin = el("div", "ctx-item ctx-item-toggle");
-    pin.appendChild(ctxIcon("pin", on));
-    const bodyEl = el("span", "ctx-item-body");
-    const l = el("span", "ctx-item-label"); l.textContent = on ? "Unpin tab" : "Pin tab"; bodyEl.appendChild(l);
-    const sb = el("span", "ctx-item-sub");
-    sb.textContent = on ? "it can be dragged again" : "it keeps this slot whatever else moves — drags flow around it";
-    bodyEl.appendChild(sb);
-    pin.appendChild(bodyEl);
-    // the click SETS the state this row showed (!on): a toggle would flip whatever a re-render stored between the render and the click
-    pin.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); setTabPinned(localStorage, id, !on, order.indexOf(id)); });   // pinned AT its slot
-    menu.appendChild(pin);
   }
   // Hot key (the user 2026-09-10): a key combination that switches to this tab, recorded in the shell's
   // shortcuts dialog (it owns the recorder and the conflict check) — this pane only asks. The chord shows
@@ -19898,10 +19832,6 @@ window.addEventListener(TABGROUPS_EVENT, () => renderTabs());
 // repaints the tabs' badges — the store's key doubles as the same-document event name
 window.addEventListener("storage", (e) => { if (e.key === KEYS_EVENT) renderTabs(); });
 window.addEventListener(KEYS_EVENT, () => renderTabs());
-// a tab pinned or unpinned — here (the CustomEvent) or in a sibling column (the storage event) — puts the pinned
-// tabs at their slots now and repaints the strip
-window.addEventListener("storage", (e) => { if (e.key === TABPINS_KEY) { holdPinnedSlots(); renderTabs(); } });
-window.addEventListener(TABPINS_EVENT, () => { holdPinnedSlots(); renderTabs(); });
 // …and so does crossing the phone/desktop boundary (an iPad rotation): renderTabs samples
 // phoneLayout() per render, and the kernel's CSS swaps the strip for its scraped session list the
 // instant the same media rule flips — so the DOM kept the desktop plan (folded tabs absent from the

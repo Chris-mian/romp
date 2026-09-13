@@ -79,7 +79,7 @@ test("a pick of a session another column holds is shown where it lives: the setA
   assert.match(RENDER, /boardLive = liveSet;/, "applyTabOrder keeps the frame's live set for the emptiness post");
   // the flag is armed by the LOCAL kernel's own strip only (tab-order.ts localStrip): a synthetic re-emission — on a fresh
   // page served from an EMPTY store, order [] — or another host's fresh push is never the board (the vanishing tab, 2026-09-12)
-  assert.match(RENDER, /if \(localStrip\(report\)\) tabOrderSeen = true;\n\s*renderTabs\(\);\n\s*syncTabKeysWithStrip\(\);\n\s*syncTabPinsWithStrip\(\);\n\}/, "set in applyTabOrder on the kernel's own strip, ahead of its render (the hot-key set and the pins follow the painted strip, 2026-09-10)");
+  assert.match(RENDER, /if \(localStrip\(report\)\) tabOrderSeen = true;\n\s*renderTabs\(\);\n\s*syncTabKeysWithStrip\(\);\n\}/, "set in applyTabOrder on the kernel's own strip, ahead of its render (the hot-key set follows the painted strip, 2026-09-10)");
   assert.match(RENDER, /import \{ localStrip, readCloseAckMs \} from "\.\/tab-order";/);
   // the shell's two questions before it moves a tab or closes a column (kernel.py moveTab / close; tests/test_chat_split.py
   // runs the refusals): an id a column can hold, and a create in flight here

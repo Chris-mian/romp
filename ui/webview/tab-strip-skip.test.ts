@@ -52,10 +52,7 @@ test("every input the strip renders is in the signature", () => {
     "s.name", "s.color?.bg", "s.color?.fg", "st.state", "tabStateClass(st)", "!!st.faded",
     "st.ctx", "st.ctxColor", "st.ctxTone", "!!s.sub", "hostIsDown(id)", "hostDownNote(id)",
     "settings.tabWidgets", "tabHotkey(id)",   // T379: which widgets a tab carries (and their options), and the hot-key keycap's chord
-    "pins.has(id)",   // the tab's pin (2026-09-10): the pushpin and the draggable flag, read from the pinned set once per render
   ]) assert.ok(sig.includes(needle), "the signature reads " + needle);
-  assert.ok(fn.indexOf("const pins = loadTabPins(localStorage);") < fn.indexOf("const stripSig"), "the pinned set is read before the signature");
-  assert.ok(fn.indexOf("const pins = loadTabPins(localStorage);") < fn.indexOf("const stripSig"), "the pinned set is read before the signature");
   assert.match(fn, /const unions = viewTagUnion\(effViews\(\)\);\s*\n\s*const plan = planStrip\(visibleIds, unions, readTabGroups\(unions\), activeId, phoneLayout\(\),/,
     "the plan reads the unions the signature carries");
   assert.match(sig, /visibleIds\.map\(\(id\) => \{/, "per visible id: a placeholder's meta or the session's painted fields");

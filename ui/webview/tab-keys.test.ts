@@ -79,7 +79,7 @@ test("a renamed session is re-titled in the set; a nameless or unchanged one is 
 
 test("render.ts: the pane keeps the set honest at the strip — departed tabs drop out, renamed ones re-title — and the shell follows", () => {
   assert.match(RENDER, /import \{ hotkeyCommandId, loadTabKeys, rememberTabKey, forgetTabKey, goneTabKeys, renamedTabKeys \} from "\.\/tab-keys";/);
-  assert.match(RENDER, /for \(const id of kernelOrder\) kernelListed\.add\(id\);\n\s*holdPinnedSlots\(\);[\s\S]*?\n\s*renderTabs\(\);\n\s*syncTabKeysWithStrip\(\);\n/, "after every tab-order push (the pinned slots held first, the T357 restore between, the strip painted, then the set follows it)");
+  assert.match(RENDER, /for \(const id of kernelOrder\) kernelListed\.add\(id\);[\s\S]*?\n\s*renderTabs\(\);\n\s*syncTabKeysWithStrip\(\);\n\}/, "after every tab-order push (the T357 restore between, the strip painted, then the set follows it)");
   assert.match(RENDER, /function syncTabKeysWithStrip\(\): void \{\n\s*if \(!inRompShell\(\)\) return;[\s\S]*?for \(const sid of goneTabKeys\(set, order\)\) \{ forgetTabKey\(localStorage, sid\); saveOverride\(hotkeyCommandId\(sid\), null\); \}\n\s*for \(const \[sid, name\] of renamedTabKeys\(set, \(sid\) => sessions\.get\(sid\)\?\.name\)\) rememberTabKey\(localStorage, sid, name\);/);
   assert.match(RENDER, /s\.name = m\.name; renderTabs\(\); syncTabKeysWithStrip\(\);/, "and on a rename");
   // the shell: every bindings write it hears prunes the unbound (its own KEYS_EVENT, a pane's storage event), never
@@ -90,11 +90,11 @@ test("render.ts: the pane keeps the set honest at the strip — departed tabs dr
   assert.match(MAIN, /for \(const sid of Array\.from\(hotkeySids\)\) if \(!\(sid in set\)\) \{ unregisterCommand\(hotkeyCommandId\(sid\)\); hotkeySids\.delete\(sid\); invalidate\(\); \}/);
 });
 
-test("render.ts: the keycap is the T379 widget's and the pin follows it; both are in the strip's repaint signature, and the strip repaints on a store change", () => {
+test("render.ts: the keycap is the T379 widget's, its chord is in the strip's repaint signature, and the strip repaints on a store change", () => {
   const loop = RENDER.slice(RENDER.indexOf("appendTabAfterWidgets(tab, s);"), RENDER.indexOf('const close = el("span", "tab-close");'));
   assert.ok(loop.length > 0 && loop.length < 2000, "the after-the-name block, between the widgets and the close ×: " + loop.length);
-  assert.match(loop, /if \(pinned\) \{ const pn = el\("span", "tab-pin"\);/, "the pushpin after the widgets; the keycap itself is tab-widgets.ts's (tabHotkey, the same romp:tabkeys set and session.hotkey.<sid> override), so the pane paints no badge of its own");
-  assert.match(RENDER, /st\.ctx, st\.ctxColor, st\.ctxTone, !!s\.sub, down, note, tabHotkey\(id\), pins\.has\(id\)\]/, "an input the strip paints is in its signature (the chord via the widget's reader)");
+  assert.doesNotMatch(loop, /tab-key/, "the pane paints no badge of its own between the widgets and the close ×: the keycap is tab-widgets.ts's (tabHotkey, the same romp:tabkeys set and session.hotkey.<sid> override)");
+  assert.match(RENDER, /st\.ctx, st\.ctxColor, st\.ctxTone, !!s\.sub, down, note, tabHotkey\(id\)\]/, "an input the strip paints is in its signature (the chord via the widget's reader)");
   assert.doesNotMatch(RENDER, /keyOverrides|tabChord\(/, "no second reader of the bindings store in the pane: the widget reads it");
   assert.match(RENDER, /window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === KEYS_EVENT\) renderTabs\(\); \}\);\n\s*window\.addEventListener\(KEYS_EVENT, \(\) => renderTabs\(\)\);/);
 });
