@@ -8,6 +8,7 @@ popover with the next step. The /send remote forward reports a dead far kernel i
 Synthetic fixtures only."""
 import json
 import os
+import time
 import inspect
 import unittest
 from unittest import mock
@@ -376,7 +377,7 @@ class SourcePins(unittest.TestCase):
 
 class SupervisorPassWhileInTransition(unittest.TestCase):
     """The laptop's dial ledger (2026-09-13): ssh up within a second, the row "up" 16 to 18 s later, a devbox restart a
-    16 s gap: the steady 15 s pass was the whole cost. A row in transition makes the next pass 2 s, for at most 90 s."""
+    16 s gap: the steady 15 s pass was the whole cost. A row in transition makes the next pass 1 s, for at most 60 s."""
 
     def setUp(self):
         km._fast_since.clear()
@@ -400,6 +401,27 @@ class SupervisorPassWhileInTransition(unittest.TestCase):
                          "a host that never comes back is not polled every 2 s for good")
         rows2 = [{"host": "TESTHOST", "status": "no-kernel"}, {"host": "TESTHOST2", "status": "starting"}]
         self.assertEqual(km._supervisor_wait_s(1000.0 + km.SUPERVISOR_FAST_WINDOW_S + 2, rows2), km.SUPERVISOR_FAST_PASS_S, "a fresh transition on another row is fast")
+
+    def test_a_dialed_port_coming_up_wakes_the_supervisor_at_once(self):
+        import socket, subprocess, threading
+        km._tunnel_wake.clear()
+        srv = socket.socket(); srv.bind(("127.0.0.1", 0)); port = srv.getsockname()[1]
+        proc = subprocess.Popen(["sleep", "5"])
+        try:
+            th = threading.Thread(target=km._wake_when_port_up, args=(port, proc, 3.0), daemon=True); th.start()
+            time.sleep(0.25)
+            self.assertFalse(km._tunnel_wake.is_set(), "nothing listens yet: no wake")
+            srv.listen(1)                                        # ssh's local forward starts accepting
+            th.join(2.0)
+            self.assertTrue(km._tunnel_wake.is_set(), "the port accepting is the event: the supervisor is woken within a step")
+            self.assertFalse(th.is_alive())
+        finally:
+            proc.kill(); proc.wait(); srv.close(); km._tunnel_wake.clear()
+        dead = subprocess.Popen(["true"]); dead.wait()
+        self.assertFalse(km._wake_when_port_up(port, dead, 1.0), "a dead ssh ends the watch without a wake")
+        self.assertFalse(km._tunnel_wake.is_set())
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn("threading.Thread(target=_wake_when_port_up, args=(r.get(\"local_port\"), r[\"proc\"])", src, "every dial starts the watch")
 
     def test_the_supervisor_loop_sleeps_by_the_rule(self):
         src = open(os.path.join(BIN, "romp-kernel")).read()
