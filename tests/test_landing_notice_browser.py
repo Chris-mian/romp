@@ -55,9 +55,17 @@ await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw
 const sentAt6 = await page.evaluate(() => window.__sent.length);
 await page.evaluate(() => { window.__hold.add("loadTurns"); });
 const turnsAt6 = await sentOf("loadTurns");
-await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.max(0, gTop - 40); });   // the gap's top edge enters the viewport: its top page is asked (and HELD)
+// meet the head gap the way a reader does (the regions lab's road): jump to the top spacer's end, then step up a viewport at a time until
+// the gap element renders and its page is asked (HELD); a bare scrollTop 0 shows only the spacer, which the observer cannot see
+await page.evaluate(() => { const c = document.getElementById("content"); const sp = document.querySelector("#content .tx-spacer-top"); c.scrollTop = sp ? sp.offsetHeight + 1 : 0; });
 await painted();
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, turnsAt6, { timeout: 8000 }).catch(() => {});
+for (let i = 0; i < 60; i++) {
+  if ((await sentOf("loadTurns")) > turnsAt6) break;
+  const seen = await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); if (!g) return false; const r = g.getBoundingClientRect(), cr = c.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; });
+  if (seen) { await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, turnsAt6, { timeout: 5000 }).catch(() => {}); break; }
+  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = Math.max(0, c.scrollTop - c.clientHeight); });
+  await painted();
+}
 const heldAsk6 = await page.evaluate(() => (window.__heldRaw || []).length);
 await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.round(gTop + Math.min(8000, (g ? g.offsetHeight : 9000) * 0.6)); });   // deep into the head gap, no row on screen
 await painted();
