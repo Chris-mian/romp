@@ -50451,7 +50451,8 @@ def _pusher():
     while not _LOOPS_STOP.is_set():
         try:
             _pusher_cycle()
-        except Exception as e:                        # the loop had no watchdog: a raise from the cycle's prologue or its finally
+        except Exception as e:                        # (Exception, never BaseException: a deliberate loop stop passes.) The loop had
+            #                                           no watchdog: a raise from the cycle's prologue or its finally
             _PERF_STATS.pusher["cycleFailed"] = _PERF_STATS.pusher.get("cycleFailed", 0) + 1   # (_live_map, the scopes' close,
             kind = type(e).__name__                   #  the boot row) ended the pusher for the process's life, silently: no push,
             if kind not in _PUSHER_FAILED_SAID:       #  no tick job, until a restart. The cycle is counted under /perf
