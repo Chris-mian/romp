@@ -68,5 +68,11 @@ test("render.ts: the append path hands the write the scrollTop it read before th
   // echo marker, and the clamp's pending scroll event filed as a gesture (the T262h and T262i labs, red alone on the devbox)
   assert.match(RENDER, /const before = content\.scrollTop;\s*\n\s*const heightBefore = content\.scrollHeight;/, "the append path reads the reader's spot before the re-render");
   assert.match(RENDER, /writeScroll\(content, content\.scrollHeight, "append-stick", true, before\);/, "…and hands it to the stick write as the move's origin");
+  assert.match(RENDER, /writeScroll\(content, top, "toolgroup-toggle", false, top\);/, "the toggle's origin is the top it read before the collapse (round two, medium; pinned round three, low 3)");
+  assert.match(RENDER, /function restoreScrollAnchor\(content: HTMLElement, v: View, a: \{ uuid: string; y: number \} \| null, from\?: number\): boolean \{/, "the anchor restore takes the caller's pre-change read (round three, medium)");
+  assert.match(RENDER, /writeScroll\(content, yNow - a\.y, "anchor-restore", false, from\);/, "…and hands it to its write as the origin");
+  assert.match(RENDER, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor, before\)\)\)/, "…which the append path passes: a reader a few pixels off the bottom whose tail came back shorter");
+  const reveal = RENDER.slice(RENDER.indexOf("function renderLiveAsk() {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function renderLiveAsk() {")));
+  assert.ok(reveal.indexOf("const topBefore = content ? content.scrollTop : 0;") < reveal.indexOf("host.replaceChildren();"), "the reveal's origin is read before the card is emptied, the first layout-forcing change in the function (round three, low 1)");
   assert.match(RENDER, /const before = from \?\? content\.scrollTop;/, "the write takes the caller's origin over its own read");
 });

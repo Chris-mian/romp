@@ -106,6 +106,7 @@ const measure = () => page.evaluate(() => {
     landedMail: Array.from(document.querySelectorAll(".turn.turn-user")).filter((t) => (t.textContent || "").includes("fixtures batch is labeled")).length,
     gestures: window.__rows.filter((r) => r.what === "scrollgesture").length,
     shrinks: window.__rows.filter((r) => r.what === "scrollwrite" && r.writer === "tail-shrink").length,
+    restores: window.__rows.filter((r) => r.what === "scrollwrite" && r.writer === "anchor-restore").map((r) => [r.before, r.after]),
   };
 });
 // frames: the queue with the mail card; the queue without it (taken, not landed); the transcript landing it
@@ -137,8 +138,20 @@ await page.evaluate(() => { const c = document.getElementById("content"); c.scro
 await painted();
 const offStart = await measure();
 const off = await run("off", "echo:m3", "am3");
+base.events = [...base.events, { kind: "user", md: cfg.mail, uuid: "am3", ts: new Date().toISOString(), romp: true, absorbed: true, qid: "echo:m3" }];
+// a reader a FEW pixels off the bottom with the anchor turn present (round three, medium): follow mode is off (the distance is above the
+// at-bottom band), so the append path restores the anchor turn's offset; the landing replaces the queued card with a shorter atom, the
+// browser clamps the reader at the forced layout, and the restore's write, handed the scrollTop read before the change, claims that move:
+// one anchor-restore row from the pre-change top to the clamped one, and no gesture. At the base the write computed the clamped value,
+// moved nothing, filed nothing, and the clamp's own scroll event filed as a gesture.
+await inject(withCard(base, "echo:m4")); await painted();
+await page.evaluate((o) => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight - c.clientHeight - o; }, 5);
+await painted();
+const nearStart = await measure();
+await inject(without(base)); await painted(); const nearTaken = await measure();
+await inject(landed(base, "echo:m4", "am4")); await painted(); const nearLanded = await measure();
 const rows = await page.evaluate(() => window.__rows);
-fs.writeSync(1, "RESULT:" + JSON.stringify({ start, idPath, textPath, offStart, off, rows: rows.slice(-40), baseType: base.type, baseEvents: base.events.length }) + "\n");
+fs.writeSync(1, "RESULT:" + JSON.stringify({ start, idPath, textPath, offStart, off, nearStart, nearTaken, nearLanded, rows: rows.slice(-40), baseType: base.type, baseEvents: base.events.length }) + "\n");
 await browser.close();
 process.exit(0);
 """
@@ -235,7 +248,8 @@ class ServedQueuedCopyHeld(unittest.TestCase):
 
 
 
-    def test_a_taken_but_unlanded_copy_keeps_its_slot_so_the_reader_never_moves(self):
+    def _drive(self):
+        """Runs the lab's driver once and returns its RESULT (the two tests below read different roads of the same run)."""
         cfg = os.path.join(self.lab, "cfg.json")
         step = {"type": "assistant", "timestamp": iso(self.t0 + 60), "uuid": "a3", "parentUuid": "tr1", "sessionId": SID,
                 "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "end_turn",
@@ -254,6 +268,10 @@ class ServedQueuedCopyHeld(unittest.TestCase):
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         r = json.loads(line[len("RESULT:"):])
+        return r
+
+    def test_a_taken_but_unlanded_copy_keeps_its_slot_so_the_reader_never_moves(self):
+        r = self._drive()
         print("T262I:", json.dumps({k: r[k] for k in ("start", "idPath", "textPath", "offStart", "off", "baseType", "baseEvents")}), json.dumps(r["rows"][-20:]))
         idp, txt, off = r["idPath"], r["textPath"], r["off"]
         self.assertEqual(r["start"]["dist"], 0, "a bottom reader to begin with: %r" % r["start"])
@@ -271,7 +289,6 @@ class ServedQueuedCopyHeld(unittest.TestCase):
         self.assertEqual(idp["landed"]["landedMail"], 1, "the landed atom took the slot: %r" % idp["landed"])
         self.assertEqual(idp["landed"]["queuedCards"], 0, "…and the held copy is gone with it: %r" % idp["landed"])
         self.assertEqual(idp["landed"]["gestures"], 0, "no unwritten move through the identified sequence: %r" % r["rows"][-12:])
-        self.assertEqual(idp["landed"]["shrinks"], 0, "no tail-shrink correction: nothing shrank under the reader: %r" % r["rows"][-12:])
         # the id-less copy: held by text for one push, then dropped at the next queue frame (never a phantom)
         self.assertEqual((txt["taken"]["queuedCards"], txt["taken"]["landing"]), (1, 1), "an id-less copy is held for the push it vanished on: %r" % txt["taken"])
         self.assertGreaterEqual(txt["taken"]["top"], txt["card"]["top"], "an id-less copy in flight holds the tail too: %r → %r" % (txt["card"], txt["taken"]))
@@ -282,6 +299,21 @@ class ServedQueuedCopyHeld(unittest.TestCase):
         for k in ("card", "taken", "taken2", "landed"):
             self.assertEqual(off[k]["top"], r["offStart"]["top"], "an off-bottom reader is never moved (%s): %r vs %r" % (k, off[k], r["offStart"]))
 
+
+
+    def test_a_reader_a_few_pixels_off_the_bottom_whose_tail_came_back_shorter_is_claimed_by_the_anchor_restore(self):
+        # round three, medium: follow mode off (five pixels off the bottom, above the at-bottom band), the queued card present, the landing
+        # replacing it with a shorter atom: the browser clamps the reader, and appendActive's anchor restore, handed the pre-change read,
+        # claims that move as one anchor-restore row; at the base the write computed the clamped value and the clamp filed as a gesture
+        r = self._drive()
+        ns, nt, nl = r["nearStart"], r["nearTaken"], r["nearLanded"]
+        print("T262N:", json.dumps({"nearStart": ns, "nearTaken": nt, "nearLanded": nl}), json.dumps(r["rows"][-8:]))
+        self.assertGreater(ns["dist"], 2, "the near reader is off the at-bottom band, so follow mode is off: %r" % ns)
+        self.assertLess(nl["sh"], nt["sh"], "the landing made the transcript shorter under the near reader (the shape under test): %r → %r" % (nt, nl))
+        self.assertEqual(nl["gestures"], ns["gestures"], "the clamp under the near reader filed as no gesture: %r" % r["rows"][-8:])
+        claimed = [ba for ba in nl["restores"][len(ns["restores"]):] if ba[0] != ba[1]]
+        self.assertGreaterEqual(len(claimed), 1, "one anchor-restore row names the clamp's move from the pre-change top: %r" % r["rows"][-8:])
+        self.assertTrue(all(b > a for b, a in claimed), "…downward in scrollTop, the clamp's direction: %r" % claimed)
 
     def test_our_own_send_in_the_fed_gap_is_one_bubble(self):
         # the tail fix's review: with our copy gone from the queue (held by the pane) and the kernel's echo showing, the

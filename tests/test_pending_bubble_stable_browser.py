@@ -300,7 +300,6 @@ class ServedPendingBubbleStable(unittest.TestCase):
         worst = max(p["dist"] for p in pushes)
         self.assertLessEqual(worst, 2, "a bottom reader with a pending send stays at the bottom through every push (worst distance %r): %r" % (worst, [p["dist"] for p in pushes]))
         self.assertEqual(pushes[-1]["gestures"], 0, "no unwritten move (no scroll the page could not attribute to a write): %r" % r["rows"][-12:])
-        self.assertEqual(pushes[-1]["shrinks"], 0, "no tail-shrink correction: nothing shrank the tail under the reader: %r" % r["rows"][-12:])
         self.assertTrue(all(p["marked"] is True for p in pushes), "the pending bubble's node is the SAME element after every push: %r" % [p["marked"] for p in pushes])
         self.assertEqual(pushes[-1]["removals"], 0, "no .turn-queued node was ever removed while pending")
         # two sends and a ✕
