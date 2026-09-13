@@ -56,7 +56,8 @@ test("the history strip shows no number while the head is unknown", () => {
 });
 
 test("the detach rule: a window re-attaches only a run that was attached and still ends on the live tail (round 2, item 2)", () => {
-  assert.equal(windowDetached(true, true, false, "replace", "z", "q"), false, "the kernel said connected");
+  assert.equal(windowDetached(true, true, false, "replace", "z", "q"), true, "connected is NOT trusted on a REPLACE (T402 round eight): the page holds only the window, so moreAfter means detached whatever the kernel says");
+  assert.equal(windowDetached(true, true, false, "merge", "z", "z"), false, "…but a real MERGE that kept the tail and the kernel calls connected stays attached");
   assert.equal(windowDetached(false, false, true, "replace", "z", "z"), false, "nothing after the window: the tail is resident");
   assert.equal(windowDetached(true, false, false, "merge", "z", "z"), false, "merged into the attached run, its live tail kept");
   assert.equal(windowDetached(true, false, false, "merge", "z", "y"), true, "merged, but the run's newest moved: an older window");
@@ -116,7 +117,7 @@ test("render.ts asks for older history only on an upward move, marks each window
   assert.ok(virt.includes("const gesture = v.gestureScroll === true;\n  v.gestureScroll = undefined;\n  if (gesture) v.edgeUp = olderRequestAllowed(v.edgeTop, st);"), "the direction is read only on the reader's own gesture, from the view's last edge-check top, and the mark is consumed");
   assert.ok(virt.indexOf("if (gesture) v.edgeUp = olderRequestAllowed(v.edgeTop, st);") < virt.indexOf("v.edgeTop = st;"), "…before the top is remembered for the next check (the page's own writes move it too)");
   assert.ok(virt.includes("const upward = v.edgeUp !== false;"), "the last gesture's verdict holds across the page's compensating writes; no verdict yet allows the ask");
-  assert.ok(virt.includes("st < topH + edgePx && upward) { requestOlder(activeId, v, content); return; }"), "the older ask is gated on the direction, not only the estimate's band");
+  assert.ok(virt.includes("st < topH + edgePx && upward && !olderLatched(activeId)) { requestOlder(activeId, v, content); return; }"), "the older ask is gated on the direction, not only the estimate's band, and on the click's latch (T402 round three)");
   assert.match(RENDER, /const cls = classifyScroll\(c\.scrollTop, lastScrollWriteAfter\);\n\s*const gv = activeId \? views\.get\(activeId\) : null;\n\s*if \(gv\) gv\.gestureScroll = cls === "gesture";/, "the scroll listener marks a gesture (a write's echo is none) for the edge check that runs next");
   assert.ok(RENDER.includes("edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean;"), "the view remembers the top the last edge check saw, the last verdict and the gesture mark");
   assert.ok(RENDER.includes("v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }"), "a window rebuild forgets both: the first check after a rebuild may ask");
@@ -124,7 +125,10 @@ test("render.ts asks for older history only on an upward move, marks each window
   assert.ok(around.includes("const nav = !relandAsk;") && around.includes("pendingWindowNav.set(sid, { nav,"), "a window ask records whether a navigation made it: every anchor landing but the re-land of the reader's own row across a rebuild");
   const keep = RENDER.slice(RENDER.indexOf("function keepPlaceAcrossWindow("), RENDER.indexOf("\n}\n", RENDER.indexOf("function keepPlaceAcrossWindow(")));
   assert.ok(keep.includes("relandAsk = true;\n  let landed = false;\n  try { landed = scrollToAnchor(keep.uuid); } finally { relandAsk = false; }"), "the re-land's own flag is set only around its landing (the reload restore shares the keep offset and must land)");
-  assert.equal((RENDER.match(/relandAsk = true;/g) || []).length, 1, "nothing else raises the flag");
+  // two raisers, both a re-land of the READER's own row: keepPlaceAcrossWindow's landing across a rebuild, and chatWindow's window asked
+  // around the reader's row after they clicked a landing's ask away (T402 round two, medium 2), whose reply restores that row at its offset
+  assert.equal((RENDER.match(/relandAsk = true;/g) || []).length, 2, "nothing else raises the flag");
+  assert.match(RENDER, /relandAsk = true;\s*\n\s*let went = false;\s*\n\s*try \{ went = requestAround\(msg\.id, anchorUuid\); \} finally \{ relandAsk = false; \}/, "the cancelled ask's re-land holds the flag only around its own ask, and says whether it went out (T402 round five, low 3)");
   assert.ok(around.includes('scrollDiagRow("windowask", {'), "…and files a diagnostic row under the scroll rows' per-minute budget: the report's rows had the landing but not the ask");
   assert.ok(RENDER.includes('| "unitchange" | "windowask", data: any): void {'), "the budgeted row kinds include it");
   assert.ok(around.indexOf("pendingWindowNav.set(sid, { nav,") < around.indexOf('type: "loadAround"'), "the mark is set before the ask goes out");
@@ -146,7 +150,7 @@ test("render.ts wires the three rules, tracks the pending needFull reason, hides
   assert.ok(win.includes("const detached = windowDetached(!!msg.moreAfter, !!msg.connected, wasDetached, r.mode, heldLast, newLast);"), "chatWindow decides through the rule, with the state before the merge");
   assert.ok(win.includes("const landing = windowLanding(detached, msg.id === activeId && !wasDetached, ask?.nav ?? false);"), "…and the landing rule decides whether the verdict is adopted (T366)");
   assert.ok(win.indexOf("const landing = windowLanding(") < win.indexOf("s.events = r.events as ChatEvent[];"), "the landing is decided BEFORE the window's events replace the run");
-  assert.ok(win.includes('if (landing === "reattach") {') && win.includes("reattachLive(msg.id, true);"), "a window not adopted re-bases the kernel on the tail at once");
+  assert.ok(win.includes('if (landing === "reattach") {') && win.includes("deferReattach(msg.id);"), "a window not adopted defers the re-base to the session's last ask (T402 round nine)");
   assert.ok(win.indexOf('if (landing === "reattach") {') < win.indexOf("s.detached = detached;"), "…and returns before the detached flag is set: no strip");
   assert.ok(win.includes("window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));"), "a window runs the edge check once it painted");
   assert.ok(RENDER.includes("if (cur && cur.detached && c && c.scrollHeight <= c.clientHeight + 1) { requestNewer(sid); return; }"), "a detached run that does not overflow asks for its next page directly");

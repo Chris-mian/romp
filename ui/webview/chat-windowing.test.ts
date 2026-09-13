@@ -73,7 +73,7 @@ test("scroll re-windows around the viewport (steady scroll OR jump) when near a 
 
 test("a loading pill shows while history renders, pinned top-center of the chat SECTION, never the viewport (T365)", () => {
   assert.match(RENDER, /function showLoadingPill\(\): void/);
-  assert.match(RENDER, /loadingPillEl\.textContent = "Loading earlier messages…";/);
+  assert.match(RENDER, /loadingPillEl\.textContent = "Loading earlier messages… click to stop waiting";/);   // clickable since T402: the click ends the wait
   const fn = RENDER.slice(RENDER.indexOf("function showLoadingPill(): void"), RENDER.indexOf("function hideLoadingPill(): void"));
   // T365 (the user 2026-09-12): a viewport-fixed pill appended to the body sat on the tabs, and on the tabs themselves
   // once the strip wrapped; it now rides a zero-height anchor inserted right before #content, the transcript's top edge
@@ -90,7 +90,7 @@ test("a loading pill shows while history renders, pinned top-center of the chat 
   assert.match(pillBody, /background: var\(--vscode-menu-background, var\(--surface-raised\)\);/);
   assert.match(pillBody, /border: 1px solid var\(--menu-border\);/);
   assert.doesNotMatch(pillBody, /rgba\(20, 24, 33/);
-  assert.match(pillBody, /pointer-events: none;/);
+  assert.match(pillBody, /pointer-events: auto;/); assert.match(pillBody, /cursor: pointer;/);   // clickable since T402: the click ends the wait; the anchor around it stays inert
 });
 
 test("syncView: a fresh build / rewind renders the TAIL window, clamped to the last compaction boundary", () => {
