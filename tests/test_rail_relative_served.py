@@ -14,7 +14,13 @@ theme at the default 13px chat font and at 14px, for the record the user asked f
 13px; at 14px the two-digit minute forms are wider than the slot and pre-line wraps them at their space, so nothing ever
 overhangs toward the dot). Across the tick a marker whose label did not change is not touched at all (no mutation
 records; a selection inside its stamp survives, where a replaced text node would collapse it): the painter writes only
-what differs. Then the page's clock is
+what differs. A reading counts only while the probed turn is still attached: the transcript can be rebuilt under the
+probe by a path outside the rail (a kernel push, the page's retry scheduler answering for the lab's blocked session),
+which collapses the selection and leaves the observers on detached nodes; each minute is taken in two jumps, to just
+before the boundary (where the page's own clock-keyed work fires) and, after a real-time settle that flushes queued
+frames, the few hundred milliseconds that contain the tick alone; an inconclusive reading re-arms on the fresh nodes and
+takes the next minute, up to six times (RT_INJECT_REBUILD=1 rebuilds the probed turn on purpose, so that path is
+executed). Then the page's clock is
 paused and jumped past the next clock-minute boundary: the rail's ONE minute timer fires, the labels move by a minute (the
 row "now" reads "1 min ago"; the row at 59 minutes reads "1 hour ago", the same as the row before it, so its stamp goes
 quiet), the yesterday markers do
@@ -190,12 +196,34 @@ out.api.light = await measure(); await shot("t406-yesterday-light");
 await theme(false); out.api.dark = await measure(); await shot("t406-yesterday-dark");
 // the clock's minute turns: pause the page's clock, jump past the next boundary (the tick is armed 50ms past it), let a frame run
 await show(cfg.web, 8);
+// The lab's sessions are BLOCKED (no SDK backend behind the hermetic kernel: the API-error card at the tail reads
+// "retrying soon"), and the page's own retry scheduler (a one-second interval) re-sends into a blocked session, whose
+// answer from the kernel rebuilds the transcript. Under the paused clock a jump of a minute fires that interval once and
+// flushes the answer's frame inside the same jump, so every probe below would find its nodes replaced. Stop the retries
+// the way the user does, by the card's own button, before arming; the re-arm loop below stays as the net for any other
+// push landing under the probe.
+out.web.retriesStopped = await page.evaluate(() => {
+  const b = Array.from(document.querySelectorAll("button")).find((x) => x.textContent.trim() === "Stop all auto-retries");
+  if (!b) return false;
+  b.click(); return true;
+});
+await page.waitForTimeout(600);   // the click's own re-render settles with the clock still flowing
 const cur = await page.evaluate(() => Date.now());
 // a marker whose label does not change across the boundary must not be touched at all (round two): a replaced text
-// node is four mutation records a minute per marker and destroys a selection that spans the stamp. Observe the
-// two-hour and one-hour rows (their labels survive the minute) and select across the two-hour turn before the tick.
-await page.evaluate(() => {
+// node is four mutation records a minute per marker and destroys a selection inside the stamp. Observe the two-hour and
+// one-hour rows (their labels survive the minute) and select inside the two-hour stamp before the tick.
+// The transcript can be REBUILT under the probe by a path outside the rail (a kernel push landing, the page's own retry
+// scheduler answering for the lab's blocked session), on the devbox under load in particular: the selected node is gone
+// (the selection collapses to "" with its one range intact) and the observers watch detached nodes, which says nothing
+// about the tick. Under the paused clock a render queued by a push runs only when fake time next advances, so each
+// attempt below takes the minute in two jumps with a real-time settle between them (see there), and a reading is
+// conclusive only while the probed turn is still attached; otherwise the probe is armed again on the fresh nodes and
+// the next minute is taken, up to six times. RT_INJECT_REBUILD=1 rebuilds the probed turn on purpose right after the
+// first arming (the flake's mechanism, made deterministic), so the re-arm path is executed and the reading that counts
+// comes from the second minute.
+const arm = () => page.evaluate(() => {
   const rel = Array.from(document.querySelectorAll("#content .turn")).filter((t) => t.offsetParent !== null && t.querySelector(":scope > .time-marker.rel"));
+  document.querySelectorAll("[data-probe]").forEach((n) => n.removeAttribute("data-probe"));
   const w = window;
   w.__t406 = { records: {} };
   for (const i of [0, 1]) {
@@ -215,33 +243,41 @@ await page.evaluate(() => {
   w.__t406.selBefore = sel.toString();
   w.__t406.scroll = [scroll0, c.scrollTop];   // the pane must not move for a programmatic selection
   t.dataset.probe = "1";
-  w.__t406.steps = [];
-  w.__t406.step = (name) => { const s2 = window.getSelection(); const c2 = document.getElementById("content");
-    w.__t406.steps.push([name, s2.toString().length, s2.rangeCount, document.activeElement ? document.activeElement.tagName + "#" + document.activeElement.id : null,
-                         !!document.querySelector("[data-probe]"), c2.scrollTop, c2.scrollHeight]); };
-  w.__t406.step("selected");
+  w.__t406.node = t; w.__t406.thread = [];
+  new MutationObserver((rs) => { for (const r of rs) w.__t406.thread.push([r.removedNodes.length, r.addedNodes.length]); }).observe(t.parentElement, { childList: true });
+});
+// the painter's own work is done inside a jump (the tick's timer paints synchronously), so the probes read right after
+// it, before any later frame's rebuild can hide what the painter did or did not do
+const read = () => page.evaluate(() => {
+  const w = window, sel = window.getSelection();
+  return { attached: !!document.querySelector("[data-probe]"), sel: sel.toString(), ranges: sel.rangeCount,
+           records: JSON.parse(JSON.stringify(w.__t406.records)), selBefore: w.__t406.selBefore, scroll: w.__t406.scroll,
+           nodeConnected: w.__t406.node.isConnected, nodeHasProbe: w.__t406.node.dataset.probe === "1", thread: w.__t406.thread.slice(), turns: document.querySelectorAll("#content .turn").length };
 });
 await page.clock.pauseAt(cur + 100);
-await page.evaluate(() => window.__t406.step("paused"));
-const jump = 60000 - ((cur + 100) % 60000) + 300;
-await page.clock.fastForward(jump);
-// the painter's own work is done inside the jump (the tick's timer paints synchronously), so the probes read HERE. A
-// frame later this fixture's transcript is rebuilt by a path outside the rail: the page's own retry scheduler (the
-// one-second interval, apiRetryTick) fires during the jump for the lab's blocked session, whose API-error card is
-// "retrying soon", and the answer rebuilds the view (the selected turn is detached, the pane re-lands at the bottom),
-// which would hide what the painter did or did not do
-await page.evaluate(() => { window.__t406.step("jumped"); const w = window; const sel = window.getSelection();
-  w.__t406.atJump = { sel: sel.toString(), ranges: sel.rangeCount, records: JSON.parse(JSON.stringify(w.__t406.records)) }; });
-await page.clock.runFor(200);
-await page.evaluate(() => window.__t406.step("frame"));
-out.web.ticked = await measure();
-out.tick = { cur, jump };
-out.web.quiet = await page.evaluate(() => {
-  const w = window, sel = window.getSelection();
-  w.__t406.step("measured");
-  return { records: w.__t406.records, selBefore: w.__t406.selBefore, atJump: w.__t406.atJump, selAfterFrame: sel.toString(),
-           scroll: w.__t406.scroll.concat([document.getElementById("content").scrollTop]), steps: w.__t406.steps };
-});
+// A minute of fake time is a minute of silence to everything in the page keyed on the clock: its intervals fire and
+// whatever asks the kernel on a quiet minute asks, and the ANSWER lands in real time, rendered at the next flush of fake
+// frames, as a whole-view rebuild (the thread's children all removed and re-added) under whatever probe is armed then.
+// So each attempt takes the minute in two jumps: first to 300 ms BEFORE the boundary, where all of that fires, then a
+// real-time settle that flushes queued frames until nothing lands; only then is the probe armed, and the second jump is
+// the 380 ms that contain the tick alone (armed 50 ms past the boundary).
+const settle = async () => { for (let i = 0; i < 5; i++) { await page.waitForTimeout(150); await page.clock.runFor(50); } };
+const inject = () => page.evaluate(() => { const t = document.querySelector("[data-probe]"); const c = t.cloneNode(true); c.removeAttribute("data-probe"); t.replaceWith(c); });
+let quiet, attempts = 0;
+out.tick = { cur, jumps: [] };
+do {
+  const at = await page.evaluate(() => Date.now());
+  const toBoundary = 60000 - (at % 60000);
+  await page.clock.fastForward(toBoundary - 300);
+  await settle();
+  await arm();
+  if (cfg.injectRebuild && attempts === 0) await inject();
+  await page.clock.fastForward(380);
+  out.tick.jumps.push([toBoundary - 300, 380]);
+  quiet = await read(); attempts++;
+  if (attempts === 1) { await page.clock.runFor(200); out.web.ticked = await measure(); }   // the labels one minute on, read after the frame whatever it rebuilt
+} while (!quiet.attached && attempts < 6);   // the transcript was rebuilt under the probe anyway: arm again on the fresh nodes and take the next minute
+out.web.quiet = Object.assign(quiet, { attempts });
 // the sticky over a today turn, in a short pane. Two legs: (1) the one-hour turn scrolled 20px past the top line, so
 // its own one-line stamp has crossed above and the sticky leads with "1 hour ago"; (2) the one-hour turn parked 7px
 // BELOW the top line, so the two-hour turn above it is the tracked one (its two-line stamp crossed above) and the
@@ -379,7 +415,8 @@ class ServedRailRelative(unittest.TestCase):
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
             json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "web": SID_A, "api": SID_B,
-                       "nowMs": self.now * 1000, "shots": os.environ.get("RT_SHOTS", "")}, f)
+                       "nowMs": self.now * 1000, "shots": os.environ.get("RT_SHOTS", ""),
+                       "injectRebuild": bool(os.environ.get("RT_INJECT_REBUILD"))}, f)
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
@@ -437,11 +474,15 @@ class ServedRailRelative(unittest.TestCase):
         # a marker whose label did not change across the boundary is not touched: no mutation records on the two-hour and
         # one-hour rows, and the selection laid across the two-hour turn before the tick reads the same after it
         q = r["web"]["quiet"]
+        print("DIAG quiet:", json.dumps({k: q[k] for k in q if k not in ("selBefore",)}), "retriesStopped:", r["web"]["retriesStopped"], "tick:", r["tick"], file=sys.stderr)
+        self.assertTrue(r["web"]["retriesStopped"], "the API-error card's own button stopped the page's auto-retries before the probe was armed")
+        self.assertTrue(q["attached"], "no conclusive reading in %d attempts: the transcript was rebuilt under the probe every minute: %r" % (q["attempts"], q))
+        if os.environ.get("RT_INJECT_REBUILD"):
+            self.assertGreaterEqual(q["attempts"], 2, "the injected rebuild made the first reading inconclusive and the probe re-armed: %r" % q)
         self.assertEqual(q["selBefore"], "2 hours\nago", "the selection is the two-hour stamp's own text, nothing beyond it: %r" % q)
         self.assertEqual(q["scroll"][0], q["scroll"][1], "a programmatic selection does not scroll the pane: %r" % q["scroll"])
-        self.assertEqual(q["atJump"]["records"], {"0": [], "1": []}, "an unchanged label is not rewritten by the tick (text node, class, title, data-hm): %r" % q)
-        self.assertEqual((q["atJump"]["ranges"], q["atJump"]["sel"]), (1, q["selBefore"]), "a selection inside an untouched stamp survives the tick (it collapses to the empty string when the text node is replaced): %r" % q)
-        self.assertEqual(q["records"], {"0": [], "1": []}, "...and nothing touched those markers in the frame after either: %r" % q)
+        self.assertEqual(q["records"], {"0": [], "1": []}, "an unchanged label is not rewritten by the tick (text node, class, title, data-hm): %r" % q)
+        self.assertEqual((q["ranges"], q["sel"]), (1, q["selBefore"]), "a selection inside an untouched stamp survives the tick (it collapses to the empty string when the text node is replaced): %r" % q)
         # the sticky over a today turn scrolled past the top line wears the same two-line label as the stamp it stands in for
         st = r["web"]["stickyRun"]
         tracked = st["markers"][1]
