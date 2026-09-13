@@ -1862,8 +1862,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   backend's own liveness record), never from the pass's alive set, which is
   older than the key, so the verdict and the key come from one file and a
   revival landing between the two cannot record a memo that owes nothing;
-  a keyed dead asker notes nothing and the debtor skips like any quiet
-  session; a ninth asker notes None under `deadAskerOverflow`. The limit:
+  a row that cannot be read, or parses without an alive bit, is unproven,
+  not dead: the ask is kept and the look notes None under
+  `askerRowUnproved`, so one transient read fault never latches a
+  skippable memo (a missing row is dead, the key's absent marker); a keyed
+  dead asker notes nothing and the debtor skips like any quiet session;
+  any asker beyond the eight keyed rows notes None under `askerOverflow`,
+  alive or not, since its row is outside the key. The pass stats the postal
+  log before it builds the asker index from it and the key carries that
+  earlier stat, so the key never claims a newer log than the selection
+  read. The limit:
   the row invariant holds for the SDK backend only; a Codex session's
   liveness is in memory with its registry at `STATE/codex/registry.json`,
   so a Codex asker's revival would move nothing in a debtor's key (not
@@ -1872,9 +1880,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `memos.nudgeWalk.unbounded` over looks on the first boot after this lands,
   since the leg counts are notes, not looks. `unboundedBy` counts the
   unbounded NOTES per leg at the look that recorded them (the stamped wait,
-  a standing deferral, a dead asker beyond the keyed rows, a store fault, a
-  queued send, a legacy record with no anchor, an unmarked verdict when no
-  named leg noted the look); the legs partition the NOTES,
+  a standing deferral, an asker beyond the keyed rows, an unproven asker
+  row, a store fault, a queued send, a legacy record with no anchor, an
+  unmarked verdict when no named leg noted the look); the legs partition the NOTES,
   not the looks (a look over two top goals can note two legs); the
   dead-asker notes (an ask in the postal wait maps whose asker is not alive
   now) were about four in five of the notes on the first boot with the

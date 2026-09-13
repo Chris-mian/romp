@@ -4,6 +4,7 @@ cycle on the first boot with per-stage rows). Its parse is gated now: skipped wh
 unchanged since the last completed look AND no clock leg that look declined on has come due; the skip repeats the recorded
 verdict and does nothing else; only a road marked file-keyed, or the full walk run to its end, records a skippable memo. The
 pass walks by recency and, with a client connected, yields after a look that paid a cold parse. Synthetic sessions only."""
+import inspect
 import json
 import os
 import sys
@@ -221,12 +222,12 @@ class NudgeWalkParseGate(unittest.TestCase):
         km._TICK_SEEN.clear()
         return r, calls, sent, quiet
 
-    def _dead_asker_look(self, r, now, calls, quiet):
+    def _dead_asker_look(self, r, now, calls, quiet, alive_ids=None):
         with mock.patch.multiple(km, **quiet), \
              mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
              mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now: (calls.append(sid), {"turns": STOPPED})[1]), \
              mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
-            return km._auto_nudge_session(r, now, {}, {}, {}, alive_ids={SID_OLD})          # the asker is not alive: no ask owed
+            return km._auto_nudge_session(r, now, {}, {}, {}, alive_ids=alive_ids or {SID_OLD})   # the asker is not alive: no ask owed
 
     def test_an_ask_from_a_dead_peer_keys_the_askers_registry_row(self):
         """Round three, medium (T401 (2)): the debt reminder's ask set filters the postal wait maps by the ASKER's liveness,
@@ -247,6 +248,8 @@ class NudgeWalkParseGate(unittest.TestCase):
             self._dead_asker_look(r, now + 1, calls, quiet)                    # a skipped look answers from its memo
             self.assertEqual(calls, [SID_OLD], "the second look skipped: nothing of the debtor's or the asker's moved")
             self.assertEqual(len(km._session_files_stat(r)), 20, "the ten session files stand as they were")
+            self.assertIsNone(km._NUDGE_HORIZON.keyed_askers, "the keyed set died with the look (round three, low 1)")
+            self.assertIsNone(km._NUDGE_HORIZON.over_askers)
         finally:
             km.jd._rebind_state(saved_state)
 
@@ -307,6 +310,67 @@ class NudgeWalkParseGate(unittest.TestCase):
         finally:
             km.jd._rebind_state(saved_state)
 
+    def test_an_unreadable_or_gutted_asker_row_is_unproven_and_keeps_the_ask(self):
+        """Round three, medium: an unreadable or gutted row read DEAD, while the backend's own reader serves the last good row
+        over a read fault and keeps a session alive whose row came back gutted; one transient fault suppressed a real reminder
+        and latched a skippable memo under an unmoved key. A row that cannot be read, or parses without an alive bit, is
+        UNPROVEN: the ask is kept and the look notes None under askerRowUnproved, so the next look parses again. A missing row
+        stays dead (the key carries the absent marker)."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            reg = km.jd.STATE / "sdk" / (SID_NEW + ".json"); reg.parent.mkdir(parents=True, exist_ok=True)
+            reg.write_text(json.dumps({"sid": SID_NEW, "field": 1}))          # the gutted shape: no alive bit
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self._dead_asker_look(r, now, calls, quiet)
+            self.assertEqual(sent, [[SID_NEW]], "the ask is kept: the row proves nothing either way")
+            memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
+            self.assertIsNone(memo[-2], "the memo is unbounded on that evidence")
+            by = km._NUDGE_WALK_STATS["unboundedBy"]
+            self.assertEqual(by.get("askerRowUnproved", 0), before.get("askerRowUnproved", 0) + 1, by)
+            self._dead_asker_look(r, now + 1, calls, quiet)
+            self.assertEqual(calls, [SID_OLD, SID_OLD], "the second look parsed again")
+            self.assertIsNone(km._asker_row_alive(SID_NEW), "gutted: unproven")
+            reg.write_text("{not json")
+            self.assertIsNone(km._asker_row_alive(SID_NEW), "unparseable: unproven")
+            if os.geteuid() != 0:                                              # root reads through the mode bits
+                reg.write_text(json.dumps({"sid": SID_NEW, "alive": True})); os.chmod(reg, 0)
+                try:
+                    self.assertIsNone(km._asker_row_alive(SID_NEW), "unreadable: unproven, never dead")
+                finally:
+                    os.chmod(reg, 0o600)
+            reg.write_text(json.dumps({"sid": SID_NEW, "alive": False}))
+            self.assertIs(km._asker_row_alive(SID_NEW), False, "an explicit alive false is dead")
+            reg.unlink()
+            self.assertIs(km._asker_row_alive(SID_NEW), False, "a missing row is dead: the key carries the absent marker")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_an_alive_ninth_asker_notes_the_overflow_too(self):
+        """Round three, low 3: the overflow note fired only for an asker absent from the alive set, so with the ninth asker
+        alive nothing noted and the memo was skippable while that row sat outside the key; any overflow asker notes None."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            askers = ["%08d-2222-3333-4444-0000000000%02d" % (i, i) for i in range(km._NUDGE_ASKER_ROWS_MAX + 1)]
+            r, calls, sent, quiet = self._dead_asker_world(askers, now)
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self._dead_asker_look(r, now, calls, quiet, alive_ids={SID_OLD, askers[0]})   # the overflowing (newest) asker is alive
+            self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "unbounded: its row is outside the key")
+            self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"].get("askerOverflow", 0), before.get("askerOverflow", 0) + 1)
+            self.assertEqual(sent, [[askers[0]]], "and the alive asker's ask is owed")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_the_pass_stats_the_postal_log_before_it_builds_the_asker_index(self):
+        """Round three, low 5: the asker index was built from the postal wait maps before the key loop statted the log, so the
+        key could claim a newer log than the selection read. The pass takes the log's stat first and hands it to the key."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True)
+        st, keyed, over = km._nudge_look_stat(r, {}, (12.5, 77))
+        self.assertEqual(st[km._NUDGE_POSTAL_KEY_AT:km._NUDGE_POSTAL_KEY_AT + 2], (12.5, 77), "the pre-taken stat sits at the log's position")
+        self.assertEqual(len(st), 20)
+        src = inspect.getsource(km._auto_nudge_pass)
+        self.assertLess(src.index("messages.jsonl"), src.index("_nudge_asks_by_target()"), "the stat precedes the index")
+
     def test_askers_beyond_the_eight_keyed_rows_note_an_unbounded_release_under_their_own_leg(self):
         """The key carries at most _NUDGE_ASKER_ROWS_MAX asker rows (oldest asks first); a debtor with more notes None for
         the rest under deadAskerOverflow, so a session flooded with asks never grows a key without bound."""
@@ -319,7 +383,7 @@ class NudgeWalkParseGate(unittest.TestCase):
             memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
             self.assertIsNone(memo[-2], "the ninth asker is not keyed: the memo is unbounded")
             by = km._NUDGE_WALK_STATS["unboundedBy"]
-            self.assertEqual(by.get("deadAskerOverflow", 0), before.get("deadAskerOverflow", 0) + 1, "one note, under its own leg")
+            self.assertEqual(by.get("askerOverflow", 0), before.get("askerOverflow", 0) + 1, "one note, under its own leg")
             self.assertNotIn("deadAsker", by, "no such leg: every dead asker is keyed or beyond the keyed rows")
             keyed, over = km._NUDGE_LOOK_ASKERS[SID_OLD]
             self.assertEqual((len(keyed), over), (km._NUDGE_ASKER_ROWS_MAX, [askers[0]]), "the NEWEST ask overflows: oldest first are keyed")
@@ -365,14 +429,21 @@ class NudgeWalkParseGate(unittest.TestCase):
             "_nudge_gate_memo", "_NUDGE_GATE_STATS",   # the placement gate's memo (the parse identity, the store view, the episode log's stat) and its counters
             "_last_state_cache", "_machine_cut_cache",   # _fold_records cursors over the state log (a keyed file), keyed by its path and stat
             "_stat_key",                            # a (mtime, size) reader
+            "_NUDGE_HORIZON",                       # the look's thread-local horizon: its notes, and the keyed and overflow asker sets the
+            #                                         gate derived from the postal log's maps (keyed) before the look; no input of its own
+            "_NUDGE_WALK_STATS",                    # the walk's counters (no input)
+            "_NUDGE_ASKER_ROWS_MAX",                # a constant
         }
+        DISPLAY_ONLY = {"_name_of": "the asker's display name for the reminder's TEXT (the names snapshot): never a verdict input"}
         CONST_MODULES = {"sb"}                      # the SDK backend module: a marked road may read only a CONSTANT of it (a cause
         #                                             name, a marker string) or one of the pure text helpers below, never a live table
         SB_PURE = {"echo_text_key", "strip_echo_markers", "_strip_marker_tail"}   # pure functions of their text argument (an atom's
         #                                             user text folded to the echo key the interrupt marks compare against)
         REFILLED = {"_downtime": "kernel-downtime.jsonl"}
         LEAF_READERS = {"_fold_records": "the event model's fold cursor over the NAMED file (the state log here), keyed by that file's "
-                                         "stat; its internals are the record cache and the checkpoint tables, which mirror the file"}
+                                         "stat; its internals are the record cache and the checkpoint tables, which mirror the file",
+                        "_postal_wait_maps": "the postal log's wait maps, cached on that file's (mtime_ns, size) and rebuilt from it alone "
+                                             "(the eighth keyed file); its internals are that cache and the alias history, which mirror the log"}
         JD_ALLOW = {"parsed_session", "_parse_entry", "_segs", "plan_units", "_placed_key", "_unit_key", "_closed_turns", "EPIDIR", "STATE",
                     "GOALDIR", "CLOSER_ON", "load_goals_shared_or_fault", "_seg_key", "_segment_id", "episode_floor", "_view_cleared"}
         EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record"}   # pure readers of a record or an atom
@@ -394,8 +465,8 @@ class NudgeWalkParseGate(unittest.TestCase):
                 if isinstance(n, ast.Import) or isinstance(n, ast.ImportFrom):
                     for a in n.names: names.add((a.asname or a.name).split(".")[0])
             return names
-        problems = []
-        for verdict in sorted(km._NUDGE_FILE_KEYED_VERDICTS):
+        problems = []; self.maxDiff = None
+        for verdict in sorted(set(km._NUDGE_FILE_KEYED_VERDICTS) | {"walk-completed"}):   # the debt leg's exit too (round three, low 2)
             todo = list(km._NUDGE_FILE_KEYED_ROADS[verdict]); seen = set()
             self.assertTrue(todo, "%s: its road functions are named" % verdict)
             while todo:
@@ -426,8 +497,9 @@ class NudgeWalkParseGate(unittest.TestCase):
                         problems.append((verdict, fn_name, "reads %s, bound nowhere the census can see" % name)); continue
                     val = g[name]
                     if isinstance(val, types.FunctionType):
-                        if name in LEAF_READERS:
-                            continue                                # a justified keyed-file reader: the trace stops at the file
+                        if name in LEAF_READERS or name in DISPLAY_ONLY:
+                            continue                                # a justified keyed-file reader (the trace stops at the file), or a
+                        #                                             name read for display text alone, never for a verdict
                         if g is km.__dict__ and val.__globals__ is km.__dict__:
                             todo.append(name); continue             # a kernel helper: walked in turn, in its own globals
                         problems.append((verdict, fn_name, "calls %s from %s, a function the trace does not walk" % (name, getattr(val, "__module__", "?"))))
