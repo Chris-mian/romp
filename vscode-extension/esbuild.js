@@ -109,6 +109,9 @@ function testBuild() {
     entryPoints: entries,
     nodePaths: [path.join(__dirname, "node_modules")],
     bundle: true,
+    // the compiler stays a runtime require: the writer census (ui/webview/writer-census.ts) parses render.ts with it, and
+    // bundling it would add its whole source to every test file that imports the census
+    external: ["typescript"],
     format: "cjs",
     platform: "node",
     target: "node18",

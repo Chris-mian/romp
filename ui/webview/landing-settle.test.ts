@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { SETTLE_MS, settleStep, settleRowFields, withinRow } from "./landing-settle";
+import { writerCensus } from "./writer-census";
 import * as LS from "./landing-settle";   // the round-one exports, read by name: the file still builds against the head before them, and
                                           // the pins on them alone go red there (a named import of a missing export fails the whole build)
 
@@ -60,21 +61,20 @@ test("a gesture needs the reader's input behind it (round two, medium): an input
   assert.equal(LS.writerIsReader("never-named"), false, "an unlisted writer is no takeover");
 });
 
-test("the census names every writer render.ts gives writeScroll, and nothing else: a new writer cannot land unclassified (round five)", () => {
-  // every writer literal, read out of render.ts the way scroll-write.test.ts reads the raw-write ban: the last string of each
-  // writeScroll, scrollContentBy or scrollElInto call that is not an alignment word, and of the landing's own two wrappers
-  // (landOn's local land(), settleLand()), which pass their writer through
-  const literals = new Set<string>();
-  const re = /\b(?:writeScroll|scrollContentBy|scrollElInto|land|settleLand)\(([^;]*?)\);/g;
-  for (let m = re.exec(RENDER); m; m = re.exec(RENDER)) {
-    // the writer is the call's LAST argument (a stick flag may follow it); a call passing a variable names no literal here
-    const last = /(?:^|,)\s*"([a-z-]+)"(?:,\s*(?:true|false))?\s*$/.exec(m[1]);
-    if (last && !["start", "center", "nearest"].includes(last[1])) literals.add(last[1]);
-  }
-  assert.ok(literals.size >= 20, "the writer literals found in render.ts: " + [...literals].sort().join(", "));
-  for (const w of literals) assert.ok(w in LS.WRITER_CLASS, "unclassified writer in render.ts: " + w);
-  for (const w of Object.keys(LS.WRITER_CLASS)) assert.ok(literals.has(w), "a census entry render.ts no longer writes: " + w);
-  assert.deepEqual([...literals].sort(), Object.keys(LS.WRITER_CLASS).sort(), "the census IS the set of writers");
+test("the census names every writer render.ts gives the write family, and nothing else; every writer is a plain string literal or a registered wrapper's own parameter (round five; round six; round seven, by the compiler's parser)", () => {
+  // every family call in render.ts, read by the TypeScript compiler's parser (writer-census.ts): the writer argument is a plain string
+  // literal, counted, or the enclosing function's own parameter, which makes that function a wrapper that must sit in WRITER_WRAPPERS at
+  // that parameter's position; a template literal, a concatenation, a constant, a variable, a spread, an anonymous forwarder, an
+  // unregistered or mis-positioned wrapper and a stale table entry each fail here naming the call (round seven, mediums 1 and 2)
+  const c = writerCensus(RENDER, LS.WRITER_WRAPPERS);
+  assert.deepEqual(c.failures, [], "every family call's writer is a plain literal or a registered wrapper's parameter:\n" + c.failures.map((f) => "render.ts:" + f.line + " " + f.call + ": " + f.why).join("\n"));
+  assert.deepEqual({ writeScroll: LS.WRITER_WRAPPERS.writeScroll, ...c.wrappers }, LS.WRITER_WRAPPERS, "the wrapper table is exactly the functions that pass their own parameter through, each at its position");
+  const classified = Object.keys(LS.WRITER_CLASS).sort();
+  for (const w of c.literals) assert.ok(w in LS.WRITER_CLASS, "unclassified writer in render.ts: " + w);
+  for (const w of classified) assert.ok(c.literals.includes(w), "a census entry render.ts no longer writes: " + w);
+  assert.deepEqual(c.literals, classified, "the census IS the set of writers");
+  assert.equal(classified.length, 24, "the census: 24 writers (round five)");
+  assert.deepEqual(LS.WRITER_WRAPPERS, { writeScroll: 2, scrollContentBy: 2, scrollElInto: 3, land: 0, settleLand: 1 });
 });
 
 test("the window's end files the landing as it stands: settled within the row, else unsettled, never held forever", () => {
