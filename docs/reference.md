@@ -3411,6 +3411,11 @@ rewrite it.
 Task tracking has one master switch, at the top of Settings, Task tracking, on by default. It is a kernel-side,
 per-install setting: `~/.local/state/romp/task-tracking.json`, `{"enabled": false, "gt": <gesture stamp>}`. An absent,
 unreadable or malformed file reads ON; only the literal `false` turns tracking off, and reading never creates the file.
+An absent file is the quiet default. A file that is present but cannot be read or is not the store's shape reads ON
+too, and says so once per episode, one kernel log line and one error-center notice (the dashboard's bell) that the task
+tracking switch file could not be read and tracking is running: unlike its siblings' defaults, which withhold a
+capability, this one resumes spending the user may have opted out of. A clean read, or the file's absence, ends the
+episode; the next flip in the gear writes a proved file over the unreadable one.
 The gear's click posts `setTaskTracking` with a gesture stamp; the setter follows the ordering, echo and stale rules every
 gesture-stamped setting uses, and an applied flip is echoed to the socket that made it (a `taskTracking` frame), which is
 when the gear greys its dependents and tells the shell. A refused write (a full disk, a read-only state directory) is

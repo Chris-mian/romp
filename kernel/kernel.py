@@ -7290,10 +7290,11 @@ def _gesture_ms(msg):
 
 
 def _gt_int(v):
-    """A stored stamp, defensively: anything unreadable orders as 0, so it never blocks an apply."""
+    """A stored stamp, defensively: anything unreadable orders as 0, so it never blocks an apply. A float too large for an
+    int is unreadable too (json parses 1e400 to infinity, and int(inf) raised OverflowError out of /version: round three)."""
     try:
         return int(v or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -7906,11 +7907,49 @@ def _set_thinking_summaries(enabled, gt=None):
 TASK_TRACKING_FILE = "task-tracking.json"
 
 
-def _task_tracking_on():
+_tt_read_fault_said = {}   # the switch file's read fault said this episode (path -> text); a clean read or absence ends it
+
+
+def _note_tracking_read_fault(p, why):
+    """The switch's UNPROVED read, loud once per fault episode (round three, low 3): the siblings' unproved default withholds a
+    capability, this one resumes spending the user may have opted out of, so it cannot stay silent. One stderr line and one
+    dashboard notice under the bell's refused kind the first time this text is seen for the path; quiet until a clean read
+    or the file's absence clears it, when the next fault is a new episode. The setter is not refused: a write replaces the
+    unreadable file with a proved one, which is the repair."""
+    text = "the task tracking switch file could not be read (%s); tracking is running, its default" % why
+    if _tt_read_fault_said.get(str(p)) == text:
+        return
+    _tt_read_fault_said[str(p)] = text
+    sys.stderr.write("romp-kernel: %s\n" % text)
     try:
-        return json.loads((jd.STATE / TASK_TRACKING_FILE).read_text()).get("enabled", True) is not False
+        _sync_notice(text, ok=False, kind="refused")
     except Exception:
+        pass
+
+
+def _task_tracking_on():
+    """The master switch's read (T404): absent reads ON, the default, and says nothing (a fresh install has no file, and the
+    read never creates one); a PRESENT file that cannot be read or is not the store's shape reads ON too, and says so once
+    per episode (_note_tracking_read_fault); only the literal false turns tracking off."""
+    p = jd.STATE / TASK_TRACKING_FILE
+    try:
+        raw = p.read_text()
+    except FileNotFoundError:
+        _tt_read_fault_said.pop(str(p), None)
         return True
+    except OSError as e:
+        _note_tracking_read_fault(p, _errno_text(e))
+        return True
+    try:
+        d = json.loads(raw)
+    except ValueError as e:
+        _note_tracking_read_fault(p, "not JSON: %s" % e)
+        return True
+    if not isinstance(d, dict):
+        _note_tracking_read_fault(p, "not an object")
+        return True
+    _tt_read_fault_said.pop(str(p), None)
+    return d.get("enabled", True) is not False
 
 
 def _set_task_tracking(enabled, gt=None):
@@ -48908,7 +48947,9 @@ def _cached_feed(now, live_map, sig, connect=False):
     _built_feed[:] = [sig, feed, time.time(), started]
     _feed_needs_input[0] = _needs_input_sids(feed)        # the per-session needs-you the session ledgers read
     _badge = _needs_you_count(feed)
-    _fired = _feed_notifications(feed)                    # armed bells: fresh builds are the transition event
+    _fired = _feed_notifications(feed) if not feed.get("off") else []   # armed bells: fresh builds are the transition event; a
+    #                                                       stand-in frame (off, empty) never feeds a writer that prunes by absence: the
+    #                                                       diff pruned every mute whose card was not in the empty frame (round three)
     _buzzed = []
     for _t, _b, _sid, _iid in _fired:
         _system_notify(_t, _b)

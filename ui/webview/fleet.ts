@@ -52,6 +52,7 @@ let sessions: FleetSession[] = [];
 // "no work" — that's the loading gap, where the data simply hasn't landed yet. We leave #fleet-list empty so
 // the page's romp loader (_pane_spin) stays up, exactly like the other panes, until real data arrives.
 let loaded = false;
+let offNotice = false;   // the Task tracking switch's off frame is on screen as the notice (T404): the loader stands down without the page claiming loaded
 let emptyShown = false;   // the romp wordmark is currently showing → don't replay its fade-in every push
 // Attached hosts whose feed payload this pane has not merged yet (federation.ts pendingHosts, riding the
 // same feed message the ledgers do), and which of those sit on a dead link right now (pendingDead). The
@@ -765,13 +766,15 @@ listenForFrames(perfFrameHandler("fleet", (m) => vscodeApi?.postMessage(m), (e: 
   if (ttOff) ttOff.hidden = !m.off;
   if (ttList) ttList.hidden = !!m.off;
   if (m.off) {
-    // the notice IS this frame's content (T404 round two, medium 1): the page is loaded, so _keepLoader below stops
-    // re-asserting the romp loader over it past its failsafe, and the loader itself goes now (its observer watches the
-    // list, which the off frame leaves empty)
-    loaded = true;
+    // the notice IS this frame's content (T404 round two, medium 1): _keepLoader below stands down while it shows, and the
+    // loader itself goes now (its observer watches the list, which the off frame leaves empty). The page does not claim
+    // loaded (round three, low 2): a later frame with no ledgers array (federation before any host built its ledgers)
+    // then brings the loader back instead of leaving an empty list with no loader and no notice
+    offNotice = true;
     document.getElementById("pane-spin")?.classList.add("gone");
     return;
   }
+  offNotice = false;
   // "loaded" means the kernel actually BUILT the fleet's ledgers (the key is present, even if []) — NOT merely
   // that some feed message arrived. A feed push can reach us before the (cold) ledger build finishes; treating
   // that as loaded would drop the loader onto an empty pane (the user 2026-06-29). Until ledgers land, keep the
@@ -1056,6 +1059,7 @@ window.addEventListener("resize", catchUp);
 // re-asserting the loader, beating that backstop; stop the instant the data arrives (event-based via `loaded`).
 const _keepLoader = setInterval(() => {
   if (loaded) { clearInterval(_keepLoader); return; }
+  if (offNotice) return;   // the Task tracking switch's notice is the content: no loader over it (T404)
   const spin = document.getElementById("pane-spin");
   if (spin) spin.classList.remove("gone");
 }, 1000);

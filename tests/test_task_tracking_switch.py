@@ -82,6 +82,33 @@ class TheStore(_Base):
         self._file().write_text(json.dumps({"enabled": True, "gt": 2}))
         self.assertTrue(km._task_tracking_on())
 
+    def test_a_present_file_that_cannot_be_read_reads_on_and_is_said_once_per_episode_while_absence_is_quiet(self):
+        # round three, low 3: the siblings' unproved default withholds a capability; this one resumes spending, so it is said
+        said = []
+        saved = km._sync_notice
+        km._sync_notice = lambda text, ok=True, kind="sync": said.append((text, ok, kind))
+        try:
+            self.assertTrue(km._task_tracking_on()); self.assertEqual(said, [], "absent: the quiet default")
+            self._file().write_text("{not json")
+            self.assertTrue(km._task_tracking_on(), "malformed reads on")
+            self.assertTrue(km._task_tracking_on())
+            self.assertEqual(len(said), 1, "…and is said ONCE for the episode: %r" % said)
+            self.assertIn("task tracking switch file could not be read", said[0][0]); self.assertIn("tracking is running", said[0][0])
+            self.assertEqual((said[0][1], said[0][2]), (False, "refused"), "the bell's refused kind")
+            self._file().write_text(json.dumps({"enabled": False, "gt": 3}))
+            self.assertFalse(km._task_tracking_on(), "a clean read ends the episode")
+            self._file().write_text("[]")
+            self.assertTrue(km._task_tracking_on(), "the wrong shape reads on")
+            self.assertEqual(len(said), 2, "…and opens a new episode")
+            self._file().unlink(); self._file().mkdir()
+            self.assertTrue(km._task_tracking_on(), "a directory in the file's place reads on")
+            self.assertEqual(len(said), 3, "…said once")
+            self.assertTrue(km._task_tracking_on()); self.assertEqual(len(said), 3)
+            self._file().rmdir()
+            self.assertTrue(km._task_tracking_on()); self.assertEqual(len(said), 3, "absence again is quiet and ends the episode")
+        finally:
+            km._sync_notice = saved
+
     def test_reading_never_creates_the_file(self):
         km._task_tracking_on()
         self.assertFalse(self._file().exists())
@@ -218,6 +245,28 @@ class TheFeedOffFrame(_Base):
         self.assertIn('feed["working"]', Path(ROOT, "kernel", "kernel.py").read_text(), "the push does read the working list")
         self.assertEqual(km._needs_input_sids(f), set() if isinstance(km._needs_input_sids(f), set) else km._needs_input_sids(f))
         self.assertEqual(km._needs_you_count(f), 0)
+
+    def test_the_off_frame_never_runs_the_bell_diff_so_a_mute_survives_the_switch(self):
+        # round three, the medium: the diff's prune reads the frame's cards as the live set, and the off frame has none, so one off
+        # frame deleted every per-card mute from notify-cards.json (the cards had not gone; they were in the store, and returned)
+        bells = Path(self._td) / "notify-cards.json"
+        bells.write_text(json.dumps({"*": True, "g-needsyou-1": False, "g-working-1": False}, sort_keys=True))
+        before = bells.read_text()
+        km._set_task_tracking(False, gt=1)
+        saved = (list(km._built_feed), km._NOTIFY_PREV[0])
+        km._NOTIFY_PREV[0] = {"g-needsyou-1": "needs_input", "g-working-1": "working"}   # the remembered snapshot: both cards known
+        km._built_feed[:] = [None, None, 0, 0]
+        try:
+            f = km._cached_feed(int(time.time()), {}, "sig-off")
+        finally:
+            km._built_feed[:] = saved[0]; km._NOTIFY_PREV[0] = saved[1]
+        self.assertTrue(f.get("off"), "the post-build work ran on the off frame")
+        self.assertEqual(bells.read_text(), before, "notify-cards.json is unchanged: the stand-in frame fed no writer that prunes by absence")
+        km._set_task_tracking(True, gt=2)
+        cards = km._notify_cards()
+        self.assertIs(km._notify_card_effective(cards, "g-working-1", "11111111-2222-3333-4444-555555555555"), False, "back on, the Working card's mute still holds")
+        self.assertIs(km._notify_card_effective(cards, "g-needsyou-1", "11111111-2222-3333-4444-555555555555"), False)
+        self.assertIn('_fired = _feed_notifications(feed) if not feed.get("off") else []', Path(ROOT, "kernel", "kernel.py").read_text(), "the one-line gate its two siblings have")
 
     def test_the_pure_feed_builds_nothing_while_off(self):
         km._set_task_tracking(False, gt=1)
@@ -389,6 +438,16 @@ class TheMeshRoad(_Base):
         v = km._version_info()
         self.assertEqual((v["taskTracking"], v["settings"]["taskTracking"], v["settingsGt"]["task-tracking"]), (False, False, 4000),
                          "/version reports the value twice and the stamp once, all from the one snapshot")
+
+    def test_a_stamp_too_large_for_an_int_orders_as_zero_instead_of_raising_out_of_the_report(self):
+        # round three, low 1: json parses 1e400 to infinity, and int(inf) raised OverflowError out of the snapshot and /version
+        self.assertEqual(km._gt_int(float("inf")), 0); self.assertEqual(km._gt_int(1e400), 0); self.assertEqual(km._gt_int(-1e400), 0)
+        self._file().write_text('{"enabled": false, "gt": 1e400}')
+        values, stamps = km._mesh_settings_snapshot()
+        self.assertEqual((values["taskTracking"], stamps["task-tracking"]), (False, 0))
+        v = km._version_info()
+        self.assertEqual((v["taskTracking"], v["settingsGt"]["task-tracking"]), (False, 0), "the report survives the stamp")
+        self.assertEqual(km._setting_stored_gt("task-tracking"), 0)
 
     def test_a_kernel_attached_after_the_flip_adopts_the_peers_newer_off_and_an_older_stamp_teaches_nothing(self):
         self.assertTrue(km._task_tracking_on())

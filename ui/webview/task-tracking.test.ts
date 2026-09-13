@@ -59,7 +59,10 @@ test("the panes: the feed frame's off flag shows the kernel's notice in place of
   }
   // round two, medium 1: the loader sat over the notice (the outline's to forever, _keepLoader re-asserting it past the failsafe)
   assert.match(FEED, /if \(m\.off\) \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*document\.getElementById\("pane-spin"\)\?\.classList\.add\("gone"\);\s*\n\s*return;\s*\n\s*\}/);
-  assert.match(FLEET, /if \(m\.off\) \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*loaded = true;\s*\n\s*document\.getElementById\("pane-spin"\)\?\.classList\.add\("gone"\);\s*\n\s*return;\s*\n\s*\}/, "the outline marks itself loaded on the off frame");
+  assert.match(FLEET, /if \(m\.off\) \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*offNotice = true;\s*\n\s*document\.getElementById\("pane-spin"\)\?\.classList\.add\("gone"\);\s*\n\s*return;\s*\n\s*\}\s*\n\s*offNotice = false;/,
+    "the outline says the notice stands in, never that it is loaded (round three, low 2): a later frame with no ledgers brings the loader back");
+  assert.match(FLEET, /if \(loaded\) \{ clearInterval\(_keepLoader\); return; \}\s*\n\s*if \(offNotice\) return;/, "_keepLoader stands down while the notice shows and resumes when it goes");
+  assert.doesNotMatch(FLEET, /if \(m\.off\) \{[^}]*loaded = true;/, "the off frame never claims loaded");
   assert.match(FLEET, /^import \{ openGear \} from "\.\/gear-host";$/m);
   assert.ok(FEED.indexOf("if (m.off) {") < FEED.indexOf("if (freezeKey || tabScopeKey) { pendingFeedPayload = m;"), "the off check precedes the hover-freeze queue: an off frame is never queued as a payload");
   assert.ok(FLEET.indexOf("if (m.off) {") < FLEET.indexOf("if (m.views && typeof m.views === \"object\") fleetViews"), "…and precedes the outline's reads of the payload");
