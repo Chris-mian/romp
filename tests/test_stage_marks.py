@@ -61,6 +61,8 @@ ALLOW = {
     "_ask": "one peer's spend call over its tunnel",
     "_fleet_restart_run": "the remote half of a fleet restart over the tunnels, then this kernel's own",
     "_ensure_postal_bus": "starts the postal bus process",
+    "_sdk": "constructs the SDK backend, whose boot reconcile reads raw records through the backend, never the index or hydrate "
+            "(sdk_backend.py makes no event-model parse or hydrate call); two wiring pins hold its Thread line literal",
     "_gl": "a git link subprocess for a file",
     "_pusher": "marks inside: push and connect through _push's decorator",
     "_jobs_loop": "marks inside: jobs.<name> through _job_stage",

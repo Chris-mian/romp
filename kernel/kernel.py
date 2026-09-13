@@ -61930,7 +61930,7 @@ def main():
         sys.stderr.write("model-alias migration: %s\n" % traceback.format_exc())   # MUST precede _sdk: regs → chosen_model there
     _write_palette_mirror()                                   # keep bin/romp's palette-colors mirror current across code updates
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
-    threading.Thread(target=_stage_marked("sdk-boot")(_sdk), daemon=True, name="sdk-boot").start()   # construct the SDK backend NOW so its boot
+    threading.Thread(target=_sdk, daemon=True, name="sdk-boot").start()   # construct the SDK backend NOW so its boot
     #                                                           reconcile (cut turns, queues, orphans) runs at
     #                                                           boot, not on the first lazy touch
     threading.Thread(target=_rewind_holds_boot, daemon=True).start()   # resolve holds whose take/fail

@@ -1783,7 +1783,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `hydratedByStage` does for bodies: `push`, `connect`, `jobs.<job>`,
   `judge.<tier>`, `http.<METHOD>.<route segment>` for every request and
   the socket it may become, `warm.parse`, `warm.boot`, `producer`,
-  `revive`, `sdk-boot`, `rewind.migration`, `rewind.holds`, `move`,
+  `revive`, `rewind.migration`, `rewind.holds`, `move`,
   `remote-ws`; `none` names a thread that carries no mark, which the
   kernel's thread census keeps empty), `resident` (the process-wide LRU, `cap`
   20000 atoms across every session; eviction drops the memo, never a field in
