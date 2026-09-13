@@ -48,6 +48,47 @@ await page.evaluate(([sid, anchor]) => window.postMessage({ type: "chatWindow", 
 await page.waitForFunction(() => { const tt = document.querySelector(".locate-toast"); return !!tt && /older version/.test(tt.textContent || ""); }, null, { timeout: 5000 }).catch(() => {});
 const nospan3 = { notice: (await state()).notice, toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }) };
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
+// ROAD 5 (T386 stage 2, medium 1; runs right after the span-less road, while the head gap is whole, so its probe has a gap to ask into): a landing's window ask lost to a socket death must not wedge the gap. A deep link into a gap (ask on
+// the wire), the socket killed, restored; the gap met again asks a fresh loadTurns and a later deep link lands.
+const deep5 = "11111111-2222-3333-4444-" + pad(2 * 25);
+await page.evaluate(() => { if (window.__bootSession) window.postMessage(window.__bootSession, "*"); });   // reset SID to the pristine boot tail: the head gap whole again, so the probe turn is genuinely in a gap (prior roads filled parts of it)
+await painted();
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight; });   // back to the tail, an attached start
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep5, anchorT: cfg.base + 2 * 25 });
+await page.waitForFunction(() => !!document.querySelector(".tx-landing-notice") && getComputedStyle(document.querySelector(".tx-landing-notice")).display !== "none", null, { timeout: 8000 }).catch(() => {});
+await page.evaluate(() => { window.__ws && window.__ws.close(); });   // the socket dies with the ask in flight; the shim redials
+await page.waitForTimeout(400);
+const afterDrop5 = await state();
+const askState5 = await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid);   // the wedge is gone: landingGaps, gapLoading and loadingOlder all cleared by wsdown (medium 1)
+// the REDIAL: the shim reopens the socket and the kernel re-sends the session (a fresh boot frame), so the head gap is whole again; then
+// meet it by stepping up from the top spacer's end until the gap element renders and asks (round four, low 6: a real close and redial,
+// a fresh loadTurns asserted)
+const recvBefore5 = await page.evaluate(() => window.__recv.filter((x) => x.startsWith("session")).length);
+await page.waitForFunction((n) => window.__recv.filter((x) => x.startsWith("session")).length > n, recvBefore5, { timeout: 15000 }).catch(() => {});
+await painted();
+// after the redial the head may be largely resident (earlier roads' fills merge into the fresh frame), so the re-ask targets whatever
+// gap the regions still hold, of ANY size: a deep link into its first turn asks (loadAround) or pages (loadTurns) — never a scroll hunt
+const asksAll5 = () => page.evaluate(() => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length);
+const asksBefore5b = await asksAll5();
+const gapLo5 = await page.evaluate((sid) => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions(sid) : null; const g = rs && rs.find((r) => r.kind === "gap" && r.hi != null && r.hi > r.lo); return g ? g.lo : null; }, cfg.sid);
+if (gapLo5 != null) {
+  await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, "11111111-2222-3333-4444-" + pad(2 * gapLo5), cfg.base + 2 * gapLo5]);
+  await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length > n, asksBefore5b, { timeout: 8000 }).catch(() => {});
+}
+const redialAsk5 = (await asksAll5()) - asksBefore5b;
+const gapLo5Out = gapLo5;
+const redialed5 = (await page.evaluate(() => window.__recv.filter((x) => x.startsWith("session")).length)) - recvBefore5;
+// the gap is not wedged: a deep link into a turn STILL in a gap (read from the regions, so no prior road made it resident) asks again
+const asks5 = () => page.evaluate(() => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length);
+const asksBefore5 = await asks5();
+const gapTurn5 = await page.evaluate(() => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; if (!rs) return null; const g = rs.find((r) => r.kind === "gap" && r.hi - r.lo >= 4); return g ? Math.floor((g.lo + g.hi) / 2) : null; });
+const deep5b = gapTurn5 != null ? "11111111-2222-3333-4444-" + pad(2 * gapTurn5) : deep5;
+const resBefore5 = await page.evaluate((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), deep5b);
+await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, deep5b, cfg.base + 2 * (gapTurn5 != null ? gapTurn5 : 25)]);
+await page.waitForFunction((n) => (window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length) > n, asksBefore5, { timeout: 8000 }).catch(() => {});
+const reask5 = (await asks5()) - asksBefore5;
+const reNotice5 = (await state()).notice;
+const resident5 = resBefore5;
 // ROAD 6 (round five, medium B; runs right after the span-less road, while the head gap is whole, and returns the reader to the tail after):
 // the point under the viewport top holds through a fill that lands ABOVE a reader standing INSIDE the head gap. The fill is the cancel road's
 // (deterministic, the same fillInPlace a page fill takes): a deep link into turn 60 asks its window (HELD), the notice is clicked away so
@@ -125,47 +166,6 @@ await page.evaluate(() => { window.__hold.delete("loadTurns"); const n = window.
 await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
 await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const filled4 = await page.evaluate(() => { const c = document.getElementById("content"); const cTop = c.getBoundingClientRect().top; const first = c.querySelector("#content .turn[data-uuid]"); const r = first ? first.getBoundingClientRect() : null; return { top: c.scrollTop, firstTop: r ? Math.round(r.top - cTop) : null, firstVisible: !!r && r.bottom > cTop && r.top < c.getBoundingClientRect().bottom }; });
-// ROAD 5 (T386 stage 2, medium 1): a landing's window ask lost to a socket death must not wedge the gap. A deep link into a gap (ask on
-// the wire), the socket killed, restored; the gap met again asks a fresh loadTurns and a later deep link lands.
-const deep5 = "11111111-2222-3333-4444-" + pad(2 * 25);
-await page.evaluate(() => { if (window.__bootSession) window.postMessage(window.__bootSession, "*"); });   // reset SID to the pristine boot tail: the head gap whole again, so the probe turn is genuinely in a gap (prior roads filled parts of it)
-await painted();
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight; });   // back to the tail, an attached start
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep5, anchorT: cfg.base + 2 * 25 });
-await page.waitForFunction(() => !!document.querySelector(".tx-landing-notice") && getComputedStyle(document.querySelector(".tx-landing-notice")).display !== "none", null, { timeout: 8000 }).catch(() => {});
-await page.evaluate(() => { window.__ws && window.__ws.close(); });   // the socket dies with the ask in flight; the shim redials
-await page.waitForTimeout(400);
-const afterDrop5 = await state();
-const askState5 = await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid);   // the wedge is gone: landingGaps, gapLoading and loadingOlder all cleared by wsdown (medium 1)
-// the REDIAL: the shim reopens the socket and the kernel re-sends the session (a fresh boot frame), so the head gap is whole again; then
-// meet it by stepping up from the top spacer's end until the gap element renders and asks (round four, low 6: a real close and redial,
-// a fresh loadTurns asserted)
-const recvBefore5 = await page.evaluate(() => window.__recv.filter((x) => x.startsWith("session")).length);
-await page.waitForFunction((n) => window.__recv.filter((x) => x.startsWith("session")).length > n, recvBefore5, { timeout: 15000 }).catch(() => {});
-await painted();
-// after the redial the head may be largely resident (earlier roads' fills merge into the fresh frame), so the re-ask targets whatever
-// gap the regions still hold, of ANY size: a deep link into its first turn asks (loadAround) or pages (loadTurns) — never a scroll hunt
-const asksAll5 = () => page.evaluate(() => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length);
-const asksBefore5b = await asksAll5();
-const gapLo5 = await page.evaluate((sid) => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions(sid) : null; const g = rs && rs.find((r) => r.kind === "gap" && r.hi != null && r.hi > r.lo); return g ? g.lo : null; }, cfg.sid);
-if (gapLo5 != null) {
-  await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, "11111111-2222-3333-4444-" + pad(2 * gapLo5), cfg.base + 2 * gapLo5]);
-  await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length > n, asksBefore5b, { timeout: 8000 }).catch(() => {});
-}
-const redialAsk5 = (await asksAll5()) - asksBefore5b;
-const gapLo5Out = gapLo5;
-const redialed5 = (await page.evaluate(() => window.__recv.filter((x) => x.startsWith("session")).length)) - recvBefore5;
-// the gap is not wedged: a deep link into a turn STILL in a gap (read from the regions, so no prior road made it resident) asks again
-const asks5 = () => page.evaluate(() => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length);
-const asksBefore5 = await asks5();
-const gapTurn5 = await page.evaluate(() => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; if (!rs) return null; const g = rs.find((r) => r.kind === "gap" && r.hi - r.lo >= 4); return g ? Math.floor((g.lo + g.hi) / 2) : null; });
-const deep5b = gapTurn5 != null ? "11111111-2222-3333-4444-" + pad(2 * gapTurn5) : deep5;
-const resBefore5 = await page.evaluate((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), deep5b);
-await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, deep5b, cfg.base + 2 * (gapTurn5 != null ? gapTurn5 : 25)]);
-await page.waitForFunction((n) => (window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length) > n, asksBefore5, { timeout: 8000 }).catch(() => {});
-const reask5 = (await asks5()) - asksBefore5;
-const reNotice5 = (await state()).notice;
-const resident5 = resBefore5;
 process.stdout.write("RESULT:" + JSON.stringify({ inGap6, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, redialAsk5, redialed5, gapLo5: gapLo5Out, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
