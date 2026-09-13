@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """T321 (the user 2026-09-10): tags render the same everywhere, and never in bold. One renderer (tagChip in
-ui/webview/tag-menu.ts) builds every tag chip: the tab strip's group rows and its filter chips at the strip's right,
-the feed's and the outline's filter chips, the tag-lens menu, the tab menu's Tags flyout, the feed's session dialog,
+ui/webview/tag-menu.ts) builds every tag chip: the tab strip's group rows (its filter chips at the strip's right left
+with T405, the user 2026-09-13: the strip's tag control displays no chips), the feed's and the outline's filter chips, the tag-lens menu, the tab menu's Tags flyout, the feed's session dialog,
 and the new-session picker's Tags row, where each tag shows as the chip (a thin border in the tag's own colour) and on
 versus off by the visual the tag toggles already use: the faded chip (TAG_CHIP_OFF_CLASS at 0.45). No identity dot. The
 picker's off chip and the tag-lens menu's off chip are read from the live page and must render identically (T321c, the
 user reversing, the same day, a diagonal drawn through the picker's off tag: the same class, the same computed opacity,
 no pseudo-element on either).
 
-The strip guard reads the LIVE computed style of a group row's chip and of the same tag's filter chip at the strip's
-right (a chat lens seeded with two tags, so both rows and both filter chips show) and asserts they are one rendering:
+The strip guard reads the LIVE computed style of a group row's chip and of the same tag's chip in the tag-lens menu the
+strip's button opens (a chat lens seeded with two tags, so both rows show) and asserts they are one rendering:
 the same font size, weight 400, normal tracking, the same border width and radius, the same padding, and the tag's
 colour on both border and text.
 
@@ -98,20 +98,27 @@ await page.waitForSelector("#tabs .tab[data-id]", { timeout: 20000 });
 // the web tab active: its tag is what the picker pre-selects
 await page.click(`#tabs .tab[data-id="${cfg.activeSid}"]`);
 await page.waitForFunction((id) => (document.querySelector("#tabs .tab.active") || {}).dataset?.id === id, cfg.activeSid, { timeout: 8000 });
-await page.waitForSelector("#tabs .tab-tagchips > span", { timeout: 10000 });
+await page.waitForSelector("#tabs .tab-group-chip", { timeout: 10000 });   // the strip's filter chips are gone (T405): the group rows are the strip's chips
 await page.waitForTimeout(200);
 const look = (e) => { const cs = getComputedStyle(e); return { text: (e.childNodes[0] && e.childNodes[0].textContent) || "", fontSize: cs.fontSize, fontWeight: cs.fontWeight, fontFamily: cs.fontFamily,
   letterSpacing: cs.letterSpacing, borderW: cs.borderTopWidth, borderColor: cs.borderTopColor, color: cs.color, radius: cs.borderTopLeftRadius,
-  padding: cs.paddingTop + " " + cs.paddingLeft, bg: cs.backgroundColor, display: cs.display }; };
+  padding: cs.paddingTop + " " + cs.paddingLeft, bg: cs.backgroundColor, display: cs.display,
+  parentFontSize: getComputedStyle(e.parentElement).fontSize }; };   // the chip takes its size from its context (a group row's inherits the header's)
 const strip = await page.evaluate((lookSrc) => {
   const look = eval("(" + lookSrc + ")");
   return { rows: Array.from(document.querySelectorAll("#tabs .tab-group-chip")).map(look),
-           filters: Array.from(document.querySelectorAll("#tabs .tab-tagchips > span")).map(look),
+           stripFilters: document.querySelectorAll("#tabs .tab-tagchips > span").length,   // T405 (the user 2026-09-13): the strip's tag control displays no chips
            names: Array.from(document.querySelectorAll("#tabs .tab-label")).map((e) => getComputedStyle(e).fontWeight) };
 }, look.toString());
 // the tag-lens menu from the strip's filter button: its unselected rows wear the off chip the picker must match
 await page.click('#tabs button[title="filter these tabs by tag"]');
 await page.waitForSelector('[data-tag-menu] span[aria-pressed="false"]', { timeout: 10000 });
+// the same tags' chips in the lens menu, read with the strip's own look: the group row's chip and the menu's are one rendering (the strip's
+// filter chips, the comparison's other half until T405, are gone)
+strip.menuChips = await page.evaluate((lookSrc) => {
+  const look = eval("(" + lookSrc + ")");
+  return Array.from(document.querySelectorAll("[data-tag-menu] span[aria-pressed]")).map(look);
+}, look.toString());
 const lensMenu = await page.evaluate(() => {
   const read = (e) => { const cs = getComputedStyle(e); return { text: e.textContent, cls: e.getAttribute("class") || "", opacity: cs.opacity, after: getComputedStyle(e, "::after").content }; };
   return { off: Array.from(document.querySelectorAll('[data-tag-menu] span[aria-pressed="false"]')).map(read),
@@ -264,21 +271,27 @@ class ServedPickerTagChips(unittest.TestCase):
             type(self)._out = self._drive()
         return type(self)._out
 
-    def test_the_strip_s_group_row_chip_and_its_filter_chip_are_one_rendering_and_never_bold(self):
+    def test_the_strip_s_group_row_chip_and_the_same_tags_chip_in_the_lens_menu_are_one_rendering_and_never_bold(self):
+        # the comparison's other half was the strip's filter chip until T405 (the user 2026-09-13: the strip's tag control
+        # displays no chips); the same tag's chip in the tag-lens menu the strip's button opens stands in for it
         strip = self._once()["strip"]
         rows = {r["text"]: r for r in strip["rows"]}
-        filters = {f["text"]: f for f in strip["filters"]}
+        filters = {f["text"]: f for f in strip["menuChips"]}
         self.assertEqual(sorted(rows), ["infra", "web"], "two group rows: %r" % strip["rows"])
-        self.assertEqual(sorted(filters), ["infra", "web"], "two filter chips at the strip's right: %r" % strip["filters"])
+        self.assertEqual(sorted(filters), sorted(t[1] for t in TAGS), "every tag's chip in the lens menu: %r" % strip["menuChips"])
+        self.assertEqual(strip["stripFilters"], 0, "the strip's tag control displays no chips (T405)")
         colors = {name: color for (_i, name, color) in TAGS}
         for name in ("web", "infra"):
             r, f = rows[name], filters[name]
-            for key in ("fontSize", "fontWeight", "fontFamily", "letterSpacing", "borderW", "radius", "padding", "bg", "display"):
-                self.assertEqual(r[key], f[key], "%s: the row chip and the filter chip differ in %s: %r vs %r" % (name, key, r, f))
+            # not the font size: the chip is sized by its context by design (the group row's chip inherits its header's size,
+            # the menu's takes the menu's), and the old filter chip matched the row only because both sat on the strip
+            for key in ("fontWeight", "fontFamily", "letterSpacing", "borderW", "radius", "padding", "bg", "display"):
+                self.assertEqual(r[key], f[key], "%s: the row chip and the lens menu's chip differ in %s: %r vs %r" % (name, key, r, f))
+            self.assertEqual(r["fontSize"], r["parentFontSize"], "the group row's chip inherits its header's size (inheritSize): %r" % r)
             self.assertEqual(r["fontWeight"], "400", "never bold: %r" % r)
             self.assertEqual(r["letterSpacing"], "normal", "the header's tracking does not reach the chip: %r" % r)
             self.assertEqual((r["borderColor"], r["color"]), (_rgb(colors[name]), _rgb(colors[name])), "the tag's colour on border and text: %r" % r)
-            self.assertEqual((f["borderColor"], f["color"]), (_rgb(colors[name]), _rgb(colors[name])), "…on the filter chip too: %r" % f)
+            self.assertEqual((f["borderColor"], f["color"]), (_rgb(colors[name]), _rgb(colors[name])), "…on the lens menu's chip too: %r" % f)
             self.assertEqual(r["borderW"], "1px")
 
     def test_each_tag_is_the_shared_chip_and_a_click_flips_the_faded_look_with_the_state_class(self):

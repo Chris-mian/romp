@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""THE TAB LOCK (T395, the user 2026-09-12) on the served chat page and, for the Sessions pane, the landing: a hermetic kernel serves six synthetic notes-api
-sessions (TESTHOST, one flat row of tabs); the strip carries a padlock button right after the + tab and before the tags
-box, in a box of the tags box's height. A REAL mouse drag (page.mouse down, a run of moves across the strip, up over the
-target) with the lock OFF moves the tab; the lock pressed, the same drag moves nothing, the tabs are not draggable, the
-box wears the accent with no fill, the setting persists across a reload; pressed again, the drag moves the tab once more.
-Round one: a keyboard press on the lock keeps the focus on the lock across the strip's rebuild; and the Sessions pane
-(the landing's timeline, which shares the order) refuses a lane drag while locked, its lanes without the grab cursor and
-saying why, and moves the lane once unlocked.
+"""THE TAB LOCK (T395, the user 2026-09-12; T405, the user 2026-09-13: the lock moved off the strip into the strip's gear) on
+the served chat page and, for the Sessions pane, the landing: a hermetic kernel serves six synthetic notes-api sessions
+(TESTHOST, one flat row of tabs, the chat lens narrowed to no tags). The strip's chrome (T405): a gear at the strip's
+FARTHEST right in a box of the tags box's height, wearing the shell's own settings glyph (the rail's character, one
+source); its menu holds "Lock the tabs in place", the toggle row with the button's two titles, and "Tab widgets…"; no lock
+button anywhere in the strip; the tag control displays no chips (narrowed to no tags, it still wears the accent). A REAL
+mouse drag (page.mouse down, a run of moves across the strip, up over the target) with the lock OFF moves the tab; the
+lock row pressed, the same drag moves nothing, the tabs are not draggable, the row wears the ✓, the setting persists across
+a reload; pressed again, the drag moves the tab once more. Round one: a keyboard press (Enter on the gear, Enter on the
+row) keeps the focus on the row across the strip's rebuild, Escape hands it back to the gear; and the Sessions pane (the
+landing's timeline, which shares the order) refuses a lane drag while locked, its lanes without the grab cursor and saying
+why, and moves the lane once unlocked. The phone layout (a coarse pointer under 1024 px) hides the strip and its gear with it.
 
 TAB_LOCK_DIST=<dir> serves another tree's UI bundle (the red run's before); TAB_LOCK_SHOTS=<prefix> writes
-<prefix>-locked-<theme>.png; TAB_LOCK_DUMP=<path> writes the whole measurement. Skips LOUDLY without the extension deps or
+<prefix>-strip-<theme>.png (the strip with the gear's menu open); TAB_LOCK_DUMP=<path> writes the whole measurement. Skips LOUDLY without the extension deps or
 a Playwright browser (CI sets ROMP_SERVED_TESTS_REQUIRE=1 and installs both, so a skip there is a failure). Synthetic
 throughout: placeholder sids, TESTHOST, invented text.
 """
@@ -82,20 +86,30 @@ const layout = () => page.evaluate(() => {
   const r1 = (v) => Math.round(v * 10) / 10;
   const tabs = Array.from(bar.querySelectorAll(".tab[data-id]")).map((t) => { const r = t.getBoundingClientRect();
     return { id: t.dataset.id, name: (t.querySelector(".tab-label") || t).textContent.trim(), left: r1(r.left - b.left), top: r1(r.top - b.top), w: r1(r.width), h: r1(r.height), draggable: !!t.draggable }; });
-  const box = bar.querySelector(".tab-lockbox"); const btn = box && box.querySelector(".tab-lock");
+  const box = bar.querySelector(".tab-gearbox"); const btn = box && box.querySelector(".tab-widgets-gear");
+  const menu = document.querySelector('[data-rows-menu="1"]');
+  const rowsOf = (m) => Array.from(m.children).map((r) => ({ label: Array.from(r.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim(), checked: r.getAttribute("aria-checked"), title: r.title, role: r.getAttribute("role"),
+    glyph: (r.querySelector("svg path") || {}).getAttribute ? r.querySelector("svg path").getAttribute("d") : null }));
   const probe = document.createElement("span"); probe.style.color = "var(--accent)"; document.body.appendChild(probe);
   const accent = getComputedStyle(probe).color; probe.remove();
+  const pb = document.createElement("span"); pb.style.border = "1px solid var(--card-border)"; document.body.appendChild(pb);
+  const cardBorder = getComputedStyle(pb).borderTopColor; pb.remove();   // the tag button's REST border token (narrowed, the button wears the accent instead)
   const add = bar.querySelector(".tab-add"), tagBox = bar.querySelector(".tab-tagbox"), tagBtn = bar.querySelector(".tab-tagbox .tab-tagfilter");
   const tb = tagBtn ? { w: r1(tagBtn.getBoundingClientRect().width), h: r1(tagBtn.getBoundingClientRect().height), border: getComputedStyle(tagBtn).borderTopColor, radius: getComputedStyle(tagBtn).borderRadius } : null;
   let s = {}; try { s = JSON.parse(localStorage.getItem("romp:settings") || "{}") || {}; } catch (e) {}
-  const lock = box ? { present: true, prev: box.previousElementSibling ? box.previousElementSibling.className : null, next: box.nextElementSibling ? box.nextElementSibling.className : null,
-                       boxH: r1(box.getBoundingClientRect().height), addH: add ? r1(add.getBoundingClientRect().height) : null, tagBoxH: tagBox ? r1(tagBox.getBoundingClientRect().height) : null,
-                       on: btn.classList.contains("on"), pressed: btn.getAttribute("aria-pressed"), label: btn.getAttribute("aria-label"), title: btn.title, svg: !!btn.querySelector("svg"),
-                       shackle: (btn.querySelector("path") || {}).getAttribute ? btn.querySelector("path").getAttribute("d") : null,
-                       color: getComputedStyle(btn).color, bg: getComputedStyle(btn).backgroundColor, border: getComputedStyle(btn).borderTopColor, radius: getComputedStyle(btn).borderRadius,
+  const gear = box ? { present: true, last: bar.lastElementChild === box, prev: box.previousElementSibling ? box.previousElementSibling.className : null,
+                       boxH: r1(box.getBoundingClientRect().height), tagBoxH: tagBox ? r1(tagBox.getBoundingClientRect().height) : null,
+                       rightGap: r1(b.right - box.getBoundingClientRect().right), text: btn.textContent, svg: !!btn.querySelector("svg"),
+                       label: btn.getAttribute("aria-label"), title: btn.title, haspopup: btn.getAttribute("aria-haspopup"),
+                       border: getComputedStyle(btn).borderTopColor, radius: getComputedStyle(btn).borderRadius, color: getComputedStyle(btn).color,
                        w: r1(btn.getBoundingClientRect().width), h: r1(btn.getBoundingClientRect().height) }
                    : { present: false };
-  return { bar: { left: b.left, top: b.top }, tabs, order: tabs.map((t) => t.id), lock, tagBtn: tb, accent, store: { tabsLocked: "tabsLocked" in s ? s.tabsLocked : "absent" } };
+  const lockRow = menu ? rowsOf(menu).find((r) => r.label === "Lock the tabs in place") || null : null;
+  const lock = { present: !!bar.querySelector(".tab-lock, .tab-lockbox"), menuOpen: !!menu, rows: menu ? rowsOf(menu).map((r) => r.label) : [], row: lockRow,
+                 on: !!(lockRow && lockRow.checked === "true") };
+  const chips = bar.querySelector(".tab-tagbox .tab-tagchips");
+  const tagCtl = tagBtn ? { pressed: tagBtn.getAttribute("aria-pressed"), chipsInDom: !!chips, chipCount: chips ? chips.children.length : 0 } : null;
+  return { bar: { left: b.left, top: b.top, right: b.right }, tabs, order: tabs.map((t) => t.id), gear, lock, tagBtn: tb, tagCtl, accent, cardBorder, store: { tabsLocked: "tabsLocked" in s ? s.tabsLocked : "absent" } };
 });
 // drag the tab at index `from` and release over the left part of the tab at index `to` (the reorder lab's gesture)
 async function drag(label) {
@@ -123,21 +137,39 @@ await page.evaluate(() => document.body.classList.add("theme-light")); await pag
 out.light = await layout();
 await page.evaluate(() => document.body.classList.remove("theme-light")); await page.waitForTimeout(150);
 out.unlockedDrag = await drag("unlocked: the 3rd tab to the first slot");
-const press = async () => { if (!(await layout()).lock.present) return false; await page.click("#tabs .tab-lockbox .tab-lock"); await page.waitForTimeout(400); return true; };
-out.pressed = await press();
+const openGear = async () => { await page.click("#tabs .tab-gearbox .tab-widgets-gear"); await page.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 }); };
+const press = async () => {
+  if (!(await layout()).gear.present) return false;
+  await openGear();
+  await page.click('[data-rows-menu="1"] [role="menuitemcheckbox"]:first-child');   // the lock row (a switch: the menu stays open, repainted)
+  await page.waitForFunction(() => !!document.querySelector('[data-rows-menu="1"]'), null, { timeout: 5000 });
+  await page.waitForTimeout(400);
+  const menuAfter = await layout();
+  await page.keyboard.press("Escape"); await page.waitForTimeout(200);
+  return menuAfter.lock;
+};
+out.pressedMenu = await press();                          // the menu as it repainted after the press: the ✓ and the seated title
+out.pressed = !!out.pressedMenu;
 out.locked = await layout();
 await page.reload(); await settle();                      // the setting is the browser's: a fresh page comes up locked
 out.afterReload = await layout();
 out.lockedDrag = await drag("locked: the same drag");
-// a KEYBOARD press on the lock (round one, LOW 2): the strip rebuilds, and the focus stays on the lock, not the active tab
-const activeCls = () => page.evaluate(() => (document.activeElement && document.activeElement.className) || "");
-await page.focus("#tabs .tab-lockbox .tab-lock"); await page.keyboard.press("Enter"); await page.waitForTimeout(400);
-out.keyToggle = { active: await activeCls(), store: (await layout()).store };
+// a KEYBOARD press (round one, LOW 2; T405): Enter on the gear opens the menu with the lock row focused; Enter on the row toggles,
+// the strip rebuilds, and the focus stays on the row, not the active tab; Escape hands it back to the gear
+const activeDesc = () => page.evaluate(() => { const a = document.activeElement; return a ? { cls: a.className || "", role: a.getAttribute("role") || "",
+  text: Array.from(a.childNodes || []).filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim().slice(0, 30) } : null; });   // the row's own label, not its ✓ badge
+await page.focus("#tabs .tab-gearbox .tab-widgets-gear"); await page.keyboard.press("Enter"); await page.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 }); await page.waitForTimeout(100);
+out.keyOpen = await activeDesc();
+await page.keyboard.press("Enter"); await page.waitForTimeout(400);
+out.keyToggle = { active: await activeDesc(), store: (await layout()).store, menuOpen: (await layout()).lock.menuOpen };
 await page.keyboard.press("Enter"); await page.waitForTimeout(400);   // and back to locked for the scenes below
-out.keyToggleBack = { active: await activeCls(), store: (await layout()).store };
+out.keyToggleBack = { active: await activeDesc(), store: (await layout()).store };
+await page.keyboard.press("Escape"); await page.waitForTimeout(150);
+out.keyEscape = { active: await activeDesc(), menuOpen: (await layout()).lock.menuOpen };
 // THE SESSIONS PANE (round one, MEDIUM 1): the landing's timeline shares the order with the strip; its lane drag is held too
 const shell = await ctx.newPage(); await shell.goto(cfg.landing);   // the same context: the lock's store is shared
 await shell.waitForSelector("#rail-gear", { timeout: 20000 });
+out.railGlyph = await shell.evaluate(() => (document.getElementById("rail-gear").textContent || "").trim());   // the shell's settings gear: the strip's must be the same character (T405)
 let tl = shell.frames().find((f) => f.url().includes("/timeline"));
 for (let i = 0; i < 100 && !tl; i++) { await shell.waitForTimeout(100); tl = shell.frames().find((f) => f.url().includes("/timeline")); }
 await tl.waitForFunction((names) => Array.from(document.querySelectorAll("svg text")).filter((t) => names.includes(t.textContent.trim())).length >= names.length, cfg.names, { timeout: 30000 });
@@ -162,16 +194,41 @@ async function laneDrag(label) {
            moved: pre.labels.map((l) => l.name).join() !== post.labels.map((l) => l.name).join(), grabRectsPre: pre.grabRects, titlesPre: pre.titles };
 }
 out.tlLocked = await laneDrag("locked: the 3rd lane to the top");
-// the screenshots: the strip with the lock on, dark then light
+// the screenshots and the gear's right edge: the strip with the gear's menu open, dark then light
+out.themes = {};
 for (const theme of ["dark", "light"]) {
   await page.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
-  await page.waitForTimeout(200);
+  await page.mouse.move(4, 4); await page.waitForTimeout(200);   // the pointer off the gear: its REST border, not the hover's accent
+  const restLay = await layout();
+  await openGear(); await page.waitForTimeout(150);
+  out.themes[theme] = await layout();
+  out.themes[theme].restBorder = restLay.gear.border; out.themes[theme].restCardBorder = restLay.cardBorder;
+  // compact tabs (round two, the medium): the dense row is 25px, and the gear must stand inside it, not stretch it
+  await page.evaluate(() => document.body.classList.add("dense-chrome")); await page.waitForTimeout(150);
+  out.themes[theme].dense = await page.evaluate(() => { const h = (el) => el ? el.getBoundingClientRect().height : null;
+    return { tab: h(document.querySelector("#tabs .tab[data-id]")), gear: h(document.querySelector("#tabs .tab-widgets-gear")), gearbox: h(document.querySelector("#tabs .tab-gearbox")),
+             tagbox: h(document.querySelector("#tabs .tab-tagbox")), contentTop: document.getElementById("content") ? document.getElementById("content").getBoundingClientRect().top : null }; });
   if (cfg.shots) {
-    const bar = await page.evaluate(() => { const b = document.getElementById("tabbar").getBoundingClientRect(); return { x: 0, y: Math.max(0, b.top - 4), width: Math.min(window.innerWidth, 900), height: b.height + 8 }; });
-    await page.screenshot({ path: cfg.shots + "-locked-" + theme + ".png", clip: bar });
+    const dbar = await page.evaluate(() => { const b = document.getElementById("tabbar").getBoundingClientRect(); return { x: 0, y: Math.max(0, b.top - 4), width: window.innerWidth, height: Math.min(window.innerHeight - b.top, b.height + 120) }; });
+    await page.screenshot({ path: cfg.shots + "-dense-strip-" + theme + ".png", clip: dbar });
   }
+  await page.evaluate(() => document.body.classList.remove("dense-chrome")); await page.waitForTimeout(100);
+  if (cfg.shots) {
+    const bar = await page.evaluate(() => { const b = document.getElementById("tabbar").getBoundingClientRect(); return { x: 0, y: Math.max(0, b.top - 4), width: window.innerWidth, height: Math.min(window.innerHeight - b.top, b.height + 120) }; });
+    await page.screenshot({ path: cfg.shots + "-strip-" + theme + ".png", clip: bar });
+  }
+  await page.keyboard.press("Escape"); await page.waitForTimeout(150);
 }
 await page.evaluate(() => document.body.classList.remove("theme-light"));
+// the phone layout (T161: a coarse pointer under 1024 px): the kernel's page hides the whole strip, the gear with it
+const phoneCtx = await browser.newContext({ viewport: { width: 800, height: 900 }, hasTouch: true });
+const phone = await phoneCtx.newPage(); await phone.goto(cfg.chat);
+await phone.waitForFunction(() => document.querySelectorAll("#tabs .tab[data-id]").length > 0 || getComputedStyle(document.getElementById("tabs") || document.body).display === "none", null, { timeout: 30000 }).catch(() => {});
+await phone.waitForTimeout(600);
+out.phone = await phone.evaluate(() => { const tabs = document.getElementById("tabs"); const gear = document.querySelector("#tabs .tab-widgets-gear");
+  const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).display !== "none" && getComputedStyle(el).visibility !== "hidden";
+  return { phoneLayout: window.matchMedia("(pointer:coarse) and (max-width:1024px)").matches, stripVisible: vis(tabs), gearVisible: vis(gear), mslot: !!document.getElementById("mtag-slot") }; });
+await phoneCtx.close();
 out.pressedAgain = await press();
 out.unlocked = await layout();
 out.unlockedAgainDrag = await drag("unlocked again: the same drag");
@@ -237,6 +294,7 @@ class ServedTabLock(unittest.TestCase):
                      "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": "end_turn",
                                  "content": [{"type": "text", "text": "It keeps the %s side of the notes-api tidy." % name}]}}]
             Path(proj, sid + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+        Path(state, "timeline-views.json").write_text(json.dumps({"active": "all", "actives": {"chat": {"none": True}}, "tags": []}))   # the chat lens narrowed to no tags (T405: the control shows no chips for it)
         Path(state, "usage.json").write_text(json.dumps({"five_hour": {"pct": 10}, "seven_day": {"pct": 10}}))
         cls.port, cls.token = _free_port(), "testtok-tablock"
         env = _lab.kernel_env(cls.lab, claude, dist, cls.port, cls.token, ROMP_HOST_NAME="TESTHOST")
@@ -294,61 +352,90 @@ class ServedTabLock(unittest.TestCase):
             Path(os.environ["TAB_LOCK_DUMP"]).write_text(json.dumps(result, indent=1) + "\n")
         return result
 
-    def test_the_lock_sits_after_the_plus_tab_and_before_the_tags_box_in_a_box_of_the_tags_boxs_height(self):
-        s = self._run()["start"]
-        table = "\n  " + json.dumps(s["lock"])
-        self.assertTrue(s["lock"]["present"], "the strip carries the lock box" + table)
-        lk = s["lock"]
-        self.assertEqual(lk["prev"], "tab tab-add", "right after the + tab" + table)
-        self.assertEqual(lk["next"], "tab-tagbox", "before the tags box" + table)
-        self.assertGreaterEqual(lk["boxH"], 31 - 0.5, "the tags box's floor" + table)
-        self.assertLessEqual(abs(lk["boxH"] - lk["tagBoxH"]), 0.5, "the same height as the tags box" + table)
-        self.assertTrue(lk["svg"], "the padlock glyph" + table)
-        self.assertEqual(lk["shackle"], "M9.4 6.2 V5.3 A2.4 2.4 0 0 1 13.6 3.7", "unlocked: the shackle swung out (the Sessions pane's drawing)" + table)
-        self.assertEqual((lk["label"], lk["pressed"], lk["on"]), ("Lock tabs", "false", False), table)
-        self.assertEqual(lk["radius"], "6px", "a little rounded box" + table)
-        # round two, LOW 1: like the tags thing beside it, measured side by side: the same border colour and the same box, to the pixel
-        tb = s["tagBtn"]; table2 = "\n  lock=" + json.dumps({k: lk[k] for k in ("w", "h", "border", "radius")}) + " tag=" + json.dumps(tb)
-        self.assertIsNotNone(tb, "the tag button beside it" + table2)
-        self.assertEqual((lk["w"], lk["h"]), (tb["w"], tb["h"]), "the same box as the tag button" + table2)
-        self.assertEqual(lk["border"], tb["border"], "the same border colour as the tag button (one source)" + table2)
-        self.assertEqual(lk["radius"], tb["radius"], table2)
-        # the light theme: the same border on both boxes, and not the dark theme's (the shared token is themed)
-        lt = self._run()["light"]; lkl, tbl = lt["lock"], lt["tagBtn"]; table3 = "\n  light lock=" + json.dumps({k: lkl[k] for k in ("w", "h", "border")}) + " tag=" + json.dumps(tbl) + " dark=" + lk["border"]
-        self.assertEqual(lkl["border"], tbl["border"], "light: the same border on both" + table3)
-        self.assertNotEqual(lkl["border"], lk["border"], "light: not the dark theme's border (both boxes read the themed token)" + table3)
-        self.assertEqual((lkl["w"], lkl["h"]), (tbl["w"], tbl["h"]), table3)
-        self.assertNotEqual(lk["color"], s["accent"], "gray at rest, not the accent" + table)
+    def test_the_gear_sits_last_at_the_strips_farthest_right_wearing_the_shells_glyph_and_the_lock_button_is_gone(self):
+        # T405 (the user 2026-09-13): the strip's gear is the shell's settings glyph from one source, in a box of its own pushed
+        # to the strip's right edge, with the tags box's floor; the padlock button and its box left the strip
+        r = self._run(); s = r["start"]
+        table = "\n  " + json.dumps(s["gear"]) + "\n  " + json.dumps(s["lock"])
+        self.assertTrue(s["gear"]["present"], "the strip carries the gear box" + table)
+        g = s["gear"]
+        self.assertTrue(g["last"], "the last thing on the bar" + table)
+        self.assertLessEqual(g["rightGap"], 2.0, "its right edge is the strip's right edge" + table)
+        self.assertGreaterEqual(g["boxH"], 31 - 0.5, "the tags box's floor" + table)
+        self.assertLessEqual(abs(g["boxH"] - g["tagBoxH"]), 0.5, "the same height as the tags box" + table)
+        self.assertEqual((g["text"], g["svg"]), ("\u26ed", False), "the shell's own glyph, a character, no drawing" + table)
+        self.assertEqual(g["text"], r["railGlyph"], "the rail's gear at the bottom right of the shell page wears the same character (one source)" + table)
+        self.assertEqual((g["label"], g["haspopup"], g["radius"]), ("Tab strip settings", "menu", "6px"), table)
+        self.assertEqual(g["title"], "Tab strip: lock", "standalone: no widgets row, and the title says so (round two, low 1)" + table)
+        for theme in ("dark", "light"):   # the gear's rest border is the card-border token in BOTH themes, and the token differs between them (round two, low 7)
+            t = r["themes"][theme]
+            self.assertEqual(t["restBorder"], t["restCardBorder"], theme + ": the gear's rest border is the card-border token, one source (the lens is narrowed here, so the tag button itself wears the accent; read with the pointer off the gear)" + table)
+        self.assertNotEqual(r["themes"]["dark"]["restCardBorder"], r["themes"]["light"]["restCardBorder"], "the token differs between the themes, so the two checks are two" + table)
+        self.assertFalse(s["lock"]["present"], "no lock button or box in the strip" + table)
+        for theme in ("dark", "light"):
+            t = r["themes"][theme]; tb = "\n  " + theme + "=" + json.dumps(t["gear"])
+            self.assertTrue(t["gear"]["last"] and t["gear"]["rightGap"] <= 2.0, theme + ": the gear at the strip's farthest right" + tb)
+            self.assertTrue(t["lock"]["menuOpen"], theme + ": the menu opened" + tb)
+            d = t["dense"]; td = "\n  " + theme + " dense=" + json.dumps(d)
+            self.assertLessEqual(abs(d["tab"] - 25), 0.6, theme + ": compact tabs are 25px" + td)
+            self.assertLessEqual(d["gear"], d["tab"] + 0.01, theme + ": the gear button stands inside the dense row (round two, the medium: it was 26px and stretched the row)" + td)
+            self.assertLessEqual(abs(d["gearbox"] - d["tab"]), 0.6, theme + ": the gear box is the row's height" + td)
+            self.assertLessEqual(abs(d["tagbox"] - d["tab"]), 0.6, theme + ": the tags box too" + td)
         self.assertEqual(s["store"]["tabsLocked"], "absent", "nothing written until pressed" + table)
+
+    def test_the_gears_menu_offers_the_lock_row_with_the_buttons_two_titles_and_the_tab_widgets_row(self):
+        r = self._run(); m = r["pressedMenu"]
+        table = "\n  " + json.dumps(m)
+        # the standalone chat page (no shell): the lock row alone; the Tab widgets row asks for a reachable settings gear and shows
+        # inside the shell (tests/test_tab_widgets_browser.py drives it there)
+        self.assertEqual(m["rows"], ["Lock the tabs in place"], table)
+        self.assertEqual((m["row"]["checked"], m["on"]), ("true", True), "pressed once: the ✓" + table)
+        self.assertEqual(m["row"]["title"], "Tabs are locked in place: click to allow moving them again", "the button's locked title" + table)
+        self.assertEqual(m["row"]["shackle"] if "shackle" in m["row"] else m["row"]["glyph"], "M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2", "locked: the shackle seated in the row" + table)
+        un = r["themes"]["dark"]["lock"]["row"] if r["themes"]["dark"]["lock"]["on"] else None
+        st = r["start"]
+        self.assertEqual(st["tagCtl"]["pressed"], "true", "the chat lens is narrowed (to no tags): the tag button says so with the accent" + json.dumps(st["tagCtl"]))
+        self.assertFalse(st["tagCtl"]["chipsInDom"], "and displays no chips, no (no tags), on the strip (T405)" + json.dumps(st["tagCtl"]))
+
+    def test_the_phone_layout_hides_the_strip_and_the_gear_with_it(self):
+        p = self._run()["phone"]
+        self.assertTrue(p["phoneLayout"], json.dumps(p))
+        self.assertFalse(p["stripVisible"], "the phone page hides the whole strip (T161)" + json.dumps(p))
+        self.assertFalse(p["gearVisible"], "so there is no gear to place" + json.dumps(p))
 
     def test_locked_the_drag_moves_nothing_and_unlocked_the_same_drag_moves_the_tab(self):
         r = self._run()
         u = r["unlockedDrag"]
         self.assertTrue(u["moved"] and u["landedFirst"], "the control: with the lock off the 3rd tab lands first: " + json.dumps(u))
-        self.assertTrue(r["pressed"], "the lock was pressed: " + json.dumps(r["locked"]["lock"]))
+        self.assertTrue(r["pressed"], "the lock row was pressed: " + json.dumps(r["locked"]["lock"]))
         lk = r["locked"]
-        self.assertEqual((lk["lock"]["on"], lk["lock"]["pressed"], lk["store"]["tabsLocked"]), (True, "true", True), json.dumps(lk["lock"]) + json.dumps(lk["store"]))
+        self.assertEqual((r["pressedMenu"]["on"], r["pressedMenu"]["row"]["checked"], lk["store"]["tabsLocked"]), (True, "true", True), json.dumps(r["pressedMenu"]) + json.dumps(lk["store"]))
         self.assertTrue(all(not t["draggable"] for t in lk["tabs"]), "no tab is draggable while locked: " + json.dumps(lk["tabs"]))
         ar = r["afterReload"]
-        self.assertEqual((ar["lock"]["on"], ar["store"]["tabsLocked"]), (True, True), "the setting is the browser's: a fresh page comes up locked: " + json.dumps(ar["lock"]))
+        self.assertEqual(ar["store"]["tabsLocked"], True, "the setting is the browser's: a fresh page comes up locked: " + json.dumps(ar["store"]))
         d = r["lockedDrag"]
         self.assertFalse(d["moved"], "locked: the same drag moves nothing: " + json.dumps(d))
         self.assertEqual(d["preOrder"], d["postOrder"], json.dumps(d))
         self.assertEqual(d["ev"]["dragstart"], 0, "no drag ever began (the tab is not draggable): " + json.dumps(d["ev"]))
-        self.assertTrue(r["pressedAgain"])
+        self.assertTrue(r["pressedAgain"], json.dumps(r["pressedAgain"]))
         un = r["unlocked"]
-        self.assertEqual((un["lock"]["on"], un["lock"]["pressed"], un["store"]["tabsLocked"]), (False, "false", False), json.dumps(un["lock"]))
+        self.assertEqual((r["pressedAgain"]["on"], r["pressedAgain"]["row"]["checked"], un["store"]["tabsLocked"]), (False, "false", False), json.dumps(r["pressedAgain"]) + json.dumps(un["store"]))
         self.assertTrue(all(t["draggable"] for t in un["tabs"]), json.dumps(un["tabs"]))
         a = r["unlockedAgainDrag"]
         self.assertTrue(a["moved"] and a["landedFirst"], "unlocked again: the drag moves the tab: " + json.dumps(a))
 
-    def test_a_keyboard_press_on_the_lock_keeps_the_focus_on_the_lock(self):
-        # round one, LOW 2: the rebuild used to treat any focus inside the strip as a held tab and threw it onto the active tab
+    def test_a_keyboard_press_on_the_gear_then_the_row_keeps_the_focus_on_the_row_and_escape_returns_it(self):
+        # round one, LOW 2 (moved by T405): Enter on the gear opens the menu with the lock row focused; Enter on the row toggles and the
+        # strip's rebuild leaves the focus on the row, not the active tab; Escape closes the menu and hands the focus back to the gear
         r = self._run()
-        self.assertIn("tab-lock", r["keyToggle"]["active"], "after Enter the lock still has the focus: " + json.dumps(r["keyToggle"]))
+        self.assertEqual((r["keyOpen"]["role"], r["keyOpen"]["text"]), ("menuitemcheckbox", "Lock the tabs in place"), "Enter on the gear: the lock row focused: " + json.dumps(r["keyOpen"]))
+        self.assertEqual(r["keyToggle"]["active"]["role"], "menuitemcheckbox", "after Enter the row still has the focus: " + json.dumps(r["keyToggle"]))
+        self.assertTrue(r["keyToggle"]["menuOpen"], "a switch keeps the menu open")
         self.assertEqual(r["keyToggle"]["store"]["tabsLocked"], False, "Enter toggled it (unlocked)")
-        self.assertIn("tab-lock", r["keyToggleBack"]["active"], json.dumps(r["keyToggleBack"]))
+        self.assertEqual(r["keyToggleBack"]["active"]["role"], "menuitemcheckbox", json.dumps(r["keyToggleBack"]))
         self.assertEqual(r["keyToggleBack"]["store"]["tabsLocked"], True, "and back")
+        self.assertIn("tab-widgets-gear", r["keyEscape"]["active"]["cls"], "Escape hands the focus back to the gear: " + json.dumps(r["keyEscape"]))
+        self.assertFalse(r["keyEscape"]["menuOpen"])
 
     def test_the_sessions_pane_lane_drag_is_held_by_the_lock_and_moves_once_unlocked(self):
         # round one, MEDIUM 1: the timeline shares the order with the strip, so its lane drag wrote a new order while every tab read
@@ -363,16 +450,15 @@ class ServedTabLock(unittest.TestCase):
         self.assertEqual(un["postOrder"][0], un["dragged"], json.dumps(un))
         self.assertGreater(un["grabRectsPre"], 0, "unlocked: the lanes offer the grab cursor again")
 
-    def test_the_locked_dress_is_the_accent_on_glyph_and_outline_with_no_fill(self):
+    def test_the_locked_state_reads_in_the_menu_row_the_check_the_seated_shackle_and_the_locked_title(self):
         r = self._run()
-        lk = r["locked"]["lock"]
-        table = "\n  " + json.dumps(lk) + " accent=" + r["locked"]["accent"]
-        self.assertTrue(lk.get("present"), table)
-        self.assertEqual(lk["color"], r["locked"]["accent"], "the glyph wears the accent" + table)
-        self.assertEqual(lk["border"], r["locked"]["accent"], "…and the outline" + table)
-        self.assertEqual(lk["bg"], "rgba(0, 0, 0, 0)", "no colour fill" + table)
-        self.assertEqual(lk["shackle"], "M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2", "locked: the shackle seated" + table)
-        self.assertIn("locked", lk["title"], table)
+        m = r["pressedMenu"]
+        table = "\n  " + json.dumps(m)
+        self.assertEqual(m["row"]["checked"], "true", "the ✓ says locked" + table)
+        self.assertEqual(m["row"]["glyph"], "M4.8 6.2 V4.4 a2.2 2.2 0 0 1 4.4 0 V6.2", "locked: the shackle seated (the Sessions pane's drawing)" + table)
+        self.assertIn("locked", m["row"]["title"], table)
+        un = r["unlocked"]
+        self.assertFalse(un["lock"]["present"], "still no button in the strip after the toggles" + json.dumps(un["lock"]))
 
 
 if __name__ == "__main__":

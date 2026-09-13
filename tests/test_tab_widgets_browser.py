@@ -86,8 +86,8 @@ const readStrip = () => chatF.evaluate(([sidWeb]) => {
     key: (() => { const k = t.querySelector(".tab-key"); return k ? { text: k.textContent, title: k.title, w: k.getBoundingClientRect().width } : null; })(),
     ctx: !!t.querySelector(".tab-ctx"),
   }));
-  const gear = document.querySelector("#tabs .tab-tagbox .tab-widgets-gear");
-  const box = document.querySelector("#tabs .tab-tagbox");
+  const gear = document.querySelector("#tabs .tab-gearbox .tab-widgets-gear");   // T405: the gear in a box of its own at the strip's right
+  const box = document.querySelector("#tabs .tab-gearbox");
   const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
   return { tabs, web: tabs.find((t) => t.id === sidWeb), gear: gear ? { title: gear.title, aria: gear.getAttribute("aria-label"), svg: !!gear.querySelector("svg"), rect: rect(gear), inBox: gear.parentElement === box, boxH: box.getBoundingClientRect().height } : null,
            store: { tabWidgets: s.tabWidgets || null, tabCtx: s.tabCtx || null } };
@@ -96,7 +96,12 @@ const out = {};
 out.strip0 = await readStrip();
 // the glyph opens the settings frame on the Chat tab, scrolled to its Tab widgets section, through the shell
 const settingsOpen = () => page.evaluate(() => document.body.classList.contains("settings-open"));
-if (out.strip0.gear) await chatF.click("#tabs .tab-tagbox .tab-widgets-gear");
+if (out.strip0.gear) {   // T405: the gear opens its menu; the "Tab widgets…" row is the T379 ask
+  await chatF.click("#tabs .tab-gearbox .tab-widgets-gear");
+  await chatF.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 });
+  out.menuRoles = await chatF.evaluate(() => Array.from(document.querySelectorAll('[data-rows-menu="1"] > div')).map((r) => [r.getAttribute("role"), r.hasAttribute("aria-checked")]));
+  await chatF.click('[data-rows-menu="1"] [role="menuitem"]:nth-child(2)', { timeout: 5000 }).catch(() => {});   // the Tab widgets row is an ACTION (role menuitem, no checked state; round two, low 2); a strip without such a row is this run's red, not a crash
+}
 await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
 out.shellOpen = await settingsOpen();
 let setF = page.frames().find((f) => f.url().includes("/settings"));
@@ -494,7 +499,7 @@ class ServedTabWidgets(unittest.TestCase):
             Path(os.environ["TAB_WIDGETS_DUMP"]).write_text(json.dumps(result, indent=1) + "\n")
         return result
 
-    def test_the_strip_carries_the_widgets_and_the_gear_glyph_in_the_tag_box(self):
+    def test_the_strip_carries_the_widgets_and_the_gear_glyph_in_its_own_box_at_the_right(self):
         s = self._run()["strip0"]
         table = "\n  " + json.dumps(s)[:1200]
         self.assertEqual(len(s["tabs"]), 2, table)
@@ -512,8 +517,9 @@ class ServedTabWidgets(unittest.TestCase):
         api = next(t for t in s["tabs"] if t["name"].endswith("api"))
         self.assertIsNone(api["key"], "no hot key assigned: no keycap" + table)
         self.assertIsNotNone(s["gear"], "the glyph is in the strip (the chat sits in the shell, so a gear can be reached)" + table)
-        self.assertEqual((s["gear"]["title"], s["gear"]["aria"], s["gear"]["svg"], s["gear"]["inBox"]), ("Tab widgets…", "Tab widgets", True, True), table)
-        self.assertLessEqual(s["gear"]["rect"]["h"], s["gear"]["boxH"] + 0.5, "it takes no extra height beyond the tag box" + table)
+        self.assertEqual((s["gear"]["title"], s["gear"]["aria"], s["gear"]["svg"], s["gear"]["inBox"]), ("Tab strip: lock, widgets…", "Tab strip settings", False, True), "T405: the shell's glyph, a character, in the gear box" + table)
+        self.assertLessEqual(s["gear"]["rect"]["h"], s["gear"]["boxH"] + 0.5, "it takes no extra height beyond its box (the tags box's floor)" + table)
+        self.assertEqual(self._run().get("menuRoles"), [["menuitemcheckbox", True], ["menuitem", False]], "the lock row a switch, the widgets row an action (round two, low 2)" + table)
 
     def _assert_scrolled_to_the_section(self, p, table):
         # the section head sits inside the card's visible box, under its padding, unless the card ran out of scroll first
