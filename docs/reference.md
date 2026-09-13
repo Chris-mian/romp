@@ -1578,7 +1578,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `fallbacks` per reason (`version`, `path`, `shrunk`, `guard`, `rewrite`,
   `corrupt`), `dirty` (files whose folds moved since their last write),
   `readBytes` and `readByPath` (what the JSONL reader pulled off disk since
-  boot, in total and per file).
+  boot, in total and per file), `docConsults` (fold documents loaded by a
+  retirement's consult or a write's carry, one read shared between them).
   `rewoundMemo`: the judges' incident scan used to read every dead episode
   file of a lineage whole at every boot (`_per_file_rewound`, 542 MB on one
   devbox boot); its verdict set per frozen file is now the fold `rewoundUuids`

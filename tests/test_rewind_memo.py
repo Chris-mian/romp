@@ -546,6 +546,47 @@ class RewoundMemo(Harness):
         d = json.loads(em._ckpt_file(path).read_text())
         self.assertNotIn("rewoundUuids", d["folds"], "the first write after the flip omits the dead cursor: %r" % sorted(d["folds"]))
 
+    def test_the_flips_disk_consult_is_the_validated_load_and_shares_its_read_with_the_write(self):
+        """Follow-up, lows A and C: the consult read the fold document RAW, so a document whose folds is not a dict raised out of
+        the scan, a document for another path retired the fold, and a corrupt one was re-read every pass; and its read
+        duplicated the write's carry. The consult goes through _ckpt_load (verified, counted, a corrupt one removed) and the
+        write's carry reuses the read."""
+        jd, fsid, path = self._own_leaf("consult", scenario="rewind_off_path")
+        self.fresh_process()
+        jd._per_file_rewound(fsid, [path])
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="cFold"); self.assertTrue(em.checkpoint_write(path))
+        cp = em._ckpt_file(path)
+        d = json.loads(cp.read_text()); d["folds"] = ["not", "a", "dict"]; cp.write_text(json.dumps(d))
+        self.fresh_process()
+        with em._CKPT_LOCK:
+            em._CKPT_DOC_FOLDS.pop(path, None)
+        em.rewound_memo_forget(path)                                        # no raise; nothing to retire
+        self.assertNotIn(path, em._RETIRED_FOLDS, "a document of the wrong shape retires nothing")
+        d = json.loads(cp.read_text()) if cp.exists() else None
+        if d is not None:
+            d["folds"] = {"rewoundUuids": {"count": 6, "state": {"uuids": ["a2", "u2"]}}}; d["path"] = "/elsewhere/other.jsonl"
+            cp.write_text(json.dumps(d))
+        else:
+            cp.write_text(json.dumps({"v": em._CKPT_V, "path": "/elsewhere/other.jsonl", "offset": 0, "count": 0, "guard": "", "seq": 1,
+                                      "folds": {"rewoundUuids": {"count": 6, "state": {"uuids": ["a2", "u2"]}}}}))
+        self.fresh_process()
+        with em._CKPT_LOCK:
+            em._CKPT_DOC_FOLDS.pop(path, None)
+        em.rewound_memo_forget(path)
+        self.assertNotIn(path, em._RETIRED_FOLDS, "another path's document retires nothing (the load refuses it)")
+        # low C: a consult followed by a write reads the document once
+        self.fresh_process()
+        jd._per_file_rewound(fsid, [path])
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="cFold"); self.assertTrue(em.checkpoint_write(path))
+        self.fresh_process()
+        with em._CKPT_LOCK:
+            em._CKPT_DOC_FOLDS.pop(path, None)
+        size = os.path.getsize(cp); before = em.read_bytes_report().get(str(cp), 0); n0 = em.checkpoint_stats().get("docConsults", 0)
+        em._doc_folds_on_disk(path)                                         # the consult reads it once
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="cFold"); em.checkpoint_write(path)   # the carry reuses the read
+        self.assertEqual(em.read_bytes_report().get(str(cp), 0) - before, size, "one document read across the consult and the carry")
+        self.assertEqual(em.checkpoint_stats().get("docConsults", 0) - n0, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

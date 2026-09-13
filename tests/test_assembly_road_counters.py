@@ -140,6 +140,27 @@ class AssemblyRoadCounters(Harness):
         self.assertEqual(em.asm_checkpoint_stats()["removed"], {"sweep": 1})
         self.assertFalse(em._asm_ckpt_file(path).exists())
 
+    def test_a_refusal_recorded_inside_the_writes_window_survives_its_pop(self):
+        """Follow-up, low B: the write's pop also discarded a refusal a judge recorded against the document just published, between
+        the replace and the pop, so that parse booked noDocument. The slot is stamped; the write pops only an older refusal."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("window", records(), sent=sent)
+        self.fresh(); self.parse(path)
+        real = em._asm_sidecar
+        def sidecar_and_a_refusal(doc):
+            em._asm_ckpt_note(path, "guard")                                 # a judge refuses the document inside the write's window
+            return real(doc)
+        em._asm_sidecar = sidecar_and_a_refusal
+        self.addCleanup(setattr, em, "_asm_sidecar", real)
+        self.assertTrue(self.doc(path))
+        em._asm_sidecar = real
+        rk = os.path.realpath(path)
+        with em._ASM_CKPT_LOCK:
+            self.assertIn(rk, em._ASM_CKPT_REFUSED, "the refusal recorded inside the window survives the write's pop")
+
+    def test_the_nudge_gates_docstring_no_longer_says_silently(self):
+        import inspect
+        self.assertNotIn("silently", inspect.getsource(kernel_module()._nudge_placement_gate), "low E: the leg is counted and said")
 
 if __name__ == "__main__":
     unittest.main()
