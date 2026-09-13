@@ -1235,12 +1235,13 @@ def _awake_spans(start, end, acts=None):
 def _record_suspend(iv):
     """Append a detected suspension to the in-memory log + a small jsonl, so it survives a kernel restart
     (the timeline reads _downtime, loaded from the file at startup). Best-effort, never raises."""
-    try:
-        with open(jd.STATE / "kernel-downtime.jsonl", "a") as f:
-            f.write(json.dumps({"start": iv[0], "end": iv[1]}) + "\n")
+    _downtime.append(iv)                             # the state FIRST, its file (the reader's key) LAST: a look landing between
+    try:                                             #  the two sees the suspension and a stat that will move under its memo; the
+        with open(jd.STATE / "kernel-downtime.jsonl", "a") as f:   #  other order let a look record a skippable memo without the
+            f.write(json.dumps({"start": iv[0], "end": iv[1]}) + "\n")   #  suspension under the final stat (T401 (2) round six)
     except OSError:
-        _nudge_memos_forget()                        # the list moves below with no file to say so: every nudge memo keyed on the
-    _downtime.append(iv)                             #  downtime log is stale, so none may skip (T401 (2) round five, low b)
+        _nudge_memos_forget()                        # the list moved with no file to say so: every nudge memo keyed on the downtime
+    #                                                  log is stale, so none may skip (round five, low b)
 
 
 def _load_downtime():
@@ -13214,10 +13215,15 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
     if not turns:
         return "empty-parse"
     lt = turns[-1]
-    if _backend_rewind_pending(sid):                 # an ARMED, unconsumed bare rollback rides the parse's cache key with no file
-        return "rewind-pending"                      #  change, so every verdict computed over this parse is unbounded: the gate
-    #                                                  sits ABOVE the marked roads (T401 (2) round five, medium 1); the original
-    #                                                  gate below stays for its own documentation and is unreachable now
+    if _backend_rewind_pending(sid):                 # an ARMED, unconsumed bare rollback: the tail is about to be rewritten, but the
+        return "rewind-pending"                      #  delete writes NOTHING to the transcript, so the parse still shows the deleted
+    #                                                  turn and the goals minted from it; a nudge here would quote rolled-back
+    #                                                  content back into the thread and spend the branch cut as the new branch's
+    #                                                  first turn (the network g14 resurrection, the user 2026-07-20). An EDIT rewind
+    #                                                  needs no gate of its own: its replacement turn sits in the backend queue,
+    #                                                  which the queued-input gate below suppresses. The cut rides the parse's cache
+    #                                                  key with no file change, so every verdict computed over this parse is
+    #                                                  unbounded: the gate sits ABOVE the marked roads (T401 (2) round five, medium 1)
     if _session_working(turns):                      # still actively working (event model) → not orphaned
         return "working"
     if _interrupt_suppresses_nudge(turns, sid, family="judge"):   # the user's LAST action was a GENUINE interrupt → they're
@@ -13227,13 +13233,6 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
     if _pending_ops.get(str(sid)) or _backend_queued(sid):   # the user has messages queued — parked drive ops OR the
         return "queued-input"                                         # backend's own queue (SDK _pending, where composer sends now
         #                                                      wait) → queued intent; a nudge would jump it (the user 2026-07-05)
-    if _backend_rewind_pending(sid):     # an ARMED, unconsumed bare rollback: the tail is about to be rewritten,
-        return "rewind-pending"                     # but the delete writes NOTHING to the transcript, so the parse still shows
-        #                                  the deleted turn and the goals minted from it. A nudge here quotes rolled-
-        #                                  back content back into the thread and spends the branch cut as the new
-        #                                  branch's first turn (the network g14 resurrection, the user 2026-07-20).
-        #                                  An EDIT rewind needs no gate of its own: its replacement turn sits in the
-        #                                  backend queue, which the check above already suppresses.
     ls_val, ls_t = _last_state(sid)
     if ls_val in _PROGRESSING_STATES and ls_t >= lt.get("end", lt.get("t", 0)):
         # GENUINE-STOP GATE (the user 2026-06-25, obsidian): the AUTHORITATIVE state log (Stop hook / SDK

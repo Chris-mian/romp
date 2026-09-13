@@ -962,10 +962,11 @@ first cycle, and let the feed-only warm parse every session too; on a box with
 Now the startup warm only refreshes the shared session listing: a reconnecting
 dashboard receives its active tab whole and every other tab as a skeleton, so
 the one parse it needs is the one its own connect push runs. The feed-only warm
-parses only sessions whose transcript, state log or goal store changed since
-the boot, or that are working now. The interrupt-block and working-note tick
-jobs skip a session whose transcript, state log and goal store are unchanged
-since their last look, with the boot as the first baseline: a session blocked
+parses only sessions whose keyed files (the transcript, the state log, the
+goal store with its override journal and archive, the episode, clears, postal
+and downtime logs) changed since the boot, or that are working now. The
+interrupt-block and working-note tick jobs skip a session whose keyed files
+are unchanged since their last look, with the boot as the first baseline: a session blocked
 before the restart and untouched after reads blocked from the store the
 previous kernel wrote, with no parse. The judges' passes walk sessions newest
 first and yield between them; their first pass still parses what it

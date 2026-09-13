@@ -125,7 +125,7 @@ class FeedWarmParsesOnlyWhatMoved(unittest.TestCase):
 
 class TickJobsKeyOnAChange(unittest.TestCase):
     """The event-keyed tick jobs' memo: a session is evaluated once when no kernel on record has looked at it,
-    skipped while its transcript, state log and goal store match the last COMPLETED look, and evaluated again on
+    skipped while its keyed files (the transcript, the state log, the store and its journal and archive, the four logs) match the last COMPLETED look, and evaluated again on
     any change; the memo persists across kernels, so a stop that landed in the gap between the previous kernel's
     last tick and this boot is evaluated (review find, 2026-09-10), while a session settled before the restart
     and untouched since is not parsed again."""
