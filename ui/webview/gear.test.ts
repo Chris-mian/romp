@@ -244,6 +244,7 @@ test("the /compact suggestion is a real settings checkbox beside Auto Nudge (the
   // checkbox next to Auto Nudge — off by default for new installs, one click to turn on.
   assert.ok(GEAR.includes("id=rs-suggestcompact"), "the checkbox exists in the gear markup");
   const auto = GEAR.indexOf("data-pane=tasks"), appear = GEAR.indexOf("data-pane=appearance");   // Automatic is Task tracking since T400
+  assert.ok(auto > 0 && appear > 0, "both panes exist (indexOf's -1 would pass every order check below)");
   const at = GEAR.indexOf("id=rs-suggestcompact");
   assert.ok(auto < at && at < appear, "…in the Task tracking tab, with its siblings (T379 regrouped the panel into tabs; T400 renamed this one)");
   assert.ok(GEAR.indexOf("id=rs-autonudge") < at && at < GEAR.indexOf("id=rs-conserve"),

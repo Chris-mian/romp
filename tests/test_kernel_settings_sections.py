@@ -50,7 +50,7 @@ class SettingsSectionsTest(unittest.TestCase):
             "chat": ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-filelink", "rs-filesctl", "rs-chatscheme", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-widgets", "rs-striprows"],
             "feed": ["rs-feedcollapsed"],
             "sessions": ["rs-defaultdir", "rs-backend", "rs-fileedit", "rs-activeonly", "rs-collapsegaps"],
-            "tasks": ["rs-autonudge", "rs-suggestcompact", "rs-conserve", "rs-thinksum", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort"],
+            "tasks": ["rs-autonudge", "rs-suggestcompact", "rs-conserve", "rs-thinksum", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
             "appearance": ["rs-theme", "rs-cmap", "rs-pal"],
             "debug": ["rs-updates", "rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
         }

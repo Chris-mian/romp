@@ -1,4 +1,5 @@
-// The settings panel in TABS (T379, the user 2026-09-12): the settings grouped by the surface they belong to, six pills
+// The settings panel in TABS (T379, the user 2026-09-12; re-cut T400: General, Chat, Feed, Sessions, Task tracking, Appearance, Debug):
+// the settings grouped by the surface they belong to, seven pills
 // under the title, one pane each, every existing key kept; the tab-widgets gear on the chat strip opens the Chat tab
 // scrolled to its Tab widgets section (the user's amendment: no tab of their own), whose rows are the registered widgets (a live demo, a sliding switch, the widget's options); the last tab used is
 // remembered per browser. gear.js builds its DOM from a markup string, so the inventory is read off that string (each
@@ -103,6 +104,7 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   assert.match(GEAR, /plFill\(\); fill\(\); showSection\(section\); \}/, "the scroll is the opener's last act, after the panel is displayed");
   assert.match(GEAR_CSS, /#rsettings \.rs-pane\[hidden\] \{ display: none; \}/, "a hidden pane is out of the flow (the [hidden] rule the author display would beat)");
   assert.match(GEAR_CSS, /#rsettings \.rs-tab\.on \{ color: var\(--accent, #9cd2ff\); border-color: var\(--accent, #9cd2ff\); background: var\(--accent-wash, rgba\(156, 210, 255, 0\.12\)\); font-weight: 600; \}/);
+  assert.match(GEAR_CSS, /#rsettings \.rs-tab \{ font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 999px;/, "8px of side padding: seven pills on the card's one row (T400 round one)");
 });
 
 test("the Tab widgets section's rows come from the strip's own module: built once, painted in place, a sliding switch, house pickers for the options", () => {

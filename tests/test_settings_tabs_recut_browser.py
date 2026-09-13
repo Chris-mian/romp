@@ -88,7 +88,10 @@ const readPanel = (setF) => setF.evaluate((moved) => {
   const shown = Array.from(document.querySelectorAll("#rsettings .rs-pane")).filter((pn) => getComputedStyle(pn).display !== "none").map((pn) => pn.dataset.pane);
   const homes = {}; for (const id of moved) { const el = document.getElementById(id); homes[id] = el ? ((el.closest(".rs-pane") || {}).dataset || {}).pane || null : "missing"; }
   const heads = {}; for (const pn of document.querySelectorAll("#rsettings .rs-pane")) heads[pn.dataset.pane] = Array.from(pn.querySelectorAll(".rs-sec")).map((h) => h.textContent.trim());
-  return { open: true, pills, shown, homes, heads, remembered: localStorage.getItem("romp:settingsTab") };
+  // the pill bar: one row when every pill shares the first pill's top; its width from the first pill's left edge to the last one's right
+  const bar = document.getElementById("rs-tabs"); const rects = Array.from(bar.querySelectorAll(".rs-tab")).map((x) => x.getBoundingClientRect());
+  const barInfo = { h: bar.getBoundingClientRect().height, rows: new Set(rects.map((r) => Math.round(r.top))).size, width: Math.round((rects[rects.length - 1].right - rects[0].left) * 10) / 10, available: Math.round(bar.getBoundingClientRect().width * 10) / 10, theme: document.body.classList.contains("theme-light") ? "light" : "dark" };
+  return { open: true, pills, shown, homes, heads, bar: barInfo, remembered: localStorage.getItem("romp:settingsTab") };
 }, MOVED);
 const out = {};
 // 1. the glyph's ask for General: the pills, the homes, the heads; then the Debug pill; screenshots of both in both themes
@@ -105,7 +108,8 @@ const out = {};
       const fr = await page.evaluate(() => { const f = document.getElementById("f-settings").getBoundingClientRect(); return { x: f.left, y: f.top }; });
       await page.screenshot({ path: cfg.shots + "-" + tab + "-" + theme + ".png", clip: { x: fr.x + card.x, y: fr.y + card.y, width: card.width, height: card.height } });
     };
-    for (const theme of ["dark", "light"]) { await shot("general", theme); await shot("debug", theme); }
+    out.bar = {};
+    for (const theme of ["dark", "light"]) { await shot("general", theme); out.bar[theme] = (await readPanel(setF)).bar; await shot("debug", theme); }
     for (const f of [page, setF]) await f.evaluate(() => document.body.classList.remove("theme-light"));
     await setF.click('#rsettings .rs-tab[data-tab="debug"]'); await setF.waitForTimeout(150);
     out.debug = await readPanel(setF);
@@ -259,6 +263,17 @@ class ServedSettingsTabs(unittest.TestCase):
         self.assertEqual(g["heads"]["tasks"], ["Sessions", "Judges"], "Task tracking keeps Automatic's sections, the judges under it" + table)
         self.assertEqual(g["heads"]["feed"], ["Cards"], "the judges' debug views left the Feed tab" + table)
         self.assertEqual(g["heads"]["sessions"], ["New sessions", "Sessions pane"], "the Panes section left the Sessions tab" + table)
+
+    def test_the_seven_pills_sit_on_one_row_of_the_card_in_both_themes(self):
+        # round one, LOW 1: at 10px of side padding the seven needed 528px against 518 available, and Debug alone dropped to a second
+        # row (the bar 38 to 69px); at 8px they fit
+        bar = self._run()["bar"]
+        for theme in ("dark", "light"):
+            bi = bar[theme]; table = "\n  " + theme + ": " + json.dumps(bi)
+            self.assertEqual(bi["theme"], theme, table)
+            self.assertEqual(bi["rows"], 1, theme + ": one row" + table)
+            self.assertLess(bi["width"], bi["available"], theme + ": the pills fit the bar" + table)
+            self.assertLess(bi["h"], 45, theme + ": a one-row bar" + table)
 
     def test_each_moved_row_lives_in_its_new_home_with_its_id_kept(self):
         g = self._run()["general"]

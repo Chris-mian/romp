@@ -66,7 +66,8 @@ var GEAR_HTML =
   '<button id=rgear hidden aria-hidden=true></button>' +
   '<div id=rsettings hidden><div class=rs-card>' +
   '<div class=rs-h>Settings</div>' +
-  // THE TABS (T379, the user 2026-09-12): the settings grouped by the surface they belong to, six pills under the
+  // THE TABS (T379, the user 2026-09-12; re-cut T400 into General, Chat, Feed, Sessions, Task tracking, Appearance, Debug): the
+  // settings grouped by the surface they belong to, seven pills under the
   // title in the menu vocabulary; every row keeps its id and its key. The tab-widgets gear on the chat strip opens the
   // Chat tab scrolled to its Tab widgets section (openSettings(tab, section)); the last tab used is remembered per
   // browser (romp:settingsTab). RS_TABS is the one list the pills, the panes and selectTab read.
