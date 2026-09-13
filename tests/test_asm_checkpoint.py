@@ -211,9 +211,11 @@ class StringRowsAndRestoreSplit(Harness):
         got, modes, n_lazy = self.restored(path)
         self.assertEqual(modes, ["restore"])
 
-    def test_the_restore_split_lands_on_the_four_parts_and_a_total_in_tenths(self):
-        """1606 low 3: whole milliseconds reported all zeros for a fast restore, and the four parts did not decompose the
-        restore (the tail's parse was unnamed): tenths, and a `total` on every return of _asm_restore."""
+    def test_the_restore_split_reports_every_part_above_zero_after_one_fast_restore(self):
+        """1606 low 3 and 1610 round two, medium 2: whole milliseconds, then tenths, reported zeros for the fast parts of one
+        restore (raw 0.0136, 0.0146, 0.0175 ms), and the pin read the raw floats, not the report. The REPORT is pinned: three
+        decimals, every part above zero after a single fast restore, a `total` on every return of _asm_restore that holds
+        each part, and the report equal to the intended rounding of the raw sums."""
         with em._ASM_CKPT_LOCK:
             em._ASM_CKPT_STATS["restoreMs"] = {"load": 0.0, "verify": 0.0, "index": 0.0, "seed": 0.0, "total": 0.0}
         path = self._compacting()
@@ -221,13 +223,50 @@ class StringRowsAndRestoreSplit(Harness):
         self.assertEqual(modes, ["restore"])
         ms = em.asm_checkpoint_stats()["restoreMs"]
         self.assertEqual(set(ms), {"load", "verify", "index", "seed", "total"})
-        self.assertTrue(all(isinstance(v, float) and v >= 0 for v in ms.values()), ms)
-        self.assertTrue(all(round(v, 1) == v for v in ms.values()), "tenths: %r" % ms)
+        self.assertTrue(all(isinstance(v, float) and v > 0.0 for v in ms.values()), "every part reads above zero on /perf: %r" % ms)
         with em._ASM_CKPT_LOCK:
             raw = dict(em._ASM_CKPT_STATS["restoreMs"])
-        self.assertTrue(all(raw[k] > 0.0 for k in ("load", "verify", "index", "seed", "total")), "every part ran and was timed: %r" % raw)
+        self.assertEqual(ms, {k: round(v, 3) for k, v in raw.items()}, "the report is the raw sums at three decimals")
         self.assertGreaterEqual(raw["total"], max(raw[k] for k in ("load", "verify", "index", "seed")), "the total holds each part")
-        self.assertGreater(ms["total"], 0.0, "a fast restore is not all zeros")
+
+    def test_a_corrupt_last_row_of_any_shape_is_refused_whole_and_the_whole_parse_serves(self):
+        """1610 round two, medium 1: the rows guard decoded row 0 only, so a document whose LAST row was a bare string, a list, a
+        number or not JSON took the restore road and raised at the consumer. Every row's shape is checked at load (cheaply:
+        an object's braces); each variant is refused as `rows` and the parse serves cold-equal."""
+        for bad in ('"a bare string"', "[1, 2]", "7", "not json at all", '{"r": 0'):
+            with self.subTest(last_row=bad):
+                path = self._compacting()
+                d = _doc(path); d["atoms"][-1] = bad; _write_doc(path, d)
+                em._ASM_CKPT_STATS["fallbacks"] = {}
+                self.fresh(); modes = []; tree = self.parse(path, modes)
+                self.assertEqual(modes, ["full"], "the whole parse serves")
+                self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "counted once: %s" % em.asm_checkpoint_stats()["fallbacks"])
+                self.assertEqual(_strip(tree), self.cold(path))
+
+    def test_an_object_shaped_row_that_does_not_decode_is_noted_at_its_first_build_and_the_next_parse_is_whole(self):
+        """1610 round two, medium 1, the residual: a row shaped as an object whose inside is not JSON passes the load's shape
+        check; the first build notes the document `rows` once, drops its assembly entry and raises for that build alone; the
+        next parse of the leaf is the whole parse, cold-equal, and the note counted once."""
+        path = self._compacting()
+        d = _doc(path); last = len(d["atoms"]) - 1; d["atoms"][last] = "{not json inside}"; _write_doc(path, d)
+        em._ASM_CKPT_STATS["fallbacks"] = {}
+        self.fresh(); modes = []; tree = self.parse(path, modes)
+        self.assertEqual(modes, ["restore"], "the shape check passes: the restore serves")
+        lazy = [t["atoms"] for t in tree["turns"] if isinstance(t.get("atoms"), em.LazyAtoms)]
+        self.assertTrue(lazy)
+        with self.assertRaises(em.LazyIndexError):
+            for la in lazy:
+                for i in range(len(la)):
+                    la[i]                                                # the corrupt row's build raises, once, loudly
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "noted once at the first failing build")
+        with self.assertRaises(em.LazyIndexError):
+            for la in lazy:
+                for i in range(len(la)):
+                    la[i]                                                # a second consumer of the same index: raised again,
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "  but noted once")
+        modes = []; tree2 = self.parse(path, modes)
+        self.assertEqual(modes, ["full"], "the entry was dropped: the next parse is whole")
+        self.assertEqual(_strip(tree2), self.cold(path))
 
     def test_a_version_6_document_whose_first_row_is_not_an_object_is_refused_as_rows(self):
         """1606 low 2: the rows guard checked the type only; a string row that decodes to a list took the restore road and

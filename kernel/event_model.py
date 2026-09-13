@@ -4811,9 +4811,11 @@ class LazyIndex:
     when a consumer reaches for an atom, through a process-wide LRU (_MAT_CAP). The record rows (identity, time, file,
     parent) stay decoded: they are small and every materialization reads one."""
 
-    def __init__(self, doc, rompuuid, leaf_path):
+    def __init__(self, doc, rompuuid, leaf_path, cache_key=None):
         self.rompuuid = str(rompuuid)
         self.leaf = str(leaf_path)
+        self._cache_key = cache_key                        # the assembly entry this index serves: dropped when a row fails to build
+        self._rows_noted = False                          # the document noted `rows` once, at the first row that fails to build
         self.rowb = [r.encode("utf-8") for r in doc["atoms"]]   # v6: the document's rows are JSON strings already (T401 (4))
         self.records = doc["records"]
         self.fsids = list(doc.get("fsids") or [])
@@ -4826,9 +4828,12 @@ class LazyIndex:
             _ASM_INDEX_STATS["rowDecodes"] += 1
         try:
             row = json.loads(self.rowb[k])
+            if not isinstance(row, dict):
+                raise ValueError("row is not a JSON object")
         except (IndexError, ValueError) as e:
-            raise LazyIndexError("session %s row %d: %s" % (self.rompuuid[:8], k, e)) from e
-        if row.get("syn"):                                # a synthesized atom (idle, a salvaged reply): its message inline, if any
+            self._refuse_rows("row %d: %s" % (k, e))       # the document is a cache and never crashes its reader twice: noted `rows`
+            raise LazyIndexError("session %s row %d: %s" % (self.rompuuid[:8], k, e)) from e   # once, its entry dropped, the next
+        if row.get("syn"):                                #  parse whole (counted); this build alone raises, loudly                                # a synthesized atom (idle, a salvaged reply): its message inline, if any
             a = dict(row.get("s") or {})
             if "m" in row:
                 a.update(message=row["m"])                # a WRITE of the synthesized atom's message (no body read: the audit's regex)
@@ -4836,6 +4841,19 @@ class LazyIndex:
         a = _restore_prefix_atoms([row], self.rompuuid, self.records, self.fsids)[0]
         a.pop("_seq", None)                               # the read-order tiebreak: the section fixed the order (parse_session pops it too)
         return a
+
+    def _refuse_rows(self, detail):
+        """A row that passed the load's shape check but does not decode to an object: the document is noted `rows` (counted once
+        per index, said once per leaf), its assembly entry is dropped so the next parse of the leaf is the whole parse, and the
+        document is removed by the note (the settle rewrites it). The caller raises for THIS build; nothing lazier is possible
+        once a consumer holds the row."""
+        if self._rows_noted:
+            return
+        self._rows_noted = True
+        _asm_ckpt_note(self.leaf, "rows", detail)
+        if self._cache_key is not None:
+            with _ASM_LOCK:
+                _ASM_CACHE.pop(self._cache_key, None)
 
     def user_facts(self, k):
         """The fields the interrupt-marks tally reads from a USER row, from one decode and no atom build (T401 (3) target 3):
@@ -5165,7 +5183,7 @@ _ASM_CKPT_STATS = {"written": 0, "restored": 0, "fallbacks": {}, "skipped": {}, 
                    #                     parse through the seeded adapter, is total minus the four named parts)
                    #                     (T401 (4)): the document's read and checks, the section's identity and coverage (or the
                    #                     atoms-only form's build and identity), the lazy index, the adapter seed; each bumped on
-                   #                     the return it names so a boot read names the mover; whole ms on /perf, floats inside
+                   #                     the return it names so a boot read names the mover; three decimals on /perf, floats inside
                    "hydratedBy": {},     # bytes per calling function: a whole-tree hydration anywhere shows here
                    "converge": {"writes": 0, "bytes": 0, "deferred": 0, "candidates": 0, "skipped": {}}}   # the pass's writes for
 #                                          idle leaves from the boot's own parse (T376): looked at, written, deferred for the budget,
@@ -5451,8 +5469,8 @@ def _restore_ms(part, t0):
 def asm_checkpoint_stats():
     with _ASM_CKPT_LOCK:
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
-        out["restoreMs"] = {k: round(v, 1) for k, v in (out.get("restoreMs") or {}).items()}   # tenths of a ms (a fast restore is
-        #                                                                                       not all zeros); the sums stay floats
+        out["restoreMs"] = {k: round(v, 3) for k, v in (out.get("restoreMs") or {}).items()}   # microsecond resolution (a fast
+        #                                                                                       restore's parts read above zero)
         out["hydratedBy"] = dict(out["hydratedBy"]); out["removed"] = dict(out.get("removed") or {})
         out["hydratedByStage"] = dict(out.get("hydratedByStage") or {})   # T401: bytes per (stage, calling function)
         cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
@@ -6167,8 +6185,10 @@ def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet
             first_ = json.loads(doc["atoms"][0])           # one row decoded here, cheaply: a string that is not a JSON object would
         except ValueError:                                 #  otherwise take the restore road and raise at its first build, uncounted
             first_ = None
-        if not isinstance(first_, dict):
-            _asm_ckpt_note(leaf_path, "rows"); return None
+        if not isinstance(first_, dict) or not all(r_.startswith("{") and r_.endswith("}") for r_ in doc["atoms"]):
+            _asm_ckpt_note(leaf_path, "rows"); return None   # every row must be shaped as an object (a bare string, a list, a number
+        #                                                   or truncated text is refused whole here, cheaply); a row that is shaped
+        #                                                   right but does not decode is the build's belt below (LazyIndex.build)
     if doc.get("path") != os.path.realpath(str(leaf_path)) or doc.get("rompuuid") != str(rompuuid) \
             or bool(doc.get("sdkHuman")) != bool(sdk_human):
         _asm_ckpt_note(leaf_path, "session"); return None
@@ -6386,11 +6406,12 @@ def _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_
             _t0 = time.perf_counter()
             if _tree_identity_of_doc(doc["turns"], doc.get("identity")) != doc.get("treeIdentity"):
                 _restore_ms("verify", _t0); _asm_ckpt_note(leaf_path, "identity"); return None
-            if sorted(k_ for td in doc["turns"] for k_ in td["atoms"]) != list(range(len(doc["atoms"]))):   # the section does not
-                _restore_ms("verify", _t0); _asm_ckpt_note(leaf_path, "coverage"); return None              #  cover the rows: never
-            _restore_ms("verify", _t0)                                                                     #  a short history
+            # the section must cover the rows, every row in exactly one turn: else never a short history
+            if sorted(k_ for td in doc["turns"] for k_ in td["atoms"]) != list(range(len(doc["atoms"]))):
+                _restore_ms("verify", _t0); _asm_ckpt_note(leaf_path, "coverage"); return None
+            _restore_ms("verify", _t0)
             _t0 = time.perf_counter()
-            index = LazyIndex(doc, rompuuid, leaf_path)
+            index = LazyIndex(doc, rompuuid, leaf_path, cache_key=key)
             pre_turns = _pre_turns_of(doc, index)
             doc["atoms"] = None                                # the rows live in the index as bytes from here
             with _MAT_LOCK:
