@@ -243,6 +243,39 @@ class StringRowsAndRestoreSplit(Harness):
                 self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "counted once: %s" % em.asm_checkpoint_stats()["fallbacks"])
                 self.assertEqual(_strip(tree), self.cold(path))
 
+    def test_a_corrupt_row_refuses_the_document_on_every_accessor_road_and_the_next_parse_is_whole(self):
+        """1610 round three, mediums 1 and 2: the belt covered LazyIndex.build only; text_flags and uuid_of (the orphan
+        synthesis walks every pre-cut row through them) did a bare json.loads whose JSONDecodeError escaped uncounted with the
+        document left on disk, so the leaf never parsed again; and user_facts returned None for the row, so the tally answered
+        from one row fewer than the whole parse with nothing counted. One helper now serves every accessor: the first read on
+        ANY road notes `rows` once, unlinks the document, drops the entry and raises; the next parse is whole and cold-equal."""
+        km_ = kernel_module()
+        roads = {
+            "build": lambda la, k: la[k],
+            "text_flags": lambda la, k: la._index.text_flags(la._rows[k]),
+            "uuid_of": lambda la, k: la._index.uuid_of(la._rows[k]),
+            "uuids": lambda la, k: la.uuids(),
+            "user_facts (the tally)": lambda la, k: km_._interrupt_marks_facts([{"id": "t", "t": 0, "atoms": la}]),
+        }
+        for name, road in roads.items():
+            with self.subTest(road=name):
+                path = self._compacting()
+                cold = self.cold(path)
+                d = _doc(path); last = len(d["atoms"]) - 1; d["atoms"][last] = "{not json inside}"; _write_doc(path, d)
+                em._ASM_CKPT_STATS["fallbacks"] = {}
+                self.fresh(); modes = []; tree = self.parse(path, modes)
+                self.assertEqual(modes, ["restore"], "the shape check passes: the restore serves")
+                la = next(t["atoms"] for t in tree["turns"] if isinstance(t.get("atoms"), em.LazyAtoms) and last in t["atoms"]._rows)
+                k = la._rows.index(last)
+                with self.assertRaises(em.LazyIndexError):
+                    road(la, k)
+                self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "noted once on the %s road" % name)
+                self.assertFalse(em._asm_ckpt_file(path).exists(), "the document is unlinked")
+                modes = []; tree2 = self.parse(path, modes)
+                self.assertEqual(modes, ["full"], "the entry was dropped: the next parse is whole")
+                self.assertEqual(_strip(tree2), cold)
+                self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "still counted once")
+
     def test_an_object_shaped_row_that_does_not_decode_is_noted_at_its_first_build_and_the_next_parse_is_whole(self):
         """1610 round two, medium 1, the residual: a row shaped as an object whose inside is not JSON passes the load's shape
         check; the first build notes the document `rows` once, drops its assembly entry and raises for that build alone; the

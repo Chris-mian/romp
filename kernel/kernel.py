@@ -51126,10 +51126,16 @@ def _jobs_pass(now, live_map):
         sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
     try:                                  # the tick jobs' evaluation memo, persisted when a completed evaluation
         _job_stage('persistTickSeen', lambda: _persist_tick_seen())          # moved it (T323 stage 1): the next kernel's first look starts from here
-        _job_stage('persistIntrMarks', lambda: _persist_intr_marks())    # the interrupt-marks memo, when a row changed (T401 (3) target 3)
-        _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
     except Exception:
         sys.stderr.write("tick-seen: %s\n" % traceback.format_exc())
+    try:                                  # each persist on its own: one memo's raise never skips the other two (1610 round three)
+        _job_stage('persistIntrMarks', lambda: _persist_intr_marks())    # the interrupt-marks memo, when a row changed (T401 (3) target 3)
+    except Exception:
+        sys.stderr.write("interrupt-marks: %s\n" % traceback.format_exc())
+    try:
+        _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
+    except Exception:
+        sys.stderr.write("spend-tree: %s\n" % traceback.format_exc())
     try:                                  # hitting a usage limit auto-engages the retry-pause (before the resume check)
         _job_stage('autoPauseOnLimit', lambda: _auto_pause_on_limit())
     except Exception:

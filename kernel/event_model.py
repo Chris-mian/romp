@@ -4823,17 +4823,26 @@ class LazyIndex:
         with _MAT_LOCK:                                   # the add under the lock the userFacts gauge sums under: an add beside the sum raised
             _LIVE_INDEXES.add(self)                       #  "set changed size during iteration" and /perf answered 500 (1597 low 1)
 
-    def build(self, k):
+    def _row(self, k):
+        """The one row decode every accessor uses (build, text_flags, uuid_of, user_facts; uuids through uuid_of): a row that
+        does not decode to a JSON object refuses the DOCUMENT to the truth (1610 round three, mediums 1 and 2): noted `rows`
+        once (counted, said once per leaf, the document unlinked by the note), the leaf's assembly entry dropped so the next
+        parse is the whole parse, and this read alone raises LazyIndexError. A checkpoint is a cache: every road that decodes
+        a row can find it corrupt, and none of them may crash its reader twice or answer from one row fewer."""
         with _MAT_LOCK:
             _ASM_INDEX_STATS["rowDecodes"] += 1
         try:
             row = json.loads(self.rowb[k])
             if not isinstance(row, dict):
                 raise ValueError("row is not a JSON object")
+            return row
         except (IndexError, ValueError) as e:
-            self._refuse_rows("row %d: %s" % (k, e))       # the document is a cache and never crashes its reader twice: noted `rows`
-            raise LazyIndexError("session %s row %d: %s" % (self.rompuuid[:8], k, e)) from e   # once, its entry dropped, the next
-        if row.get("syn"):                                #  parse whole (counted); this build alone raises, loudly                                # a synthesized atom (idle, a salvaged reply): its message inline, if any
+            self._refuse_rows("row %d: %s" % (k, e))
+            raise LazyIndexError("session %s row %d: %s" % (self.rompuuid[:8], k, e)) from e
+
+    def build(self, k):
+        row = self._row(k)
+        if row.get("syn"):                                # a synthesized atom (idle, a salvaged reply): its message inline, if any
             a = dict(row.get("s") or {})
             if "m" in row:
                 a.update(message=row["m"])                # a WRITE of the synthesized atom's message (no body read: the audit's regex)
@@ -4860,8 +4869,8 @@ class LazyIndex:
         type, uuid, t, author (the recorded scalars applied over the record row's fields, exactly as the build applies them)
         and lazy.ir (the interrupt flag), as a light dict that is never stored in the slot or the LRU; None for a row that
         is not a user record. What is cached: the USER rows' facts, per index in self._user_facts, cleared whole past
-        _USER_FACTS_CAP; a non-user row is re-decoded on every tally and a broken row is never cached (the build reports
-        it), so a second tally over the same index decodes every non-user row again. That second tally is rare: the
+        _USER_FACTS_CAP; a non-user row is re-decoded on every tally
+        (a broken row refuses the document, see _row), so a second tally
         kernel's identity memo answers a repeated tally over the same parse before this method runs, and a changed
         transcript restores a new index. The gauge asmIndex.userFacts is the sum of the live indexes' caches, taken at
         report time (asm_index_stats), so this hot path takes no lock but the row-decode counter's."""
@@ -4869,13 +4878,8 @@ class LazyIndex:
         f = cache.get(k)
         if f is not None:
             return f
-        with _MAT_LOCK:
-            _ASM_INDEX_STATS["rowDecodes"] += 1
-        try:
-            row = json.loads(self.rowb[k])
-        except (IndexError, ValueError):
-            return None                                # not cached: a broken row is the build's to report
-        ri = row.get("r"); sc = row.get("s") or {}
+        row = self._row(k)                             # a broken row refuses the document and raises here: the tally never answers
+        ri = row.get("r"); sc = row.get("s") or {}     #  from one row fewer than the whole parse (1610 round three, medium 2)
         tname = {"u": "user", "a": "assistant", "s": "system"}
         typ = sc.get("type") or (tname.get(self.records[ri][2], "user") if ri is not None else None)
         if typ != "user":
@@ -4896,9 +4900,7 @@ class LazyIndex:
 
     def uuid_of(self, k):
         """A row's uuid without building its atom (the record row's, else the synthesized scalars')."""
-        with _MAT_LOCK:
-            _ASM_INDEX_STATS["rowDecodes"] += 1
-        row = json.loads(self.rowb[k])
+        row = self._row(k)
         ri = row.get("r")
         if ri is not None:
             return self.records[ri][0]
@@ -4908,9 +4910,7 @@ class LazyIndex:
         """(type, has text, text hash) for a row without building its atom, one decode: what an orphan marker's dedup reads.
         The hash is lz.h (the first eight hex of sha1 over the text) for a lazy row, the same digest over an inline message
         for a synthesized or inline row; None without text."""
-        with _MAT_LOCK:
-            _ASM_INDEX_STATS["rowDecodes"] += 1
-        row = json.loads(self.rowb[k])
+        row = self._row(k)
         ri = row.get("r")
         lz = row.get("lz")
         tname = {"u": "user", "a": "assistant", "s": "system"}

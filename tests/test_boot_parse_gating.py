@@ -164,19 +164,19 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         r = _row(d, SID_OLD, old=True)
         skip, st = km._tick_job_check("interrupt-block", r); km._tick_job_done("interrupt-block", r, st)
         p = km._tick_seen_path(); p.parent.mkdir(parents=True, exist_ok=True)
-        blocker = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident())); blocker.mkdir()   # write_text raises
         err = io.StringIO()
-        try:
-            with mock.patch.object(km, "_TICK_SEEN_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err):
-                self.assertFalse(km._persist_tick_seen(), "the write failed")
-                with km._TICK_SEEN_LOCK:
-                    self.assertTrue(km._TICK_SEEN_DIRTY[0], "the memo is dirty again: the next persist retries")
-                self.assertFalse(km._persist_tick_seen(), "still failing (the blocker stands)")
-        finally:
-            blocker.rmdir()
+        def broken_replace(a, b):                                          # the fault on the REPLACE (1610 round three, medium 3):
+            raise OSError("EIO: replace refused")                          #  the tmp was written, so the unlink leg has power
+        with mock.patch.object(km, "_TICK_SEEN_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err), \
+             mock.patch("os.replace", side_effect=broken_replace):
+            self.assertFalse(km._persist_tick_seen(), "the replace failed")
+            with km._TICK_SEEN_LOCK:
+                self.assertTrue(km._TICK_SEEN_DIRTY[0], "the memo is dirty again: the next persist retries")
+            self.assertEqual(list(p.parent.glob(p.name + ".tmp.*")), [], "the written tmp was unlinked")
+            self.assertFalse(km._persist_tick_seen(), "still failing")
+            self.assertEqual(list(p.parent.glob(p.name + ".tmp.*")), [], "and unlinked again")
         self.assertEqual(err.getvalue().count("tick-seen memo: not written"), 1, "said once: %r" % err.getvalue())
-        self.assertEqual(list(p.parent.glob(p.name + ".tmp.*")), [], "no tmp left behind")
-        self.assertTrue(km._persist_tick_seen(), "the blocker gone: the retried persist writes")
+        self.assertTrue(km._persist_tick_seen(), "the fault gone: the retried persist writes")
 
     def test_an_unserializable_entry_raises_with_the_flag_still_dirty_and_is_said_once(self):
         """1610 round two, medium 3: json.dumps sat after the flag cleared, so an unserializable entry raised with the memo left
