@@ -107,7 +107,7 @@ test("the scroll clamp: how far short of the viewport top a target near the tail
 test("render.ts wiring: landOn ends follow mode, feeds the rule from the page's own events, files the row at settle time, and the walk-forward waits", () => {
   assert.match(RENDER, /import \{ SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, writerIsReader, type SettleSample \} from "\.\/landing-settle";/);
   assert.match(RENDER, /if \(c && v\) v\.stick = atBottom\(c\); \}/, "a landing ends follow mode unless it put the reader at the bottom (the tail-shrink snap otherwise undoes it)");
-  assert.match(RENDER, /const landSettle = \{ turn: target, at, uuid: flashKey \?\? null, quote: quote \?\? null, rowH: settleRowHeight\(at\), samples: \[\] as SettleSample\[\],/, "one settle in flight per landing, with what re-finds its target");
+  assert.match(RENDER, /const landSettle = \{ turn: target, at, uuid, quote, rowH: settleRowHeight\(at\), samples: \[\] as SettleSample\[\],/, "one settle in flight per landing, with what re-finds its target");
   assert.match(RENDER, /ro\.observe\(at\); if \(at !== target\) ro\.observe\(target\);/, "the aligned element's box, and the turn's");
   assert.match(RENDER, /for \(const sp of Array\.from\(v\.el\.querySelectorAll\("\.tx-spacer"\)\)\) ro\.observe\(sp\);/, "the view's spacers: their size from estimate to measurement");
   assert.match(RENDER, /function settleTick\(\): void \{/);
@@ -147,7 +147,7 @@ test("render.ts wiring, round one: the gesture verdict ends the settle by any in
   assert.match(RENDER, /function settleSupersede\(s: NonNullable<typeof landSettling>\): void \{\s*\n\s*settleEnd\(s\);\s*\n\s*if \(s\.row\) vscodeApi\?\.postMessage\(\{ \.\.\.s\.row, \.\.\.settleRowFields\("gave-up", s\.samples, s\.rowH\), gesture: undefined, settled: false, superseded: true,/);
   assert.match(RENDER, /if \(landSettling\) settleSupersede\(landSettling\);/, "a newer landing files the older's row, marked");
   // medium 3: the clamp
-  assert.match(RENDER, /const floor = reachableOffset\(r\.top - cr\.top \+ c\.scrollTop, c\.scrollHeight, c\.clientHeight\);\s*\n\s*s\.clamp = floor;\s*\n\s*s\.samples\.push\(\{ at: Date\.now\(\) - s\.start, dist: \(r\.top - cr\.top\) - floor \}\);/);
+  assert.match(RENDER, /const floor = reachableOffset\(r\.top - cr\.top \+ c\.scrollTop, c\.scrollHeight, c\.clientHeight\);\s*\n\s*s\.clamp = floor;\s*\n\s*s\.samples\.push\(\{ at: Date\.now\(\) - s\.start, dist: \(r\.top - cr\.top\) - floor - s\.offset \}\);/);
   // low 1: the tolerance, capped and re-measured
   assert.match(RENDER, /return Math\.max\(8, Math\.min\(at\.getBoundingClientRect\(\)\.height, \(c \? c\.clientHeight : 600\) \* SETTLE_ROW_VIEWPORT_CAP\)\);/);
   assert.match(RENDER, /s\.rowH = settleRowHeight\(s\.at\);/, "re-measured when the settle swaps its element");

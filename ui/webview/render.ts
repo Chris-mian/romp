@@ -11258,6 +11258,7 @@ function scrollToAnchor(uuid: string): boolean {
     if (content) {
       const yNow = target.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop;
       writeScroll(content, yNow - keepY, "keep-offset");
+      armLandSettle(target, target, target.dataset.uuid ?? null, null, keepY);   // the row stays at its offset while the transcript settles under it (round ten, low 1); by UUID, so a deferred rebuild's fresh element is what the samples measure (a stale node read the row at the top while it sat 348 px down)
     }
     return true;
   }
@@ -11399,7 +11400,7 @@ function highlightCiteSpan(target: HTMLElement, quote: string): HTMLElement | nu
 // measured distance and whether it settled, so `ok` alone is never again the whole verdict. One settle in flight: a
 // newer landing supersedes the older's. The walk-forward of a detached window that fits the viewport waits for it.
 let landSettling: { turn: HTMLElement; at: HTMLElement; uuid: string | null; quote: string | null; rowH: number; samples: SettleSample[]; start: number;
-                    gesture: boolean; row: Record<string, unknown> | null; ro: ResizeObserver | null; timers: number[]; done: boolean; clamp: number } | null = null;
+                    gesture: boolean; row: Record<string, unknown> | null; ro: ResizeObserver | null; timers: number[]; done: boolean; clamp: number; offset: number } | null = null;
 const afterSettle: (() => void)[] = [];   // what waits for the landing to settle (the window's edge check)
 /** When the reader last put a hand on the scroller (ms): a pointer down or a drag on it or its scrollbar, a touch, a wheel, or a
  *  key outside an editable field. The scroll listener reads it: a gesture-classified scroll within SETTLE_INPUT_MS of it is the
@@ -11489,7 +11490,9 @@ function settleRowHeight(at: HTMLElement): number {
 }
 function settleLand(s: NonNullable<typeof landSettling>, writer: string): void {
   const c = document.getElementById("content"); const at = settleResolve(s);
-  if (c && at) scrollElInto(c, at, "start", writer);
+  if (!c || !at) return;
+  if (s.offset) writeScroll(c, at.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop - s.offset, writer);   // back to the kept offset
+  else scrollElInto(c, at, "start", writer);
 }
 function settleFinish(s: NonNullable<typeof landSettling>, fields: { dist: number | null; settled: boolean }): void {
   settleEnd(s);
@@ -11506,10 +11509,11 @@ function settleSample(): void {
   const c = document.getElementById("content"); if (!c) return;
   const at = settleResolve(s);
   if (!at) { settleFinish(s, { dist: null, settled: false }); return; }   // the turn left the view: nothing to align, the row says so
+  if (at !== s.at && s.ro) { s.ro.observe(at); s.at = at; }   // a rebuild replaced the element: observe the live one (round ten, low 1)
   const cr = c.getBoundingClientRect(), r = at.getBoundingClientRect();
   const floor = reachableOffset(r.top - cr.top + c.scrollTop, c.scrollHeight, c.clientHeight);
   s.clamp = floor;
-  s.samples.push({ at: Date.now() - s.start, dist: (r.top - cr.top) - floor });
+  s.samples.push({ at: Date.now() - s.start, dist: (r.top - cr.top) - floor - s.offset });   // an offset landing (keep-offset) settles at its kept offset, not the top
   settleTick();
 }
 function settleTick(): void {
@@ -11536,9 +11540,16 @@ function landOn(target: HTMLElement, flashKey?: string, alignOn?: HTMLElement | 
     at.classList.add("anchor-flash");                     // the ALIGNED element flashes: the turn may sit above the viewport when the words are aligned (round one, low 2)
     setTimeout(() => at.classList.remove("anchor-flash"), 1700);
   }
+  armLandSettle(target, at, flashKey ?? null, quote ?? null, 0);
+}
+/** Arm the landing's settle window on `at` (T386): samples on resize, another writer's move or a scroll with no input behind it re-land
+ *  the row ("land-realign") until the window ends or the reader takes over. `offset` 0 is a block-start landing; a keep-offset landing
+ *  (round ten, low 1) passes the row's kept offset, so late layout growth above it (a prepend's head content laying out after the
+ *  write) is re-aligned the same way instead of pushing the opened message down the viewport. */
+function armLandSettle(target: HTMLElement, at: HTMLElement, uuid: string | null, quote: string | null, offset: number): void {
   if (landSettling) settleSupersede(landSettling);   // a newer landing supersedes the older's settle: its row is filed as it stood, marked
-  const landSettle = { turn: target, at, uuid: flashKey ?? null, quote: quote ?? null, rowH: settleRowHeight(at), samples: [] as SettleSample[],
-                       start: Date.now(), gesture: false, row: null as Record<string, unknown> | null, ro: null as ResizeObserver | null, timers: [] as number[], done: false, clamp: 0 };
+  const landSettle = { turn: target, at, uuid, quote, rowH: settleRowHeight(at), samples: [] as SettleSample[],
+                       start: Date.now(), gesture: false, row: null as Record<string, unknown> | null, ro: null as ResizeObserver | null, timers: [] as number[], done: false, clamp: 0, offset };
   landSettling = landSettle;
   if (typeof ResizeObserver === "function") {
     const ro = new ResizeObserver(() => settleSample());
@@ -11546,6 +11557,7 @@ function landOn(target: HTMLElement, flashKey?: string, alignOn?: HTMLElement | 
     for (const id of ["tabbar", "ledger"]) { const c = document.getElementById(id); if (c) ro.observe(c); }
     const v = activeId ? views.get(activeId) : null;
     if (v) for (const sp of Array.from(v.el.querySelectorAll(".tx-spacer"))) ro.observe(sp);
+    if (v) ro.observe(v.el);   // the view's own box: content laying out ABOVE the row (a prepend's head cards after the write) resizes it and no observed box otherwise (round ten, low 1)
     landSettle.ro = ro;
   }
   // the reader's takeover reaches settleGesture through the scroll listener: the classifier's gesture verdict with the reader's
@@ -17350,7 +17362,7 @@ function chatHead(msg: any) {
   // a scroll-back with no deep link pending re-anchors the READER'S OWN visible row at its offset (round ten, low 1): the landing's own
   // older-history prepend drifted the opened row (top 8 to 356) once the cancelled twin no longer re-anchored it; captured before the reset
   const contentEl = document.getElementById("content");
-  const keepRow = (!anchorUuid && v && contentEl && msg.id === activeId) ? captureScrollAnchor(contentEl, v) : null;
+  const keepRow = (v && contentEl && msg.id === activeId) ? captureScrollAnchor(contentEl, v) : null;   // the row under the viewport top, before the reset
   forget(msg.id);
   // A DEEP-LINK STILL WAITING TO LAND WINS (the user 2026-08-02). A scroll-back re-anchor is about where the
   // reader was; a pending deep-link is about where they asked to GO. Letting the arrival overwrite it sent
@@ -17359,11 +17371,18 @@ function chatHead(msg: any) {
     pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
     flashedAnchor = null;                  // ditto: this path is also a user navigation
     pendingAnchorKeepY = keepY ?? null;
+  } else if (pendingAnchor && keepRow && pendingAnchor === keepRow.uuid) {
+    // the landing still pending is the row on screen (its own older-history prepend arriving mid-settle, round ten low 1): keep that row
+    // where it is through the prepend, or the settle treats it as landed and the inserted rows push it down uncompensated (top 8 to 356)
+    pendingAnchorKeepY = keepRow.y;
   } else if (keepRow && !pendingAnchor && keepRow.y < contentEl!.clientHeight) {
     pendingAnchor = keepRow.uuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; flashedAnchor = null;
     pendingAnchorKeepY = keepRow.y;        // the reader's row, back at its offset: the prepend sits above, off-screen
   }
   showActive();
+  // the prepend RESTORES the row itself (round ten, low 1): a landing that already filed its row does not re-land on the re-render, so a
+  // refreshed keep offset alone left the inserted rows pushing the opened message down (top 8 to 356); after the re-render the row under
+  // the viewport top goes back to its offset, the page's own move (anchor-restore, the append path's writer for the same job)
 }
 
 // Fetch the next older history chunk re-anchored on `uuid` (a deep-link target past the resident tail), so

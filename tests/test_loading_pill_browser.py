@@ -324,35 +324,35 @@ await page.waitForFunction((u) => { const t = document.querySelector('#content .
 await pillHidden();
 out.landed10 = { pill: await pill(), target: await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { visible: r.bottom > c.top && r.top < c.bottom }; }, deep10), toast: await page.evaluate(() => { const t = document.querySelector(".locate-toast"); return t ? t.textContent : null; }) };
 out.step = "10:done";
-// ROAD 11 (round seven, medium 1): a same-key re-ask must not throw the reader off the message they opened. A card's window ask held,
-// the pill clicked (cancelledWire keeps the twin's key), the SAME card clicked again (re-ask, same anchor). The kernel answers BOTH: reply
-// one matches the live re-ask and lands; reply two is the cancelled twin, consumed silently — it must NOT re-base (no needFull, the reader
-// stays on the message).
+// ROAD 11 (round seven, medium 1; round ten: the KERNEL's own replies): a same-key re-ask must not throw the reader off the message
+// they opened. A card's window ask held, the pill clicked (cancelledWire keeps the twin's key), the SAME card clicked again (re-ask, same
+// anchor), both asks released to the kernel in order. Reply one matches the live re-ask and lands; reply two is the cancelled twin,
+// consumed silently: no needFull, the row at its landing offset. (A synthetic two-event window cannot prove the offset: with nothing
+// below the row the scroll clamps at the document's end, 356 px short, and the settle rightly files settled-at-clamp; the kernel's real
+// window carries the turns below, so the offset is reachable.)
 out.step = "11:start";
-// reset SID to the attached tail (its state is churned by roads 4-10): re-post the boot session frame the page received, so the same-key
-// road runs from a known attached state, its deep link into unloaded history (round seven, medium 1)
 await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); if (t) t.click(); }, cfg.sid);
 await page.waitForFunction((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid, { timeout: 8000 }).catch(() => {});
 await page.evaluate(() => { if (window.__bootSession) window.postMessage(window.__bootSession, "*"); });
 await painted();
 const deep11 = "11111111-2222-3333-4444-" + pad(2 * 7);
-const around11 = [{ uuid: deep11, kind: "user", md: "the opened message" }, { uuid: "11111111-2222-3333-4444-" + pad(2 * 7 + 1), kind: "assistant", md: "its reply" }];
-const win11 = () => ({ type: "chatWindow", id: cfg.sid, anchor: deep11, events: around11, span: [7, 9], moreBefore: true, moreAfter: true, connected: true });
+const rowTop11 = () => page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, deep11);
 await page.evaluate(() => { window.__hold.add("loadAround"); });
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep11, anchorT: cfg.base + 2 * 7 });
+await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, deep11, cfg.base + 2 * 7]);
 await pillShown();
 await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // cancel: the twin stays on the wire
 await pillHidden();
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep11, anchorT: cfg.base + 2 * 7 });   // the same card again
+await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, deep11, cfg.base + 2 * 7]);   // the same card again
 await pillShown();
 const fullBefore11 = await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach").length);
-await page.evaluate((f) => window.postMessage(f, "*"), win11());   // reply one: matches the live re-ask, lands
-await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), deep11, { timeout: 8000 }).catch(() => {});
+await page.evaluate(() => window.__releaseOne());   // ask one reaches the kernel: its real window comes back, matches the live re-ask, lands
+await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), deep11, { timeout: 10000 }).catch(() => {});
 await pillHidden();
-const landed11 = await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, deep11);
-await page.evaluate((f) => window.postMessage(f, "*"), win11());   // reply two: the cancelled twin, silent
-await page.waitForTimeout(400);
-out.reask11 = { landed: landed11, after: await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, deep11), reattach: (await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach").length)) - fullBefore11 };
+await page.waitForTimeout(1400);   // the landing's settle window (1200 ms) and its own older-history prepend
+const landed11 = await rowTop11();
+await page.evaluate(() => window.__releaseOne());   // ask two reaches the kernel: the cancelled twin's reply, silent
+await page.waitForTimeout(600);
+out.reask11 = { landed: landed11, after: await rowTop11(), reattach: (await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach").length)) - fullBefore11 };
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
 // ROAD 12 (round seven, medium 2): a served stranger window for a NON-active session re-bases that session, so its live tail does not
 // silently freeze. Switch to tab B (SID2 active), inject an unasked served window for SID (attached, its tab not active): a needFull
@@ -415,9 +415,17 @@ const C14 = "11111111-2222-3333-4444-" + pad(2 * 6), MID14 = "11111111-2222-3333
 await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, C14, cfg.base + 2 * 6]);
 await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), C14, { timeout: 10000 }).catch(() => {});
 await pillHidden();
-await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), MID14, { timeout: 8000 }).catch(() => {});
-await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (t) t.scrollIntoView({ block: "start" }); }, MID14);   // the reader's own place inside the window
-await painted();
+const locBefore14 = await page.evaluate(() => window.__sent.filter((m) => m.type === "locateDiag").length);
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "locateDiag").length > n, locBefore14 - 1, { timeout: 8000 }).catch(() => {});   // the landing settled and filed its row
+await page.waitForTimeout(400);
+await unlatch();   // one real wheel tick over the transcript: the reader's own gesture, so the settle does not undo the move below
+for (let i = 0; i < 4; i++) {   // the reader's own place inside the window: scroll turn 40 to the top, re-checked (the virtualiser may re-window once)
+  await page.evaluate((u) => { const c = document.getElementById("content"); const t = c.querySelector('.turn[data-uuid="' + u + '"]'); if (t) c.scrollTop = t.offsetTop; }, MID14);
+  await painted();
+  const ok = await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return r.bottom > c.top && r.top < c.bottom; }, MID14);
+  if (ok) break;
+  await page.waitForTimeout(150);
+}
 const stripBefore14 = await page.evaluate(() => { const st = document.getElementById("live-paused"); return !!st && getComputedStyle(st).display !== "none"; });
 const mid14Before = await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, MID14);
 await page.evaluate(() => { window.__hold.add("loadAround"); });
@@ -566,7 +574,7 @@ class ServedLoadingPill(WindowLab):
         rk = r["reask11"]
         self.assertTrue(rk["landed"] and rk["landed"]["visible"], "reply one landed the reader on the opened message: %r" % rk)
         self.assertTrue(rk["after"] and rk["after"]["visible"], "reply two (the cancelled twin) left the reader on the message, on screen: %r" % rk)
-        self.assertLessEqual(abs(rk["after"]["top"] - rk["landed"]["top"]), 4, "…at the landing's offset: the landing's own older-history prepend re-anchors the reader's row (round ten, low 1): %r" % rk)
+        self.assertLessEqual(abs(rk["after"]["top"] - rk["landed"]["top"]), 4, "…at the landing's offset (the kernel's real window carries the turns below, so the offset is reachable; round ten, low 1): %r" % rk)
         self.assertEqual(rk["reattach"], 0, "reply two re-based nothing: no needFull, the kernel's base is where reply one put it (round nine, the agreement-resident skip): %r" % rk)
 
     def test_a_different_key_re_ask_with_the_kernels_own_replies_defers_the_re_base_and_keeps_the_reader_on_b(self):
