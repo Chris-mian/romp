@@ -315,7 +315,7 @@ PY
 @test "romp perf: the two-snapshot verb is untouched — its usage now names client, and help lists the sub-verb" {
     run "$ROMP_SCRIPT" perf --nope
     [ "$status" -eq 2 ]
-    [[ "$output" == *"usage: romp perf [--interval <s>] [--json] | romp perf log on|off | romp perf client"* ]]
+    [[ "$output" == *"usage: romp perf [--interval <s>] [--json] | romp perf log on|off | romp perf stacks [--json] | romp perf client"* ]]   # the stacks verb sits in the line (T401)
     run "$ROMP_SCRIPT" help
     [ "$status" -eq 0 ]
     [[ "$output" == *"romp perf client"* ]]
