@@ -84,15 +84,19 @@ class SpendTreeMemo(unittest.TestCase):
         after a restart statted every file at once (16,752 over 60 trees, the base's count). The re-stat is needed (an
         append moves no directory's mtime) but spread: at most SPEND_GUARD_RESTAT_PER_CYCLE files a cycle, hot first, the
         tree whole within ceil(files / N) cycles, and a file appended during the gap is found by then."""
-        self._second_boot(full_age_s=600.0)
-        now = time.time(); os.utime(self.files[7], (now, now))        # appended while the kernel was down: its directory's mtime stands
-        since = now - 100                                             # the window: only the appended file is in it
-        with mock.patch.object(km, "SPEND_GUARD_RESTAT_PER_CYCLE", 4):
+        coldest = time.time() - 7200                                   # the file to be appended is the COLDEST the memo knows, so
+        os.utime(self.files[7], (coldest, coldest))                    #  hot-first puts it last in the spread: found in the third cycle
+        self._second_boot(full_age_s=600.0)                            #  (among equal stored mtimes the order is the listing's, which
+        now = time.time(); os.utime(self.files[7], (now, now))        #  differs by filesystem: CI found it in the first cycle and then
+        since = now - 100                                             #  statted it as hot in two more, 12 not 10; the count below is
+        with mock.patch.object(km, "SPEND_GUARD_RESTAT_PER_CYCLE", 4):   #  exact only with the order pinned)
             got1 = km._spend_window_files(self.leaf, since, now=now)
             s1 = _stats()
             self.assertEqual(s1["fileStats"], 4, "the first cycle stats at most N files: %s" % s1)
             self.assertEqual(s1["listings"], 0, "and lists nothing: %s" % s1)
             self.assertEqual(len(km._SPEND_TREE_CACHE[self.leaf]["restat"]), 6, "six remain for the next cycles")
+            self.assertEqual(km._SPEND_TREE_CACHE[self.leaf]["restat"][-1], self.files[7], "hot first: the coldest is last")
+            self.assertNotIn(self.files[7], got1, "not found yet")
             for _ in range(2):                                        # ceil(10 / 4) = 3 cycles in all
                 got = km._spend_window_files(self.leaf, since, now=now)
             s = _stats()
@@ -100,8 +104,8 @@ class SpendTreeMemo(unittest.TestCase):
             self.assertNotIn("restat", km._SPEND_TREE_CACHE[self.leaf], "the spread is spent")
             self.assertIn(self.files[7], got, "the appended file is in the window by then")
             self.assertEqual(km._spend_window_files(self.leaf, since, now=now), got, "and a fourth cycle adds no stat beyond the hot one")
-            self.assertEqual(_stats()["fileStats"], 11, "steady state: the one hot file: %s" % _stats())
-        self.assertLessEqual(len(got1), 2)
+            self.assertEqual(_stats()["fileStats"], 11, "steady state: the one hot file (found, it is hot from then on): %s" % _stats())
+        self.assertEqual(got1, [self.leaf])
 
     def test_a_memo_naming_another_root_is_a_failed_load_and_a_foreign_path_is_dropped(self):
         """Round two, lows 1 and 6: a shaped memo whose dirs do not name this session's root counted loaded and listed
