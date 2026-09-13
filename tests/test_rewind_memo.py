@@ -44,6 +44,8 @@ class RewoundMemo(Harness):
 
     def fresh_process(self):
         self.fresh(); em.set_checkpoint_dir(lambda: self.ck)
+        with em._CKPT_LOCK:
+            em._COLD_FOLDS.clear()                        # a cold fold an earlier test left would keep checkpoint_has_work True (low 9)
         for c in list(em._FOLD_REG.values()):
             c.clear()
         em._REWOUND_CACHE.clear()
@@ -495,6 +497,54 @@ class RewoundMemo(Harness):
         rows = {k: v["bytes"] for k, v in em.record_cache_stats()["wholeReads"].items() if k.endswith("<-_per_file_rewound")}
         self.assertEqual(rows, {}, "the next process reads no whole file: %s" % em.record_cache_stats()["wholeReads"])
         self.assertEqual(em.rewound_memo_stats()["served"], 2, "both files served: %s" % em.rewound_memo_stats())
+
+    def test_a_fresh_store_for_the_memo_road_clears_a_pending_flip_retirement(self):
+        """Follow-up, low 7: a GENUINE flip retirement still pending when the session clears (the leaf becoming an anchor on the
+        memo road) popped the memo re-stored for the memo road out of the next write. The store is the newer event: it clears
+        the path's pending retirement."""
+        jd, fsid, path = self._own_leaf("pendflip", scenario="rewind_off_path")
+        self.fresh_process()
+        jd._per_file_rewound(fsid, [path])                                  # the memo road: a cursor
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="pfFold"); self.assertTrue(em.checkpoint_write(path))
+        recs = G.SINGLE_FILE["rewind_off_path"][0]()
+        with open(path, "a") as fh:
+            for r in compacting_variant(recs, "pf")[len(recs):]:
+                fh.write(json.dumps(r) + "\n")
+        old = time.time() - 600; os.utime(path, (old, old))
+        tree = em.parse_session(path, rompuuid=fsid, name="impl", dir="/TESTDIR", candidate_files=[path], postal_log=[], now=NOW)
+        self.assertTrue(em.asm_checkpoint_write(path, fsid, tree=tree))
+        jd._per_file_rewound(fsid, [path])                                  # the flip: a genuine retirement, pending (no write yet)
+        self.assertIn("rewoundUuids", em._RETIRED_FOLDS.get(path, set()))
+        leaf2 = Path(path).with_name("7a391000-2222-4333-8444-000000000387.jsonl")   # the session clears: the leaf becomes the anchor
+        leaf2.write_text(json.dumps(G.uline(NOW + 5, "after the clear", "u_after2", None)) + "\n")
+        files = jd._judge_candidates(fsid, [str(leaf2)]); self.assertEqual(len(files), 2)
+        jd._per_file_rewound(fsid, files)                                   # the memo road stores a fresh cursor for the anchor
+        self.assertNotIn(path, em._RETIRED_FOLDS, "the store cleared the stale retirement")
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="pfFold"); self.assertTrue(em.checkpoint_write(path))
+        self.assertIn("rewoundUuids", json.loads(em._ckpt_file(path).read_text())["folds"], "the fresh memo on disk")
+
+    def test_the_flip_consults_the_document_on_disk_when_no_fold_has_read_it_yet(self):
+        """Follow-up, low 8: in a fresh process where the scan reaches the leaf before any fold read its fold document, the tracker
+        had no entry, so the first write after the flip carried the dead cursor forward once. The forget asks the disk."""
+        jd, fsid, path = self._own_leaf("diskflip", scenario="rewind_off_path")
+        self.fresh_process()
+        jd._per_file_rewound(fsid, [path])
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="dfFold"); self.assertTrue(em.checkpoint_write(path))
+        self.assertIn("rewoundUuids", json.loads(em._ckpt_file(path).read_text())["folds"])
+        recs = G.SINGLE_FILE["rewind_off_path"][0]()
+        with open(path, "a") as fh:
+            for r in compacting_variant(recs, "df")[len(recs):]:
+                fh.write(json.dumps(r) + "\n")
+        old = time.time() - 600; os.utime(path, (old, old))
+        tree = em.parse_session(path, rompuuid=fsid, name="impl", dir="/TESTDIR", candidate_files=[path], postal_log=[], now=NOW)
+        self.assertTrue(em.asm_checkpoint_write(path, fsid, tree=tree))
+        self.fresh_process()                                                # a fresh process: no fold has read the fold document
+        self.assertNotIn(path, em._CKPT_DOC_FOLDS)
+        jd._per_file_rewound(fsid, [path])                                  # the scan reaches the leaf first: the flip
+        self.assertIn("rewoundUuids", em._RETIRED_FOLDS.get(path, set()), "the disk said the document carries the fold")
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="dfFold"); self.assertTrue(em.checkpoint_write(path))
+        d = json.loads(em._ckpt_file(path).read_text())
+        self.assertNotIn("rewoundUuids", d["folds"], "the first write after the flip omits the dead cursor: %r" % sorted(d["folds"]))
 
 
 if __name__ == "__main__":

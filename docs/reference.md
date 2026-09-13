@@ -1545,7 +1545,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
   `rewrite` when the leaf's record entry was replaced by a from-zero read
   under a new generation, `nonleaf` when a lineage file moved),
-  `full:noDocument`, `full:refused` (a document that stood but did not verify,
+  `full:noDocument`, `full:noDir` (no checkpoint directory), `full:refused` (a document that stood but did not verify,
   its fallback reason counted), `bypass` (a pending cut armed on the session)
   and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,
   beside `asmCheckpoint.removed`, the document files removed per reason (a

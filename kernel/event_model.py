@@ -2582,7 +2582,7 @@ class FileAdapter:
                         if len(_TS_REPAIRED_SEEN) >= 4096:
                             _TS_REPAIRED_SEEN.clear()
                         _TS_REPAIRED_SEEN.add(u)
-                        _ASM_STATS["ts-repair"] = _ASM_STATS.get("ts-repair", 0) + 1
+                        _asm_stat("ts-repair")
                     if fsid not in _TS_REPAIR_NOTED:
                         if len(_TS_REPAIR_NOTED) >= 64:
                             _TS_REPAIR_NOTED.clear()   # re-arm — capped silence must not become
@@ -3233,7 +3233,7 @@ class FileAdapter:
                 # these would show up, since a silent clamp would hide a CLI write-order change. (The
                 # 2026-09-06 review: two goldens had pinned a landedT 30-40 s before the send, from a
                 # synthetic shape with no tool_result before the attachment.)
-                _ASM_STATS["landedT-clamp"] = _ASM_STATS.get("landedT-clamp", 0) + 1
+                _asm_stat("landedT-clamp")
                 landed_t = t
             atom["t"] = landed_t         # placed where the model READ it (T252d); `sentAt` keeps the send
         if ROMP_AUTO_RE.search(full):   # an AUTO-nudge → flag it, mirroring the native user-record path
@@ -4355,6 +4355,12 @@ def rewound_uuids(path, drop=True):
         return out
     _REWOUND_CACHE[key] = (count, gen, {"uuids": sorted(out)})   # the memo at the walk's own witness, dirty
     with _CKPT_LOCK:
+        r = _RETIRED_FOLDS.get(key)                        # a retirement still pending from a flip before this store is stale:
+        if r is not None:                                  #  the store is the newer event (T391 follow-up, low 7)
+            r.discard("rewoundUuids")
+            if not r:
+                _RETIRED_FOLDS.pop(key, None)
+    with _CKPT_LOCK:
         _FOLD_DIRTY.add(key)
     if drop and checkpoint_drop_writes_on():              # the quiescence drop over this frozen file writes the document from the
         with _JSONL_CACHE_LOCK:                           #  walk's own read and lets the records go (T362's drop, its budget and its
@@ -4426,6 +4432,13 @@ _ASM_KEYLOCKS = {}                 # key -> Lock; never pruned (a Lock is tiny, 
 #                                    key's lock mid-flight would let two folds interleave)
 _ASM_STATS = {"full": 0, "fold": 0, "serve": 0, "restore": 0, "bypass": 0, "fallback": 0}   # observability + tests (restore
 #                                                                                             seeded: a row without it means zero)
+
+
+def _asm_stat(key, n=1):
+    """One increment of the parse's road counters under _ASM_CKPT_LOCK (the lock the perf copy takes): every write goes through
+    here, so a judge parse and the pusher's parse never lose each other's increment (T398 follow-up, low 3)."""
+    with _ASM_CKPT_LOCK:
+        _ASM_STATS[key] = _ASM_STATS.get(key, 0) + n
 _ASM_WARNED = [False]
 _TS_REPAIR_NOTED = set()     # file stems already warned about a garbled stamp — once per file;
 #                              the cap CLEARS and re-arms (an occasional repeat note beats silence)
@@ -4437,7 +4450,7 @@ def _asm_demote(reason):
     """Count WHY a fold demoted to a full parse (g:<reason> in _ASM_STATS) and return None —
     the hit-rate diagnosis this cache lives or dies by, in prod and in the corpus replay."""
     k = "g:" + reason
-    _ASM_STATS[k] = _ASM_STATS.get(k, 0) + 1
+    _asm_stat(k)
     return None
 
 
@@ -4479,7 +4492,7 @@ def _asm_full(key, leaf_path, candidate_files, links, rompuuid, postal_index, sd
         while len(_ASM_CACHE) >= _ASM_CACHE_MAX:
             _ASM_CACHE.pop(next(iter(_ASM_CACHE)))   # oldest-used first; hot entries survive floods
         _ASM_CACHE[key] = entry
-    _ASM_STATS["full"] += 1
+    _asm_stat("full")
     return _asm_serve(entry)
 
 
@@ -4666,7 +4679,7 @@ def _asm_fold(entry, delta, leaf_recs, leaf_key, leaf_stem, rompuuid, postal_ind
     entry["recs"][leaf_key] = (ogen, obase, ocount + len(delta))   # commit LAST: a bail above re-slices the same
     ad._src[leaf_key] = leaf_recs                 #  delta next visit and the uuid gate demotes it
     ad._src_keys[leaf_key] = entry["recs"][leaf_key]
-    _ASM_STATS["fold"] += 1
+    _asm_stat("fold")
     return _asm_serve(entry)
 
 
@@ -5100,6 +5113,23 @@ def _retire_fold(path, name):
         _FOLD_DIRTY.add(key)
 
 
+def _doc_folds_on_disk(key):
+    """The fold shapes of `key`'s fold document as it sits on disk (a small JSON read, counted under documentBytes), {} with
+    none: what a retirement consults before any fold of this process has loaded the document."""
+    cp = _ckpt_file(key)
+    if cp is None or not cp.exists():
+        return {}
+    try:
+        text = cp.read_bytes(); _count_read(str(cp), len(text))
+        doc = json.loads(text.decode("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    shapes = _doc_fold_shapes(doc.get("folds")) if isinstance(doc, dict) else {}
+    with _CKPT_LOCK:
+        _CKPT_DOC_FOLDS.setdefault(key, shapes)
+    return shapes
+
+
 def rewound_memo_forget(path):
     """Drop the incident scan's memo cursor for `path` (T391 follow-up, round one, low 2): a leaf that took the memo road while it
     had no assembly document carries a rewoundUuids cursor in its fold document; once its first compaction lands and the scan
@@ -5110,7 +5140,10 @@ def rewound_memo_forget(path):
     key = str(path)
     had = _REWOUND_CACHE.pop(key, None) is not None
     with _CKPT_LOCK:
-        on_disk = "rewoundUuids" in (_CKPT_DOC_FOLDS.get(key) or {})   # the document as last read or written carries the fold
+        shapes = _CKPT_DOC_FOLDS.get(key)
+    if shapes is None:                                    # no fold of this process has read or written the document yet (a fresh
+        shapes = _doc_folds_on_disk(key)                  #  process whose scan reaches the leaf first): ask the disk (low 8)
+    on_disk = "rewoundUuids" in (shapes or {})            # the document as last read or written carries the fold
     if had or on_disk:                                    # retire only at the FLIP, when there is something to retire: a leaf-road
         _retire_fold(key, "rewoundUuids")                 #  pass over a clean path retires nothing and dirties nothing (round two:
     #                                                        an unconditional retirement popped a memo stored later in the process
@@ -5639,6 +5672,9 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
         except OSError:
             return skip("write")
         entry["docWritten"] = True
+        with _ASM_CKPT_LOCK:
+            _ASM_CKPT_REFUSED.pop(os.path.realpath(str(leaf_path)), None)   # a fresh document stands: a later parse with none is
+        #                                                                       noDocument, not the old refusal (T398 follow-up, low 1)
         entry["docTurns"] = bool(turns_doc)              # the turns section was written (T323 stage 4c)
         entry["docNoTurns"] = _tree_key(tree) if (tree is not None and not turns_doc) else None   # …or this tree yields none
         with _ASM_CKPT_LOCK:
@@ -6135,7 +6171,7 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
     if leaf_override:
         # A pending cut changes the walk anchor and is transient: always a plain full parse,
         # never cached — a cut parse's truncated emit state must not seed later folds.
-        _ASM_STATS["bypass"] += 1
+        _asm_stat("bypass")
         _mode("bypass")
         ad = FileAdapter(candidate_files, leaf_path, leaf_override=leaf_override, resume_links=links)
         ad.sdk_human = sdk_human
@@ -6157,7 +6193,7 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
                     delta, leaf_recs = got
                     _asm_heal(entry, rompuuid, postal_index)
                     if not delta:
-                        _ASM_STATS["serve"] += 1
+                        _asm_stat("serve")
                         _mode("serve")
                         return _asm_serve(entry)
                     served = _asm_fold(entry, delta, leaf_recs, str(leaf_path),
@@ -6170,8 +6206,7 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
             elif _CKPT_DIR_FN is not None:
                 served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
                 if served is not None:
-                    with _ASM_CKPT_LOCK:
-                        _ASM_STATS["restore"] += 1
+                    _asm_stat("restore")
                     _mode("restore")
                     return served
             # A full parse names its road (T398): an entry the gates DEMOTED (the g:<reason> beside it: the leaf's record
@@ -6188,13 +6223,12 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
             else:                                         #  note unlinked it, so the stat below would have read it as none
                 cp_ = _asm_ckpt_file(leaf_path)
                 why = "noDocument" if cp_ is None or not cp_.exists() else "refused"
-            with _ASM_CKPT_LOCK:
-                _ASM_STATS["full:" + why] = _ASM_STATS.get("full:" + why, 0) + 1
+            _asm_stat("full:" + why)
             _mode("full")
             return _asm_full(key, leaf_path, candidate_files, links, rompuuid,
                              postal_index, sdk_human)
     except Exception as e:
-        _ASM_STATS["fallback"] += 1
+        _asm_stat("fallback")
         _mode("fallback")
         if not _ASM_WARNED[0] or _ASM_STATS["fallback"] in (10, 100, 1000, 10000):
             _ASM_WARNED[0] = True    # once, then at count milestones — a PERSISTENT fold bug

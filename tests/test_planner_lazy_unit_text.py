@@ -137,7 +137,7 @@ class LazyUnitText(Harness):
     def test_an_empty_late_read_retires_that_units_own_key_and_the_next_unit_still_plans(self):
         """Round four, medium: the retire wrote the collection loop's last-bound `key`, so a phantom unit's empty late read retired
         some OTHER unit (the next prompt's) and left the phantom's key absent: the prompt never planned and the nudge gate read
-        the phantom as unplanned. Driven through the real _plan_session: plan_units stubbed to yield a phantom work unit (its
+        the phantom as unplanned. Driven through the real _plan_session: plan_units stubbed to yield a phantom live unit (its
         late text empty) then a real human prompt unit; the phantom's own key is the one retired, the prompt plans."""
         km = kernel_module(); jd = km.jd
         fsid = "7a396000-2222-4333-8444-000000000396"

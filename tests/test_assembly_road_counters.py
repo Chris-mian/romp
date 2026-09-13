@@ -102,6 +102,44 @@ class AssemblyRoadCounters(Harness):
             self.assertIn(k, rows[0]["parse"], "seeded keys: a row without one means zero: %r" % rows[0]["parse"])
         self.assertEqual(rows[0]["parse"], em.asm_checkpoint_stats()["parse"], "the row is the perf block's parse, values and all")
 
+    def test_a_document_write_clears_the_refusal_slot(self):
+        """Follow-up, low 1: a refusal recorded by one parse was never cleared at a document write and the restore road returned
+        before the pop, so after a fresh document was written a later parse with NO document standing booked full:refused."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("slot", records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        em._asm_ckpt_file(path).write_bytes(b"not a document")
+        self.fresh(); self._reset(); self.parse(path)
+        self.assertEqual(em.asm_checkpoint_stats()["parse"].get("full:refused"), 1)
+        em._asm_ckpt_note(path, "corrupt")                                  # a JUDGE read's refusal, recorded in the slot
+        self.assertTrue(self.doc(path), "a fresh document written")          # the write clears the slot
+        self.fresh(); modes = []; self.parse(path, modes); self.assertEqual(modes, ["restore"])   # the restore road: no pop
+        cp = em._asm_ckpt_file(path); cp.unlink(); cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
+        self.fresh(); self._reset(); self.parse(path)
+        parse = em.asm_checkpoint_stats()["parse"]
+        self.assertEqual((parse.get("full:noDocument"), parse.get("full:refused", 0)), (1, 0), "no document standing: noDocument: %s" % parse)
+
+    def test_every_road_counter_write_goes_through_the_locked_helper(self):
+        """Follow-up, low 3: the lock covered two of ten writes; every increment goes through _asm_stat under _ASM_CKPT_LOCK."""
+        import inspect, re
+        src = inspect.getsource(em)
+        bare = [l.strip() for l in src.splitlines() if "_ASM_STATS[" in l and ("+=" in l or "= _ASM_STATS.get(" in l)
+                and "(key, 0) + n" not in l]                                # the helper's own line
+        self.assertEqual(bare, [], "bare writes: %r" % bare)
+        self.assertGreaterEqual(len(re.findall(r"_asm_stat\(", src)), 10)
+        self.assertIn("with _ASM_CKPT_LOCK:", inspect.getsource(em._asm_stat))
+
+    def test_the_boot_sweep_counts_the_documents_it_removes(self):
+        """Follow-up, low 6: `removed["sweep"]` had no test."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("swept", records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        em._ASM_CKPT_STATS["removed"] = {}
+        os.unlink(path)                                                     # the transcript vanishes: the sweep removes its document
+        em.checkpoint_sweep()
+        self.assertEqual(em.asm_checkpoint_stats()["removed"], {"sweep": 1})
+        self.assertFalse(em._asm_ckpt_file(path).exists())
+
 
 if __name__ == "__main__":
     unittest.main()
