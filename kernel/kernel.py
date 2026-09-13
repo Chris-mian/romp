@@ -9884,8 +9884,8 @@ def _warm_wanted(s, tm):
 
 def _session_files_stat(s):
     """(mtime, size) of the transcript, the state log, the session's goal store, its override journal and archive, its
-    episode log, the clears log, the postal log and the kernel's downtime log, zeros for a missing file: the inputs every
-    event-keyed tick job reads (the store's shared view is identified by its three files, bin/romp-judge's ident; the nudge's
+    episode log, the clears log, the postal log, the kernel's downtime log and the nudge ledger, zeros for a missing file:
+    the inputs every event-keyed tick job reads (the store's shared view is identified by its three files, bin/romp-judge's ident; the nudge's
     placement gate reads the two logs; the debt reminder's ask set comes from the postal log; _session_working's suspension
     check reads the _downtime list, which the downtime log refills). A change in any of them is the only event that can change the
     job's answer; the store is in the tuple because a judge can clear or complete the goal a marker points at with
@@ -9897,7 +9897,9 @@ def _session_files_stat(s):
               str(jd._overrides_dir() / (sid + ".jsonl")), str(jd.GOALARCHDIR / (sid + ".json")),   # the shared store's identity is
               str(jd.EPIDIR / (sid + ".jsonl")), str(jd.STATE / "cleared.jsonl"),                 # three files; the placement gate
               str(jd.STATE / "timeline" / "messages.jsonl"),                                       # reads the episode and clears logs;
-              str(jd.STATE / "kernel-downtime.jsonl")):                                            # the debt reminder reads the postal
+              str(jd.STATE / "kernel-downtime.jsonl"),                                             # the debt reminder reads the postal
+              str(jd.STATE / "auto-nudge.json")):                                                  # log; the nudge ledger (a judge's moot
+        #                                                                                           ruling lands there with no other file)
         #                                                                                           log; the working verdict reads the
         #                                                                                           host-suspension list, refilled from
         #                                                                                           the downtime log (module state refilled
@@ -10041,12 +10043,12 @@ def _nudge_clock(t):
 
 
 def _nudge_look_check(s, now):
-    """(skip, stat, verdict): whether the walk may skip `s`'s parse this look. It may when the nine files the memo keys on
+    """(skip, stat, verdict): whether the walk may skip `s`'s parse this look. It may when the ten files the memo keys on
     (_session_files_stat) are unchanged since the last COMPLETED look (this kernel's or a previous one's, the persisted memo) and that look noted
     no clock leg that could have flipped by `now` (the earliest flip is in the memo; None there means a leg whose release is
     not one of these files, never skipped). `verdict` is the recorded look's result, repeated by the skip."""
-    st = _session_files_stat(s)
-    if not st[0]:
+    st = tuple(s.get("_look_stat") or _session_files_stat(s))   # the pass hands the stat it took before its snapshots (round seven);
+    if not st[0]:                                                #  a caller handing snapshots of its own must hand that stat too
         return False, st, None
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(("auto-nudge", str(s.get("sid") or "")))
@@ -11251,6 +11253,12 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     the single-flight guard (split out the way _pusher_cycle_jobs is from _pusher_cycle). `on` is the auto-nudge toggle:
     off, the walk runs WAKE-ONLY — the awaiting dead-man still fires (see _auto_nudge_tick). An UNPROVED
     ledger snapshot (a read fault) stands the whole pass down — see _auto_nudge_pause."""
+    alive = list(_alive_sessions(now, live_map))
+    for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
+        s["_look_stat"] = _session_files_stat(s)          #  stat is taken here, before the ledger, the peer graph and the clear set below
+    #                                                       are read, so no snapshot handed to a look is older than the key its memo
+    #                                                       is recorded under (an undo between a pass-top snapshot and a look moved the
+    #                                                       clears log and the store under a memo that then silenced the un-cleared goal)
     snap = _auto_nudge_data()
     if snap.get(UNPROVED):
         _auto_nudge_pause(snap[UNPROVED])
@@ -11268,7 +11276,6 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
             return
     on = _auto_nudge_on()
     nudged = dict(snap.get("nudged", {}))                 # {gid: {count, lastTurnId}}
-    alive = list(_alive_sessions(now, live_map))
     alive_ids = {s["sid"] for s in alive}
     waitfor = _wait_for_graph(now, alive_ids)             # {sid:{peerSid,name,inCycle}} — the peer-wait gate
     fired = False
@@ -13123,7 +13130,7 @@ _NUDGE_FILE_KEYED_ROADS = {       # the functions each marked verdict's road rea
 }
 #   The roads whose verdict is a pure function of the files the memo keys on (_session_files_stat: the transcript, the state
 #   log, the store with its override journal and archive, the episode log, the clears log, the postal log, the kernel's
-#   downtime log, nine in all), marked so that a
+#   downtime log, the nudge ledger, ten in all), marked so that a
 #   look ending in one may record a skippable memo. Every OTHER exit of the look, marked or not, records an unbounded memo
 #   (None) by default: the SDK overlay, the backend's queue, an armed rollback, a store fault, a dead asker's revival, a peer's
 #   bounce (T401 (2) round three: the class, not the instances; an unmarked road can never silence a session). The full goal

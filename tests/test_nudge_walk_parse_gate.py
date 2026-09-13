@@ -4,6 +4,7 @@ cycle on the first boot with per-stage rows). Its parse is gated now: skipped wh
 unchanged since the last completed look AND no clock leg that look declined on has come due; the skip repeats the recorded
 verdict and does nothing else; only a road marked file-keyed, or the full walk run to its end, records a skippable memo. The
 pass walks by recency and, with a client connected, yields after a look that paid a cold parse. Synthetic sessions only."""
+import json
 import os
 import sys
 import tempfile
@@ -115,7 +116,7 @@ class NudgeWalkParseGate(unittest.TestCase):
         saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
         try:
             st0 = km._session_files_stat(r)
-            self.assertEqual(len(st0), 18, "nine files, (mtime, size) each")
+            self.assertEqual(len(st0), 20, "ten files, (mtime, size) each")
             jp = km.jd._overrides_dir() / (SID_OLD + ".jsonl"); jp.parent.mkdir(parents=True, exist_ok=True); jp.write_text("{}\n")
             self.assertNotEqual(km._session_files_stat(r), st0, "the override journal moves the stat")
             st1 = km._session_files_stat(r)
@@ -225,7 +226,7 @@ class NudgeWalkParseGate(unittest.TestCase):
             r1 = km._auto_nudge_session(r, now, {}, {}, {}, alive_ids={SID_OLD})          # the asker is not alive: no ask owed
         self.assertIs(r1, False)
         self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "a dead peer's ask: the debtor's memo is unbounded")
-        self.assertEqual(len(km._session_files_stat(r)), 18, "nine files: the postal log and the downtime log joined the memo's inputs")
+        self.assertEqual(len(km._session_files_stat(r)), 20, "ten files: the postal log, the downtime log and the nudge ledger joined the memo's inputs")
 
     def test_a_host_suspension_ends_the_skip_of_a_working_verdict(self):
         """Round four, HIGH: `working` was marked file-keyed, but _session_working ends in _suspended_after, which reads the
@@ -251,12 +252,13 @@ class NudgeWalkParseGate(unittest.TestCase):
         name a road reads must be a function walked in turn, an immutable constant, or one of the allowlisted keyed-file readers,
         pure helpers and file-refilled states; any other module-level name, a brand-new list included, fails naming the road and
         the name. Module state refilled from a file (the _downtime list) is traced to the downtime log, which the stat function
-        must name."""
+        must name. Limits the census states rather than closes (round seven, low 1): a read through globals()[...] or getattr
+        with a string attribute, a function-local import (locals_of treats every imported name as local), a read_text on a path
+        built off the allowlisted jd.STATE or a literal Path, and a module-level lambda on a marked road (locals_of expects a def)
+        are not traced; the roads are read by eye for those shapes."""
         import ast, inspect, types, builtins
-        CLASS_ALLOW = {"Path": "pathlib's path type: a pure value", "OSError": "an exception type", "KeyError": "an exception type",
-                       "ValueError": "an exception type", "TypeError": "an exception type", "Exception": "an exception type",
-                       "FileNotFoundError": "an exception type", "FrozenStoreError": "an exception type of the store"}   # a class with
-        #                                               mutable state (Sessions, the door to the live backend table) is LIVE state, not a pass
+        CLASS_ALLOW = {"Path": "pathlib's path type: a pure value"}   # the exception types are builtins, short-circuited a line earlier; a
+        #                                               class with mutable state (Sessions, the door to the live backend table) is LIVE state
         ALLOW = {                                   # module-level names a marked road may read, each traced to its source
             "jd", "em", "os", "time", "json", "re", "sys", "math", "Path", "threading", "traceback",   # modules and stdlib (pure)
             "_downtime",                            # the host-suspension list, refilled from STATE/kernel-downtime.jsonl (keyed)
@@ -265,7 +267,7 @@ class NudgeWalkParseGate(unittest.TestCase):
             "_nudge_gate_memo", "_NUDGE_GATE_STATS",   # the placement gate's memo (the parse identity, the store view, the episode log's stat) and its counters
             "_last_state_cache", "_machine_cut_cache",   # _fold_records cursors over the state log (a keyed file), keyed by its path and stat
             "_stat_key",                            # a (mtime, size) reader
-            "_MACHINE_CUT_CAUSES", "_INTERRUPT_CAUSES", "CLOSER_SETTLE_GRACE_S",   # constants read by the interrupt and closer roads
+            "_MACHINE_CUT_CAUSES", "_INTERRUPT_CAUSES",   # cause-name constants read by the interrupt road
         }
         CONST_MODULES = {"sb"}                      # the SDK backend module: a marked road may read only a CONSTANT of it (a cause
         #                                             name, a marker string) or one of the pure text helpers below, never a live table
@@ -533,13 +535,69 @@ class RedundancySkipKeepsItsDeadMan(unittest.TestCase):
         self.assertIsNotNone(memo, "the look recorded its memo")
         flip = memo[-2]
         self.assertEqual(flip, M.NOW + K.AWAITING_DEADMAN_SECS, "the skip notes the parked dead-man it opened, not nothing-can-flip")
-        self.assertIsNone(self._tick(M.NOW + 60), "inside the window: the parse is skipped, the verdict repeated")
+        self.assertIs(self._tick(M.NOW + 60), False, "the skip wrote the ledger, a keyed file: this look re-evaluates once")
+        self.assertIsNone(self._tick(M.NOW + 120), "inside the window with nothing moved: the parse is skipped, the verdict repeated")
         self.assertEqual(K._NUDGE_WALK_STATS["skippedParses"], 1)
         late = M.NOW + K.AWAITING_DEADMAN_SECS + 60
         self.assertIs(self._tick(late), True, "past the dead-man the look evaluates and the backstop fires")
         self.assertEqual([r.get("verdict") for r in self.h._rows()][-1], "fired-parked-backstop")
         self.assertEqual(len(self.h.sent), 1)
         self.assertEqual(K._NUDGE_WALK_STATS["clockDue"], 1)
+
+
+
+
+class PassSnapshotsAreNewerThanTheKey(unittest.TestCase):
+    """Round seven, medium: the pass parsed the clear set once at its top and handed the same object to every look, while each
+    look statted the files for itself; an undo landing between that snapshot and a look moved the clears log and the store, the
+    look re-parsed, read the store fresh, but read the STALE clear set, skipped the un-cleared goal and recorded a skippable memo
+    under the post-undo stat, silencing the goal. The pass now takes every session's stat before any snapshot and hands it to
+    the look, so the memo's key is older than every input the verdict read; the next look sees the moved stat and fires."""
+
+    def setUp(self):
+        import test_nudge_memo_deadlock as M
+        self.M = M; self.K = M.km
+        self.h = M.MemoDeadlock("test_a_parked_goal_sleeps_silently"); self.h.setUp()
+        self.K._TICK_SEEN.clear()
+        for k in self.K._NUDGE_WALK_STATS:
+            self.K._NUDGE_WALK_STATS[k] = 0
+        d = tempfile.mkdtemp(); self.path = os.path.join(d, M.SID + ".jsonl")
+        Path(self.path).write_text("{}\n")
+        self._debt_saved = {n: getattr(self.K, n) for n in ("_debt_reminder_outcomes", "_fire_debt_reminder", "_debt_asks", "_postal_wait_maps")}
+        self.K._debt_reminder_outcomes = lambda sid, lt, now: None
+        self.K._fire_debt_reminder = lambda sid, now, alive_ids: False
+
+    def tearDown(self):
+        for n, v in self._debt_saved.items():
+            setattr(self.K, n, v)
+        self.h.tearDown()
+
+    def test_an_undo_between_the_pass_top_snapshot_and_the_look_cannot_silence_the_goal(self):
+        M, K = self.M, self.K
+        row = {"sid": M.SID, "path": self.path, "name": "web", "mtime": time.time()}
+        self.h.judge_replies = [False]                                    # the judge rules the report NOT redundant: the goal is due
+        cleared_log = K.jd.STATE / "cleared.jsonl"
+        cleared_log.write_text("")
+        reads = []
+        def stale_cleared_then_undo():
+            reads.append(1)
+            if len(reads) == 1:                                           # the pass-top read happens; the user's undo lands right after it:
+                cleared_log.write_text(json.dumps({"undo": M.G1}) + "\n")   # the clears log and the store both move, the snapshot is stale
+                self.h.store["nodes"][M.G1]["cleared"] = False
+                return {M.G1}
+            return set()
+        self.h.store["nodes"][M.G1]["cleared"] = True                     # cleared before the pass
+        quiet = dict(_auto_nudge_data=lambda: {}, _auto_nudge_resume=lambda: None, _alive_sessions=lambda now, live_map: [row],
+                     _wait_for_graph=lambda now, ids: {}, _cleared_ids=stale_cleared_then_undo, _auto_nudge_on=lambda: True,
+                     _compact_suggest_tick=lambda sid, live, now: False, _relay_tick=lambda now, ids: None,
+                     _debt_backstop_tick=lambda now: None, _dead_wait_sweep=lambda ids, nudged, now: None,
+                     _awaiting_wake_outcomes=lambda now, ids: False, _push_soon=lambda: None, _pop_walk_gate=lambda k: None,
+                     _put_walk_gate=lambda k, g, now: None)
+        with mock.patch.multiple(K, **quiet):
+            K._auto_nudge_pass(M.NOW, {}, True)                           # the pass whose snapshot went stale
+            K._auto_nudge_pass(M.NOW + 5, {}, True)                       # the next pass: the truth
+        self.assertEqual(len(self.h.sent), 1, "the un-cleared goal's nudge went out on the next pass: sent %r, rows %r, walk %r"
+                         % (len(self.h.sent), [r.get("verdict") for r in self.h._rows()], K._NUDGE_WALK_STATS))
 
 
 if __name__ == "__main__":
