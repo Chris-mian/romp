@@ -17372,12 +17372,10 @@ function chatHead(msg: any) {
     flashedAnchor = null;                  // ditto: this path is also a user navigation
     pendingAnchorKeepY = keepY ?? null;
   } else if (pendingAnchor && keepRow && pendingAnchor === keepRow.uuid) {
-    // the landing still pending is the row on screen (its own older-history prepend arriving mid-settle, round ten low 1): keep that row
-    // where it is through the prepend, or the settle treats it as landed and the inserted rows push it down uncompensated (top 8 to 356)
+    // the landing still pending is the row on screen (its own older-history prepend arriving mid-settle, round ten low 1): refresh its
+    // keep offset from the row as it stands, so the landing re-lands it there. A bare prepend with no landing pending arms NOTHING here:
+    // arming a landing on the visible row gated the reload restore's walk behind a settle window per page (round ten, the reload lab).
     pendingAnchorKeepY = keepRow.y;
-  } else if (keepRow && !pendingAnchor && keepRow.y < contentEl!.clientHeight) {
-    pendingAnchor = keepRow.uuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; flashedAnchor = null;
-    pendingAnchorKeepY = keepRow.y;        // the reader's row, back at its offset: the prepend sits above, off-screen
   }
   showActive();
   // the prepend RESTORES the row itself (round ten, low 1): a landing that already filed its row does not re-land on the re-render, so a
