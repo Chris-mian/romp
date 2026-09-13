@@ -45201,7 +45201,10 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                 start = min(change_from, pl + 1) if change_from > 0 else 0   # from the change, or from after the held
             if start > pf:                                #  last record (the overlay cards after it ride the suffix)
                 tail = {"type": "chatTail", "id": sid, "afterUuid": _event_key(evs[start - 1]),
-                        "events": evs[start:], "status": m.get("status")}
+                        "events": evs[start:], "status": m.get("status"),
+                        # the per-session view flags ride this delta as they ride the index client's (2026-09-11, the bell
+                        # on a key): the empty-suffix tail a flag-only change sends is how another window learns the flip
+                        "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
                 if led_changed:
                     tail["ledger"] = m.get("ledger")
                 _send_client(c, ("chat", sid), tail, kind="delta")
@@ -45263,7 +45266,13 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
     if (pc is not None and change_from > 0 and pc[1] <= change_from <= total
             and pc[0] == (evs[pc[1]].get("uuid") if pc[1] < total else None)):
         tail = {"type": "chatTail", "id": sid, "from": change_from,
-                "events": evs[change_from:], "total": total, "status": m.get("status")}
+                "events": evs[change_from:], "total": total, "status": m.get("status"),
+                # the per-session view flags ride the delta as the status does (2026-09-11): a flag flipped in one
+                # window — the bell, the feed mute, the mail mute — reached a caught-up client only with its next FULL
+                # frame, so the other column of a split, or another browser, showed the old bell until something else
+                # changed. An empty suffix with the new flags is the frame a flag-only change rides (the dedup
+                # signature reads them, so the flip alone sends it)
+                "notify": m.get("notify"), "hideFromFeed": m.get("hideFromFeed"), "postalServiceOff": m.get("postalServiceOff")}
         if led_changed:                               # the TOC only changed on a judge pass → usually omitted
             tail["ledger"] = m.get("ledger")
         _send_client(c, ("chat", sid), tail, kind="delta")   # the chat's delta form, for /perf's sends split

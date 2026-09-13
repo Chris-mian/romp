@@ -77,6 +77,7 @@ function world(o: { col?: string; sets?: ColSets | null; tabOrderSeen?: boolean;
     const failedProvisionals = new Set(W.failed || []);
     let colEmptyPosted = false; const closingTabs = new Map(); let boardLive = new Set();
     const readColSets = () => { HOOKS.reads++; return W.shell.sets; };
+    const holdPinnedSlots = () => false; const syncTabKeysWithStrip = () => {}; const syncTabPinsWithStrip = () => {};   // pinned tabs and per-tab hot keys (2026-09-10): none in these worlds
     const peekId = null; const chatVisible = () => true;
     const setTimeout = (f) => { HOOKS.timers.push(f); return HOOKS.timers.length; };
     const setActive = (id) => { HOOKS.activated.push(id); activeId = id; };
@@ -299,6 +300,7 @@ function stripWorld(o: { col: string; sets: ColSets | null; wantActive?: string 
     let colSets = W.sets, tabOrderSeen = false, activeId = null, provisionalId = null, wantActive = W.wantActive, vanishedId = null;
     const failedProvisionals = new Set(); let colEmptyPosted = false; let boardLive = new Set();
     const readColSets = () => W.shell.sets;
+    const holdPinnedSlots = () => false; const syncTabKeysWithStrip = () => {}; const syncTabPinsWithStrip = () => {};   // pinned tabs and per-tab hot keys (2026-09-10): none in these worlds
     const peekId = null; const chatVisible = () => true;
     const tabMeta = new Map(), sessions = new Map(), pendingTabMeta = new Map(), closingTabs = new Map(), kernelListed = new Set(); const order = [];
     const CLOSE_ACK_MS = 15_000; let clock = 1_000_000; const Date = { now: () => clock };

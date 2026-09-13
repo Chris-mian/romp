@@ -69,7 +69,7 @@ test("the dress: the tags box's floor, gray at rest, the accent on glyph and out
 
 test("locked, nothing moves: every draggable gate, both dragstart guards, the menu's Move to rows, and the strip's signature", () => {
   assert.equal((RENDER.match(/tab\.draggable = !fedMissing && !settings\.tabsLocked;/g) || []).length, 2, "the skeleton tab and the rename's restore");
-  assert.match(RENDER, /tab\.draggable = !s\.sub && !fedMissing && !isProvisionalId\(id\) && !settings\.tabsLocked;/, "the live tab");
+  assert.match(RENDER, /tab\.draggable = !s\.sub && !pinned && !fedMissing && !isProvisionalId\(id\) && !settings\.tabsLocked;/, "the live tab (a pinned one holds still too, 2026-09-10)");
   assert.match(RENDER, /if \(fedMissing \|\| settings\.tabsLocked\) \{ e\.preventDefault\(\); return; \}/, "the shared dragstart refuses too (belt and braces)");
   assert.match(RENDER, /head\.draggable = !settings\.tabsLocked;/, "a group drag moves tabs as well");
   assert.match(RENDER, /head\.addEventListener\("dragstart", \(e\) => \{\s*\n\s*if \(settings\.tabsLocked\) \{ e\.preventDefault\(\); return; \}\s*\n\s*draggedGroup = name;/);

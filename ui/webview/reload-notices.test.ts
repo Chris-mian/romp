@@ -312,7 +312,7 @@ test("render.ts: warnToast hands back its toast, and the refusals about a state 
   // tunnel health (the tab mark, the transcript foot), and the re-dial that makes "re-dialing now" true is posted by
   // the gesture, never by a replay
   assert.match(RENDER, /if \(hostIsDown\(sid\)\) \{\n\s*const host = String\(sid\)\.slice\(0, String\(sid\)\.indexOf\(":"\)\);\n(\s*\/\/[^\n]*\n)*\s*vscodeApi\?\.postMessage\(\{ type: "redial", host \}\);\n(\s*\/\/[^\n]*\n)*\s*ephemeralWarnToast\(host \+ " is disconnected, so this wasn't sent\. It's still in the box/);
-  assert.equal((RENDER.match(/ephemeralWarnToast\(/g) || []).length, 9, "the definition, the two reachability sites and the six state refusals (the queued edit's two went with the in-place editor, T373)");
+  assert.equal((RENDER.match(/ephemeralWarnToast\(/g) || []).length, 10, "the definition, the two reachability sites, the six state refusals (the queued edit's two went with the in-place editor, T373) and the bell toggle's word on the new state (2026-09-11: a confirmation for a flip whose only other witness is the tab menu's row)");
   // what the nack, the dismissal and the other-tab ack say stays true after the reload, so they ride it unmarked
   assert.match(RENDER, /warnToast\(m\.name \+ " couldn't be saved on the kernel, so it was not attached/);
   assert.match(RENDER, /warnToast\("The pending upload was dismissed — your held message was NOT sent\."\)/);
