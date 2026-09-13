@@ -350,7 +350,7 @@ class _PerfStats:
             self.pusher = {"cycles": 0, "wakes": 0, "wakes_event": 0, "wakes_backstop": 0,
                            "cycle_ms_sum": 0.0, "cycle_ms_max": 0.0, "cycle_ms_last": 0.0,
                            "cycle_cpu_ms_sum": 0.0, "sends": 0,
-                           "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0, "splitFailed": 0}
+                           "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0, "splitFailed": 0, "cycleFailed": 0}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
             # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes
@@ -414,6 +414,12 @@ class _PerfStats:
     def wake_kind(self, by_event):
         with self.lock:
             self.pusher["wakes_event" if by_event else "wakes_backstop"] += 1
+
+    def cycle_failed(self):
+        """A pusher cycle that raised out of the loop and was skipped (the loop's guard): counted under its lock like every
+        other pusher counter."""
+        with self.lock:
+            self.pusher["cycleFailed"] = self.pusher.get("cycleFailed", 0) + 1
 
     def marks(self):
         """(wakes, sends) so far: the cycle compares the pair before and after itself to tell an idle cycle."""
@@ -685,6 +691,7 @@ class _PerfStats:
                           ("goalArchive", jd.goal_archive_memo_stats), ("plannerSkip", jd.planner_skip_stats),
                           ("liftGate", _lift_gate_report), ("bgTops", _bg_tops_report),
                           ("intrMarks", _intr_marks_memo_report), ("deadWait", lambda: dict(_DEAD_WAIT_STATS)),
+                          ("tickSeen", _tick_seen_report),
                           ("statesOverlay", _states_overlay_report),
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
@@ -10011,6 +10018,46 @@ _TICK_SEEN_FILE = "tick-seen.json"   # the memo PERSISTED under the state dir (j
 #                                      last tick and this boot read as unchanged and was never blocked). A crash
 #                                      loses the newest writes: the affected sessions are evaluated once, the safe way.
 _TICK_SEEN_DIRTY = [False]
+_TICK_KEY_FILES = ("transcript", "states", "store", "overrides", "archive", "episode", "cleared", "messages", "downtime", "ledger")
+#   the ten keyed files in the order _session_files_stat lays them out, two elements (mtime, size) each; a key element past the
+#   twentieth is an asker's registry row (the nudge walk's key, T401 (2) follow-up)
+_TICK_SEEN_STATS = {}   # job -> {"hits", "misses", "neverSeen", "noTranscript", "clockParse", "missBy": {file: n}}: GET /perf
+#   memos.tickSeen.byJob, why each event-keyed job re-evaluated (the 2026-09-13 measurement boot re-parsed every session in
+#   jobs.interruptBlock, 38 s, and the key position that moved could not be named after the fact). Per job (round two), so the
+#   interrupt block's hits against its misses by file read exactly on their own; `clockParse` is the nudge walk's parse on a
+#   matched key that a clock leg refused to serve (a flip due, a None flip, the closer toggle): not a hit, not a miss
+
+
+def _tick_seen_bump(job, key, n=1):
+    with _TICK_SEEN_LOCK:
+        j = _TICK_SEEN_STATS.setdefault(job, {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "clockParse": 0, "missBy": {}})
+        j[key] += n
+
+
+def _tick_key_miss_by(job, st, prev):
+    """Count a miss with a previous entry: which of the key's positions differed (twenty comparisons, nothing else). A key of
+    another length than the recorded one counts once under `shape`, as does a previous entry that is not a sequence (an
+    observation counter is never the raising path); a differing element past the ten files is `askerRow`."""
+    with _TICK_SEEN_LOCK:
+        j = _TICK_SEEN_STATS.setdefault(job, {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "clockParse": 0, "missBy": {}})
+        j["misses"] += 1
+        by = j["missBy"]
+        if not isinstance(prev, (list, tuple)) or not isinstance(st, (list, tuple)):
+            by["shape"] = by.get("shape", 0) + 1
+            return
+        n = min(len(st), len(prev))
+        if len(st) != len(prev):
+            by["shape"] = by.get("shape", 0) + 1
+        for i in range(0, n - 1, 2):
+            if st[i] != prev[i] or st[i + 1] != prev[i + 1]:
+                name = _TICK_KEY_FILES[i // 2] if i // 2 < len(_TICK_KEY_FILES) else "askerRow"
+                by[name] = by.get(name, 0) + 1
+
+
+def _tick_seen_report():
+    with _TICK_SEEN_LOCK:
+        by_job = {job: {k: (dict(v) if k == "missBy" else v) for k, v in j.items()} for job, j in _TICK_SEEN_STATS.items()}
+    return {"entries": len(_TICK_SEEN), "byJob": by_job}
 
 
 def _tick_seen_path():
@@ -10068,13 +10115,19 @@ def _tick_job_check(job, s):
     same memo plus the earliest instant one of its clock legs could flip (T401 (2))."""
     st = _session_files_stat(s)
     if not st[0]:
+        _tick_seen_bump(job, "noTranscript")
         return False, st                      # no transcript to stat: nothing is known about it, so never a skip
     key = (job, str(s.get("sid") or ""))
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(key)
     if prev is None:
+        _tick_seen_bump(job, "neverSeen")
         return False, st                      # never evaluated by any kernel on record: evaluate once
-    return st == prev, st
+    if st == prev:
+        _tick_seen_bump(job, "hits")
+        return True, st
+    _tick_key_miss_by(job, st, prev)          # which position moved: the boot read decodes it (memos.tickSeen.missBy)
+    return False, st
 
 
 def _tick_job_done(job, s, st):
@@ -10230,21 +10283,30 @@ def _nudge_look_check(s, now):
         _NUDGE_LOOK_ASKERS[sid] = (keyed, over)
     st = tuple(st)
     if not st[0]:                                                #  a caller handing snapshots of its own stats first
+        _tick_seen_bump("auto-nudge", "noTranscript")
         return False, st, None
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(("auto-nudge", str(s.get("sid") or "")))
-    if prev is None or len(prev) != len(st) + 2 or tuple(prev[:len(st)]) != tuple(st):
+    if prev is None:
+        _tick_seen_bump("auto-nudge", "neverSeen")
         return False, st, None
+    if not isinstance(prev, (list, tuple)) or len(prev) != len(st) + 2 or tuple(prev[:len(st)]) != tuple(st):
+        _tick_key_miss_by("auto-nudge", tuple(st), tuple(prev[:-2]) if isinstance(prev, (list, tuple)) else prev)   # the walk's key
+        return False, st, None                                                                   #  beside the tick jobs' (memos.tickSeen)
     flip, verdict = prev[len(st)], prev[len(st) + 1]
     if verdict == "closer-unsettled" and not jd.CLOSER_ON:
+        _tick_seen_bump("auto-nudge", "clockParse")   # a matched key the clock legs refuse to serve: a parse, not a hit (round two)
         return False, st, None                        # recorded under the closer toggle, read with it off (an import-time toggle,
     #                                                   not a file): evaluate (round five, low c)
     if flip is None:
         _NUDGE_WALK_STATS["unbounded"] += 1
+        _tick_seen_bump("auto-nudge", "clockParse")
         return False, st, None
     if flip >= 0 and now >= flip:
         _NUDGE_WALK_STATS["clockDue"] += 1
+        _tick_seen_bump("auto-nudge", "clockParse")
         return False, st, None
+    _tick_seen_bump("auto-nudge", "hits")             # counted on the one return that skips
     return True, st, verdict
 
 
@@ -20439,6 +20501,25 @@ def _reap_stray_tunnels(host):
                 pass
 
 
+PORT_UP_WATCH_S = 12.0            # how long a dial's port watch waits for ssh's local forward to accept (ConnectTimeout is 10)
+
+
+def _wake_when_port_up(port, proc, deadline_s=PORT_UP_WATCH_S, step_s=0.1):
+    """Wake the supervisor the moment a dialed ssh's local forward accepts a connection, instead of at the next pass
+    (the user 2026-09-13: while we know we should reconnect, the round trip is the floor, not a timer). A local connect
+    every 100 ms (no remote load), until the port opens, the ssh dies, or the deadline passes. Returns whether the
+    port came up. Runs on a short daemon thread from _spawn_tunnel."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < deadline_s:      # loop-ok: bounded by the deadline, local connects only
+        if proc is not None and proc.poll() is not None:
+            return False
+        if port and _port_open(port):
+            _tunnel_wake.set()
+            return True
+        time.sleep(step_s)
+    return False
+
+
 def _spawn_tunnel(r):
     """(Re)spawn the ssh tunnel proc for one remote. Caller holds _remotes_lock.
 
@@ -20459,6 +20540,11 @@ def _spawn_tunnel(r):
         r["status"], r["detail"] = "starting", ""
         r["_death_logged"] = False
         _tunnel_log(r["host"], "dial", pid=r["proc"].pid, fails=r.get("fails", 0), argv=argv)
+        try:                              # the port-up wake: the row reads up as soon as ssh connects, not a pass later
+            threading.Thread(target=_wake_when_port_up, args=(r.get("local_port"), r["proc"]),
+                             name="port-up:" + str(r["host"]), daemon=True).start()   # kind "port-up"; the host after the colon is the payload the kind rule drops
+        except Exception:
+            pass
     except Exception as e:
         r["proc"], r["status"], r["detail"] = None, "error", str(e)
         _tunnel_log(r["host"], "spawn-failed", error=str(e), argv=argv)
@@ -23894,8 +23980,8 @@ def _first_cycle_sampler_run(tid, t0):
         n = len(_FIRST_CYCLE_SAMPLER["rows"]) + _FIRST_CYCLE_SAMPLER["failed"]
         if ev.wait(FIRST_CYCLE_SAMPLE_S if n < FIRST_CYCLE_SAMPLE_DENSE else FIRST_CYCLE_SAMPLE_WIDE_S):
             return
-        if len(_FIRST_CYCLE_SAMPLER["rows"]) >= FIRST_CYCLE_SAMPLES_MAX:
-            return
+        if n >= FIRST_CYCLE_SAMPLES_MAX:                  # rows AND failed walks fill the cap, so an all-failing sampler retires
+            return                                        #  with the cap rather than waking for the whole cycle (1588 low 4)
         try:
             _FIRST_CYCLE_SAMPLER["rows"].append(_first_cycle_sample(tid, t0))
         except Exception:
@@ -24628,7 +24714,45 @@ def _tunnel_supervisor():
             _remotes_save_if_changed()
         except Exception:
             sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
-        _tunnel_wake.wait(15)
+        _tunnel_wake.wait(_supervisor_wait_s(time.time()))
+
+
+SUPERVISOR_PASS_S = 15.0          # the steady pass: every attached tunnel polled end to end this often
+SUPERVISOR_FAST_PASS_S = 0.25     # the GAP between passes while a row is in transition (dialing, starting, restarting, no kernel
+#                                   answering): a pass is one synchronous probe round trip per row, so the pace coalesces on the
+#                                   round trip itself (the user 2026-09-13) and nothing here needs to know how long it takes
+SUPERVISOR_FAST_WINDOW_S = 60.0   # how long one transition keeps the fast pass before the steady pass resumes
+_TRANSITIONAL = frozenset(("starting", "connecting", "restarting", "no-kernel"))
+_fast_since = {}                  # host -> when its current transition began (dropped when the row reads up or down)
+
+
+def _supervisor_wait_s(now, rows=None):
+    """How long the supervisor sleeps before its next pass: the steady 15 s, or a quarter-second gap while any tunnel
+    row is in transition, for at most 60 s per transition (the user 2026-09-13: while we know we should reconnect, probe
+    back to back; the pass is one probe round trip per row, so the pace is the round trip's own and no timer guesses it). The laptop's dial ledger (the user, 2026-09-13): every dial had
+    its ssh up within a second and the row read "up" 16 to 18 s later, and a devbox kernel restart read as a 16 s
+    gap, because nothing polled sooner than the next steady pass. A transition is the event; the bound keeps a
+    host that never comes back from being polled every second for good (the backoff ladder still spaces its dials)."""
+    if rows is None:
+        with _remotes_lock:
+            rows = [dict(r) for r in _remotes.values()]
+    fast = False
+    live = set()
+    for r in rows:
+        host = r.get("host")
+        if not host:
+            continue
+        transitional = bool(r.get("_dialing")) or (r.get("status") or "") in _TRANSITIONAL
+        if not transitional:
+            _fast_since.pop(host, None)
+            continue
+        live.add(host)
+        since = _fast_since.setdefault(host, now)
+        if now - since < SUPERVISOR_FAST_WINDOW_S:
+            fast = True
+    for host in [h for h in _fast_since if h not in live]:
+        _fast_since.pop(host, None)
+    return SUPERVISOR_FAST_PASS_S if fast else SUPERVISOR_PASS_S
 
 
 def _session_rows():
@@ -39093,10 +39217,14 @@ SPEND_GUARD_RESTAT_PER_CYCLE = 400  # after a memo LOAD every file is statted on
 #                                     warm stat is about 5 us (the largest tree's 2,581 files listed in 15 ms), so a cycle carries
 #                                     about 2 ms and that tree is whole again within seven cycles, well inside the 30 s rescan bound
 _SPEND_TREE_STATS = {"dirStats": 0, "fileStats": 0, "entryStats": 0, "listings": 0, "loaded": 0, "loadFailed": 0, "written": 0,
-                     "swept": 0}    # the guard's tree reads, cumulative (GET /perf memos.spendTree; `romp perf` reads two snapshots as
+                     "swept": 0, "dropped": 0, "dumpSkipped": 0, "evicted": 0, "writeFailed": 0}    # the guard's tree reads, cumulative (GET /perf memos.spendTree; `romp perf` reads two snapshots as
 #                                     rates): a boot read shows one stat per directory, the spread file re-stat and no listing when the
 #                                     persisted memo stood; entryStats are the per-entry stats a listing performs (one per DirEntry)
-_SPEND_TREE_SWEPT = [False]         # the directory was swept once this kernel life (the first persist)
+_SPEND_TREE_SWEPT = [False]         # the directory was swept once this kernel life (the guard's first tick, cycle two or later)
+_SPEND_TREE_DUMP_SAID = [False]     # the exit write's dump failure was logged once this kernel life
+_SPEND_TREE_WRITE_SAID = [False]    # a memo write's OSError was logged once this kernel life
+_SPEND_TREE_EVICTED_FULL = {}       # leaf -> the full-rescan epoch of a memo the byte bound evicted THIS kernel life, so a reload
+#                                     within the life keeps its rescan clock (a boot starts every clock afresh; the map is empty)
 _SPEND_TREE_DIR = "spend-tree"      # STATE/spend-tree/<sid>.json: a session's tree memo persisted (written when dirty by the pusher's
 #                                     persistSpendTrees job and at exit), loaded LAZILY when that session's guard first runs after a
 #                                     boot, never all at boot; a corrupt or stale file is tolerated (relisted, never raised)
@@ -39181,12 +39309,16 @@ def _spend_tree_load(leaf, now=None):
     whole), and a path outside the root is dropped (round two, low 6: a memo is trusted only for the tree it names, never
     a foreign live file billed to this session). What the load saves is the LISTINGS (the scandir and its per-entry stat
     for every directory); one stat per file remains, spread over the next cycles under SPEND_GUARD_RESTAT_PER_CYCLE,
-    hot files (by stored mtime) first, since an append while the kernel was down moves no directory's mtime."""
+    hot files (by stored mtime) first, since an append while the kernel was down moves no directory's mtime. A memo the byte
+    bound evicted mid-drain persisted its remaining re-stat list and its rescan clock stays in _SPEND_TREE_EVICTED_FULL, so
+    the reload drains on and runs its full pass (the follow-up's low 1: before, both restarted per load and the largest
+    tree under a binding bound never finished either)."""
     now = time.time() if now is None else now
     p = _spend_tree_path(leaf)
     try:
         raw = p.read_bytes()
     except OSError:
+        _SPEND_TREE_EVICTED_FULL.pop(str(leaf), None)     # no memo to reload: its clock has nothing to attach to (low 2)
         return None
     root = _spend_tree_root(leaf)
     try:
@@ -39199,24 +39331,42 @@ def _spend_tree_load(leaf, now=None):
         if root not in dirs:
             raise ValueError("root")
         under = root + os.sep
+        n_all = len(dirs) + len(files)
         dirs = {k: float(v) for k, v in dirs.items() if k == root or k.startswith(under)}
         files = {k: float(v) for k, v in files.items() if k.startswith(under)}
-        _SPEND_TREE_STATS["loaded"] += 1
-        return {"dirs": dirs, "files": files, "full": now, "seen": now,
-                "restat": sorted(files, key=lambda f: -files[f])}       # hot first: the files most likely to have grown
+        _SPEND_TREE_STATS["dropped"] += n_all - len(dirs) - len(files)   # paths outside the root (a partly foreign memo is visible)
+        rest = d.get("restat")
+        same_life = str(leaf) in _SPEND_TREE_EVICTED_FULL          # this kernel evicted it: its persisted drain list is current
+        if same_life and isinstance(rest, list) and all(isinstance(x, str) for x in rest):
+            restat = [f for f in rest if f in files]       # the drain continues where it stopped (an empty list: it was done)
+        else:
+            restat = sorted(files, key=lambda f: -files[f])   # a boot (or an older memo): every file once, hot first, since an
+        _SPEND_TREE_STATS["loaded"] += 1                       #  append while the kernel was down moves no directory's mtime
+        m = {"dirs": dirs, "files": files, "full": _SPEND_TREE_EVICTED_FULL.pop(str(leaf), now), "seen": now}
+        if restat:
+            m["restat"] = restat
+        return m
     except (ValueError, KeyError, TypeError):
         _SPEND_TREE_STATS["loadFailed"] += 1
+        _SPEND_TREE_EVICTED_FULL.pop(str(leaf), None)
         return None
 
 
 def _sweep_spend_trees():
-    """One pass over STATE/spend-tree at the first persist of a kernel life: a memo whose leaf transcript no longer exists,
-    or that does not parse, is removed (counted as swept), the checkpoint sweep's shape, so cleared and removed sessions
-    do not grow the directory forever (round two, low 3: 0.73 MB for the largest tree, kept for good before this)."""
+    """One pass over STATE/spend-tree at the guard's FIRST tick of a kernel life (cycle two or later, never the boot's first
+    cycle: the pass parses every memo, 58.7 ms for sixty largest-tree memos, low 4): a memo whose leaf transcript no longer
+    exists, or that does not parse, is removed (counted as swept), the checkpoint sweep's shape, so cleared and removed
+    sessions do not grow the directory forever (round two, low 3: 0.73 MB for the largest tree, kept for good before
+    this); a tmp file a kill left between write and replace goes too."""
     d = jd.STATE / _SPEND_TREE_DIR
     if not d.is_dir():
         return 0
     gone = 0
+    for p in list(d.glob("*.json.tmp.*")):                # a tmp a kill left between write and replace (low 3): never a memo
+        try:
+            p.unlink(); gone += 1
+        except OSError:
+            pass
     for p in list(d.glob("*.json")):
         keep = False
         try:
@@ -39229,40 +39379,67 @@ def _sweep_spend_trees():
                 p.unlink(); gone += 1
             except OSError:
                 pass
+            for leaf in [k for k in _SPEND_TREE_EVICTED_FULL if _spend_tree_path(k) == p]:
+                _SPEND_TREE_EVICTED_FULL.pop(leaf, None)   # the evicted memo's clock goes with its file (round two, low 2)
     _SPEND_TREE_STATS["swept"] += gone
     return gone
 
 
-def _persist_spend_trees(force=False):
+def _spend_tree_memo_doc(leaf, m):
+    """The memo's on-disk shape: the leaf, the directories and files with their mtimes, and the re-stat list still to drain
+    (empty once the drain is done). No rescan epoch: a boot starts every clock afresh (the round-two medium), and a same-life
+    reload takes its clock from _SPEND_TREE_EVICTED_FULL and trusts the persisted drain list."""
+    doc = {"leaf": str(leaf), "dirs": m["dirs"], "files": m["files"], "restat": list(m.get("restat") or [])}
+    return doc                                         # the drain list always, empty once the drain is done: a same-life reload
+    #                                                    reads it as current, a boot ignores it (_spend_tree_load)
+
+
+def _persist_spend_trees(force=False, only=None):
     """Write every DIRTY tree memo (one listed or relisted this process) to STATE/spend-tree/<sid>.json, atomically; the pusher's
-    job each cycle and the exit's `force`. Best-effort: a write that fails leaves the memo dirty for the next cycle."""
+    job each cycle, the exit's `force`, and `only` for the one memo the byte bound is about to evict. Best-effort: a write
+    that fails leaves the memo dirty for the next cycle."""
     n = 0
-    if not _SPEND_TREE_SWEPT[0]:
-        _SPEND_TREE_SWEPT[0] = True
-        try:
-            _sweep_spend_trees()
-        except Exception:
-            pass
     for leaf, m in list(_SPEND_TREE_CACHE.items()):
-        if not (m.get("dirty") or force):
+        if only is not None and leaf != only:
             continue
+        if not (m.get("dirty") or force):
+            continue                                         # `only` writes the one memo too, and only when dirty (low 5: an
+        #                                                      eviction on a binding bound fires every cycle)
         p = _spend_tree_path(leaf)
+        tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
         body = None
         for _ in range(3):                                   # the exit's write runs beside the pusher, which may be
             try:                                             #  mutating the dicts (round two, low 2): a resize under the
-                body = json.dumps({"leaf": str(leaf), "dirs": m["dirs"], "files": m["files"], "full": m["full"]})
+                body = json.dumps(_spend_tree_memo_doc(leaf, m))
                 break                                        #  dump is retried, as the /perf report does, never raised
             except RuntimeError:
                 body = None
         if body is None:
+            _SPEND_TREE_STATS["dumpSkipped"] += 1            # three tries lost the race (low 2): counted, and said once a life
+            if not _SPEND_TREE_DUMP_SAID[0]:
+                _SPEND_TREE_DUMP_SAID[0] = True
+                try:
+                    sys.stderr.write("spend guard: a tree memo's write was skipped three times under the pusher's mutation\n")
+                except Exception:
+                    pass
             continue
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
             tmp.write_text(body, encoding="utf-8")
             os.replace(tmp, p)
             m["dirty"] = False; n += 1
-        except OSError:
+        except OSError as e:                             # a read-only directory, a full disk, a path replaced by a directory: the
+            _SPEND_TREE_STATS["writeFailed"] += 1        #  memo stays dirty and is retried each cycle; counted, said once a life
+            try:                                         #  (round two, low 4); a failed replace leaves no tmp behind for the retry
+                tmp.unlink()                             #  to pile on (round three, low 2)
+            except OSError:
+                pass
+            if not _SPEND_TREE_WRITE_SAID[0]:
+                _SPEND_TREE_WRITE_SAID[0] = True
+                try:
+                    sys.stderr.write("spend guard: a tree memo could not be written to %s (%s); retried each cycle\n" % (p.parent, e))
+                except Exception:
+                    pass
             continue
     _SPEND_TREE_STATS["written"] += n
     return n
@@ -39355,10 +39532,14 @@ def _spend_window_files(leaf, since, now=None):
                 if p not in m["files"]:
                     continue
                 try:
-                    m["files"][p] = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
+                    cur = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
                 except OSError:
                     m["files"].pop(p, None); m["dirty"] = True
+                    continue
+                if cur != m["files"][p]:
+                    m["files"][p] = cur; m["dirty"] = True
             del m["restat"][:SPEND_GUARD_RESTAT_PER_CYCLE]
+            m["dirty"] = True                                # the drain moved: the persisted list follows it (round two, low 5)
             if not m["restat"]:
                 del m["restat"]
         full = now - m["full"] >= SPEND_GUARD_TREE_RESCAN_S
@@ -39368,10 +39549,13 @@ def _spend_window_files(leaf, since, now=None):
                 continue
             if full or mt >= floor:
                 try:
-                    m["files"][p] = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
+                    cur = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
                 except OSError:
                     m["files"].pop(p, None); m["dirty"] = True
-        if full:
+                    continue
+                if cur != mt:                                    # a stat that CHANGES a stored mtime dirties the memo (round three,
+                    m["files"][p] = cur; m["dirty"] = True       #  medium): the eviction's dirty-only write must carry a grown file,
+        if full:                                                 #  or a same-life reload reads the old mtime and the window loses it
             m["full"] = now
     return [key] + [p for p, mt in m["files"].items() if mt >= since]
 
@@ -39605,6 +39789,12 @@ def _spend_guard_clear(s, rate, ceiling, now, be, clients):
 def _spend_guard_tick(now, live_map, sessions=None, be=None, clients=None, prices=None):
     """The pusher job: every live session's rate against the ceiling, the latch per session. `sessions`, `be`, `clients`
     and `prices` are seams for the tests; the pusher passes none of them."""
+    if not _SPEND_TREE_SWEPT[0]:                          # once per life, here rather than in the first cycle's persist job (the sweep
+        _SPEND_TREE_SWEPT[0] = True                      #  parses every memo; the guard never runs in cycle one), and BEFORE the
+        try:                                              #  disabled return below, so a kernel with the ceiling off still sweeps
+            _sweep_spend_trees()                          #  (round two, low 1)
+        except Exception:
+            pass
     ceiling = _spend_ceiling()
     if ceiling <= 0:
         _SPEND_GUARD.clear()                             # disabled: nothing latched survives the disable
@@ -39655,6 +39845,8 @@ def _spend_tree_memo_prune(live_paths):
     whose memo goes is listed again on its next tick, one first listing) and only the deficit shed."""
     for k in [k for k in _SPEND_TREE_CACHE if k not in live_paths]:
         _SPEND_TREE_CACHE.pop(k, None)
+    for k in [k for k in _SPEND_TREE_EVICTED_FULL if k not in live_paths]:
+        _SPEND_TREE_EVICTED_FULL.pop(k, None)                    # a departed session's rescan clock goes with its memo (round three, low 1)
     total = sum(_spend_tree_memo_size(m) for m in _SPEND_TREE_CACHE.values())
     if total <= SPEND_GUARD_TREE_MEMO_BYTES:
         return
@@ -39669,7 +39861,11 @@ def _spend_tree_memo_prune(live_paths):
         if total <= SPEND_GUARD_TREE_MEMO_BYTES:
             break
         total -= _spend_tree_memo_size(_SPEND_TREE_CACHE[k])
-        _SPEND_TREE_CACHE.pop(k, None)
+        m = _SPEND_TREE_CACHE.pop(k, None)
+        if m is not None:                                    # the evicted memo goes to disk whole (its drain list with it) and its
+            _SPEND_TREE_EVICTED_FULL[str(k)] = m.get("full", 0.0)   # rescan clock stays here, so the reload continues rather than
+            _SPEND_TREE_STATS["evicted"] += 1                #  restarting both (the follow-up's low 1)
+            _SPEND_TREE_CACHE[k] = m; _persist_spend_trees(only=k); _SPEND_TREE_CACHE.pop(k, None)
 
 
 def _spend_tree_memo_report():
@@ -50573,9 +50769,34 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     _PERF_STATS.stage("jobs", (time.monotonic() - _t_jobs) - _t_push)
 
 
+_PUSHER_FAILED_SAID = {}                           # exception type name -> said once per kernel life
+PUSHER_FAIL_BACKOFF_S = (0.5, 1.0, 2.0, 5.0)       # a failing cycle's retry pace: the backstop, then doubling to five seconds, reset by a
+#                                                   clean cycle (round two, medium 2: the failure path fell through to the same wake
+#                                                   wait as success, and a cycle that set the wake flag itself before raising retried
+#                                                   half a million times a second, a whole core for as long as the fault lasted)
+
+
 def _pusher():
+    streak = 0
     while not _LOOPS_STOP.is_set():
-        _pusher_cycle()
+        try:
+            _pusher_cycle()
+            streak = 0
+        except Exception as e:                        # (Exception, never BaseException: a deliberate loop stop passes.) The loop had
+            #                                           no watchdog: a raise from the cycle's prologue or its finally
+            _PERF_STATS.cycle_failed()                # (_live_map, the scopes' close, the boot row) ended the pusher for the
+            kind = type(e).__name__                   #  process's life, silently: no push, no tick job, until a restart. The cycle
+            if kind not in _PUSHER_FAILED_SAID:       #  is counted under /perf (pusher.cycleFailed), said once per exception kind,
+                _PUSHER_FAILED_SAID[kind] = True      #  and the loop goes on at its own pace
+                try:
+                    sys.stderr.write("pusher: a cycle raised %s and was skipped (counted under /perf pusher.cycleFailed; said "
+                                     "once per kind): %s\n" % (kind, traceback.format_exc().rstrip().splitlines()[-1]))
+                except Exception:
+                    pass
+            _pusher_wake.clear()                      # a wake the failing cycle set itself never re-arms the retry at once
+            streak += 1
+            _LOOPS_STOP.wait(PUSHER_FAIL_BACKOFF_S[min(streak, len(PUSHER_FAIL_BACKOFF_S)) - 1])   # the pace; a stop returns now
+            continue
         # Event-driven (woken by the SDK live-tail and by /tick on hook events) with a SHORT 0.5s backstop
         # poll, so a session with no per-message event for mid-turn streaming (the tmux backend's, until its
         # removal 2026-09-11) still refreshes responsively as the model generates, instead of waiting out a
