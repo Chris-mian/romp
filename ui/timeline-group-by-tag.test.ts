@@ -260,11 +260,51 @@ test("a focus on a session folded away unfolds its first lane's section through 
   assert.deepEqual(opened, [WEB]);
 });
 
+test("the unfold reaches only a session the pane would draw: one the lens or the active filter removed stays folded (the round-three low)", () => {
+  // a focus at a lens-filtered session unfolded its section in the shared blob (the strip's group sprang open) while the pane
+  // drew nothing: the unfold asked only whether the session had a drawn row, never why
+  store.clear();
+  store.set("romp:tabgroups", JSON.stringify({ on: true, collapsed: [], expanded: [], pinned: [], timeline: true }));
+  const panel = new V.TimelinePanel(makeNode("div"));
+  grouped(panel);
+  panel._curViews = () => ({ active: "all", tagOrder: ["backend", "frontend", "archived"], tags: unions.map((u, k) => ({ id: "t" + k, name: u.name, color: u.color, members: u.members })) });
+  panel._vis = VIS2.filter((s) => s.id !== OLD);            // the lens removed old-notes: it is not in the visible set
+  panel._rows = V.tlRows(panel._vis, unions, st(), true);
+  panel._rowOf = Object.create(null); panel._rows.forEach((r: any, i: number) => { if (r.kind === "lane" && !(r.s.id in panel._rowOf)) panel._rowOf[r.s.id] = i; });
+  assert.equal(panel._unfoldFor(OLD), null, "not in the visible set: nothing unfolds");
+  assert.deepEqual(JSON.parse(store.get("romp:tabgroups")!).expanded, [], "and the shared blob is untouched");
+  panel._vis = VIS2;                                        // visible but folded: unfolds, as before
+  assert.equal(panel._unfoldFor(OLD), "archived");
+});
+
+test("a focus at a session whose other copy the user clicked pulses that copy, the band's row", () => {
+  // the round-three cosmetic: the pulse landed on the first lane while the band stayed on the clicked copy
+  const panel = new V.TimelinePanel(makeNode("div"));
+  grouped(panel);
+  panel.svg = makeNode("svg");
+  panel._geom = { top: 8, ml: 130, plotW: 800, winSec: 3600, cT0: 0, compress: null };
+  panel._select(WEB, 5);                                    // the frontend copy, row 5
+  panel._pulseFocus(WEB, 600, null);
+  const ring = panel.svg.children[0];
+  assert.ok(ring && ring.tag === "circle");
+  assert.equal(+ring.getAttribute("cy"), 8 + 5 * 26 + 13, "the ring on the clicked copy's row, where the band is");
+  panel._select(API);                                       // no row known: web's first lane, as before
+  panel.svg = makeNode("svg");
+  panel._pulseFocus(WEB, 600, null);
+  assert.equal(+panel.svg.children[0].getAttribute("cy"), 8 + 2 * 26 + 13);
+});
+
+test("source pins: a click on a message stub aimed at a folded-away recipient unfolds through _unfoldFor before it selects (the round-three low)", () => {
+  const src = fs.readFileSync(viewPath, "utf8");
+  assert.match(src, /const msgNav = \(mm\) => \(\) => \{ const an = this\.nearestTurnAnchor\(mm\.toId, execAt\(mm\)\); if \(this\._unfoldFor\(mm\.toId\) != null\) this\.draw\(\); this\._select\(mm\.toId, this\._rowOf\[mm\.toId\]\);/,
+               "the message handler unfolds the recipient's section, redraws, and selects the row the redraw gave it");
+});
+
 test("source pins: the draw pass lays rows out through tlRows, the focus pulse and the drag read the row model", () => {
   const src = fs.readFileSync(viewPath, "utf8");
   assert.match(src, /const rows = tlRows\(vis, grouped \? viewTagUnion\(this\._curViews\(\)\) : \[\], tabGroupsState\(\), grouped\);/);
   assert.match(src, /this\._rows = rows; this\._rowOf = vidx; this\._grouped = grouped;/);
-  assert.match(src, /const i = \(sid in rowOf\) \? rowOf\[sid\] : \(this\._grouped \? -1 : \(this\._vis \|\| \[\]\)\.findIndex\(\(s\) => s\.id === sid\)\);/, "the pulse lands on the first lane row, nowhere for a folded-away session");
+  assert.match(src, /const i = onCursor \? cur : \(sid in rowOf\) \? rowOf\[sid\] : \(this\._grouped \? -1 : \(this\._vis \|\| \[\]\)\.findIndex\(\(s\) => s\.id === sid\)\);/, "the pulse lands on the cursor's row when it is this session's, else the first lane, nowhere for a folded-away session");
   assert.match(src, /if \(this\._grouped && this\._rows\) this\._rows\.forEach\(\(r, i\) => \{ if \(r\.kind === 'lane'\) walk\.push\(\{ s: r\.s, i \}\); \}\);/, "the arrow walk steps the rows shown, its position a row index");
   assert.match(src, /this\._mc\.font = '400 ' \+ fs \+ 'px ' \+ this\._fontFace\(\);/, "the chip's name is measured at the drawn weight");
   assert.match(src, /if \(d\.mode === 'row' && d\.noReorder\) \{ this\._drag = null; return; \}/, "grouped lanes follow the tag order: a vertical drag is a click");

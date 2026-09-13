@@ -1787,6 +1787,9 @@ class TimelinePanel {
   // the pan and pulse then land on the lane as for a visible one. Returns the section's name, null when nothing was folded
   _unfoldFor(sid) {
     if (!sid || !this._grouped || (this._rowOf && sid in this._rowOf)) return null;
+    // only a session the pane WOULD draw (the visible set: the lens and the active filter kept it) but folded away; one the
+    // lens removed has no lane to reach, and unfolding its section would spring the strip's group open for nothing
+    if (!(this._vis || []).some((s) => s.id === sid)) return null;
     const st = tabGroupsState();
     for (const u of viewTagUnion(this._curViews())) {
       if (u.members.indexOf(sid) < 0 || !sectionFolded(st, u.name)) continue;
@@ -2890,8 +2893,12 @@ class TimelinePanel {
     // lanes; the connectors and dots land on the first, and so does the pulse), the visible index when nothing is grouped
     const rowOf = this._rowOf || {};
     // grouped, a session with no lane row is folded away under its section's head: it pulses NOWHERE (the fold verifier's
-    // first medium: the fallback to the ungrouped visible index drew the ring on another row); ungrouped, the visible index
-    const i = (sid in rowOf) ? rowOf[sid] : (this._grouped ? -1 : (this._vis || []).findIndex((s) => s.id === sid));
+    // first medium: the fallback to the ungrouped visible index drew the ring on another row); ungrouped, the visible index.
+    // With copies, the cursor's row when it is one of this session's lanes (the copy the user clicked wears the band), else
+    // the first lane
+    const rows = this._rows || [], cur = this._selRow;
+    const onCursor = cur != null && rows[cur] && rows[cur].kind === 'lane' && rows[cur].s.id === sid;
+    const i = onCursor ? cur : (sid in rowOf) ? rowOf[sid] : (this._grouped ? -1 : (this._vis || []).findIndex((s) => s.id === sid));
     if (i < 0) return;
     const y = g.top + i * LANE_GAP + LANE_GAP * 0.5;
     // The outline goes INTO the live plot group when the last build left one (_tickPlot): the tick translates
@@ -6512,7 +6519,7 @@ class TimelinePanel {
     // user 2026-08-24). A nameless row falls back to the raw id: information, not an empty span
     // (the CLI's unmappable-member precedent).
     const msgHtml = (mm) => () => { const col = colorOf(mm.fromId); return '<div class="r"><span class="chip" style="background:' + col + '"></span><span class="who" style="color:' + col + '">' + esc(mm.from || mm.fromId) + '</span><span class="ar">→</span><span class="who" style="color:' + colorOf(mm.toId) + '">' + esc(mm.to || mm.toId) + '</span>' + (mm.pending ? ' <span class="k">pending</span>' : '') + '<span class="t">' + clock(mm.sent) + (mm.pending ? ' → …' : ' → ' + clock(mm.exec)) + '</span></div>' + this.body(esc(mm.summary || mm.text || '')); };
-    const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); this._select(mm.toId, vidx[mm.toId]); this.openChat(mm.toId, mm.id || (an && (an.promptId || an.replyUuid)), false, false, execAt(mm)); };   // land on the message's OWN postal card BY ID — the chat matches mm.id to the card's data-mid (the user 2026-06-20); nearest-turn uuid / time only as fallback
+    const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); if (this._unfoldFor(mm.toId) != null) this.draw(); this._select(mm.toId, this._rowOf[mm.toId]); this.openChat(mm.toId, mm.id || (an && (an.promptId || an.replyUuid)), false, false, execAt(mm)); };   // land on the message's OWN postal card BY ID — the chat matches mm.id to the card's data-mid (the user 2026-06-20); nearest-turn uuid / time only as fallback
     // OVERLAP HOVER (the user 2026-08-24): message marks stack — several exchanges on one pair, a
     // stub riding another's track — and the topmost hit swallowed the hover, so the modal named ONE
     // message where the cursor covered several. Resolve every message element under the point
