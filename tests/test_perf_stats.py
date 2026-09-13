@@ -942,7 +942,7 @@ class PerfRoutes(unittest.TestCase):
         self.assertIsInstance(rows, dict, "?stacks=1 fills the slot the plain snapshot leaves null")
         self.assertTrue(rows and all(set(r) == {"self", "stage", "frames"} for r in rows.values()), list(rows.items())[:1])
         key = "%d probe-thread" % th.ident
-        self.assertIn(key, rows, sorted(rows))                              # keyed "<ident> <name>" (T358's duplicate-worker case)
+        self.assertIn(key, rows, sorted(rows))                              # keyed "<ident> <kind>" (T358's duplicate-worker case)
         mine = rows[key]
         self.assertEqual(mine["stage"], "jobs.probe", mine)
         self.assertTrue(any(f.startswith("wait (threading.py:") for f in mine["frames"]), mine["frames"])
@@ -969,6 +969,55 @@ class PerfRoutes(unittest.TestCase):
         self.assertNotIn("notes-api-web", json.dumps(rows), "no session name anywhere in the sample")
         self.assertEqual((km._thread_kind("sdk-intr:web"), km._thread_kind("Thread-12 (process_request_thread)"), km._thread_kind("pusher"),
                           km._thread_kind("MainThread"), km._thread_kind(None)), ("sdk-intr", "handler", "pusher", "main", "?"))
+        # round two: every identity-bearing worker follows kind:payload, and a default name keeps its target function
+        self.assertEqual((km._thread_kind("codex:notes-api-web"), km._thread_kind("end-host:11111111"), km._thread_kind("peer:TESTHOST")),
+                         ("codex", "end-host", "peer"))
+        self.assertEqual((km._thread_kind("Thread-7 (_ask_poll)"), km._thread_kind("Thread-9 (serve_forever)"), km._thread_kind("Thread-3")),
+                         ("_ask_poll", "serve_forever", "thread"), "a default name keeps the target function, the identity a slow-boot read needs")
+        self.assertEqual((km._thread_kind("judge-index_2"), km._thread_kind("ThreadPoolExecutor-0_4")), ("judge-index", "pool"))
+        gate = threading.Event()
+        th = threading.Thread(target=gate.wait, daemon=True); th.start()   # unnamed: Python's "Thread-N (wait)"
+        try:
+            rows = km._thread_stacks()
+        finally:
+            gate.set(); th.join(5)
+        self.assertIn("%d wait" % th.ident, rows, sorted(rows))
+
+    def test_every_named_thread_site_maps_to_a_kind_without_an_identity(self):
+        """Round two, medium 1: a census of every `threading.Thread(... name=...)` site in the kernel, the backends the kernel
+        loads in-process and the postal service. A constant name is a kind already; a name with a dynamic part (a session
+        name, a sid, a host) must carry it after the convention's separator so _thread_kind drops it; a name built any other
+        way fails the census. The judge pools carry a thread_name_prefix per tier."""
+        import re
+        root = os.path.dirname(BIN)
+        files = [os.path.join(root, "kernel", f) for f in ("kernel.py", "sdk_backend.py", "codex_backend.py", "session_host.py")] + \
+                [os.path.join(root, "postal", "postal_service.py")]
+        seen, bad = [], []
+        for f in files:
+            src = open(f, encoding="utf-8").read()
+            for m in re.finditer(r"threading\.Thread\(([^\n]*?name=([^,)\n]+))", src):
+                expr = m.group(2).strip()
+                seen.append((os.path.basename(f), expr))
+                lit = re.match(r"f?([\"'])(.*?)\1", expr)
+                if lit is None:
+                    bad.append((os.path.basename(f), expr, "not a literal")); continue
+                text = lit.group(2)
+                dynamic = (expr.startswith("f") and "{" in text) or ("%" in expr[lit.end():]) or ("+" in expr[lit.end():])
+                if dynamic:
+                    static = re.split(r"\{|%", text)[0]
+                    if not static.endswith(km._THREAD_NAME_SEP):
+                        bad.append((os.path.basename(f), expr, "a dynamic part without the kind:payload separator")); continue
+                    kind = km._thread_kind(static + "notes-api-web")
+                    if kind != static[:-1] or "notes" in kind:
+                        bad.append((os.path.basename(f), expr, "the payload survives: %r" % kind))
+                else:
+                    kind = km._thread_kind(text)
+                    if kind != text or re.search(r"[/\\]|[0-9a-f]{8}-", text):
+                        bad.append((os.path.basename(f), expr, "a constant name that is not a plain kind: %r" % kind))
+        self.assertGreaterEqual(len(seen), 12, "the census found the naming sites: %r" % seen)
+        self.assertEqual(bad, [], "every named thread maps to a kind with no identity in it")
+        self.assertIn("thread_name_prefix", open(os.path.join(root, "kernel", "judge.py"), encoding="utf-8").read(),
+                      "the judge pools carry a prefix per tier")
 
     def test_the_sample_never_reads_source_through_linecache(self):
         """Round one, low 1: extract_stack read and cached every source file in every stack (4 MB of kernel) for line text

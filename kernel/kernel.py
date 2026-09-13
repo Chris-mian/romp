@@ -750,18 +750,36 @@ def _set_stage(name):
         _STAGE_BY_TID[tid] = name
 
 
+_THREAD_NAME_SEP = ":"            # the one naming convention for every worker the kernel or a backend names with an identity
+#                                   in it: "<kind>:<payload>" (sdk:<session name>, sdk-intr:<session name>, codex:<session
+#                                   name>, end-host:<sid8>, peer:<host>); the kind rule below keeps the kind and drops the
+#                                   payload, so no session name, sid, host or path reaches the stack sample (T401 round two)
+
+
 def _thread_kind(name):
-    """A thread's KIND from its name, never a session's name: an SDK session thread is named "sdk:<session name>" and its
-    interrupt thread "sdk-intr:<session name>", so the part before the colon is the kind; Python's default "Thread-N
-    (target)" names are the HTTP handlers' ("handler"); the rest (pusher, producer, index, triage, parse-warm, ...) are
-    kinds already. The stack sample keys its rows by ident and kind (T401 round one, medium 1: a key carried a live
-    session name where the reference promised no session content)."""
-    n = (name or "?").split(":", 1)[0]
-    if n.startswith("Thread-"):
-        return "handler"
+    """A thread's KIND from its name, never a session's name, sid, host or path: a name with the convention's separator keeps
+    the part before it (sdk, sdk-intr, codex, end-host, peer); Python's default "Thread-N (target)" keeps the target function
+    (the identity a slow-boot read needs: _ask_poll, _parent_watch, _update_check_loop, serve_forever, ...), "handler" for
+    the HTTP server's process_request_thread; a pool worker "<prefix>_N" keeps its prefix (the judge tiers' pools are
+    prefixed judge-<tier>), a default "ThreadPoolExecutor-K_N" is "pool"; MainThread is "main"; the rest (pusher, producer,
+    index, triage, parse-warm, ...) are kinds already. The stack sample keys its rows by ident and kind (T401 round one,
+    medium 1: a key carried a live session name where the reference promised no session content; round two: the Codex
+    worker's hyphenated name and the end-host's sid slipped past a colon-only rule, and every default name read as handler)."""
+    n = name or "?"
+    if _THREAD_NAME_SEP in n:
+        return n.split(_THREAD_NAME_SEP, 1)[0] or "?"
+    m = re.match(r"Thread-\d+(?: \((.+)\))?$", n)
+    if m:
+        fn = m.group(1) or "thread"
+        return "handler" if fn == "process_request_thread" else fn
     if n == "MainThread":
         return "main"
-    return n or "?"
+    if re.match(r"ThreadPoolExecutor-\d+_\d+$", n):
+        return "pool"
+    m = re.match(r"(.+)_\d+$", n)
+    if m:
+        return m.group(1)
+    return n
 
 
 def _thread_stacks(limit=40):
@@ -60497,7 +60515,7 @@ def main():
         sys.stderr.write("model-alias migration: %s\n" % traceback.format_exc())   # MUST precede _sdk: regs → chosen_model there
     _write_palette_mirror()                                   # keep bin/romp's palette-colors mirror current across code updates
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
-    threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot
+    threading.Thread(target=_sdk, daemon=True, name="sdk-boot").start()   # construct the SDK backend NOW so its boot
     #                                                           reconcile (cut turns, queues, orphans) runs at
     #                                                           boot, not on the first lazy touch
     threading.Thread(target=_rewind_holds_boot, daemon=True).start()   # resolve holds whose take/fail

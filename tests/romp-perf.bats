@@ -93,7 +93,12 @@ if [[ "$*" == *"-X POST"* ]]; then
     printf '{"ok": true, "log": %s}\n200' "$([[ "$*" == *'"log": true'* ]] && echo true || echo false)"
     exit 0
 fi
-if [[ "$*" == *"stacks=1"* ]]; then if [ -n "${CURL_OLD_KERNEL:-}" ]; then cat "$SNAP_A"; else cat "$SNAP_S"; fi; printf '\n200'; exit 0; fi
+if [[ "$*" == *"stacks=1"* ]]; then
+    if [ -n "${CURL_OLD_KERNEL:-}" ]; then cat "$SNAP_A"
+    elif [ -n "${CURL_OLD_SHAPE:-}" ]; then printf '{"now": 1000.0, "process": {"pid": 4242}, "stacks": {"11 pusher": ["  File \"kernel.py\", line 100, in _pusher"]}}'
+    else cat "$SNAP_S"; fi
+    printf '\n200'; exit 0
+fi
 n=0; [ -f "$CURL_CALLS" ] && n="$(cat "$CURL_CALLS")"
 echo $((n + 1)) > "$CURL_CALLS"
 if [ "$n" -eq 0 ]; then cat "$SNAP_A"; elif [ -n "${CURL_RESTART:-}" ]; then cat "$SNAP_C"; else cat "$SNAP_B"; fi
@@ -204,6 +209,14 @@ assert lines[i + 1:i + 6] == ["    _pusher (kernel.py:100)", "    _job_stage (ke
     echo "$output" | grep -q "does not answer stacks"
     run bash -c "CURL_OLD_KERNEL=1 '$ROMP_SCRIPT' perf stacks 2>/dev/null | grep -c threads"
     [ "$output" = "0" ]
+}
+
+@test "romp perf stacks: the OLD switch shape (a list of lines per thread) is refused like no stacks, in both forms" {
+    CURL_OLD_SHAPE=1 run "$ROMP_SCRIPT" perf stacks
+    [ "$status" -eq 1 ]
+    echo "$output" | grep -q "does not answer stacks"
+    CURL_OLD_SHAPE=1 run "$ROMP_SCRIPT" perf stacks --json
+    [ "$status" -eq 1 ]
 }
 
 @test "romp perf stacks: an unknown flag is refused with the usage" {
