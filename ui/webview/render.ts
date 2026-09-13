@@ -29,7 +29,7 @@ import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, a
 import { lensVisible, surfaceLens } from "./tag-lens";
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
-import { markerLabel, dayContext, DayWalk } from "./time-marker";
+import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
 import { senderKind, SenderKind } from "./sender-identity";
@@ -3107,14 +3107,37 @@ function eventEpoch(ev: ChatEvent): number | null {
 // Nothing re-reveals a suppressed marker: a stamp marks a time CHANGE and nothing else
 // (the user 2026-07-23) — see paintRailSticky for why the rail no longer needs repeats.
 function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
-  const { text, day, hm } = markerLabel(epoch, prevEpoch, Date.now());
   const m = el("div", "time-marker");
-  m.dataset.hm = hm;
   m.dataset.epoch = String(epoch);   // the row's own moment; the top-of-view day-context label reads data-day, the walk's mark (stampWalkDay), and falls back to this (paintRailSticky)
+  m.dataset.prev = prevEpoch == null ? "" : String(prevEpoch);   // the raw previous timed row the chain compared against, for the minute tick's repaint (the same reference, so a tick can never stamp what the render suppressed)
   // The gutter shows the TIME and nothing else. The date rides a full-width day divider
-  // instead (dayDividerFor below) — no date word has to fit 47px of rail any more.
-  if (text) m.textContent = day ? hm : text;
+  // instead (dayDividerFor below) — no date word has to fit the 56px slot of rail any more.
+  paintMarker(m, epoch, prevEpoch, Date.now());
   return m;
+}
+
+// The marker's text from its moment, the raw previous timed row's and the clock: ONE writer for the render above and
+// for the rail's minute tick (refreshRelativeMarkers), so the two can never disagree. A row of TODAY reads how long ago
+// (time-marker.ts relativeLabel; T406, the user 2026-09-13), the words they asked for in place of the clock; the exact
+// HH:MM rides its tooltip; and the label is stamped where it CHANGES from the previous timed row's, the rail's
+// same-minute rule at the label's own grain, so two rows an hour apart that both read "2 hours ago" stamp once, like
+// two rows of one minute. Such a marker keeps the `rel` class shown or not, so the tick can stamp it again when the
+// labels part (119 and 120 minutes ago read differently) and can hand it back to the clock time once its day is over
+// (the divider for that day comes with the next render). Any other day: the HH:MM exactly as before, empty when the
+// minute repeats.
+function paintMarker(m: HTMLElement, epoch: number, prevEpoch: number | null, now: number): void {
+  const { text, day, hm } = markerLabel(epoch, prevEpoch, now);
+  m.dataset.hm = hm;
+  const rel = relativeLabel(epoch, now);
+  if (rel) {
+    const shown = rel !== (prevEpoch == null ? "" : relativeLabel(prevEpoch, now));
+    m.classList.add("rel");
+    m.textContent = shown ? relativeLines(rel) : "";
+    if (shown) m.title = hm; else m.removeAttribute("title");
+    return;
+  }
+  m.classList.remove("rel"); m.removeAttribute("title");
+  m.textContent = text ? (day ? hm : text) : "";
 }
 
 // The day boundary itself: a hairline rule across the prose column with the date on it
@@ -3122,8 +3145,8 @@ function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
 // of a new (non-today) day. Returns null on every other turn.
 //
 // Why it is not in the rail (the user 2026-08-01): the date used to stack on its own row
-// inside the .time-marker, but the gutter is only 47px wide and "Yesterday" measures 52.6px
-// bold, so its "Y" was clipped by the pane's overflow. Nothing that has to FIT a fixed 47px
+// inside the .time-marker, but the marker's slot was only 48px wide and "Yesterday" measures 52.6px
+// bold, so its "Y" was clipped by the pane's overflow. Nothing that has to FIT a fixed slot
 // is safe — `--fs` follows --vscode-chat-font-size, so a bigger chat font re-clips whatever
 // just barely fit at 13px. Out here the label has the whole column and can never be cut off.
 //
@@ -3512,12 +3535,15 @@ function paintRailSticky(): void {
   // (offsets ≥ stamp height), which is realLeads — this branch never runs. Markers at or below the sticky's
   // bottom stay visible — they are the genuine lower stamps, not doubles.
   const g = (anyMarker || marker!).getBoundingClientRect();
-  for (const [m, top] of all) m.style.visibility = top < slotLine + g.height ? "hidden" : "";
-  stamp.textContent = hm;
+  const rel = relativeLabel(Number(marker!.dataset.epoch), Date.now());   // a row of today reads how long ago at the top too, as its own marker does (T406)
+  stamp.classList.toggle("rel", !!rel);
+  stamp.textContent = rel ? relativeLines(rel) : hm;
   stamp.style.left = g.left + "px";
   stamp.style.width = g.width + "px";
   stamp.style.top = slotLine + "px";
   stamp.style.display = "";
+  const stampH = stamp.getBoundingClientRect().height || g.height;   // the sticky's OWN band (two lines for a today label), not the first marker's
+  for (const [m, top] of all) m.style.visibility = top < slotLine + stampH ? "hidden" : "";
   paintDay(slotLine);
 }
 
@@ -3531,6 +3557,27 @@ function scheduleRailSticky(): void {
   railStickyPending = true;
   requestAnimationFrame(() => { railStickyPending = false; paintRailSticky(); paintScrollMarks(); updateCommentRail(); if (activeId && hasUnreadOpenThread(activeId)) paintCommentOutlines(activeId); });
 }
+
+// The rail's MINUTE TICK (T406): today's labels age. ONE page-level timer, re-armed to fire just past each clock-minute
+// boundary (the labels are in calendar minutes, so nothing can change between two boundaries), repaints the SHOWN
+// transcript's today markers from the moment and the previous row each stored at render (paintMarker, the same writer):
+// a textContent write only where the text differs, then the sticky's usual rAF repaint. Never a timer per marker.
+// Hidden tabs are skipped and refreshed the moment a switch shows them (the switch below, showActive); a hidden window
+// skips too and catches up on visibilitychange. Cost per fire: one querySelectorAll over the shown transcript's today
+// markers, an integer label each, no layout read of its own (the sticky's paint reads as it always did).
+function refreshRelativeMarkers(root: HTMLElement | null | undefined): void {
+  if (!root) return;
+  const now = Date.now();
+  for (const m of Array.from(root.querySelectorAll<HTMLElement>(".time-marker.rel")))
+    paintMarker(m, Number(m.dataset.epoch), m.dataset.prev ? Number(m.dataset.prev) : null, now);
+  scheduleRailSticky();
+}
+function railMinuteTick(): void {
+  if (!document.hidden && activeId) refreshRelativeMarkers(views.get(activeId)?.el);
+  setTimeout(railMinuteTick, 60000 - (Date.now() % 60000) + 50);   // just past the next boundary
+}
+// (armed, with the visibilitychange catch-up, beside the pre-build's own listener further down: module-level statements
+// here would run inside the source-lifting test harnesses that slice this region, chat-proto2-exec.test.ts)
 
 function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "system") return renderSystem(ev);
@@ -12339,6 +12386,10 @@ function paneHidden(): boolean {
 // The prefetch never runs while the browser tab is hidden (nextPrefetch); coming back is the event that re-arms
 // it. (A display:none pane has no event for its CSS flip — it re-arms on the next upsert / click instead.)
 document.addEventListener("visibilitychange", () => { if (!document.hidden) schedulePrebuild(); });
+// the rail's minute tick (T406, refreshRelativeMarkers above): armed once here for the page, re-armed by each fire; a
+// window shown again after minutes hidden catches its today labels up at once rather than at the next boundary
+setTimeout(railMinuteTick, 60000 - (Date.now() % 60000) + 50);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && activeId) refreshRelativeMarkers(views.get(activeId)?.el); });
 
 function runPrebuild(deadline: IdleDeadline): void {
   prebuildHandle = null;
@@ -12877,6 +12928,7 @@ function showActive(keep?: { uuid: string; y: number } | null) {
     v.rendered = 0; v.winStart = 0; v.avgTurnH = undefined; v.stick = true;   // → firstBuild rebuilds the tail, lands at bottom
   }
   for (const [vid, vv] of views) vv.el.style.display = vid === activeId ? "" : "none";
+  if (!reshow) refreshRelativeMarkers(v.el);   // a tab shown after minutes hidden: its today labels catch up before the eye lands (T406; the minute tick skips hidden tabs)
   renderSubHead();   // the viewer's header above its transcript (hidden for every real session)
   updateStatusline();
   // The transcript BUILD is the only expensive part of a switch. A view already built for the current

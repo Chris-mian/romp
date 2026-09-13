@@ -41,7 +41,8 @@ test("the hand-off happens at the buffer line, with the crossed marker hidden", 
   assert.match(fn, /if \(!hm \|\| realLeads\) \{/);
   // when the sticky leads, every marker that crossed ABOVE the slot line — or INTO the sticky's own
   // box — is hidden, so no clipped duplicate shows and no incoming stamp superimposes the sticky
-  assert.match(fn, /for \(const \[m, top\] of all\) m\.style\.visibility = top < slotLine \+ g\.height \? "hidden" : "";/);
+  // (the band is the sticky's OWN height since T406: two lines for a today label, rail-relative.test.ts)
+  assert.match(fn, /for \(const \[m, top\] of all\) m\.style\.visibility = top < slotLine \+ stampH \? "hidden" : "";/);
   // and it rests exactly at the slot line
   assert.match(fn, /stamp\.style\.top = slotLine \+ "px";/);
   // ...while a real stamp leading means nothing is suppressed

@@ -19,7 +19,7 @@ test("the time-marker left gutter is reserved unconditionally, 56px so the day l
   // the turn's own text indent also drops 30→24, and the time-marker re-fits the smaller gutter (left/width)
   assert.match(CSS, /\.thread \{[^}]*padding: 0 24px 0 56px/);
   assert.match(CSS, /\.turn \{[^}]*padding-left: 24px/);
-  assert.match(CSS, /\.time-marker \{[\s\S]*?left: -45px; width: 48px/);
+  assert.match(CSS, /\.time-marker \{[\s\S]*?left: -53px; width: 56px/);   // the slot is the whole gutter since T406 (today's "59 minutes" is 55.9px); its right edge, 3px short of the dot, did not move
   // the statusline shares the same left gutter so its controls stay aligned with the transcript column
   assert.match(CSS, /\.statusline \{[^}]*padding: 7px 24px 0 56px/);
 });

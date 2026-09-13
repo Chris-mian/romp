@@ -34,6 +34,7 @@ test("the date rides a day divider, not the 47px rail gutter it used to be clipp
 });
 
 test("the rail marker shows only the time on a day boundary", () => {
-  // `day ? hm : text` — never the combined "Yesterday · 21:24", which overran the gutter
-  assert.match(RENDER, /m\.textContent = day \? hm : text/);
+  // `day ? hm : text` — never the combined "Yesterday · 21:24", which overran the gutter (since T406 the line is
+  // paintMarker's other-day branch; a today row reads how long ago instead, rail-relative.test.ts)
+  assert.match(RENDER, /m\.textContent = text \? \(day \? hm : text\) : "";/);
 });
