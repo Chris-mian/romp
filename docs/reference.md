@@ -964,8 +964,9 @@ dashboard receives its active tab whole and every other tab as a skeleton, so
 the one parse it needs is the one its own connect push runs. The feed-only warm
 parses only sessions whose transcript, state log or goal store changed since
 the boot, or that are working now. The interrupt-block and working-note tick
-jobs skip a session whose transcript, state log and goal store are unchanged
-since their last look, with the boot as the first baseline: a session blocked
+jobs skip a session whose keyed files (the transcript, the state log, the goal
+store with its override journal and archive, the episode, clears, postal and
+downtime logs and the nudge ledger, ten in all) are unchanged since their last look, with the boot as the first baseline: a session blocked
 before the restart and untouched after reads blocked from the store the
 previous kernel wrote, with no parse. The judges' passes walk sessions newest
 first and yield between them; their first pass still parses what it
@@ -1581,7 +1582,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   its fallback reason counted), `bypass` (a pending cut armed on the session)
   and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,
   beside `asmCheckpoint.removed`, the document files removed per reason (a
-  fallback's reason, or the boot sweep).
+  fallback's reason, or the boot sweep). The row also carries `nudgeWalk`
+  (T401): the first eight characters of the session ids whose parses the
+  boot's nudge walk `skipped` on its memo, those it `parsed` (at most forty
+  each), and how many it `deferred` to a later pass.
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
@@ -1812,7 +1816,31 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   read-only store cache (`hit`, `miss`, `compare_miss`, `refuse`, `dup`,
   `absent`, `corrupt`, `unreadable_journal`, `evict`, `fallback`, `poisoned`,
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
-  (`hit`, `miss`, `populate`, `bypass`); `nudgeGate` is the auto-nudge walk's
+  (`hit`, `miss`, `populate`, `bypass`); `nudgeWalk` is the auto-nudge walk's
+  parse gate (T401): `looks`, `skippedParses` (a session whose files are
+  unchanged since its last completed look and whose clock legs, noted by that
+  look with the instant each could flip, have not come due; the skip repeats
+  the recorded verdict and does nothing else; only a look whose verdict came
+  from a road marked file-keyed, or the full walk run to its end, records a
+  skippable memo, every other exit an unbounded one), `parses`, `coldParses`
+  (parses no cache held), `deferredSessions` (the yield: with a client
+  connected the pass stops after a look that paid a cold parse; the first
+  deferred session is the resume cursor, so the next pass rotates the
+  recency order to start there and every session is reached within as many
+  passes as there are cold parses), `unbounded` (memos refused because a leg's release is not one
+  of the session's files: a deferral retired by a judge pass, a stamped wait
+  a peer's bounce can end, an owed reminder a refused ledger write left
+  standing), `clockDue` (memos refused because a noted flip has come) and
+  `wakeOnly` (looks with injected follow-ups off, which neither skip nor
+  record because the toggle is not a file, so that configuration keeps the
+  boot's cold parses); the files the memo keys on are the transcript, the
+  state log, the goal store with its override journal and archive, the
+  episode log, the clears log, the postal log, the kernel's downtime log
+  (the working verdict's suspension check reads a list that log refills)
+  and the nudge ledger; the pass takes every session's stat before it reads
+  any pass-level snapshot, so no input a look reads is older than the key
+  its memo is recorded under;
+  `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue
