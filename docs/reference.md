@@ -1566,9 +1566,20 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   standing disagreement with the cold parse remains outside the rule: a tail
   record whose stamp precedes the cut or the tip chains soundly but the
   write-time stamp-order guard is not re-checked, so such a restore can
-  differ from a cold parse; a later round); a document written before the bit is unproven, so every standing
-  document is refused once at its first restore after the change and booked
-  `full:refused`, then rewritten with the bit; the restore falls to the whole parse, at boot
+  differ from a cold parse; a later round); a document written before the bit is unproven, so a standing
+  document is refused at its first restore after the change, booked
+  `full:refused`, and rewritten from the whole parse that follows the
+  refusal, then and there (`write:afterRefusal`, or
+  `write:afterRefusalSkipped` when the writer declines), so the next
+  restore takes it; a document refused for the tail's SHAPE (a re-rooted
+  tail, a reused pre-cut uuid), or whose offered rewrite the writer declined
+  for any reason, is marked refused in its sidecar at the leaf's stat (under
+  the key lock, re-read after the write), and while that stat stands every
+  road goes straight to the whole or cold parse with no proof and no rewrite
+  (`restore:refusedStanding`, `seeded:refusedStanding`); the mark clears when
+  the leaf moves or a write the writer accepts replaces the sidecar; a whole parse whose resolved graph is cyclic writes no
+  document (`skipped.cycle`); a record without a uuid is not a node of the
+  chain walk; the restore falls to the whole parse, at boot
   and after a demotion alike, and `seeded:chainRefused` counts the same
   refusal by the chain-membership and file-rewound readers, which then walk
   the file cold, T402), `full` with
@@ -1837,9 +1848,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   state log, the goal store with its override journal and archive, the
   episode log, the clears log, the postal log, the kernel's downtime log
   (the working verdict's suspension check reads a list that log refills)
-  and the nudge ledger; the pass takes every session's stat before it reads
-  any pass-level snapshot, so no input a look reads is older than the key
-  its memo is recorded under;
+  and the nudge ledger (one file for the box, so any ledger write moves every
+  session's key and the next pass re-evaluates each alive session once);
+  the pass takes every session's stat before it reads any pass-level
+  snapshot, so no input a look reads is older than the key its memo is
+  recorded under; `unboundedBy` counts the unbounded NOTES per leg at the
+  look that recorded them (the stamped wait, a standing deferral, a dead
+  asker, a store fault, a queued send, a legacy record with no anchor, an
+  unmarked verdict when no named leg noted the look); the legs partition
+  the NOTES, not the looks (a look over two top goals can note two legs); the
+  `deadAsker` leg (an ask in the postal wait maps whose asker is not alive
+  now) carried 33,579 of 43,173 notes on the first boot with the counts,
+  since an ask a dead peer left in the log stays there for good; ageing such
+  an ask out of the wait maps would delete a wait the postal surfaces show
+  and is the user's call, the open hygiene question here; while
+  `unbounded` counts a LATER look's refused skip, so the two are not
+  comparable;
   `spendTree` is the spend guard's memo of each live
   session's subagents tree (`entries`, `bytes`, `bound`, a sixty-fourth of
   the machine's memory or `ROMP_SPEND_GUARD_TREE_MEMO_BYTES`, and the

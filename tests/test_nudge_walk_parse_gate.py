@@ -25,8 +25,9 @@ class NudgeWalkParseGate(unittest.TestCase):
     maxDiff = None
     def setUp(self):
         km._TICK_SEEN.clear()
-        for k in km._NUDGE_WALK_STATS:
-            km._NUDGE_WALK_STATS[k] = 0
+        for k, v in list(km._NUDGE_WALK_STATS.items()):
+            km._NUDGE_WALK_STATS[k] = {} if isinstance(v, dict) else 0
+        km._NUDGE_LOOK_STATS.clear()
         km._NUDGE_HORIZON.notes = None
 
     def _look(self, r, now, calls, **over):
@@ -72,7 +73,7 @@ class NudgeWalkParseGate(unittest.TestCase):
         km._NUDGE_HORIZON.notes = None
         km._nudge_clock(5.0)                                             # outside a look: a no-op
         km._NUDGE_HORIZON.notes = []
-        km._nudge_clock(7.0); km._nudge_clock(None)
+        km._nudge_clock(7.0); km._nudge_clock(None, "storeFault")
         self.assertEqual(km._NUDGE_HORIZON.notes, [7.0, None])
         km._NUDGE_HORIZON.notes = None
 
@@ -267,7 +268,6 @@ class NudgeWalkParseGate(unittest.TestCase):
             "_nudge_gate_memo", "_NUDGE_GATE_STATS",   # the placement gate's memo (the parse identity, the store view, the episode log's stat) and its counters
             "_last_state_cache", "_machine_cut_cache",   # _fold_records cursors over the state log (a keyed file), keyed by its path and stat
             "_stat_key",                            # a (mtime, size) reader
-            "_MACHINE_CUT_CAUSES", "_INTERRUPT_CAUSES",   # cause-name constants read by the interrupt road
         }
         CONST_MODULES = {"sb"}                      # the SDK backend module: a marked road may read only a CONSTANT of it (a cause
         #                                             name, a marker string) or one of the pure text helpers below, never a live table
@@ -451,6 +451,68 @@ class NudgeWalkParseGate(unittest.TestCase):
         self.assertEqual(self._look(r, now + 1, calls, _backend_rewind_pending=lambda sid: False), "working", "the cut dropped: the look evaluates")
         self.assertEqual(calls, [SID_OLD, SID_OLD])
 
+    def test_the_unbounded_notes_are_counted_per_leg(self):
+        """Follow-up: a third of looks refused the memo as unbounded at the first gated boot and the counters could not say which
+        road; every None note names its leg under memos.nudgeWalk.unboundedBy, the decorator's default under unmarked:<verdict>."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); now = time.time(); calls = []
+        km._NUDGE_WALK_STATS["unboundedBy"] = {}
+        quiet = dict(_session_working=lambda turns: False, _interrupt_suppresses_nudge=lambda turns, sid="", **k: False, _pending_ops={},
+                     _backend_queued=lambda sid: False, _backend_rewind_pending=lambda sid: False, _last_state=lambda sid: ("", 0),
+                     _session_awaiting=lambda *a, **k: False)
+        with mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: (None, OSError("EMFILE"))):
+            self._look(r, now, calls, **quiet)
+        self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"], {"storeFault": 1}, "one unbounded look books exactly one leg (round two: the "
+                         "decorator's default fires only when no named leg noted the look)")
+        km._TICK_SEEN.clear()
+        self._look(r, now + 1, calls, _session_working=lambda turns: False, _interrupt_suppresses_nudge=lambda turns, sid="", **k: False,
+                   _pending_ops={SID_OLD: [1]})
+        self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"], {"storeFault": 1, "unmarked:queued-input": 1}, km._NUDGE_WALK_STATS["unboundedBy"])
+        self.assertIn("unboundedBy", km._PERF_STATS.snapshot()["memos"]["nudgeWalk"])
+
+    def test_every_unbounded_note_site_names_its_leg(self):
+        """Round three, low 5: `leg or "unnamed"` absorbed a future None site with no name and nothing failed. A nameless None
+        note raises, and a source census over every `_nudge_clock(None` call in the kernel requires a second, literal argument."""
+        import ast, inspect
+        src = open(os.path.join(os.path.dirname(HERE), "bin", "romp-kernel"), encoding="utf-8").read()
+        sites, bad = 0, []
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_nudge_clock":
+                first = node.args[0] if node.args else None
+                may_be_none = (isinstance(first, ast.Constant) and first.value is None) or isinstance(first, ast.IfExp)
+                if not may_be_none:
+                    continue
+                sites += 1
+                if len(node.args) < 2 or not (isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)):
+                    bad.append(node.lineno)
+        self.assertGreaterEqual(sites, 14, "the census found the None note sites: %d" % sites)
+        self.assertEqual(bad, [], "every None note names its leg with a literal")
+        km._NUDGE_HORIZON.notes = []
+        try:
+            with self.assertRaises(ValueError):
+                km._nudge_clock(None)
+        finally:
+            km._NUDGE_HORIZON.notes = None
+
+    def test_the_pass_keeps_its_stats_in_a_side_map_and_leaves_the_shared_rows_untouched(self):
+        """Follow-up, low 1: the pass wrote _look_stat into the session rows _sessions memoises per cycle and hands out read-only;
+        a later reader of a row would have read a stale key. The stats live in a side map keyed by sid, cleared per pass."""
+        d = tempfile.mkdtemp(); older, newer = _row(d, SID_OLD, old=True), _row(d, SID_NEW, old=False)
+        seen_map = {}
+        def look(s, *a, **k):
+            seen_map[s["sid"]] = dict(km._NUDGE_LOOK_STATS)                # what the look sees while the pass runs
+            return None
+        quiet = dict(_auto_nudge_data=lambda: {}, _auto_nudge_resume=lambda: None, _alive_sessions=lambda now, live_map: [older, newer],
+                     _wait_for_graph=lambda now, ids: {}, _cleared_ids=lambda: set(), _auto_nudge_on=lambda: True,
+                     _auto_nudge_session=look, _compact_suggest_tick=lambda sid, live, now: False,
+                     _relay_tick=lambda now, ids: None, _debt_backstop_tick=lambda now: None, _dead_wait_sweep=lambda ids, nudged, now: None,
+                     _awaiting_wake_outcomes=lambda now, ids: False, _push_soon=lambda: None, _pop_walk_gate=lambda k: None)
+        with mock.patch.multiple(km, **quiet):
+            km._auto_nudge_pass(time.time(), {}, True)
+        self.assertNotIn("_look_stat", older); self.assertNotIn("_look_stat", newer)
+        self.assertEqual(set(seen_map[SID_OLD]), {SID_OLD, SID_NEW}, "both sessions' stats in the side map during the pass")
+        self.assertEqual(seen_map[SID_OLD][SID_OLD], km._session_files_stat(older))
+        self.assertEqual(km._NUDGE_LOOK_STATS, {}, "the pass's stats are cleared when it ends: a look outside a pass stats for itself")
+
     def test_the_perf_memos_and_the_boot_row_carry_the_walk(self):
         self.assertIn("nudgeWalk", km._PERF_STATS.snapshot()["memos"])
         self.assertEqual(set(km._PERF_STATS.snapshot()["memos"]["nudgeWalk"]), set(km._NUDGE_WALK_STATS))
@@ -511,8 +573,9 @@ class RedundancySkipKeepsItsDeadMan(unittest.TestCase):
         self.K._debt_reminder_outcomes = lambda sid, lt, now: None
         self.K._fire_debt_reminder = lambda sid, now, alive_ids: False
         self.K._TICK_SEEN.clear()
-        for k in self.K._NUDGE_WALK_STATS:
-            self.K._NUDGE_WALK_STATS[k] = 0
+        for k, v in list(self.K._NUDGE_WALK_STATS.items()):
+            self.K._NUDGE_WALK_STATS[k] = {} if isinstance(v, dict) else 0
+        self.K._NUDGE_LOOK_STATS.clear()
         d = tempfile.mkdtemp(); self.path = os.path.join(d, M.SID + ".jsonl")
         Path(self.path).write_text("{}\n")
 
@@ -559,8 +622,9 @@ class PassSnapshotsAreNewerThanTheKey(unittest.TestCase):
         self.M = M; self.K = M.km
         self.h = M.MemoDeadlock("test_a_parked_goal_sleeps_silently"); self.h.setUp()
         self.K._TICK_SEEN.clear()
-        for k in self.K._NUDGE_WALK_STATS:
-            self.K._NUDGE_WALK_STATS[k] = 0
+        for k, v in list(self.K._NUDGE_WALK_STATS.items()):
+            self.K._NUDGE_WALK_STATS[k] = {} if isinstance(v, dict) else 0
+        self.K._NUDGE_LOOK_STATS.clear()
         d = tempfile.mkdtemp(); self.path = os.path.join(d, M.SID + ".jsonl")
         Path(self.path).write_text("{}\n")
         self._debt_saved = {n: getattr(self.K, n) for n in ("_debt_reminder_outcomes", "_fire_debt_reminder", "_debt_asks", "_postal_wait_maps")}
