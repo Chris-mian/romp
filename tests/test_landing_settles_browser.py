@@ -168,6 +168,14 @@ const keyWrites10 = (await ledger()).slice(ledgerBefore10).filter((wr) => wr.wri
 const rows10 = (await rows()).slice(rowsBefore10);
 // ROAD 11 (round five, medium): the history chord. Ctrl+M goes back in the chat's own navigation history through the write helper
 // (writer nav-history); the census makes it the reader's takeover
+// the history spot must sit a full row or more from the landing (round six, low 2): a step inside the target's row fired no re-land at
+// the base and left only the audit mark to go red. So a landing far away first, then the landing whose settle the chord takes over.
+// Far ABOVE, not below: a far landing near the resident run's end asks for the newer side, and a gap reply replaces the run with the
+// tail (the windowing stage 2 reworks); near the run's top a landing write asks for nothing (an older ask needs the reader's upward move)
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(12), anchorT: cfg.base + 24 });
+try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(12), { timeout: 20000 }); }
+catch (e) { const st = await state(); console.error("the chord road's far landing never arrived: " + JSON.stringify(st)); process.exit(1); }
+await page.waitForTimeout(1500);   // that landing's own settle runs out first
 const rowsBefore11 = (await rows()).length; const ledgerBefore11 = (await ledger()).length;
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(38), anchorT: cfg.base + 76 });
 try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(38), { timeout: 20000 }); }
@@ -190,7 +198,9 @@ const planted12 = await page.evaluate(([from, to]) => { const src = document.que
   if (!src || !dst) return null; dst.id = "lab-frag"; const a = document.createElement("a"); a.href = "#lab-frag"; a.className = "lab-frag"; a.textContent = "further down"; src.appendChild(a);
   return { landed: document.getElementById("content").scrollTop, srcOk: true }; }, [q(42), q(44)]);
 if (!planted12) { console.error("the link road found no message bodies to plant in"); process.exit(1); }
-await page.click(".lab-frag");
+// the click as a DOM event on the link itself: the mouse's own click would first scroll the link into view (Playwright's actionability),
+// a scroll the settle then re-lands, and the two fight past the click's timeout when the link sits below the viewport
+await page.evaluate(() => { const a = document.querySelector(".lab-frag"); if (a) a.click(); });
 await page.waitForTimeout(1400);
 const after12 = await page.evaluate(() => document.getElementById("content").scrollTop);
 const link12 = (await ledger()).slice(ledgerBefore12).filter((wr) => wr.writer === "section-link").length;
@@ -242,6 +252,23 @@ await page.waitForTimeout(1400);
 const after9 = await page.evaluate(() => document.getElementById("content").scrollTop);
 const writes9 = (await ledger()).filter((w) => w.writer === "land-realign" && (Math.abs(w.before - moved9) < 4 || Math.abs(w.before - moved9b) < 4));
 const rows9 = (await rows()).slice(rowsBefore9);
+// ROAD 13 (round six, low 3; LAST of all: the jump to the live tail ends the resident run the other roads land in): the feed's
+// go-to-the-live-tail chip on the active tab: one focus frame with live true, which the page
+// answers by writing the pane to its bottom (writer focus-live). The largest symptom of round four: a jump of thousands of pixels to
+// the live tail, written straight back by land-realign
+const rowsBefore13 = (await rows()).length; const ledgerBefore13 = (await ledger()).length;
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(46), anchorT: cfg.base + 92 });
+try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(46), { timeout: 20000 }); }
+catch (e) { const st = await state(); console.error("the live road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
+const landed13 = await page.evaluate(() => document.getElementById("content").scrollTop);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, live: true });
+await page.waitForTimeout(1400);
+const after13 = await page.evaluate(() => { const c = document.getElementById("content"); return { top: c.scrollTop, max: c.scrollHeight - c.clientHeight }; });
+const live13 = (await ledger()).slice(ledgerBefore13).filter((wr) => wr.writer === "focus-live").length;
+const units13 = await page.evaluate(() => document.querySelectorAll("#content .turn").length);
+const strip13 = await page.evaluate(() => { const s = document.getElementById("live-paused"); return !!s && s.style.display !== "none" && getComputedStyle(s).display !== "none"; });
+const writes13 = (await ledger()).slice(ledgerBefore13).filter((wr) => wr.writer === "land-realign");
+const rows13 = (await rows()).slice(rowsBefore13);
 // the anchor's place in the DOM: its ancestors up to #content and the siblings that follow it (the turn's atoms as rendered),
 // and whether the page can highlight at all; the diagnosis when the words are not at the top
 const dom2 = await page.evaluate((u) => {
@@ -257,7 +284,7 @@ const st = await state();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-settled.png" });
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify({ o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2,
-  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, grab9, landed10, after10, writes10, keyWrites10, rows10, landed11, after11, nav11, navTo11, writes11, rows11, planted12, after12, link12, writes12, rows12, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
+  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, grab9, landed10, after10, writes10, keyWrites10, rows10, landed11, after11, nav11, navTo11, writes11, rows11, planted12, after12, link12, writes12, rows12, landed13, after13, live13, units13, strip13, writes13, rows13, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
 """
 
 
@@ -398,8 +425,10 @@ class ServedLandingSettles(WindowLab):
         self.assertGreaterEqual(r["nav11"], 1, "the chord wrote the pane (nav-history): %s writes" % r["nav11"])
         # the history spot may sit near the landing (the road before landed close by): the proof is that the view ENDS where the chord's
         # own write put it and did not return to the landing, not how far that is
-        self.assertNotEqual(r["after11"], r["landed11"], "the view left the landing: %s" % r["after11"])
-        self.assertLessEqual(abs(r["after11"] - (r["navTo11"] if r["navTo11"] is not None else -1)), 2, "the view ends where the chord's write put it (%s), now %s" % (r["navTo11"], r["after11"]))
+        self.assertGreater(abs(r["after11"] - r["landed11"]), 100, "the view left the landing for the far history spot: %s from %s" % (r["after11"], r["landed11"]))
+        # within a row of where the chord's write put it: the far spot re-windows under the view and the browser's own anchoring
+        # moves it by a spacer re-estimate (34 px in one run), never by a write; the re-land this guards against is thousands of pixels
+        self.assertLess(abs(r["after11"] - (r["navTo11"] if r["navTo11"] is not None else -10000)), 200, "the view ends within a row of where the chord's write put it (%s), now %s" % (r["navTo11"], r["after11"]))
         self.assertEqual(r["writes11"], [], "no land-realign wrote the reader's history step back: %r" % r["writes11"])
         taken = [x for x in r["rows11"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
         self.assertEqual(len(taken), 1, "one exact row for the chord road's landing: %r" % r["rows11"])
@@ -414,6 +443,20 @@ class ServedLandingSettles(WindowLab):
         self.assertEqual(r["writes12"], [], "no land-realign wrote the reader's link step back: %r" % r["writes12"])
         taken = [x for x in r["rows12"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
         self.assertEqual(len(taken), 1, "one exact row for the link road's landing: %r" % r["rows12"])
+        self.assertTrue(taken[0].get("gesture"), "the row says the reader took the landing over: %r" % taken[0])
+
+    def test_the_live_tail_chip_during_the_settle_is_the_readers_takeover(self):
+        # round six, low 3: a focus frame with live true writes the pane to its bottom (focus-live); the reader's, so the view stays there
+        r = self._result()
+        self.assertGreaterEqual(r["live13"], 1, "the chip wrote the pane (focus-live): %s writes" % r["live13"])
+        # the jump re-renders the pane as the live tail's run (measured heights; the history window it left stood on spacer estimates),
+        # so the new view shares no pixel with the landing: the claims are the rendered tail, the view at its end, no paused strip
+        self.assertGreaterEqual(r["units13"], 1, "the live tail's turns are rendered: %s" % r["units13"])
+        self.assertFalse(r["strip13"], "the paused strip is gone at the live tail")
+        self.assertGreaterEqual(r["after13"]["top"], r["after13"]["max"] - 2, "the view ends at the live tail, not the landing: %r" % r["after13"])
+        self.assertEqual(r["writes13"], [], "no land-realign wrote the jump back: %r" % r["writes13"])
+        taken = [x for x in r["rows13"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]
+        self.assertEqual(len(taken), 1, "one exact row for the live road's landing: %r" % r["rows13"])
         self.assertTrue(taken[0].get("gesture"), "the row says the reader took the landing over: %r" % taken[0])
 
 

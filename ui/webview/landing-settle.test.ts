@@ -60,21 +60,41 @@ test("a gesture needs the reader's input behind it (round two, medium): an input
   assert.equal(LS.writerIsReader("never-named"), false, "an unlisted writer is no takeover");
 });
 
-test("the census names every writer render.ts gives writeScroll, and nothing else: a new writer cannot land unclassified (round five)", () => {
-  // every writer literal, read out of render.ts the way scroll-write.test.ts reads the raw-write ban: the last string of each
-  // writeScroll, scrollContentBy or scrollElInto call that is not an alignment word, and of the landing's own two wrappers
-  // (landOn's local land(), settleLand()), which pass their writer through
-  const literals = new Set<string>();
-  const re = /\b(?:writeScroll|scrollContentBy|scrollElInto|land|settleLand)\(([^;]*?)\);/g;
-  for (let m = re.exec(RENDER); m; m = re.exec(RENDER)) {
-    // the writer is the call's LAST argument (a stick flag may follow it); a call passing a variable names no literal here
-    const last = /(?:^|,)\s*"([a-z-]+)"(?:,\s*(?:true|false))?\s*$/.exec(m[1]);
-    if (last && !["start", "center", "nearest"].includes(last[1])) literals.add(last[1]);
-  }
-  assert.ok(literals.size >= 20, "the writer literals found in render.ts: " + [...literals].sort().join(", "));
+test("the census names every writer render.ts gives writeScroll, and nothing else: a new writer cannot land unclassified (round five; round six: any call shape)", () => {
+  // every writer literal, read out of render.ts by the executed extractor: every call to the write helper or a wrapper, the string at
+  // the writer's position whatever the other arguments are
+  const literals = LS.writerLiterals(RENDER);
+  assert.ok(literals.length >= 20, "the writer literals found in render.ts: " + literals.join(", "));
   for (const w of literals) assert.ok(w in LS.WRITER_CLASS, "unclassified writer in render.ts: " + w);
-  for (const w of Object.keys(LS.WRITER_CLASS)) assert.ok(literals.has(w), "a census entry render.ts no longer writes: " + w);
-  assert.deepEqual([...literals].sort(), Object.keys(LS.WRITER_CLASS).sort(), "the census IS the set of writers");
+  for (const w of Object.keys(LS.WRITER_CLASS)) assert.ok(literals.includes(w), "a census entry render.ts no longer writes: " + w);
+  assert.deepEqual(literals, Object.keys(LS.WRITER_CLASS).sort(), "the census IS the set of writers");
+  // the wrapper table is held to the source: every function of render.ts that takes a `writer: string` and writes through the
+  // family is a wrapper the extractor must know, at the writer's position
+  const fns = [...RENDER.matchAll(/(?:^function (\w+)\(([^)]*)\)|const (\w+) = \(([^)]*)\) =>)/gm)]
+    .map((m) => ({ name: m[1] || m[3], params: (m[2] || m[4] || "").split(",").map((x) => x.trim().split(":")[0].trim()) }))
+    .filter((f) => f.params.includes("writer"));
+  // each function's DEFINITION (a call site may precede it): the helper itself, or a body that writes through the family with its writer
+  const defOf = (name: string) => { const i = RENDER.indexOf("function " + name + "("); return i >= 0 ? i : RENDER.indexOf("const " + name + " = ("); };
+  const family = new RegExp("\\b(?:" + Object.keys(LS.WRITER_WRAPPERS).join("|") + ")\\([^;]*\\bwriter\\b");
+  const wrappers = fns.filter((f) => f.name === "writeScroll" || family.test(RENDER.slice(defOf(f.name), RENDER.indexOf("\n}\n", defOf(f.name)) + 1)));
+  assert.deepEqual(wrappers.map((f) => f.name).sort(), Object.keys(LS.WRITER_WRAPPERS).sort(), "every writer-taking function of render.ts is in the wrapper table (round six, low 1)");
+  for (const f of wrappers) assert.equal(f.params.indexOf("writer"), LS.WRITER_WRAPPERS[f.name], f.name + ": the writer's position");
+});
+
+test("the extractor reads every call shape: a stick flag as a variable, a name with a digit, a new wrapper (round six, low 1)", () => {
+  const src = `
+    writeScroll(c, top, "plain-one");
+    writeScroll(content, content.scrollHeight, "stick-var", stick);
+    writeScroll(c, y, "step-2", true);
+    scrollElInto(c, el, "start", "aligned-one");
+    scrollElInto(document.getElementById("content"), at, "start", writer);
+    land("land-on");
+    settleLand(s, "land-realign");
+    myWrapper(c, "through-a-wrapper", { stick: true });
+  `;
+  assert.deepEqual(LS.writerLiterals(src), ["aligned-one", "land-on", "land-realign", "plain-one", "step-2", "stick-var"], "a variable at the writer's position names nothing; the alignment word is never taken");
+  assert.deepEqual(LS.writerLiterals(src, { ...LS.WRITER_WRAPPERS, myWrapper: 1 }), ["aligned-one", "land-on", "land-realign", "plain-one", "step-2", "stick-var", "through-a-wrapper"], "a wrapper registered with its writer position is read");
+  assert.deepEqual(LS.WRITER_WRAPPERS, { writeScroll: 2, scrollContentBy: 2, scrollElInto: 3, land: 0, settleLand: 1 });
 });
 
 test("the window's end files the landing as it stands: settled within the row, else unsettled, never held forever", () => {
