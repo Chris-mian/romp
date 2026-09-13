@@ -211,6 +211,55 @@ class SpendTreeMemo(unittest.TestCase):
             self.assertEqual(_stats()["written"], w1, "a clean memo is evicted without a write")
             self.assertEqual(_stats()["evicted"], 2)
 
+    def test_a_file_that_grew_is_carried_to_disk_by_the_eviction_and_the_reload_keeps_it_in_the_window(self):
+        """Round three, medium: the dirty-only eviction froze the persisted mtimes: the ordinary stat pass refreshed a grown
+        file's mtime in memory without marking the memo dirty, the eviction wrote nothing, and a same-life reload read the old
+        mtime, so a transcript that grew was in the window only on the 30 s full-pass cycles and the rate understated between
+        them (a latch the full pass set could clear and re-fire). A stat that changes a stored mtime dirties the memo."""
+        self._second_boot()
+        now = time.time()
+        with mock.patch.object(km, "SPEND_GUARD_RESTAT_PER_CYCLE", 100):
+            km._spend_window_files(self.leaf, now - 100, now=now)          # the drain: every file statted once, all cold
+            with mock.patch.object(km, "SPEND_GUARD_TREE_MEMO_BYTES", 1):
+                km._spend_tree_memo_prune({self.leaf})                     # evicted and written (the drain dirtied it)
+            w0 = _stats()["written"]
+            km._spend_window_files(self.leaf, now - 100, now=now)          # the reload: clean
+            self.assertFalse(km._SPEND_TREE_CACHE[self.leaf].get("dirty"))
+            grown = self.files[3]; os.utime(grown, (now, now))            # an idle transcript grows
+            km._SPEND_TREE_CACHE[self.leaf]["full"] = now - 3600           # the 30 s full pass is due
+            got = km._spend_window_files(self.leaf, now - 100, now=now)
+            self.assertIn(grown, got, "the full pass finds it in the window")
+            self.assertTrue(km._SPEND_TREE_CACHE[self.leaf].get("dirty"), "the stat changed a stored mtime: dirty")
+            with mock.patch.object(km, "SPEND_GUARD_TREE_MEMO_BYTES", 1):
+                km._spend_tree_memo_prune({self.leaf})                     # the binding bound evicts it again
+            self.assertEqual(_stats()["written"], w0 + 1, "the eviction wrote the grown mtime once")
+            got = km._spend_window_files(self.leaf, now - 100, now=now)   # the same-life reload
+            self.assertIn(grown, got, "the reload keeps the grown file in the window")
+            km._spend_window_files(self.leaf, now - 100, now=now)
+            self.assertTrue(km._SPEND_TREE_CACHE[self.leaf].get("dirty") is False or _stats()["written"] == w0 + 1,
+                            "nothing grew since: nothing more to write")
+
+    def test_a_departed_sessions_rescan_clock_leaves_with_its_memo(self):
+        """Round three, low 1: a leaf evicted (its clock in the map) and then departed from the live set kept its clock for the
+        life; the non-live prune pops the clock with the cache entry."""
+        self._second_boot()
+        self._window(time.time() + 10 ** 6)
+        with mock.patch.object(km, "SPEND_GUARD_TREE_MEMO_BYTES", 1):
+            km._spend_tree_memo_prune({self.leaf})
+        self.assertIn(self.leaf, km._SPEND_TREE_EVICTED_FULL)
+        km._spend_tree_memo_prune(set())                                   # the session left the live set
+        self.assertNotIn(self.leaf, km._SPEND_TREE_EVICTED_FULL, "the clock went with the memo")
+
+    def test_a_failed_replace_leaves_no_tmp_behind(self):
+        """Round three, low 2: a failed os.replace left sid.json.tmp.pid until the next kernel's first-tick sweep while the retry
+        each cycle rewrote it; the except unlinks the tmp."""
+        self._window(time.time() + 10 ** 6)
+        p = km._spend_tree_path(self.leaf)
+        with mock.patch.object(km.os, "replace", side_effect=OSError("EACCES")):
+            self.assertEqual(km._persist_spend_trees(force=True), 0)
+        self.assertEqual([x.name for x in p.parent.glob("*.tmp.*")], [], "no tmp left behind")
+        self.assertEqual(_stats()["writeFailed"], 1)
+
     def test_a_partly_foreign_memo_counts_the_paths_it_dropped(self):
         """Follow-up, low 6: paths dropped by the root filter went uncounted, so a partly foreign memo read as a healthy load."""
         far = time.time() + 10 ** 6

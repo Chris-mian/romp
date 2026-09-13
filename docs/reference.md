@@ -1914,16 +1914,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   tree. A corrupt or misshapen file, or one that does not name the
   session's own root, is a failed load and relisted, never raised; a path
   outside the root is dropped and counted; a memo the byte bound evicts is
-  written first when it is dirty (a drain step marks it so; a memo whose
-  file already holds its state is not rewritten, since on a binding bound
-  the eviction fires every cycle), with its remaining re-stat list, and its
-  rescan clock stays in memory for the kernel's life (dropped when its file
-  is swept or fails to load), so the reload drains on and runs its full pass
+  written first when it is dirty (a drain step marks it so, and so does any
+  stat that changes a stored mtime, so a file that grew is carried to disk;
+  a memo whose file already holds its state is not rewritten, since on a
+  binding bound the eviction fires every cycle), with its remaining re-stat
+  list, and its rescan clock stays in memory for the kernel's life (dropped
+  when its file is swept or fails to load, or when the session leaves the
+  live set), so the reload drains on and runs its full pass
   instead of restarting both; the directory is swept once per kernel life at
   the guard's first tick, before the disabled ceiling's early return, so a
   kernel with the guard off sweeps too (never the boot's first cycle, since
   the sweep parses every memo), of memos whose leaf is gone, that name no
-  leaf or that do not parse, and of tmp files a kill left; the guard's job itself skips
+  leaf or that do not parse, and of tmp files a kill left (a failed replace
+  unlinks its own tmp at once); the guard's job itself skips
   the boot's first cycle, since its first pass lists every alive session's
   tree (4.2 s on one boot, 60 trees of 16,752 agent transcripts in 1,542
   directories, the largest 2,581 files) and a runaway spend is minutes,

@@ -39113,6 +39113,7 @@ def _persist_spend_trees(force=False, only=None):
             continue                                         # `only` writes the one memo too, and only when dirty (low 5: an
         #                                                      eviction on a binding bound fires every cycle)
         p = _spend_tree_path(leaf)
+        tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
         body = None
         for _ in range(3):                                   # the exit's write runs beside the pusher, which may be
             try:                                             #  mutating the dicts (round two, low 2): a resize under the
@@ -39131,13 +39132,16 @@ def _persist_spend_trees(force=False, only=None):
             continue
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
             tmp.write_text(body, encoding="utf-8")
             os.replace(tmp, p)
             m["dirty"] = False; n += 1
         except OSError as e:                             # a read-only directory, a full disk, a path replaced by a directory: the
             _SPEND_TREE_STATS["writeFailed"] += 1        #  memo stays dirty and is retried each cycle; counted, said once a life
-            if not _SPEND_TREE_WRITE_SAID[0]:            #  (round two, low 4)
+            try:                                         #  (round two, low 4); a failed replace leaves no tmp behind for the retry
+                tmp.unlink()                             #  to pile on (round three, low 2)
+            except OSError:
+                pass
+            if not _SPEND_TREE_WRITE_SAID[0]:
                 _SPEND_TREE_WRITE_SAID[0] = True
                 try:
                     sys.stderr.write("spend guard: a tree memo could not be written to %s (%s); retried each cycle\n" % (p.parent, e))
@@ -39235,9 +39239,12 @@ def _spend_window_files(leaf, since, now=None):
                 if p not in m["files"]:
                     continue
                 try:
-                    m["files"][p] = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
+                    cur = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
                 except OSError:
                     m["files"].pop(p, None); m["dirty"] = True
+                    continue
+                if cur != m["files"][p]:
+                    m["files"][p] = cur; m["dirty"] = True
             del m["restat"][:SPEND_GUARD_RESTAT_PER_CYCLE]
             m["dirty"] = True                                # the drain moved: the persisted list follows it (round two, low 5)
             if not m["restat"]:
@@ -39249,10 +39256,13 @@ def _spend_window_files(leaf, since, now=None):
                 continue
             if full or mt >= floor:
                 try:
-                    m["files"][p] = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
+                    cur = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
                 except OSError:
                     m["files"].pop(p, None); m["dirty"] = True
-        if full:
+                    continue
+                if cur != mt:                                    # a stat that CHANGES a stored mtime dirties the memo (round three,
+                    m["files"][p] = cur; m["dirty"] = True       #  medium): the eviction's dirty-only write must carry a grown file,
+        if full:                                                 #  or a same-life reload reads the old mtime and the window loses it
             m["full"] = now
     return [key] + [p for p, mt in m["files"].items() if mt >= since]
 
@@ -39542,6 +39552,8 @@ def _spend_tree_memo_prune(live_paths):
     whose memo goes is listed again on its next tick, one first listing) and only the deficit shed."""
     for k in [k for k in _SPEND_TREE_CACHE if k not in live_paths]:
         _SPEND_TREE_CACHE.pop(k, None)
+    for k in [k for k in _SPEND_TREE_EVICTED_FULL if k not in live_paths]:
+        _SPEND_TREE_EVICTED_FULL.pop(k, None)                    # a departed session's rescan clock goes with its memo (round three, low 1)
     total = sum(_spend_tree_memo_size(m) for m in _SPEND_TREE_CACHE.values())
     if total <= SPEND_GUARD_TREE_MEMO_BYTES:
         return
