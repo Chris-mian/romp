@@ -5138,8 +5138,11 @@ def _asm_leaf_stat(leaf_path):
 def _asm_mark_refused(leaf_path, reason, rompuuid=None, sdk_human=False):
     """Record in the document's sidecar that the chain proof refused the standing document for the TAIL's SHAPE (a re-rooted
     tail, a reused pre-cut uuid), with the leaf's stat: while that stat stands, the same cut reproduces the same refusal, so
-    no road retries the proof or the rewrite (the missing-bit case is not marked: its one rewrite converges). The mark clears
-    when the leaf moves (the stat differs) or a write the writer accepts replaces the sidecar (T402 follow-up, round two)."""
+    no road retries the proof or the rewrite. The missing-bit case is marked only when the writer DECLINED its offered rewrite
+    (an accepted rewrite converges and is never marked); a transient decline (the entry evicted between the parse and the
+    write) marks a document whose only defect was the missing bit, and the next accepted write clears it, so that cost is
+    bounded. The mark clears when the leaf moves (the stat differs) or a write the writer accepts replaces the sidecar (T402
+    follow-up, round two)."""
     cp = _asm_ckpt_file(leaf_path)
     st_ = _asm_leaf_stat(leaf_path)
     if cp is None or st_ is None:

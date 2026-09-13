@@ -557,8 +557,10 @@ class AssemblyRoadCounters(Harness):
         self.assertEqual(tree, self._cold(path))
 
     def test_the_seeded_readers_read_the_mark_once_per_call(self):
-        """Round three, low 4: each reader evaluated the standing mark twice per call, reading the sidecar twice."""
+        """Round three, low 4: each reader evaluated the standing mark twice per call, reading the sidecar twice. The document
+        carries a STANDING mark here (the five-lows read, low 3: a healthy document with no mark read once at the base too)."""
         path, t0 = self._documented("once")
+        self.assertTrue(em._asm_mark_refused(path, "shape", SID)); self.assertTrue(em._asm_refusal_stands(path))
         calls = []
         real = em._asm_refusal_stands
         em._asm_refusal_stands = lambda p: (calls.append(p), real(p))[1]
