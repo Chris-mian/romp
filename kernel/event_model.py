@@ -5251,6 +5251,11 @@ def _asm_ckpt_file(leaf_path):
     return Path(d) / (hashlib.sha1(os.path.realpath(str(leaf_path)).encode("utf-8")).hexdigest()[:20] + ".asm.json.gz")
 
 
+_ASM_CHAIN_REFUSED_PATHS = set()  # realpaths whose standing document the chain proof refused at this parse: parse_session
+#                                   rewrites the document from the whole parse that follows, then and there (the writer has the
+#                                   resolved graph in hand and the refusal is the event), never leaving it to the entry's next
+#                                   quiescence drop, which a quiet session reaches slowly or never (T402 follow-up: sixteen of
+#                                   twenty-six sessions paid a whole parse at every boot while their documents lacked the bit)
 _ASM_CKPT_REFUSED = {}            # realpath -> the reason a standing document was refused at this path's last restore: read
 #                                   by _assemble to book full:refused, since the note below unlinks the document before the
 #                                   parse decides its road (T398 round one, medium: a refused document read as none at all)
@@ -5616,11 +5621,13 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                     row["tur"] = a["toolUseResult"]
             pre_atoms.append(row)
         # the pre-cut spine, root to cut
-        chain, u, guard_n = [], ad.leaf_uuid, 0
-        while u is not None and guard_n < 500000:
-            if ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid:
+        chain, u, guard_n, bound = [], ad.leaf_uuid, 0, len(ad.by_uuid) + 1
+        while u is not None and guard_n < bound:              # a walk longer than the record count is a cycle in the resolved
+            if ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid:   #  graph (a reused uuid can make one): no document for it
                 chain.append(u)
             u = ad.parent_of.get(u); guard_n += 1
+        if u is not None:
+            return skip("cycle")
         spine = [row_of[u] for u in reversed(chain) if u in row_of]   # record indexes, root to cut
         tip = chain[0] if chain else None                 # the pre-cut spine's tip: the first pre-cut record on the leaf's path
         tip_childless = tip is not None and not any(    # decided HERE from the RESOLVED graph (parentUuid or logicalParentUuid,
@@ -6112,9 +6119,10 @@ def _tail_chains_onto_the_document(leaf_path, doc):
     recs = ent[4] if ent is not None else []
     if ent is not None and ent[5] < int(cut[1]):          # a whole entry: the tail is the records past the cut
         recs = recs[int(cut[1]) - ent[5]:]
-    nodes = [r for r in recs if isinstance(r, dict) and (r.get("uuid") or "parentUuid" in r)]   # the graph nodes; a
-    by_uuid = {r["uuid"]: r for r in nodes if r.get("uuid")}                                     #  file-history snapshot or a
-    rows, spine = doc.get("records") or [], doc.get("spine") or []                                #  summary index row is none
+    nodes = [r for r in recs if isinstance(r, dict) and r.get("uuid")]   # the graph nodes: records the parse indexes by uuid; a
+    by_uuid = {r["uuid"]: r for r in nodes}                               #  uuid-less record bearing a parentUuid is no node to the
+    rows, spine = doc.get("records") or [], doc.get("spine") or []       #  parse either (nothing is indexed for it), so it is not
+    #                                                                       walked (T402 follow-up); a snapshot or index row is none
     pre_uuids = {row[0] for row in rows}
     tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
     tip_ok = tip if tip is not None and doc.get("tipChildless") is True else None
@@ -6126,7 +6134,7 @@ def _tail_chains_onto_the_document(leaf_path, doc):
     #                                                       below runs over one node per uuid with the last copy's parent; the common real
     #                                                       shape (a verbatim duplicate, 3.5 percent of transcripts) grafts, and a repeat
     #                                                       whose last copy is a non-tip root refuses through reachability (round eight)
-    walk_nodes = list(by_uuid.values()) + [r for r in nodes if not r.get("uuid")]
+    walk_nodes = list(by_uuid.values())
 
     def parent_of(r):
         """The record's parent as the parse resolves it; None for a root (a null or missing parent, a self-link)."""
@@ -6174,6 +6182,8 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
         seed, landed = _seed_from_doc(doc)
         if not _tail_chains_onto_the_document(leaf_path, doc):
             _asm_stat("restore:chainRefused")             # the tail does not chain onto the document: the whole parse (T402); the
+            with _ASM_CKPT_LOCK:
+                _ASM_CHAIN_REFUSED_PATHS.add(os.path.realpath(str(leaf_path)))   # and the document is rewritten from that parse
             return None                                   #  document stands on disk until the next write replaces it
         fsids = list(doc.get("fsids") or [])
         pre_turns, prefix = [], []
@@ -6555,6 +6565,18 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
             "skillLoads": skill_loads}
     if cut_turn:
         out["cutTurn"] = cut_turn                   # a restored tree only (T323 stage 4b): where its lazy atoms ended
+    _rk = os.path.realpath(str(leaf_path))
+    with _ASM_CKPT_LOCK:
+        _refused_here = _rk in _ASM_CHAIN_REFUSED_PATHS
+        _ASM_CHAIN_REFUSED_PATHS.discard(_rk)
+    if _refused_here and _CKPT_DIR_FN is not None:
+        try:                                        # the chain proof refused the standing document and this whole parse produced a
+            if asm_checkpoint_write(leaf_path, rompuuid, sdk_human, tree=out, who="refusal"):   # sound tree: write its document now,
+                _asm_stat("write:afterRefusal")     #  carrying the childless bit, so the next restore takes it (T402 follow-up)
+            else:
+                _asm_stat("write:afterRefusalSkipped")   # the writer declined (its own skip reason is counted under asmCheckpoint.skipped)
+        except Exception as e:                      # noqa: BLE001 — a write that fails is the settle's to retry
+            _say_once("assembly checkpoint: %s not rewritten after a refusal: %r" % (leaf_path, e))
     return out
 
 

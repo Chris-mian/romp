@@ -458,6 +458,61 @@ class AssemblyRoadCounters(Harness):
                 self._append(path, tail(t0))
                 self._seeded_vs_cold(name, path, expect_refused=(boot_road == "whole"))
 
+    def _strip_bit(self, path):
+        """The standing document as a kernel before the childless bit wrote it."""
+        import gzip as _gz
+        cp = em._asm_ckpt_file(path); doc = json.loads(_gz.decompress(cp.read_bytes())); doc.pop("tipChildless", None)
+        cp.write_bytes(_gz.compress(json.dumps(doc, separators=(",", ":")).encode("utf-8"), compresslevel=6))
+
+    def test_a_document_the_chain_proof_refused_is_rewritten_by_the_whole_parse_that_follows(self):
+        """Follow-up: a standing document without the childless bit was refused at EVERY boot until the session happened to move
+        (sixteen of twenty-six sessions paid a whole parse per boot); the whole parse that follows a chain refusal writes the
+        document then and there, so the next restore takes it. The same for a refusal by the tail's shape: the parse writes what
+        it can (the writer decides), and the restore that follows answers by the rule."""
+        with self.subTest(shape="a_document_without_the_bit"):
+            path, t0 = self._documented("rewrite-bit"); self._strip_bit(path)
+            self.fresh(); self._reset()
+            tree, parse, reads = self._served(path)
+            self.assertEqual((parse.get("restore:chainRefused"), parse.get("full:refused"), parse.get("write:afterRefusal")), (1, 1, 1), parse)
+            import gzip as _gz
+            self.assertIs(json.loads(_gz.decompress(em._asm_ckpt_file(path).read_bytes())).get("tipChildless"), True, "the rewritten document carries the bit")
+            self.fresh(); self._reset()
+            tree2, parse2, reads2 = self._served(path)
+            self.assertEqual((parse2.get("restore"), parse2.get("restore:chainRefused", 0), parse2.get("full", 0)), (1, 0, 0), "the next restore takes it: %s" % parse2)
+            self.assertEqual(tree2, self._cold(path))
+        with self.subTest(shape="a_rerooted_tail"):
+            path, t0 = self._documented("rewrite-reroot")
+            self._append(path, self.REROOT_SHAPES["x4_self_link_last"](t0))
+            self.fresh(); self._reset(); w0 = em.asm_checkpoint_stats()["written"]
+            tree, parse, reads = self._served(path)
+            self.assertEqual(parse.get("restore:chainRefused"), 1, parse)
+            self.assertEqual(parse.get("write:afterRefusal", 0) + parse.get("write:afterRefusalSkipped", 0), 1,
+                             "the whole parse offered its document to the writer: %s (skipped: %s)" % (parse, em.asm_checkpoint_stats()["skipped"]))
+            self.assertEqual(tree, self._cold(path))
+
+    def test_a_cyclic_resolved_graph_refuses_the_write_instead_of_walking_to_the_guard(self):
+        """Follow-up (the demote gate's later low): a reused uuid can make the resolved graph cyclic, and the writer's spine walk
+        ran to its 500,000 guard and stored the collected chain; the walk is bounded by the record count and a cycle refuses."""
+        t0 = NOW
+        recs = [G.uline(t0, "first ask", "u1", "a1"), G.aline(t0 + 10, "first reply", "a1", "u1", stop="end_turn"),   # u1 <-> a1
+                G.compact_line(t0 + 600, "b1", "a1"), G.compact_summary_line(t0 + 601, "s1", "b1"),
+                G.uline(t0 + 610, "after", "u4", "s1"), G.aline(t0 + 620, "reply", "a4", "u4", stop="end_turn")]
+        path = self.write("cycle", recs)
+        self.fresh(); self._parse_lineage(path, [path])
+        sk0 = dict(em.asm_checkpoint_stats()["skipped"])
+        self.assertFalse(self.doc(path), "no document for a cyclic graph")
+        self.assertEqual(em.asm_checkpoint_stats()["skipped"].get("cycle", 0) - sk0.get("cycle", 0), 1, em.asm_checkpoint_stats()["skipped"])
+
+    def test_a_uuid_less_record_bearing_a_parent_is_not_a_node_of_the_walk(self):
+        """Follow-up (the demote gate's later low): the parse indexes nothing for a record without a uuid, so a null or interior
+        parent on such a record must not cost a whole parse; it is not walked, and the restore stands equal to a cold parse."""
+        path, t0 = self._documented("uuidless")
+        rec = {k: v for k, v in G.uline(t0 + 700, "no uuid", "u_x", "a1").items() if k != "uuid"}
+        self._append(path, [rec]); self.fresh(); self._reset()
+        tree, parse, reads = self._served(path)
+        self.assertEqual((parse.get("restore"), parse.get("restore:chainRefused", 0)), (1, 0), parse)
+        self.assertEqual(tree, self._cold(path))
+
     def test_the_seeded_readers_take_the_chain_rule_and_fall_to_the_cold_walk(self):
         """Round four, medium 2: chain_membership and file_rewound seeded an adapter from the document with no chain rule, and
         the goal sweep archived on their answer (over a rewound tail the seeded signature named one eclipsed record where the
