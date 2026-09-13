@@ -106,9 +106,17 @@ await page.evaluate(() => { window.__ws && window.__ws.close(); });   // the soc
 await page.waitForTimeout(400);
 const afterDrop5 = await state();
 const turnsBefore5 = await sentOf("loadTurns");
-await page.waitForFunction(() => document.querySelector(".tx-loading-pill, .tx-gap") ? true : true, null, { timeout: 3000 }).catch(() => {});
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });   // meet the head gap again on the healed socket
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, turnsBefore5, { timeout: 10000 }).catch(() => {});
+// meet the head gap again: jump to the top spacer's end, then step up a viewport at a time until the gap element renders and asks (the
+// head gap is folded into the top spacer at the tail, so a single jump renders no gap element for the observer)
+await page.evaluate(() => { const c = document.getElementById("content"); const sp = document.querySelector("#content .tx-spacer-top"); c.scrollTop = sp ? sp.offsetHeight + 1 : 0; });
+await painted();
+for (let i = 0; i < 60; i++) {
+  if ((await sentOf("loadTurns")) > turnsBefore5) break;
+  const seen = await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); if (!g) return false; const r = g.getBoundingClientRect(), cr = c.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; });
+  if (seen) { await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, turnsBefore5, { timeout: 5000 }).catch(() => {}); break; }
+  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = Math.max(0, c.scrollTop - c.clientHeight); });
+  await painted();
+}
 const reask5 = (await sentOf("loadTurns")) - turnsBefore5;
 process.stdout.write("RESULT:" + JSON.stringify({ head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
