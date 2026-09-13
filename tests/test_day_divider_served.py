@@ -65,6 +65,7 @@ BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
 import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment (the module, not its classes)
+from test_rail_relative_served import relative_label, relative_lines   # noqa: E402  the rail's words for a row of today (T406)
 
 SID_A = "aaaaaaaa-1111-2222-3333-444444444444"   # web: rows across three days, an echo in two of the gaps
 SID_B = "bbbbbbbb-1111-2222-3333-444444444444"   # api: the same read a day later, both echoes before the first turn
@@ -171,7 +172,7 @@ const measure = () => page.evaluate(() => {
     const marker = n.querySelector(":scope > .time-marker");
     const r = n.getBoundingClientRect();
     return { cls: n.className, unit: n.dataset.unit ?? null, t: n.dataset.t ?? null, marker: marker ? marker.textContent : null,
-             markerEpoch: marker ? marker.dataset.epoch : null, label: isDiv ? n.querySelector(".day-divider-label").textContent : null,
+             markerEpoch: marker ? marker.dataset.epoch : null, hm: marker ? marker.dataset.hm : null, title: marker ? marker.getAttribute("title") : null, label: isDiv ? n.querySelector(".day-divider-label").textContent : null,
              top: r.top, bottom: r.bottom, height: r.height, marginTop: cs.marginTop, marginBottom: cs.marginBottom };
   });
   const railX = (n) => { const b = getComputedStyle(n, "::before"); return n.getBoundingClientRect().left + parseFloat(b.left); };
@@ -198,7 +199,7 @@ const measure = () => page.evaluate(() => {
            head: head ? { marker: (head.querySelector(":scope > .time-marker") || {}).textContent ?? null, t: head.dataset.t ?? null,
                           prevIsDivider: !!(head.previousElementSibling && head.previousElementSibling.classList.contains("day-divider")),
                           gist: head.textContent.trim().slice(0, 80) } : null,
-           theme: document.body.classList.contains("theme-light") ? "light" : "dark" };
+           theme: document.body.classList.contains("theme-light") ? "light" : "dark", now: Date.now() };
 });
 const out = { web: {}, api: {} };
 await show(cfg.web, 8);
@@ -368,7 +369,13 @@ class ServedDayDivider(unittest.TestCase):
                 row = echo_row(m, t)
                 self.assertIn("turn-notice", row["cls"], "the echo is a notice row of its own: %r" % row)
                 self.assertNotIn("turn-noticegroup", row["cls"], "…not a run (the two echoes are a day apart, no longer adjacent): %r" % row)
-                self.assertEqual((row["marker"], row["markerEpoch"]), (hm(t), str(t)), "an echo row wears its OWN time: %r" % row)
+                self.assertEqual((row["hm"], row["markerEpoch"]), (hm(t), str(t)), "an echo row wears its OWN time: %r" % row)
+                if t == yesterday_echo_t:
+                    self.assertEqual(row["marker"], hm(t), "...and a past day's row reads it in the rail: %r" % row)
+                else:   # a row of TODAY reads how long ago instead (T406), stamped where the label changes from the row before; the time is its tooltip
+                    self.assertIn(row["marker"], ("", relative_lines(relative_label(t, m["now"]))), "a today row reads how long ago, or nothing when the row before reads the same: %r" % row)
+                    if row["marker"]:
+                        self.assertEqual(row["title"], hm(t), "...with its own time on hover: %r" % row)
             self.assertIsNone(m["head"], "no collapsed notice run in web (the echoes sit in different gaps): %r" % [row["cls"] for row in m["rows"]])
             # (3) two dividers only: the first row (two days ago) opens its day; "Yesterday" opens on the 09:47 echo, now
             # yesterday's first row (it sits in the gap before the 10:00 row); none inside today
