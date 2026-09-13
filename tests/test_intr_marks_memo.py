@@ -359,6 +359,53 @@ class RowTallyEqualsAtomTally(TA.Harness):
         self.assertEqual(em.asm_index_stats()["userFacts"], g0, "the dropped index took its cache with it")
         self.assertNotIn("userFacts", em._ASM_INDEX_STATS, "no running counter beside the gauge")
 
+    def test_a_stop_free_transcript_builds_no_romp_row_and_one_stop_builds_the_notice_the_scan_reaches(self):
+        """T401 (3b): the facts builder built every romp-authored row (the deploy boot's cold pass: 3,220 atoms hydrated from
+        disk) although the classifier reads a romp body only inside _machine_cut_cause's forward scan from a stop record.
+        On the real document road (write, parse, document, restore): a transcript with three romp notices and one stop
+        followed by a restart notice builds exactly ONE atom, the notice the scan reaches, and the tally equals the cold
+        parse's; a synthetic index with romp rows and no stop builds nothing."""
+        G = TA.G; T0 = G.T0
+        def with_a_cut():
+            return [G.uline(T0, "refactor the ledger", "u1", ps="typed"),
+                    G.aline(T0 + 20, "Reading it.", "a1", "u1", stop="end_turn"),
+                    G.uline(T0 + 30, "Status?\n\n<!-- romp-injected -->", "n0", "a1", ps="sdk"),          # a nudge before the stop
+                    G.aline(T0 + 40, "Still reading.", "a2", "n0", stop="end_turn"),
+                    G.uline(T0 + 60, "[Request interrupted by user]", "s1", "a2", ps="typed"),          # the stop record
+                    G.uline(T0 + 61, "%s\n\n<!-- romp-injected -->" % km.INTR_RESTART_SIG, "n1", "s1", ps="sdk"),   # the notice
+                    G.aline(T0 + 80, "Resuming.", "a3", "n1", stop="end_turn"),
+                    G.uline(T0 + 100, "carry on then", "u2", "a3", ps="typed"),                           # the human ends the scan
+                    G.uline(T0 + 120, "Status?\n\n<!-- romp-injected -->", "n2", "u2", ps="sdk"),          # a nudge past it
+                    G.aline(T0 + 140, "Done.", "a4", "n2", stop="end_turn")]
+        path = self.write("variant-cut", TA.compacting_variant(with_a_cut(), "cut"))
+        whole = self.cold(path)
+        atoms_all = [a for t in whole["turns"] for a in (t.get("atoms") or [])]
+        self.assertEqual(sum(1 for a in atoms_all if a.get("author") == "romp"), 3, "three romp rows in the cold parse")
+        users_cold = [a for a in atoms_all if a.get("type") == "user"]
+        i_stop = next(i for i, a in enumerate(users_cold) if em.is_interrupt_record(a))
+        self.assertEqual(km._machine_cut_cause(users_cold, i_stop, 0.0, ""), "restart", "the cold classifier names the cut")
+        want = km._interrupt_marks_atoms(atoms_all, 0.0, "")
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path)); self.fresh(); modes = []; tree = self.parse(path, modes)
+        self.assertEqual(modes, ["restore"])
+        m0 = em._ASM_INDEX_STATS["materialized"]
+        got = km._interrupt_marks_atoms(km._interrupt_marks_facts(tree["turns"]), 0.0, "")
+        self.assertEqual(got, want, "the row tally equals the atom tally")
+        self.assertEqual(want[0], 0, "a machine cut is not a user stop")
+        self.assertEqual(em._ASM_INDEX_STATS["materialized"] - m0, 1, "exactly the notice the scan reached is built, not the three romp rows")
+        # a synthetic index with romp rows and no stop record: nothing built, the tally right
+        recs = [["r%d" % i, None, "u", None, i, 1000 + i, 0, None, None, None] for i in range(6)]
+        rows = []
+        for i in range(6):
+            author = "romp" if i % 2 else "human"
+            rows.append({"r": i, "s": {"type": "user", "author": author, "t": 1000 + i}, "seq": i,
+                         "lz": {"k": "user", "h": "00000000", "nt": True, "ir": False}, "i": i})
+        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "nostop.jsonl")
+        atoms = em.LazyAtoms(index, range(6))
+        m1 = em._ASM_INDEX_STATS["materialized"]
+        users = km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}])
+        self.assertEqual(km._interrupt_marks_atoms(users, 0.0, ""), (0, 1004), "the newest human prompt; no stop")
+        self.assertEqual(em._ASM_INDEX_STATS["materialized"] - m1, 0, "a stop-free transcript builds nothing")
+
     def test_a_stop_between_a_queued_prompts_send_and_its_landing_agrees(self):
         """The shape medium 1 named: an absorbed queued prompt carries its LANDING time in the scalars and its SEND time in the
         record row; a stop between the two must read the same on both roads (the landing wins, so the stop is older)."""
