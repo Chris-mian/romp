@@ -958,7 +958,8 @@ class PerfRoutes(unittest.TestCase):
 
     def test_the_sample_keys_threads_by_kind_never_by_a_session_name(self):
         """Round one, medium 1: an SDK session thread is named "sdk:<session name>", and the sample's key carried it where
-        the reference promised no session content. Keys are "<ident> <kind>", the kind the name up to its colon."""
+        the reference promised no session content. Keys are "<ident> <kind>", the kind _thread_kind's (the name before the
+        convention's separator, a default name's target function, a pool worker's prefix)."""
         gate = threading.Event()
         th = threading.Thread(target=gate.wait, name="sdk:notes-api-web", daemon=True); th.start()
         try:
@@ -985,13 +986,18 @@ class PerfRoutes(unittest.TestCase):
 
     def test_every_named_thread_site_maps_to_a_kind_without_an_identity(self):
         """Round two, medium 1, and round three's medium 1: a census of every thread and pool construction site in the kernel,
-        the backends the kernel loads in-process and the postal service, walked with the ast module (a regex could not cross a
-        newline and missed five named sites, the Codex worker's among them). A constant name is a kind already; a name with a
-        dynamic part (a session name, a sid, a host) must carry it after the convention's separator so _thread_kind drops it; a
-        name built any other way fails. The site count is checked against an independent grep count over the same files."""
+        every module the kernel loads in-process (the backends, the judge, the credentials helper) and the postal service,
+        walked with the ast module (a regex could not cross a newline and missed five named sites, the Codex worker's among
+        them). A constant name is a kind already; a name with a dynamic part (a session name, a sid, a host) must carry it after
+        the convention's separator so _thread_kind drops it; a name built any other way fails, and so does a name the census
+        cannot see: a Thread's positional name (its third positional argument), a Timer with a positional beyond its interval
+        and function, keywords passed through **kwargs, or an aliased constructor (an assignment whose value is one of the
+        constructors; ctor_of resolves Name and Attribute spellings only, so an alias would hide every site built through it).
+        Every kind family the census derives must appear in the reference's kind list, so a new kind cannot ship undocumented."""
         import ast, re
         root = os.path.dirname(BIN)
-        files = [os.path.join(root, "kernel", f) for f in ("kernel.py", "sdk_backend.py", "codex_backend.py", "session_host.py")] + \
+        files = [os.path.join(root, "kernel", f) for f in ("kernel.py", "sdk_backend.py", "codex_backend.py", "session_host.py",
+                                                            "judge.py", "credentials.py")] + \
                 [os.path.join(root, "postal", "postal_service.py")]
         CTORS = {"Thread", "Timer", "ThreadPoolExecutor", "_TimedPool"}
         def ctor_of(call):
@@ -1010,20 +1016,28 @@ class PerfRoutes(unittest.TestCase):
             if isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr == "format" and isinstance(v.func.value, ast.Constant):
                 return v.func.value.value.split("{")[0], True
             return None, None
-        sites, named, bad, grep_thread, ast_thread = 0, [], [], 0, 0
+        sites, named, bad, dyn_kinds, per_file = 0, [], [], set(), {}
         for f in files:
             src = open(f, encoding="utf-8").read()
-            grep_thread += len(re.findall(r"threading\.Thread\(", src))
-            for node in ast.walk(ast.parse(src)):
+            tree = ast.parse(src)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)) and ctor_of(ast.Call(func=node.value, args=[], keywords=[])) \
+                        and not all(isinstance(tg, ast.Name) and tg.id in CTORS for tg in node.targets):   # judge.py rebinds ThreadPoolExecutor
+                    bad.append(("%s:%d" % (os.path.basename(f), node.lineno), "a constructor aliased into a name the census cannot follow", ast.dump(node.value)[:60]))   # to its timed subclass: both names are constructors, so every site stays visible
+            for node in ast.walk(tree):
                 if not isinstance(node, ast.Call) or ctor_of(node) is None:
                     continue
-                sites += 1
-                if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id == "threading" and node.func.attr == "Thread":
-                    ast_thread += 1
+                sites += 1; per_file[os.path.basename(f)] = per_file.get(os.path.basename(f), 0) + 1
+                label = "%s:%d" % (os.path.basename(f), node.lineno)
+                if ctor_of(node) == "Thread" and len(node.args) >= 3:
+                    bad.append((label, "a positional name the census cannot read: pass name= as a keyword", "")); continue
+                if ctor_of(node) == "Timer" and len(node.args) > 2:
+                    bad.append((label, "a Timer with a positional beyond its interval and function: spell args, kwargs and any name as keywords", "")); continue
+                if any(k.arg is None for k in node.keywords):
+                    bad.append((label, "keywords through **kwargs may carry a name the census cannot read: spell them", "")); continue
                 kw = next((k for k in node.keywords if k.arg in ("name", "thread_name_prefix")), None)
                 if kw is None:
                     continue                                     # a default name: the rule keeps the target function
-                label = "%s:%d" % (os.path.basename(f), node.lineno)
                 static, dynamic = static_prefix(kw.value)
                 named.append(label)
                 if static is None:
@@ -1034,14 +1048,23 @@ class PerfRoutes(unittest.TestCase):
                     kind = km._thread_kind(static + "notes-api-web")
                     if kind != static[:-1] or "notes" in kind:
                         bad.append((label, "the payload survives", kind))
+                    dyn_kinds.add(kind)                          # a kind with a payload is a documented family (sdk, codex, ...)
                 else:
-                    kind = km._thread_kind(static)
+                    kind = km._thread_kind(static if kw.arg == "name" else static + "_0")   # a pool prefix names its workers <prefix>_N
                     if kind != static or re.search(r"[/\\]|[0-9a-f]{8}-", static):
                         bad.append((label, "a constant name that is not a plain kind", kind))
-        self.assertEqual(ast_thread, grep_thread, "the ast walk sees every threading.Thread( the grep sees")
+        self.assertGreaterEqual(sites, 60, "the census walked the construction sites: %d" % sites)
         self.assertGreaterEqual(len(named), 23, "the census found every named site, the multi-line ones included: %r" % named)
         self.assertTrue(any(l.startswith("codex_backend.py:") for l in named), "the Codex worker's site is walked: %r" % named)
+        self.assertGreaterEqual(per_file.get("credentials.py", 0), 1, "the credentials helper's Timer is a construction site the census walked: %r" % per_file)
+        self.assertGreaterEqual(per_file.get("judge.py", 0), 7, "the judge tiers' pools are construction sites the census walked: %r" % per_file)
         self.assertEqual(bad, [], "every named thread maps to a kind with no identity in it")
+        ref = open(os.path.join(root, "docs", "reference.md"), encoding="utf-8").read()
+        para = ref[ref.index("- `stacks`: every live thread's stack"):]
+        para = para[:para.index("\n- ", 10)]
+        undocumented = sorted(k for k in dyn_kinds if "`%s`" % k not in para)
+        self.assertEqual(undocumented, [], "every kind family with a payload (sdk, codex, end-host, peer, ...) is in the reference's kind list; a constant name is its own kind")
+        self.assertGreaterEqual(len(dyn_kinds), 5, sorted(dyn_kinds))
 
     def test_the_judge_pools_workers_carry_their_tier(self):
         """Round three, low 2: the pin on the pool prefix was a substring check on the source; the behaviour is pinned instead:
