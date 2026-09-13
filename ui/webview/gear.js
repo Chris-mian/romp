@@ -526,7 +526,19 @@ function initGear(post, opts) {
   // echo, which the scroll handler below consumes and never reads as the user's, even when the user's press on a row fell within
   // the input window before it (the ask died 0 and 60 ms after a press, measured by the review). A write that did not move owes
   // none, and must not eat a later gesture. The chat's writeScroll pairs a write with its echo the same way (lastScrollWriteAfter).
-  function writeCard(card, top) { var before = card.scrollTop; card.scrollTop = top; if (card.scrollTop !== before) sectionWrote = true; }
+  // A move is what the FRAME renders (round four, MEDIUM 1): the value the frame started from (from, read by the caller before any
+  // layout it changed) against the value after the write. go() drops the room to measure, which clamps the card from 594 to 0, and
+  // lands it back at 594: Chromium renders no net move and fires no scroll event, so a mark read off the clamped intermediate was a
+  // debt the user's first real scroll paid (a wheel tick moved the card and the ask stood, measured by the review). And a debt no
+  // event pays (two writes in one frame netting to its start) is forgiven two frames on, before it could eat the user's own scroll:
+  // the echo comes with the next frame's scroll events or never.
+  function writeCard(card, top, from) {
+    var before = from === undefined ? card.scrollTop : from;
+    card.scrollTop = top;
+    if (card.scrollTop === before) return;
+    sectionWrote = true;
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(function () { requestAnimationFrame(function () { sectionWrote = false; }); });
+  }
   function clearSectionScroll() {
     if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
     sectionAsk = null;
@@ -545,6 +557,7 @@ function initGear(post, opts) {
     var pane = sec && sec.closest('.rs-pane');
     if (!sec || !card || !pane) return;
     var go = function () {
+      var top0 = card.scrollTop;   // where the frame started: the room drop below clamps the card, and the landing is measured against this, not the clamp
       pane.style.paddingBottom = '';   // measure the pane's own end: a re-ask on an already roomed pane must not read its earlier room
       var cs = getComputedStyle(card), padT = parseFloat(cs.paddingTop) || 0, padB = parseFloat(cs.paddingBottom) || 0;
       // room at the pane's END so the head can reach the top even when the section is the last thing in the pane (round two,
@@ -556,7 +569,7 @@ function initGear(post, opts) {
       // write takes up rounding, or a cap the computed style did not resolve to pixels.
       var below = function () { return pane.getBoundingClientRect().bottom - sec.getBoundingClientRect().top; };
       var land = function () {
-        writeCard(card, card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - padT);
+        writeCard(card, card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - padT, top0);
         card.setAttribute('data-section-landed', section);   // the landing's mark: what a lab waits for before it measures (never a delay)
       };
       var capH = parseFloat(cs.maxHeight);
@@ -602,7 +615,13 @@ function initGear(post, opts) {
     if (!card) return;
     var inputAt = 0, held = false, pressedIn = false;
     var inCard = function (e) { return e.target instanceof Node && card.contains(e.target); };
-    var inField = function () { var a = document.activeElement; return !!a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.tagName === 'SELECT' || a.isContentEditable); };
+    // a FIELD is an element that consumes the scroll keys (Page, Home, End, the arrows): a text-like input, a textarea, a select, a
+    // contenteditable. A checkbox, radio, button or range input is none (round four, MEDIUM 2: PageUp after a click on a checkbox row
+    // scrolled the card with no evidence counted, and the next size change re-landed over the user's scroll)
+    var NOT_FIELDS = { checkbox: 1, radio: 1, button: 1, submit: 1, reset: 1, range: 1, color: 1, file: 1, image: 1 };
+    var inField = function () { var a = document.activeElement; if (!a) return false;
+      if (a.tagName === 'INPUT') return !NOT_FIELDS[String(a.getAttribute('type') || 'text').toLowerCase()];
+      return a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || !!a.isContentEditable; };
     var keyFocus = function () { var a = document.activeElement; return pressedIn || (!!a && a !== document.body && card.contains(a)); };
     var onInput = function (e) {
       if (e.type === 'keydown') { if (inField() || !keyFocus()) return; }
@@ -612,7 +631,9 @@ function initGear(post, opts) {
         // the hold latches on the scroller's GUTTER only (round three, LOW 2): a press whose target is the card's own padding is a
         // press like any other, with the timed window, not a grab that outlives it
         var r = card.getBoundingClientRect();
-        if (LS.scrollerGrab(false, e.clientX - r.left, e.clientY - r.top, card.clientWidth, card.clientHeight)) held = true;
+        // offsets from the PADDING box (the border box less clientLeft and clientTop), the box clientWidth and clientHeight measure
+        // (round four, LOW 2: measured from the border box, the innermost content pixel column read as the gutter)
+        if (LS.scrollerGrab(false, e.clientX - r.left - card.clientLeft, e.clientY - r.top - card.clientTop, card.clientWidth, card.clientHeight)) held = true;
       }
       else if (!inCard(e)) return;
       inputAt = performance.now();

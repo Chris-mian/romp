@@ -84,10 +84,10 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   // the SECTION anchor (the user's amendment 2026-09-12): looked up in the shown pane only; the card, the modal's one scroll box, scrolls so the head
   // sits under its padding (never scrollIntoView, which would scroll the host document too); after the panel is shown, since rects exist only then
   assert.match(GEAR, /function showSection\(section\) \{\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}\s*\n\s*sectionAsk = null;\s*\n\s*var card0 = [^\n]*\n\s*if \(card0\) card0\.removeAttribute\('data-section-landed'\);[^\n]*\n\s*if \(typeof section !== 'string' \|\| !section\) return;\s*\n\s*var sec = document\.querySelector\('#rsettings \.rs-pane:not\(\[hidden\]\) \.rs-sec\[data-section="' \+ section \+ '"\]'\);/);
-  assert.match(GEAR, /writeCard\(card, card\.scrollTop \+ sec\.getBoundingClientRect\(\)\.top - card\.getBoundingClientRect\(\)\.top - padT\);/);
+  assert.match(GEAR, /writeCard\(card, card\.scrollTop \+ sec\.getBoundingClientRect\(\)\.top - card\.getBoundingClientRect\(\)\.top - padT, top0\);/);
   // round two, LOW 1: room at the pane's end so the head reaches the top even for the last section; LOW 2 and 7: one pending ask,
   // disconnected on close and before a new ask, and a plain open resets the card and the room
-  assert.match(GEAR, /var go = function \(\) \{\s*\n\s*pane\.style\.paddingBottom = '';/, "the room is cleared before the measurement (a re-ask must not read its own earlier room)");
+  assert.match(GEAR, /var go = function \(\) \{\s*\n\s*var top0 = card\.scrollTop;[^\n]*\n\s*pane\.style\.paddingBottom = '';/, "the room is cleared before the measurement (a re-ask must not read its own earlier room)");
   // the follow-up's round one, MEDIUM: the room is sized to the card's CAP (max-height, a content box), since below the cap the card
   // grows under the room and the head stops short on tall windows; a second measurement after the write takes up rounding
   // the follow-up's round two: the cap is a BORDER box on the served page (feed.css makes every element one), so the room fills the cap
@@ -122,18 +122,25 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   assert.match(GEAR, /else if \(!inCard\(e\)\) return;\s*\n\s*inputAt = performance\.now\(\);/, "a wheel or a touch counts by containment");
   // round three, LOW 2: the hold latches on the gutter only (landing-settle's scrollerGrab by the offsets, never by the target being
   // the card, whose padding takes a press as its own target), and a lost release ends with the page's focus or visibility
-  assert.match(GEAR, /var r = card\.getBoundingClientRect\(\);\s*\n\s*if \(LS\.scrollerGrab\(false, e\.clientX - r\.left, e\.clientY - r\.top, card\.clientWidth, card\.clientHeight\)\) held = true;/);
+  assert.match(GEAR, /var r = card\.getBoundingClientRect\(\);\s*\n(\s*\/\/[^\n]*\n)*\s*if \(LS\.scrollerGrab\(false, e\.clientX - r\.left - card\.clientLeft, e\.clientY - r\.top - card\.clientTop, card\.clientWidth, card\.clientHeight\)\) held = true;/, "offsets from the padding box (round four, LOW 2)");
+  // round four, MEDIUM 2: a field is an element that consumes the scroll keys; a checkbox, radio, button or range input is none
+  assert.match(GEAR, /var NOT_FIELDS = \{ checkbox: 1, radio: 1, button: 1, submit: 1, reset: 1, range: 1, color: 1, file: 1, image: 1 \};/);
+  assert.match(GEAR, /var inField = function \(\) \{ var a = document\.activeElement; if \(!a\) return false;\s*\n\s*if \(a\.tagName === 'INPUT'\) return !NOT_FIELDS\[String\(a\.getAttribute\('type'\) \|\| 'text'\)\.toLowerCase\(\)\];\s*\n\s*return a\.tagName === 'TEXTAREA' \|\| a\.tagName === 'SELECT' \|\| !!a\.isContentEditable; \};/);
+  assert.doesNotMatch(GEAR, /a\.tagName === 'INPUT' \|\| a\.tagName === 'SELECT'/, "no blanket INPUT rule");
   assert.match(GEAR, /window\.addEventListener\('pointerup', function \(\) \{ held = false; \}\);\s*\n\s*window\.addEventListener\('pointercancel', function \(\) \{ held = false; \}\);/);
   assert.match(GEAR, /window\.addEventListener\('blur', function \(\) \{ held = false; \}\);\s*\n\s*document\.addEventListener\('visibilitychange', function \(\) \{ held = false; \}\);/);
   // round three, LOW 1: the ask's own writes are marked and their echo is consumed before the evidence is read; no unmarked write
   // of the card's scrollTop anywhere in the ask's code
   assert.match(GEAR, /var sectionRO = null, sectionAsk = null, sectionWrote = false;/);
-  assert.match(GEAR, /function writeCard\(card, top\) \{ var before = card\.scrollTop; card\.scrollTop = top; if \(card\.scrollTop !== before\) sectionWrote = true; \}/, "a write that moved owes one echo; one that did not owes none");
-  assert.match(GEAR, /writeCard\(card, card\.scrollTop \+ sec\.getBoundingClientRect\(\)\.top - card\.getBoundingClientRect\(\)\.top - padT\);/, "the landing writes through the ledger");
+  // round four, MEDIUM 1: the move is the FRAME's (the caller's start value against the value after the write; go() reads it before
+  // the room drop that clamps the card), and a debt no scroll event pays is forgiven two frames on
+  assert.match(GEAR, /function writeCard\(card, top, from\) \{\s*\n\s*var before = from === undefined \? card\.scrollTop : from;\s*\n\s*card\.scrollTop = top;\s*\n\s*if \(card\.scrollTop === before\) return;\s*\n\s*sectionWrote = true;\s*\n\s*if \(typeof requestAnimationFrame === 'function'\) requestAnimationFrame\(function \(\) \{ requestAnimationFrame\(function \(\) \{ sectionWrote = false; \}\); \}\);\s*\n\s*\}/, "a write that moved the frame owes one echo, forgiven two frames on if unpaid; one that did not owes none");
+  assert.match(GEAR, /var go = function \(\) \{\s*\n\s*var top0 = card\.scrollTop;[^\n]*\n\s*pane\.style\.paddingBottom = '';/, "the frame's start is read before the room drop");
+  assert.match(GEAR, /writeCard\(card, card\.scrollTop \+ sec\.getBoundingClientRect\(\)\.top - card\.getBoundingClientRect\(\)\.top - padT, top0\);/, "the landing writes through the ledger");
   assert.match(GEAR, /card\.addEventListener\('scroll', function \(\) \{\s*\n\s*if \(sectionWrote\) \{ sectionWrote = false; return; \}[^\n]*\n\s*if \(!sectionAsk \|\| !LS\.gestureEvidence\(inputAt, performance\.now\(\), held\)\) return;\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}\s*\n\s*sectionAsk = null;\s*\n\s*card\.removeAttribute\('data-section-landed'\);/);
   const ASK_CODE = GEAR.slice(GEAR.indexOf("var sectionRO = null"), GEAR.indexOf("THE WIDGET ROWS"));
   assert.equal((ASK_CODE.match(/card\.scrollTop = /g) || []).length, 1, "one scrollTop write in the ask's code: writeCard's");
-  assert.match(ASK_CODE, /function writeCard\(card, top\) \{ var before = card\.scrollTop; card\.scrollTop = top;/);
+  assert.match(ASK_CODE, /function writeCard\(card, top, from\) \{\s*\n\s*var before = from === undefined \? card\.scrollTop : from;\s*\n\s*card\.scrollTop = top;/);
   assert.doesNotMatch(GEAR.slice(GEAR.indexOf("function showSection(section) {"), GEAR.indexOf("function closeSettings()")), /sectionAsk\.top|Math\.abs\(card\.scrollTop/, "no scroll-delta reading anywhere in the ask");
   assert.match(GEAR, /var card0 = document\.querySelector\('#rsettings \.rs-card'\);\s*\n\s*if \(card0\) card0\.removeAttribute\('data-section-landed'\);/, "a new ask clears the earlier landing's mark (LOW 3)");
   // the first open in the shell: this document has no layout until the shell lifts its iframe on the settings-open message, so a

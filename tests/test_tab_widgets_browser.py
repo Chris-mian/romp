@@ -303,6 +303,7 @@ for (const mode of ["always", "never"]) {
     const pastWindow = () => new Promise((r) => setTimeout(r, 200));
     const press = (target, x, y) => target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true, clientX: x, clientY: y, pointerType: "mouse", isPrimary: true, button: 0, buttons: 1 }));
     const release = () => window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "mouse", isPrimary: true }));
+    const nudge = async () => { card.scrollTop = 0; await frames(2); card.scrollTop = 20; await frames(2); };   // two scrolls of another origin: one alone could be paid to an echo debt (round four, LOW 1)
     const cycle = async () => { card.removeAttribute("data-section-landed"); card.style.maxHeight = "70vh"; await frames(4); const a = { mark: mark(), scrollTop: card.scrollTop };
       card.removeAttribute("data-section-landed"); card.style.maxHeight = ""; await frames(4); return { afterChange: a, restored: mark(), scrollTop: card.scrollTop }; };
   ` + body + "})();"));
@@ -320,7 +321,7 @@ for (const mode of ["always", "never"]) {
     const r = card.getBoundingClientRect(), gw = r.width - card.clientLeft * 2 - card.clientWidth;
     press(card, r.left + card.clientLeft + card.clientWidth + gw / 2, r.top + r.height / 2);
     window.dispatchEvent(new Event("blur")); document.dispatchEvent(new Event("visibilitychange"));
-    await pastWindow(); card.scrollTop = 0; await frames(2);
+    await pastWindow(); await nudge();
     const out = await cycle(); return Object.assign({ gw }, out);`);
   // P: a press whose target is the card's own padding (inside the client box), a pause past the window, a scroll of another origin,
   // a size change: a press is no grab, so the ask stands
@@ -328,8 +329,41 @@ for (const mode of ["always", "never"]) {
   r3.pad = await probe(`
     const r = card.getBoundingClientRect();
     press(card, r.left + card.clientLeft + 3, r.top + card.clientTop + 3);
-    await pastWindow(); card.scrollTop = 0; await frames(2);
+    await pastWindow(); await nudge();
     const out = await cycle(); release(); return out;`);
+  // ROUND FOUR. S: a landing's echo debt (MEDIUM 1): a re-land by a SHRINK of the card's cap (a shrink moves nothing before the landing
+  // runs, so the landing's room drop and write back net to zero and the frame renders no move: the debt's shape; a growth clamps the
+  // scroll first, a real move that pays any debt), then ONE scroll with the user's evidence (a wheel on the card and the scroll it
+  // stands for, within the window): the ask must end on that first scroll, so the next size change, a further shrink that cannot
+  // clamp the wheel's position, lands nothing and the card stays where the wheel put it. The cap is restored after the measurement.
+  r3.debtLanded = await reask();
+  r3.debt = await probe(`
+    card.style.maxHeight = "70vh"; await frames(4); const relanded = mark(); await frames(2);
+    card.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 })); card.scrollTop = card.scrollTop - 120; await frames(2);
+    const afterWheel = { mark: mark(), scrollTop: card.scrollTop };
+    card.removeAttribute("data-section-landed"); card.style.maxHeight = "60vh"; await frames(4);
+    const out = { relanded, afterWheel, landedAfterChange: mark(), scrollTop: card.scrollTop, overflow: card.scrollHeight - card.clientHeight };
+    card.style.maxHeight = ""; await frames(4); return out;`);
+  // G: a press at the innermost content pixel column (LOW 2): measured from the border box it read as the gutter; no grab, the ask stands
+  r3.edgeLanded = await reask();
+  r3.edge = await probe(`
+    const r = card.getBoundingClientRect();
+    press(card, r.left + card.clientLeft + card.clientWidth - 1, r.top + r.height / 2);
+    await pastWindow(); await nudge();
+    const out = await cycle(); release(); return out;`);
+  // C: the focus on a checkbox row in the landed view, then a real PageUp (MEDIUM 2): a checkbox consumes no Page key, so the card
+  // scrolls; the key must count (a checkbox is no field), the ask end, and a size change after it land nothing
+  r3.boxLanded = await reask();
+  await clearMark(); await p3.setViewportSize({ width: 1200, height: 1450 }); r3.boxStanding = await landedSoon(sf3, 10000); await settled();
+  await sf3.evaluate(() => document.getElementById("rs-striprows").focus({ preventScroll: true }));
+  const beforeBoxKey = await readSec();
+  await p3.keyboard.press("PageUp");
+  await sf3.waitForFunction((t) => document.querySelector("#rsettings .rs-card").scrollTop !== t, beforeBoxKey.scrollTop, { timeout: 5000 }).catch(() => {});
+  await settleScroll();
+  const afterBoxKey = await readSec();
+  await clearMark(); await p3.setViewportSize({ width: 1200, height: 1420 });
+  r3.box = { active: await sf3.evaluate(() => { const a = document.activeElement; return a ? a.tagName + "#" + a.id + ":" + (a.getAttribute("type") || "") : null; }),
+             beforeBoxKey, afterBoxKey, landedAfterResize: await landedSoon(sf3, 2500), sec: await readSec() };
   out.tall.r3 = r3;
   await p3.close(); await c3.close();
 }
@@ -626,6 +660,7 @@ class ServedTabWidgets(unittest.TestCase):
         w = t["wheel"]; table = "\n  wheel: " + json.dumps(w)
         self.assertGreaterEqual(abs(w["afterWheel"]["top"] - (w["afterWheel"]["cardTop"] + w["afterWheel"]["pad"])), 3, "the wheel moved the head off the top" + table)
         self.assertFalse(w["landedAfterGrowth"], "the ask ended on the user's input: a growth after it lands nothing" + table)
+        self.assertLessEqual(abs(w["sec"]["scrollTop"] - w["afterWheel"]["scrollTop"]), 1, "the card stays where the wheel put it (round four)" + table)
 
     def test_a_key_scroll_after_a_click_in_the_card_ends_the_ask(self):
         # round three, MEDIUM: the inputs were bound to the card, which has no tabindex, so PageUp after a click in it targeted BODY,
@@ -663,6 +698,36 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertTrue(r["padLanded"], table)
         self.assertEqual(p["afterChange"]["mark"], "tabwidgets", "no hold from a press on the padding: the size change re-lands" + table)
         self.assertEqual(p["restored"], "tabwidgets", table)
+
+    def test_a_landings_echo_is_the_frames_move_or_no_debt_at_all(self):
+        # round four, MEDIUM 1: go() dropped the room to measure (the card clamped 594 to 0) and landed it back, and the ledger read the
+        # clamped intermediate as a move: a debt no scroll event paid, so the user's first real scroll after every landing was eaten
+        # (a wheel tick moved the card 594 to 474 with the ask standing, and the next size change re-landed it). The move is the
+        # frame's now, and an unpaid debt is forgiven two frames on
+        r = self._run()["tall"]["r3"]; d = r["debt"]; table = "\n  debt: " + json.dumps(d)
+        self.assertTrue(r["debtLanded"], table)
+        self.assertEqual(d["relanded"], "tabwidgets", "the size change re-landed before the wheel" + table)
+        self.assertIsNone(d["afterWheel"]["mark"], "the first scroll with the user's evidence after a landing ends the ask" + table)
+        self.assertIsNone(d["landedAfterChange"], "a size change after it lands nothing" + table)
+        self.assertLessEqual(abs(d["scrollTop"] - d["afterWheel"]["scrollTop"]), 1, "the card stays where the wheel put it" + table)
+
+    def test_a_key_after_the_focus_on_a_checkbox_row_ends_the_ask(self):
+        # round four, MEDIUM 2: any INPUT counted as a field, so PageUp after a click on a checkbox row scrolled the card with no evidence
+        # and the size change re-landed 594 over the user's 0; a field is an element that consumes the scroll keys
+        r = self._run()["tall"]["r3"]; b = r["box"]; table = "\n  box: " + json.dumps(b)
+        self.assertTrue(r["boxLanded"] and r["boxStanding"], "the ask landed and stood before the key" + table)
+        self.assertEqual(b["active"], "INPUT#rs-striprows:checkbox", "the focus sits on the checkbox" + table)
+        self.assertLess(b["afterBoxKey"]["scrollTop"], b["beforeBoxKey"]["scrollTop"], "PageUp scrolled the card" + table)
+        self.assertFalse(b["landedAfterResize"], "a size change after the user's key lands nothing" + table)
+        self.assertLessEqual(abs(b["sec"]["scrollTop"] - b["afterBoxKey"]["scrollTop"]), 1, "the card stays where the key put it" + table)
+
+    def test_the_innermost_content_pixel_column_is_no_gutter_grab(self):
+        # round four, LOW 2: the grab's offsets were measured from the border box against the padding box's clientWidth, so a press at
+        # clientLeft + clientWidth - 1 read as the gutter; the offsets come from the padding box now
+        r = self._run()["tall"]["r3"]; e = r["edge"]; table = "\n  edge: " + json.dumps(e)
+        self.assertTrue(r["edgeLanded"], table)
+        self.assertEqual(e["afterChange"]["mark"], "tabwidgets", "no hold from a press inside the client box: the size change re-lands" + table)
+        self.assertEqual(e["restored"], "tabwidgets", table)
 
 
 if __name__ == "__main__":
