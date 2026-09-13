@@ -58,18 +58,6 @@ const filled = await state(); const regionsFilled = await regions();
 const rowAfter = await rowAtTop();
 const gesturesAfter = await gestures();
 const fills = await writes("gap-fill");
-// ROAD 2b (T386 stage 2, low 8): a fill BELOW the viewport. The head gap still stands above the filled run; a jump to the transcript
-// top puts the reader at the gap's TOP edge, the edge met by scrolling DOWN, so the gap asks for its top page (lo 0), which fills in
-// place with the reader's row held.
-const belowBefore = await sentOf("loadTurns");
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
-await painted();
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, belowBefore, { timeout: 10000 }).catch(() => {});
-const belowAsks = await page.evaluate((n) => window.__sent.filter((m) => m.type === "loadTurns").slice(n).map((m) => ({ lo: m.lo, hi: m.hi })), belowBefore);
-const belowRowBefore = await rowAtTop();
-await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
-await painted();
-const belowRegions = await regions(); const belowRowAfter = await rowAtTop(); const belowGestures = await gestures();
 // ROAD 3: a live tail while the reader is up in history: it lands at the tail, nothing pauses
 const k = cfg.turns;
 const tail = { type: "chatTail", id: cfg.sid, afterUuid: regionsFilled ? regionsFilled[regionsFilled.length - 1].last : filled.lastUuid, events: [
@@ -78,9 +66,21 @@ const tail = { type: "chatTail", id: cfg.sid, afterUuid: regionsFilled ? regions
 await page.evaluate((f) => { window.postMessage(f, "*"); }, tail);
 await page.waitForFunction((u) => { const ts = Array.from(document.querySelectorAll("#content .turn[data-uuid]")); return ts.length && ts[ts.length - 1].dataset.uuid === u; }, tail.events[1].uuid, { timeout: 10000 }).catch(() => {});
 const live = await state(); const regionsLive = await regions(); const rowLive = await rowAtTop();
+// ROAD 2b (T386 stage 2, low 8): a fill BELOW the viewport. The head gap still stands above the filled run; a jump to the transcript
+// top puts the reader at the gap's TOP edge, the edge met by scrolling DOWN, so the gap asks for its top page (lo 0), which fills in
+// place with the reader's row held.
+const belowBefore = await sentOf("loadTurns"); const belowGesturesBefore = await gestures();
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
+await painted();
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, belowBefore, { timeout: 10000 }).catch(() => {});
+const belowAsks = await page.evaluate((n) => window.__sent.filter((m) => m.type === "loadTurns").slice(n).map((m) => ({ lo: m.lo, hi: m.hi })), belowBefore);
+const belowRowBefore = await rowAtTop();
+await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
+await painted();
+const belowRegions = await regions(); const belowRowAfter = await rowAtTop(); const belowGestures = await gestures();
 process.stdout.write("RESULT:" + JSON.stringify({ boot: { regions: bootRegions, turns: boot.turns, atBottom: boot.atBottom, notice: boot.notice, strip: boot.strip }, turnsBefore, asks, gapsAsked, regionsAsked, rowBefore, rowAfter, gesturesBefore, gesturesAfter, fills,
   filled: { regions: regionsFilled, gaps: filled.gaps, turns: filled.turns, firstUuid: filled.firstUuid, lastUuid: filled.lastUuid, top: filled.top, notice: filled.notice, strip: filled.strip },
-  rowLive, below: { asks: belowAsks, regions: belowRegions, rowBefore: belowRowBefore, rowAfter: belowRowAfter, gestures: belowGestures, gesturesBefore: gesturesAfter },
+  rowLive, below: { asks: belowAsks, regions: belowRegions, rowBefore: belowRowBefore, rowAfter: belowRowAfter, gestures: belowGestures, gesturesBefore: belowGesturesBefore },
   live: { regions: regionsLive, lastUuid: live.lastUuid, atBottom: live.atBottom, notice: live.notice, strip: live.strip, turns: live.turns, top: live.top } }) + "\n");
 await browser.close();
 """

@@ -254,7 +254,7 @@ class ServedLandingNoticeAnchor(unittest.TestCase):
         mid_pill, mid_box = (pill["left"] + pill["right"]) / 2, (box["left"] + box["right"]) / 2
         self.assertLess(abs(mid_pill - mid_box), 2.0, "centered in the section" + table)
         self.assertLess(pill["top"] - box["top"], 24.0, "at the top of the section (10px in), not floating lower" + table)
-        self.assertEqual(c["pointer"], "none", "non-interactive" + table)
+        self.assertEqual(c["pointer"], "auto", "the notice takes the click, the ONE cancel (T386 stage 2)" + table)
         self.assertIs(c["inBody"], False, "the pill no longer lands in the body" + table)
         self.assertEqual(c["parent"], "tx-loading-anchor", "its parent is the zero-height anchor before #content" + table)
         self.assertEqual(c["shownBy"], "hook", "the page shows its own pill (a build without the hook is the old one)" + table)

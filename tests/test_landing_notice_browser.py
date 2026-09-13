@@ -34,6 +34,19 @@ const rowAtTop = () => page.evaluate(() => {
   return null;
 });
 const onScreen = (uuid) => page.evaluate((u) => { const t = document.querySelector(`#content .turn[data-uuid="${u}"]`); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(); const r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, uuid);
+// ROAD 3 (T386 stage 2, medium 2): an OLDER host speaks the pre-regions window protocol — its chatWindow carries events but NO span.
+// A deep link into a gap, the ask held, then a span-less reply injected: the pre-jump moved the reader, so the notice comes down and
+// the reader is told the host is older, never dropped silently where the pre-jump left them.
+const deep3 = "11111111-2222-3333-4444-" + pad(2 * 40);
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const aroundBefore3 = await sentOf("loadAround"); const toastBefore3 = await page.evaluate(() => !!document.querySelector(".locate-toast"));
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep3, anchorT: cfg.base + 2 * 40 });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore3, { timeout: 10000 }).catch(() => {});
+const asked3 = await state();
+await page.evaluate(([sid, anchor]) => window.postMessage({ type: "chatWindow", id: sid, anchor, events: [{ uuid: anchor, kind: "user", md: "an older host's window, no span" }], moreBefore: false, moreAfter: false }, "*"), [cfg.sid, deep3]);
+await page.waitForFunction(() => { const tt = document.querySelector(".locate-toast"); return !!tt && /older version/.test(tt.textContent || ""); }, null, { timeout: 5000 }).catch(() => {});
+const nospan3 = { notice: (await state()).notice, toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }) };
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
 // ROAD 1: a deep link into the head gap: the notice, the pre-jump, the ask (HELD at the socket so the wait can be sampled: a local kernel
 // answers within the round trip), the landing once released
 await page.evaluate(() => { window.__hold.add("loadAround"); });
@@ -73,19 +86,6 @@ await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-
 await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const late2 = await state(); const rowLate2 = await rowAtTop(); const regionsLate = await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null));
 const target2 = await onScreen(deep2);
-// ROAD 3 (T386 stage 2, medium 2): an OLDER host speaks the pre-regions window protocol — its chatWindow carries events but NO span.
-// A deep link into a gap, the ask held, then a span-less reply injected: the pre-jump moved the reader, so the notice comes down and
-// the reader is told the host is older, never dropped silently where the pre-jump left them.
-const deep3 = "11111111-2222-3333-4444-" + pad(2 * 40);
-await page.evaluate(() => { window.__hold.add("loadAround"); });
-const aroundBefore3 = await sentOf("loadAround"); const toastBefore3 = await page.evaluate(() => !!document.querySelector(".locate-toast"));
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep3, anchorT: cfg.base + 2 * 40 });
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore3, { timeout: 10000 }).catch(() => {});
-const asked3 = await state();
-await page.evaluate(([sid, anchor]) => window.postMessage({ type: "chatWindow", id: sid, anchor, events: [{ uuid: anchor, kind: "user", md: "an older host's window, no span" }], moreBefore: false, moreAfter: false }, "*"), [cfg.sid, deep3]);
-await page.waitForFunction(() => { const tt = document.querySelector(".locate-toast"); return !!tt && /older version/.test(tt.textContent || ""); }, null, { timeout: 5000 }).catch(() => {});
-const nospan3 = { notice: (await state()).notice, toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }) };
-await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
 process.stdout.write("RESULT:" + JSON.stringify({ asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
