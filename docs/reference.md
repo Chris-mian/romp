@@ -1739,7 +1739,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   browser reload or reconnect), `none` outside those (T401), and `asmCheckpoint.hydratedByStage`
   does the same for the hydration rows.
 - `asmCheckpoint`: the assembly documents since boot: `written`, `restored`,
-  `fallbacks` per reason (`version`, `session`, `inputs`, `lineage`, `shrunk`,
+  `fallbacks` per reason (`version`, `rows` (a version-6 document whose atom
+  row is not a JSON string: refused whole, never read by a second road),
+  `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
   `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`;
@@ -1755,7 +1757,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   place at equal length plus an append passes the 64-byte guard, like a
   same-size same-mtime rewrite),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
-  a cut), `hydratedBy` (those bytes per calling function), and `converge`: the
+  a cut), `hydratedBy` (those bytes per calling function), `restoreMs`, the
+  restore's four parts since boot in whole milliseconds, each added on the
+  return it names (`load`: the document read, decompressed, decoded and its
+  file checks; `verify`: the turns section's identity and coverage, or the
+  atoms-only form's rows built and its identity proven; `index`: the lazy
+  index over the rows and the pre-cut turns; `seed`: the adapter's pre-cut
+  graph facts), so a boot read names the mover; since document version 6 the
+  atom rows are stored as pre-serialized JSON strings, so the decode builds
+  strings, not dicts, and the index takes each row's bytes with no re-encode
+  (the deploy boot of that version refuses every standing document as
+  `version` and the settle rewrites it: that boot is the migration, the boot
+  after is the read), and `converge`: the
   pass's writes of idle leaves' documents from the boot's own parse
   (`candidates`, `writes`, `bytes`, `deferred`, `skipped` per the writer's
   reason).
