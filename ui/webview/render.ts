@@ -7671,7 +7671,9 @@ window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contai
 // an Escape that closed the menu says so on the event (preventDefault), so the section view's own Escape
 // (installSnapshotEscape, armed at this same capture phase, later in the listener order) yields to it
 window.addEventListener("keydown", (e) => { if (e.key === "Escape" && ctxMenuEl) { dismissTabMenu(); e.preventDefault(); } }, true);
-window.addEventListener("scroll", dismissTabMenu, true);
+// …but not the menu's own scroll: taller than the window it scrolls inside it (styles.css max-height, 2026-09-13), and a
+// dismissal on that scroll closed it under the pointer the moment a row below the fold was brought into view
+window.addEventListener("scroll", (e) => { if (ctxMenuEl && ctxMenuEl.contains(e.target as Node)) return; dismissTabMenu(); }, true);
 window.addEventListener("blur", () => dismissTabMenu());
 
 // "Rename" (tab context menu): swap the tab's label for an inline input. Enter
