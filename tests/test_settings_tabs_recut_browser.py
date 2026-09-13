@@ -170,9 +170,10 @@ const out = {};
                  up: box.classList.contains("rs-up"), roomAbove: br.top - cr.top, roomBelow: cr.bottom - br.bottom, scrollHeight: card.scrollHeight, viewport: window.innerHeight }; }, id);
       r.scrollHeightRest = rest; out.fastBoxes.push(r);
     }
-    // no room on either side (round two, low 5): a 210 px window and the Thinking summaries popover; the roomier side is taken
+    // no room on either side (round three, the ruling): a 300 px window and the Thinking summaries popover, more room above than
+    // below and neither enough; the popover stays BELOW, where the card's scroll reaches the clip (a top clip cannot be reached)
     await page.mouse.move(4, 4);
-    await page.setViewportSize({ width: 1200, height: 210 }); await page.waitForTimeout(200);
+    await page.setViewportSize({ width: 1200, height: 300 }); await page.waitForTimeout(200);
     await setF.click('#rsettings .rs-tab[data-tab="chat"]'); await setF.waitForTimeout(150);
     await setF.evaluate(() => document.getElementById("rs-thinksum").closest("label").scrollIntoView({ block: "center" })); await setF.waitForTimeout(80);
     await setF.hover("label:has(#rs-thinksum)"); await setF.waitForTimeout(160);
@@ -376,15 +377,18 @@ class ServedSettingsTabs(unittest.TestCase):
             self.assertEqual(x["scrollHeight"], x["scrollHeightRest"], x["id"] + ": no scroll growth under the hover" + table)
         self.assertTrue(any(x["up"] for x in fb), "at least one opened above its box" + table)
 
-    def test_with_no_room_on_either_side_the_popover_takes_the_roomier_side(self):
-        # round two, low 5: a 210 px window and the 143 px Thinking summaries popover fit neither side
+    def test_with_no_room_on_either_side_the_popover_stays_below_where_the_card_scrolls_to_it(self):
+        # round three, the manager's ruling: at 300 px the Thinking summaries popover fits neither side, with more room above than
+        # below; it stays below (main's behaviour), because a bottom clip is reachable by the card's scroll and a top clip is not.
+        # The executed cover of the dropped roomier-side clause: adding it back opens this one above
         n = self._run()["noRoom"]; table = "\n  " + json.dumps(n)
-        self.assertLess(n["viewport"], 260, table)
-        fits_above = n["roomAbove"] >= n["subHeight"] + 2; fits_below = n["roomBelow"] >= n["subHeight"]
-        if not fits_above and not fits_below:
-            self.assertEqual(n["up"], n["roomAbove"] > n["roomBelow"], "neither side fits: the side with more room" + table)
-        else:
-            self.assertTrue(n["subTop"] >= n["cardTop"] - 1 and n["subBottom"] <= n["cardBottom"] + 1, "a side fits: inside" + table)
+        self.assertLess(n["viewport"], 320, table)
+        self.assertGreater(n["roomAbove"], n["roomBelow"], "the case: more room above than below" + table)
+        self.assertLess(n["roomAbove"], n["subHeight"] + 2, "…and not enough above" + table)
+        self.assertLess(n["roomBelow"], n["subHeight"], "…nor below" + table)
+        self.assertFalse(n["up"], "neither side fits: below, as main had it, where the scroll reaches the clip" + table)
+        self.assertGreaterEqual(n["subTop"], n["cardTop"] - 1, "the start of the text is inside the card" + table)
+        self.assertGreater(n["subBottom"], n["cardBottom"], "the clip is at the bottom" + table)
 
     def test_a_row_near_its_panes_bottom_opens_its_popover_above_and_the_card_does_not_scroll(self):
         # the T408 read: Feed rs-feedcollapsed, Sessions rs-backend and Task tracking rs-indexeffort and rs-judgeconc sent their hover

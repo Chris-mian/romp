@@ -78,11 +78,13 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   const CSS2 = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.css"), "utf8");
   assert.match(GEAR, /var HOSTS = '#rsettings \.rs-fastin, #rsettings \.rs-row, #rsettings \.rs-widget';/, "a Fast mode box is a host of its own (round two, the medium)");
   assert.match(GEAR, /function ownSub\(host\) \{[^}]*if \(subs\[i\]\.closest\(HOSTS\) === host\) return subs\[i\];/, "the popover the host owns, never a nested box's");
-  assert.match(GEAR, /if \(sr\.bottom <= cr\.bottom\) return;[^\n]*\n\s*var rr = host\.getBoundingClientRect\(\), above = rr\.top - cr\.top, below = cr\.bottom - rr\.bottom;/);
-  assert.match(GEAR, /if \(above >= sr\.height \+ 2 \|\| above > below\) host\.classList\.add\('rs-up'\);/, "up when it fits above, or when neither side fits and above has more room (round two, low 5)");
+  assert.match(GEAR, /var anchor = host\.classList\.contains\('rs-fastin'\) \? \(host\.closest\('#rsettings \.rs-row'\) \|\| host\) : host;\s*\n\s*var ar = anchor\.getBoundingClientRect\(\), above = ar\.top - cr\.top;/,
+    "the room above is measured from the popover's containing block, the row (round three, low 3)");
+  assert.match(GEAR, /if \(above >= sr\.height \+ 2\) host\.classList\.add\('rs-up'\);/, "up only when it fits above; neither side fitting, it stays below, where the card's scroll reaches the clip (round three, the ruling)");
+  assert.doesNotMatch(GEAR, /above > below/, "no roomier-side clause");
   assert.match(GEAR, /pcard\.addEventListener\('mouseover', function \(e\) \{ var host = hostOf\(e\.target\); if \(host\) placeSub\(host\); \}\);/);
   assert.match(GEAR, /pcard\.addEventListener\('mouseout', function \(e\) \{ var host = hostOf\(e\.target\); if \(host && !\(e\.relatedTarget && host\.contains\(e\.relatedTarget\)\)\) host\.classList\.remove\('rs-up'\); \}\);/, "the class goes with the pointer, so the next hover measures afresh");
-  assert.match(CSS2, /#rsettings \.rs-row \.rs-fastin\.rs-up \.rs-sub \{ top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; \}/, "the box's own up rule, one class above the row rules");
+  assert.match(CSS2, /#rsettings \.rs-row:hover \.rs-fastin\.rs-up \.rs-sub \{ top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; \}/, "the box's own up rule, (1,5,0): above the hover rule and the row's up rule whatever the order");
   assert.match(CSS2, /#rsettings \.rs-row\.rs-up:hover \.rs-sub, #rsettings \.rs-widget\.rs-up:hover \.rs-sub \{ top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; \}/, "the up rule outranks the hover rule by one class");
   assert.doesNotMatch(GEAR, /Files control in the dashboard bar/, "the old words are gone from the gear");
   assert.match(G, /<b>Updates install automatically <span class=rs-mixed hidden><\/span><\/b>/, "the updates row's name (T404)");

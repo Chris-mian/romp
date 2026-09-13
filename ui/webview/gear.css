@@ -64,9 +64,11 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 /* the popover opens ABOVE a row whose popover would run past the card's bottom (gear.js placeSub sets rs-up on hover): the card
    is the modal's scroll box, and a popover past its bottom grew it a scrollbar and was clipped (the T408 read) */
 #rsettings .rs-row.rs-up:hover .rs-sub, #rsettings .rs-widget.rs-up:hover .rs-sub { top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; }
-/* the Fast mode box's own popover, positioned against its row like the row's: the box carries rs-up itself (gear.js hostOf),
-   one class above the row rules so it wins whatever the row wears */
-#rsettings .rs-row .rs-fastin.rs-up .rs-sub { top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; }
+/* the Fast mode box's own popover, positioned against its row like the row's (the box is static, so the row is the
+   containing block and the popover keeps the row's width): the box carries rs-up itself (gear.js hostOf). Specificity
+   (1,5,0): two classes above the hover rule and one above the row's own rs-up rule, so the box's placement wins whatever the
+   row wears, whatever the order in this sheet */
+#rsettings .rs-row:hover .rs-fastin.rs-up .rs-sub { top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; }
 #rsettings .rs-sub code { background: #0d0d0d; border-radius: 3px; padding: 0 3px; }
 /* an inline live status beside a control (the login flow's "starting…") — visible when non-empty,
    never a popover (as an rs-sub it doubled the Account row's tooltip, 2026-09-02) */

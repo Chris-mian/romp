@@ -1540,9 +1540,13 @@ function initGear(post, opts) {
     var sr = sub.getBoundingClientRect(), cr = pcard.getBoundingClientRect();
     if (!sr.height) return;   // no popover shown (a picker open, the mixed mark hovered): nothing to place
     if (sr.bottom <= cr.bottom) return;   // it fits below: the default stands
-    var rr = host.getBoundingClientRect(), above = rr.top - cr.top, below = cr.bottom - rr.bottom;
-    // above when it fits there; when it fits on neither side (a very short window), the side with more room (round two, low 5)
-    if (above >= sr.height + 2 || above > below) host.classList.add('rs-up');
+    // the room above is measured from what bottom:100% resolves against: the ROW, for a Fast mode box too, since the box is
+    // static and its popover's containing block is the row (round three, low 3: measuring the box left 5 px of slack)
+    var anchor = host.classList.contains('rs-fastin') ? (host.closest('#rsettings .rs-row') || host) : host;
+    var ar = anchor.getBoundingClientRect(), above = ar.top - cr.top;
+    // above only when it fits there. When it fits on neither side (a very short window) the popover stays BELOW, as main had
+    // it (round three, the manager's ruling): a bottom clip is reachable by the card's scroll, a top clip is not
+    if (above >= sr.height + 2) host.classList.add('rs-up');
   }
   if (pcard) {
     pcard.addEventListener('mouseover', function (e) { var host = hostOf(e.target); if (host) placeSub(host); });
