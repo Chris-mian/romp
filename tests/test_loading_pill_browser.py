@@ -40,7 +40,7 @@ await page.evaluate(() => {
 });
 const painted = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const fs2 = require("fs");
-const appendLiveTurn = (k) => { const u = cfg.liveU.slice(0, -1) + (k % 10), a = cfg.liveA.slice(0, -1) + (k % 10); const now = new Date().toISOString().replace(/\.\d{3}Z$/, ".000Z"); fs2.appendFileSync(cfg.transcript, JSON.stringify({ type: "user", uuid: u, parentUuid: cfg.lastUuid, timestamp: now, promptSource: "sdk", sessionId: cfg.sid, message: { role: "user", content: "a real live turn " + k } }) + "\n" + JSON.stringify({ type: "assistant", uuid: a, parentUuid: u, timestamp: now, sessionId: cfg.sid, message: { role: "assistant", model: "claude-fable-5-1", content: [{ type: "text", text: "ok " + k }] } }) + "\n"); };
+const appendLiveTurn = (k) => { const u = cfg.liveU.slice(0, -1) + (k % 10); const now = new Date().toISOString().replace(/\.\d{3}Z$/, ".000Z"); fs2.appendFileSync(cfg.transcript, JSON.stringify({ type: "user", uuid: u, parentUuid: cfg.lastUuid, timestamp: now, promptSource: "sdk", sessionId: cfg.sid, message: { role: "user", content: "a real live turn " + k } }) + "\n"); };   // USER-ONLY (round ten, low 2): a user+assistant pair reads as a FORK in this fixture (the kernel rebuilds the session, a session frame), a lone user record keeps the run and pushes a chatTail
 const pillShown = () => page.waitForFunction(() => { const p = document.querySelector(".tx-loading-pill"); return !!p && getComputedStyle(p).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
 const pillHidden = () => page.waitForFunction(() => { const p = document.querySelector(".tx-loading-pill"); return !p || getComputedStyle(p).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
 const latch = () => page.evaluate(() => (typeof window.__rompLatch === "function" ? window.__rompLatch() : null));   // the head's hook; the base has none, and its roads must still run to their own red
@@ -404,8 +404,40 @@ await page.waitForTimeout(1200);
 out.afterLive13 = { onB: await rowOf(B13), tailPushed: (await page.evaluate(() => window.__in.filter((x) => x === "chatTail").length)) - inBefore13, atBottom: await page.evaluate(() => { const c = document.getElementById("content"); return c.scrollHeight - c.scrollTop - c.clientHeight < 2; }), gapReplaced: await page.evaluate((u) => !document.querySelector('#content .turn[data-uuid="' + u + '"]'), B13) };
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
 out.step = "13:done";
+// ROAD 14 (round ten, mediums 1 and 2): never re-base from a DETACHED run. Card at turn 6 (the kernel's real window; detached, strip up),
+// the reader scrolls to turn 40 inside it; card at turn 90 asked (held) and the pill clicked (cancelled); the kernel's reply released:
+// the window holds the reader's row, so no re-land, and the branch that used to reattachLive at once (a repair frame the deep window
+// cannot merge) must not fire — the reader stays at turn 40 within a row, the strip up. Then a user-only live append: withheld from the
+// detached base; still at turn 40, strip up.
+out.step = "14:start";
+await focusReset();
+const C14 = "11111111-2222-3333-4444-" + pad(2 * 6), MID14 = "11111111-2222-3333-4444-" + pad(2 * 40), D14 = "11111111-2222-3333-4444-" + pad(2 * 90);
+await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, C14, cfg.base + 2 * 6]);
+await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), C14, { timeout: 10000 }).catch(() => {});
+await pillHidden();
+await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), MID14, { timeout: 8000 }).catch(() => {});
+await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (t) t.scrollIntoView({ block: "start" }); }, MID14);   // the reader's own place inside the window
+await painted();
+const stripBefore14 = await page.evaluate(() => { const st = document.getElementById("live-paused"); return !!st && getComputedStyle(st).display !== "none"; });
+const mid14Before = await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, MID14);
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, D14, cfg.base + 2 * 90]);
+await pillShown();
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // the second card clicked away
+await pillHidden();
+const fullBefore14 = await reattachN();
+await page.evaluate(() => window.__releaseOne());   // the kernel's real window for turn 90 arrives, cancelled
+await page.waitForFunction((n) => window.__in.filter((x) => x === "chatWindow").length > n, await page.evaluate(() => window.__in.filter((x) => x === "chatWindow").length) - 1, { timeout: 8000 }).catch(() => {});
+await page.waitForTimeout(400);
+out.cancelled14 = { reattach: (await reattachN()) - fullBefore14, mid: await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, MID14), strip: await page.evaluate(() => { const st = document.getElementById("live-paused"); return !!st && getComputedStyle(st).display !== "none"; }), stripBefore: stripBefore14, midBefore: mid14Before };
+const inBefore14 = await page.evaluate(() => window.__in.filter((x) => x === "chatTail" || x === "session").length);
+appendLiveTurn(cfg.turns + 1);
+await page.waitForTimeout(1200);
+out.afterLive14 = { mid: await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, MID14), strip: await page.evaluate(() => { const st = document.getElementById("live-paused"); return !!st && getComputedStyle(st).display !== "none"; }), pushed: (await page.evaluate(() => window.__in.filter((x) => x === "chatTail" || x === "session").length)) - inBefore14, reattach: (await reattachN()) - fullBefore14 };
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
+out.step = "14:done";
 } catch (e) { out.roadError = String(e && e.message || e); }
-process.stdout.write("RESULT:" + JSON.stringify({ ...out, reask11: out.reask11, stranger12: out.stranger12, reattachAfterA13: out.reattachAfterA13, landedB13: out.landedB13, stripB13: out.stripB13, afterLive13: out.afterLive13, pageEvents, start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ ...out, reask11: out.reask11, stranger12: out.stranger12, reattachAfterA13: out.reattachAfterA13, landedB13: out.landedB13, stripB13: out.stripB13, afterLive13: out.afterLive13, cancelled14: out.cancelled14, afterLive14: out.afterLive14, pageEvents, start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
 try { await browser.close(); } catch (e) { /* the page may already be gone */ }
 """
 
@@ -534,6 +566,7 @@ class ServedLoadingPill(WindowLab):
         rk = r["reask11"]
         self.assertTrue(rk["landed"] and rk["landed"]["visible"], "reply one landed the reader on the opened message: %r" % rk)
         self.assertTrue(rk["after"] and rk["after"]["visible"], "reply two (the cancelled twin) left the reader on the message, on screen: %r" % rk)
+        self.assertLessEqual(abs(rk["after"]["top"] - rk["landed"]["top"]), 4, "…at the landing's offset: the landing's own older-history prepend re-anchors the reader's row (round ten, low 1): %r" % rk)
         self.assertEqual(rk["reattach"], 0, "reply two re-based nothing: no needFull, the kernel's base is where reply one put it (round nine, the agreement-resident skip): %r" % rk)
 
     def test_a_different_key_re_ask_with_the_kernels_own_replies_defers_the_re_base_and_keeps_the_reader_on_b(self):
@@ -544,8 +577,24 @@ class ServedLoadingPill(WindowLab):
         self.assertTrue(r["afterA13"]["baseStale"], "…the re-base was DEFERRED (baseStale set): %r" % r["afterA13"])
         self.assertTrue(r["afterB13"]["landedB"] and r["afterB13"]["landedB"]["visible"], "reply B landed the reader on the message they opened: %r" % r["afterB13"])
         self.assertFalse(r["afterB13"]["baseStale"], "…B restored agreement, so the deferred re-base cleared without firing: %r" % r["afterB13"])
+        self.assertTrue(r["afterB13"]["strip"], "…detached on window B with the paused strip up (half 2: a replace with more after it is detached whatever connected says): %r" % r["afterB13"])
         self.assertTrue(r["afterLive13"]["onB"] and r["afterLive13"]["onB"]["visible"], "the live turn kept the reader on the message they opened (a detached client is withheld the delta, or a gap while a window stands MERGES): %r" % r["afterLive13"])
         self.assertFalse(r["afterLive13"]["gapReplaced"], "…B's row was not replaced and the reader was not snapped to the tail: %r" % r["afterLive13"])
+
+    def test_a_detached_reader_who_cancels_a_second_card_is_never_re_based_and_a_live_append_leaves_them_in_place(self):
+        # round ten, mediums 1 and 2: never re-base from a DETACHED run (a repair frame a deep window cannot merge would throw the reader to the bottom)
+        r = self._result()
+        self.assertIn("afterLive14", r, "the road did not complete: %r" % r.get("roadError"))
+        c = r["cancelled14"]
+        self.assertTrue(c["stripBefore"], "the reader was detached (strip up) inside the first card's window before the second click: %r" % c)
+        self.assertTrue(c["midBefore"] and c["midBefore"]["visible"], "…standing on turn 40: %r" % c)
+        self.assertEqual(c["reattach"], 0, "the cancelled reply re-based nothing from the detached run: %r" % c)
+        self.assertTrue(c["mid"] and c["mid"]["visible"] and abs(c["mid"]["top"] - c["midBefore"]["top"]) <= max(8, 60), "the reader is still on turn 40 within a row after the cancelled reply: %r" % c)
+        self.assertTrue(c["strip"], "…with the strip up: %r" % c)
+        a = r["afterLive14"]
+        self.assertEqual(a["reattach"], 0, "the live append re-based nothing: %r" % a)
+        self.assertTrue(a["mid"] and a["mid"]["visible"], "the reader is still on turn 40 after a user-only live append (withheld from the detached base): %r" % a)
+        self.assertTrue(a["strip"], "…with the strip up: %r" % a)
 
     def test_a_served_stranger_window_for_a_background_tab_re_bases_that_session(self):
         # round seven, medium 2: a served window for a non-active attached session must re-base it, or its tail freezes silently

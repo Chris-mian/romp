@@ -150,10 +150,13 @@ function liftWorld(): (hooks: Hooks, mod: typeof MOD, doc: ReturnType<typeof fak
     const showLoadingPill = () => { H.pillShown++; };
     const readerWaits = new Map(), askedGen = new Map(); let askGen = 0;   // the per-tab wait set (T402 round two): the slices call noteAsk/endAsk
     const olderCancelled = new Map();   // the click's latch (round three): the deep-link ask clears it
-    const liveAskKey = { get: () => ({ kind: "older" }), set() {}, delete() {} };
-    const baseStale = { has: () => false, add() {}, delete: () => false };   // the deferred-reattach set (round nine): these slices drive one older ask, never a deferred re-base
+    const liveAskKey = { get: () => ({ kind: "older" }), set() {}, delete() {} };   // the live ask's identity (round five/six): these slices drive one older ask, so chatHead's keyless branch matches it by kind
+    // the deferred re-base (round nine) is NOT exercised here: baseStale answers false and settleReattach is a no-op, so the executed
+    // chatHead slice can never run the settle; that road (case c, a scroll-back reply firing the deferred re-base) is covered by the
+    // served pill lab only, with the kernel's own replies
+    const baseStale = { has: () => false, add() {}, delete: () => false };
     const reattachLive = () => {};
-    const settleReattach = () => {};   // the live ask's identity (round five/six); these slices drive one older ask, so chatHead's keyless branch matches it by kind
+    const settleReattach = () => {};
     const matchAsk = () => "live";      // the reply answers the ask on the books
     const syncLoadingPill = () => { if (activeId && readerWaits.has(activeId)) showLoadingPill(); else hideLoadingPill(); };
     const noteAsk = (sid, reader) => { loadingOlder.add(sid); askedGen.set(sid, askGen); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); };

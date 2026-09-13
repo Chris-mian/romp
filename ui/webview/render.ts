@@ -17135,7 +17135,14 @@ function chatTail(msg: any) {
   if (typeof msg.afterUuid === "string") {
     const kernelEvents = s.events.filter((e) => !isOptimistic(e) && !isHeldGroup(e));
     const at = indexOfUuid(kernelEvents as { uuid?: string }[], msg.afterUuid);
-    if (at < 0) { if (s.detached) requestFullSession(msg.id, "reattach"); else requestFullSession(msg.id, "gap"); return; }   // the anchor is not resident: a gap; but a page that holds a window MERGES the full frame (reattach: keeps the walked pages) rather than replacing (round nine)
+    if (at < 0) {
+      // the anchor is not resident: a gap. An ATTACHED page asks a full frame (gap: the tail replaces the run it should have matched). A
+      // DETACHED page asks nothing (round ten, medium 2): the kernel withholds deltas from a detached base, so a chatTail here is a stray,
+      // and a repair frame (the kernel's last 250 events) MERGES only when the held run shares a key with that tail — a window older than
+      // the tail would be replaced and the reader thrown to the bottom. The reader's own walk to the bottom re-attaches.
+      if (!s.detached) requestFullSession(msg.id, "gap");
+      return;
+    }
     from = at + 1;
     const inc = (msg.events || []) as ChatEvent[];
     s.lastUuid = inc.length ? (keyOf(inc[inc.length - 1] as { uuid?: string; key?: string }) ?? s.lastUuid) : keyOf(kernelEvents[at] as { uuid?: string; key?: string }) ?? s.lastUuid;
@@ -17161,7 +17168,7 @@ function chatTail(msg: any) {
     // pointer-exact on the SAME anchor the moment a kernel restart forced a reconnect).
     // So ASK for the full session — the one message that closes this desync class whatever opened it. A page that holds a window MERGES
     // it (reattach) so the walked pages stay; an attached page replaces (gap).
-    if (s.detached) requestFullSession(msg.id, "reattach"); else requestFullSession(msg.id, "gap");   // a page holding a window MERGES (reattach), an attached page replaces (gap) (round nine)
+    if (!s.detached) requestFullSession(msg.id, "gap");   // attached: the full frame re-bases. Detached: nothing (round ten): a reattach frame merges only with a run that shares a key with the wire tail, and a deep window does not
     return;
   }
   if (from < 0) return;                            // below the loaded head → our resident tail is still valid
@@ -17225,10 +17232,17 @@ const loadingOlder = new Set<string>();                 // sessions with a loadO
 // stale, and fire ONE reattach when the session's LAST in-flight reply lands, unless that reply restored agreement (the page adopted it
 // as the detached window the kernel's base sits on).
 const baseStale = new Set<string>();
-function deferReattach(sid: string): void { if (liveAskKey.has(sid)) baseStale.add(sid); else reattachLive(sid, true); }
+// Never from a DETACHED run (round ten): its kernel base is a detached window that owes no delta, and the repair frame (the kernel's last
+// 250 events) merges only when the held run shares a key with that tail; an older window would be replaced and the reader thrown to the
+// bottom. The reader's own walk to the bottom re-attaches a detached run (measured: reattach 0).
+function deferReattach(sid: string): void {
+  if (sessions.get(sid)?.detached) { baseStale.delete(sid); return; }
+  if (liveAskKey.has(sid)) baseStale.add(sid); else reattachLive(sid, true);
+}
 function settleReattach(sid: string, adoptedDetached: boolean): void {
   if (liveAskKey.has(sid)) return;             // more asks in flight: wait for the last one
   if (!baseStale.delete(sid)) return;          // nothing deferred for this sid
+  if (sessions.get(sid)?.detached) return;     // a detached run re-bases from nothing (round ten)
   if (!adoptedDetached) reattachLive(sid, true);   // agreement not restored (a fault, a merge that stayed attached, a non-adopted reply): re-base now
 }
 // T402 round two (medium 1): the pill is PAGE-WIDE and the waits are PER TAB, so the pill shows for the ACTIVE tab's own
@@ -17333,6 +17347,10 @@ function chatHead(msg: any) {
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; }
   const anchorUuid = pendingOlderAnchor.get(msg.id);
   const keepY = pendingOlderKeepY.get(msg.id);
+  // a scroll-back with no deep link pending re-anchors the READER'S OWN visible row at its offset (round ten, low 1): the landing's own
+  // older-history prepend drifted the opened row (top 8 to 356) once the cancelled twin no longer re-anchored it; captured before the reset
+  const contentEl = document.getElementById("content");
+  const keepRow = (!anchorUuid && v && contentEl && msg.id === activeId) ? captureScrollAnchor(contentEl, v) : null;
   forget(msg.id);
   // A DEEP-LINK STILL WAITING TO LAND WINS (the user 2026-08-02). A scroll-back re-anchor is about where the
   // reader was; a pending deep-link is about where they asked to GO. Letting the arrival overwrite it sent
@@ -17341,6 +17359,9 @@ function chatHead(msg: any) {
     pendingAnchor = anchorUuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null;
     flashedAnchor = null;                  // ditto: this path is also a user navigation
     pendingAnchorKeepY = keepY ?? null;
+  } else if (keepRow && !pendingAnchor && keepRow.y < contentEl!.clientHeight) {
+    pendingAnchor = keepRow.uuid; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; flashedAnchor = null;
+    pendingAnchorKeepY = keepRow.y;        // the reader's row, back at its offset: the prepend sits above, off-screen
   }
   showActive();
 }
@@ -17508,7 +17529,10 @@ function chatWindow(msg: any) {
       let went = false;
       try { went = requestAround(msg.id, anchorUuid); } finally { relandAsk = false; }
       if (went) pendingOlderKeepY.set(msg.id, keepY ?? 0);   // the re-land's reply restores the reader's row at its offset (round five, low 3)
-    } else if (!anchorResident) {
+    } else if (!anchorResident && !wasDetached) {
+      // ATTACHED only (round ten, medium 1): a detached page's kernel base is a detached window, the kernel owes it no delta, and a repair
+      // frame (the kernel's last 250 events) merges only when the held run shares a key with that tail — a window older than the tail
+      // would be REPLACED and the reader thrown to the live bottom. The reader's own walk to the bottom re-attaches a detached run.
       anchorPendingOlder = false;
       deferReattach(msg.id);
     }
