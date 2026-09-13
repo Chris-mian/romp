@@ -1,4 +1,5 @@
-// The settings panel in TABS (T379, the user 2026-09-12): the settings grouped by the surface they belong to, six pills
+// The settings panel in TABS (T379, the user 2026-09-12; re-cut T400: General, Chat, Feed, Sessions, Task tracking, Appearance, Debug):
+// the settings grouped by the surface they belong to, seven pills
 // under the title, one pane each, every existing key kept; the tab-widgets gear on the chat strip opens the Chat tab
 // scrolled to its Tab widgets section (the user's amendment: no tab of their own), whose rows are the registered widgets (a live demo, a sliding switch, the widget's options); the last tab used is
 // remembered per browser. gear.js builds its DOM from a markup string, so the inventory is read off that string (each
@@ -15,7 +16,7 @@ const GEAR_CSS = fs.readFileSync(path.join(UI, "gear.css"), "utf8");
 const RENDER = fs.readFileSync(path.join(UI, "render.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 
-const TABS = ["chat", "feed", "sessions", "automatic", "appearance", "system"];
+const TABS = ["general", "chat", "feed", "sessions", "tasks", "appearance", "debug"];
 // the panes, cut from the markup string by their openers (each pane opens with the literal below and the next pane's opener ends it)
 function panes(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -29,23 +30,27 @@ function panes(): Record<string, string> {
   return out;
 }
 
-test("six tabs, in the approved order, from ONE list the pills, the panes and selectTab read", () => {
-  assert.match(GEAR, /^var RS_TABS = \[\['chat', 'Chat'\], \['feed', 'Feed'\], \['sessions', 'Sessions'\], \['automatic', 'Automatic'\], \['appearance', 'Appearance'\], \['system', 'System'\]\];/m);
+test("seven tabs, in the user's order (T400: General first, Task tracking for Automatic, Debug last), from ONE list the pills, the panes and selectTab read", () => {
+  assert.match(GEAR, /^var RS_TABS = \[\['general', 'General'\], \['chat', 'Chat'\], \['feed', 'Feed'\], \['sessions', 'Sessions'\], \['tasks', 'Task tracking'\], \['appearance', 'Appearance'\], \['debug', 'Debug'\]\];/m);
+  // older remembered tabs and older asks land on the tab that holds their rows now, never a blank card
+  assert.match(GEAR, /^var TAB_ALIASES = \{ automatic: 'tasks', system: 'debug', tabs: 'chat' \};/m);
+  assert.match(GEAR, /function knownTab\(t\) \{ t = TAB_ALIASES\[t\] \|\| t; return RS_TABS\.some\(function \(x\) \{ return x\[0\] === t; \}\) \? t : null; \}/);
   assert.match(GEAR, /'<div class=rs-tabs id=rs-tabs role=tablist>' \+ RS_TABS\.map\(function \(t\) \{ return '<button class=rs-tab type=button role=tab data-tab=' \+ t\[0\] \+ ' aria-selected=false>' \+ t\[1\] \+ '<\/button>'; \}\)\.join\(''\) \+ '<\/div>' \+/);
   const ps = panes();
   assert.deepEqual(Object.keys(ps), TABS, "one pane per tab, in the tab order");
-  assert.ok(GEAR.indexOf("id=rs-tabs") < GEAR.indexOf("data-pane=chat"), "the pills come before the first pane");
+  assert.ok(GEAR.indexOf("id=rs-tabs") < GEAR.indexOf("data-pane=general"), "the pills come before the first pane");
 });
 
 test("every existing control keeps its id and sits in exactly one pane, by the approved grouping", () => {
   const ps = panes();
   const where: Record<string, string[]> = {
+    general: ["rs-billing", "rs-login-acct", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed"],
     chat: ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-filelink", "rs-filesctl", "rs-chatscheme", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-widgets", "rs-striprows"],
-    feed: ["rs-feedcollapsed", "rs-judges-index", "rs-judges-triage"],
-    sessions: ["rs-defaultdir", "rs-backend", "rs-fileedit", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-activeonly", "rs-collapsegaps"],
-    automatic: ["rs-autonudge", "rs-suggestcompact", "rs-conserve", "rs-thinksum", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
+    feed: ["rs-feedcollapsed"],
+    sessions: ["rs-defaultdir", "rs-backend", "rs-fileedit", "rs-activeonly", "rs-collapsegaps"],
+    tasks: ["rs-autonudge", "rs-suggestcompact", "rs-conserve", "rs-thinksum", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
     appearance: ["rs-theme", "rs-cmap", "rs-pal"],
-    system: ["rs-billing", "rs-login-acct", "rs-updates", "ra-open", "rs-log-open", "rsver"],
+    debug: ["rs-updates", "rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
   };
   for (const [pane, ids] of Object.entries(where)) {
     for (const id of ids) {
@@ -53,10 +58,14 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
       assert.deepEqual(homes, [pane], id + " lives in " + pane + " and nowhere else (found in: " + homes.join(",") + ")");
     }
   }
-  // the keyboard-shortcuts rows ride the SHORTCUT_ROWS variable, concatenated into the System pane
-  assert.match(ps.system, /\+ SHORTCUT_ROWS \+/);
+  // the keyboard-shortcuts rows ride the SHORTCUT_ROWS variable, concatenated into the General pane (T400)
+  assert.match(ps.general, /\+ SHORTCUT_ROWS \+/);
   assert.match(GEAR, /^var SHORTCUT_ROWS =\s*\n\s*'<div class=rs-key id=rs-keys-web hidden>/m);
-  for (const t of TABS.filter((x) => x !== "system")) assert.doesNotMatch(ps[t], /SHORTCUT_ROWS/, t + " holds no shortcut rows");
+  for (const t of TABS.filter((x) => x !== "general")) assert.doesNotMatch(ps[t], /SHORTCUT_ROWS/, t + " holds no shortcut rows");
+  // T400: General opens with the account, then the panes and the shortcuts; Debug opens with updates, then the judges' debug views, then the diagnostics
+  assert.ok(ps.general.indexOf(">Account<") < ps.general.indexOf("id=rs-panes-sec") && ps.general.indexOf("id=rs-panes-sec") < ps.general.indexOf(">Keyboard shortcuts<"), "General: Account, Panes, Keyboard shortcuts");
+  assert.ok(ps.debug.indexOf(">Updates<") < ps.debug.indexOf(">Judging bands<") && ps.debug.indexOf(">Judging bands<") < ps.debug.indexOf(">Diagnostics<") && ps.debug.indexOf(">Diagnostics<") < ps.debug.indexOf("id=rsver"), "Debug: Updates, Judging bands, Diagnostics, the version last");
+  assert.doesNotMatch(GEAR, /data-pane=(automatic|system)\b/, "no Automatic or System pane remains");
   // the tab widgets are a SECTION of Chat (the user's amendment 2026-09-12), after the chat's own sections, then the strip's controls;
   // its head carries the data-section anchor the strip's gear asks for; there is no Tabs tab
   assert.match(ps.chat, /<div class='rs-sec' data-section=tabwidgets>Tab widgets<\/div>/);
@@ -95,6 +104,7 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   assert.match(GEAR, /plFill\(\); fill\(\); showSection\(section\); \}/, "the scroll is the opener's last act, after the panel is displayed");
   assert.match(GEAR_CSS, /#rsettings \.rs-pane\[hidden\] \{ display: none; \}/, "a hidden pane is out of the flow (the [hidden] rule the author display would beat)");
   assert.match(GEAR_CSS, /#rsettings \.rs-tab\.on \{ color: var\(--accent, #9cd2ff\); border-color: var\(--accent, #9cd2ff\); background: var\(--accent-wash, rgba\(156, 210, 255, 0\.12\)\); font-weight: 600; \}/);
+  assert.match(GEAR_CSS, /#rsettings \.rs-tab \{ font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 999px;/, "8px of side padding: seven pills on the card's one row (T400 round one)");
 });
 
 test("the Tab widgets section's rows come from the strip's own module: built once, painted in place, a sliding switch, house pickers for the options", () => {

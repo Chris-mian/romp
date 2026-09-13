@@ -37,7 +37,10 @@ function ku(path) {
 // commands, rebindable in VS Code's own Keyboard Shortcuts editor, so the row says that instead
 // (a second editor there would fight the native one). The old static list is gone with the section
 // (it opened with "Enter — send message", a typing key nobody looks up, and went stale per surface).
-var RS_TABS = [['chat', 'Chat'], ['feed', 'Feed'], ['sessions', 'Sessions'], ['automatic', 'Automatic'], ['appearance', 'Appearance'], ['system', 'System']];
+var RS_TABS = [['general', 'General'], ['chat', 'Chat'], ['feed', 'Feed'], ['sessions', 'Sessions'], ['tasks', 'Task tracking'], ['appearance', 'Appearance'], ['debug', 'Debug']];
+// older remembered tabs (romp:settingsTab) and older asks map to the tab that holds their rows now, never a blank card (T400):
+// Automatic became Task tracking, System dissolved into Debug (its account rows into General), the short-lived Tabs tab is Chat's section
+var TAB_ALIASES = { automatic: 'tasks', system: 'debug', tabs: 'chat' };
 var SHORTCUT_ROWS =
   '<div class=rs-key id=rs-keys-web hidden><button id=rs-keys-btn type=button>Customize shortcuts…</button>' +
   '<span class=rs-key-desc>view, record and rebind every dashboard shortcut</span></div>' +
@@ -63,11 +66,47 @@ var GEAR_HTML =
   '<button id=rgear hidden aria-hidden=true></button>' +
   '<div id=rsettings hidden><div class=rs-card>' +
   '<div class=rs-h>Settings</div>' +
-  // THE TABS (T379, the user 2026-09-12): the settings grouped by the surface they belong to, six pills under the
+  // THE TABS (T379, the user 2026-09-12; re-cut T400 into General, Chat, Feed, Sessions, Task tracking, Appearance, Debug): the
+  // settings grouped by the surface they belong to, seven pills under the
   // title in the menu vocabulary; every row keeps its id and its key. The tab-widgets gear on the chat strip opens the
   // Chat tab scrolled to its Tab widgets section (openSettings(tab, section)); the last tab used is remembered per
   // browser (romp:settingsTab). RS_TABS is the one list the pills, the panes and selectTab read.
   '<div class=rs-tabs id=rs-tabs role=tablist>' + RS_TABS.map(function (t) { return '<button class=rs-tab type=button role=tab data-tab=' + t[0] + ' aria-selected=false>' + t[1] + '</button>'; }).join('') + '</div>' +
+  '<div class=rs-pane data-pane=general hidden>' +
+  // GENERAL (T400, the user 2026-09-12): the account this machine is logged in as, which panes this browser's dashboard shows at
+  // all, and the keyboard shortcuts: settings about the dashboard as a whole, not one surface of it
+  "<div class='rs-sec rs-sec-first'>Account</div>" +
+  "<div class='rs-row' id=rs-billing style='cursor:default'>" +
+  '<span style="flex:1 1 auto"><b>Claude login</b>' +
+  '<span class=rs-sub id=rs-login-acct>…</span>' +
+  "<div id=rs-login-flow style='margin-top:6px'>" +
+  "<button id=rs-login-btn type=button style='cursor:pointer;background:var(--btn-bg, #2a2a2a);color:var(--fg, #ccc);border:1px solid var(--hairline, #3a3a3a);border-radius:5px;padding:3px 10px'>Log in to Claude Code</button>" +
+  // rs-note, NOT rs-sub: this is a live inline status ("starting the login flow…"), not the row's
+  // description — as an rs-sub it floated a SECOND hover popover under the Account row, stacked on
+  // rs-login-acct's (the user 2026-09-02, who saw two tooltips stacked; even empty it painted a box)
+  "<span id=rs-login-state class=rs-note style='margin-left:8px'></span>" +
+  '</div></span></div>' +
+  // Panes (the user 2026-09-10): which optional panes this browser's dashboard shows at all. The chat is
+  // required and not listed; the rows are Sessions, Outline and Feed (the rail's own words for the panes
+  // keys: timeline, 'fleet', feed), on by default. A pane off here is not in the dashboard: no rail button,
+  // no phone tab, no palette command, its iframe never given a src (nothing loads, no socket). The kernel
+  // keeps judging and tracking every session regardless; this is where THIS browser looks. The section is
+  // for the dashboard's own gear (ownPage): the VS Code panels have no dashboard, so initGear hides it there.
+  '<div class=rs-sec id=rs-panes-sec>Panes</div>' +
+  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-timeline checked>' +
+  '<span><b>Sessions</b>' +
+  '<span class=rs-sub>The lanes across the bottom: every session\'s turns, judging and messages on one time axis. Off, the band and its button are gone from this browser.</span>' +
+  '</span></label>' +
+  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-fleet checked>' +
+  '<span><b>Outline</b>' +
+  '<span class=rs-sub>The by-session goal trees, with search across sessions. Off, the column and its button are gone from this browser.</span>' +
+  '</span></label>' +
+  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-feed checked>' +
+  '<span><b>Feed</b>' +
+  '<span class=rs-sub>The cards: what needs you, what is in progress, what shipped. Off, the column and its button are gone from this browser; tracking carries on and the other browsers and devices are unaffected.</span>' +
+  '</span></label>' +
+  '<div class=rs-sec>Keyboard shortcuts</div>' + SHORTCUT_ROWS +
+  '</div>' +
   '<div class=rs-pane data-pane=chat hidden>' +
   "<div class='rs-sec rs-sec-first'>Transcript</div>" +
   '<label class=rs-row><input type=checkbox id=rs-compact>' +
@@ -144,17 +183,6 @@ var GEAR_HTML =
   '<span><b>Collapse cards by default</b>' +
   '<span class=rs-sub>Every card arrives collapsed to its one-line gist; expanding one is a per-card override. Moved here from the feed footer — a set-and-forget default, not a per-glance action.</span>' +
   '</span></label>' +
-  "<div class='rs-sec'>Judging bands</div>" +
-  '<div class=rs-judges>' +
-  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>' +
-  '<span><b>Show indexing judges</b>' +
-  "<span class=rs-sub>Debug view: draws the captioner + archiver on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
-  '</span></label>' +
-  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-triage>' +
-  '<span><b>Show triage judges</b>' +
-  "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
-  '</span></label>' +
-  '</div>' +
   '</div>' +
   '<div class=rs-pane data-pane=sessions hidden>' +
   "<div class='rs-sec rs-sec-first'>New sessions</div>" +
@@ -174,25 +202,6 @@ var GEAR_HTML =
   '<span><b>File editing</b><span class=rs-mixed hidden></span>' +
   '<span class=rs-sub>Let the file viewer’s Edit save straight to disk on the file’s machine. Off by default; the viewer asks the first time. A session working in the edited folder is told, and a save always refuses when the file changed underneath you. Applies on every connected machine’s kernel.</span>' +
   '</span></label>' +
-  // Panes (the user 2026-09-10): which optional panes this browser's dashboard shows at all. The chat is
-  // required and not listed; the rows are Sessions, Outline and Feed (the rail's own words for the panes
-  // keys: timeline, 'fleet', feed), on by default. A pane off here is not in the dashboard: no rail button,
-  // no phone tab, no palette command, its iframe never given a src (nothing loads, no socket). The kernel
-  // keeps judging and tracking every session regardless; this is where THIS browser looks. The section is
-  // for the dashboard's own gear (ownPage): the VS Code panels have no dashboard, so initGear hides it there.
-  '<div class=rs-sec id=rs-panes-sec>Panes</div>' +
-  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-timeline checked>' +
-  '<span><b>Sessions</b>' +
-  '<span class=rs-sub>The lanes across the bottom: every session\'s turns, judging and messages on one time axis. Off, the band and its button are gone from this browser.</span>' +
-  '</span></label>' +
-  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-fleet checked>' +
-  '<span><b>Outline</b>' +
-  '<span class=rs-sub>The by-session goal trees, with search across sessions. Off, the column and its button are gone from this browser.</span>' +
-  '</span></label>' +
-  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-feed checked>' +
-  '<span><b>Feed</b>' +
-  '<span class=rs-sub>The cards: what needs you, what is in progress, what shipped. Off, the column and its button are gone from this browser; tracking carries on and the other browsers and devices are unaffected.</span>' +
-  '</span></label>' +
   '<div class=rs-sec>Sessions pane</div>' +  '<label class=rs-row><input type=checkbox id=rs-activeonly checked>' +
   '<span><b>Show active sessions only</b>' +
   '<span class=rs-sub>Only draw lanes for sessions with work in the visible time range, so idle sessions do not take up room. They stay in the chat, and a lane reappears the moment you zoom or pan to a stretch where it did something.</span>' +
@@ -202,7 +211,9 @@ var GEAR_HTML =
   '<span class=rs-sub>Squish long idle stretches (no work on any lane — e.g. overnight) into a thin break on the timeline, so the active periods get the width.</span>' +
   '</span></label>' +
   '</div>' +
-  '<div class=rs-pane data-pane=automatic hidden>' +
+  '<div class=rs-pane data-pane=tasks hidden>' +
+  // TASK TRACKING (T400, the user 2026-09-12: the judges sit under task tracking): what romp does on its own with the sessions
+  // it tracks, and the judges that read them
   "<div class='rs-sec rs-sec-first'>Sessions</div>" +
   "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
   '<span><b>Auto Nudge</b><span class=rs-mixed id=rs-autonudge-split hidden></span>' +
@@ -253,26 +264,28 @@ var GEAR_HTML =
   "<div id=rs-pal><button id=rs-pal-btn type=button aria-label='Pick the session palette'></button>" +
   '<div id=rs-pal-list hidden></div></div></span></div>' +
   '</div>' +
-  '<div class=rs-pane data-pane=system hidden>' +
-  "<div class='rs-sec rs-sec-first'>Account</div>" +
-  "<div class='rs-row' id=rs-billing style='cursor:default'>" +
-  '<span style="flex:1 1 auto"><b>Claude login</b>' +
-  '<span class=rs-sub id=rs-login-acct>…</span>' +
-  "<div id=rs-login-flow style='margin-top:6px'>" +
-  "<button id=rs-login-btn type=button style='cursor:pointer;background:var(--btn-bg, #2a2a2a);color:var(--fg, #ccc);border:1px solid var(--hairline, #3a3a3a);border-radius:5px;padding:3px 10px'>Log in to Claude Code</button>" +
-  // rs-note, NOT rs-sub: this is a live inline status ("starting the login flow…"), not the row's
-  // description — as an rs-sub it floated a SECOND hover popover under the Account row, stacked on
-  // rs-login-acct's (the user 2026-09-02, who saw two tooltips stacked; even empty it painted a box)
-  "<span id=rs-login-state class=rs-note style='margin-left:8px'></span>" +
-  '</div></span></div>' +
-  '<div class=rs-sec>Keyboard shortcuts</div>' + SHORTCUT_ROWS +
-  '<div class=rs-sec>Updates & debug</div>' +
+  '<div class=rs-pane data-pane=debug hidden>' +
+  // DEBUG (T400, the user 2026-09-12): updates, the judges' debug views, the token usage analytics, the log and the version; the
+  // former System tab dissolved here, its account rows to General
+  "<div class='rs-sec rs-sec-first'>Updates</div>" +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Automatic updates <span class=rs-mixed hidden></span></b>" +
   '<span class=rs-sub>romp watches for new tagged releases (every 6 hours) AND new commits on main (origin polled every few minutes, plus a restart offer when updated code sits on disk unbooted) — one banner covers both, and acting on it converges every attached machine. Check and ask (the default) offers the banner with an Update button; Install automatically converges by itself: a change to kernel code restarts it at once (turns in flight are cut and resume with their history); anything else (the UI, the docs, the postal bus) converges in place with the kernel left up; Off never checks. Kernel-side setting.</span>' +
   "<select id=rs-updates style='display:none'>" +
   '<option value=ask>Check and ask</option><option value=auto>Install automatically</option><option value=off>Off</option>' +
   '</select></span></div>' +
   
+  "<div class='rs-sec'>Judging bands</div>" +   // the two debug views of the judges' activity, from the Feed tab (T400)
+  '<div class=rs-judges>' +
+  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>' +
+  '<span><b>Show indexing judges</b>' +
+  "<span class=rs-sub>Debug view: draws the captioner + archiver on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
+  '</span></label>' +
+  '<label class=rs-row rs-half><input type=checkbox id=rs-judges-triage>' +
+  '<span><b>Show triage judges</b>' +
+  "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
+  '</span></label>' +
+  '</div>' +
+  '<div class=rs-sec>Diagnostics</div>' +
   "<div class=rs-sep style='padding-top:8px'>" +
   '<button id=ra-open class=ra-openbtn>Token usage analytics</button>' +
   '<button id=rs-log-open class=ra-openbtn hidden>Open log<span class=rs-log-n hidden></span></button></div>' +   // T290: the Log moved here from the bottom bar (web shell only); the span is the unread count
@@ -503,9 +516,10 @@ function initGear(post, opts) {
   ttPaint();
   // (the Context gauge picker moved onto the Context bar widget's row in the Chat tab's Tab widgets section, T379: tcPaint below is its stand-in)
   function tcPaint() {}
-  // ── THE TABS (T379) ── six pills, one pane each; selectTab shows one pane and remembers it per browser
+  // ── THE TABS (T379, re-cut T400) ── seven pills, one pane each; selectTab shows one pane and remembers it per browser (an older
+  // remembered name maps through TAB_ALIASES)
   var TAB_KEY = 'romp:settingsTab';
-  function knownTab(t) { return RS_TABS.some(function (x) { return x[0] === t; }) ? t : null; }
+  function knownTab(t) { t = TAB_ALIASES[t] || t; return RS_TABS.some(function (x) { return x[0] === t; }) ? t : null; }
   function selectTab(t) {
     t = knownTab(t) || knownTab((function () { try { return localStorage.getItem(TAB_KEY); } catch (e) { return null; } })()) || 'chat';
     Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { var on = b.getAttribute('data-tab') === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });

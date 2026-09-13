@@ -217,10 +217,11 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
    a STATUS colour (the accent/status split), so it is the same literal on every surface */
 .rs-log-n { color: #ff6b6b; font-weight: 600; }
 
-/* THE TABS (T379, the user 2026-09-12): the settings grouped by surface, six pills under the title in the menu vocabulary
+/* THE TABS (T379, the user 2026-09-12; re-cut T400): the settings grouped by surface, seven pills under the title in the menu vocabulary,
+   8px of side padding so the seven fit the 560px card's one row (at 10px they needed 528px against 518 and Debug wrapped)
    (menu tokens, the accent wash on the current one); one pane shows at a time ([hidden] restored against the flex rules) */
 #rsettings .rs-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 10px; padding-bottom: 10px; border-bottom: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12)); }
-#rsettings .rs-tab { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
+#rsettings .rs-tab { font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
   background: transparent; color: var(--fg, #ccc); cursor: pointer; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
 #rsettings .rs-tab:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff); }
 #rsettings .rs-tab.on { color: var(--accent, #9cd2ff); border-color: var(--accent, #9cd2ff); background: var(--accent-wash, rgba(156, 210, 255, 0.12)); font-weight: 600; }
