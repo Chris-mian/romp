@@ -1553,10 +1553,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   effective parent, resolved as the parse resolves it (the logical parent,
   else, for a truthy anchor naming no known record, the preserved segment's
   tail, anchor or head that does; a boundary with no anchor is a root); so a
-  null or missing parent, a self-link, a cycle, a parent anywhere else in the
-  pre-cut part, an unproven tip, an unknown parent, or a boundary re-anchored
-  into the interior or onto an unknown uuid refuses, whatever the record's
-  type; a document written before the bit is unproven, so every standing
+  null or missing parent, a self-link, a cycle, a uuid repeated in the tail
+  or reusing a pre-cut record's, a parent anywhere else in the pre-cut part,
+  an unproven tip, an unknown parent, or a boundary re-anchored into the
+  interior or onto an unknown uuid refuses, whatever the record's type (one
+  standing disagreement with the cold parse remains outside the rule: a tail
+  record whose stamp precedes the cut or the tip chains soundly but the
+  write-time stamp-order guard is not re-checked, so such a restore can
+  differ from a cold parse; a later round); a document written before the bit is unproven, so every standing
   document is refused once at its first restore after the change and booked
   `full:refused`, then rewritten with the bit; the restore falls to the whole parse, at boot
   and after a demotion alike, and `seeded:chainRefused` counts the same

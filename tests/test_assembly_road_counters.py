@@ -418,6 +418,37 @@ class AssemblyRoadCounters(Harness):
                 self._append(path, tail(t0))
                 self._seeded_vs_cold(name, path, expect_refused=True)
 
+    # Round seven: a repeated uuid poisons a memo keyed by uuid (the parse keeps the LAST record's parent) and a reuse of a
+    # pre-cut uuid closes a cycle across the spine; both refuse outright.
+    DUP_SHAPES = {
+        "y1_repeated_uuid_second_copy_a_null_root": lambda t0: [G.uline(t0 + 700, "first copy", "d1", "a5"), G.uline(t0 + 701, "second copy", "d1", None)],
+        "y2_tail_record_reusing_a_pre_cut_uuid": lambda t0: [G.uline(t0 + 700, "reuses a pre-cut uuid", "a2", "a5")],
+        "y3_repeated_uuid_second_copy_self_linked": lambda t0: [G.uline(t0 + 700, "first copy", "d1", "a5"), G.uline(t0 + 701, "second copy", "d1", "d1")],
+        "y4_verbatim_duplicate": lambda t0: [G.uline(t0 + 700, "the same record twice", "d1", "a5"), G.uline(t0 + 700, "the same record twice", "d1", "a5")],
+    }
+
+    def test_a_repeated_or_reused_uuid_in_the_tail_is_refused(self):
+        """Round seven, medium: the reachability memo was keyed by uuid and the record map last-wins, so the second record with a
+        uuid took the first copy's verdict while the parse keeps the LAST record's parent (a regression from the membership rule,
+        which read every record's own parent); a tail record reusing a pre-cut uuid closed a cycle across the spine. Any uuid
+        repeated in the tail or reusing a pre-cut record's refuses; the verbatim duplicate stays refused. Three roads, cold parse."""
+        for name, tail in self.DUP_SHAPES.items():
+            with self.subTest(shape=name, road="descent"):
+                path, t0 = self._documented("dup-" + name)
+                self._append(path, tail(t0)); em._read_jsonl_entry(path, tail_ok=True)
+                tree, parse, reads = self._served(path)
+                self.assertEqual(parse.get("restore:afterDemote", 0), 0, "%s: never restored: %s" % (name, parse))
+                self.assertEqual(tree, self._cold(path), "%s: the tree equals a cold whole parse" % name)
+            with self.subTest(shape=name, road="boot"):
+                path, t0 = self._documented("dup-boot-" + name)
+                self._append(path, tail(t0)); self.fresh(); self._reset()
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, "whole", path, reason=None, boot=True)
+            with self.subTest(shape=name, road="seeded"):
+                path, t0 = self._documented("dup-seeded-" + name)
+                self._append(path, tail(t0))
+                self._seeded_vs_cold(name, path, expect_refused=True)
+
     def test_the_seeded_readers_take_the_chain_rule_and_fall_to_the_cold_walk(self):
         """Round four, medium 2: chain_membership and file_rewound seeded an adapter from the document with no chain rule, and
         the goal sweep archived on their answer (over a rewound tail the seeded signature named one eclipsed record where the
