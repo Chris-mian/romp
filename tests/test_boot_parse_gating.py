@@ -202,8 +202,9 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         order (the ten files, then askerRow, then shape for a key of another length)."""
         d = tempfile.mkdtemp()
         r = _row(d, SID_OLD, old=True)
-        def snap():
-            rep = km._tick_seen_report(); return {k: rep[k] for k in ("hits", "misses", "neverSeen", "noTranscript")}, rep["missBy"]
+        def snap(job="interrupt-block"):
+            rep = km._tick_seen_report().get("byJob", {}).get(job) or {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "clockParse": 0, "missBy": {}}
+            return {k: rep[k] for k in ("hits", "misses", "neverSeen", "noTranscript", "clockParse")}, {"interrupt-block": rep["missBy"]}
         def delta(by0, by1, job="interrupt-block"):                     # the counters are cumulative for the module: deltas
             a, b = by0.get(job, {}), by1.get(job, {})
             return {k: b.get(k, 0) - a.get(k, 0) for k in set(a) | set(b) if b.get(k, 0) != a.get(k, 0)}
@@ -240,21 +241,78 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         r = _row(d, SID_OLD, old=True)
         st = km._session_files_stat(r) + (5.0, 7)                    # ten files plus one asker row
         km._nudge_look_done(r, st, [], "working")
-        rep0 = km._tick_seen_report()
+        def job():
+            return dict(km._tick_seen_report()["byJob"].get("auto-nudge") or {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "clockParse": 0, "missBy": {}})
+        rep0 = job()
         km._NUDGE_LOOK_STATS[SID_OLD] = st
         try:
             self.assertTrue(km._nudge_look_check(r, time.time())[0])
-            self.assertEqual(km._tick_seen_report()["hits"] - rep0["hits"], 1)
+            self.assertEqual(job()["hits"] - rep0["hits"], 1, "the skipping return counts a hit")
             km._NUDGE_LOOK_STATS[SID_OLD] = km._session_files_stat(r) + (6.0, 7)   # the asker's row moved
             self.assertFalse(km._nudge_look_check(r, time.time())[0])
-            by = km._tick_seen_report()["missBy"].get("auto-nudge", {})
-            self.assertEqual(by.get("askerRow", 0) - rep0["missBy"].get("auto-nudge", {}).get("askerRow", 0), 1, by)
+            self.assertEqual(job()["missBy"].get("askerRow", 0) - rep0["missBy"].get("askerRow", 0), 1, job()["missBy"])
             km._NUDGE_LOOK_STATS[SID_OLD] = km._session_files_stat(r)                  # a key of another length: shape
             self.assertFalse(km._nudge_look_check(r, time.time())[0])
-            by = km._tick_seen_report()["missBy"]["auto-nudge"]
-            self.assertEqual(by.get("shape", 0) - rep0["missBy"].get("auto-nudge", {}).get("shape", 0), 1, by)
+            self.assertEqual(job()["missBy"].get("shape", 0) - rep0["missBy"].get("shape", 0), 1, job()["missBy"])
+            # round two, MEDIUM: a matched key that a clock leg refuses to serve is a parse, never a hit
+            km._NUDGE_LOOK_STATS[SID_OLD] = st
+            km._nudge_look_done(r, st, [None], "awaiting-dispatch")                    # a None flip: unbounded
+            h0, c0 = job()["hits"], job()["clockParse"]
+            self.assertFalse(km._nudge_look_check(r, time.time())[0])
+            self.assertEqual((job()["hits"] - h0, job()["clockParse"] - c0), (0, 1), "flip None: hits 0, clockParse 1")
+            km._nudge_look_done(r, st, [time.time() - 5], "working")                  # a flip already due
+            self.assertFalse(km._nudge_look_check(r, time.time())[0])
+            self.assertEqual((job()["hits"] - h0, job()["clockParse"] - c0), (0, 2))
+            # round two, low 1: the walk's no-transcript parse counts too
+            n0 = job()["noTranscript"]
+            km._NUDGE_LOOK_STATS[SID_OLD] = (0.0, 0) + st[2:]
+            self.assertFalse(km._nudge_look_check(r, time.time())[0])
+            self.assertEqual(job()["noTranscript"] - n0, 1)
+            # round two, low 2: a previous entry that is not a sequence counts under shape, never raises
+            with km._TICK_SEEN_LOCK:
+                km._TICK_SEEN[("auto-nudge", SID_OLD)] = 17
+            km._NUDGE_LOOK_STATS[SID_OLD] = st
+            self.assertFalse(km._nudge_look_check(r, time.time())[0])
+            self.assertEqual(job()["missBy"].get("shape", 0) - rep0["missBy"].get("shape", 0), 2)
+            with km._TICK_SEEN_LOCK:
+                km._TICK_SEEN[("interrupt-block", SID_OLD)] = "bad"
+            self.assertFalse(km._tick_job_check("interrupt-block", r)[0])
+            j = job
+            ib = km._tick_seen_report()["byJob"]["interrupt-block"]
+            self.assertGreaterEqual(ib["missBy"].get("shape", 0), 1, ib)
+            # per job, the checks reconcile: hits + misses + neverSeen + noTranscript + clockParse
+            a = job(); self.assertEqual(a["hits"] + a["misses"] + a["neverSeen"] + a["noTranscript"] + a["clockParse"],
+                                        sum(rep0[k] for k in ("hits", "misses", "neverSeen", "noTranscript", "clockParse")) + 7,
+                                        "the seven auto-nudge checks above, one counter each")
         finally:
             km._NUDGE_LOOK_STATS.clear()
+            with km._TICK_SEEN_LOCK:
+                km._TICK_SEEN.pop(("interrupt-block", SID_OLD), None); km._TICK_SEEN.pop(("auto-nudge", SID_OLD), None)
+
+    def test_a_matched_key_a_clock_leg_refuses_to_serve_is_a_parse_not_a_hit(self):
+        """Round two, MEDIUM: hits was incremented before the walk's three clock branches, so a parse forced by a None flip, a
+        due flip or the closer toggle counted as a skip and a boot read over-reported the memo's skip rate; hits counts on the
+        one return that skips, and those parses count under clockParse for the walk's job."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        st = km._session_files_stat(r)
+        def counters():                                             # shape-tolerant: per job (the head) or aggregate (the base)
+            rep = km._tick_seen_report()
+            j = (rep.get("byJob") or {}).get("auto-nudge") if "byJob" in rep else rep
+            j = j or {}
+            return j.get("hits", 0), j.get("clockParse", 0)
+        km._nudge_look_done(r, st, [None], "awaiting-dispatch")     # a matched key whose look declined on a None flip
+        km._NUDGE_LOOK_STATS[SID_OLD] = st
+        try:
+            h0, c0 = counters()
+            skip, _st, verdict = km._nudge_look_check(r, time.time())
+            self.assertFalse(skip, "a None flip: the look parses")
+            h1, c1 = counters()
+            self.assertEqual((h1 - h0, c1 - c0), (0, 1), "hits 0, clockParse 1 for auto-nudge")
+        finally:
+            km._NUDGE_LOOK_STATS.clear()
+            with km._TICK_SEEN_LOCK:
+                km._TICK_SEEN.pop(("auto-nudge", SID_OLD), None)
 
     def test_jobs_keep_separate_memos(self):
         d = tempfile.mkdtemp()

@@ -10014,17 +10014,30 @@ _TICK_SEEN_DIRTY = [False]
 _TICK_KEY_FILES = ("transcript", "states", "store", "overrides", "archive", "episode", "cleared", "messages", "downtime", "ledger")
 #   the ten keyed files in the order _session_files_stat lays them out, two elements (mtime, size) each; a key element past the
 #   twentieth is an asker's registry row (the nudge walk's key, T401 (2) follow-up)
-_TICK_SEEN_STATS = {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "missBy": {}}   # GET /perf memos.tickSeen: why the
-#   event-keyed jobs re-evaluated (the 2026-09-13 measurement boot re-parsed every session in jobs.interruptBlock, 38 s, and the
-#   key position that moved could not be named after the fact); missBy[job][file] counts, per miss, each position that differed
+_TICK_SEEN_STATS = {}   # job -> {"hits", "misses", "neverSeen", "noTranscript", "clockParse", "missBy": {file: n}}: GET /perf
+#   memos.tickSeen.byJob, why each event-keyed job re-evaluated (the 2026-09-13 measurement boot re-parsed every session in
+#   jobs.interruptBlock, 38 s, and the key position that moved could not be named after the fact). Per job (round two), so the
+#   interrupt block's hits against its misses by file read exactly on their own; `clockParse` is the nudge walk's parse on a
+#   matched key that a clock leg refused to serve (a flip due, a None flip, the closer toggle): not a hit, not a miss
+
+
+def _tick_seen_bump(job, key, n=1):
+    with _TICK_SEEN_LOCK:
+        j = _TICK_SEEN_STATS.setdefault(job, {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "clockParse": 0, "missBy": {}})
+        j[key] += n
 
 
 def _tick_key_miss_by(job, st, prev):
     """Count a miss with a previous entry: which of the key's positions differed (twenty comparisons, nothing else). A key of
-    another length than the recorded one counts once under `shape`; a differing element past the ten files is `askerRow`."""
+    another length than the recorded one counts once under `shape`, as does a previous entry that is not a sequence (an
+    observation counter is never the raising path); a differing element past the ten files is `askerRow`."""
     with _TICK_SEEN_LOCK:
-        _TICK_SEEN_STATS["misses"] += 1
-        by = _TICK_SEEN_STATS["missBy"].setdefault(job, {})
+        j = _TICK_SEEN_STATS.setdefault(job, {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "clockParse": 0, "missBy": {}})
+        j["misses"] += 1
+        by = j["missBy"]
+        if not isinstance(prev, (list, tuple)) or not isinstance(st, (list, tuple)):
+            by["shape"] = by.get("shape", 0) + 1
+            return
         n = min(len(st), len(prev))
         if len(st) != len(prev):
             by["shape"] = by.get("shape", 0) + 1
@@ -10036,10 +10049,8 @@ def _tick_key_miss_by(job, st, prev):
 
 def _tick_seen_report():
     with _TICK_SEEN_LOCK:
-        out = {k: v for k, v in _TICK_SEEN_STATS.items() if k != "missBy"}
-        out["missBy"] = {j: dict(v) for j, v in _TICK_SEEN_STATS["missBy"].items()}
-    out["entries"] = len(_TICK_SEEN)
-    return out
+        by_job = {job: {k: (dict(v) if k == "missBy" else v) for k, v in j.items()} for job, j in _TICK_SEEN_STATS.items()}
+    return {"entries": len(_TICK_SEEN), "byJob": by_job}
 
 
 def _tick_seen_path():
@@ -10097,19 +10108,16 @@ def _tick_job_check(job, s):
     same memo plus the earliest instant one of its clock legs could flip (T401 (2))."""
     st = _session_files_stat(s)
     if not st[0]:
-        with _TICK_SEEN_LOCK:
-            _TICK_SEEN_STATS["noTranscript"] += 1
+        _tick_seen_bump(job, "noTranscript")
         return False, st                      # no transcript to stat: nothing is known about it, so never a skip
     key = (job, str(s.get("sid") or ""))
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(key)
     if prev is None:
-        with _TICK_SEEN_LOCK:
-            _TICK_SEEN_STATS["neverSeen"] += 1
+        _tick_seen_bump(job, "neverSeen")
         return False, st                      # never evaluated by any kernel on record: evaluate once
     if st == prev:
-        with _TICK_SEEN_LOCK:
-            _TICK_SEEN_STATS["hits"] += 1
+        _tick_seen_bump(job, "hits")
         return True, st
     _tick_key_miss_by(job, st, prev)          # which position moved: the boot read decodes it (memos.tickSeen.missBy)
     return False, st
@@ -10268,28 +10276,30 @@ def _nudge_look_check(s, now):
         _NUDGE_LOOK_ASKERS[sid] = (keyed, over)
     st = tuple(st)
     if not st[0]:                                                #  a caller handing snapshots of its own stats first
+        _tick_seen_bump("auto-nudge", "noTranscript")
         return False, st, None
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(("auto-nudge", str(s.get("sid") or "")))
     if prev is None:
-        with _TICK_SEEN_LOCK:
-            _TICK_SEEN_STATS["neverSeen"] += 1
+        _tick_seen_bump("auto-nudge", "neverSeen")
         return False, st, None
-    if len(prev) != len(st) + 2 or tuple(prev[:len(st)]) != tuple(st):
-        _tick_key_miss_by("auto-nudge", tuple(st), tuple(prev[:-2]))   # the walk's key beside the tick jobs' (memos.tickSeen)
-        return False, st, None
-    with _TICK_SEEN_LOCK:
-        _TICK_SEEN_STATS["hits"] += 1
+    if not isinstance(prev, (list, tuple)) or len(prev) != len(st) + 2 or tuple(prev[:len(st)]) != tuple(st):
+        _tick_key_miss_by("auto-nudge", tuple(st), tuple(prev[:-2]) if isinstance(prev, (list, tuple)) else prev)   # the walk's key
+        return False, st, None                                                                   #  beside the tick jobs' (memos.tickSeen)
     flip, verdict = prev[len(st)], prev[len(st) + 1]
     if verdict == "closer-unsettled" and not jd.CLOSER_ON:
+        _tick_seen_bump("auto-nudge", "clockParse")   # a matched key the clock legs refuse to serve: a parse, not a hit (round two)
         return False, st, None                        # recorded under the closer toggle, read with it off (an import-time toggle,
     #                                                   not a file): evaluate (round five, low c)
     if flip is None:
         _NUDGE_WALK_STATS["unbounded"] += 1
+        _tick_seen_bump("auto-nudge", "clockParse")
         return False, st, None
     if flip >= 0 and now >= flip:
         _NUDGE_WALK_STATS["clockDue"] += 1
+        _tick_seen_bump("auto-nudge", "clockParse")
         return False, st, None
+    _tick_seen_bump("auto-nudge", "hits")             # counted on the one return that skips
     return True, st, verdict
 
 
