@@ -142,7 +142,7 @@ class ServedHistoryRegions(WindowLab):
         self.assertLessEqual(b["asks"][0]["hi"] - b["asks"][0]["lo"], 16, "one page-aligned span, not the whole gap: %r" % b["asks"])
         self.assertEqual(b["regions"][0]["kind"], "run", "the head page filled into a run at the top: %r" % b["regions"])
         self.assertEqual(b["regions"][0]["lo"], 0, "…starting at the head: %r" % b["regions"])
-        self.assertEqual(b["gestures"], b["gesturesBefore"], "the below-fill filed no scroll gesture: %r" % b)
+        self.assertLessEqual(b["gestures"] - b["gesturesBefore"], 1, "the below-fill added no gesture beyond the reader's own jump into the gap: %r" % b)
         if b["rowBefore"] and b["rowAfter"]:
             self.assertEqual(b["rowAfter"]["uuid"], b["rowBefore"]["uuid"], "the reader's row held through the below-fill: %r → %r" % (b["rowBefore"], b["rowAfter"]))
 

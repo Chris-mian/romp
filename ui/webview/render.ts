@@ -17555,6 +17555,7 @@ function requestAround(sid: string, uuid: string): boolean {
 function chatWindow(msg: any) {
   loadingOlder.delete(msg.id);
   landingGaps.delete(msg.id);
+  const wasLanding = landingNoticeSid === msg.id;   // a notice was up for this session (captured before hideLandingNotice clears it): a span-less or missing reply must tell the reader, not drop them
   if (landingNoticeSid === msg.id) hideLandingNotice();
   const s = sessions.get(msg.id);
   const anchorUuid = pendingOlderAnchor.get(msg.id);
@@ -17567,7 +17568,7 @@ function chatWindow(msg: any) {
     // T386 stage 2, medium 2: no span is an OLDER kernel's reply (it speaks the pre-regions window protocol); a missing is the honest
     // end of a deep link. Either way the pre-jump moved the reader, so the notice comes down; a span-less reply says the host is older,
     // a missing says the anchor is gone; neither is silent (the notice's cancel is the only silence).
-    if (msg.id === activeId && (pendingAnchor === anchorUuid || cancelled)) {
+    if (msg.id === activeId && (pendingAnchor === anchorUuid || cancelled || wasLanding)) {
       pendingAnchor = null; anchorPendingOlder = false;
       if (!cancelled) { landTrail.push(Array.isArray(msg.span) ? "window-missing" : "window-nospan"); landToast(Array.isArray(msg.span) ? "couldn't locate this in the transcript" : "this session's host is an older version; open it there to jump"); }
     }
