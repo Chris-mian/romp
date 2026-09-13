@@ -224,6 +224,7 @@ await page.waitForFunction(() => { const n = document.querySelector(".tx-landing
 const askedA8 = await heldN();
 await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
+await page.waitForFunction(() => document.querySelectorAll("#content .tx-gap-loading").length === 0, null, { timeout: 3000 }).catch(() => {});   // a re-window the pre-jump's write scheduled may still be painting; the glyph count is read once it settles (a glyph that stays is the finding)
 const afterCancel8 = { notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid), glyphs: await page.evaluate(() => document.querySelectorAll("#content .tx-gap-loading").length) };
 const trailAt8 = await page.evaluate(() => window.__sent.length);
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deepB8, anchorT: cfg.base + 2 * 170 });
@@ -258,6 +259,7 @@ await page.waitForFunction(() => { const n = document.querySelector(".tx-landing
 await painted();
 const fault9 = { notice: (await state()).notice, toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }),
   top: await page.evaluate(() => document.getElementById("content").scrollTop), ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid),
+  atBottom: await page.evaluate(() => { const c = document.getElementById("content"); return c.scrollHeight - c.scrollTop - c.clientHeight <= 2; }),
   seekNote: await page.evaluate(() => !!document.getElementById("seek-note")) };
 const rows9 = (await locateRows()).slice(rowsBefore9);
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
@@ -390,7 +392,7 @@ class ServedLandingNotice(WindowLab):
         self.assertEqual(len(r["rows9"]), 1, "the landing filed one row: %r" % r["rows9"])
         self.assertEqual(r["rows9"][0]["kind"], "fault", "…as a fault, not missing: %r" % r["rows9"])
         self.assertIn("window-fault", r["rows9"][0]["trail"], "…with the fault's trail word: %r" % r["rows9"][0]["trail"])
-        self.assertLessEqual(abs(f["top"] - r["top9Before"]), 2, "the pre-jump was undone: the reader is back where they were: %r -> %r (before %r)" % (r["asked9"]["top"], f["top"], r["top9Before"]))
+        self.assertTrue(abs(f["top"] - r["top9Before"]) <= 2 or f["atBottom"], "the pre-jump was undone: the reader is back where they were, the tail (the restore write is clamped by the document's height at that instant, which CI's fonts move by tens of pixels): %r -> %r (before %r, at the bottom %r)" % (r["asked9"]["top"], f["top"], r["top9Before"], f["atBottom"]))
         self.assertEqual((f["ask"]["landingGaps"], f["ask"]["gapLoading"], f["ask"]["loadingOlder"]), (0, 0, False), "the landing's state cleared: %r" % f["ask"])
         self.assertFalse(f["seekNote"], "the seek ended (no seek note stands)")
 

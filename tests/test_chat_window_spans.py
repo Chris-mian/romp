@@ -10,7 +10,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from test_chat_pages import NOW, SID, Harness, _client, _strip, km, transcript  # noqa: E402  the hermetic preamble (a temp XDG root, the kernel loaded from bin) runs on import
+from test_chat_pages import NOW, SID, Harness, _client, _strip, em, km, transcript  # noqa: E402  the hermetic preamble (a temp XDG root, the kernel loaded from bin) runs on import
 
 
 class WindowSpans(Harness):
@@ -102,7 +102,13 @@ class WindowSpans(Harness):
         # /clear card never reach a reader who scrolls to the top (the reply says head, so nothing asks again)
         recs = transcript(NOW - 86400, turns=40)                           # no compaction: the whole build stands at floor 0
         self.write(recs)
-        m0 = km.build_session(SID, NOW, {}, floor=0)                       # the floor-0 build itself, cards and all (the harness's whole() strips them)
+        # the floor-0 build itself, cards and all (the harness's whole() strips them), from a fresh process with no document, as whole()
+        # builds it: a build over the module's shared state left a stale lazy index behind for the next module (CI, round seven)
+        self.fresh(); saved = em._CKPT_DIR_FN; em._CKPT_DIR_FN = None
+        try:
+            m0 = km.build_session(SID, NOW, {}, floor=0)
+        finally:
+            em._CKPT_DIR_FN = saved
         whole = m0["events"]
         self.assertEqual(int(m0.get("floor") or 0), 0, "the build stands at floor 0: %r" % m0.get("floor"))
         turns = km._parse(self.leaf, SID, NOW)["turns"]
