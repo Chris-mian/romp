@@ -13869,6 +13869,7 @@ function preJumpIntoGap(sid: string, t: number | null | undefined): void {
 }
 // the served labs read the session's regions on demand (a gap inside a spacer has no element to read): kind, span, and a run's event count
 if (typeof window !== "undefined") (window as any).__rompRegions = (sid?: string): unknown => { const s = sessions.get(sid || activeId || ""); return s?.regions ? s.regions.map((r) => r.kind === "gap" ? { kind: "gap", lo: r.lo, hi: r.hi } : { kind: "run", lo: r.lo, hi: r.hi, n: r.events.length, first: keyOf(r.events[0] as { uuid?: string; key?: string }) ?? null, last: keyOf(r.events[r.events.length - 1] as { uuid?: string; key?: string }) ?? null }) : null; };
+(window as any).__rompAskState = (sid?: string): unknown => { const id = sid || activeId || ""; const s = sessions.get(id); return { loadingOlder: loadingOlder.has(id), gapLoading: gapLoading.size, landingGaps: landingGaps.size, hasGap: !!(s && s.regions && s.regions.some((r) => r.kind === "gap")), olderOnServer: !!(s && olderOnServer(s)) }; };
 // the served geometry lab shows the notice on demand: its real showings last the span of a fetch, too brief to measure against the strip
 if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLandingNotice(activeId || "", null); else hideLandingNotice(); };
 
