@@ -5979,7 +5979,37 @@ def _entry_current(entry, candidate_files):
     return True
 
 
-def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human):
+def _tail_reparents_into_the_prefix(leaf_path, doc, seed):
+    """Whether the leaf's tail (its records past the document's cut) re-parents onto the pre-cut part's INTERIOR or onto a null
+    root: a rewind onto a pre-cut record or a /clear fork, graph invalidations the document's byte checks cannot see, after
+    which the pre-cut verdicts the document carries are stale (T402 round one: a restore over such a tail served the rewound
+    turns as kept). A tail whose every parent is the last pre-cut record or a tail record chains on, and the restore stands."""
+    fsid = Path(leaf_path).stem
+    f = (doc.get("files") or {}).get(fsid) or {}
+    cut = f.get("cut")
+    if not cut or f.get("skip"):
+        return False
+    ent = _read_jsonl_entry(leaf_path, tail_ok=True, tail_from=(int(cut[0]), int(cut[1]), bytes.fromhex(cut[2])))
+    recs = ent[4] if ent is not None else []
+    if ent is not None and ent[5] < int(cut[1]):          # a whole entry: the tail is the records past the cut
+        recs = recs[int(cut[1]) - ent[5]:]
+    pre = set(seed.get("verdicts") or {})
+    last_pre = (seed.get("file_ends") or {}).get(fsid, (None, None))[1]
+    tail_uuids = {r.get("uuid") for r in recs if isinstance(r, dict) and r.get("uuid")}
+    for r in recs:
+        if not isinstance(r, dict) or not r.get("uuid") or r.get("type") not in ("user", "assistant"):
+            continue                                      # a boundary carries its parent in its metadata, never in parentUuid
+        if r.get("isSidechain") or r.get("isCompactSummary") is True:
+            continue                                      # the summary chains onto its boundary; a sidechain is its own graph
+        parent = r.get("parentUuid")
+        if parent is None:
+            return True                                   # a null root in the tail: a /clear fork
+        if parent in pre and parent != last_pre and parent not in tail_uuids:
+            return True                                   # a re-parent onto the pre-cut interior: a rewind before the cut
+    return False
+
+
+def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human, tail_chain=False):
     """The entry restored from the leaf's assembly checkpoint, served; None when there is none or it does not verify.
     The pre-cut turns come from the document as lazy atoms; the tail is read from the cut and parsed through an
     adapter seeded with the pre-cut graph facts and the carried emit state; the prefix's identity is proven."""
@@ -5989,6 +6019,9 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
     asm_sidecar_refresh(leaf_path, doc)                   # an older sidecar gains the inputs list here (round one, low 2)
     try:
         seed, landed = _seed_from_doc(doc)
+        if tail_chain and _tail_reparents_into_the_prefix(leaf_path, doc, seed):
+            _asm_stat("restore:descentRefused")           # the tail re-parents into the prefix: the whole parse, as before (T402)
+            return None
         fsids = list(doc.get("fsids") or [])
         pre_turns, prefix = [], []
         if doc.get("turns"):
@@ -6218,8 +6251,13 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
                 # lineage file, the document still stands for the pre-cut part and its own load checks refuse it when it does
                 # not fit; the tail read from the cut covers the moved leaf. The first instrumented boot (T398) paid two whole
                 # parses under g:descent inside the auto-nudge tick where a restore would have read the tail.
-                if _CKPT_DIR_FN is not None and getattr(_ASM_DEMOTE_TL, "reason", None) in _ASM_RESTORE_AFTER_DEMOTE:
-                    served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
+                _why = getattr(_ASM_DEMOTE_TL, "reason", None)
+                if _CKPT_DIR_FN is not None and _why in _ASM_RESTORE_AFTER_DEMOTE:
+                    # descent: the restore only when the tail re-parents at or after the cut (the last pre-cut record or a tail
+                    # record); a target inside the pre-cut part or a null root is a graph invalidation the document's byte
+                    # checks cannot see, and the whole parse stands, as before (round one, medium)
+                    served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human,
+                                          tail_chain=(_why == "descent"))
                     if served is not None:
                         _asm_stat("restore"); _asm_stat("restore:afterDemote")
                         _mode("restore")

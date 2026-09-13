@@ -8,7 +8,7 @@ import sys
 import unittest
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
-from test_asm_checkpoint import em, G, SID, NOW, Harness, kernel_module   # noqa: E402
+from test_asm_checkpoint import em, G, SID, NOW, Harness, kernel_module, _strip   # noqa: E402
 
 
 class AssemblyRoadCounters(Harness):
@@ -142,31 +142,61 @@ class AssemblyRoadCounters(Harness):
         self.assertEqual(em.asm_checkpoint_stats()["removed"], {"sweep": 1})
         self.assertFalse(em._asm_ckpt_file(path).exists())
 
-    def test_a_demoted_entry_falls_to_the_restore_road_not_a_whole_parse(self):
-        """T402: an entry the gates demoted (here descent: a tail record re-parented off the leaf, the rewind shape) went
-        straight to a whole parse, consulting no document; the first instrumented boot paid two of them inside the auto-nudge
-        tick. The document still stands for the pre-cut part, so the restore road is tried first: g:descent booked, a restore
-        taken (restore:afterDemote), no whole read; the whole parse only when the restore returns None."""
-        records, sent = G.SINGLE_FILE["compaction_atom"]
-        path = self.write("descent", records(), sent=sent)
-        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
-        self.fresh(); tree = self.parse(path); self._reset()               # the entry stands, restored from the document
-        with em._JSONL_CACHE_LOCK:
-            em._RECORD_CACHE_STATS["wholeReads"] = {}
-        atoms = [a for t in tree["turns"] for a in t["atoms"] if a.get("uuid") and a.get("type") in ("user", "assistant")]
-        old_leaf = atoms[-1]; anchor = atoms[-3]                          # a record chained onto an EARLIER atom: off the leaf
-        t_late = max(float(a.get("t") or 0) for a in atoms) + 60
-        with open(path, "a") as fh:
-            fh.write(json.dumps(G.uline(t_late, "a rewind off the leaf", "u_rewound_tail", anchor["uuid"])) + "\n")
-        em._read_jsonl_entry(path, tail_ok=True)                           # the entry grows; the gates see the delta
-        self.parse(path)
-        parse = em.asm_checkpoint_stats()["parse"]
-        self.assertEqual(parse.get("g:descent"), 1, "the descent check demoted the entry: %s" % parse)
-        self.assertEqual(parse.get("restore:afterDemote"), 1, "and the restore road was taken: %s" % parse)
-        self.assertEqual(parse.get("full:demoted", 0), 0, "no whole parse: %s" % parse)
-        self.assertEqual({k: v for k, v in em.record_cache_stats()["wholeReads"].items()}, {}, "no whole read")
-        self.fresh(); whole = self.parse(path)
-        self.assertEqual([len(t["atoms"]) for t in whole["turns"]], [len(t["atoms"]) for t in self.parse(path)["turns"]])
+    def _five_shape_file(self, name):
+        """Three turns, an attached compaction, two turns: the document's pre-cut records u1 a1 u2 a2 u3 a3."""
+        t0 = NOW
+        recs = [G.uline(t0, "first ask", "u1"), G.aline(t0 + 10, "first reply", "a1", "u1", stop="end_turn"),
+                G.uline(t0 + 20, "second ask", "u2", "a1"), G.aline(t0 + 30, "second reply", "a2", "u2", stop="end_turn"),
+                G.uline(t0 + 40, "third ask", "u3", "a2"), G.aline(t0 + 50, "third reply", "a3", "u3", stop="end_turn"),
+                G.compact_line(t0 + 600, "b1", "a3"), G.compact_summary_line(t0 + 601, "s1", "b1"),
+                G.uline(t0 + 610, "after the compaction", "u4", "s1"), G.aline(t0 + 620, "fourth reply", "a4", "u4", stop="end_turn"),
+                G.uline(t0 + 630, "then more", "u5", "a4"), G.aline(t0 + 640, "fifth reply", "a5", "u5", stop="end_turn")]
+        return self.write(name, recs), t0
+
+    def _cold(self, path):
+        self.fresh(); saved = em._CKPT_DIR_FN; em._CKPT_DIR_FN = None
+        try:
+            return _strip(self.parse(path))
+        finally:
+            em._CKPT_DIR_FN = saved
+
+    def test_a_demoted_entry_falls_to_the_restore_road_only_when_the_tail_chains_at_or_after_the_cut(self):
+        """T402 round one: a demoted entry went straight to a whole parse; the restore road stands for a descent only when the
+        tail re-parents at or after the document's cut. Five shapes against a COLD whole parse: (a) a rewind onto a pre-cut
+        interior record and (b) a /clear fork (a null root) in the tail are graph invalidations the document's byte checks
+        cannot see, so they parse whole, as before; (c) an api_error spur after the cut, (d) a rewind onto a post-cut record
+        and (e) a rewind onto the LAST pre-cut record take the restore road with no whole read."""
+        shapes = {
+            "a_rewind_pre_interior": (lambda t0: [G.uline(t0 + 700, "a rewind before the cut", "u_rw", "a1")], "full"),
+            "b_clear_fork": (lambda t0: [G.uline(t0 + 700, "a clear fork", "u_fork", None)], "full"),
+            "c_api_error_spur": (lambda t0: [G.api_error_line(t0 + 700, "e1", "u5"), G.uline(t0 + 710, "after the spur", "u6", "e1")], "restore"),   # the spur roots at the turn's opener (T209's shape)
+            "d_rewind_post_cut": (lambda t0: [G.uline(t0 + 700, "a rewind after the cut", "u_rw2", "a4")], "restore"),
+            "e_rewind_last_pre": (lambda t0: [G.uline(t0 + 700, "a rewind onto the cut", "u_rw3", "a3")], "restore"),
+        }
+        for name, (tail, road) in shapes.items():
+            with self.subTest(shape=name):
+                path, t0 = self._five_shape_file("shape-" + name)
+                self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+                self.fresh(); self.parse(path); self._reset()               # the entry stands, restored from the document
+                with em._JSONL_CACHE_LOCK:
+                    em._RECORD_CACHE_STATS["wholeReads"] = {}
+                with open(path, "a") as fh:
+                    for r in tail(t0):
+                        fh.write(json.dumps(r) + "\n")
+                em._read_jsonl_entry(path, tail_ok=True)                   # the entry grows; the gates see the delta
+                tree = self.parse(path)
+                em.hydrate(tree, SID)                                       # a restored tree's bodies, so the strip can read them
+                tree = _strip(tree)
+                parse = em.asm_checkpoint_stats()["parse"]
+                self.assertEqual(parse.get("g:descent"), 1, "%s: the descent check demoted the entry: %s" % (name, parse))
+                if road == "restore":
+                    self.assertEqual(parse.get("restore:afterDemote"), 1, "%s: the restore road: %s" % (name, parse))
+                    self.assertEqual(em.record_cache_stats()["wholeReads"], {}, "%s: no whole read" % name)
+                else:
+                    self.assertEqual(parse.get("full:demoted"), 1, "%s: the whole parse, as before: %s" % (name, parse))
+                    self.assertEqual(parse.get("restore:descentRefused"), 1, "%s: the tail re-parents into the prefix: %s" % (name, parse))
+                self.assertEqual(tree, self._cold(path), "%s: the tree equals a cold whole parse" % name)
+
 
 if __name__ == "__main__":
     unittest.main()
