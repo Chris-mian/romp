@@ -13833,9 +13833,11 @@ function cancelLanding(): void {
   // a cancelled landing is not busy (round seven, medium 3): the older-ask mark and the landing's held gap go now, not when the reply
   // lands, or the reader's next card click is refused as "still going" and dropped; the glyph on that gap goes with them unless a page
   // ask of its own is on the wire for it
-  const held = landingGaps.get(sid);
   loadingOlder.delete(sid); landingGaps.delete(sid);
-  if (held) { const gv = views.get(sid); const g = gv ? gv.el.querySelector(`.tx-gap[data-lo="${held.lo}"][data-hi="${held.hi}"]`) as HTMLElement | null : null; if (g && !gapLoading.has(gapKey(sid, held.lo, held.hi))) g.classList.remove("tx-gap-loading"); }
+  // the glyphs follow the truth, not the held record: every gap of the view that no ask names any more sheds its glyph (CI's page kept one
+  // on a gap the record no longer matched, round seven)
+  const gv = views.get(sid);
+  if (gv) for (const g of Array.from(gv.el.querySelectorAll(".tx-gap.tx-gap-loading")) as HTMLElement[]) { if (!gapHasAsk(sid, { lo: Number(g.dataset.lo), hi: Number(g.dataset.hi) })) g.classList.remove("tx-gap-loading"); }
   landTrail.push("cancelled");
   vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: target ?? pendingAnchor ?? undefined, anchorT: pendingAnchorT ?? undefined, kind: pendingAnchorKind ?? undefined, cancelled: true });
   pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
