@@ -144,14 +144,18 @@ class AssemblyRoadCounters(Harness):
 
     SIBLING = "cccccccc-0000-0000-0000-000000000000"
 
-    def _five_shape_file(self, name, resume=False):
+    def _five_shape_file(self, name, resume=False, tip_fork=False):
         """Three turns, an attached compaction, two turns: the document's pre-cut records u1 a1 u2 a2 u3 a3 (the spine tip a3).
-        With `resume`, a sibling file beside the leaf holds x1 x2 and u1 parents x2 (a two-file lineage)."""
+        With `resume`, a sibling file beside the leaf holds x1 x2 and u1 parents x2 (a two-file lineage). With `tip_fork`, the
+        tip a3 has a second, abandoned pre-cut child a_d before the compaction (a rollback onto a3, then the compaction whose
+        logical parent is a3): whether a3 is a fork is decided by the tail, so no tail may parent it (round four, medium 1)."""
         t0 = NOW
         recs = [G.uline(t0, "first ask", "u1", "x2" if resume else None), G.aline(t0 + 10, "first reply", "a1", "u1", stop="end_turn"),
                 G.uline(t0 + 20, "second ask", "u2", "a1"), G.aline(t0 + 30, "second reply", "a2", "u2", stop="end_turn"),
-                G.uline(t0 + 40, "third ask", "u3", "a2"), G.aline(t0 + 50, "third reply", "a3", "u3", stop="end_turn"),
-                G.compact_line(t0 + 600, "b1", "a3"), G.compact_summary_line(t0 + 601, "s1", "b1"),
+                G.uline(t0 + 40, "third ask", "u3", "a2"), G.aline(t0 + 50, "third reply", "a3", "u3", stop="end_turn")]
+        if tip_fork:
+            recs.append(G.aline(t0 + 55, "an abandoned reply", "a_d", "a3", stop="end_turn"))
+        recs += [G.compact_line(t0 + 600, "b1", "a3"), G.compact_summary_line(t0 + 601, "s1", "b1"),
                 G.uline(t0 + 610, "after the compaction", "u4", "s1"), G.aline(t0 + 620, "fourth reply", "a4", "u4", stop="end_turn"),
                 G.uline(t0 + 630, "then more", "u5", "a4"), G.aline(t0 + 640, "fifth reply", "a5", "u5", stop="end_turn")]
         path = self.write(name, recs)
@@ -190,13 +194,28 @@ class AssemblyRoadCounters(Harness):
         return _strip(tree), em.asm_checkpoint_stats()["parse"], em.record_cache_stats()["wholeReads"]
 
     # The tail shapes (appended past the document's cut) and whether the tail chains onto the document: "restore" when every
-    # parent-bearing record parents the pre-cut spine tip (a3) or a tail record, "whole" otherwise.
+    # uuid-bearing record parents a TAIL record (the boundary read past as the tail's root) or the pre-cut spine tip when the
+    # document proves it childless, "whole" otherwise (round four: a tip with a pre-cut child is decided by the tail).
     SHAPES = {
         "a_rewind_pre_interior": (lambda t0: [G.uline(t0 + 700, "a rewind before the cut", "u_rw", "a1")], "whole"),
         "b_clear_fork": (lambda t0: [G.uline(t0 + 700, "a clear fork", "u_fork", None)], "whole"),
         "c_api_error_spur_at_opener": (lambda t0: [G.api_error_line(t0 + 700, "e1", "u5"), G.uline(t0 + 710, "after the spur", "u6", "e1")], "restore"),
         "d_rewind_post_cut": (lambda t0: [G.uline(t0 + 700, "a rewind after the cut", "u_rw2", "a4")], "restore"),
         "e_rewind_spine_tip": (lambda t0: [G.uline(t0 + 700, "a rewind onto the cut", "u_rw3", "a3")], "restore"),
+        #   (e: a3 has no pre-cut child here, so a first child cannot move the active branch; with a pre-cut child it refuses:
+        #    the tip-fork test below)
+        "p1_no_parent_key": (lambda t0: [{k: v for k, v in G.uline(t0 + 700, "no parent key", "u_nk").items() if k != "parentUuid"}], "whole"),
+        # p4, r7 and q never reach the demotion leg's restore: a summary in the delta trips the gates' own summary demotion
+        # (whole, as before) and a sidechain delta that leaves the main line's leaf in place folds without any demotion; the
+        # chain rule meets them at the BOOT restore (the boot leg below), where p4 and r7 refuse and q restores
+        "p4_summary_parented_into_the_interior": (lambda t0: [G.compact_summary_line(t0 + 700, "s9", "a1")], "summary"),
+        "r7_sidechain_parented_into_the_interior": (lambda t0: [dict(G.uline(t0 + 700, "a side ask", "sc1", "a1"), isSidechain=True),
+                                                                G.uline(t0 + 710, "then the main line", "u6", "a5")], "fold"),
+        "r8_sidechain_last_in_file": (lambda t0: [dict(G.uline(t0 + 700, "a side ask", "sc1", "a1"), isSidechain=True)], "whole"),
+        #   (r8 alone: the sidechain record is the file's last, so it is the new leaf and the gates' descent walk demotes; the
+        #    chain rule then refuses its interior parent, where the round-three rule read the sidechain past and re-rooted)
+        "q_sidechain_rooted_in_the_tail": (lambda t0: [dict(G.uline(t0 + 700, "a side ask", "sc1", "a5"), isSidechain=True),
+                                                       dict(G.aline(t0 + 705, "side reply", "sca1", "sc1", stop="end_turn"), isSidechain=True)], "fold"),
         "f_two_step_rewind": (lambda t0: [G.uline(t0 + 700, "a rewind after the cut", "u_r1", "a4"), G.aline(t0 + 710, "its reply", "a_r1", "u_r1", stop="end_turn"),
                                           G.uline(t0 + 720, "then a rewind before the cut", "u_r2", "a2")], "whole"),
         "g_later_crossing": (lambda t0: [G.uline(t0 + 700, "chains on", "u6", "a5"), G.aline(t0 + 710, "reply", "a6", "u6", stop="end_turn"),
@@ -229,8 +248,10 @@ class AssemblyRoadCounters(Harness):
         elif road == "whole":
             self.assertEqual(parse.get("restore:chainRefused"), 1, "%s: the tail does not chain onto the document: %s" % (name, parse))
             self.assertEqual(parse.get("full:refused" if boot else "full:demoted"), 1, "%s: the whole parse: %s" % (name, parse))
+        elif road == "fold":
+            self.assertEqual(parse.get("fold"), 1, "%s: no gate demotes this delta: the fold road, as before: %s" % (name, parse))
         else:
-            self.assertEqual(parse.get("full:demoted"), 1, "%s: a boundary in the tail parses whole: %s" % (name, parse))
+            self.assertEqual(parse.get("full:demoted"), 1, "%s: the gates' own %s demotion parses whole: %s" % (name, road, parse))
         self.assertEqual(tree, self._cold(path, cands), "%s: the tree equals a cold whole parse" % name)
 
     def test_a_restore_over_a_document_stands_only_when_the_tail_chains_onto_it(self):
@@ -244,7 +265,49 @@ class AssemblyRoadCounters(Harness):
                 self._append(path, tail(t0))
                 em._read_jsonl_entry(path, tail_ok=True)                   # the entry grows; the gates see the delta
                 tree, parse, reads = self._served(path)
-                self._check(name, tree, parse, reads, road, path, reason="boundary" if road == "boundary" else "descent")
+                self._check(name, tree, parse, reads, road, path, reason={"boundary": "boundary", "summary": "summary", "fold": None}.get(road, "descent"))
+
+    def test_a_tail_onto_the_spine_tip_parses_whole_because_the_tail_decides_the_tips_fork(self):
+        """Round four, medium 1: exempting the spine tip unconditionally was unsound. A document whose tip a3 has a second,
+        abandoned pre-cut child (a rollback onto a3, then the compaction whose logical parent is a3) plus a tail spur onto a3
+        restored stale pre-cut verdicts; the rows carry every pre-cut parent, so such a tip is no longer exempt: p7 the spur
+        alone, p8 the spur with a reply, e the rewind onto the tip, each parses whole and equals a cold parse. (A childless
+        tip stays exempt: the live manual /compact chains its wrappers onto one, the golden detached scenario.)"""
+        shapes = {"p7_spur_onto_the_tip": lambda t0: [G.api_error_line(t0 + 700, "e3", "a3")],
+                  "p8_spur_onto_the_tip_with_reply": lambda t0: [G.api_error_line(t0 + 700, "e3", "a3"), G.uline(t0 + 710, "after the spur", "u6", "e3")],
+                  "e_rewind_onto_the_tip": self.SHAPES["e_rewind_spine_tip"][0]}
+        for name, tail in shapes.items():
+            with self.subTest(shape=name):
+                made = self._five_shape_file("tipfork-" + name, tip_fork=True); path, t0 = made
+                self.fresh(); self._parse_lineage(path, [path]); self.assertTrue(self.doc(path), "the writer accepts the tip's fork")
+                self.fresh(); self._parse_lineage(path, [path]); self._reset()
+                self._append(path, tail(t0))
+                em._read_jsonl_entry(path, tail_ok=True)
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, "whole", path, reason="descent")
+
+    def test_the_seeded_readers_take_the_chain_rule_and_fall_to_the_cold_walk(self):
+        """Round four, medium 2: chain_membership and file_rewound seeded an adapter from the document with no chain rule, and
+        the goal sweep archived on their answer (over a rewound tail the seeded signature named one eclipsed record where the
+        cold walk kept it). Both take the predicate before seeding; a refused document means the cold walk, counted."""
+        for name, road in (("a_rewind_pre_interior", "whole"), ("i_interior_api_error_alone", "whole"), ("c_api_error_spur_at_opener", "restore")):
+            with self.subTest(shape=name):
+                path, t0 = self._documented("seeded-" + name)
+                self._append(path, self.SHAPES[name][0](t0))
+                self.fresh(); self._reset()                                  # no entry: both readers reach for the document
+                n0 = em.asm_checkpoint_stats()["parse"].get("seeded:chainRefused", 0)
+                seeded_m = em.chain_membership(path, [path], rompuuid=SID)
+                seeded_r = em.file_rewound(path, rompuuid=SID)
+                refused = em.asm_checkpoint_stats()["parse"].get("seeded:chainRefused", 0) - n0
+                saved = em._CKPT_DIR_FN; em._CKPT_DIR_FN = None
+                try:
+                    self.fresh()
+                    cold_m = em.chain_membership(path, [path], rompuuid=SID); cold_r = em.file_rewound(path, rompuuid=SID)
+                finally:
+                    em._CKPT_DIR_FN = saved
+                self.assertEqual(seeded_m, cold_m, "%s: the membership equals the cold walk's" % name)
+                self.assertEqual(seeded_r, cold_r, "%s: the rewound set equals the cold walk's" % name)
+                self.assertEqual(refused, 2 if road == "whole" else 0, "%s: both readers refused the document, or neither" % name)
 
     def test_the_chain_rule_runs_for_a_rewrite_demotion_after_the_caches_own_eviction(self):
         """Round two, medium 1: the rule ran for descent only, and a plain LRU eviction of the leaf's record entry (the cache's byte
@@ -287,9 +350,13 @@ class AssemblyRoadCounters(Harness):
         """Round two, item A: with no assembly entry (every kernel boot, every eviction of the entry) the restore ran with no tail
         check, so a document standing over a rewound or forked tail restored as round one described at the next start. The one
         rule runs on every restore over a document; a refused boot restore falls to the whole parse and books restore:chainRefused."""
-        for name in ("a_rewind_pre_interior", "b_clear_fork", "i_interior_api_error_alone", "c_api_error_spur_at_opener", "e_rewind_spine_tip"):
+        boot_roads = {"p4_summary_parented_into_the_interior": "whole", "r7_sidechain_parented_into_the_interior": "whole",
+                      "r8_sidechain_last_in_file": "whole", "q_sidechain_rooted_in_the_tail": "restore"}
+        for name in ("a_rewind_pre_interior", "b_clear_fork", "i_interior_api_error_alone", "e_rewind_spine_tip", "p1_no_parent_key",
+                     "p4_summary_parented_into_the_interior", "r7_sidechain_parented_into_the_interior", "r8_sidechain_last_in_file",
+                     "q_sidechain_rooted_in_the_tail", "c_api_error_spur_at_opener", "d_rewind_post_cut"):
             with self.subTest(shape=name):
-                tail, road = self.SHAPES[name]
+                tail, road = self.SHAPES[name]; road = boot_roads.get(name, road)
                 path, t0 = self._documented("boot-" + name)
                 self._append(path, tail(t0))
                 self.fresh(); self._reset()                                  # a boot: no entry, the document on disk

@@ -4274,9 +4274,11 @@ def chain_membership(leaf_path, candidate_files=None, states=None, leaf_override
                 return _membership_of(entry["ad"])        # the display's own current graph, under its lock
         if _CKPT_DIR_FN is not None:
             doc = _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
-            if doc is not None:                              # no current entry: the document's pre-cut facts plus the
-                try:                                         #  tail read now, the whole graph's verdicts without the
-                    seed, _landed = _seed_from_doc(doc)      #  whole read (the emit is the parse's, not needed here)
+            if doc is not None and not _tail_chains_onto_the_document(leaf_path, doc):
+                _asm_stat("seeded:chainRefused"); doc = None   # the tail re-parents into the pre-cut part: the cold walk, as
+            if doc is not None:                              #  before T391 (T402 round four)
+                try:                                         # no current entry: the document's pre-cut facts plus the tail
+                    seed, _landed = _seed_from_doc(doc)      #  read now, the whole graph's verdicts without the whole read
                     adapter = FileAdapter(candidate_files, leaf_path, resume_links=links, seed=seed)
                     how = "seeded"
                 except Exception as e:                       # noqa: BLE001
@@ -4300,7 +4302,9 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
     ad = None
     if rompuuid is not None and _CKPT_DIR_FN is not None:
         doc = _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True)
-        if doc is not None:
+        if doc is not None and not _tail_chains_onto_the_document(path, doc):
+            _asm_stat("seeded:chainRefused"); doc = None      # the cold walk over a tail that re-parents into the pre-cut
+        if doc is not None:                                   #  part (T402 round four)
             try:
                 seed, _landed = _seed_from_doc(doc)
                 ad = FileAdapter([str(path)], str(path), seed=seed)
@@ -6007,16 +6011,20 @@ def _entry_current(entry, candidate_files):
     return True
 
 
-def _tail_chains_onto_the_document(leaf_path, doc, seed):
-    """Whether the leaf's tail (its records past the document's cut) CHAINS onto the document: every tail record that carries a
-    parent, whatever its type (user, assistant, a system spur, an attachment), parents the pre-cut SPINE TIP or a record in the
-    tail. A compaction boundary and its summary are read past (the boundary carries its parent in its metadata, the summary
-    chains onto its boundary) and so is a sidechain (its own graph). A null root (a /clear fork), a pre-cut INTERIOR parent (a
-    rewind before the cut, an api_error or stop_hook spur anchored there), an unknown parent (an orphan) are graph invalidations
-    the document's byte checks cannot see, after which the pre-cut verdicts the document carries are stale (T402 round one: a
-    restore over such a tail served rewound turns as kept; round two: a system spur in the interior lost the post-compaction
-    turns). One predicate for EVERY restore over a document, the boot's and the restore after a descent, rewrite or nonleaf
-    demotion (their byte checks decide fit; this decides shape). A leaf with no cut in the document has no tail to chain."""
+def _tail_chains_onto_the_document(leaf_path, doc):
+    """Whether the leaf's tail (its records past the document's cut) CHAINS onto the document: EVERY tail record that bears a
+    uuid or a parentUuid key, whatever its type (user, assistant, a system spur, a summary, a sidechain record, an attachment),
+    parents a record IN THE TAIL, or the pre-cut SPINE TIP when the document proves the tip has no pre-cut child (its rows
+    carry every pre-cut record's parent; a boundary's logical parent is metadata and no child). The compaction boundary alone
+    is read past, as the tail's root. A missing parentUuid key counts as a null root. So a /clear fork, a rewind onto any
+    pre-cut record but a childless tip, a system spur anchored before the cut, an orphan parent, a summary or sidechain
+    record parented into the pre-cut part all refuse to the whole parse: graph invalidations the document's byte checks
+    cannot see, after which the pre-cut verdicts the document carries may be stale (T402 rounds one to four). The childless
+    tip is exempt because a first child cannot change which pre-cut branch is active; a tip with an abandoned pre-cut child
+    is not, since a further child decides the fork (round four, medium 1), and the live manual /compact chains its command
+    wrappers onto the pre-compact leaf, a childless tip, in ten of thirteen corpus cases (the golden detached scenario). One
+    predicate for EVERY read that seeds an adapter from a document: the boot restore, the restore after a descent, rewrite or
+    nonleaf demotion, the chain-membership and file-rewound readers. A leaf with no cut in the document has no tail to chain."""
     fsid = Path(leaf_path).stem
     f = (doc.get("files") or {}).get(fsid) or {}
     cut = f.get("cut")
@@ -6026,17 +6034,18 @@ def _tail_chains_onto_the_document(leaf_path, doc, seed):
     recs = ent[4] if ent is not None else []
     if ent is not None and ent[5] < int(cut[1]):          # a whole entry: the tail is the records past the cut
         recs = recs[int(cut[1]) - ent[5]:]
-    spine = seed.get("spine") or []
-    tip = spine[-1] if spine else None                    # the pre-cut spine's tip, not the last record in file order
     tail_uuids = {r.get("uuid") for r in recs if isinstance(r, dict) and r.get("uuid")}
+    rows, spine = doc.get("records") or [], doc.get("spine") or []
+    tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
+    if tip is not None and any(len(row) > 9 and row[9] == tip for row in rows):
+        tip = None                                        # the tip has a pre-cut child: a tail child would decide the fork
+    allowed = tail_uuids | ({tip} if tip is not None else set())
     for r in recs:
-        if not isinstance(r, dict) or "parentUuid" not in r:
-            continue
-        if (r.get("type") == "system" and r.get("subtype") == "compact_boundary") or r.get("isCompactSummary") is True \
-                or r.get("isSidechain"):
-            continue
-        parent = r.get("parentUuid")
-        if parent is None or (parent != tip and parent not in tail_uuids):
+        if not isinstance(r, dict) or not (r.get("uuid") or "parentUuid" in r):
+            continue                                      # no graph node: a file-history snapshot, a summary index row
+        if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
+            continue                                      # the tail's root; its parent is metadata
+        if r.get("parentUuid") not in allowed:
             return False
     return True
 
@@ -6051,7 +6060,7 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
     asm_sidecar_refresh(leaf_path, doc)                   # an older sidecar gains the inputs list here (round one, low 2)
     try:
         seed, landed = _seed_from_doc(doc)
-        if not _tail_chains_onto_the_document(leaf_path, doc, seed):
+        if not _tail_chains_onto_the_document(leaf_path, doc):
             _asm_stat("restore:chainRefused")             # the tail does not chain onto the document: the whole parse (T402); the
             return None                                   #  document stands on disk until the next write replaces it
         fsids = list(doc.get("fsids") or [])

@@ -1544,9 +1544,15 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood
-  but whose leaf tail does not chain onto it: a null root, a parent in the
-  pre-cut interior or an unknown one, any record type; the restore falls to
-  the whole parse, at boot and after a demotion alike, T402), `full` with
+  but whose leaf tail does not chain onto it: every tail record bearing a
+  uuid must parent a record in the tail or the pre-cut spine tip when the
+  document's rows prove the tip has no pre-cut child, the compaction boundary
+  alone read past as the tail's root, so a null or missing parent, a parent
+  anywhere else in the pre-cut part, a tip with a pre-cut child, or an unknown
+  parent refuses, whatever the record's type; the restore falls to the whole parse, at boot
+  and after a demotion alike, and `seeded:chainRefused` counts the same
+  refusal by the chain-membership and file-rewound readers, which then walk
+  the file cold, T402), `full` with
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
   `descent` when the new leaf does not chain to the old through the delta,
   `rewrite` when the leaf's record entry was replaced by a from-zero read
