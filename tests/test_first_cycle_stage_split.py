@@ -4,6 +4,7 @@ totals and a ring of whole-cycle durations, so nothing named the stage. The push
 reader's bytes, the hydrated bytes), the boot's first for the process under `pusher.firstCycle`, the last cycles in a ring
 sized as a fraction of memory under `pusher.stageRing`, and the restart ledger's boot-health row carries the first split."""
 import inspect
+import io
 import os
 import sys
 import threading
@@ -260,7 +261,6 @@ class LabBootFirstCycle(unittest.TestCase):
         the thread is stored only once started, and the cycle completes and writes its row."""
         km = self.km
         self._marked_push(0.05)
-        import io
         err = io.StringIO()
         with mock.patch.object(threading.Thread, "start", side_effect=RuntimeError("can't start new thread")), \
              mock.patch.object(sys, "stderr", err):
@@ -289,14 +289,85 @@ class LabBootFirstCycle(unittest.TestCase):
         self.assertEqual(row.get("firstCycleStacksFailed"), 1, sorted(row))
         self.assertGreaterEqual(len(row["firstCycleStacks"]), 1, "sampling went on after the failure: %r" % calls)
 
+    def test_failed_walks_fill_the_cap_too(self):
+        """1588 follow-up, low 4: a failed walk consumed an interval but not a cap slot, so an all-failing sampler woke every
+        interval for the whole cycle instead of retiring with the cap."""
+        km = self.km
+        self._marked_push(1.5)
+        calls = []
+        def failing(tid, t0):
+            calls.append(1); raise RuntimeError("frame gone")
+        with mock.patch.object(km, "_first_cycle_sample", failing), mock.patch.object(km, "FIRST_CYCLE_SAMPLE_S", 0.1), \
+             mock.patch.object(km, "FIRST_CYCLE_SAMPLES_MAX", 3):
+            km._pusher_cycle()
+        self.assertEqual(len(calls), 3, "three failed walks filled the cap and the sampler retired: %r" % calls)
+        self.assertEqual(self.rows[0].get("firstCycleStacksFailed"), 3)
+        self.assertEqual(self.rows[0]["firstCycleStacks"], [])
+
+    def test_a_cycle_that_raises_is_counted_and_the_pusher_loop_goes_on(self):
+        """The standing gap: _pusher called _pusher_cycle bare, and _live_map, the scopes' close and the boot row sit outside
+        the cycle's try, so one raise there ended the pusher for the process's life, silently. The loop catches the cycle's
+        raise, counts it under pusher.cycleFailed, says it once per exception kind, and goes on to the next cycle."""
+        km = self.km
+        import io
+        n = [0]
+        def cycle():
+            n[0] += 1
+            if n[0] <= 2:
+                raise RuntimeError("no thread slot")
+            km._LOOPS_STOP.set()
+        err = io.StringIO()
+        saved_stop = km._LOOPS_STOP.is_set()
+        with mock.patch.object(km, "_pusher_cycle", cycle), mock.patch.object(km, "_PUSHER_FAILED_SAID", {}), \
+             mock.patch.object(km.sys, "stderr", err), mock.patch.dict(km._PERF_STATS.pusher, {"cycleFailed": 0}):
+            try:
+                km._pusher()
+                self.assertEqual(n[0], 3, "two raising cycles were skipped and the third ran")
+                self.assertEqual(km._PERF_STATS.pusher["cycleFailed"], 2)
+            finally:
+                if not saved_stop:
+                    km._LOOPS_STOP.clear()
+        self.assertEqual(err.getvalue().count("pusher: a cycle raised RuntimeError"), 1, "said once per kind: %r" % err.getvalue())
+        self.assertIn("cycleFailed", km._PERF_STATS.snapshot()["pusher"])
+
+    def test_a_failing_cycle_that_woke_the_pusher_itself_retries_at_a_pace(self):
+        """Round two, medium 2: the failure path fell through to the same wake wait as success, and that wait returns at once
+        while the wake flag stands; tick jobs set it on the pusher's own thread during the cycle, so a cycle that set the
+        flag then raised retried half a million times a second (a whole core). The guard clears the wake and paces the retry
+        at the backstop, doubling to five seconds until a clean cycle; the counter goes through _PERF_STATS' locked method."""
+        km = self.km
+        n = [0]
+        def cycle():
+            n[0] += 1
+            km._pusher_wake.set()                                          # a tick job's writer woke the pusher...
+            raise RuntimeError("broken stderr")                            # ...and then the cycle raised
+        saved_stop = km._LOOPS_STOP.is_set(); km._LOOPS_STOP.clear()
+        timer = threading.Timer(1.0, km._LOOPS_STOP.set); timer.start()
+        t0 = time.thread_time()
+        try:
+            with mock.patch.object(km, "_pusher_cycle", cycle), mock.patch.object(km, "_PUSHER_FAILED_SAID", {}), \
+                 mock.patch.object(km.sys, "stderr", io.StringIO()), mock.patch.dict(km._PERF_STATS.pusher, {"cycleFailed": 0}):
+                km._pusher()
+                cpu = time.thread_time() - t0
+                self.assertLess(n[0], 10, "the retries are paced, not spun: %d cycles in a second" % n[0])
+                self.assertLess(cpu, 0.2, "and cost no core: %.3f s of thread CPU" % cpu)
+                self.assertEqual(km._PERF_STATS.pusher["cycleFailed"], n[0])
+        finally:
+            timer.cancel()
+            if saved_stop: km._LOOPS_STOP.set()
+            else: km._LOOPS_STOP.clear()
+        self.assertTrue(callable(getattr(km._PERF_STATS, "cycle_failed", None)), "the counter has a locked method like wake and cycle")
+        self.assertEqual(km.PUSHER_FAIL_BACKOFF_S[-1], 5.0)
+
     def test_the_interval_widens_after_the_dense_samples(self):
         """Round two, low 3: sixty one-second samples kept the first minute and dropped the rest, so an 84 s cycle never showed
         where it ended; after FIRST_CYCLE_SAMPLE_DENSE samples the interval is FIRST_CYCLE_SAMPLE_WIDE_S, and the cap covers
         three minutes."""
         km = self.km
         self._marked_push(1.4)
-        with mock.patch.object(km, "FIRST_CYCLE_SAMPLE_S", 0.2), mock.patch.object(km, "FIRST_CYCLE_SAMPLE_DENSE", 2), \
-             mock.patch.object(km, "FIRST_CYCLE_SAMPLE_WIDE_S", 0.5):
+        with mock.patch.object(km, "FIRST_CYCLE_SAMPLE_S", 0.2), mock.patch.object(km, "FIRST_CYCLE_SAMPLE_DENSE", 2, create=True), \
+             mock.patch.object(km, "FIRST_CYCLE_SAMPLE_WIDE_S", 0.5, create=True):   # create=True: at a base without the widening the
+            #                                                                            red is the GAP, not an AttributeError (1588 low 3)
             km._pusher_cycle()
         ts = [row["t"] for row in self.rows[0]["firstCycleStacks"]]
         self.assertGreaterEqual(len(ts), 3, ts)
