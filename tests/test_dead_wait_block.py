@@ -433,18 +433,17 @@ class DeadWaitBlock(_HermeticDeadWait):
         self.assertEqual(d["sharedFallback"], 1, "the alive store without a file fell back to a private load: %r" % d)
         other = _fresh_sid(); jd.save_goals(other, jd.load_goals(other))    # a readable, cached store for the warm views
         import threading
-        stop = threading.Event()
-        def burst():                                                      # another thread's private loads, the WS handler's shape
-            while not stop.is_set():
-                jd.load_goals(SID)
-        th = threading.Thread(target=burst, daemon=True); th.start()
+        def burst():                                                      # another thread's private loads, the WS handler's shape: a
+            for _ in range(6000):                                         #  FIXED count (the shared box's rule: no spin, no stop flag,
+                jd.load_goals(SID)                                        #  no timed join that could leave a daemon hammering loads)
+        th = threading.Thread(target=burst); th.start()
         try:
             before = dict(km._DEAD_WAIT_STATS)
             for _ in range(200):
                 store, fault = km._dead_wait_shared_view(other)
                 self.assertIsNone(fault); self.assertIsInstance(store, jd.FrozenStore)
         finally:
-            stop.set(); th.join(5)
+            th.join()
         d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
         self.assertEqual((d["sharedLoads"], d["sharedFallback"]), (200, 0), "200 warm views, no degrade, whatever another thread loaded: %r" % d)
 
