@@ -75,7 +75,10 @@ export function historyLabel(headKnown: boolean, resident: number, total: number
  *  sending it nothing. */
 export function windowDetached(moreAfter: boolean, connected: boolean, wasDetached: boolean, mergeMode: "merge" | "replace",
                                heldLast: string | null | undefined, newLast: string | null | undefined): boolean {
-  return !!moreAfter && !connected && !(mergeMode === "merge" && !wasDetached && heldLast != null && newLast === heldLast);
+  // connected is trusted only when the page's OWN merge overlapped (mode "merge"): a REPLACE with moreAfter is detached whatever the
+  // reply says (T402 round eight, medium: reply B served against a tail base the cancelled reply A re-based to comes back connected, but
+  // the page holds only window B — trusting it left the reader "attached" on an older window and the next tail snapped them to the bottom).
+  return !!moreAfter && !(connected && mergeMode === "merge") && !(mergeMode === "merge" && !wasDetached && heldLast != null && newLast === heldLast);
 }
 
 /** Where a chatWindow reply LANDS a client whose verdict (windowDetached) would detach it (T366, the user 2026-09-12: the

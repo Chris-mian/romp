@@ -56,7 +56,8 @@ test("the history strip shows no number while the head is unknown", () => {
 });
 
 test("the detach rule: a window re-attaches only a run that was attached and still ends on the live tail (round 2, item 2)", () => {
-  assert.equal(windowDetached(true, true, false, "replace", "z", "q"), false, "the kernel said connected");
+  assert.equal(windowDetached(true, true, false, "replace", "z", "q"), true, "connected is NOT trusted on a REPLACE (T402 round eight): the page holds only the window, so moreAfter means detached whatever the kernel says");
+  assert.equal(windowDetached(true, true, false, "merge", "z", "z"), false, "…but a real MERGE that kept the tail and the kernel calls connected stays attached");
   assert.equal(windowDetached(false, false, true, "replace", "z", "z"), false, "nothing after the window: the tail is resident");
   assert.equal(windowDetached(true, false, false, "merge", "z", "z"), false, "merged into the attached run, its live tail kept");
   assert.equal(windowDetached(true, false, false, "merge", "z", "y"), true, "merged, but the run's newest moved: an older window");

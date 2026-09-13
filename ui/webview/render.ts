@@ -17272,8 +17272,10 @@ function chatHead(msg: any) {
   // kind, keeping the index branch's own `before !== headFrom` staleness guard below. A proto-2 reply that DOES echo its uuid is keyed
   // as round five made it. LIMIT (round seven, low): on the INDEX wire every chatHead is keyless, so a cancelled older ask's late reply
   // cannot be told from the live older ask's — it ends the live wait early, the `before !== headFrom` guard drops it, and the live reply
-  // then finds the ask gone and is dropped too, so the chunk lands on the next scroll rather than at once; the proto-2 wire (keyed) has
-  // no such ambiguity, and the index wire is legacy (the cost is one extra scroll, never a wrong landing).
+  // then finds the ask gone and is dropped too. A DEEP LINK waiting on that chunk does not wait for the next scroll: the stale reply's
+  // forget deletes the live ask's pendingOlderAnchor and pendingOlderKeepY, and landActive's own re-ask road (pointer-fetch-older) fires
+  // the fetch again, so the landing recovers on its own; a plain scroll-back recovers on the next scroll. The proto-2 wire (keyed) has no
+  // such ambiguity, and the index wire is legacy (the cost is one extra round trip, never a wrong landing).
   const keyed = typeof msg.beforeUuid === "string";
   const which = keyed ? matchAsk(msg.id, "older", msg.beforeUuid)
                       : (liveAskKey.get(msg.id)?.kind === "older" ? "live" : "none");
@@ -17472,7 +17474,15 @@ function chatWindow(msg: any) {
   if (cancelled && msg.id === activeId && anchorUuid && !(msg.events || []).some((e: { uuid?: string; key?: string }) => keyOf(e) === anchorUuid)) {
     reconcileOptimistic(s);
     landTrail.push("window-cancelled");
-    if (!wasDetached) { anchorPendingOlder = false; reattachLive(msg.id, true); updateLivePaused(); return; }
+    if (!wasDetached) {
+      // another ask of this session is LIVE (a different-key re-ask: card A clicked away, card B in flight): its reply will set the base,
+      // so this cancelled reply must NOT re-base to the tail (T402 round eight, medium half 1) — doing so left B's reply looking connected
+      // against a tail base while the page held only B. With no live ask, re-base as before.
+      anchorPendingOlder = false;
+      if (!liveAskKey.has(msg.id)) reattachLive(msg.id, true);
+      updateLivePaused();
+      return;
+    }
     relandAsk = true;
     let went = false;
     try { went = requestAround(msg.id, anchorUuid); } finally { relandAsk = false; }
@@ -17527,7 +17537,7 @@ function chatMore(msg: any) {
     // a stranger newer page (round seven, medium 2): loadNewer moved the base (last + detached), so an attached client the page will not
     // adopt is frozen until it re-bases; a fault or missing moved nothing. Whatever tab is active (reattachLive carries the sid).
     const st = sessions.get(msg.id);
-    if (st && st.proto === 2 && !st.detached && !msg.fault && !msg.missing && Array.isArray(msg.events) && msg.events.length) { landTrail.push("more-stranger"); reattachLive(msg.id, true); }
+    if (st && st.proto === 2 && !st.detached && !msg.fault && !msg.missing && msg.more !== false && Array.isArray(msg.events) && msg.events.length) { landTrail.push("more-stranger"); reattachLive(msg.id, true); }   // more:false already re-attaches (its _base sets detached false, status and ledger riding along): no needless reattach (round eight, low 2)
     return;
   }
   endAsk(msg.id);

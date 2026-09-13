@@ -363,8 +363,42 @@ await page.evaluate(([sid2, u]) => window.postMessage({ type: "chatWindow", id: 
 await page.waitForFunction((sid2, n) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid2).length > n, [cfg.sid2, fullBefore12], { timeout: 8000 }).catch(() => {});
 out.stranger12 = { reattach: (await page.evaluate((sid2) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid2).length, cfg.sid2)) - fullBefore12, activeIsSid: await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab.active'); return !!t && t.dataset.id === sid; }, cfg.sid) };
 out.step = "12:done";
+// ROAD 13 (round eight, medium): the DIFFERENT-key re-ask. Card A (a window ask), the pill clicked away, card B (a different window). Reply
+// A reaches an ATTACHED reader whose row is outside window A, so the cancelled road would re-base to the tail; reply B is then served
+// against that base as `connected` while the page's own merge REPLACED the run. Half 1: A does not re-base while B is live. Half 2: the
+// page treats a REPLACE with moreAfter as detached whatever `connected` says. Then a live turn: the reader stays on B, no gap frame.
+out.step = "13:start";
+await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); if (t) t.click(); }, cfg.sid);
+await page.waitForFunction((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid, { timeout: 8000 }).catch(() => {});
+await page.evaluate(() => { if (window.__bootSession) window.postMessage(window.__bootSession, "*"); });   // reset SID to the attached tail
+await painted();
+const A13 = "11111111-2222-3333-4444-" + pad(2 * 6), B13 = "11111111-2222-3333-4444-" + pad(2 * 30);
+const winA = { type: "chatWindow", id: cfg.sid, anchor: A13, events: [{ uuid: A13, kind: "user", md: "card A window" }, { uuid: "11111111-2222-3333-4444-" + pad(2 * 6 + 1), kind: "assistant", md: "a" }], span: [6, 8], moreBefore: true, moreAfter: true, connected: false };
+const winB = { type: "chatWindow", id: cfg.sid, anchor: B13, events: [{ uuid: B13, kind: "user", md: "the message I opened" }, { uuid: "11111111-2222-3333-4444-" + pad(2 * 30 + 1), kind: "assistant", md: "b" }], span: [30, 32], moreBefore: true, moreAfter: true, connected: true };   // the kernel calls B connected against the tail base A re-based to
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: A13, anchorT: cfg.base + 2 * 6 });
+await pillShown();
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // card A clicked away
+await pillHidden();
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: B13, anchorT: cfg.base + 2 * 30 });   // card B
+await pillShown();
+const fullBefore13 = await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach").length);
+await page.evaluate((f) => window.postMessage(f, "*"), winA);   // reply A: cancelled, must not re-base while B is live
+await page.waitForTimeout(200);
+out.reattachAfterA13 = (await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach").length)) - fullBefore13;
+await page.evaluate((f) => window.postMessage(f, "*"), winB);   // reply B: lands the reader on B
+await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), B13, { timeout: 8000 }).catch(() => {});
+await pillHidden();
+out.landedB13 = await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { visible: r.bottom > c.top && r.top < c.bottom }; }, B13);
+out.stripB13 = await page.evaluate(() => { const st = document.getElementById("live-paused"); return !!st && getComputedStyle(st).display !== "none"; });
+const liveK13 = cfg.turns + 5;
+await page.evaluate(([sid, u, a]) => window.postMessage({ type: "chatTail", id: sid, afterUuid: a, events: [{ uuid: u, kind: "user", md: "a live turn after" }] }, "*"), [cfg.sid, "11111111-2222-3333-4444-" + pad(2 * liveK13), winB.events[winB.events.length - 1].uuid]);
+await page.waitForTimeout(500);
+out.afterLive13 = { onB: await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { visible: r.bottom > c.top && r.top < c.bottom }; }, B13), atBottom: await page.evaluate(() => { const c = document.getElementById("content"); return c.scrollHeight - c.scrollTop - c.clientHeight < 2; }) };
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
+out.step = "13:done";
 } catch (e) { out.roadError = String(e && e.message || e); }
-process.stdout.write("RESULT:" + JSON.stringify({ ...out, reask11: out.reask11, stranger12: out.stranger12, pageEvents, start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ ...out, reask11: out.reask11, stranger12: out.stranger12, reattachAfterA13: out.reattachAfterA13, landedB13: out.landedB13, stripB13: out.stripB13, afterLive13: out.afterLive13, pageEvents, start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
 try { await browser.close(); } catch (e) { /* the page may already be gone */ }
 """
 
@@ -495,6 +529,15 @@ class ServedLoadingPill(WindowLab):
         self.assertTrue(rk["after"] and rk["after"]["visible"], "reply two (the cancelled twin) left the reader on the message: %r" % rk)
         self.assertLessEqual(abs(rk["after"]["top"] - rk["landed"]["top"]), 4, "…at the same offset, not snapped to the bottom: %r" % rk)
         self.assertEqual(rk["reattach"], 0, "reply two re-based nothing (the kernel's base is where reply one put it): %r" % rk)
+
+    def test_a_different_key_re_ask_lands_the_reader_on_b_and_a_live_turn_keeps_them_there(self):
+        # round eight, medium: card A clicked away, card B; reply A must not re-base while B is live, and the page must not trust connected on a replace
+        r = self._result()
+        self.assertIn("afterLive13", r, "the road did not complete: %r" % r.get("roadError"))
+        self.assertEqual(r["reattachAfterA13"], 0, "reply A (cancelled) did not re-base while B was live: %r reattach" % r["reattachAfterA13"])
+        self.assertTrue(r["landedB13"] and r["landedB13"]["visible"], "reply B landed the reader on the message they opened: %r" % r["landedB13"])
+        self.assertTrue(r["stripB13"], "…detached on window B with the strip up (a replace with moreAfter is detached whatever connected says)")
+        self.assertTrue(r["afterLive13"]["onB"] and not r["afterLive13"]["atBottom"], "the live turn did not snap the reader to the bottom; they stayed on B: %r" % r["afterLive13"])
 
     def test_a_served_stranger_window_for_a_background_tab_re_bases_that_session(self):
         # round seven, medium 2: a served window for a non-active attached session must re-base it, or its tail freezes silently
