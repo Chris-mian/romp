@@ -521,12 +521,17 @@ function initGear(post, opts) {
   // the modal's one scroll box, never scrollIntoView, which would scroll the host document too.
   // the one pending section ask (round two, LOW 2): an observer registered for an unlaid-out ask is disconnected on close and
   // before a new ask, so a later open never fires a stale scroll; a plain open (no section) resets the card (LOW 7)
-  var sectionRO = null, sectionAsk = null;
+  var sectionRO = null, sectionAsk = null, sectionWrote = false;
+  // THE ASK'S OWN WRITES, marked (round three, LOW 1): a scrollTop write that moves the card owes exactly one scroll event, its
+  // echo, which the scroll handler below consumes and never reads as the user's, even when the user's press on a row fell within
+  // the input window before it (the ask died 0 and 60 ms after a press, measured by the review). A write that did not move owes
+  // none, and must not eat a later gesture. The chat's writeScroll pairs a write with its echo the same way (lastScrollWriteAfter).
+  function writeCard(card, top) { var before = card.scrollTop; card.scrollTop = top; if (card.scrollTop !== before) sectionWrote = true; }
   function clearSectionScroll() {
     if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
     sectionAsk = null;
     var card = document.querySelector('#rsettings .rs-card');
-    if (card) { card.scrollTop = 0; card.removeAttribute('data-section-landed'); }
+    if (card) { writeCard(card, 0); card.removeAttribute('data-section-landed'); }
     Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-pane'), function (pn) { pn.style.paddingBottom = ''; });
   }
   function showSection(section) {
@@ -551,7 +556,7 @@ function initGear(post, opts) {
       // write takes up rounding, or a cap the computed style did not resolve to pixels.
       var below = function () { return pane.getBoundingClientRect().bottom - sec.getBoundingClientRect().top; };
       var land = function () {
-        card.scrollTop = card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - padT;
+        writeCard(card, card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - padT);
         card.setAttribute('data-section-landed', section);   // the landing's mark: what a lab waits for before it measures (never a delay)
       };
       var capH = parseFloat(cs.maxHeight);
@@ -583,19 +588,45 @@ function initGear(post, opts) {
     sectionRO.observe(pane);
   }
   // The USER's scroll ends a standing section ask; the browser's never does. A scroll event is the user's only with INPUT
-  // evidence: a wheel, a key or a touch on the card within the settle rule's window before it, or a pointer holding the
-  // scroller itself (a thumb drag), the chat's own rule (landing-settle.ts gestureEvidence). A scroll delta is no evidence:
-  // Chrome's scroll anchoring moved the card 2px after a late layout settle, and a taller window's clamp moved it 143px,
-  // and both were read as the user's, killing the ask (the follow-up's review, 2026-09-13).
+  // evidence: a wheel, a key or a touch within the settle rule's window before it, or a pointer holding the scroller's gutter
+  // (a thumb drag), the chat's own rule (landing-settle.ts gestureEvidence). A scroll delta is no evidence: Chrome's scroll
+  // anchoring moved the card 2px after a late layout settle, and a taller window's clamp moved it 143px, and both were read as
+  // the user's, killing the ask (the follow-up's review, 2026-09-13).
+  // The inputs are read on the WINDOW with capture, the way the chat reads them (render.ts settleInput), never on the card
+  // (round three, MEDIUM): the card has no tabindex, so a key scroll after a click in it targets BODY and never reached a
+  // listener on the card; the ask stood and the next size change threw the user's scroll away. Scoped to the card: a wheel, a
+  // touch or a press by its target's containment; a key by the card being the scroll focus (the user's last press fell in it,
+  // or the focus sits in it), and never while a field has the focus (typing scrolls the field, not the card).
   (function () {
     var card = document.querySelector('#rsettings .rs-card');
     if (!card) return;
-    var inputAt = 0, held = false;
-    ['wheel', 'keydown', 'touchstart'].forEach(function (k) { card.addEventListener(k, function () { inputAt = performance.now(); }, { passive: true }); });
-    card.addEventListener('pointerdown', function (e) { inputAt = performance.now(); if (e.target === card) held = true; });
+    var inputAt = 0, held = false, pressedIn = false;
+    var inCard = function (e) { return e.target instanceof Node && card.contains(e.target); };
+    var inField = function () { var a = document.activeElement; return !!a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.tagName === 'SELECT' || a.isContentEditable); };
+    var keyFocus = function () { var a = document.activeElement; return pressedIn || (!!a && a !== document.body && card.contains(a)); };
+    var onInput = function (e) {
+      if (e.type === 'keydown') { if (inField() || !keyFocus()) return; }
+      else if (e.type === 'pointerdown') {
+        pressedIn = inCard(e);
+        if (!pressedIn) return;
+        // the hold latches on the scroller's GUTTER only (round three, LOW 2): a press whose target is the card's own padding is a
+        // press like any other, with the timed window, not a grab that outlives it
+        var r = card.getBoundingClientRect();
+        if (LS.scrollerGrab(false, e.clientX - r.left, e.clientY - r.top, card.clientWidth, card.clientHeight)) held = true;
+      }
+      else if (!inCard(e)) return;
+      inputAt = performance.now();
+    };
+    ['wheel', 'keydown', 'touchstart', 'pointerdown'].forEach(function (k) { window.addEventListener(k, onInput, { capture: true, passive: true }); });
     window.addEventListener('pointerup', function () { held = false; });
     window.addEventListener('pointercancel', function () { held = false; });
+    // a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round three, LOW 2; the chat's
+    // round four): the hold ends with the page's focus or visibility as well, or a lost release would make the next scroll of
+    // any origin end the ask
+    window.addEventListener('blur', function () { held = false; });
+    document.addEventListener('visibilitychange', function () { held = false; });
     card.addEventListener('scroll', function () {
+      if (sectionWrote) { sectionWrote = false; return; }   // the ask's own write echoing (one event per moving write): never the user's
       if (!sectionAsk || !LS.gestureEvidence(inputAt, performance.now(), held)) return;
       if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
       sectionAsk = null;

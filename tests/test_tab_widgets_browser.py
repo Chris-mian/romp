@@ -270,6 +270,67 @@ for (const mode of ["always", "never"]) {
   const afterWheel = await readSec();
   await clearMark(); await p3.setViewportSize({ width: 1200, height: 1500 });   // a growth after the user's scroll: no re-land, the ask ended
   out.tall.wheel = { afterWheel, landedAfterGrowth: await landedSoon(sf3, 2500), sec: await readSec() };
+  // ROUND THREE: the keyboard road (MEDIUM), the ask's own echo (LOW 1), a lost release and a press on the padding (LOW 2)
+  const r3 = {};
+  // a re-ask's landing owes one scroll event, its echo, dispatched at the next frame: two frames let it pass before the road's
+  // own input, so a head without the write ledger fails a road for the road's reason and not for LOW 1's
+  const settled = () => sf3.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const reask = async () => { await clearMark(); await p3.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets")); const l = await landed(sf3); await settled(); return l; };
+  const settleScroll = () => sf3.evaluate(() => new Promise((res) => { const c = document.querySelector("#rsettings .rs-card"); let last = c.scrollTop, same = 0;
+    const tick = () => { if (c.scrollTop === last) same++; else { same = 0; last = c.scrollTop; } if (same >= 3) res(); else requestAnimationFrame(tick); }; requestAnimationFrame(tick); }));
+  // K: a click in the card (the section head), a pause past the input window on purpose (the key must stand on its own, not on the
+  // click), PageUp: the key scrolls the card while its keydown targets BODY (the card has no tabindex); a size change after it must
+  // land nothing and leave the card where the key put it
+  r3.keyLanded = await reask();
+  await clearMark(); await p3.setViewportSize({ width: 1200, height: 1450 });   // the ask stands before the key: a size change re-lands
+  r3.keyStanding = await landedSoon(sf3, 10000); await settled();
+  const headBox = await sf3.evaluate(() => { const r = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="tabwidgets"]').getBoundingClientRect(); return { x: r.left + 20, y: r.top + r.height / 2 }; });
+  await p3.mouse.click(fr3.x + headBox.x, fr3.y + headBox.y);
+  await sf3.waitForTimeout(300);
+  const beforeKey = await readSec();
+  await p3.keyboard.press("PageUp");
+  await sf3.waitForFunction((t) => document.querySelector("#rsettings .rs-card").scrollTop !== t, beforeKey.scrollTop, { timeout: 5000 }).catch(() => {});
+  await settleScroll();
+  const afterKey = await readSec();
+  await clearMark(); await p3.setViewportSize({ width: 1200, height: 1420 });   // a size change after the user's key: nothing lands
+  r3.key = { beforeKey, afterKey, landedAfterResize: await landedSoon(sf3, 2500), sec: await readSec() };
+  // the three probes below drive the ask's own machinery from inside the page: a synthetic press, a size change of the card (its
+  // observer re-lands), frames counted, never a clock, except the pauses past the 120 ms input window that the probes need
+  const probe = (body) => sf3.evaluate(new Function("return (async () => {" + `
+    const card = document.querySelector("#rsettings .rs-card"), label = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="tabwidgets"]');
+    const mark = () => card.getAttribute("data-section-landed");
+    const frames = (n) => new Promise((r) => { const step = () => (--n <= 0 ? r() : requestAnimationFrame(step)); requestAnimationFrame(step); });
+    const pastWindow = () => new Promise((r) => setTimeout(r, 200));
+    const press = (target, x, y) => target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true, clientX: x, clientY: y, pointerType: "mouse", isPrimary: true, button: 0, buttons: 1 }));
+    const release = () => window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "mouse", isPrimary: true }));
+    const cycle = async () => { card.removeAttribute("data-section-landed"); card.style.maxHeight = "70vh"; await frames(4); const a = { mark: mark(), scrollTop: card.scrollTop };
+      card.removeAttribute("data-section-landed"); card.style.maxHeight = ""; await frames(4); return { afterChange: a, restored: mark(), scrollTop: card.scrollTop }; };
+  ` + body + "})();"));
+  // E: the card moved by another origin (no input: the ask stands, the head off the top), then a press on the section's head and a
+  // size change at once: the re-land's write moves the card back and its echo arrives inside the input window
+  r3.echoLanded = await reask();
+  r3.echo = await probe(`
+    card.scrollTop = 0; await frames(2);
+    const lr = label.getBoundingClientRect(); press(label, lr.left + 10, lr.top + lr.height / 2);
+    const out = await cycle(); release(); return out;`);
+  // B: a grab of the gutter, then the page's blur and visibility change with no release ever, a pause past the window, a scroll of
+  // another origin, a size change: the hold must be gone, the ask standing
+  r3.blurLanded = await reask();
+  r3.blur = await probe(`
+    const r = card.getBoundingClientRect(), gw = r.width - card.clientLeft * 2 - card.clientWidth;
+    press(card, r.left + card.clientLeft + card.clientWidth + gw / 2, r.top + r.height / 2);
+    window.dispatchEvent(new Event("blur")); document.dispatchEvent(new Event("visibilitychange"));
+    await pastWindow(); card.scrollTop = 0; await frames(2);
+    const out = await cycle(); return Object.assign({ gw }, out);`);
+  // P: a press whose target is the card's own padding (inside the client box), a pause past the window, a scroll of another origin,
+  // a size change: a press is no grab, so the ask stands
+  r3.padLanded = await reask();
+  r3.pad = await probe(`
+    const r = card.getBoundingClientRect();
+    press(card, r.left + card.clientLeft + 3, r.top + card.clientTop + 3);
+    await pastWindow(); card.scrollTop = 0; await frames(2);
+    const out = await cycle(); release(); return out;`);
+  out.tall.r3 = r3;
   await p3.close(); await c3.close();
 }
 fs.writeFileSync(cfg.out, JSON.stringify(out));
@@ -565,6 +626,43 @@ class ServedTabWidgets(unittest.TestCase):
         w = t["wheel"]; table = "\n  wheel: " + json.dumps(w)
         self.assertGreaterEqual(abs(w["afterWheel"]["top"] - (w["afterWheel"]["cardTop"] + w["afterWheel"]["pad"])), 3, "the wheel moved the head off the top" + table)
         self.assertFalse(w["landedAfterGrowth"], "the ask ended on the user's input: a growth after it lands nothing" + table)
+
+    def test_a_key_scroll_after_a_click_in_the_card_ends_the_ask(self):
+        # round three, MEDIUM: the inputs were bound to the card, which has no tabindex, so PageUp after a click in it targeted BODY,
+        # the ask stood, and the next size change threw the user's scroll away (the head 594 off after the key, 0.5 after the resize);
+        # the inputs are read on the window now, a key counting when the card is the scroll focus
+        r = self._run()["tall"]["r3"]; k = r["key"]; table = "\n  key: " + json.dumps(k)
+        self.assertTrue(r["keyLanded"] and r["keyStanding"], "the ask landed and stood (a size change re-landed) before the key" + table)
+        self.assertLess(k["afterKey"]["scrollTop"], k["beforeKey"]["scrollTop"], "PageUp scrolled the card" + table)
+        self.assertFalse(k["landedAfterResize"], "a size change after the user's key lands nothing" + table)
+        self.assertLessEqual(abs(k["sec"]["scrollTop"] - k["afterKey"]["scrollTop"]), 1, "the card stays where the key put it" + table)
+        self.assertGreaterEqual(abs(k["sec"]["top"] - (k["sec"]["cardTop"] + k["sec"]["pad"])), 3, "the head stays off the top" + table)
+
+    def test_the_asks_own_landing_echo_is_never_the_users_scroll(self):
+        # round three, LOW 1: a press on a row within 120 ms of the ask's own re-land made its echo read as the user's scroll (the ask
+        # died at 0 and 60 ms after an input); the ask's writes are marked and their one echo consumed
+        r = self._run()["tall"]["r3"]; e = r["echo"]; table = "\n  echo: " + json.dumps(e)
+        self.assertTrue(r["echoLanded"], table)
+        self.assertEqual(e["afterChange"]["mark"], "tabwidgets", "the re-land's mark survives its own echo inside the input window" + table)
+        self.assertEqual(e["restored"], "tabwidgets", "the ask stands: a second size change re-lands" + table)
+
+    def test_a_lost_release_ends_with_the_pages_focus_or_visibility(self):
+        # round three, LOW 2: a page put behind another mid-press gets neither pointerup nor pointercancel, and the hold made the next
+        # scroll of any origin end the ask; blur and visibilitychange clear it
+        r = self._run()["tall"]["r3"]; b = r["blur"]; table = "\n  blur: " + json.dumps(b)
+        self.assertTrue(r["blurLanded"], table)
+        # headless Chromium hides its scrollbars (the gutter measures 0 here, printed as gw), so the probe's press stands for the
+        # gutter by its offsets: clientLeft + clientWidth + half the gutter, beyond the client box, which is all scrollerGrab reads
+        self.assertEqual(b["afterChange"]["mark"], "tabwidgets", "the ask stands after the lost release: the size change re-lands" + table)
+        self.assertEqual(b["restored"], "tabwidgets", table)
+
+    def test_a_press_on_the_cards_padding_is_no_grab(self):
+        # round three, LOW 2: the hold latched on any press whose target was the card (its padding), so an ordinary click on the
+        # card's edge outlived the input window as a standing hold; only the gutter latches (landing-settle's scrollerGrab)
+        r = self._run()["tall"]["r3"]; p = r["pad"]; table = "\n  pad: " + json.dumps(p)
+        self.assertTrue(r["padLanded"], table)
+        self.assertEqual(p["afterChange"]["mark"], "tabwidgets", "no hold from a press on the padding: the size change re-lands" + table)
+        self.assertEqual(p["restored"], "tabwidgets", table)
 
 
 if __name__ == "__main__":
