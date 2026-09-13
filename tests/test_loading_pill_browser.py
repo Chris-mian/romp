@@ -54,7 +54,8 @@ page.on("crash", () => pageEvents.push("crash")); page.on("close", () => pageEve
 page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") pageEvents.push(m.type() + ":" + m.text().slice(0, 240)); });
 page.on("pageerror", (e) => pageEvents.push("pageerror:" + String(e).slice(0, 240)));
 await page.evaluate(() => { const orig = WebSocket.prototype.send; window.__hold = new Set(); window.__heldRaw = []; window.__in = []; window.__wheels = 0; window.addEventListener("wheel", () => { window.__wheels++; }, { capture: true, passive: true });
-  window.addEventListener("message", (e) => { const m = e.data; if (m && m.type && e.source !== window) window.__in.push(m.type); }, true);
+  window.__bootSession = null;
+  window.addEventListener("message", (e) => { const m = e.data; if (m && m.type && e.source !== window) { window.__in.push(m.type); if (m.type === "session" && Array.isArray(m.events) && !window.__bootSession) window.__bootSession = m; } }, true);
   WebSocket.prototype.send = function (d) { window.__ws = this; try { const m = JSON.parse(d); if (m && m.type && window.__drop.has(m.type)) { window.__sent.push(m); return; } if (m && m.type && window.__hold.has(m.type)) { window.__sent.push(m); window.__heldRaw.push(d); return; } } catch (e) {} return orig.call(this, d); };
   window.__release = () => { const ws = window.__ws; const held = window.__heldRaw; window.__heldRaw = []; for (const d of held) orig.call(ws, d); return held.length; }; });
 // the page opens on the NEWEST session, the second one this lab writes after the boot (as a session created while the kernel runs
@@ -325,6 +326,12 @@ out.step = "10:done";
 // one matches the live re-ask and lands; reply two is the cancelled twin, consumed silently — it must NOT re-base (no needFull, the reader
 // stays on the message).
 out.step = "11:start";
+// reset SID to the attached tail (its state is churned by roads 4-10): re-post the boot session frame the page received, so the same-key
+// road runs from a known attached state, its deep link into unloaded history (round seven, medium 1)
+await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); if (t) t.click(); }, cfg.sid);
+await page.waitForFunction((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid, { timeout: 8000 }).catch(() => {});
+await page.evaluate(() => { if (window.__bootSession) window.postMessage(window.__bootSession, "*"); });
+await painted();
 const deep11 = "11111111-2222-3333-4444-" + pad(2 * 7);
 const around11 = [{ uuid: deep11, kind: "user", md: "the opened message" }, { uuid: "11111111-2222-3333-4444-" + pad(2 * 7 + 1), kind: "assistant", md: "its reply" }];
 const win11 = () => ({ type: "chatWindow", id: cfg.sid, anchor: deep11, events: around11, span: [7, 9], moreBefore: true, moreAfter: true, connected: true });
@@ -348,13 +355,13 @@ await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw
 // silently freeze. Switch to tab B (SID2 active), inject an unasked served window for SID (attached, its tab not active): a needFull
 // reattach for SID goes out, and a following chatTail for SID lands (the session kept updating).
 out.step = "12:start";
-await page.evaluate((sid2) => { const t = document.querySelector('#tabs .tab[data-id="' + sid2 + '"]'); if (t) t.click(); }, cfg.sid2);
-await page.waitForFunction((sid2) => { const t = document.querySelector('#tabs .tab[data-id="' + sid2 + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid2, { timeout: 8000 }).catch(() => {});
-const fullBefore12 = await page.evaluate((sid) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid).length, cfg.sid);
-const deep12 = "11111111-2222-3333-4444-" + pad(2 * 9);
-await page.evaluate((f) => window.postMessage(f, "*"), { type: "chatWindow", id: cfg.sid, anchor: deep12, events: [{ uuid: deep12, kind: "user", md: "an unasked window for the background tab" }], span: [9, 10], moreBefore: true, moreAfter: true });
-await page.waitForFunction((sid, n) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid).length > n, [cfg.sid, fullBefore12], { timeout: 8000 }).catch(() => {});
-out.stranger12 = { reattach: (await page.evaluate((sid) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid).length, cfg.sid)) - fullBefore12 };
+// SID is active (from road 11); SID2 is the background session, never deep-linked, so attached. A served window nobody asked for, for the
+// background SID2, must re-base SID2 whatever tab is active (round seven, medium 2), or its live tail freezes with no strip.
+const fullBefore12 = await page.evaluate((sid2) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid2).length, cfg.sid2);
+const deep12 = "22222222-3333-4444-5555-" + pad(2 * 9 + 1);
+await page.evaluate(([sid2, u]) => window.postMessage({ type: "chatWindow", id: sid2, anchor: u, events: [{ uuid: u, kind: "assistant", md: "an unasked window for the background tab" }], span: [9, 10], moreBefore: true, moreAfter: true }, "*"), [cfg.sid2, deep12]);
+await page.waitForFunction((sid2, n) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid2).length > n, [cfg.sid2, fullBefore12], { timeout: 8000 }).catch(() => {});
+out.stranger12 = { reattach: (await page.evaluate((sid2) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid2).length, cfg.sid2)) - fullBefore12, activeIsSid: await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab.active'); return !!t && t.dataset.id === sid; }, cfg.sid) };
 out.step = "12:done";
 } catch (e) { out.roadError = String(e && e.message || e); }
 process.stdout.write("RESULT:" + JSON.stringify({ ...out, reask11: out.reask11, stranger12: out.stranger12, pageEvents, start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
