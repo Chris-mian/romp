@@ -59526,12 +59526,14 @@ class Handler(BaseHTTPRequestHandler):
                 sid = str(msg["id"])
                 with _client_lock(client):
                     _cur_base = (client.get("echat") or {}).get(sid)
-                _reply_type = {"loadOlder": "chatHead", "loadAround": "chatWindow", "loadNewer": "chatMore"}[msg["type"]]
+                _reply_type = {"loadOlder": "chatHead", "loadAround": "chatWindow", "loadNewer": "chatMore", "loadTurns": "chatTurns"}[msg["type"]]
                 # a reply the kernel could not build is a FAULT, not a verdict on the anchor (T402 round two, low 3): it carries the
                 # ask's own key back under the name the page reads (beforeUuid, anchor, afterUuid), so the page can match it to its
                 # wait and end it without re-basing or saying "couldn't locate"
-                _keys = {"loadOlder": ("beforeUuid", "before"), "loadAround": ("anchor", "uuid"), "loadNewer": ("afterUuid", "after")}[msg["type"]]
-                _fault = lambda why: {"type": _reply_type, "id": sid, _keys[0]: msg.get(_keys[1]), "missing": True, "fault": True, "error": why}
+                # …and a span ask (loadTurns, T386 stage 2) echoes its span: the page frees the gap it asked for by [lo, hi]
+                _echo = {"loadOlder": ("beforeUuid", msg.get("before")), "loadAround": ("anchor", msg.get("uuid")),
+                         "loadNewer": ("afterUuid", msg.get("after")), "loadTurns": ("span", [msg.get("lo"), msg.get("hi")])}[msg["type"]]
+                _fault = lambda why: {"type": _reply_type, "id": sid, _echo[0]: _echo[1], "missing": True, "fault": True, "error": why}
                 try:
                     reply = _chat_history_reply(sid, msg, int(time.time()), base=_cur_base if isinstance(_cur_base, dict) else None)
                 except Exception as e:                    # the ask is answered even so (T402): the page waits on the reply to end its
