@@ -150,7 +150,7 @@ test("a sent card that has not landed wears the pending send's own provisional d
   // (0,1,0) later in the file used to win that card's border, background and radius back from `.queued-bubble` (0,1,0);
   // `.notice.queued-bubble` (0,2,0) outranks it. The slim selector (0,3,0) stays: `.notice.notice-slim` (0,2,0) is
   // later in the file too and would otherwise take the slim card's dress back from `.notice.queued-bubble`.
-  assert.match(CSS, /\.queued-bubble, \.notice\.queued-bubble, \.notice\.notice-slim\.queued-bubble \{/);
+  assert.match(CSS, /\.queued-bubble, \.notice\.queued-bubble, \.notice\.notice-slim\.queued-bubble,\s*\n\.turn\.echo \.user-bubble\.cmd-row\.echo-bubble \{/, "…and the echo of a slash command joins the list (T403)");
   // the width reset reaches both densities the same way: the boxed card keeps the column too, so it never snaps from
   // the bubble's 72% to the full width when the receipt lands
   assert.match(CSS, /\.notice\.queued-bubble, \.notice\.notice-slim\.queued-bubble \{ max-width: none; display: block; \}/, "the row keeps its width at either density (the same specificities as the shared rule, later)");
@@ -163,7 +163,9 @@ test("a sent card that has not landed wears the pending send's own provisional d
   // colour inside (the kind word read below 4.5:1 on the wash): the old 10% / 65% / 0.85 are folded into 8.5% / 55% /
   // an 85% --fg ink, the ink is a custom property the notice's gist and body read (their own rules set --fg back), and
   // the head's own colours stay whole
-  const bubble = CSS.slice(CSS.indexOf(".queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble {"), CSS.indexOf("\n}\n", CSS.indexOf(".queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble {")));
+  const SHARED = ".queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble,";   // the list runs on to the echo of a slash command (T403)
+  assert.ok(CSS.indexOf(SHARED) > 0, "the shared provisional rule is where the slice looks");
+  const bubble = CSS.slice(CSS.indexOf(SHARED), CSS.indexOf("\n}\n", CSS.indexOf(SHARED)));
   assert.doesNotMatch(bubble, /opacity:/, "no element opacity on the provisional dress");
   assert.match(bubble, /--prov-ink: color-mix\(in srgb, var\(--fg\) 85%, transparent\);/);
   assert.match(bubble, /background: color-mix\(in srgb, var\(--you\) 8\.5%, transparent\);/);
