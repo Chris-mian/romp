@@ -535,6 +535,66 @@ class AssemblyRoadCounters(Harness):
                 tree, parse, reads = self._served(path)
                 self._check(name, tree, parse, reads, road, path, reason=None, boot=True)
 
+    def test_a_refusal_recorded_inside_the_writes_window_survives_its_pop(self):
+        """Follow-up, low B: the write's pop also discarded a refusal a judge recorded against the document just published, between
+        the replace and the pop, so that parse booked noDocument. The slot is stamped; the write pops only an older refusal."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("window", records(), sent=sent)
+        self.fresh(); self.parse(path)
+        real = em._asm_sidecar
+        def sidecar_and_a_refusal(doc):
+            em._asm_ckpt_note(path, "guard")                                 # a judge refuses the document inside the write's window
+            return real(doc)
+        em._asm_sidecar = sidecar_and_a_refusal
+        self.addCleanup(setattr, em, "_asm_sidecar", real)
+        self.assertTrue(self.doc(path))
+        em._asm_sidecar = real
+        rk = os.path.realpath(path)
+        with em._ASM_CKPT_LOCK:
+            self.assertIn(rk, em._ASM_CKPT_REFUSED, "the refusal recorded inside the window survives the write's pop")
+
+    def test_a_refusal_recorded_during_the_build_is_popped_by_the_write(self):
+        """Round one, low 1: the window opened at the write's first line, so a refusal a judge recorded DURING the document build
+        (against the document still on disk, which the note unlinks) survived the pop and mislabelled the next parse. The stamp is
+        taken just before the replace: a refusal before it was against the retired document and goes; one after it stands."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("build", records(), sent=sent)
+        self.fresh(); self.parse(path)
+        real = em._carry_encode
+        def carry_and_a_refusal(st):
+            em._asm_ckpt_note(path, "guard")                                 # a judge refuses the OLD document while this one builds
+            return real(st)
+        em._carry_encode = carry_and_a_refusal
+        self.addCleanup(setattr, em, "_carry_encode", real)
+        self.assertTrue(self.doc(path))
+        rk = os.path.realpath(path)
+        with em._ASM_CKPT_LOCK:
+            self.assertNotIn(rk, em._ASM_CKPT_REFUSED, "a refusal recorded before the replace was against the retired document: popped")
+
+    def test_the_writes_docstring_stands(self):
+        """Round one, low 2: the window's stamp was inserted above the docstring, which made the string a bare expression."""
+        self.assertTrue((em.asm_checkpoint_write.__doc__ or "").startswith("Write the leaf's assembly checkpoint"),
+                        "asm_checkpoint_write.__doc__: %r" % (em.asm_checkpoint_write.__doc__,))
+
+    def test_the_nudge_gates_failure_leg_is_counted_and_said_as_its_docstring_claims(self):
+        """Low E and its round-one pin: the docstring claims the leg is counted under failed and said on stderr; the test drives
+        the leg (a planner that raises) and checks both, not a word's absence in the source."""
+        import contextlib, io
+        km = kernel_module(); jd = km.jd
+        self.assertIn("counted under failed and said on stderr", km._nudge_placement_gate.__doc__ or "")
+        saved = jd.plan_units
+        self.addCleanup(setattr, jd, "plan_units", saved)
+        def failing_planner(session, store, **kw):
+            raise RuntimeError("synthetic gate failure")
+        jd.plan_units = failing_planner
+        km._NUDGE_GATE_STATS["failed"] = 0
+        turns = [{"id": "t1", "t": 1.0, "end": 2.0, "ended": True, "atoms": [], "trigger": None}]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(km._nudge_placement_gate(SID, turns, {"placements": {}}), "a failed gate answers not unplanned")
+        self.assertEqual(km._NUDGE_GATE_STATS["failed"], 1, "counted under failed")
+        self.assertIn("auto-nudge placement gate", err.getvalue(), "said on stderr")
+        self.assertIn("synthetic gate failure", err.getvalue(), "with its traceback")
     def test_whole_reads_and_hydrations_are_counted_under_the_calling_threads_stage(self):
         """T401: the first instrumented boot said jobs.autoNudge read 162.8 MB, and the callers' rows could not say which caller
         inside that job read it. The kernel marks the thread's stage for each tick job and the push; the event model counts
@@ -598,6 +658,36 @@ class AssemblyRoadCounters(Harness):
         self.assertTrue(any(k.startswith("push:zero<-") for k in rows), "the push's read under its mark: %r" % rows)
         self.assertIsNone(km._current_read_stage())
         self.assertTrue(hasattr(km._push, "__wrapped__"), "the push carries the stage decorator (set at entry, restored in a finally)")
+
+    def test_the_mark_returns_through_a_raise_and_a_connect_push_is_marked_connect(self):
+        """T401 round two, lows 1 and 2: the round-one test drove a CAUGHT build failure, which returns normally into the wrapper, so
+        a decorator restoring after the call would have passed it; the finally is pinned by a body that raises out. And a handler
+        thread's connect push (Handler._push_one: connect=True) was marked push too, booking a browser reload's reads into the
+        cycle's push: rows; it is marked connect."""
+        km = kernel_module()
+        km._STAGE_TL.name = "before"
+        self.addCleanup(setattr, km._STAGE_TL, "name", None)
+        def raiser():
+            self.assertEqual(km._current_read_stage(), "probe")
+            raise RuntimeError("synthetic")
+        with self.assertRaises(RuntimeError):
+            km._stage_marked("probe")(raiser)()
+        self.assertEqual(km._current_read_stage(), "before", "the previous mark returns after a raise (the finally)")
+        km._STAGE_TL.name = None
+        saved = km._chat_push_scopes_close                                 # the push's first call outside any try
+        self.addCleanup(setattr, km, "_chat_push_scopes_close", saved)
+        seen = []
+        def close_and_raise():
+            seen.append(km._current_read_stage())
+            raise RuntimeError("synthetic, out of the push")
+        km._chat_push_scopes_close = close_and_raise
+        client = {"app": "chat", "wid": "lab", "send": lambda *a, **k: None, "alive": True, "dedup": {}}
+        with self.assertRaises(RuntimeError):
+            km._push([client], connect=True, live_map={})
+        with self.assertRaises(RuntimeError):
+            km._push([client], live_map={})
+        self.assertEqual(seen, ["connect", "push"], "a fresh client's push is marked connect; the pusher's push, push")
+        self.assertIsNone(km._current_read_stage(), "restored after a raise out of the push")
 
 if __name__ == "__main__":
     unittest.main()

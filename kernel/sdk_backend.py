@@ -13148,7 +13148,7 @@ class SdkBackend:
                 return True                     # one end thread per sid: a second End click starts no second socket
             self._log("host (%s): kill with no session object; ending the live host (pid %s) through its lease"
                       % (sid[:8], ((lease or {}).get("holder") or {}).get("pid")))
-            th = threading.Thread(target=run, name="romp-end-host-" + sid[:8], daemon=True)
+            th = threading.Thread(target=run, name="end-host:" + sid[:8], daemon=True)   # kind:payload: the stack sample keeps the kind
             threads[sid] = th
             th.start()
         return True

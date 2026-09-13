@@ -1433,7 +1433,7 @@ class CodexBackend:
             if s.worker and s.worker.is_alive():
                 return
             s.worker = threading.Thread(target=self._work, args=(s,), daemon=True,
-                                        name="codex-%s" % s.name)
+                                        name="codex:%s" % s.name)   # kind:payload: the kernel's stack sample keeps the kind
             s.worker.start()
 
     def _prepare_thread(self, s, c):

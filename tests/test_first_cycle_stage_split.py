@@ -15,6 +15,9 @@ sys.path.insert(0, HERE)
 from test_asm_checkpoint import em, kernel_module   # noqa: E402
 
 
+JOB_NAME_RE = r"_job_stage\(['\"](\w+)['\"]"   # a wrapped tick job's name, either quote style
+
+
 class StageSplitUnit(unittest.TestCase):
     def setUp(self):
         self.km = kernel_module()
@@ -63,7 +66,8 @@ class StageSplitUnit(unittest.TestCase):
         self.assertEqual(fresh["stages_ms"]["prelude"], 0.0, "every stage listed at zero: %r" % sorted(fresh["stages_ms"])[:6])
         self.assertIn("jobs.interruptBlock", fresh["stages_ms"])
         import re
-        named = set(re.findall(r"_job_stage\('(\w+)'", inspect.getsource(km._pusher_cycle_jobs)))
+        named = set(re.findall(JOB_NAME_RE, inspect.getsource(km._pusher_cycle_jobs)))
+        self.assertEqual(re.findall(JOB_NAME_RE, "_job_stage('a', x); _job_stage(\"b\", y)"), ["a", "b"], "both quote styles (low D)")
         self.assertEqual(named, set(km._PerfStats.JOBS), "the JOBS tuple is the census of the wrapped tick jobs: a new job goes red here")
         self.assertEqual(len(km._PerfStats.JOBS), len(set(km._PerfStats.JOBS)), "no name twice")
 

@@ -42,11 +42,25 @@ let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+const errors = []; page.on("pageerror", (e) => errors.push(String(e && e.message || e).slice(0, 300))); page.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text().slice(0, 300)); });
+// the roads are the lab's own frames. The kernel's tail delta carries its status for the session, and one landing between an injected
+// frame and its probe replaced the injected verdict while the injected rows stayed (three full-suite reds on 2026-09-13, a fourth caught
+// with this trace: a chatTail 118 ms after the idle frame). So once the roads begin, the kernel's frames for the session are HELD off the
+// pane: a capture listener registered before the pane's own runs first at the window and stops the event; every held frame is listed in
+// the RESULT. The boot's own tail delta is kept for the replay road.
+await page.addInitScript(() => { window.__held = []; window.__lastTail = null; window.addEventListener("message", (e) => { const m = e.data; if (!m || !m.type || e.source === window) return; if (m.type === "chatTail" && !window.__labHold) window.__lastTail = m; if (window.__labHold && m.id === window.__labHold) { window.__held.push({ t: Math.round(performance.now()), type: m.type }); e.stopImmediatePropagation(); } }, true); });
 await page.goto(cfg.chat);
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
 await page.waitForSelector("#composer-input", { timeout: 20000 });
+// every frame the pane handles, kernel or injected, stamped at its handling (the socket's frames and window.postMessage both arrive
+// as a window message event, so one capture listener sees both; e.source is the window for an injected one, null for the socket's)
+await page.evaluate(() => { window.__frames = []; window.__wsups = 0; window.addEventListener("romp:wsup", () => { window.__wsups++; window.__frames.push({ t: Math.round(performance.now()), type: "(wsup)", injected: false }); }); window.addEventListener("romp:wsdown", () => { window.__frames.push({ t: Math.round(performance.now()), type: "(wsdown)", injected: false }); }); window.addEventListener("message", (e) => { const m = e.data; if (!m || !m.type) return; window.__frames.push({ t: Math.round(performance.now()), type: m.type, id: m.id || null, injected: e.source === window, svc: m.status ? (m.status.bgServiceIds || null) : undefined, tasks: ("bgTasks" in m) ? ((m.bgTasks && m.bgTasks.tasks) ? m.bgTasks.tasks.length : 0) : undefined, skel: Array.isArray(m.skeleton) ? m.skeleton.length : undefined }); }, true); });
 await page.waitForTimeout(500);
 // the frame: the session working, the kernel's rows and the tracked tasks; the shim hands it to the page like a kernel push
+// the kernel's own tail delta for the session, from the boot (the replay road plays it back the shim's way); then the hold
+let bootTail = null;
+try { bootTail = await (await page.waitForFunction(() => window.__lastTail, null, { timeout: 15000 })).jsonValue(); } catch (e) { bootTail = null; }
+await page.evaluate((sid) => { window.__labHold = sid; }, cfg.frame.id);
 await page.evaluate((f) => window.postMessage(f, "*"), cfg.frame);
 await page.waitForSelector("#bg-tasks .bg-fold-head", { timeout: 15000 });
 await page.click("#bg-tasks .bg-fold-head");   // collapsed by default: open the list
@@ -88,27 +102,49 @@ await page.evaluate(() => document.body.classList.remove("theme-light"));
 // now a service; (iii) a session whose one tracked task is finished: the header counts it and its dot is the completed tint
 const f0 = cfg.frame; const task = (id) => f0.bgTasks.tasks.find((t) => t.id === id);
 const only = (tasks, serviceIds, state) => ({ ...f0, status: { ...f0.status, state, awaitingItems: [], awaitingTaskIds: [], bgServiceIds: serviceIds }, bgTasks: { count: tasks.length, tasks } });
-const settle = async (f) => { await page.evaluate((x) => window.postMessage(x, "*"), f); await page.waitForTimeout(500); return probe(); };
-const placedOnly = await settle(only([task(cfg.placedId)], [], "working"));
+// a frame, then the box's own MARK of it (a predicate over the box the frame must make true), never a fixed pause: under full-suite
+// load the page's thread lagged the frame past a fixed wait and a status-frame road read the previous state twice (the manager's
+// two samples, 2026-09-13); a first mutation under the box was no mark either, since the kernel's own pushes repaint it too
+const settle = async (f, until) => {
+  const n0 = await page.evaluate(() => window.__frames.filter((x) => x.injected).length);
+  const postedAt = await page.evaluate((x) => { const t = Math.round(performance.now()); window.postMessage(x, "*"); return t; }, f);
+  try { await page.waitForFunction(until, null, { timeout: 6000 }); } catch (e) { /* the probe below says what the box shows */ }
+  await page.waitForTimeout(150);   // the repaint's own frame settles its computed styles
+  const probeAt = await page.evaluate(() => Math.round(performance.now()));
+  const r = await probe();
+  r.postedAt = postedAt; r.probeAt = probeAt;
+  r.handledAt = await page.evaluate((n) => { const inj = window.__frames.filter((x) => x.injected); return inj[n] ? inj[n].t : null; }, n0);
+  r.tabCls = await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab.active') || document.querySelector('#tabs [data-sid="' + sid + '"]'); return { active: t ? t.className : null, skeletons: document.querySelectorAll("#tabs .tab-skeleton").length }; }, f.id);
+  r.wsups = await page.evaluate(() => window.__wsups);
+  return r;
+};
+const rowsOf = () => document.querySelectorAll("#bg-tasks .bg-list .bg-task");
+const placedOnly = await settle(only([task(cfg.placedId)], [], "working"), () => document.querySelectorAll("#bg-tasks .bg-list .bg-task").length === 1 && !document.querySelector("#bg-tasks .bg-kept"));
 // the verdict arrives by a BARE STATUS frame (round three, low 4): a session frame repaints the box unconditionally for the active
 // tab, a status frame only through awaitKey, so this is the executed coverage of the key carrying bgServiceIds
-const placedKept = await settle({ type: "status", id: f0.id, status: { ...f0.status, state: "working", awaitingItems: [], awaitingTaskIds: [], bgServiceIds: [cfg.placedId] } });
-const doneOnly = await settle(only([task(cfg.doneId)], [], "idle"));
+const placedKept = await settle({ type: "status", id: f0.id, status: { ...f0.status, state: "working", awaitingItems: [], awaitingTaskIds: [], bgServiceIds: [cfg.placedId] } }, () => !!document.querySelector("#bg-tasks .bg-list .bg-task.bg-kept .bg-kept-word"));
+// the REPLAY road: the kernel's own tail delta (its status carries no verdict) dispatched the way the shim delivers a socket frame,
+// between the verdict and the next probe; at main it repainted the box from the kernel's status and the row lost its suffix; held now
+const replay = await page.evaluate((m) => { if (!m) return { had: false }; window.dispatchEvent(new MessageEvent("message", { data: m })); return { had: true, type: m.type, svc: m.status ? (m.status.bgServiceIds || null) : undefined }; }, bootTail);
+await page.waitForTimeout(400);
+const afterReplay = await probe(); afterReplay.held = await page.evaluate(() => window.__held.slice());
+const doneOnly = await settle(only([task(cfg.doneId)], [], "idle"), () => document.querySelectorAll("#bg-tasks .bg-list .bg-task").length === 1 && !!document.querySelector("#bg-tasks .bg-list .bg-task.bg-completed"));
 // the one-kind idle wait with tracked rows beyond it (round three, low 3): waiting on one command, a kept service and a finished
 // command listed too; every listed row counted, the kept subset after
 // round four: the peer-named idle header counts the peer row as a peer beside the tracked rows; an agent's own wait is a sub-row the
 // header never counts (the session waits on the agent, the agent on it)
 const peerIdle = await settle({ ...f0, status: { ...f0.status, state: "idle", awaitingWhy: "delegated to api; waiting on a reply", awaitingKind: "peer", awaitingCount: 1,
                                                  awaitingPeers: [{ name: "api", host: "", color: null }], awaitingItems: [{ kind: "peer", id: "api", label: "api" }], awaitingTaskIds: [], bgServiceIds: [cfg.svcId] },
-                                bgTasks: { count: 1, tasks: [task(cfg.svcId)] } });
+                                bgTasks: { count: 1, tasks: [task(cfg.svcId)] } }, () => Array.from(document.querySelectorAll("#bg-tasks .bg-group-head")).some((h) => h.textContent === "Peers"));
 const nested = await settle({ ...f0, status: { ...f0.status, state: "working", awaitingItems: [{ ...f0.status.awaitingItems.find((it) => it.kind === "agents"), waits: [{ kind: "commands", id: cfg.placedId, label: "Run the parser test chunk", stoppable: true }] }], awaitingTaskIds: [], bgServiceIds: [] },
-                              bgTasks: { count: 2, tasks: [task("tu_agent_1"), task(cfg.placedId)] } });
+                              bgTasks: { count: 2, tasks: [task("tu_agent_1"), task(cfg.placedId)] } }, () => !!document.querySelector("#bg-tasks .bg-list .bg-task.bg-sub"));
 const idleOne = await settle({ ...f0, status: { ...f0.status, state: "idle", awaitingWhy: "waiting on a background command: Build the docs site", awaitingKind: "commands", awaitingCount: 1,
                                                awaitingItems: f0.status.awaitingItems.filter((it) => it.kind === "commands"), awaitingTaskIds: [cfg.cmdId], bgServiceIds: [cfg.svcId, cfg.doneId] },
-                                bgTasks: { count: 3, tasks: [task(cfg.cmdId), task(cfg.svcId), task(cfg.doneId)] } });
+                                bgTasks: { count: 3, tasks: [task(cfg.cmdId), task(cfg.svcId), task(cfg.doneId)] } }, () => ((document.querySelector("#bg-tasks .bg-fold-label") || {}).textContent || "").startsWith("Awaiting command"));
 if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/romp_chat-T394-bg-kinds-light-served.png" }); }
+const frames = await page.evaluate(() => window.__frames); const held = await page.evaluate(() => window.__held);
 await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ dark, light, placedOnly, placedKept, doneOnly, idleOne, peerIdle, nested }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ dark, light, placedOnly, placedKept, doneOnly, idleOne, peerIdle, nested, frames, errors, held, replay, afterReplay }) + "\n", () => process.exit(0));
 """
 
 
@@ -339,6 +375,15 @@ class ServedBgKinds(unittest.TestCase):
         do = r["doneOnly"]
         self.assertEqual(do["headDot"], do["tokens"]["dim"], "the header dot is the completed tint, the dim ink: %r vs %r" % (do["headDot"], do["tokens"]))
         self.assertEqual(r["placedOnly"]["headDot"], r["placedOnly"]["tokens"]["working"], "a running-only box keeps the running gold on its header: %r" % r["placedOnly"]["headDot"])
+
+    def test_the_kernels_own_tail_delta_during_a_road_is_held_off_the_pane_and_the_verdict_stays(self):
+        # the mechanism behind the full-suite reds of 2026-09-13: the kernel's tail delta carries its status for the session, with no
+        # verdict, and one landing between an injected frame and its probe repainted the box from it (the rows stayed, the suffix went)
+        r = self._result()
+        self.assertTrue(r["replay"]["had"], "the boot's tail delta was in hand for the replay: %r" % r["replay"])
+        self.assertEqual([x["kept"] for x in r["afterReplay"]["rows"]], [KEPT_WORD], "the row keeps the verdict through the kernel's tail delta: %r" % [(x["label"], x["kept"]) for x in r["afterReplay"]["rows"]])
+        self.assertIn("chatTail", [h["type"] for h in r["afterReplay"]["held"]], "the delta was held off the pane and listed: %r" % r["afterReplay"]["held"])
+        self.assertEqual(r["errors"], [], "no page error through the roads: %r" % r["errors"])
 
 
 if __name__ == "__main__":
