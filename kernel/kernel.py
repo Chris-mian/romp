@@ -3105,6 +3105,7 @@ def _fire_debt_reminder(sid, now, alive_ids):
         return False
     snap = _auto_nudge_data()
     if snap.get(UNPROVED):
+        _nudge_clock(None)                             # an owed ask stands unreminded: the next look must retry (T401 (2))
         return False                                   # the record write would be refused → an unrecorded
         #                                                reminder re-fires every tick; the tick is paused anyway
     dn0 = snap.get("debtNudged") or {}
@@ -3123,6 +3124,7 @@ def _fire_debt_reminder(sid, now, alive_ids):
     except OSError:
         landed = False                                 # said once per fault episode by the writer
     if not landed:
+        _nudge_clock(None)                             # the same: retry next look (T401 (2))
         return False                                   # nothing sent whose record could not land
     Sessions.backend_for(sid).send(sid, _debt_reminder_body([(n, t, k, h) for _a, n, t, k, h in due]))
     return True
@@ -9877,14 +9879,18 @@ def _warm_wanted(s, tm):
 
 
 def _session_files_stat(s):
-    """(mtime, size) of the transcript, the state log and the session's goal store, zeros for a missing file: the
-    three inputs every event-keyed tick job reads. A change in any of them is the only event that can change the
+    """(mtime, size) of the transcript, the state log, the session's goal store, its override journal and archive, its
+    episode log and the clears log, zeros for a missing file: the inputs every event-keyed tick job reads (the store's
+    shared view is identified by its three files, bin/romp-judge's ident; the nudge's placement gate reads the two logs). A change in any of them is the only event that can change the
     job's answer; the store is in the tuple because a judge can clear or complete the goal a marker points at with
     no transcript change at all, and the interrupt tick must re-block on exactly that (its docstring's stale-marker
     rule; tests/test_kernel_interrupt_machine_cut.py pins it)."""
     sid = str(s.get("sid") or "")
     out = []
-    for p in (s.get("path") or "", str(jd.STATE / "states" / (sid + ".jsonl")), str(jd.GOALDIR / (sid + ".json"))):
+    for p in (s.get("path") or "", str(jd.STATE / "states" / (sid + ".jsonl")), str(jd.GOALDIR / (sid + ".json")),
+              str(jd._overrides_dir() / (sid + ".jsonl")), str(jd.GOALARCHDIR / (sid + ".json")),   # the shared store's identity is
+              str(jd.EPIDIR / (sid + ".jsonl")), str(jd.STATE / "cleared.jsonl")):                # three files; the placement gate
+        #                                                                                           reads the episode and clears logs
         try:
             st = os.stat(p)
             out += [st.st_mtime, st.st_size]
@@ -9923,7 +9929,7 @@ def _load_tick_seen():
     n = 0
     with _TICK_SEEN_LOCK:
         for k, v in (d.items() if isinstance(d, dict) else ()):
-            if isinstance(k, str) and "|" in k and isinstance(v, list) and len(v) == 6:
+            if isinstance(k, str) and "|" in k and isinstance(v, list) and len(v) >= 6:   # the nudge's rows carry the flip and the
                 job, sid = k.split("|", 1)
                 _TICK_SEEN[(job, sid)] = tuple(v)
                 n += 1
@@ -9999,8 +10005,10 @@ def _tick_job_skips(job, s):
 # 63 s first cycle in this walk, parsing every alive session cold before a single nudge could be due.
 _NUDGE_HORIZON = threading.local()    # the walking thread's collector: .notes (the flips a look's clock legs declined on)
 _NUDGE_WALK_STATS = {"looks": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
-                     "clockDue": 0}
+                     "clockDue": 0, "wakeOnly": 0}
 _NUDGE_WALK_FIRST = {"skipped": [], "parsed": [], "deferred": 0}   # the boot's first cycle, for its health row (T401 (2))
+_NUDGE_WALK_CURSOR = [None]           # the sid the yield deferred first: the next pass rotates the recency order to start there,
+#                                       so a session whose parse never warms cannot hold the rest of the walk behind it
 _NUDGE_WALK_FIRST_OPEN = [True]
 
 
@@ -11243,6 +11251,11 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     fired = False
     alive.sort(key=lambda s: -_session_files_stat(s)[0])  # by recency, the judges' rule (T401 (2)): the sessions most likely
     _NUDGE_HORIZON.cold = 0                               #  to owe a nudge are looked at first, and a yield below defers the rest
+    _resume = _NUDGE_WALK_CURSOR[0]                       # a yield's first deferred session: the walk resumes there (rotated), so
+    if _resume is not None:                               #  every session is reached within as many passes as there are cold parses
+        _k = next((i for i, s in enumerate(alive) if s["sid"] == _resume), 0)
+        alive = alive[_k:] + alive[:_k]
+    _NUDGE_WALK_CURSOR[0] = None
     with _clients_lock:
         _yielding = bool(_clients)                        # with a client connected the push waits behind this walk: one cold
     #                                                       parse per pass, the remaining sessions next pass (their order stands)
@@ -11250,11 +11263,15 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     #                                                       a clear landing mid-pass reaches the later sessions next pass; the
     #                                                       node's own cleared flag, written in the same gesture, covers the gap
     for _i, s in enumerate(alive):
-        if _yielding and getattr(_NUDGE_HORIZON, "cold", 0) >= 1:
+        if _yielding and getattr(_NUDGE_HORIZON, "cold", 0) >= 1 and getattr(_NUDGE_HORIZON, "cold_last", False):
             _NUDGE_WALK_STATS["deferredSessions"] += len(alive) - _i
             if _NUDGE_WALK_FIRST_OPEN[0]:
                 _NUDGE_WALK_FIRST["deferred"] += len(alive) - _i
-            break                                         # the yield (T401 (2)): the push interleaves; the walk resumes next pass
+            _NUDGE_WALK_CURSOR[0] = s["sid"]
+            break                                         # the yield (T401 (2)): after a look that PAID a cold parse the push
+        #                                                   interleaves; warm looks never yield, so the sessions behind a cold one
+        #                                                   are all reached within as many passes as there are cold parses
+        _NUDGE_HORIZON.cold_last = False
         # PER-SESSION ISOLATION (2026-07-16): one session's failure — a bad backend snapshot, a
         # malformed store — must not abort the whole tick and silence nudging fleet-wide. A
         # TypeError in _session_awaiting (a subagents LIST fed to %d) killed 1333 consecutive
@@ -13085,9 +13102,11 @@ def _nudge_look_gated(fn):
             skip, files_st, verdict = _nudge_look_check(s, now)
             if skip:
                 _NUDGE_WALK_STATS["skippedParses"] += 1
-                if _NUDGE_WALK_FIRST_OPEN[0]:
-                    _NUDGE_WALK_FIRST["skipped"].append(sid)
-                return True if _fire_debt_reminder(sid, now, alive_ids) else verdict
+                if _NUDGE_WALK_FIRST_OPEN[0] and len(_NUDGE_WALK_FIRST["skipped"]) < 40:
+                    _NUDGE_WALK_FIRST["skipped"].append(sid[:8])
+                return verdict                        # the recorded verdict and nothing else: the full road's gates (idle, judged,
+        else:                                         #  unqueued) precede every send, the debt reminder's included (round one, medium 1)
+            _NUDGE_WALK_STATS["wakeOnly"] += 1        # nudges off: the toggle is not a file, so the look neither skips nor records
         _NUDGE_HORIZON.notes, _NUDGE_HORIZON.parsed = [], False
         try:
             r = fn(s, now, live_map, nudged, waitfor, alive_ids, wake_only, cleared)
@@ -13142,8 +13161,9 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
         if _cold:
             _NUDGE_WALK_STATS["coldParses"] += 1
             _NUDGE_HORIZON.cold = getattr(_NUDGE_HORIZON, "cold", 0) + 1
-        if _NUDGE_WALK_FIRST_OPEN[0]:
-            _NUDGE_WALK_FIRST["parsed"].append(sid)
+            _NUDGE_HORIZON.cold_last = True
+        if _NUDGE_WALK_FIRST_OPEN[0] and len(_NUDGE_WALK_FIRST["parsed"]) < 40:
+            _NUDGE_WALK_FIRST["parsed"].append(sid[:8])   # eight of the sid, at most forty rows: the attachUnsettled convention
     except Exception:
         return "parse-failed"
     if not turns:
@@ -13275,12 +13295,9 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
             # done / block / user reply / a peer's answer superseding the stamp). But a wait is not an
             # exemption from the ladder (the user 2026-08-11): past the backstop the goal takes a WAKE —
             # same records, same response gates, same escalation, its own copy (see _wake_goal).
-            _n0 = len(getattr(_NUDGE_HORIZON, "notes", None) or [])
             fired = _wake_goal(sid, gid, _stamp, nudged, turns, store, now, lt, live_map, wake_only) or fired
-            _nn = getattr(_NUDGE_HORIZON, "notes", None)
-            if _nn is not None and len(_nn) == _n0:
-                _nudge_clock(None)                   # a wait that declined on no clock: its endings are owners' and peers'
-            continue                                 #  events, not this session's files, so the next look evaluates (T401 (2))
+            _nudge_clock(None)                       # a stamped wait ends on postal events too (a peer's bounced or recalled
+            continue                                 #  send), none of them this session's files: the next look evaluates (T401 (2))
         if wake_only:
             continue                                 # auto-nudge OFF: the dead-man was the whole errand
         # PARK GATE (the user 2026-08-30, the parked-tick round): a goal whose record holds the full
@@ -13481,6 +13498,9 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
                         if report_ts and rec0.get("redundantEvT") == report_ts \
                                 and rec0.get("redundantSettleT") == settle_t:
                             _anch = max(rec0.get("answeredAt") or 0, rec0.get("at") or 0)
+                            _nudge_clock((_anch + AWAITING_DEADMAN_SECS) if _anch else None)   # the parked dead-man this ruling
+                            #                                                                     stands under (T401 (2), high; a legacy
+                            #                                                                     record with no anchor: unbounded)
                             if _anch and now - _anch > AWAITING_DEADMAN_SECS:
                                 # PARKED DEAD-MAN: a fully-quiet session produces NO future event
                                 # — no report, no settle — so no key change can ever re-arm it;
@@ -13507,12 +13527,13 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
                             nudged[f[0]] = dict(rec0, answeredAt=int(now), redundantSkips=skips + 1,
                                                 redundantEvT=report_ts, redundantSettleT=settle_t)
                             _put_nudged(f[0], nudged[f[0]])
+                            _nudge_clock(now + AWAITING_DEADMAN_SECS)   # the skip parks the goal: its dead-man opens now (T401 (2), high)
                             _v = ("skipped-redundant-at-cap" if skips >= 2
                                   else "held-fresh-re-judged" if held_pass else "skipped-redundant")
                             _log_nudge_event(sid, f[0], now, f[1], verdict=_v, ev_t=report_ts)
                             continue
                     except Exception:
-                        pass
+                        _nudge_clock(None)                       # an unjudgeable check: nothing bounds the next look (T401 (2))
                     if skips >= 2:
                         _verdicts[f[0]] = ("fired-at-cap", report_ts)
                     if skips:
@@ -13583,6 +13604,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
         except OSError:
             landed = False                           # said once per fault episode by the writer
         if not landed:
+            _nudge_clock(None)                       # a refused ledger write: the next tick retries whatever the files (T401 (2))
             return fired                             # nothing sent whose record could not land
     if len(to_fire) == 1:
         gid, count, stalled = to_fire[0]

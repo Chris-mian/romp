@@ -1550,8 +1550,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,
   beside `asmCheckpoint.removed`, the document files removed per reason (a
   fallback's reason, or the boot sweep). The row also carries `nudgeWalk`
-  (T401): the session ids whose parses the boot's nudge walk `skipped` on
-  its memo, those it `parsed`, and how many it `deferred` to a later pass.
+  (T401): the first eight characters of the session ids whose parses the
+  boot's nudge walk `skipped` on its memo, those it `parsed` (at most forty
+  each), and how many it `deferred` to a later pass.
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
@@ -1766,8 +1767,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `deferredSessions` (the yield: with a client connected the pass stops after
   its first cold parse and the rest of the recency-ordered walk waits for the
   next pass), `unbounded` (memos refused because a leg's release is not one
-  of the session's files, a deferral retired by a judge pass) and `clockDue`
-  (memos refused because a noted flip has come); `nudgeGate` is the auto-nudge walk's
+  of the session's files: a deferral retired by a judge pass, a stamped wait
+  a peer's bounce can end, an owed reminder a refused ledger write left
+  standing), `clockDue` (memos refused because a noted flip has come) and
+  `wakeOnly` (looks with injected follow-ups off, which neither skip nor
+  record because the toggle is not a file, so that configuration keeps the
+  boot's cold parses); the files the memo keys on are the transcript, the
+  state log, the goal store with its override journal and archive, the
+  episode log and the clears log; `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue
