@@ -59,7 +59,7 @@ function lift(avail: Avail, auth = "", acct = "") {
   const a = RENDER.indexOf("    const openBillingFly = (): HTMLElement | null => {");
   const b = RENDER.indexOf('    wireFlyout(menu, item, ".ctx-sub-billing"', a);
   assert.ok(a > 0 && b > a, "openBillingFly: anchors not found; re-anchor");
-  const helpers = ["function billingChoices(", "function placeFlyBeside(", "function wireFlyout("].map((anchor) => {
+  const helpers = ["function billingChoices(", "function authLoginChoices(", "function authChoiceCurrent(", "function placeFlyBeside(", "function wireFlyout("].map((anchor) => {   // the two login helpers the merged slice calls (T346)
     const h = RENDER.indexOf(anchor); if (h < 0) return "";
     return RENDER.slice(h, RENDER.indexOf("\n}\n", h) + 2);
   }).join("\n");
