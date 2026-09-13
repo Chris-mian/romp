@@ -58,6 +58,11 @@ const filled = await state(); const regionsFilled = await regions();
 const rowAfter = await rowAtTop();
 const gesturesAfter = await gestures();
 const fills = await writes("gap-fill");
+// MEDIUM 2 (T386 stage 2): the head gap's drawn height per turn must match the rendered run's measured per-turn height (a turn is a
+// user row plus its reply, so a per-display-unit average drew gaps about half true). Measure the gap element's px/turn and the rendered
+// tail run's px/turn (its user rows are its turns) and compare.
+const gapPerTurn = await page.evaluate(() => { const g = document.querySelector("#content .tx-gap"); if (!g) return null; const lo = Number(g.dataset.lo), hi = Number(g.dataset.hi); return hi > lo ? g.offsetHeight / (hi - lo) : null; });
+const runPerTurn = await page.evaluate(() => { const c = document.getElementById("content"); let h = 0, turns = 0; for (const t of Array.from(c.querySelectorAll("#content .turn"))) { if (t.classList.contains("tx-spacer") || t.classList.contains("tx-gap")) continue; h += t.offsetHeight; if (t.classList.contains("turn-user")) turns++; } return turns > 0 ? h / turns : null; });
 // ROAD 3: a live tail while the reader is up in history: it lands at the tail, nothing pauses
 const k = cfg.turns;
 const tail = { type: "chatTail", id: cfg.sid, afterUuid: regionsFilled ? regionsFilled[regionsFilled.length - 1].last : filled.lastUuid, events: [
@@ -80,6 +85,7 @@ await painted();
 const belowRegions = await regions(); const belowRowAfter = await rowAtTop(); const belowGestures = await gestures();
 process.stdout.write("RESULT:" + JSON.stringify({ boot: { regions: bootRegions, turns: boot.turns, atBottom: boot.atBottom, notice: boot.notice, strip: boot.strip }, turnsBefore, asks, gapsAsked, regionsAsked, rowBefore, rowAfter, gesturesBefore, gesturesAfter, fills,
   filled: { regions: regionsFilled, gaps: filled.gaps, turns: filled.turns, firstUuid: filled.firstUuid, lastUuid: filled.lastUuid, top: filled.top, notice: filled.notice, strip: filled.strip },
+  gapPerTurn, runPerTurn,
   rowLive, below: { asks: belowAsks, regions: belowRegions, rowBefore: belowRowBefore, rowAfter: belowRowAfter, gestures: belowGestures, gesturesBefore: belowGesturesBefore },
   live: { regions: regionsLive, lastUuid: live.lastUuid, atBottom: live.atBottom, notice: live.notice, strip: live.strip, turns: live.turns, top: live.top } }) + "\n");
 await browser.close();
@@ -145,6 +151,14 @@ class ServedHistoryRegions(WindowLab):
         self.assertLessEqual(b["gestures"] - b["gesturesBefore"], 1, "the below-fill added no gesture beyond the reader's own jump into the gap: %r" % b)
         if b["rowBefore"] and b["rowAfter"]:
             self.assertEqual(b["rowAfter"]["uuid"], b["rowBefore"]["uuid"], "the reader's row held through the below-fill: %r → %r" % (b["rowBefore"], b["rowAfter"]))
+
+    def test_the_head_gap_is_drawn_at_the_rendered_runs_per_turn_height(self):
+        # MEDIUM 2: a gap's height counts TURNS times px-per-turn, not display units; within ten percent of the rendered run's per-turn height
+        r = self._result()
+        gpt, rpt = r["gapPerTurn"], r["runPerTurn"]
+        self.assertIsNotNone(gpt, "the head gap was measured: %r" % r.get("filled"))
+        self.assertIsNotNone(rpt, "the rendered run's per-turn height was measured")
+        self.assertLessEqual(abs(gpt - rpt) / rpt, 0.10, "the gap's px/turn (%r) is within ten percent of the run's (%r)" % (gpt, rpt))
 
     def test_a_live_tail_lands_while_the_reader_is_up_in_history_and_nothing_pauses(self):
         r = self._result()

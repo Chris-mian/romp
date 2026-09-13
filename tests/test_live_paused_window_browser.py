@@ -109,13 +109,19 @@ class WindowLab(unittest.TestCase):
     maxDiff = None
 
     @classmethod
+    def _skip(cls, why):
+        if os.environ.get("ROMP_SERVED_TESTS_REQUIRE") == "1":
+            raise AssertionError("ROMP_SERVED_TESTS_REQUIRE=1 but the served lab could not run: " + why)
+        raise unittest.SkipTest(why)
+
+    @classmethod
     def setUpClass(cls):
         if not os.path.isdir(os.path.join(EXT, "node_modules", "playwright")):
-            raise unittest.SkipTest("extension deps absent (npm ci not run here) — the served guard needs them")
+            cls._skip("extension deps absent (npm ci not run here) — the served guard needs them")
         cls.lab = tempfile.mkdtemp(prefix="live-paused-window-")
         b = subprocess.run(["node", "esbuild.js"], cwd=EXT, capture_output=True, text=True)
         if b.returncode != 0:
-            raise unittest.SkipTest("esbuild failed here: " + (b.stderr or b.stdout)[-200:])
+            cls._skip("esbuild failed here: " + (b.stderr or b.stdout)[-200:])
         dist = os.path.join(cls.lab, "dist")
         copy_dist(os.path.join(EXT, "dist"), dist)
         cls.state = os.path.join(cls.lab, "xdg", "romp")
@@ -186,7 +192,7 @@ class WindowLab(unittest.TestCase):
                 time.sleep(0.5)
         else:
             cls.kernel.kill()
-            raise unittest.SkipTest("hermetic kernel never served /healthz here")
+            cls._skip("hermetic kernel never served /healthz here")
 
     @classmethod
     def tearDownClass(cls):
@@ -208,6 +214,8 @@ class WindowLab(unittest.TestCase):
         p = subprocess.run(["node", driver], capture_output=True, text=True, timeout=240,
                            env=dict(os.environ, EXT_PKG=os.path.join(EXT, "package.json"), CFG=cfg))
         if p.returncode == 3:
+            if os.environ.get("ROMP_SERVED_TESTS_REQUIRE") == "1":
+                raise AssertionError("ROMP_SERVED_TESTS_REQUIRE=1 but no playwright browser to run the served lab")
             raise unittest.SkipTest("no playwright browser on this box — the served guard needs one (CI installs none)")
         klog = ""
         try:

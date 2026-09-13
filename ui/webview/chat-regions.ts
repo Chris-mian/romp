@@ -13,7 +13,7 @@ export interface Run { kind: "run"; lo: number; hi: number | null; events: Ev[];
 export interface Gap { kind: "gap"; lo: number; hi: number; }
 export type Region = Run | Gap;
 
-export const DEFAULT_TURN_PX = 60;   // the row estimate the spacers use until a run is measured (render.ts sizeSpacers)
+export const DEFAULT_TURN_PX = 120;   // the per-TURN estimate the spacers use until a run is measured (a turn is ~two rows; render.ts sizeSpacers measures px-per-turn)
 
 /** The regions a set of runs implies: the runs in turn order with a gap between each pair that does not touch, and a head gap
  *  [0, first.lo) when the first run does not start at the head. Runs must not overlap (insertRun keeps that). */
@@ -67,10 +67,11 @@ function mergeRuns(held: Run, win: Run): Run {
   return { kind: "run", lo, hi, events };
 }
 
-/** A gap's height in the thread: its turns × the measured average row height (the estimate the spacers use), at least a row. */
-export function gapHeight(gap: { lo: number; hi: number }, avgTurnH: number | null | undefined): number {
-  const avg = avgTurnH ?? DEFAULT_TURN_PX;
-  return Math.max(Math.round(avg), Math.round((gap.hi - gap.lo) * avg));
+/** A gap's height in the thread: its TURN count × the measured px-per-TURN (not px-per-display-unit: a turn is a user row plus its
+ *  reply and any tool rows, so multiplying a turn count by a per-unit average drew gaps roughly half their true height), at least a turn. */
+export function gapHeight(gap: { lo: number; hi: number }, perTurnPx: number | null | undefined): number {
+  const per = perTurnPx ?? DEFAULT_TURN_PX;
+  return Math.max(Math.round(per), Math.round((gap.hi - gap.lo) * per));
 }
 
 /** The page-aligned span to ask for when a gap enters the viewport: the page nearest the viewport's edge first. Scrolling UP

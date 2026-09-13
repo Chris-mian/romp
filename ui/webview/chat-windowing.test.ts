@@ -139,6 +139,26 @@ test("a deep-link off the current window renders a fresh window AROUND the targe
   assert.match(RENDER, /renderWindowItems\(v, s, items, Math\.max\(0, u - WINDOW_RADIUS\), Math\.min\(items\.length, u \+ WINDOW_RADIUS\), working\);/);
 });
 
+test("round two/three code fixes each carry a pin (T386 stage 2, low 1)", () => {
+  const winStart = RENDER.indexOf("function chatWindow(msg: any) {");
+  const win = RENDER.slice(winStart, RENDER.indexOf("\nfunction ", winStart + 1));
+  const cTurns = RENDER.slice(RENDER.indexOf("function chatTurns(msg: any)"), RENDER.indexOf("function chatHead(msg: any)") >= 0 ? RENDER.indexOf("function chatHead(msg: any)") : winStart);
+  // the socket death clears every in-flight ask's state, not the glyph alone (medium 1)
+  assert.match(RENDER, /window\.addEventListener\("romp:wsdown", \(\) => \{[\s\S]*?gapLoading\.clear\(\); landingGaps\.clear\(\); loadingOlder\.clear\(\);[\s\S]*?hideLandingNotice\(\);/, "wsdown clears the landing's gap, the older-ask set and the notice");
+  // sizeSpacers does not average the gap element (medium 3, round one)
+  assert.match(RENDER, /if \(c\.classList\.contains\("tx-spacer"\) \|\| c\.classList\.contains\("tx-gap"\)\) continue;/, "sizeSpacers skips the gap element in the average");
+  // the region-fill view resets (chatTurns, chatWindow) keep the measured averages across fills (low 1); chatHead's prepend reset may still clear them
+  assert.ok(cTurns.includes("v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.spacerCount = undefined;"), "chatTurns resets the window");
+  assert.doesNotMatch(cTurns, /v\.winEnd = 0; v\.avgTurnH = undefined;/, "…without clearing the measured average (the fill keeps it, low 1)");
+  assert.doesNotMatch(win, /v\.winEnd = 0; v\.avgTurnH = undefined;/, "chatWindow's fill keeps the measured average too (low 1)");
+  // a second deep link while one is on the wire is refused with a cue, not silently repointed (low 6, low 4)
+  assert.match(RENDER, /if \(loadingOlder\.has\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}/, "the busy refusal toasts a cue");
+  // the cancelled mark is read once before any early return (low 2)
+  assert.ok(win.indexOf("const cancelled = cancelledLandings.delete(msg.id);") >= 0 && win.indexOf("const cancelled = cancelledLandings.delete(msg.id);") < win.indexOf("!Array.isArray(msg.span)"), "the cancelled mark is read before the missing/span-less return");
+  // a mid-transcript gap keeps headTotal null (low 7)
+  assert.match(RENDER, /s\.regions && s\.regions\.some\(\(r\) => r\.kind === "gap"\)\)\) s\.headTotal/, "chatTail keeps no head total while a gap holds older history");
+});
+
 test("the spacer is invisible, non-interactive vertical space", () => {
   assert.match(CSS, /\.tx-spacer \{ width: 100%; pointer-events: none; \}/);
 });

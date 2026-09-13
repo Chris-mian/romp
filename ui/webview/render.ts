@@ -1330,7 +1330,7 @@ let landTrail: string[] = [];
 // count is NOT len − winStart + spacer: a unit may own more than one node (the day
 // divider that opens a new day precedes its turn), so anything mapping DOM back to
 // units reads data-unit off the node rather than counting children.
-interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; gapUnits?: Map<number, number>; edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
+interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; pxPerTurn?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; gapUnits?: Map<number, number>; edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
 const views = new Map<string, View>();
 
 // Pending pickers (AskUserQuestion / tool-permission) keyed by session id. These
@@ -11211,7 +11211,7 @@ function scrollToAnchor(uuid: string): boolean {
                 || v.el.querySelector(`.turn[data-uuids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
     } else if (s && s.proto === 2 && (olderOnServer(s) || (s.regions && s.regions.some((r) => r.kind === "gap")))) {
       // proto 2 (T323 stage 4b): the anchor is outside the resident run — ONE window around it (chatWindow lands it)
-      if (loadingOlder.has(activeId)) { landTrail.push("pointer-fetch-busy"); return false; }   // a landing is already on the wire (T386 stage 2, low 6): the first stands, the second is refused, not silently repointed
+      if (loadingOlder.has(activeId)) { landTrail.push("pointer-fetch-busy"); landToast("still going to the earlier message"); return false; }   // a landing is already on the wire (T386 stage 2, low 6): the first stands, the second is refused with a cue (low 4), not silently repointed
       if (requestAround(activeId, uuid)) {
         pendingOlderAnchor.set(activeId, uuid);
         pendingOlderKeepY.delete(activeId);
@@ -12119,7 +12119,7 @@ function renderWindowItems(v: View, s: Session, items: DisplayItem[], unitStart:
   v.rendered = s.events.length;
   // a gap unit's height is its own estimate, not the average row (T386 stage 2): the spacers and the scroll→unit map read it
   const gu = new Map<number, number>();
-  for (let u = 0; u < total; u++) { const it = items[u]; if (it.kind === "gap") gu.set(u, gapHeight(it, v.avgTurnH)); }
+  for (let u = 0; u < total; u++) { const it = items[u]; if (it.kind === "gap") gu.set(u, gapHeight(it, v.pxPerTurn)); }   // per TURN, not per display unit (medium 2)
   v.gapUnits = gu.size ? gu : undefined;
   sizeSpacers(v);
 }
@@ -12145,6 +12145,15 @@ function sizeSpacers(v: View): void {
       h += c.offsetHeight; n++;
     }
     if (h > 0 && n > 0) v.avgTurnH = h / n;
+  }
+  if (v.pxPerTurn == null) {   // px per TURN (a gap counts turns, not display units): total rendered height over the rendered turns (a user row starts each)
+    let h = 0, turns = 0;
+    for (const c of Array.from(v.el.children) as HTMLElement[]) {
+      if (c.classList.contains("tx-spacer") || c.classList.contains("tx-gap")) continue;
+      h += c.offsetHeight;
+      if (c.classList.contains("turn-user")) turns++;
+    }
+    if (h > 0 && turns > 0) v.pxPerTurn = h / turns;
   }
   const avg = v.avgTurnH ?? 60;
   const topBefore = top ? (parseFloat(top.style.height) || 0) : 0, botBefore = bot ? (parseFloat(bot.style.height) || 0) : 0;
@@ -13778,6 +13787,7 @@ let landingNoticeEl: HTMLElement | null = null;
 let landingNoticeSid: string | null = null;
 const cancelledLandings = new Set<string>();   // sids whose landing the notice's click cancelled while the window was on the wire
 const landingGaps = new Map<string, { lo: number; hi: number }>();   // sid -> the gap a landing's window is on the wire for (its glyph shows while it is)
+const preJumpFrom = new Map<string, number>();   // sid -> the scrollTop before the pre-jump, restored when a span-less or missing reply cannot land (T386 stage 2, low 2)
 /** The ONE notice (T386 stage 2, the user 2026-09-12): "Going to the message from 7:41 AM, click to stay here", at the pill's old
  *  anchor before #content, while a landing's window is on the wire; a scroll-driven gap fill shows the glyph inside the gap and no
  *  notice. Clicking it is the ONLY cancel: the reader's own scroll during the wait does not cancel the landing. */
@@ -13833,6 +13843,7 @@ function preJumpIntoGap(sid: string, t: number | null | undefined): void {
     if ((tBefore != null && t < tBefore) || (tAfter != null && t > tAfter)) continue;
     const frac = gapFraction(t, tBefore, tAfter);
     landingGaps.set(sid, { lo: r.lo, hi: r.hi });   // the gap wears the glyph while the window is on the wire (gapHasAsk)
+    preJumpFrom.set(sid, content.scrollTop);   // the reader's place before the jump, to restore if the reply cannot land (T386 stage 2, low 2)
     const g = v.el.querySelector(`.tx-gap[data-lo="${r.lo}"][data-hi="${r.hi}"]`) as HTMLElement | null;
     let y: number;
     if (g) {
@@ -17210,7 +17221,18 @@ let skeletonDiagArmed = true;
 // event, which fires at onopen while the dead socket's last frames may still be draining from the FIFO)
 // A send still unconfirmed at the socket's down edge may never have reached the kernel: say so on its bubble
 window.addEventListener("romp:wsdown", () => markPendingLost("connection"));
-window.addEventListener("romp:wsdown", () => { gapLoading.clear(); document.querySelectorAll("#content .tx-gap-loading").forEach((g) => g.classList.remove("tx-gap-loading")); });   // a page ask dropped at a dead socket is re-asked on the reopen (T386 stage 2), never a gap blocked for the page's life
+window.addEventListener("romp:wsdown", () => {
+  // the socket died with asks in flight (a blip, the watchdog's abandon, a tunnel flap): their replies come on no socket, so clear EVERY
+  // in-flight ask's state (T386 stage 2, medium 1), not the glyph alone, or a landing's gap stays unable to ask for the page's life and its
+  // notice stands forever. gapLoading and its glyphs, the landing's held gap, the older-ask set, and the notice all go; a landing in flight
+  // is told once the jump was lost. A gap met again on the healed socket asks anew.
+  const hadLanding = !!landingNoticeSid || landingGaps.size > 0;
+  gapLoading.clear(); landingGaps.clear(); loadingOlder.clear();
+  document.querySelectorAll("#content .tx-gap-loading").forEach((g) => g.classList.remove("tx-gap-loading"));
+  hideLandingNotice();
+  pendingAnchor = null; anchorPendingOlder = false;
+  if (hadLanding) { landTrail.push("wsdown-lost"); landToast("the connection dropped before the jump; scroll to it again"); }
+});
 
 function chatTail(msg: any) {
   // A tail for a tab held as SKELETON (2026-09-07) violates the contract — the kernel sends such a tab status
@@ -17397,7 +17419,13 @@ function chatTurns(msg: any): void {
   const span = Array.isArray(msg.span) && msg.span.length === 2 ? msg.span as [number, number] : null;
   if (span) gapLoading.delete(gapKey(msg.id, span[0], span[1]));
   const s = sessions.get(msg.id);
-  if (!s || !span || !(span[1] > span[0])) return;
+  if (!s) return;
+  if (!span || !(span[1] > span[0])) {
+    // an OLDER host's page reply carries no span (or an empty one): the gap cannot be placed, so tell the reader and free the gap
+    // instead of dropping it silently (T386 stage 2, low 2). A scroll-driven fill shows no notice, so no toast beyond the row.
+    if (Array.isArray(msg.events) && !span) { landTrail.push("turns-nospan"); vscodeApi?.postMessage({ type: "locateDiag", id: msg.id, ok: false, trail: landTrail.slice(), kind: "nospan" }); }
+    return;
+  }
   stripOptimistic(s);
   insertRegionRun(s, span[0], span[1], (msg.events || []) as ChatEvent[]);
   reconcileOptimistic(s);
@@ -17413,19 +17441,29 @@ function chatTurns(msg: any): void {
 function fillInPlace(sid: string, v: View | undefined): void {
   const content = document.getElementById("content"), s = sessions.get(sid);
   if (!content || !v || !s || sid !== activeId) { showActive(); return; }
-  const topBefore = content.scrollTop, shBefore = content.scrollHeight;
+  const topBefore = content.scrollTop;
   const keep = captureScrollAnchor(content, v);
-  // the window is rendered AROUND the reader's row (as a deep link's recovery renders around its target): a plain syncView of a stale view
-  // renders the TAIL window, whose rebuild lands at the bottom and loses the row the reader was looking at
+  // a row is the anchor only when it is actually ON SCREEN (T386 stage 2, medium 3): captureScrollAnchor returns the first row whose
+  // bottom clears the viewport top, which for a reader standing INSIDE a gap (a jump to the head, a cancelled head-gap landing) is a
+  // rendered row far BELOW them; writing that row back to its offset moved the view by the whole fill. keep.y is the row's top from the
+  // viewport top, so it is on screen only when 0 <= keep.y < the viewport height.
+  const keepVisible = !!keep && keep.y >= -1 && keep.y < content.clientHeight - 1;
   const items = displayItems(s);
-  const idx = keep ? s.events.findIndex((e) => e.uuid === keep.uuid) : -1;
-  let u = idx >= 0 ? items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(idx) : it.kind === "event" && it.index === idx) : -1;
-  if (u < 0 && idx >= 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= idx));
+  let u = -1;
+  if (keepVisible && keep) {
+    const idx = s.events.findIndex((e) => e.uuid === keep.uuid);
+    u = idx >= 0 ? items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(idx) : it.kind === "event" && it.index === idx) : -1;
+    if (u < 0 && idx >= 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= idx));
+  } else {
+    u = unitAtScroll(v, content);   // no row on screen: the reader sits in a gap/spacer — render the window around the unit under the viewport top
+  }
   v.stick = false;   // a fill never follows the tail: the reader is where they are
   if (u >= 0) renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), s.status.state === "working" || s.status.state === "compacting");
   else syncView(sid);
-  const row = keep ? (v.el.querySelector(`.turn[data-uuid="${cssEscape(keep.uuid)}"]`) as HTMLElement | null) : null;
-  const y = row && keep ? row.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop - keep.y : topBefore + (content.scrollHeight - shBefore);
+  // a visible row goes back to its exact offset; with no row on screen the reader keeps their scrollTop (at the document head, 0 stays 0
+  // and the filled turns appear at the top; deeper in a gap they keep their place, the fill inserting around them), never a jump by the growth
+  const row = keepVisible && keep ? (v.el.querySelector(`.turn[data-uuid="${cssEscape(keep.uuid)}"]`) as HTMLElement | null) : null;
+  const y = row && keep ? row.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop - keep.y : topBefore;
   writeScroll(content, y, "gap-fill", false, topBefore);
   if (activeId) applyCommentMarks(activeId);
   scheduleRailSticky();
@@ -17570,8 +17608,17 @@ function chatWindow(msg: any) {
     // a missing says the anchor is gone; neither is silent (the notice's cancel is the only silence).
     if (msg.id === activeId && (pendingAnchor === anchorUuid || cancelled || wasLanding)) {
       pendingAnchor = null; anchorPendingOlder = false;
-      if (!cancelled) { landTrail.push(Array.isArray(msg.span) ? "window-missing" : "window-nospan"); landToast(Array.isArray(msg.span) ? "couldn't locate this in the transcript" : "this session's host is an older version; open it there to jump"); }
+      const nospan = !Array.isArray(msg.span);
+      const from = preJumpFrom.get(msg.id);
+      const cRestore = document.getElementById("content");
+      if (from != null && cRestore) writeScroll(cRestore, from, "land-cancel", false, cRestore.scrollTop);   // the pre-jump moved the reader; put them back where they were (low 2)
+      if (!cancelled) {
+        landTrail.push(nospan ? "window-nospan" : "window-missing");
+        vscodeApi?.postMessage({ type: "locateDiag", id: msg.id, ok: false, trail: landTrail.slice(), anchor: anchorUuid, kind: nospan ? "nospan" : "missing" });   // the honest end files its row (low 2)
+        landToast(nospan ? "this session's host is an older version; open it there to jump" : "couldn't locate this in the transcript");
+      }
     }
+    preJumpFrom.delete(msg.id);
     return;
   }
   // T386 stage 2: the window becomes a RUN among the session's regions by its turn span; the gaps on either side shrink or split and

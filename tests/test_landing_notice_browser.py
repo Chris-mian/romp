@@ -86,7 +86,31 @@ await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-
 await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const late2 = await state(); const rowLate2 = await rowAtTop(); const regionsLate = await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null));
 const target2 = await onScreen(deep2);
-process.stdout.write("RESULT:" + JSON.stringify({ asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
+// ROAD 4 (T386 stage 2, medium 3): a fill while the reader stands INSIDE a gap must not jump them. At the transcript head (scrollTop 0,
+// no row on screen) a held gap-scroll ask, then the release: the head page fills and its first turn sits at the top, scrollTop still ~0.
+await page.evaluate(() => { window.__hold.add("loadTurns"); });
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, await sentOf("loadTurns"), { timeout: 8000 }).catch(() => {});
+const head4 = await page.evaluate(() => { const c = document.getElementById("content"); return { top: c.scrollTop, rows: c.querySelectorAll("#content .turn[data-uuid]").length }; });
+await page.evaluate(() => { window.__hold.delete("loadTurns"); const n = window.__release(); return n; });
+await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
+const filled4 = await page.evaluate(() => { const c = document.getElementById("content"); const cTop = c.getBoundingClientRect().top; const first = c.querySelector("#content .turn[data-uuid]"); const r = first ? first.getBoundingClientRect() : null; return { top: c.scrollTop, firstTop: r ? Math.round(r.top - cTop) : null, firstVisible: !!r && r.bottom > cTop && r.top < c.getBoundingClientRect().bottom }; });
+// ROAD 5 (T386 stage 2, medium 1): a landing's window ask lost to a socket death must not wedge the gap. A deep link into a gap (ask on
+// the wire), the socket killed, restored; the gap met again asks a fresh loadTurns and a later deep link lands.
+const deep5 = "11111111-2222-3333-4444-" + pad(2 * 25);
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight; });   // back to the tail, an attached start
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep5, anchorT: cfg.base + 2 * 25 });
+await page.waitForFunction(() => !!document.querySelector(".tx-landing-notice") && getComputedStyle(document.querySelector(".tx-landing-notice")).display !== "none", null, { timeout: 8000 }).catch(() => {});
+await page.evaluate(() => { window.__ws && window.__ws.close(); });   // the socket dies with the ask in flight; the shim redials
+await page.waitForTimeout(400);
+const afterDrop5 = await state();
+const turnsBefore5 = await sentOf("loadTurns");
+await page.waitForFunction(() => document.querySelector(".tx-loading-pill, .tx-gap") ? true : true, null, { timeout: 3000 }).catch(() => {});
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });   // meet the head gap again on the healed socket
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, turnsBefore5, { timeout: 10000 }).catch(() => {});
+const reask5 = (await sentOf("loadTurns")) - turnsBefore5;
+process.stdout.write("RESULT:" + JSON.stringify({ head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 130, bootTop: boot.top }) + "\n");
@@ -125,6 +149,21 @@ class ServedLandingNotice(WindowLab):
         kinds = [x["kind"] for x in l["regions"]]
         self.assertIn(kinds, (["run", "gap", "run"], ["gap", "run", "gap", "run"]), "the window is a run among the regions, a gap between it and the tail (a head gap too when it did not reach the head): %r" % l["regions"])
         self.assertTrue(any(row["ok"] for row in r["rows1"]), "the landing filed its row: %r" % r["rows1"])
+
+    def test_a_fill_at_the_transcript_head_keeps_the_reader_and_lands_the_head_at_the_top(self):
+        # MEDIUM 3: a reader inside a gap (scrollTop 0, no row on screen) is not jumped by the fill
+        r = self._result()
+        self.assertLessEqual(abs(r["head4"]["top"]), 2, "the reader was at the transcript head before the fill: %r" % r["head4"])
+        f = r["filled4"]
+        self.assertLessEqual(abs(f["top"]), 8, "the head fill did not jump the reader (scrollTop stayed ~0): %r" % f)
+        self.assertTrue(f["firstVisible"], "the first filled turn is on screen: %r" % f)
+        self.assertLessEqual(abs(f["firstTop"]), 8, "…at the top: %r" % f)
+
+    def test_a_landing_ask_lost_to_a_socket_death_does_not_wedge_the_gap(self):
+        # MEDIUM 1: a landing's window ask dropped at a dead socket; the gap re-asks on the healed socket
+        r = self._result()
+        self.assertFalse(r["afterDrop5"]["notice"], "the socket death brought the notice down: %r" % r["afterDrop5"])
+        self.assertGreaterEqual(r["reask5"], 1, "the gap asked a fresh page after the socket healed, not wedged for the page's life: %r reask" % r["reask5"])
 
     def test_a_span_less_window_from_an_older_host_tells_the_reader_and_is_not_dropped_silently(self):
         # T386 stage 2, medium 2: a chatWindow with events but no span is an older host's pre-regions reply

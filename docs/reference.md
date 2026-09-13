@@ -2016,7 +2016,10 @@ announces `chatProto2` in its `caps`:
 - `loadTurns {id, lo, hi}` asks for a gap's page directly and is answered by
   `chatTurns {id, span, events, head}` (`head: true` at the head, the head cards
   riding along; an empty or out-of-range span is `missing`); `loadNewer` is
-  retired (`missing, retired`);
+  retired (`missing, retired`): an OLD bundle against this kernel is the only
+  caller left, and its detached client snaps to the tail on the retired reply,
+  dropping the pages it had walked — acceptable, since an old bundle holds no
+  regions to keep them in;
 - the kernel's per-client base is TAIL-ONLY: a reply moves the base's first edge
   only when its span reaches the tail run, so the tail's deltas keep flowing to a
   reader in older history; a reconnect's `ready` starts a fresh base. A run whose
