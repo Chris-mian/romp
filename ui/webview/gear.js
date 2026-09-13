@@ -24,6 +24,7 @@
 var gclock = require('./gesture-clock.js');   // every `gt` below is minted here (see that file)
 var BN = require('./backend-names.ts');   // the backends' user-facing names and the offer rule (T288)
 var TW = require('./tab-widgets.ts');   // the tab-title widgets (T379): the registry the Tab widgets section's rows render from, the strip's own module
+var LS = require('./landing-settle.ts');   // gestureEvidence: the chat's rule for telling the user's scroll from the browser's own (the section ask ends only on input, T379 follow-up)
 function kb() { return (typeof window !== 'undefined' && window.__rompKernelBase) || ''; }
 function ku(path) {
   var tok = (typeof window !== 'undefined' && window.__rompKernelToken) || '';
@@ -527,26 +528,147 @@ function initGear(post, opts) {
     try { localStorage.setItem(TAB_KEY, t); } catch (e) {}
     return t;
   }
-  Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); selectTab(b.getAttribute('data-tab')); }); });
+  Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); selectTab(b.getAttribute('data-tab')); clearSectionScroll(); }); });   // a pill change starts its pane at the top with no section room left behind (the follow-up's round one, LOW 1)
   // a SECTION of the tab (the user 2026-09-12): an ask may name a section of the tab it opens (data-section on the section's
   // head; the strip's tab-widgets gear asks for chat / tabwidgets), and the card scrolls so that head sits at its top, under
   // the padding. Looked up in the SHOWN pane only, after the panel is displayed (rects exist only then). Set on the card,
   // the modal's one scroll box, never scrollIntoView, which would scroll the host document too.
+  // the one pending section ask (round two, LOW 2): an observer registered for an unlaid-out ask is disconnected on close and
+  // before a new ask, so a later open never fires a stale scroll; a plain open (no section) resets the card (LOW 7)
+  var sectionRO = null, sectionAsk = null, sectionWrote = false;
+  // THE ASK'S OWN WRITES, marked (round three, LOW 1): a scrollTop write that moves the card owes exactly one scroll event, its
+  // echo, which the scroll handler below consumes and never reads as the user's, even when the user's press on a row fell within
+  // the input window before it (the ask died 0 and 60 ms after a press, measured by the review). A write that did not move owes
+  // none, and must not eat a later gesture. The chat's writeScroll pairs a write with its echo the same way (lastScrollWriteAfter).
+  // A move is what the FRAME renders (round four, MEDIUM 1): the value the frame started from (from, read by the caller before any
+  // layout it changed) against the value after the write. go() drops the room to measure, which clamps the card from 594 to 0, and
+  // lands it back at 594: Chromium renders no net move and fires no scroll event, so a mark read off the clamped intermediate was a
+  // debt the user's first real scroll paid (a wheel tick moved the card and the ask stood, measured by the review). And a debt no
+  // event pays (two writes in one frame netting to its start) is forgiven two frames on, before it could eat the user's own scroll:
+  // the echo comes with the next frame's scroll events or never.
+  function writeCard(card, top, from) {
+    var before = from === undefined ? card.scrollTop : from;
+    card.scrollTop = top;
+    if (card.scrollTop === before) return;
+    sectionWrote = true;
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(function () { requestAnimationFrame(function () { sectionWrote = false; }); });
+  }
+  function clearSectionScroll() {
+    if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
+    sectionAsk = null;
+    var card = document.querySelector('#rsettings .rs-card');
+    if (card) { writeCard(card, 0); card.removeAttribute('data-section-landed'); }
+    Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-pane'), function (pn) { pn.style.paddingBottom = ''; });
+  }
   function showSection(section) {
+    if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
+    sectionAsk = null;
+    var card0 = document.querySelector('#rsettings .rs-card');
+    if (card0) card0.removeAttribute('data-section-landed');   // a new ask's landing is its own: the earlier mark goes with the earlier ask
     if (typeof section !== 'string' || !section) return;
     var sec = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="' + section + '"]');
     var card = document.querySelector('#rsettings .rs-card');
-    if (!sec || !card) return;
-    var go = function () { card.scrollTop = card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - (parseFloat(getComputedStyle(card).paddingTop) || 0); };
-    if (card.clientHeight > 0) { go(); return; }   // laid out already: an open panel, or a host that never hides this document
-    // Not laid out yet: in the shell this document sits in an iframe that is display:none until the shell hears the
-    // settings-open message feedFull just posted, and a scroll set on a box with no size clamps to zero (the served lab
-    // measured 0 on the first open). The card gaining a size IS the event that says the panel is visible, so the
-    // scroll rides it, once. No timer: a frame or a delay would guess at the shell's round trip.
+    var pane = sec && sec.closest('.rs-pane');
+    if (!sec || !card || !pane) return;
+    var go = function () {
+      var top0 = card.scrollTop;   // where the frame started: the room drop below clamps the card, and the landing is measured against this, not the clamp
+      pane.style.paddingBottom = '';   // measure the pane's own end: a re-ask on an already roomed pane must not read its earlier room
+      var cs = getComputedStyle(card), padT = parseFloat(cs.paddingTop) || 0, padB = parseFloat(cs.paddingBottom) || 0;
+      // room at the pane's END so the head can reach the top even when the section is the last thing in the pane (round two,
+      // LOW 1: the scroll used to stop at the card's end with the head far below the padding): the pane grows by what is
+      // missing below the section, cleared on close, a plain open or a pill change. The room is sized to the card's CAP
+      // (max-height, 88vh, a content box), not its current height: below the cap the card is content-driven and grows
+      // under any room added, so the head stopped short on tall windows (152px off at 1200px, measured by the review);
+      // sized to the cap, the card lands exactly there in one pass, whatever the window. A second measurement after the
+      // write takes up rounding, or a cap the computed style did not resolve to pixels.
+      var below = function () { return pane.getBoundingClientRect().bottom - sec.getBoundingClientRect().top; };
+      var land = function () {
+        writeCard(card, card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - padT, top0);
+        card.setAttribute('data-section-landed', section);   // the landing's mark: what a lab waits for before it measures (never a delay)
+      };
+      var capH = parseFloat(cs.maxHeight);
+      if (!isFinite(capH) || capH <= 0) { pane.style.paddingBottom = ''; land(); return; }   // no cap (not this sheet's case: the card is capped at 88vh): the card fits its content, nothing to room for
+      // the cap is a BORDER box on the served page (feed.css: every element is border-box), so the content the room fills is the
+      // cap less the paddings and borders; under a content box (no such rule) the cap is the content itself
+      var edges = cs.boxSizing === 'border-box' ? padT + padB + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0) : 0;
+      var content = capH - edges;
+      var missing = content - below();
+      pane.style.paddingBottom = missing > 0 ? Math.ceil(missing) + 'px' : '';
+      var short = (card.clientHeight - padT - padB) - below();   // measured ONCE after the write: rounding
+      if (short > 0) pane.style.paddingBottom = Math.ceil(Math.max(missing, 0) + short) + 'px';
+      land();
+    };
+    var ask = {};
+    sectionAsk = ask;
+    if (card.clientHeight > 0) go();   // laid out already: an open panel, or a host that never hides this document
+    // The ask STANDS until the user's own input scrolls the card, a pill changes the pane, or the panel closes: the scroll
+    // re-lands the head whenever the pane's or the card's size changes, whatever scroll events came before (a browser's scroll
+    // anchoring nudge, the clamp a taller window applies: neither is the user's). Two reasons, both events, never timers: in the shell this document
+    // sits in an iframe that is display:none until the shell hears the settings-open message feedFull just posted, and
+    // a scroll set on a box with no size clamps to zero (the served lab measured 0 on the first open), so the card
+    // gaining a size is the first landing; and a layout that settles AFTER that first size (a web font arriving, a list
+    // filling) moves everything above the section, so the head slid off the top on a slow runner (CI, 2026-09-13: neither
+    // at the top nor at the end). Only a size change re-lands it, so a picker opening over the pane moves nothing.
     if (typeof ResizeObserver !== 'function') return;
-    var ro = new ResizeObserver(function () { if (card.clientHeight > 0) { ro.disconnect(); go(); } });
-    ro.observe(card);
+    sectionRO = new ResizeObserver(function () { if (sectionAsk === ask && card.clientHeight > 0) go(); });
+    sectionRO.observe(card);
+    sectionRO.observe(pane);
   }
+  // The USER's scroll ends a standing section ask; the browser's never does. A scroll event is the user's only with INPUT
+  // evidence: a wheel, a key or a touch within the settle rule's window before it, or a pointer holding the scroller's gutter
+  // (a thumb drag), the chat's own rule (landing-settle.ts gestureEvidence). A scroll delta is no evidence: Chrome's scroll
+  // anchoring moved the card 2px after a late layout settle, and a taller window's clamp moved it 143px, and both were read as
+  // the user's, killing the ask (the follow-up's review, 2026-09-13).
+  // The inputs are read on the WINDOW with capture, the way the chat reads them (render.ts settleInput), never on the card
+  // (round three, MEDIUM): the card has no tabindex, so a key scroll after a click in it targets BODY and never reached a
+  // listener on the card; the ask stood and the next size change threw the user's scroll away. Scoped to the card: a wheel, a
+  // touch or a press by its target's containment; a key by the card being the scroll focus (the user's last press fell in it,
+  // or the focus sits in it), and never while a field has the focus (typing scrolls the field, not the card).
+  (function () {
+    var card = document.querySelector('#rsettings .rs-card');
+    if (!card) return;
+    var inputAt = 0, held = false, pressedIn = false;
+    var inCard = function (e) { return e.target instanceof Node && card.contains(e.target); };
+    // a FIELD is an element that consumes the scroll keys (Page, Home, End, the arrows): a text-like input, a textarea, a select, a
+    // contenteditable. A checkbox, radio, button or range input is none (round four, MEDIUM 2: PageUp after a click on a checkbox row
+    // scrolled the card with no evidence counted, and the next size change re-landed over the user's scroll)
+    var NOT_FIELDS = { checkbox: 1, radio: 1, button: 1, submit: 1, reset: 1, range: 1, color: 1, file: 1, image: 1 };
+    var inField = function () { var a = document.activeElement; if (!a) return false;
+      if (a.tagName === 'INPUT') return !NOT_FIELDS[String(a.getAttribute('type') || 'text').toLowerCase()];
+      return a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || !!a.isContentEditable; };
+    var keyFocus = function () { var a = document.activeElement; return pressedIn || (!!a && a !== document.body && card.contains(a)); };
+    var onInput = function (e) {
+      if (e.type === 'keydown') { if (inField() || !keyFocus()) return; }
+      else if (e.type === 'pointerdown') {
+        pressedIn = inCard(e);
+        if (!pressedIn) return;
+        // the hold latches on the scroller's GUTTER only (round three, LOW 2): a press whose target is the card's own padding is a
+        // press like any other, with the timed window, not a grab that outlives it
+        var r = card.getBoundingClientRect();
+        // offsets from the PADDING box (the border box less clientLeft and clientTop), the box clientWidth and clientHeight measure
+        // (round four, LOW 2: measured from the border box, the innermost content pixel column read as the gutter)
+        if (LS.scrollerGrab(false, e.clientX - r.left - card.clientLeft, e.clientY - r.top - card.clientTop, card.clientWidth, card.clientHeight)) held = true;
+      }
+      else if (!inCard(e)) return;
+      inputAt = performance.now();
+    };
+    ['wheel', 'keydown', 'touchstart', 'pointerdown'].forEach(function (k) { window.addEventListener(k, onInput, { capture: true, passive: true }); });
+    window.addEventListener('pointerup', function () { held = false; });
+    window.addEventListener('pointercancel', function () { held = false; });
+    // a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round three, LOW 2; the chat's
+    // round four): the hold ends with the page's focus or visibility as well, or a lost release would make the next scroll of
+    // any origin end the ask
+    window.addEventListener('blur', function () { held = false; });
+    document.addEventListener('visibilitychange', function () { held = false; });
+    card.addEventListener('scroll', function () {
+      if (sectionWrote) { sectionWrote = false; return; }   // the ask's own write echoing (one event per moving write): never the user's
+      if (!sectionAsk || !LS.gestureEvidence(inputAt, performance.now(), held)) return;
+      if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
+      sectionAsk = null;
+      card.removeAttribute('data-section-landed');
+    });
+  })();
+
   // ── THE WIDGET ROWS (T379) ── one per registered widget: the live demo (a miniature tab rendering the widget over a
   // synthetic status through the SAME render the strip uses), the name and what it does, the sliding switch, and the
   // widget's own options as house pickers. Built once; every paint re-fills in place (click-safe). A change writes
@@ -1405,16 +1527,16 @@ function initGear(post, opts) {
       document.body.classList.remove('rs-lifted'); document.body.classList.remove('rs-pane-gone');
       clearPaneVars();
       window.removeEventListener('resize', onRsResize); } }
-  function closeSettings() { p.hidden = true; setModalCls(false); feedFull(false); }
+  function closeSettings() { clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
   function openSettings(tab, section) {
-    if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); showSection(section); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)
+    if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); if (section) showSection(section); else clearSectionScroll(); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)
     selectTab(tab);
     // Signal the SHELL first, then measure (the picker's order, adopted 2026-08-09): feedFull posts
     // settings-open, which is what un-hides #feed-pane when the feed is toggled off — measuring first
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fl) fl.value = s.fileLinkPane === 'pane' ? 'pane' : 'chat'; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); showSection(section); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fl) fl.value = s.fileLinkPane === 'pane' ? 'pane' : 'chat'; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin
