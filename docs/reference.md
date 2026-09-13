@@ -1543,10 +1543,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   stage without the kernel alive, and `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
-  instead of a whole parse, T402), `full` with
+  instead of a whole parse, and `restore:chainRefused`, a document that stood
+  but whose leaf tail does not chain onto it: a null root, a parent in the
+  pre-cut interior or an unknown one, any record type; the restore falls to
+  the whole parse, at boot and after a demotion alike, T402), `full` with
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
+  `descent` when the new leaf does not chain to the old through the delta,
   `rewrite` when the leaf's record entry was replaced by a from-zero read
-  under a new generation, `nonleaf` when a lineage file moved),
+  under a new generation, `nonleaf` when a lineage file moved or grew,
+  `inputs`, `recs-gone`, `no-leaf-slot`, `empty-graph`, `uuid-known`,
+  `boundary`, `summary`, `promptid`, `skill-link`, `ts`, `kept`),
   `full:noDocument`, `full:noDir` (no checkpoint directory), `full:refused` (a document that stood but did not verify,
   its fallback reason counted), `bypass` (a pending cut armed on the session)
   and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,

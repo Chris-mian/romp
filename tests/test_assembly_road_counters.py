@@ -142,60 +142,159 @@ class AssemblyRoadCounters(Harness):
         self.assertEqual(em.asm_checkpoint_stats()["removed"], {"sweep": 1})
         self.assertFalse(em._asm_ckpt_file(path).exists())
 
-    def _five_shape_file(self, name):
-        """Three turns, an attached compaction, two turns: the document's pre-cut records u1 a1 u2 a2 u3 a3."""
+    SIBLING = "cccccccc-0000-0000-0000-000000000000"
+
+    def _five_shape_file(self, name, resume=False):
+        """Three turns, an attached compaction, two turns: the document's pre-cut records u1 a1 u2 a2 u3 a3 (the spine tip a3).
+        With `resume`, a sibling file beside the leaf holds x1 x2 and u1 parents x2 (a two-file lineage)."""
         t0 = NOW
-        recs = [G.uline(t0, "first ask", "u1"), G.aline(t0 + 10, "first reply", "a1", "u1", stop="end_turn"),
+        recs = [G.uline(t0, "first ask", "u1", "x2" if resume else None), G.aline(t0 + 10, "first reply", "a1", "u1", stop="end_turn"),
                 G.uline(t0 + 20, "second ask", "u2", "a1"), G.aline(t0 + 30, "second reply", "a2", "u2", stop="end_turn"),
                 G.uline(t0 + 40, "third ask", "u3", "a2"), G.aline(t0 + 50, "third reply", "a3", "u3", stop="end_turn"),
                 G.compact_line(t0 + 600, "b1", "a3"), G.compact_summary_line(t0 + 601, "s1", "b1"),
                 G.uline(t0 + 610, "after the compaction", "u4", "s1"), G.aline(t0 + 620, "fourth reply", "a4", "u4", stop="end_turn"),
                 G.uline(t0 + 630, "then more", "u5", "a4"), G.aline(t0 + 640, "fifth reply", "a5", "u5", stop="end_turn")]
-        return self.write(name, recs), t0
+        path = self.write(name, recs)
+        if resume:
+            sib = os.path.join(os.path.dirname(path), self.SIBLING + ".jsonl")
+            with open(sib, "w") as fh:
+                for r in [G.uline(t0 - 100, "sibling parent ask", "x1"), G.aline(t0 - 80, "sibling reply", "x2", "x1", stop="end_turn")]:
+                    fh.write(json.dumps(r) + "\n")
+            return path, t0, sib
+        return path, t0
 
-    def _cold(self, path):
+    def _parse_lineage(self, path, cands, modes=None):
+        tree = em.parse_session(path, rompuuid=SID, name="impl", dir="/TESTDIR", candidate_files=list(cands),
+                                states=None, postal_log=[], now=NOW, asm_mode_out=modes)
+        self._trees[path] = tree
+        return tree
+
+    def _cold(self, path, cands=None):
         self.fresh(); saved = em._CKPT_DIR_FN; em._CKPT_DIR_FN = None
         try:
-            return _strip(self.parse(path))
+            return _strip(self._parse_lineage(path, cands or [path]))
         finally:
             em._CKPT_DIR_FN = saved
 
-    def test_a_demoted_entry_falls_to_the_restore_road_only_when_the_tail_chains_at_or_after_the_cut(self):
-        """T402 round one: a demoted entry went straight to a whole parse; the restore road stands for a descent only when the
-        tail re-parents at or after the document's cut. Five shapes against a COLD whole parse: (a) a rewind onto a pre-cut
-        interior record and (b) a /clear fork (a null root) in the tail are graph invalidations the document's byte checks
-        cannot see, so they parse whole, as before; (c) an api_error spur after the cut, (d) a rewind onto a post-cut record
-        and (e) a rewind onto the LAST pre-cut record take the restore road with no whole read."""
-        shapes = {
-            "a_rewind_pre_interior": (lambda t0: [G.uline(t0 + 700, "a rewind before the cut", "u_rw", "a1")], "full"),
-            "b_clear_fork": (lambda t0: [G.uline(t0 + 700, "a clear fork", "u_fork", None)], "full"),
-            "c_api_error_spur": (lambda t0: [G.api_error_line(t0 + 700, "e1", "u5"), G.uline(t0 + 710, "after the spur", "u6", "e1")], "restore"),   # the spur roots at the turn's opener (T209's shape)
-            "d_rewind_post_cut": (lambda t0: [G.uline(t0 + 700, "a rewind after the cut", "u_rw2", "a4")], "restore"),
-            "e_rewind_last_pre": (lambda t0: [G.uline(t0 + 700, "a rewind onto the cut", "u_rw3", "a3")], "restore"),
-        }
-        for name, (tail, road) in shapes.items():
+    def _append(self, path, recs):
+        with open(path, "a") as fh:
+            for r in recs:
+                fh.write(json.dumps(r) + "\n")
+
+    def _served(self, path, cands=None):
+        """The tree the parse serves now, hydrated and stripped, with the parse counters."""
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReads"] = {}
+        tree = self._parse_lineage(path, cands or [path])
+        em.hydrate(tree, SID)                                               # a restored tree's bodies, so the strip can read them
+        return _strip(tree), em.asm_checkpoint_stats()["parse"], em.record_cache_stats()["wholeReads"]
+
+    # The tail shapes (appended past the document's cut) and whether the tail chains onto the document: "restore" when every
+    # parent-bearing record parents the pre-cut spine tip (a3) or a tail record, "whole" otherwise.
+    SHAPES = {
+        "a_rewind_pre_interior": (lambda t0: [G.uline(t0 + 700, "a rewind before the cut", "u_rw", "a1")], "whole"),
+        "b_clear_fork": (lambda t0: [G.uline(t0 + 700, "a clear fork", "u_fork", None)], "whole"),
+        "c_api_error_spur_at_opener": (lambda t0: [G.api_error_line(t0 + 700, "e1", "u5"), G.uline(t0 + 710, "after the spur", "u6", "e1")], "restore"),
+        "d_rewind_post_cut": (lambda t0: [G.uline(t0 + 700, "a rewind after the cut", "u_rw2", "a4")], "restore"),
+        "e_rewind_spine_tip": (lambda t0: [G.uline(t0 + 700, "a rewind onto the cut", "u_rw3", "a3")], "restore"),
+        "f_two_step_rewind": (lambda t0: [G.uline(t0 + 700, "a rewind after the cut", "u_r1", "a4"), G.aline(t0 + 710, "its reply", "a_r1", "u_r1", stop="end_turn"),
+                                          G.uline(t0 + 720, "then a rewind before the cut", "u_r2", "a2")], "whole"),
+        "g_later_crossing": (lambda t0: [G.uline(t0 + 700, "chains on", "u6", "a5"), G.aline(t0 + 710, "reply", "a6", "u6", stop="end_turn"),
+                                         G.uline(t0 + 720, "then crosses into the interior", "u7", "a1")], "whole"),
+        "h_orphan_parent": (lambda t0: [G.uline(t0 + 700, "an orphan", "u_o", "00000000-no-such-record")], "whole"),
+        "i_interior_api_error_alone": (lambda t0: [G.api_error_line(t0 + 700, "e2", "a1")], "whole"),
+        "j_interior_api_error_with_reply": (lambda t0: [G.api_error_line(t0 + 700, "e2", "a1"), G.uline(t0 + 710, "after the spur", "u6", "e2")], "whole"),
+        "k_stop_hook_summary_spur": (lambda t0: [G.stop_hook_line(t0 + 700, "sh1", "a2")], "whole"),
+        "l_boundary_in_tail": (lambda t0: [G.compact_line(t0 + 700, "b2", "a5"), G.compact_summary_line(t0 + 701, "s2", "b2"),
+                                           G.uline(t0 + 710, "after a second compaction", "u6", "s2")], "boundary"),
+    }
+
+    def _documented(self, name, resume=False):
+        """A five-shape file with its document standing and its entry restored from it; the counters reset."""
+        made = self._five_shape_file(name, resume=resume)
+        path, cands = made[0], ([made[0], made[2]] if resume else [made[0]])
+        self.fresh(); self._parse_lineage(path, cands); self.assertTrue(self.doc(path))
+        self.fresh(); self._parse_lineage(path, cands); self._reset()          # the entry stands, restored from the document
+        return made
+
+    def _check(self, name, tree, parse, reads, road, path, cands=None, reason="descent", boot=False):
+        if reason is not None:
+            self.assertEqual(parse.get("g:" + reason), 1, "%s: the gates demoted the entry for %s: %s" % (name, reason, parse))
+        if road == "restore":
+            self.assertEqual(parse.get("restore"), 1, "%s: the restore road: %s" % (name, parse))
+            self.assertEqual(parse.get("restore:afterDemote", 0), 0 if boot else 1, "%s: %s" % (name, parse))
+            if not boot and reason != "rewrite":                          # a boot's parse primes the leaf's reader entry from zero
+                self.assertEqual(reads, {}, "%s: no whole read" % name)   #  before the assembly (unchanged here); a rewrite IS a
+                #                                                            from-zero read of the leaf
+        elif road == "whole":
+            self.assertEqual(parse.get("restore:chainRefused"), 1, "%s: the tail does not chain onto the document: %s" % (name, parse))
+            self.assertEqual(parse.get("full:refused" if boot else "full:demoted"), 1, "%s: the whole parse: %s" % (name, parse))
+        else:
+            self.assertEqual(parse.get("full:demoted"), 1, "%s: a boundary in the tail parses whole: %s" % (name, parse))
+        self.assertEqual(tree, self._cold(path, cands), "%s: the tree equals a cold whole parse" % name)
+
+    def test_a_restore_over_a_document_stands_only_when_the_tail_chains_onto_it(self):
+        """T402 rounds one and two: a restore over a document (after a descent demotion here) serves the document's pre-cut
+        verdicts as they stand, so a tail that re-parents into the pre-cut interior, forks from a null root, anchors a system spur
+        before the cut or names a parent no transcript holds must refuse to the whole parse, whatever the record's type; a tail
+        whose every parent is the pre-cut spine tip or a tail record chains on. Twelve shapes, each against a cold whole parse."""
+        for name, (tail, road) in self.SHAPES.items():
             with self.subTest(shape=name):
-                path, t0 = self._five_shape_file("shape-" + name)
-                self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
-                self.fresh(); self.parse(path); self._reset()               # the entry stands, restored from the document
-                with em._JSONL_CACHE_LOCK:
-                    em._RECORD_CACHE_STATS["wholeReads"] = {}
-                with open(path, "a") as fh:
-                    for r in tail(t0):
-                        fh.write(json.dumps(r) + "\n")
+                path, t0 = self._documented("shape-" + name)
+                self._append(path, tail(t0))
                 em._read_jsonl_entry(path, tail_ok=True)                   # the entry grows; the gates see the delta
-                tree = self.parse(path)
-                em.hydrate(tree, SID)                                       # a restored tree's bodies, so the strip can read them
-                tree = _strip(tree)
-                parse = em.asm_checkpoint_stats()["parse"]
-                self.assertEqual(parse.get("g:descent"), 1, "%s: the descent check demoted the entry: %s" % (name, parse))
-                if road == "restore":
-                    self.assertEqual(parse.get("restore:afterDemote"), 1, "%s: the restore road: %s" % (name, parse))
-                    self.assertEqual(em.record_cache_stats()["wholeReads"], {}, "%s: no whole read" % name)
-                else:
-                    self.assertEqual(parse.get("full:demoted"), 1, "%s: the whole parse, as before: %s" % (name, parse))
-                    self.assertEqual(parse.get("restore:descentRefused"), 1, "%s: the tail re-parents into the prefix: %s" % (name, parse))
-                self.assertEqual(tree, self._cold(path), "%s: the tree equals a cold whole parse" % name)
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, road, path, reason="boundary" if road == "boundary" else "descent")
+
+    def test_the_chain_rule_runs_for_a_rewrite_demotion_after_the_caches_own_eviction(self):
+        """Round two, medium 1: the rule ran for descent only, and a plain LRU eviction of the leaf's record entry (the cache's byte
+        budget) makes the next parse's reason g:rewrite, which reached the restore unguarded. The entry is evicted through the
+        cache's own loop (a budget of one byte and a read of another file), never popped by hand."""
+        for name in ("a_rewind_pre_interior", "b_clear_fork", "c_api_error_spur_at_opener"):
+            with self.subTest(shape=name):
+                tail, road = self.SHAPES[name]
+                path, t0 = self._documented("evict-" + name)
+                self._append(path, tail(t0))
+                other = self.write("evict-other-" + name, [G.uline(t0, "another file", "o1")])
+                saved = em._JSONL_CACHE_BUDGET_BYTES; em._JSONL_CACHE_BUDGET_BYTES = 1
+                try:
+                    em._read_jsonl_entry(other, tail_ok=False)             # the insert evicts the leaf's entry: the cache's own loop
+                finally:
+                    em._JSONL_CACHE_BUDGET_BYTES = saved
+                with em._JSONL_CACHE_LOCK:
+                    self.assertNotIn(path, em._JSONL_CACHE, "the leaf's record entry evicted")
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, road, path, reason="rewrite")
+
+    def test_a_nonleaf_demotion_is_refused_by_the_loads_lineage_witness_before_any_chain_rule(self):
+        """Round two: the nonleaf demotion driven. A lineage file that grew (or was touched) demotes the entry as nonleaf; the
+        document's own byte checks refuse it first (the skipped file's stat witness: fallbacks.lineage), and the parse is whole,
+        equal to a cold parse. The rule's other nonleaf road, a lineage file's reader entry replaced under a new generation
+        (the gates' line for a file with a cut of its own), is not reachable from these shapes: the writer skips every lineage
+        file whose records all sort before the cut, which a resume parent's do, a fork of its own stamped after the compaction
+        included (probed: pre 3 of 3, skip). The chain rule itself is one call inside _asm_restore, shared by every reason."""
+        path, t0, sib = self._documented("nonleaf-grown", resume=True)
+        self._append(sib, [G.uline(t0 - 60, "the sibling grows", "x3", "x2")])
+        em._read_jsonl_entry(sib, tail_ok=True)
+        fb0 = em.asm_checkpoint_stats()["fallbacks"].get("lineage", 0)
+        tree, parse, reads = self._served(path, [path, sib])
+        self.assertEqual((parse.get("g:nonleaf"), parse.get("full:demoted"), parse.get("restore:chainRefused", 0), parse.get("restore", 0)),
+                         (1, 1, 0, 0), "%s" % parse)
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("lineage", 0) - fb0, 1, "the load's lineage witness refused it")
+        self.assertEqual(tree, self._cold(path, [path, sib]))
+
+    def test_the_chain_rule_runs_for_the_boot_restore_too(self):
+        """Round two, item A: with no assembly entry (every kernel boot, every eviction of the entry) the restore ran with no tail
+        check, so a document standing over a rewound or forked tail restored as round one described at the next start. The one
+        rule runs on every restore over a document; a refused boot restore falls to the whole parse and books restore:chainRefused."""
+        for name in ("a_rewind_pre_interior", "b_clear_fork", "i_interior_api_error_alone", "c_api_error_spur_at_opener", "e_rewind_spine_tip"):
+            with self.subTest(shape=name):
+                tail, road = self.SHAPES[name]
+                path, t0 = self._documented("boot-" + name)
+                self._append(path, tail(t0))
+                self.fresh(); self._reset()                                  # a boot: no entry, the document on disk
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, road, path, reason=None, boot=True)
 
     def test_whole_reads_and_hydrations_are_counted_under_the_calling_threads_stage(self):
         """T401: the first instrumented boot said jobs.autoNudge read 162.8 MB, and the callers' rows could not say which caller
