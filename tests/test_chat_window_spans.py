@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""T386 stage 2 (plans/chat-history-regions.md Part B, the kernel): every history reply names its TURN SPAN so the page can place
+it among its regions; a gap's page is asked by span (loadTurns) and served exactly; and the per-client base is TAIL-ONLY: a reply
+moves the client's base only when its span reaches the tail run, so the kernel never withholds a delta from a reader in older
+history (no client is ever detached). Over the render-floor fixture (a restored parse whose pre-cut turns are lazy) the pages
+before the floor and the floor'd list equal the whole build, so a span's events are checked against the whole. Synthetic
+transcripts only (the stage 4a served fixture's builder)."""
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from test_chat_pages import NOW, SID, Harness, _client, _strip, km, transcript  # noqa: E402  the hermetic preamble (a temp XDG root, the kernel loaded from bin) runs on import
+
+
+class WindowSpans(Harness):
+    def _boot(self):
+        recs = transcript(NOW - 86400, turns=120, compact_every=25)
+        self.write(recs)
+        whole = self.whole()
+        self.document()
+        m = self.restored()
+        c, sent = _client()
+        km._send_chat_locked(c, m, None, 0, False)
+        frame = sent[-1]
+        return whole, m, frame, c
+
+    def test_the_full_frame_names_the_tail_runs_first_turn_and_the_page_size(self):
+        whole, m, frame, _ = self._boot()
+        self.assertIn("tailLo", frame, "the full frame names where the tail run starts, so the page can lay a gap before it")
+        self.assertGreater(frame["tailLo"], 0, "a restored parse's tail does not start at the head")
+        self.assertEqual(frame["pageTurns"], km.PAGE_TURNS, "the page the gaps ask by")
+        turns = km._parse(self.leaf, SID, NOW)["turns"]
+        self.assertLessEqual(frame["tailLo"], len(turns))
+        # the tail run's first event is the first event of turn tailLo
+        first_tail = next(a["uuid"] for a in turns[frame["tailLo"]]["atoms"] if a.get("uuid"))
+        resident = [e["uuid"] for e in _strip(frame["events"])]
+        self.assertEqual(resident[0], first_tail, "the run the page holds starts at the named turn")
+
+    def test_load_around_carries_its_span_and_no_connected_verdict(self):
+        whole, m, frame, c = self._boot()
+        turns = km._parse(self.leaf, SID, NOW)["turns"]
+        anchor = whole[len(whole) // 4]["uuid"]
+        w = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": anchor}, NOW, base=c["echat"][SID])
+        self.assertNotIn("missing", w)
+        self.assertEqual(len(w["span"]), 2, "a window names [lo, hi) in the kernel's turn numbering")
+        lo, hi = w["span"]
+        self.assertLess(lo, hi); self.assertLessEqual(hi, len(turns))
+        self.assertIn(anchor, [e["uuid"] for e in w["events"]], "the anchor is inside its window")
+        self.assertEqual([e["uuid"] for e in w["events"]], [e["uuid"] for e in km._chat_history_page(SID, lo, hi, NOW)], "the window IS the span's page")
+        self.assertNotIn("connected", w, "no detached verdict: the tail run is always resident on the page")
+        head = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": whole[0]["uuid"]}, NOW, base=c["echat"][SID])
+        self.assertEqual(head["span"][0], 0, "a window reaching the head spans from turn 0, whatever the head cards' own index: %r" % head["span"])
+        self.assertEqual([e["uuid"] for e in head["events"][:len(self.head_cards)]], [e["uuid"] for e in self.head_cards], "…and carries the head cards")
+        self.assertNotIn("_base", {k: v for k, v in w.items() if v is not None}, "a window short of the tail moves no base") if hi < frame["tailLo"] else None
+
+    def test_load_older_carries_its_span_and_the_tail_only_base(self):
+        whole, m, frame, c = self._boot()
+        base = c["echat"][SID]
+        oldest = _strip(frame["events"])[0]["uuid"]
+        r = km._chat_history_reply(SID, {"type": "loadOlder", "id": SID, "before": oldest}, NOW, base=base)
+        self.assertNotIn("missing", r)
+        self.assertEqual(r["span"][1], frame["tailLo"], "the chunk before the tail ends where the tail run starts")
+        lo, hi = r["span"]
+        self.assertLess(lo, hi)
+        self.assertEqual([e["uuid"] for e in r["events"][len(self.head_cards) if lo == 0 else 0:]], [e["uuid"] for e in km._chat_history_page(SID, lo, hi, NOW)], "the span is honest: its events are exactly the turns it names")
+        self.assertTrue(r.get("_base") and r["_base"].get("first"), "a page joining the tail run moves the client's base to its first event: the tail-only base")
+        self.assertEqual(r["_base"]["first"], km._event_key(r["events"][len(self.head_cards) if lo == 0 else 0]), "…its first TRANSCRIPT event (the head cards ride a chunk that reaches the head, and are no base)")
+        # a page deep in history, not touching the tail, moves nothing
+        if lo > 0:
+            deep = km._chat_history_reply(SID, {"type": "loadOlder", "id": SID, "before": r["events"][0]["uuid"]}, NOW, base=base)
+            self.assertNotIn("missing", deep)
+            self.assertEqual(deep["span"][1], lo, "the chunks tile: each ends where the next begins")
+            self.assertFalse(deep.get("_base"), "a chunk short of the tail moves no base (the reader is not detached, the tail's deltas keep flowing)")
+
+    def test_load_turns_serves_exactly_the_span_asked_with_the_head_cards_at_the_head(self):
+        whole, m, frame, c = self._boot()
+        turns = km._parse(self.leaf, SID, NOW)["turns"]
+        for lo, hi in ((0, 16), (16, 48), (20, 37), (frame["tailLo"] - 5, frame["tailLo"])):
+            with self.subTest(lo=lo, hi=hi):
+                n = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": lo, "hi": hi}, NOW, base=c["echat"][SID])
+                self.assertNotIn("missing", n)
+                self.assertEqual(n["span"], [lo, hi], "the span comes back as asked (alignment is the page's rule, chat-regions.ts pagesToAsk)")
+                self.assertEqual(n["head"], lo == 0)
+                body = n["events"][len(self.head_cards):] if lo == 0 else n["events"]
+                if lo == 0:
+                    self.assertEqual([e["uuid"] for e in n["events"][:len(self.head_cards)]], [e["uuid"] for e in self.head_cards], "the head cards ride the head page")
+                self.assertEqual([e["uuid"] for e in body], [e["uuid"] for e in km._chat_history_page(SID, lo, hi, NOW)])
+                if hi >= frame["tailLo"]:
+                    self.assertTrue(n.get("_base") and n["_base"].get("first"), "a span reaching the tail moves the base to its first event")
+                else:
+                    self.assertFalse(n.get("_base"), "a span short of the tail moves no base")
+        empty = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": 40, "hi": 40}, NOW)
+        self.assertTrue(empty["missing"], "an empty span is missing, never a silent empty run")
+        past = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": len(turns) + 5, "hi": len(turns) + 9}, NOW)
+        self.assertTrue(past["missing"], "a span past the transcript is missing")
+
+    def test_load_newer_is_retired(self):
+        self._boot()
+        r = km._chat_history_reply(SID, {"type": "loadNewer", "id": SID, "after": "11111111-2222-3333-4444-000000000001"}, NOW)
+        self.assertTrue(r.get("missing") and r.get("retired"), "the walk toward the tail is gone: the tail run is always resident (T386 stage 2): %r" % r)
+
+
+if __name__ == "__main__":
+    unittest.main()

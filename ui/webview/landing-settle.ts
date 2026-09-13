@@ -60,6 +60,8 @@ export const WRITER_CLASS: Readonly<Record<string, "reader" | "page">> = {
   "land-on": "page", "land-realign": "page", "land-bottom": "page", "land-saved": "page", "keep-offset": "page", "anchor-restore": "page",
   "reload-restore": "page", "append-stick": "page", "append-raw": "page", "tail-shrink": "page", "rewindow": "page", "box-resize": "page",
   "box-below": "page", "tabbar-drag": "page", "toolgroup-toggle": "page", "liveask-reveal": "page", "optimistic-send": "page", "queued-x": "page",
+  "gap-fill": "page",   // a gap's page appearing in place (T386 stage 2): the reader's row written back to its offset
+  "land-guess": "page",   // the jump into the gap where a landing's target will be, before its window arrives (T386 stage 2)
 };
 /** The write helper (the root) and its wrappers, with the position of the WRITER argument in each call (round six, low 1; round
  *  seven, mediums 1 and 2). The census pin (landing-settle.test.ts, through writer-census.ts on the TypeScript compiler's parser)

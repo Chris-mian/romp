@@ -1922,27 +1922,27 @@ announces `chatProto2` in its `caps`:
   after it and appends; an anchor it does not hold is a gap (`needFull`);
 - `loadOlder {id, before: <oldest resident uuid>}` is answered by `chatHead {id,
   beforeUuid, events, more}`; `more: false` is the head;
-- `loadAround {id, uuid}` is answered by `chatWindow {id, anchor, events,
+- every history reply names its TURN SPAN (`span: [lo, hi)` in the kernel's turn
+  numbering) so the page can place it among its regions, the runs it holds and
+  the gaps it does not; the session frame carries `tailLo` (the tail run's first
+  turn) and `pageTurns` (the page the gaps ask by), and the tail run is always
+  resident and live: no client is ever detached, and no window pauses live
+  updates;
+- `loadAround {id, uuid}` is answered by `chatWindow {id, anchor, events, span,
   moreBefore, moreAfter}` in one round trip (`missing: true` when the anchor is
-  in no page); a window with `moreAfter` leaves the client DETACHED: it gets no
-  delta until `loadNewer {id, after: <newest resident uuid>}`, answered by
-  `chatMore {id, afterUuid, events, more}`, reaches the tail (`more: false`,
-  the reply then carries the frame's status and ledger), or a `needFull`
-  re-attaches it (the page's "Return to live" strip and its jump chip ask for
-  one, and the full frame answering that ask merges into the held run it
-  overlaps, so the pages the reader walked stay, the kernel's base keeping the
-  run's older first edge with it (the page sends its newest resident keys with
-  the ask, `reattachKeys`, and the kernel keeps the older edge when the highest
-  of them still in the list lies inside the frame); every other full frame
-  replaces the run, its
-  in-list events being the fresh copies); a reconnect's `ready` starts a fresh
-  base. A window that overlaps the run the client holds
-  through the live tail, by turn span, keeps it attached (`connected`; a
-  `loadOlder` advances the run's first edge, so the kernel's picture of the run
-  follows the page's). A
-  detached run whose edges left the transcript (a `/clear`, a fork, a rewind)
-  gets a full frame; a `missing` reply on a held key is a gap the page answers
-  with `needFull`. A reply that reaches the head carries the head cards first.
+  in no page; `fault: true` when the kernel could not answer this time); the
+  page inserts the window as a run by its span, and a navigation's window lands
+  while any other fills in place;
+- `loadTurns {id, lo, hi}` asks for a gap's page directly and is answered by
+  `chatTurns {id, span, events, head}` (`head: true` at the head, the head cards
+  riding along; an empty or out-of-range span is `missing`); `loadNewer` is
+  retired (`missing, retired`);
+- the kernel's per-client base is TAIL-ONLY: a reply moves the base's first edge
+  only when its span reaches the tail run, so the tail's deltas keep flowing to a
+  reader in older history; a reconnect's `ready` starts a fresh base. A run whose
+  edges left the transcript (a `/clear`, a fork, a rewind) gets a full frame; a
+  `missing` reply on a held key is a gap the page answers with `needFull`. A
+  reply that reaches the head carries the head cards first.
   Every slice of the list is turn-aligned. A remote kernel learns the protocol
   from a `ready` the page sends on each host socket's open; a redialed local
   socket carries it on its dial term (`&proto=`), since a redial posts no

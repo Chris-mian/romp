@@ -250,12 +250,11 @@ class PagesEqualTheWhole(Harness):
         self.assertEqual(older[len(self.head_cards):] + [onote["uuid"]], wu[:full_index + 1], "one contiguous run across the boundary, from the head")
         self.assertFalse(ob["more"])
         held = list(w["events"])
-        for _ in range(100):
-            n = km._chat_history_reply(SID, {"type": "loadNewer", "id": SID, "after": held[-1].get("key") or held[-1]["uuid"]}, NOW)
-            self.assertNotIn("missing", n)
-            held = held + n["events"]
-            if not n["more"]:
-                break
+        # the rest of the transcript below the window, asked by TURN SPAN in one loadTurns (T386 stage 2: the walk retired)
+        self.assertEqual(len(w["span"]), 2)
+        n = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": w["span"][1], "hi": len(turns_b)}, NOW)
+        self.assertNotIn("missing", n)
+        held = held + n["events"]
         full = [e["uuid"] for e in self.head_cards + whole]
         self.assertEqual([e["uuid"] for e in held], full[full.index(held[0]["uuid"]):])
 
@@ -395,80 +394,72 @@ class RealArm(Harness):
             self.assertEqual(c.get("proto"), want, path)
             self.assertIsInstance(c.get("t0"), (int, float), "the registration is stamped for the ready wait")
 
-    def test_a_return_to_live_keeps_the_runs_first_edge_and_a_window_into_the_walked_part_stays_attached(self):
-        """Round 3, A: deep link, loadNewer into the list (still detached), Return to live (needFull reattach), a deep link
-        into the walked part, then a tail change reaches the client as a chatTail. Before the fix the re-attach frame
-        re-based the kernel's first to the wire tail's while the client's merged run kept its older first."""
+    def test_a_deep_link_then_a_span_to_the_tail_grows_the_tail_run_and_every_tail_change_is_a_delta(self):
+        """T386 stage 2: a deep link (a window with its turn span), then the gap between the window and the tail asked as one
+        span (loadTurns), whose reply moves the kernel's base to the filled span's first event since it reaches the tail's first
+        turn; a deep link into the filled part changes nothing; a tail change reaches the client as a chatTail. No client is ever
+        detached and no re-attach exists."""
         recs = transcript(NOW - 86400, turns=600, compact_every=150)      # ~300 events after the cut: longer than the wire tail
         self.write(recs)
         whole = self.whole()
         self.document()
         m = self.restored()
-        evs = m["events"]; list_keys = {e.get("key") or e["uuid"] for e in evs}
+        evs = m["events"]
         deep = whole[10]["uuid"]
         run = []                                                          # what the page holds, as the frames build it
         state = {"step": "ready", "fulls": 0}
 
         def next_frame(sent):
-            fresh = sent[state.get("seen", 0):]                            # the frames since the last request (the caps frame and
-            state["seen"] = len(sent)                                     #  the tab strip ride the same socket: rarely the last one)
+            fresh = sent[state.get("seen", 0):]
+            state["seen"] = len(sent)
 
             def newest(kind):
                 return next((f for f in reversed(fresh) if f.get("type") == kind and f.get("id") == SID), None)
             if state["step"] == "ready":
                 state["step"] = "window"; return self._frame({"type": "ready", "proto": 2})
             if state["step"] == "window":
-                if newest("session") is not None:
-                    state["fulls"] += 1; state["step"] = "newer"
-                    return self._frame({"type": "loadAround", "id": SID, "uuid": deep})
-            elif state["step"] == "newer":
-                w = newest("chatWindow"); mo = newest("chatMore") if w is None else None
-                if w is not None:
-                    run[:] = list(w["events"])
-                    self.assertTrue(w["moreAfter"])
-                if mo is not None:
-                    run.extend(mo["events"])
-                    self.assertTrue(mo["more"], "the walk stops inside the list, still detached")
-                if w is not None or mo is not None:
-                    if any((e.get("key") or e["uuid"]) in list_keys for e in run):
-                        state["step"] = "keys"
-                        return self._frame({"type": "reattachKeys", "id": SID, "keys": [e.get("key") or e["uuid"] for e in run[-512:]]})
-                    return self._frame({"type": "loadNewer", "id": SID, "after": run[-1].get("key") or run[-1]["uuid"]})
-            elif state["step"] == "keys":
-                state["step"] = "reattach"
-                return self._frame({"type": "needFull", "id": SID, "why": "reattach"})   # Return to live, the keys ahead of it
-            elif state["step"] == "reattach":
                 f = newest("session")
                 if f is not None:
-                    state["fulls"] += 1; state["step"] = "walked"
-                    # the client merges the frame into its run (they overlap: the run's newest is inside the frame)
-                    fk = {e.get("key") or e["uuid"] for e in f["events"]}
-                    self.assertTrue(any((e.get("key") or e["uuid"]) in fk for e in run), "the frame overlaps the held run")
-                    inside = run[len(run) // 3]["uuid"]                 # into the walked pages, far from the tail
+                    state["fulls"] += 1; state["tailLo"] = f["tailLo"]; state["step"] = "turns"
+                    self.assertIsInstance(f["tailLo"], int, "the full frame names the tail run's first turn")
+                    return self._frame({"type": "loadAround", "id": SID, "uuid": deep})
+            elif state["step"] == "turns":
+                w = newest("chatWindow")
+                if w is not None:
+                    run[:] = list(w["events"]); state["window"] = w
+                    self.assertEqual(w["span"][0], 0, "the window reached the head"); self.assertTrue(w["moreAfter"])
+                    self.assertLess(w["span"][1], state["tailLo"], "…and ends before the tail run")
+                    state["step"] = "filled"
+                    return self._frame({"type": "loadTurns", "id": SID, "lo": w["span"][1], "hi": state["tailLo"]})
+            elif state["step"] == "filled":
+                n = newest("chatTurns")
+                if n is not None:
+                    run.extend(n["events"]); state["turns"] = n; state["step"] = "walked"
+                    self.assertEqual(n["span"], [state["window"]["span"][1], state["tailLo"]])
+                    inside = run[len(run) // 3]["uuid"]                 # into the filled part, far from the tail
                     return self._frame({"type": "loadAround", "id": SID, "uuid": inside})
             elif state["step"] == "walked":
                 w = newest("chatWindow")
                 if w is not None:
-                    state["window"] = w; state["step"] = "done"
+                    state["window2"] = w; state["step"] = "done"
             return (0x8, b"", True)
         c, sent = self._drive("/ws?app=chat&delta=1&iid=p2&active=%s" % SID, next_frame)
         self.assertEqual(state["step"], "done", "the sequence ran to its end: %s" % state)
-        self.assertEqual(state["fulls"], 2)
+        self.assertEqual(state["fulls"], 1, "one full frame: no re-attach frame exists")
         base = c["echat"][SID]
-        hc = {h["uuid"] for h in self.head_cards}
-        first_event = next(e for e in run if e["uuid"] not in hc)         # the window reached the head: its cards ride first (B)
-        self.assertEqual(base["first"], first_event.get("key") or first_event["uuid"], "the kernel's base keeps the run's older first edge")
-        self.assertFalse(base["detached"])
-        w = state["window"]
-        self.assertTrue(w["connected"], "a window into the walked part overlaps the run: attached on both ends")
-        self.assertTrue(w["moreAfter"])
+        self.assertEqual(set(base), {"first", "last"}, "the tail-only base: no detached flag")
+        filled_first = state["turns"]["events"][0]
+        self.assertEqual(base["first"], filled_first.get("key") or filled_first["uuid"], "the base's first moved to the filled span's first event: it reached the tail")
+        w2 = state["window2"]
+        self.assertNotIn("connected", w2); self.assertEqual(len(w2["span"]), 2)
         n = len(sent)
         km._send_chat_locked(c, m, None, len(evs) - 1, False)             # the next tail change
         self.assertEqual(len(sent), n + 1); self.assertEqual(sent[-1]["type"], "chatTail", "a delta, not silence")
 
-    def test_a_window_reaching_the_head_keys_the_base_on_the_first_event_and_the_walk_to_the_tail_reattaches(self):
-        """Round 3, B: the head cards ride a window that reaches turn 0; the base's first is the first EVENT's key, which
-        places in a turn, so the walk to the tail re-attaches and the next tail change is a delta."""
+    def test_a_window_reaching_the_head_carries_the_head_cards_and_a_span_to_the_tail_keys_the_base_on_an_event(self):
+        """T386 stage 2 (from round 3, B): the head cards ride a window whose span starts at turn 0; a window that does not reach
+        the tail leaves the base alone; the span up to the tail's first turn moves the base's first to its first EVENT (a key
+        that places in a turn), and the next tail change is a delta."""
         recs = transcript(NOW - 86400, turns=200, compact_every=25)
         self.write(recs)
         whole = self.whole()
@@ -477,50 +468,26 @@ class RealArm(Harness):
         self.assertTrue(self.head_cards, "the fixture has head cards")
         c, sent = _client()
         km._send_chat_locked(c, m, None, 0, False)
+        f = sent[-1]; tail_lo = f["tailLo"]
+        self.assertIsInstance(tail_lo, int); self.assertGreater(tail_lo, 0)
         w = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": whole[0]["uuid"]}, NOW, base=c["echat"][SID])
         self.assertFalse(w["moreBefore"]); self.assertEqual(w["events"][0]["uuid"], self.head_cards[0]["uuid"], "the head cards ride first")
-        self.assertEqual(w["_base"]["first"], whole[0]["uuid"], "the base's first is the first EVENT, not a head card")
-        c["echat"][SID] = w.pop("_base")
-        held = list(w["events"])
-        for _ in range(200):
-            r = km._chat_history_reply(SID, {"type": "loadNewer", "id": SID, "after": held[-1].get("key") or held[-1]["uuid"]}, NOW, base=c["echat"][SID])
-            held += r["events"]
-            b = r.pop("_base"); b["first"] = c["echat"][SID]["first"] if b.pop("keepFirst", False) else b["first"]
-            c["echat"][SID] = b
-            if not r["more"]:
-                break
-        self.assertFalse(c["echat"][SID]["detached"], "back at the tail")
-        n = len(sent)
+        self.assertEqual(w["span"][0], 0)
+        self.assertIsNone(w["_base"], "a window short of the tail leaves the base alone")
+        n = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": w["span"][1], "hi": tail_lo}, NOW, base=c["echat"][SID])
+        self.assertEqual(n["span"], [w["span"][1], tail_lo]); self.assertFalse(n["head"])
+        self.assertEqual(n["_base"]["first"], n["events"][0].get("key") or n["events"][0]["uuid"], "the base's first is the span's first EVENT")
+        c["echat"][SID] = {"first": n["_base"]["first"], "last": c["echat"][SID]["last"]}
+        held = list(w["events"]) + n["events"] + list(f["events"])
+        self.assertEqual(_strip(held), self.head_cards + whole, "the window, the span and the tail make the whole, the head cards first")
+        n0 = len(sent)
         km._send_chat_locked(c, m, None, len(m["events"]) - 1, False)
-        self.assertEqual(sent[-1]["type"], "chatTail"); self.assertEqual(len(sent), n + 1)
-        # a window back into the head part now overlaps the run [turn 0 .. the tail]: attached
+        self.assertEqual(sent[-1]["type"], "chatTail"); self.assertEqual(len(sent), n0 + 1)
         w2 = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": whole[4]["uuid"]}, NOW, base=c["echat"][SID])
-        self.assertTrue(w2["connected"])
+        self.assertNotIn("connected", w2); self.assertEqual(w2["span"][0], 0)
 
 
-class ReattachKeysArm(Harness):
-    """1448's lows: a posted key list is held only for a session the client has a base for, and the map is bounded."""
-
-    def test_unknown_sessions_are_ignored_and_the_map_is_bounded(self):
-        c, sent = _client()
-        c["echat"]["s-known"] = {"first": "a", "last": "b", "detached": False}
-        arm = lambda msg: km.Handler._dispatch_ws(object.__new__(km.Handler), msg, c)
-        arm({"type": "reattachKeys", "id": "s-unknown", "keys": ["k1"]})
-        self.assertNotIn("reattachKeys", c, "a session this client holds no base for: dropped")
-        arm({"type": "reattachKeys", "id": "s-known", "keys": ["k%d" % i for i in range(700)]})
-        self.assertEqual(len(c["reattachKeys"]["s-known"]), km.REATTACH_KEYS, "the newest keys, bounded")
-        for i in range(km.REATTACH_KEYS_CLIENTS + 3):
-            sid = "s-%d" % i
-            c["echat"][sid] = {"first": "a", "last": "b", "detached": False}
-            arm({"type": "reattachKeys", "id": sid, "keys": ["k"]})
-        self.assertEqual(len(c["reattachKeys"]), km.REATTACH_KEYS_CLIENTS, "the map is capped")
-        self.assertNotIn("s-known", c["reattachKeys"], "…the oldest dropped first")
-        self.assertIn("s-%d" % (km.REATTACH_KEYS_CLIENTS + 2), c["reattachKeys"])
-
-
-class OrphanGate(Harness):
-    """Round 2 item 11, executed: the fold's orphan demotion gate reads the note's own window."""
-
+class NotesAndFloor(Harness):
     def _sealed_note(self):
         """A rendered orphan note in the (soon sealed) last turn of a 200-turn transcript, its text turn 0's reply: the parse
         keeps the text far away, so the near-window rule renders the note; then a typed prompt opens turn 200, which seals
@@ -804,7 +771,8 @@ class Proto2Wire(Harness):
         self.assertNotIn("headFrom", f)
         self.assertEqual(f["events"], m["events"][-km.WIRE_TAIL:])
         self.assertEqual((f["firstUuid"], f["lastUuid"]), (f["events"][0]["uuid"], f["events"][-1]["uuid"]))
-        self.assertEqual(c["echat"][SID], {"first": f["firstUuid"], "last": f["lastUuid"], "detached": False})
+        self.assertEqual(c["echat"][SID], {"first": f["firstUuid"], "last": f["lastUuid"]}, "the tail-only base (T386 stage 2)")
+        self.assertIsInstance(f["tailLo"], int); self.assertGreater(f["tailLo"], 0, "the full frame names the tail run's first turn; the head is not reached")
         # an append: the list grows by two events, the diff finds the old length
         m2 = dict(m); m2["events"] = list(m["events"]) + [{"kind": "user", "md": "more", "uuid": "u_new"}, {"kind": "assistant", "md": "ok", "uuid": "a_new"}]
         km._send_chat_locked(c, m2, None, len(m["events"]), False)
@@ -875,29 +843,20 @@ class Proto2Wire(Harness):
         km._send_chat_locked(c, m0, None, 0, False)
         self.assertEqual((sent[-1]["type"], sent[-1]["floor"]), ("session", 0), "a floor move is a full frame")
 
-    def test_a_detached_base_whose_edges_left_the_transcript_gets_a_full_frame(self):
-        """Review find A: a detached client whose run is gone (a /clear, a fork, a rewind) was never sent anything again."""
-        whole, m = self._restored_tail()
-        c, sent = _client()
-        c["echat"][SID] = {"first": "gone-1", "last": "gone-2", "detached": True}
-        km._send_chat_locked(c, m, None, len(m["events"]) - 1, False)
-        self.assertEqual(sent[-1]["type"], "session", "both edges gone from the transcript: a full frame re-bases the client")
-        self.assertFalse(c["echat"][SID]["detached"])
-        c["echat"][SID] = {"first": whole[3]["uuid"], "last": whole[30]["uuid"], "detached": True}   # a live pre-floor run
-        n = len(sent)
-        km._send_chat_locked(c, m, None, len(m["events"]) - 1, False)
-        self.assertEqual(len(sent), n, "a detached run the transcript still holds gets no delta")
-
-    def test_a_window_that_reaches_the_held_run_keeps_the_client_attached(self):
-        """Review find G: a window overlapping the resident tail merges into one run through the live tail."""
+    def test_a_window_whose_span_reaches_the_tail_run_moves_the_bases_first_to_its_first_event(self):
+        """From review find G (T386 stage 2): a window that reaches the tail run's first turn merges into the tail on the page,
+        so the kernel's base takes its first event as the tail's older edge; the last stands."""
         whole, m = self._restored_tail()
         c, sent = _client()
         km._send_chat_locked(c, m, None, 0, False)
-        base = c["echat"][SID]
+        base = dict(c["echat"][SID])
         anchor = whole[-len(m["events"]) - 3]["uuid"]                        # just before the floor'd list: the window reaches it
         r = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": anchor}, NOW, base=base)
-        self.assertTrue(r["connected"], "the window holds the client's first: one run through the tail")
-        self.assertEqual((r["_base"]["detached"], r["_base"]["last"]), (False, base["last"]))
+        self.assertNotIn("connected", r); self.assertNotIn("detached", r.get("_base") or {})
+        hc = {h["uuid"] for h in self.head_cards}
+        first_event = next(e for e in r["events"] if e["uuid"] not in hc)
+        self.assertEqual(r["_base"], {"first": first_event.get("key") or first_event["uuid"]}, "the span reaches the tail: the base's first is the window's first event")
+        self.assertEqual(len(r["span"]), 2)
 
     def test_in_list_windows_are_turn_aligned_at_floor_zero_and_the_walks_meet_the_whole(self):
         """Review find J: slices of the floor'd list snap to turn boundaries, at floor 0 too (a whole parse, no document)."""
@@ -929,27 +888,18 @@ class Proto2Wire(Harness):
             held = o["events"] + held
             if not o["more"]:
                 break
-        for _ in range(50):
-            n = km._chat_history_reply(SID, {"type": "loadNewer", "id": SID, "after": held[-1].get("key") or held[-1]["uuid"]}, NOW)
-            held = held + n["events"]
-            if not n["more"]:
-                break
-        self.assertEqual(_strip(held), _strip(evs), "both walks from the window meet the whole list")
+        n = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": r["span"][1], "hi": len(turns)}, NOW)
+        held = held + n["events"]
+        self.assertEqual(_strip(held), _strip(evs), "the older walk and one span below the window meet the whole list")
 
     @staticmethod
     def _apply_base(c, reply):
-        """What the handler does with a reply's _base (kernel.py, the history requests' arm): keepFirst / keepLast."""
+        """What the handler does with a reply's _base (kernel.py, the history requests' arm): the tail run's first edge advances,
+        the last stands (T386 stage 2)."""
         base = reply.pop("_base", None)
         old = c["echat"].get(SID)
-        if base is None:
-            return
-        if base.pop("keepFirst", False):
-            base["first"] = old.get("first") if isinstance(old, dict) else None
-        if base.pop("keepLast", False):
-            if not isinstance(old, dict):
-                return
-            base["last"], base["detached"] = old.get("last"), bool(old.get("detached"))
-        c["echat"][SID] = base
+        if isinstance(base, dict) and base.get("first") and isinstance(old, dict):
+            c["echat"][SID] = {"first": base["first"], "last": old.get("last")}
 
     def test_load_older_advances_the_runs_first_edge_and_a_window_inside_the_walked_run_stays_attached(self):
         """Round 2, item 1: the base's first never moved with loadOlder, so loadAround's `connected` tested a STALE first: a
@@ -968,11 +918,12 @@ class Proto2Wire(Harness):
         self.assertEqual(base0["first"], evs[len(evs) - km.WIRE_TAIL]["uuid"], "the first frame's base: the wire tail's first")
         self.assertNotEqual(base0["first"], evs[0]["uuid"])
         o1 = km._chat_history_reply(SID, {"type": "loadOlder", "id": SID, "before": base0["first"]}, NOW, base=c["echat"][SID])
-        self.assertIsNotNone(o1.get("_base")); self.assertTrue(o1["_base"].get("keepLast"))
+        self.assertEqual(set(o1["_base"]), {"first"}, "an older chunk from the TAIL's first edge moves the base's first, nothing else")
         self._apply_base(c, o1)
         b1 = c["echat"][SID]
         self.assertEqual(b1["first"], evs[0]["uuid"], "the run's first edge advanced to the list's head")
-        self.assertEqual((b1["last"], b1["detached"]), (base0["last"], False), "its last and its attachment unchanged")
+        self.assertEqual(b1["last"], base0["last"], "its last unchanged")
+        self.assertEqual(o1["span"][1], km._turn_index_of_events(evs, km._parse(self.leaf, SID, NOW)["turns"])[len(evs) - km.WIRE_TAIL], "the chunk's span ends at the tail's first turn")
         o2 = km._chat_history_reply(SID, {"type": "loadOlder", "id": SID, "before": b1["first"]}, NOW, base=c["echat"][SID])
         self._apply_base(c, o2)
         b2 = c["echat"][SID]
@@ -984,68 +935,16 @@ class Proto2Wire(Harness):
         keys = {e.get("key") or e["uuid"] for e in w["events"]}
         self.assertNotIn(b2["first"], keys); self.assertNotIn(base0["first"], keys); self.assertNotIn(b2["last"], keys)
         self.assertTrue(w["moreAfter"], "the window ends before the tail")
-        self.assertTrue(w["connected"], "…but lies inside the run the client holds through the live tail: attached")
-        self.assertEqual((w["_base"]["first"], w["_base"]["last"], w["_base"]["detached"]), (b2["first"], b2["last"], False))
-        self._apply_base(c, w)
+        self.assertIsNone(w["_base"], "a window inside the held history changes no base: the tail is always resident (T386 stage 2)")
         n = len(sent)
         km._send_chat_locked(c, m, None, len(evs) - 1, False)             # a change at the tail: a delta, not silence
         self.assertEqual(len(sent), n + 1); self.assertEqual(sent[-1]["type"], "chatTail")
-        # a window that holds NO part of the run (a far anchor) still detaches the client, kernel and page agreeing
         far = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": whole[2]["uuid"]}, NOW, base=c["echat"][SID])
-        self.assertFalse(far["connected"]); self.assertTrue(far["_base"]["detached"])
-        # the re-attach's shared clause reads the client's OWN resident keys (reattachKeys), never the broadcast diff's change
-        # index: the repair frame is a connect push over an unchanged build, so change_from is total there (T323 follow-up, M1)
-        head_from = len(evs) - km.WIRE_TAIL
-        run_keys = [e.get("key") or e["uuid"] for e in evs[:head_from + 10]]       # a run from the list's head into the frame
-        c2, sent2 = _client()
-        c2["echat"][SID] = {"first": evs[0]["uuid"], "last": "gone-after-a-fork", "detached": False, "reattach": True, "keys": run_keys[-512:]}
-        km._send_chat_locked(c2, m, None, len(evs), False)               # an unchanged build: change_from == total
-        self.assertEqual(sent2[-1]["type"], "session"); self.assertEqual(c2["echat"][SID]["first"], evs[0]["uuid"], "the older first kept")
-        self.assertNotEqual(sent2[-1]["firstUuid"], evs[0]["uuid"])
-        w2 = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": evs[3]["uuid"]}, NOW, base=c2["echat"][SID])
-        self.assertTrue(w2["connected"], "a window below the frame after the re-attach stays connected: no divergence")
-        c3, sent3 = _client()                                            # the fork cut every key the client holds: replaced (M2)
-        c3["echat"][SID] = {"first": "dead-1", "last": "dead-2", "detached": False, "reattach": True, "keys": ["dead-1", "dead-9", "dead-2"]}
-        km._send_chat_locked(c3, m, None, len(evs), False)
-        self.assertEqual(c3["echat"][SID]["first"], sent3[-1]["firstUuid"], "no resident key: the base takes the frame's first")
-        c3b, sent3b = _client()                                          # resident keys, all below the frame: no shared key either
-        c3b["echat"][SID] = {"first": evs[0]["uuid"], "last": "gone", "detached": False, "reattach": True, "keys": run_keys[:head_from - 5]}
-        km._send_chat_locked(c3b, m, None, len(evs), False)
-        self.assertEqual(c3b["echat"][SID]["first"], sent3b[-1]["firstUuid"])
-        c4, sent4 = _client()                                            # an older bundle sends no keys: the newest edge decides
-        c4["echat"][SID] = {"first": evs[0]["uuid"], "last": evs[-1]["uuid"], "detached": False, "reattach": True}
-        km._send_chat_locked(c4, m, None, len(evs), False)
-        self.assertEqual(c4["echat"][SID]["first"], evs[0]["uuid"])
-        c5, sent5 = _client()
-        c5["echat"][SID] = {"first": evs[0]["uuid"], "last": "gone", "detached": False, "reattach": True}
-        km._send_chat_locked(c5, m, None, len(evs), False)
-        self.assertEqual(c5["echat"][SID]["first"], sent5[-1]["firstUuid"])
+        self.assertIsNone(far["_base"]); self.assertNotIn("connected", far)
+        o3 = km._chat_history_reply(SID, {"type": "loadOlder", "id": SID, "before": far["events"][-1]["uuid"]}, NOW, base=c["echat"][SID])
+        self.assertIsNone(o3.get("_base"), "an older chunk from a history run's edge, not the tail's, leaves the base alone")
         src = open(os.path.join(BIN, "romp-kernel")).read()
-        self.assertIn('if base.pop("keepLast", False):', src, "the handler applies a loadOlder's first-edge advance")
-
-    def test_a_detached_bases_note_keyed_edges_do_not_keep_it_alive_and_the_check_is_memoized(self):
-        """Round 2, item 8: a note key resolves by time, to turn 0 on any newer transcript, so a run edged on a note read as
-        alive after a /clear and the client never got its full frame."""
-        whole, m = self._restored_tail()
-        note_base = {"first": "orphan:%d:1" % (NOW - 90000), "last": "retried:%d:1" % (NOW - 89000), "detached": True}
-        self.assertFalse(km._base_alive(SID, note_base, NOW), "note-keyed edges alone: not alive")
-        atom_base = {"first": "orphan:%d:1" % (NOW - 90000), "last": whole[30]["uuid"], "detached": True}
-        self.assertTrue(km._base_alive(SID, atom_base, NOW), "an atom-keyed edge the transcript holds: alive")
-        turns = km._parse(self.leaf, SID, NOW)["turns"]
-        key = (SID, atom_base["first"], atom_base["last"])                # per (sid, edges), valid for one parse tree's identity
-        hit = km._BASE_ALIVE_MEMO[key]
-        ident = (id(turns), len(turns), turns[-1]["id"], turns[-1]["end"])
-        self.assertEqual(hit, (ident, True))
-        km._BASE_ALIVE_MEMO[key] = (ident, "memo")                       # a repeat with the same edges and parse reads the memo
-        self.assertEqual(km._base_alive(SID, atom_base, NOW), "memo")
-        km._BASE_ALIVE_MEMO[key] = ((id(turns), len(turns) + 1, turns[-1]["id"], turns[-1]["end"]), "stale")   # the same address, another
-        self.assertIs(km._base_alive(SID, atom_base, NOW), True)                                              #  shape: re-read
-        c, sent = _client()
-        c["echat"][SID] = dict(note_base)
-        km._send_chat_locked(c, m, None, len(m["events"]) - 1, False)
-        self.assertEqual(sent[-1]["type"], "session", "the detached client edged on notes gets its full frame")
-        km._forget_chat_positions(set())
-        self.assertFalse([k for k in km._BASE_ALIVE_MEMO if k[0] == SID]); self.assertNotIn(SID, km._UUID_POS)
+        self.assertIn('if isinstance(base, dict) and base.get("first"):', src, "the handler applies a first-edge advance and keeps the last")
 
     def test_the_fold_entry_carries_the_prefixs_key_counts(self):
         whole, m = self._restored_tail()
@@ -1058,16 +957,18 @@ class Proto2Wire(Harness):
         self.assertIsNotNone(fe); self.assertIn("keyCounts", fe)
         self.assertEqual(fe["keyCounts"], km._key_counts(fe["events"]))
 
-    def test_a_detached_client_gets_no_delta_and_a_fresh_base_reattaches(self):
+    def test_a_client_whose_first_edge_lies_in_the_pages_still_gets_the_tails_delta(self):
+        """T386 stage 2: no client is detached; a base whose first sits before the floor'd list (history the client loaded) and
+        whose last is the tail's gets the tail's changes as deltas like any other."""
         whole, m = self._restored_tail()
         c, sent = _client()
-        c["echat"][SID] = {"first": whole[10]["uuid"], "last": whole[30]["uuid"], "detached": True}
+        c["echat"][SID] = {"first": whole[10]["uuid"], "last": m["events"][-1].get("key") or m["events"][-1]["uuid"]}
         km._send_chat_locked(c, m, None, len(m["events"]) - 1, False)
-        self.assertEqual(sent, [], "a detached client is sent nothing")
+        self.assertEqual(sent[-1]["type"], "chatTail", "a delta reaches a client holding history above the tail")
         c["echat"].pop(SID)                                              # needFull's reset, or a reconnect's ready
         km._send_chat_locked(c, m, None, len(m["events"]) - 1, False)
         self.assertEqual(sent[-1]["type"], "session")
-        self.assertFalse(c["echat"][SID]["detached"])
+        self.assertEqual(set(c["echat"][SID]), {"first", "last"})
 
     def test_a_proto1_client_keeps_the_index_frames(self):
         whole, m = self._restored_tail()
@@ -1104,37 +1005,34 @@ class Proto2Wire(Harness):
         self.assertEqual(_strip(resident), self.head_cards + whole, "the pages walked back to the head, the head cards first, concatenate to the whole build")
         self.assertGreaterEqual(steps, 2)
 
-    def test_load_around_lands_a_deep_anchor_in_one_reply_and_load_newer_walks_back_to_the_tail(self):
+    def test_load_around_lands_a_deep_anchor_in_one_reply_and_a_span_fills_the_gap_to_the_tail(self):
         whole, m = self._restored_tail()
         c, sent = _client()
         km._send_chat_locked(c, m, None, 0, False)
+        f = sent[-1]
         anchor = whole[7]["uuid"]                                        # deep in the pre-cut history
-        self.assertNotIn(anchor, {e["uuid"] for e in sent[-1]["events"]})
-        r = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": anchor}, NOW)
+        self.assertNotIn(anchor, {e["uuid"] for e in f["events"]})
+        r = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": anchor}, NOW, base=c["echat"][SID])
         self.assertEqual((r["type"], r["anchor"]), ("chatWindow", anchor))
         uu = [e["uuid"] for e in r["events"]]
         self.assertIn(anchor, uu)
-        self.assertEqual(r["moreBefore"], False, "the window reached the head")
-        self.assertTrue(r["moreAfter"], "and not the tail: the client is detached")
-        base = r["_base"]; self.assertTrue(base["detached"])
-        c["echat"][SID] = base
+        self.assertEqual(r["moreBefore"], False, "the window reached the head"); self.assertEqual(r["span"][0], 0)
+        self.assertTrue(r["moreAfter"], "and not the tail")
+        self.assertIsNone(r["_base"], "a window short of the tail leaves the base alone: the client is not detached")
         km._send_chat_locked(c, m, None, len(m["events"]) - 1, False)
-        self.assertEqual(sent[-1]["type"], "session", "no delta reached the detached client")
-        sent.clear()
-        # scroll forward through loadNewer until the tail
-        newest = r["events"][-1]["uuid"]; held = list(r["events"]); steps = 0
-        while True:
-            n = km._chat_history_reply(SID, {"type": "loadNewer", "id": SID, "after": newest}, NOW)
-            self.assertEqual((n["type"], n["afterUuid"]), ("chatMore", newest))
-            held = held + n["events"]; steps += 1
-            if not n["more"]:
-                break
-            newest = held[-1]["uuid"]
-            self.assertLess(steps, 50)
-        self.assertEqual(_strip(held), self.head_cards + whole, "the window walked forward to the tail equals the whole, the head cards first (the window reached the head)")
-        self.assertIn("status", n, "back at the tail the reply carries the frame's status (no full frame needed)")
-        self.assertFalse(n["_base"]["detached"], "re-attached at the tail")
-        # a missing anchor answers honestly
+        self.assertEqual(sent[-1]["type"], "chatTail", "the delta reaches the client with a window above the tail")
+        turns = km._parse(self.leaf, SID, NOW)["turns"]
+        n = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": r["span"][1], "hi": f["tailLo"]}, NOW, base=c["echat"][SID])
+        self.assertEqual((n["type"], n["span"], n["head"]), ("chatTurns", [r["span"][1], f["tailLo"]], False))
+        self.assertEqual(n["_base"]["first"], n["events"][0].get("key") or n["events"][0]["uuid"], "the span reaches the tail's first turn: the base's first moves")
+        held = list(r["events"]) + n["events"] + list(f["events"])
+        self.assertEqual(_strip(held), self.head_cards + whole, "the window, the span and the tail equal the whole, the head cards first")
+        past = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": f["tailLo"], "hi": len(turns) + 5}, NOW, base=c["echat"][SID])
+        self.assertEqual(_strip(past["events"]), _strip(f["events"]), "a span over the tail run itself is the tail's events, clipped to the transcript")
+        empty = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": len(turns), "hi": len(turns) + 5}, NOW)
+        self.assertTrue(empty.get("missing"))
+        retired = km._chat_history_reply(SID, {"type": "loadNewer", "id": SID, "after": uu[-1]}, NOW)
+        self.assertTrue(retired.get("missing") and retired.get("retired"), "the walk toward the tail is retired: answered, never served")
         r = km._chat_history_reply(SID, {"type": "loadAround", "id": SID, "uuid": "no-such-uuid"}, NOW)
         self.assertTrue(r.get("missing")); self.assertEqual(r["events"], [])
 

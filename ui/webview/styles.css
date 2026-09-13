@@ -1746,7 +1746,7 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
    sat on the tabs, and on the tabs themselves once the strip wrapped. The surface rides the menu tokens so it reads
    on cream as on the dark page. */
 .tx-loading-anchor { position: relative; flex: 0 0 auto; height: 0; width: 100%; overflow: visible; z-index: 50; pointer-events: none; }
-.tx-loading-pill {
+.tx-landing-notice {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50;
   background: var(--vscode-menu-background, var(--surface-raised)); color: var(--accent, #9cd2ff); font-size: 12px; font-weight: 600;
   padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: none; white-space: nowrap;
@@ -3230,15 +3230,17 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 #jump-bottom[hidden] { display: none; }   /* author display:flex defeats [hidden] — the login-modal lesson */
 /* live updates paused (T323 stage 4b): a proto-2 reader on an older window gets no live delta; the strip says so and
    offers the return. The jump chip's dress: menu-card background, the hairline border, the toast shadow, pill radius. */
-#live-paused {
-  position: fixed; left: 14px; z-index: 40; display: flex; align-items: center; gap: 10px;
-  padding: 4px 10px; border-radius: var(--radius-pill); font-size: 12px; color: var(--dim);
-  background: var(--vscode-menu-background, var(--surface-raised)); border: 1px solid var(--menu-border); box-shadow: var(--shadow-toast);
-}
-#live-paused[hidden] { display: none; }
-#live-paused .live-paused-btn { cursor: pointer; border: 1px solid var(--menu-border); border-radius: var(--radius-pill); padding: 2px 10px;
-  background: transparent; color: var(--accent); font: inherit; }
-#live-paused .live-paused-btn:hover { border-color: var(--accent); }
+/* a GAP in the thread (T386 stage 2): history the page does not hold, as empty space of an estimated height; overflow-anchor none
+   so the browser never anchors on it (the first visible turn holds when a gap above the viewport fills or re-sizes); the romp
+   loading glyph, large enough to read at a glance, while a page of it is on the wire, sticky so it stays in view through a tall gap */
+.tx-gap { position: relative; width: 100%; overflow-anchor: none; pointer-events: none; }
+.tx-gap-glyph { position: sticky; top: 40%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 0;
+  font-family: var(--sans); font-size: 21px; font-weight: 650; color: var(--fg); opacity: 0.85; }
+.tx-gap-glyph .tx-gap-r { color: #1EA1EB; }
+.tx-gap-glyph .tx-gap-mp { color: #54B204; }
+.tx-gap-glyph .tx-gap-swirl { width: 30px; height: 30px; animation: tx-swirl-spin 1.6s linear infinite reverse; }
+.tx-gap-glyph .tx-loading-dots { margin-left: 8px; }
+.tx-gap-glyph .tx-loading-dots i { width: 7px; height: 7px; }
 @media (pointer: coarse) { #jump-bottom { width: 64px; height: 32px; } }   /* the phone half: WIDEN for the hit area, never heighten — the compact look is the ask */
 /* replies ready (the user 2026-09-08): two chips stacked ABOVE the jump chip in the SAME slot and dress —
    "↑ 2 replies unread" / "↓ 1 reply unread" — for the unread landed replies whose marks sit off-screen in

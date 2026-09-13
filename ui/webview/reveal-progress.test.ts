@@ -148,6 +148,9 @@ function liftWorld(): (hooks: Hooks, mod: typeof MOD, doc: ReturnType<typeof fak
     let loadingPillEl = null;
     const hideLoadingPill = () => { H.pillHidden++; };
     const showLoadingPill = () => { H.pillShown++; };
+    let landingNoticeEl = null;   // the ONE landing notice (T386 stage 2) replaced the per-fetch pill; the reveal hides it the same way
+    const hideLandingNotice = () => { H.pillHidden++; };
+    const showLandingNotice = () => { H.pillShown++; };
     const olderOnServer = (s) => s.proto === 2 ? !s.headKnown : (s.headFrom ?? 0) > 0;   // the guard's helper (T323 stage 4b), outside the lift
     const showActive = () => { H.shows++; };
     const cancelSeek = () => { H.cancels++; };
@@ -414,7 +417,7 @@ test("the seams: the tick sits on the landing pass BEFORE the seek block, the se
   assert.match(RENDER, /const from0 = seek && seek\.uuid === p\.uuid && seek\.from0 != null \? seek\.from0 : p\.from0;\n\s*const loaded = messageCount\(s\.events\.slice\(0, Math\.max\(0, from0 - \(s\.headFrom \?\? 0\)\)\)\);/);
   assert.match(RENDER, /if \(revealProgress && revealProgress\.uuid === seek\.uuid\) \{ existing\?\.remove\(\); return; \}/, "showSeekNote yields the slot");
   assert.match(RENDER, /document\.getElementById\("seek-note"\)\?\.remove\(\);\n\s*revealProgressEnd\(\);/, "every end of the seek ends the line");
-  assert.match(RENDER, /function showLoadingPill\(\): void \{\n\s*if \(revealProgress\) return;/, "the per-fetch pill yields while the line shows");
+  assert.match(RENDER, /function showLandingNotice\(sid: string, t: number \| null \| undefined\): void \{\n\s*if \(revealProgress\) return;/, "the landing notice yields while the line shows (T386 stage 2)");
   // the start guard reads the index wire's own count, never a version
   assert.match(RENDER, /if \(anchorPendingOlder && pendingAnchor && s && \(s\.headFrom \?\? 0\) > 0\) \{/);
   // the end: this loop's own anchor, the tab, or a loop that neither kicked nor waits

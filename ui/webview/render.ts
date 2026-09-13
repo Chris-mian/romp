@@ -22,7 +22,7 @@ import { applyTheme } from "./theme";
 import { installPostalWash } from "./postal-wash";   // the incoming postal card's tint lightness, measured from the page (T337c)
 import { applyDenseChrome } from "./dense-chrome";
 import { SessionViews, viewVisible, viewsKey, revealIn, viewTagUnion, viewTags, type TagUnion, type SessionTag } from "./session-views";
-import { prependHead, appendMore, mergeWindow, historyLabel, indexOfUuid, keyOf, windowDetached, fullFrameMerges, afterMore, reattachKeys, windowLanding, olderRequestAllowed, livePausedText } from "./chat-window";   // the uuid-anchored wire (T323 stage 4b)
+import { prependHead, mergeWindow, historyLabel, indexOfUuid, keyOf, olderRequestAllowed } from "./chat-window";   // the uuid-anchored wire (T323 stage 4b)
 import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./subagent-wait";   // the viewer's wait bound and its stall (T355)
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
@@ -32,6 +32,7 @@ import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTa
 import { markerLabel, dayContext, DayWalk } from "./time-marker";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
+import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, type Region, type Run, type Gap } from "./chat-regions";
 import { senderKind, SenderKind } from "./sender-identity";
 import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { backendLabel, effectiveDefaultBackend } from "./backend-names";
@@ -339,7 +340,7 @@ interface BgTasks { count: number; tasks: BgTask[]; }
 // kernel ships only the last WIRE_TAIL events (headFrom > 0) to keep startup light; older history streams in
 // on scroll-back (loadOlder → chatHead prepends, lowering headFrom). headFrom 0 = the whole transcript is
 // resident. chatTail's `from` is GLOBAL and mapped through headFrom.
-interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; detached?: boolean; detachNav?: { t: number | null } | null; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo; }
+interface Session { id: string; name: string; color: Color | null; events: ChatEvent[]; status: Status; firstSeen?: number; cwd?: string; gitBranch?: string; workTree?: { dir: string; branch: string } | null; githubRepo?: string | null; headFrom?: number; headTotal?: number | null; proto?: number; headKnown?: boolean; firstUuid?: string | null; lastUuid?: string | null; regions?: Region[]; pageTurns?: number; tailLo?: number | null; bgTasks?: BgTasks; hideFromFeed?: boolean; postalServiceOff?: boolean; mailOffWhy?: string; notify?: boolean; branch?: { fromSid: string; fromName: string; cut: string; t: number } | null; branches?: { sid: string; name: string; cut: string; t: number }[] | null; sub?: SubInfo; }
 // A SUBAGENT VIEWER pseudo-session (plans/subagent-transcripts.md): a read-only tab whose events are one
 // agent's own transcript, fed by {type:"subagent"} frames. Client-only — the kernel never lists it in
 // tabOrder (reconcileTabOrder keeps a known, never-kernel-seen id), so it lives exactly as long as the
@@ -1212,7 +1213,7 @@ function showSeekNote(): void {
 let revealProgress: { sid: string; uuid: string; anchorT: number | null; from0: number } | null = null;
 function revealProgressBegin(sid: string, uuid: string, anchorT: number | null, from0: number): void {
   revealProgress = { sid, uuid, anchorT, from0 };
-  hideLoadingPill();                                  // one message for the wait, not two
+  hideLandingNotice();                                // one message for the wait, not two
   document.getElementById("seek-note")?.remove();     // the line takes the seek note's slot (showSeekNote yields to it)
 }
 function revealProgressEnd(): void {
@@ -1329,7 +1330,7 @@ let landTrail: string[] = [];
 // count is NOT len − winStart + spacer: a unit may own more than one node (the day
 // divider that opens a new day precedes its turn), so anything mapping DOM back to
 // units reads data-unit off the node rather than counting children.
-interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
+interface View { el: HTMLElement; rendered: number; scrollTop: number; stick: boolean; shown: boolean; stale: boolean; winStart: number; winEnd?: number; avgTurnH?: number; spacerCount?: number; spacerCountBot?: number; unitTotal?: number; gapUnits?: Map<number, number>; edgeTop?: number; edgeUp?: boolean; gestureScroll?: boolean; working?: boolean; uo?: ResizeObserver; uh?: WeakMap<Element, number>; ro?: ResizeObserver; mo?: MutationObserver; }   // working: the session's state at the last sync, the "worked …" footer's one non-event input (syncViewInner)
 const views = new Map<string, View>();
 
 // Pending pickers (AskUserQuestion / tool-permission) keyed by session id. These
@@ -2855,7 +2856,7 @@ function residentUnits(s: Session, uuids: string[]): number[] {
   for (const uuid of uuids) {
     const idx = s.events.findIndex((e) => e.uuid === uuid);
     if (idx < 0) continue;
-    let u = items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(idx) : it.index === idx);
+    let u = items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(idx) : it.kind === "event" && it.index === idx);
     if (u < 0) u = items.findIndex((it) => itemFirstEvent(it) >= idx);
     if (u >= 0) out.push(u);
   }
@@ -3216,7 +3217,7 @@ function eventUnitIndex(s: Session): Int32Array {
   for (let u = 0; u < items.length; u++) {
     const it = items[u];
     if (it.kind === "toolgroup" || it.kind === "noticegroup") { for (const i of it.indices) map[i] = u; }
-    else map[it.index] = u;
+    else if (it.kind === "event") map[it.index] = u;
   }
   return map;
 }
@@ -9913,6 +9914,7 @@ function fillCommentMsgs(list: HTMLElement, th: CommentThread, sid: string): voi
         walk.pass(exit);
         continue;
       }
+      if (it.kind === "gap") continue;   // a viewer's list has no gaps; the type says so
       const ev = evs[it.index];
       // the "worked Ns" footer rides exactly as in the chat (the parity bundle) — the same
       // turnWorkedSecs, with the thread session's own busy reading standing in for `working`
@@ -11101,15 +11103,20 @@ function tailMutations(records: MutationRecord[]): { removedTail: string[]; adde
 // the cap is the default unless the page's localStorage says otherwise (a laptop capturing raises it; T262j)
 const scrollDiagCap = readScrollDiagCap((k) => { try { return localStorage.getItem(k); } catch { return null; } });
 const scrollDiag = new ScrollDiagBudget(scrollDiagCap);
-function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "spacer" | "tailmut" | "unitchange" | "windowask", data: any): void {
+function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "spacer" | "tailmut" | "unitchange" | "regionask", data: any): void {
   const v = scrollDiag.take(activeId || "", kind, Date.now());
   if (v === "drop") return;
   vscodeApi?.postMessage(v === "cap"
     ? { type: "clientDiag", surface: "chat", what: kind + "-capped", data: { sid: activeId || "", perMinute: scrollDiagCap } }
     : { type: "clientDiag", surface: "chat", what: kind, data });
 }
-function writeScroll(content: HTMLElement, top: number, writer: string, stick = false): void {
-  const before = content.scrollTop;
+// `from`: the scrollTop the caller read BEFORE its own DOM change (the append path, a gap fill). A tail that re-renders SHORTER under
+// a bottom reader is clamped by the browser at the forced layout, before this write runs: without `from` the write finds the reader
+// already at the new bottom, moves nothing, files no row and owes no echo, and the clamp's own scroll event, still pending, files as
+// a gesture, an unwritten move for a move the pane's re-render caused. With `from`, the move is the pane's: the row names it and the
+// pending event is its echo. (The same parameter as the scroll clamp fix; the two meet at the merge.)
+function writeScroll(content: HTMLElement, top: number, writer: string, stick = false, from?: number): void {
+  const before = from ?? content.scrollTop;
   content.scrollTop = top;
   const after = content.scrollTop;
   if (after !== before) lastScrollWriteAfter = after;   // a write that moved the view owes exactly one scroll event, its echo; one that did not move owes none, and must not eat a later gesture landing near its target (verifier low, round two)
@@ -11177,7 +11184,7 @@ function scrollToAnchor(uuid: string): boolean {
                                        || (((e as { settleUuids?: string[] }).settleUuids || []).includes(uuid))) : -1;
     if (s && idx >= 0) {
       const items = displayItems(s);
-      let u = items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(idx) : it.index === idx);
+      let u = items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(idx) : it.kind === "event" && it.index === idx);
       if (u < 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= idx));
       // The anchor can live INSIDE a collapsed tool run: the folded line carries only the run's FIRST
       // uuid, so the re-render below could never surface a mid-run member — the click honest-failed
@@ -11199,7 +11206,7 @@ function scrollToAnchor(uuid: string): boolean {
                 || v.el.querySelector(`.turn[data-mid="${cssEscape(uuid)}"]`)
                 || v.el.querySelector(`.turn[data-mids~="${cssEscape(uuid)}"]`)
                 || v.el.querySelector(`.turn[data-uuids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
-    } else if (s && s.proto === 2 && (olderOnServer(s) || s.detached)) {
+    } else if (s && s.proto === 2 && (olderOnServer(s) || (s.regions && s.regions.some((r) => r.kind === "gap")))) {
       // proto 2 (T323 stage 4b): the anchor is outside the resident run — ONE window around it (chatWindow lands it)
       if (requestAround(activeId, uuid) || loadingOlder.has(activeId)) {
         pendingOlderAnchor.set(activeId, uuid);
@@ -11311,7 +11318,7 @@ function landNearestMoment(t: number): boolean {
   if (best < 0) return false;
   const uuid = (s.events[best] as { uuid?: string }).uuid || "";
   const items = displayItems(s);
-  let u = items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(best) : it.index === best);
+  let u = items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(best) : it.kind === "event" && it.index === best);
   if (u < 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= best));
   const working = s.status.state === "working" || s.status.state === "compacting";
   renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), working);
@@ -11920,6 +11927,7 @@ function prevTimedEpoch(events: ChatEvent[], i: number): number | null {
 // for the walk and for a window's seed, so a window opening mid-transcript decides its first divider as a walk from the
 // top would have.
 function unitExit(s: Session, it: DisplayItem): number | null {
+  if (it.kind === "gap") return null;   // empty space leaves the day walk where it was
   if (it.kind === "event") return eventEpoch(s.events[it.index]);
   if (it.kind === "noticegroup") return eventEpoch(s.events[itemAnchor(it, (i) => eventEpoch(s.events[i]))]);
   const open = openFolds.has(toolGroupKey(s.events[it.indices[0]]));
@@ -11961,14 +11969,52 @@ function dayWalkBeforeEvent(events: ChatEvent[], i: number): DayWalk {
 // The display units for the current mode: every event as its own pass-through (normal), or the folded
 // compactDisplay stream (compact). O(events), cheap (array ops, no DOM).
 function displayItems(s: Session): DisplayItem[] {
+  let out: DisplayItem[];
   if (!settings.compact) {
-    const out: DisplayItem[] = [];
+    out = [];
     for (let i = 0; i < s.events.length; i++) out.push({ kind: "event", index: i });
-    return out;
+  } else {
+    out = compactDisplay(s.events.map((e) => e.kind), s.events.map((e) => e.kind === "tool" ? e.name : undefined), s.events.map(isFoldableNotice));
   }
-  return compactDisplay(s.events.map((e) => e.kind), s.events.map((e) => e.kind === "tool" ? e.name : undefined), s.events.map(isFoldableNotice));
+  return withGapItems(s, out);
 }
-function itemFirstEvent(it: DisplayItem): number { return it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices[0] : it.index; }
+// T386 stage 2: the history the page does not hold is GAPS between its runs (and before the first), each a display unit of its own
+// placed before the first item of the run below it (`before`: that run's first event index in s.events, the runs' events being
+// s.events in turn order, the tail run last). Without regions (an index session, a head reached at the boot) the list is as before.
+function withGapItems(s: Session, items: DisplayItem[]): DisplayItem[] {
+  const rs = s.regions;
+  if (!rs || !rs.some((r) => r.kind === "gap")) return items;
+  const out: DisplayItem[] = [];
+  let evIdx = 0, ii = 0;
+  for (const r of rs) {
+    if (r.kind === "gap") { out.push({ kind: "gap", lo: r.lo, hi: r.hi, before: evIdx }); continue; }
+    if (r.hi == null) break;                                   // the tail run: everything left is its own
+    const end = evIdx + r.events.length;
+    while (ii < items.length && itemFirstEvent(items[ii]) < end) out.push(items[ii++]);
+    evIdx = end;
+  }
+  while (ii < items.length) out.push(items[ii++]);
+  return out;
+}
+/** The regions' events as one list in turn order (the runs' events, the tail run last): s.events is always this. */
+function eventsFromRegions(s: Session): void {
+  const rs = s.regions;
+  if (!rs) return;
+  const out: ChatEvent[] = [];
+  for (const r of rs) if (r.kind === "run") for (const e of r.events) out.push(e as ChatEvent);
+  s.events = out;
+}
+/** The tail run takes whatever s.events holds past the history runs (a chatTail truncated and appended, an optimistic echo
+ *  injected): the runs' events are s.events, so the tail's slice is the rest. */
+function regionsAbsorbTail(s: Session): void {
+  const rs = s.regions;
+  if (!rs) return;
+  let n = 0;
+  for (const r of rs) if (r.kind === "run" && r.hi != null) n += r.events.length;
+  const tail = rs.find((r): r is Run => r.kind === "run" && r.hi == null);
+  if (tail) tail.events = s.events.slice(n);
+}
+function itemFirstEvent(it: DisplayItem): number { return it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices[0] : it.kind === "gap" ? it.before : it.index; }
 
 // The display-unit index of the most recent compaction boundary in the loaded events, or 0 if none. The
 // default render window opens at (never below) this unit so pre-compaction history is scrubbed from the
@@ -11996,6 +12042,7 @@ function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEp
   // data-unit so the scroll↔unit map still resolves every node it walks). The unit is placed and timed by its ANCHOR
   // member (compact.ts itemAnchor, T339): a run's latest member, the one in sequence with its neighbours, never a member
   // stamped earlier than the rows around it.
+  if (it.kind === "gap") { v.el.appendChild(tag(gapElement(s, it, v))); return prevEpoch; }   // empty space: no divider, no epoch (T386 stage 2)
   const anchor = itemAnchor(it, (i) => eventEpoch(s.events[i]));
   const dayOpen = eventEpoch(s.events[anchor]);
   if (dayOpen != null) {
@@ -12063,7 +12110,17 @@ function renderWindowItems(v: View, s: Session, items: DisplayItem[], unitStart:
   v.winStart = unitStart; v.winEnd = unitEnd;
   v.spacerCount = unitStart; v.spacerCountBot = total - unitEnd; v.unitTotal = total;
   v.rendered = s.events.length;
+  // a gap unit's height is its own estimate, not the average row (T386 stage 2): the spacers and the scroll→unit map read it
+  const gu = new Map<number, number>();
+  for (let u = 0; u < total; u++) { const it = items[u]; if (it.kind === "gap") gu.set(u, gapHeight(it, v.avgTurnH)); }
+  v.gapUnits = gu.size ? gu : undefined;
   sizeSpacers(v);
+}
+/** The estimated height of the units [from, to): a gap its own, every other unit the measured average. */
+function hiddenHeight(v: View, from: number, to: number, avg: number): number {
+  let h = 0;
+  for (let u = from; u < to; u++) h += v.gapUnits?.get(u) ?? avg;
+  return Math.max(0, Math.round(h));
 }
 
 // Size the head/tail spacers to (hidden-unit count × avg rendered row height) so the scrollbar spans the
@@ -12084,7 +12141,8 @@ function sizeSpacers(v: View): void {
   }
   const avg = v.avgTurnH ?? 60;
   const topBefore = top ? (parseFloat(top.style.height) || 0) : 0, botBefore = bot ? (parseFloat(bot.style.height) || 0) : 0;
-  const topAfter = top ? Math.max(0, Math.round((v.spacerCount ?? 0) * avg)) : 0, botAfter = bot ? Math.max(0, Math.round((v.spacerCountBot ?? 0) * avg)) : 0;
+  const total = v.unitTotal ?? ((v.spacerCount ?? 0) + (v.spacerCountBot ?? 0));
+  const topAfter = top ? hiddenHeight(v, 0, v.spacerCount ?? 0, avg) : 0, botAfter = bot ? hiddenHeight(v, total - (v.spacerCountBot ?? 0), total, avg) : 0;
   if (top) top.style.height = topAfter + "px";
   if (bot) bot.style.height = botAfter + "px";
   // a spacer re-size is a layout change above or below the reader that no pane write accompanies; the browser's
@@ -12103,7 +12161,12 @@ function unitAtScroll(v: View, content: HTMLElement): number {
   const yOf = (e: HTMLElement) => e.getBoundingClientRect().top - cTop + st;   // position in scroll space
   const top = v.el.querySelector(".tx-spacer-top") as HTMLElement | null;
   const topH = top ? top.offsetHeight : 0;
-  if (st < topH) return Math.max(0, Math.floor(st / avg));   // in the top spacer
+  if (st < topH) {   // in the top spacer: walk the hidden units by their own heights (a gap's estimate, else the average)
+    if (!v.gapUnits) return Math.max(0, Math.floor(st / avg));
+    let y = 0;
+    for (let u = 0; u < (v.winStart ?? 0); u++) { y += v.gapUnits.get(u) ?? avg; if (st < y) return u; }
+    return Math.max(0, (v.winStart ?? 1) - 1);
+  }
   let lastUnit = v.winStart ?? 0;
   for (const c of Array.from(v.el.children) as HTMLElement[]) {
     if (c.classList.contains("tx-spacer")) continue;
@@ -13268,7 +13331,6 @@ function updateJumpBtn(): void {
 jumpBtn.onclick = () => {
   const c = document.getElementById("content");
   if (!c) return;
-  if (activeId) { const sd = liveSession(activeId); if (sd && sd.proto === 2 && sd.detached) reattachLive(activeId); }   // a detached window: the bottom is the live tail (review find M)
   writeScroll(c, c.scrollHeight, "jump-button", true);   // the snap IS the acknowledgment
   const v = activeId ? views.get(activeId) : undefined;
   if (v) { v.stick = true; v.scrollTop = c.scrollTop; }   // the explicit re-entry into follow mode
@@ -13654,13 +13716,10 @@ function virtualizeToViewport(): void {
   // At the top of the RESIDENT events with older history still on the server → fetch the previous chunk
   // (loadOlder → chatHead). winStart 0 ⇒ no top spacer left to expand into; topH is 0 so this is "near 0".
   if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx && upward) { requestOlder(activeId, v, content); return; }
-  // At the bottom of a DETACHED proto-2 window (an older window with more after it) → the next page (loadNewer → chatMore)
-  if (s.detached && (v.winEnd ?? total) >= total && st + vh > renderedBottom - edgePx) { requestNewer(activeId); return; }
   const nearTopEdge = (v.winStart ?? 0) > 0 && st < topH + edgePx;
   const nearBotEdge = (v.winEnd ?? total) < total && st + vh > renderedBottom - edgePx;
   if (!nearTopEdge && !nearBotEdge) return;   // window comfortably covers the viewport
   revirtBusy = true;
-  showLoadingPill();
   // Defer one frame so the pill paints before the (possibly heavy) render, then re-anchor on the focus unit.
   requestAnimationFrame(() => {
     try {
@@ -13684,7 +13743,6 @@ function virtualizeToViewport(): void {
       if (activeId) applyCommentMarks(activeId);   // the re-window rebuilt turns — re-anchor highlights
       scheduleRailSticky();
     } finally {
-      hideLoadingPill();
       revirtBusy = false;   // always release, even if a render threw — a wedged flag = no more loading
     }
   });
@@ -13701,28 +13759,92 @@ function virtualizeToViewport(): void {
 // .tx-loading-anchor right before #content, which the page's flex column places exactly where the transcript
 // starts, below the tab strip and the ledger box, so the pill's top follows the strip's bottom by layout
 // alone, whatever the row count and however it changes while the pill shows. Idempotent; no pointer events.
-let loadingPillEl: HTMLElement | null = null;
-function showLoadingPill(): void {
+let landingNoticeEl: HTMLElement | null = null;
+let landingNoticeSid: string | null = null;
+const cancelledLandings = new Set<string>();   // sids whose landing the notice's click cancelled while the window was on the wire
+const landingGaps = new Map<string, { lo: number; hi: number }>();   // sid -> the gap a landing's window is on the wire for (its glyph shows while it is)
+/** The ONE notice (T386 stage 2, the user 2026-09-12): "Going to the message from 7:41 AM, click to stay here", at the pill's old
+ *  anchor before #content, while a landing's window is on the wire; a scroll-driven gap fill shows the glyph inside the gap and no
+ *  notice. Clicking it is the ONLY cancel: the reader's own scroll during the wait does not cancel the landing. */
+function showLandingNotice(sid: string, t: number | null | undefined): void {
   if (revealProgress) return;   // the reveal progress line is the one message for that wait (T336)
   const content = document.getElementById("content");
-  if (!content || !content.parentNode) return;   // no chat section on this page: nothing to anchor to
-  if (!loadingPillEl) {
-    loadingPillEl = document.createElement("div");
-    loadingPillEl.className = "tx-loading-pill";
-    loadingPillEl.textContent = "Loading earlier messages…";
+  if (!content || !content.parentNode) return;
+  if (!landingNoticeEl) {
+    landingNoticeEl = document.createElement("div");
+    landingNoticeEl.className = "tx-landing-notice";
+    landingNoticeEl.title = "stay where you are; the messages still load into place";
+    landingNoticeEl.addEventListener("click", () => cancelLanding());
   }
-  if (!loadingPillEl.isConnected) {   // the first show, or a rebuild that dropped the anchor
+  landingNoticeEl.textContent = landingNotice(t, clockOf);
+  landingNoticeSid = sid;
+  if (!landingNoticeEl.isConnected) {   // the first show, or a rebuild that dropped the anchor
     const anchor = document.createElement("div");
     anchor.className = "tx-loading-anchor";
-    anchor.appendChild(loadingPillEl);
+    anchor.appendChild(landingNoticeEl);
     content.parentNode.insertBefore(anchor, content);
   }
-  loadingPillEl.style.display = "";
+  landingNoticeEl.style.display = "";
 }
-function hideLoadingPill(): void { if (loadingPillEl) loadingPillEl.style.display = "none"; }
-// the served geometry lab (tests/test_loading_pill_anchor_browser.py) shows the pill on demand: its real
-// showings last the span of a fetch, too brief to measure against the strip
-if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLoadingPill(); else hideLoadingPill(); };
+function hideLandingNotice(): void { if (landingNoticeEl) landingNoticeEl.style.display = "none"; landingNoticeSid = null; }
+/** The notice's click: the pending target and the notice go, the reply still inserts its run when it arrives (nothing is thrown
+ *  away) and the view is not moved; the reader stays where they are, including where the pre-jump put them. */
+function cancelLanding(): void {
+  const sid = landingNoticeSid;
+  if (!sid) return;   // no notice showing: nothing to cancel
+  const target = pendingOlderAnchor.get(sid);
+  hideLandingNotice();
+  if (loadingOlder.has(sid)) cancelledLandings.add(sid);   // the reply still comes: it fills in place
+  landTrail.push("cancelled");
+  vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: target ?? pendingAnchor ?? undefined, anchorT: pendingAnchorT ?? undefined, kind: pendingAnchorKind ?? undefined, cancelled: true });
+  pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
+  clearSeek();
+}
+/** The view jumps STRAIGHT to where the target will be (the user 2026-09-12): the anchor's time against the runs' times picks the
+ *  gap it falls in and its place inside it (chat-regions.ts gapFraction), so the reader sees the loading glyph in the empty space
+ *  the words will fill. With no time, or a gap not on screen, the view does not move until the reply. */
+function preJumpIntoGap(sid: string, t: number | null | undefined): void {
+  const s = sessions.get(sid), v = views.get(sid), content = document.getElementById("content");
+  if (t == null || !s || !s.regions || !v || !content || sid !== activeId) { landTrail.push(t == null ? "pre-jump-notime" : "pre-jump-noview"); return; }
+  const rs = s.regions;
+  for (let i = 0; i < rs.length; i++) {
+    const r = rs[i];
+    if (r.kind !== "gap") continue;
+    const above = i > 0 && rs[i - 1].kind === "run" ? (rs[i - 1] as Run).events : null;
+    const below = i + 1 < rs.length && rs[i + 1].kind === "run" ? (rs[i + 1] as Run).events : null;
+    let tBefore: number | null = null, tAfter: number | null = null;
+    if (above) for (let k = above.length - 1; k >= 0 && tBefore == null; k--) tBefore = eventEpoch(above[k] as ChatEvent);
+    if (below) for (let k = 0; k < below.length && tAfter == null; k++) tAfter = eventEpoch(below[k] as ChatEvent);
+    if ((tBefore != null && t < tBefore) || (tAfter != null && t > tAfter)) continue;
+    const frac = gapFraction(t, tBefore, tAfter);
+    landingGaps.set(sid, { lo: r.lo, hi: r.hi });   // the gap wears the glyph while the window is on the wire (gapHasAsk)
+    const g = v.el.querySelector(`.tx-gap[data-lo="${r.lo}"][data-hi="${r.hi}"]`) as HTMLElement | null;
+    let y: number;
+    if (g) {
+      if (!g.classList.contains("tx-gap-loading")) { g.classList.add("tx-gap-loading"); g.appendChild(gapGlyph()); }
+      y = g.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop + frac * g.offsetHeight;
+    } else {
+      // the gap sits inside a spacer: its place is the hidden units' heights before it (the walk unitAtScroll takes), and the
+      // re-window the write provokes renders it with its glyph
+      const items = displayItems(s);
+      const idx = items.findIndex((it) => it.kind === "gap" && it.lo === r.lo && it.hi === r.hi);
+      if (idx < 0) { landTrail.push("pre-jump-noitem"); return; }
+      const avg = v.avgTurnH ?? 60, own = hiddenHeight(v, idx, idx + 1, avg);
+      if (idx < (v.winStart ?? 0)) y = hiddenHeight(v, 0, idx, avg) + frac * own;
+      else { const bot = v.el.querySelector(".tx-spacer-bot") as HTMLElement | null; y = content.scrollHeight - (bot ? bot.offsetHeight : 0) + hiddenHeight(v, v.winEnd ?? idx, idx, avg) + frac * own; }
+    }
+    v.stick = false;   // a navigation's move ends follow mode (else the re-window the write provokes lands the reader back at the bottom)
+    writeScroll(content, y, "land-guess");
+    v.scrollTop = content.scrollTop;
+    landTrail.push("pre-jump");
+    return;
+  }
+  landTrail.push("pre-jump-nogap");   // the anchor's time falls in no gap (it is in a run, or the runs' times bracket it out)
+}
+// the served labs read the session's regions on demand (a gap inside a spacer has no element to read): kind, span, and a run's event count
+if (typeof window !== "undefined") (window as any).__rompRegions = (sid?: string): unknown => { const s = sessions.get(sid || activeId || ""); return s?.regions ? s.regions.map((r) => r.kind === "gap" ? { kind: "gap", lo: r.lo, hi: r.hi } : { kind: "run", lo: r.lo, hi: r.hi, n: r.events.length, first: keyOf(r.events[0] as { uuid?: string; key?: string }) ?? null, last: keyOf(r.events[r.events.length - 1] as { uuid?: string; key?: string }) ?? null }) : null; };
+// the served geometry lab shows the notice on demand: its real showings last the span of a fetch, too brief to measure against the strip
+if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLandingNotice(activeId || "", null); else hideLandingNotice(); };
 
 // ---- ledger box (rolling per-session digest, just below the tabs) ----
 
@@ -16776,7 +16898,6 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   }
   activeId = id;
   vanishedId = null; vanishedWhy = null; vanishedName = ""; wantActive = null; wantActiveGone = null; vanishedByDecline = false;   // any activation ends the unfocused state (T357)
-  updateLivePaused();   // the entering tab's own detached state shows or hides the strip (round 2, item 7)
   persistActive(id);   // the name rides beside the id: after a reload the unfocused body names the awaited tab before its host relays (T357)
   renderTabs();
   showActive();
@@ -16836,18 +16957,35 @@ function upsert(msg: any) {
     vscodeApi?.postMessage({ type: "clientDiag", surface: "chat", what: "empty-session-frame", data: { id: msg.id, held: prev.events.length } });
   }
   let events: ChatEvent[] = kept && prev ? prev.events : (msg.events || (prev ? prev.events : []));
-  let mergedRun = false;
-  const fullWhy = pendingFullWhy.get(msg.id) ?? null;
   pendingFullWhy.delete(msg.id);
-  if (!kept && prev && prev.proto === 2 && msg.proto === 2 && Array.isArray(msg.events) && msg.events.length && fullFrameMerges(fullWhy)) {
-    // a full frame answering this client's own RE-ATTACH ask MERGES into the resident run it overlaps: the pages the
-    // reader walked stay resident and the reader's place holds (review find L); a frame with no overlap (a fork, a
-    // /clear) replaces as before, and so does every full frame the kernel sent on its own (a change before the held
-    // run, a floor move): its in-list events are the fresh copies (round 2, item 3)
-    stripOptimistic(prev);
-    const r = mergeWindow(prev.events as { uuid?: string; key?: string }[], msg.events as { uuid?: string; key?: string }[]);
-    if (r.mode === "merge") { events = r.events as ChatEvent[]; mergedRun = true; }
+  // T386 stage 2: a proto-2 full frame is the TAIL run (the kernel names its first turn, tailLo); history runs the page holds whose
+  // spans end at or before it stay, and s.events is the runs' events in turn order. No full frame merges by reason any more: the
+  // tail is always resident, so no re-attach exists.
+  let regions: Region[] | undefined = kept && prev ? prev.regions : undefined;
+  if (!kept && msg.proto === 2 && Array.isArray(msg.events)) {
+    const tailLo: number | null = typeof msg.tailLo === "number" ? msg.tailLo : (msg.headKnown ? 0 : null);
+    if (tailLo != null) {
+      // the frame's tail run joins the regions the page holds: history wholly above it stays; a held run starting at or past it is
+      // superseded (the frame carries everything from there); a held run STRADDLING it (the held tail, when the kernel's cut moved
+      // down after an append and the frame's tail is the few turns past the cut) keeps its part before the frame's start, minus
+      // the keys the frame carries, and the two touch, so insertRun makes them one run (the merge-base merged such a frame into
+      // the held run; dropping the held tail here blanked 640 events to 2 in the landing lab, 2026-09-13)
+      const frameKeys = new Set((events as Array<{ uuid?: string; key?: string }>).map((e) => keyOf(e)).filter((k): k is string => !!k));
+      const held: Run[] = [];
+      for (const r of (prev?.regions ? runsOf(prev.regions) : [])) {
+        if (!r.events.length) continue;
+        if (r.hi != null && r.hi <= tailLo) { held.push(r); continue; }
+        if (r.lo >= tailLo) continue;
+        const before = r.events.filter((e) => !frameKeys.has(keyOf(e as { uuid?: string; key?: string }) ?? ""));
+        if (before.length) held.push({ kind: "run", lo: r.lo, hi: tailLo, events: before });   // emptied by the frame's own keys: nothing of it is left to hold
+      }
+      regions = insertRun(regionsFromRuns(held), { kind: "run", lo: tailLo, hi: null, events: events.slice() });
+      const all: ChatEvent[] = [];
+      for (const r of regions) if (r.kind === "run") for (const e of r.events) all.push(e as ChatEvent);
+      events = all;
+    }
   }
+  const hasGap = !!regions && regions.some((r) => r.kind === "gap");
   const s: Session = {
     id: msg.id,
     name: msg.name,
@@ -16868,13 +17006,15 @@ function upsert(msg: any) {
     githubRepo: ("githubRepo" in msg) ? (msg.githubRepo ?? null) : (prev ? prev.githubRepo : null),
     // A trimmed full send carries headFrom/headTotal; a whole-transcript send omits them (headFrom 0).
     headFrom: kept && prev ? prev.headFrom : (msg.headFrom ?? 0),
-    headTotal: kept && prev ? prev.headTotal : (msg.proto === 2 ? (mergedRun && prev?.headKnown ? events.length : (msg.headTotal ?? null)) : (msg.headTotal ?? events.length)),   // a merged run with a known head: its own count (round 2, item 9)
+    headTotal: kept && prev ? prev.headTotal : (msg.proto === 2 ? (regions ? (hasGap ? null : events.length) : (msg.headTotal ?? null)) : (msg.headTotal ?? events.length)),
     // the uuid-anchored wire (T323 stage 4b): the frame says its shape (proto 2); a frame without it is an index frame
     proto: kept && prev ? prev.proto : (msg.proto === 2 ? 2 : undefined),
-    headKnown: kept && prev ? prev.headKnown : (msg.proto === 2 ? (!!msg.headKnown || (mergedRun && !!prev?.headKnown)) : undefined),
-    firstUuid: kept && prev ? prev.firstUuid : (msg.proto === 2 ? (mergedRun ? keyOf(events[0] as { uuid?: string; key?: string } | undefined) ?? null : (msg.firstUuid ?? keyOf(events[0] as { uuid?: string; key?: string } | undefined) ?? null)) : undefined),
+    headKnown: kept && prev ? prev.headKnown : (msg.proto === 2 ? (regions ? !hasGap || regions[0].kind === "run" : !!msg.headKnown) : undefined),
+    firstUuid: kept && prev ? prev.firstUuid : (msg.proto === 2 ? (regions ? (keyOf(events[0] as { uuid?: string; key?: string } | undefined) ?? null) : (msg.firstUuid ?? keyOf(events[0] as { uuid?: string; key?: string } | undefined) ?? null)) : undefined),
     lastUuid: kept && prev ? prev.lastUuid : (msg.proto === 2 ? (msg.lastUuid ?? null) : undefined),
-    detached: kept && prev ? prev.detached : false,
+    regions,
+    pageTurns: typeof msg.pageTurns === "number" ? msg.pageTurns : (prev ? prev.pageTurns : undefined),
+    tailLo: regions ? turnsBeforeTail(regions) : (kept && prev ? prev.tailLo : (typeof msg.tailLo === "number" ? msg.tailLo : (msg.headKnown ? 0 : null))),   // the merged tail's start, not the frame's alone
     bgTasks: ("bgTasks" in msg) ? msg.bgTasks : (prev ? prev.bgTasks : undefined),
     hideFromFeed: ("hideFromFeed" in msg) ? !!msg.hideFromFeed : (prev ? prev.hideFromFeed : undefined),
     postalServiceOff: ("postalServiceOff" in msg) ? !!msg.postalServiceOff : (prev ? prev.postalServiceOff : undefined),
@@ -16882,7 +17022,6 @@ function upsert(msg: any) {
     notify: ("notify" in msg) ? !!msg.notify : (prev ? prev.notify : undefined),
   };
   sessions.set(msg.id, s);
-  if (msg.id === activeId) updateLivePaused();   // the re-attach frame landed: the paused strip hides (round 2, item 7)
   // a session frame can ride the kernel's chat build cache with a stale name/color embedded (its sig
   // watches transcript+states only) — the freshest tabOrder meta wins over it, pending guard included
   const tm = tabMeta.get(msg.id);
@@ -17118,6 +17257,7 @@ function chatTail(msg: any) {
   // EQUAL to the length and syncView's no-op fast path skips the repaint — the retired turn stayed on screen
   // for good (the user 2026-07-24: a ✕'d queued message left its "1 queued message" element behind). Mark the
   // view stale so the window is rebuilt from the events that actually remain.
+  regionsAbsorbTail(s);                            // the tail run is s.events past the history runs (T386 stage 2)
   const shrank = s.events.length < wasLen;
   if (typeof msg.total === "number") s.headTotal = msg.total;
   if (s.proto === 2 && s.headKnown) s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);   // the whole is resident: its count
@@ -17159,6 +17299,119 @@ function chatTail(msg: any) {
 // The kernel replies with the previous chunk; PREPEND it to the resident tail (lowering headFrom) and re-
 // anchor on the row the user was at, so the older content appears ABOVE without the view jumping.
 const loadingOlder = new Set<string>();                 // sessions with a loadOlder in flight
+
+// ── history regions (T386 stage 2): runs the page holds, gaps it asks for by turn span ──────────────────────────
+/** A window or a page becomes a run among the session's regions; s.events follows (the runs' events in turn order). */
+function insertRegionRun(s: Session, lo: number, hi: number, events: ChatEvent[]): void {
+  const rs = s.regions ?? regionsFromRuns([{ kind: "run", lo: s.tailLo ?? 0, hi: null, events: s.events.slice() }]);
+  s.regions = insertRun(rs, { kind: "run", lo, hi, events });
+  eventsFromRegions(s);
+  const hasGap = s.regions.some((r) => r.kind === "gap");
+  s.headKnown = !hasGap || s.regions[0].kind === "run";
+  s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
+  s.headTotal = hasGap ? null : s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);
+}
+const gapLoading = new Set<string>();                                        // "sid:lo:hi" of the page asks in flight
+const gapKey = (sid: string, lo: number, hi: number): string => sid + ":" + lo + ":" + hi;
+function gapHasAsk(sid: string, gap: { lo: number; hi: number }): boolean {
+  const lg = landingGaps.get(sid);
+  if (lg && lg.lo === gap.lo && lg.hi === gap.hi) return true;   // a landing's window on the wire for this gap (the pre-jump)
+  for (const k of gapLoading) {   // a page ask whose span lies inside the gap
+    const [ksid, a, b] = k.split(":");
+    if (ksid === sid && Number(a) >= gap.lo && Number(b) <= gap.hi) return true;
+  }
+  return false;
+}
+/** The romp loading glyph at a size read at a glance (the swirl as the o of the wordmark, the three accent dots): the mark of a gap
+ *  whose page is on the wire; never the small pill. */
+function gapGlyph(): HTMLElement {
+  const w = el("div", "tx-gap-glyph");
+  const r = el("span", "tx-gap-r"); r.textContent = "R";
+  const o = el("img", "tx-gap-swirl") as HTMLImageElement; o.src = mediaSrc("romp-swirl-o.svg"); o.alt = "o";
+  const mp = el("span", "tx-gap-mp"); mp.textContent = "mp";
+  const dots = el("span", "tx-loading-dots"); dots.append(el("i"), el("i"), el("i"));
+  w.append(r, o, mp, dots);
+  return w;
+}
+/** A gap in the thread: empty space of the gap's estimated height (overflow-anchor none, so the browser never anchors on it), the
+ *  glyph while a page of it is on the wire, watched by the one observer that asks when it enters the viewport. */
+function gapElement(s: Session, it: { lo: number; hi: number }, v: View): HTMLElement {
+  const g = el("div", "tx-gap");
+  g.dataset.lo = String(it.lo); g.dataset.hi = String(it.hi); g.dataset.sid = s.id;
+  g.style.height = gapHeight(it, v.avgTurnH) + "px";
+  if (gapHasAsk(s.id, it)) { g.classList.add("tx-gap-loading"); g.appendChild(gapGlyph()); }
+  gapObserver?.observe(g);
+  return g;
+}
+// ONE observer over the gap elements (an event, not a scroll poll): a gap entering the viewport asks for the page nearest the edge it
+// entered by (its top above the viewport's top: the reader met its bottom, scrolling up; else its top)
+const gapObserver: IntersectionObserver | null = (() => {
+  if (typeof IntersectionObserver !== "function" || typeof document === "undefined") return null;
+  const root = document.getElementById("content");
+  if (!root) return null;
+  return new IntersectionObserver((entries) => {
+    for (const en of entries) {
+      if (!en.isIntersecting) continue;
+      const g = en.target as HTMLElement;
+      const sid = g.dataset.sid || "", lo = Number(g.dataset.lo), hi = Number(g.dataset.hi);
+      if (!sid || !(hi > lo) || !g.isConnected) continue;
+      const rootTop = en.rootBounds ? en.rootBounds.top : root.getBoundingClientRect().top;
+      requestTurns(sid, { lo, hi }, en.boundingClientRect.top < rootTop ? "bottom" : "top");
+    }
+  }, { root, threshold: 0 });
+})();
+/** Ask for the page of a gap nearest the viewport's edge (chat-regions.ts pagesToAsk); one request per gap in flight. */
+function requestTurns(sid: string, gap: { lo: number; hi: number }, edge: "top" | "bottom"): void {
+  const s = sessions.get(sid);
+  if (!s || s.proto !== 2 || !s.regions || gapHasAsk(sid, gap)) return;
+  const span = pagesToAsk(gap, edge, s.pageTurns ?? 16);
+  if (!(span.hi > span.lo)) return;
+  gapLoading.add(gapKey(sid, span.lo, span.hi));
+  scrollDiagRow("regionask", { sid, lo: span.lo, hi: span.hi, edge, why: "gap-scroll", notice: landingNoticeSid === sid });
+  const v = views.get(sid);
+  const g = v ? (v.el.querySelector(`.tx-gap[data-lo="${gap.lo}"][data-hi="${gap.hi}"]`) as HTMLElement | null) : null;
+  if (g && !g.classList.contains("tx-gap-loading")) { g.classList.add("tx-gap-loading"); g.appendChild(gapGlyph()); }
+  vscodeApi?.postMessage({ type: "loadTurns", id: sid, lo: span.lo, hi: span.hi });
+}
+/** A gap's page arrived: the run is inserted and the view rebuilt with the reader's row where it was. An empty or missing page
+ *  still closes its span (an empty run), so the gap never asks for it again. */
+function chatTurns(msg: any): void {
+  const span = Array.isArray(msg.span) && msg.span.length === 2 ? msg.span as [number, number] : null;
+  if (span) gapLoading.delete(gapKey(msg.id, span[0], span[1]));
+  const s = sessions.get(msg.id);
+  if (!s || !span || !(span[1] > span[0])) return;
+  stripOptimistic(s);
+  insertRegionRun(s, span[0], span[1], (msg.events || []) as ChatEvent[]);
+  reconcileOptimistic(s);
+  const v = views.get(msg.id);
+  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
+  if (msg.id !== activeId) { schedulePrebuild(); return; }
+  fillInPlace(msg.id, v);
+}
+/** A fill moves nothing (the user 2026-09-12): the content appears in place and scrollTop does not change. The rebuild's window is
+ *  chosen around the row the reader was looking at and that row is written back to its offset, ONE attributed write (gap-fill),
+ *  with the scrollTop read before the rebuild as the write's origin (the browser's own anchoring, kept on for #content, may have
+ *  moved it already; the row still names the move as the pane's). */
+function fillInPlace(sid: string, v: View | undefined): void {
+  const content = document.getElementById("content"), s = sessions.get(sid);
+  if (!content || !v || !s || sid !== activeId) { showActive(); return; }
+  const topBefore = content.scrollTop, shBefore = content.scrollHeight;
+  const keep = captureScrollAnchor(content, v);
+  // the window is rendered AROUND the reader's row (as a deep link's recovery renders around its target): a plain syncView of a stale view
+  // renders the TAIL window, whose rebuild lands at the bottom and loses the row the reader was looking at
+  const items = displayItems(s);
+  const idx = keep ? s.events.findIndex((e) => e.uuid === keep.uuid) : -1;
+  let u = idx >= 0 ? items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(idx) : it.kind === "event" && it.index === idx) : -1;
+  if (u < 0 && idx >= 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= idx));
+  v.stick = false;   // a fill never follows the tail: the reader is where they are
+  if (u >= 0) renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), s.status.state === "working" || s.status.state === "compacting");
+  else syncView(sid);
+  const row = keep ? (v.el.querySelector(`.turn[data-uuid="${cssEscape(keep.uuid)}"]`) as HTMLElement | null) : null;
+  const y = row && keep ? row.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop - keep.y : topBefore + (content.scrollHeight - shBefore);
+  writeScroll(content, y, "gap-fill", false, topBefore);
+  if (activeId) applyCommentMarks(activeId);
+  scheduleRailSticky();
+}
 const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to re-anchor on when the chunk lands
 // sid → the on-screen y that uuid must come back to. PRESENT ⇒ the fetch was a scroll-back (requestOlder) and
 // the arrival is POSITION PRESERVATION; ABSENT ⇒ it was a deep-link (fetchOlderForAnchor) and the arrival is a
@@ -17167,7 +17420,6 @@ const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to r
 const pendingOlderKeepY = new Map<string, number>();
 function chatHead(msg: any) {
   loadingOlder.delete(msg.id);
-  hideLoadingPill();
   const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); };
   const s = sessions.get(msg.id);
   if (!s) { forget(msg.id); return; }
@@ -17216,7 +17468,6 @@ function fetchOlderForAnchor(sid: string, uuid: string): boolean {
   pendingOlderAnchor.set(sid, uuid);
   pendingOlderKeepY.delete(sid);   // a DEEP-LINK: land it properly (top-align + flash), not offset-preserved
   loadingOlder.add(sid);
-  showLoadingPill();
   vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.proto === 2 ? s.firstUuid : s.headFrom });
   return true;
 }
@@ -17245,7 +17496,6 @@ function requestOlder(sid: string, v: View, content: HTMLElement): void {
   // top) 0 restores the fallback row to the top, which is where it already is.
   if (anchor) { pendingOlderAnchor.set(sid, anchor); pendingOlderKeepY.set(sid, keep?.y ?? 0); }
   loadingOlder.add(sid);
-  showLoadingPill();
   vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.proto === 2 ? s.firstUuid : s.headFrom });
 }
 
@@ -17253,7 +17503,8 @@ function requestOlder(sid: string, v: View, content: HTMLElement): void {
 // Older history exists on the server: for an index session while headFrom > 0; for a proto-2 session until the
 // head has been reached (headKnown). A proto-2 client never holds a count before that, so nothing shows one.
 function olderOnServer(s: Session): boolean {
-  return s.proto === 2 ? s.headKnown !== true : (s.headFrom ?? 0) > 0;
+  if (s.proto === 2) return !s.regions && s.headKnown !== true;   // with regions the head gap is an element that asks for itself (T386 stage 2)
+  return (s.headFrom ?? 0) > 0;
 }
 // A deep-link anchor past the resident run: ONE round trip for a window around it (chatWindow), instead of the
 // index wire's fetch-older-until-resident loop. False when nothing can be asked (an index session, a request in flight).
@@ -17275,151 +17526,54 @@ function requestAround(sid: string, uuid: string): boolean {
   // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked;
   // under the same per-minute budget as the other scroll rows (verifier low 5)
   const cAsk = document.getElementById("content");
-  scrollDiagRow("windowask", { sid, nav, kind, keep: pendingAnchorKeepY != null, reland: relandAsk, trail: landTrail.slice(-4), detached: !!s.detached, atBottom: !!cAsk && atBottom(cAsk) });
+  scrollDiagRow("regionask", { sid, why: "landing", nav, kind, keep: pendingAnchorKeepY != null, reland: relandAsk, trail: landTrail.slice(-4), notice: landingNoticeSid === sid, atBottom: !!cAsk && atBottom(cAsk) });   // the T366 window-ask row, renamed with the regions (T386 stage 2)
   pendingOlderAnchor.set(sid, uuid);
   pendingOlderKeepY.delete(sid);
   loadingOlder.add(sid);
-  showLoadingPill();
+  if (nav) { showLandingNotice(sid, pendingAnchorT); preJumpIntoGap(sid, pendingAnchorT); }   // the one notice and the jump into the gap (T386 stage 2); a re-land shows nothing
   vscodeApi?.postMessage({ type: "loadAround", id: sid, uuid });
   return true;
 }
-// The page after a DETACHED window's newest event (the reader scrolled to its bottom): chatMore appends it, and
-// `more: false` means the live tail is resident again — the kernel's deltas resume from there.
-function requestNewer(sid: string): void {
-  const s = sessions.get(sid);
-  if (!s || s.proto !== 2 || !s.detached || !s.lastUuid || loadingOlder.has(sid)) return;
-  loadingOlder.add(sid);
-  showLoadingPill();
-  vscodeApi?.postMessage({ type: "loadNewer", id: sid, after: s.lastUuid });
-}
 function chatWindow(msg: any) {
   loadingOlder.delete(msg.id);
-  hideLoadingPill();
+  landingGaps.delete(msg.id);
+  if (landingNoticeSid === msg.id) hideLandingNotice();
   const s = sessions.get(msg.id);
   const anchorUuid = pendingOlderAnchor.get(msg.id);
   pendingOlderAnchor.delete(msg.id); pendingOlderKeepY.delete(msg.id);
   if (!s) return;
-  if (msg.missing || !(msg.events || []).length) {
+  const ask = pendingWindowNav.get(msg.id) ?? null;
+  pendingWindowNav.delete(msg.id);
+  if (msg.missing || !(msg.events || []).length || !Array.isArray(msg.span)) {
     // the honest end of a deep link: the anchor is in no page the kernel can render
     if (msg.id === activeId && pendingAnchor === anchorUuid) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-missing"); landToast("couldn't locate this in the transcript"); }
     return;
   }
+  // T386 stage 2: the window becomes a RUN among the session's regions by its turn span; the gaps on either side shrink or split and
+  // a touching run merges (chat-regions.ts insertRun). The tail run is never detached, so there is no strip, no re-attach, no walk.
   stripOptimistic(s);
-  const heldLast = s.lastUuid, wasDetached = !!s.detached;
-  const r = mergeWindow(s.events as { uuid?: string }[], msg.events as { uuid?: string }[]);
-  const newLast = keyOf(r.events[r.events.length - 1] as { uuid?: string; key?: string } | undefined) ?? null;
-  // detached only when the merged run's newest event is not the live tail the page held: a window that overlaps the
-  // resident tail merges into one contiguous run through it and stays attached (review find G; the kernel says so
-  // too, `connected`); a client detached BEFORE the window stays so on the merge clause (round 2, item 2)
-  const detached = windowDetached(!!msg.moreAfter, !!msg.connected, wasDetached, r.mode, heldLast, newLast);
-  // …but a detaching window that lands on the active view of a run that was ATTACHED, asked by no navigation of the
-  // reader's own (the re-land of their row after a rebuild), never takes them off it (T366, the user 2026-09-12: the
-  // paused strip mid-flick toward the bottom): the window is not adopted, and the kernel, whose base for this client
-  // moved to the window, is asked to re-base it on the tail (a full frame that merges into the held run)
-  const ask = pendingWindowNav.get(msg.id) ?? null;
-  const landing = windowLanding(detached, msg.id === activeId && !wasDetached, ask?.nav ?? false);
-  pendingWindowNav.delete(msg.id);
-  if (landing === "reattach") {
-    // the kernel's base for this client is the window until the re-attach lands; a tail it pushes meanwhile misses its
-    // afterUuid here and asks for a full frame as a gap, which requestFullSession drops while the re-attach ask is in
-    // flight (awaitingFull), so the pending reason stays reattach and the frame MERGES into the held run (verifier low 4)
-    reconcileOptimistic(s);
-    if (msg.id === activeId) { if (pendingAnchor === anchorUuid) { pendingAnchor = null; pendingAnchorKeepY = null; } anchorPendingOlder = false; landTrail.push("window-not-adopted"); }
-    reattachLive(msg.id, true);
-    updateLivePaused();
-    return;
-  }
-  s.events = r.events as ChatEvent[];
-  s.firstUuid = keyOf(s.events[0] as { uuid?: string; key?: string } | undefined) ?? null;
-  s.lastUuid = newLast;
-  s.detached = detached;
-  s.detachNav = detached && ask?.named ? { t: ask.t } : null;   // the strip names a detach by a card, lane or deep link (T366); read only while detached
-  if (msg.moreBefore === false) s.headKnown = true;
-  s.headTotal = s.headKnown && !s.detached ? s.events.length : null;   // a count only when the whole is resident
+  insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]);
   reconcileOptimistic(s);
   const v = views.get(msg.id);
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
-  if (msg.id !== activeId) return;
+  if (msg.id !== activeId) { schedulePrebuild(); return; }
   const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
-  // the same landing re-armed, so the click's time and kind ride through (T386: the adoption used to reset them, and the
-  // landing row lost the datum that ties it to the click); a window with no navigation behind it carries none
-  if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = ask?.t ?? null; pendingAnchorKind = ask?.kind ?? null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
-  showActive();
-  updateLivePaused();
-  window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));
-}
-// After a window or a page of newer history painted: a window that does not overflow never scrolls, so the edge check runs
-// once here (review find M). A DETACHED run whose content fits the viewport cannot reach the newer edge through that check
-// (it returns on "everything rendered", or asks for older first), so its next page is asked for directly (round 2, item 7;
-// round 3: chatMore too, so a short page appended to a short run keeps walking).
-function edgeCheckAfterWindow(sid: string): void {
-  if (landSettling && !landSettling.done) { afterSettle.push(() => edgeCheckAfterWindow(sid)); return; }   // a fresh landing settles first (T386): the walk never moves the reader off it
-  const c = document.getElementById("content");
-  const cur = sessions.get(sid);
-  if (cur && cur.detached && c && c.scrollHeight <= c.clientHeight + 1) { requestNewer(sid); return; }
-  virtualizeToViewport();
-}
-function chatMore(msg: any) {
-  loadingOlder.delete(msg.id);
-  hideLoadingPill();
-  const s = sessions.get(msg.id);
-  if (!s) return;
-  if (msg.missing) { requestFullSession(msg.id, "gap"); return; }   // the run's newest event is gone from the transcript: re-base
-  stripOptimistic(s);
-  const next = appendMore(s.events as { uuid?: string }[], msg.afterUuid, (msg.events || []) as { uuid?: string }[]);
-  if (!next) { reconcileOptimistic(s); return; }   // stale: the newest moved on
-  s.events = next as ChatEvent[];
-  s.lastUuid = keyOf(s.events[s.events.length - 1] as { uuid?: string; key?: string } | undefined) ?? s.lastUuid;
-  const am = afterMore(!!msg.more, !!s.headKnown, s.events.length);
-  s.detached = am.detached;
-  if (!s.detached) {
-    // back at the live tail: the kernel re-based this client on the reply and carries the frame's status and ledger
-    // here, so no full frame is asked (a full frame is the last 250 events: the walked pages would be dropped and the
-    // reader's place lost, review find L)
-    s.headTotal = am.headTotal;
-    if (msg.status) s.status = msg.status;
-    if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
+  const cancelled = cancelledLandings.delete(msg.id);
+  // a NAVIGATION's window lands (the ask's own mark, as before the regions: landActive clears the landing's mark while the ask is in
+  // flight, so that mark cannot be the key); the notice's click stands the landing down and the window appears in place instead
+  if (target && ask?.nav && !cancelled) {
+    // the landing re-armed on the window's anchor, so the click's time and kind ride through (T386: the landing row keeps the datum that ties it to the click)
+    pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = ask?.t ?? null; pendingAnchorKind = ask?.kind ?? null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
+    showActive();
+    return;
   }
-  reconcileOptimistic(s);
-  const v = views.get(msg.id);
-  if (v) { v.stale = true; }
-  if (msg.id === activeId) showActive();
-  updateLivePaused();
-  if (msg.id === activeId && s.detached) window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));   // the appended page may still fit
+  fillInPlace(msg.id, v);   // nobody is going to this window (the notice was clicked, or the ask was the page's own): it appears in place
 }
 
 // ── the detached client's way back (review find M) ──────────────────────────────────────────────────────────
 // A proto-2 client reading an older window gets no live delta: a strip says so and offers the return; the jump chip
 // returns too. The return is a full frame (needFull "reattach"): upsert merges it into the held run when they
 // overlap, so the pages the reader walked stay resident.
-let livePausedEl: HTMLElement | null = null;
-let livePausedTxt: HTMLElement | null = null;   // the strip's sentence, re-said on every evaluation (T366)
-function updateLivePaused(): void {
-  const s = activeId ? liveSession(activeId) : null;
-  const on = !!(s && s.proto === 2 && s.detached);
-  if (!on) { if (livePausedEl) livePausedEl.hidden = true; return; }
-  if (!livePausedEl) {
-    livePausedEl = el("div", "live-paused");
-    livePausedEl.id = "live-paused";
-    livePausedTxt = el("span", "live-paused-text");
-    const btn = document.createElement("button"); btn.className = "live-paused-btn"; btn.type = "button"; btn.textContent = "Return to live";
-    btn.onclick = () => { if (activeId) reattachLive(activeId); };
-    livePausedEl.appendChild(livePausedTxt); livePausedEl.appendChild(btn);
-    document.body.appendChild(livePausedEl);
-  }
-  // the sentence names a navigation's detach (a card or lane click with the message's time) and keeps the plain one
-  // otherwise (T366): a jump landing mid-scroll must not read as the scroll pausing the page
-  if (livePausedTxt) livePausedTxt.textContent = livePausedText(!!s.detachNav, s.detachNav ? s.detachNav.t : null, clockOf);
-  livePausedEl.hidden = false;
-  const c = document.getElementById("content");
-  if (c) livePausedEl.style.bottom = (Math.max(0, window.innerHeight - c.getBoundingClientRect().bottom) + 40) + "px";
-}
-function reattachLive(sid: string, force = false): void {
-  const s = sessions.get(sid);
-  if (!s || s.proto !== 2 || (!s.detached && !force)) return;   // force: a window the client did not adopt moved the KERNEL's base for it (T366)
-  vscodeApi?.postMessage({ type: "reattachKeys", id: sid, keys: reattachKeys(s.events as { uuid?: string; key?: string }[]) });   // the run as held, for the kernel's shared clause
-  requestFullSession(sid, "reattach");   // the kernel's full tail frame re-bases this client; upsert merges it into the held run
-}
 
 // The awaiting fields the #bg-tasks box renders from (renderBgTasks — the header words, the rows, the awaited-row outline) — one
 // key per status, so a status-only frame re-renders the box exactly when THESE change (the chip's own
@@ -17792,7 +17946,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "chatTail") chatTail(m);
   else if (m.type === "chatHead") chatHead(m);
   else if (m.type === "chatWindow") chatWindow(m);   // proto 2: a window around a deep-link anchor (T323 stage 4b)
-  else if (m.type === "chatMore") chatMore(m);       // proto 2: the page after a detached window
+  else if (m.type === "chatTurns") chatTurns(m);     // proto 2 (T386 stage 2): a gap's page, asked by turn span
   else if (m.type === "chatEpisode") chatEpisode(m);
   else if (m.type === "subagent") applySubagentFrame(m);
   else if (m.type === "update") update(m);
@@ -18236,7 +18390,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   }
   else if (m.type === "closed") dismissSession(m.id, m.hostDrop === true ? "hostDrop" : "end");   // a session died on its own (or the kernel confirms our close) — or its HOST dropped (federation's stand-in, stamped: not an end)
   // any payload that rebuilt transcript DOM must get its highlights re-applied (marks live IN that DOM)
-  if (m && m.id && (m.type === "session" || m.type === "chatTail" || m.type === "chatHead" || m.type === "chatWindow" || m.type === "chatMore" || m.type === "chatEpisode"))
+  if (m && m.id && (m.type === "session" || m.type === "chatTail" || m.type === "chatHead" || m.type === "chatWindow" || m.type === "chatTurns" || m.type === "chatEpisode"))
     applyCommentMarks(String(m.id));
   // a refused create (warn) must hand the popover back — the draft is intact, the button un-sticks.
   // FULL rebuild: the in-place refresh path deliberately never touches the composer, so it would

@@ -27,7 +27,7 @@ test("windowing constants are sane: a tail, a render radius and a re-window marg
 test("units unify both modes: one per event (normal) or the folded compactDisplay stream (compact)", () => {
   assert.match(RENDER, /function displayItems\(s: Session\): DisplayItem\[\]/);
   assert.match(RENDER, /if \(!settings\.compact\) \{[\s\S]*?out\.push\(\{ kind: "event", index: i \}\);/);
-  assert.match(RENDER, /return compactDisplay\(/);
+  assert.match(RENDER, /out = compactDisplay\([\s\S]*?\n\s*\}\s*\n\s*return withGapItems\(s, out\);/, "the folded stream, then the gaps between the runs interleaved (T386 stage 2)");
 });
 
 test("every rendered row is tagged data-unit, so the scroll↔unit map can locate it", () => {
@@ -45,14 +45,14 @@ test("renderWindowItems renders [unitStart, unitEnd) with a TOP and a BOTTOM spa
 
 test("sizeSpacers sizes BOTH spacers by hidden-unit count × avg, caching only a visible measurement", () => {
   assert.match(RENDER, /function sizeSpacers\(v: View\): void/);
-  assert.match(RENDER, /const topAfter = top \? Math\.max\(0, Math\.round\(\(v\.spacerCount \?\? 0\) \* avg\)\) : 0, botAfter = bot \? Math\.max\(0, Math\.round\(\(v\.spacerCountBot \?\? 0\) \* avg\)\) : 0;/);
+  assert.match(RENDER, /const topAfter = top \? hiddenHeight\(v, 0, v\.spacerCount \?\? 0, avg\) : 0, botAfter = bot \? hiddenHeight\(v, total - \(v\.spacerCountBot \?\? 0\), total, avg\) : 0;/, "both spacers by the hidden units' own heights: a gap's estimate, else the average (T386 stage 2)");
   assert.match(RENDER, /if \(top\) top\.style\.height = topAfter \+ "px";\s*\n\s*if \(bot\) bot\.style\.height = botAfter \+ "px";/);
   assert.match(RENDER, /if \(h > 0 && n > 0\) v\.avgTurnH = h \/ n;/);   // don't cache a display:none 0
 });
 
 test("unitAtScroll maps a spacer by avg height and a rendered row by its data-unit", () => {
   assert.match(RENDER, /function unitAtScroll\(v: View, content: HTMLElement\): number/);
-  assert.match(RENDER, /if \(st < topH\) return Math\.max\(0, Math\.floor\(st \/ avg\)\);/);   // in the top spacer
+  assert.match(RENDER, /if \(st < topH\) \{[^\n]*\n\s*if \(!v\.gapUnits\) return Math\.max\(0, Math\.floor\(st \/ avg\)\);/, "in the top spacer: the average when no gap sits in it, else a walk over the hidden units' heights (T386 stage 2)");
   assert.match(RENDER, /if \(st < t0 \+ c\.offsetHeight\) return lastUnit;/);                  // straddling a rendered row
   assert.match(RENDER, /return \(v\.winEnd \?\? 0\) \+ Math\.floor\(\(st - bTop\) \/ avg\);/);  // in the bottom spacer
 });
@@ -65,25 +65,27 @@ test("scroll re-windows around the viewport (steady scroll OR jump) when near a 
   assert.match(RENDER, /if \(!nearTopEdge && !nearBotEdge\) return;/);
   assert.match(RENDER, /const idx = unitAtScroll\(v, content\);/);
   assert.match(RENDER, /renderWindowItems\(v, s, items, Math\.max\(0, c - WINDOW_RADIUS\), Math\.min\(items\.length, c \+ WINDOW_RADIUS\), working\);/);
-  // it re-anchors the focus unit so it doesn't jump, and shows a loading cue, coalesced to one frame
+  // it re-anchors the focus unit so it doesn't jump, coalesced to one frame; a re-window of resident content shows no cue (T402, T386 stage 2)
   assert.match(RENDER, /writeScroll\(content, yNow - beforeY, "rewindow"\);/);   // (T262: every #content write rides writeScroll)
-  assert.match(RENDER, /showLoadingPill\(\);/);
+  assert.doesNotMatch(RENDER, /showLoadingPill\(\)|hideLoadingPill\(\)/, "the per-fetch pill is retired: the ONE landing notice and the gaps' glyphs replace it (T386 stage 2)");
   assert.match(RENDER, /c\.addEventListener\("scroll", virtualizeToViewport, \{ passive: true \}\);/);
 });
 
-test("a loading pill shows while history renders, pinned top-center of the chat SECTION, never the viewport (T365)", () => {
-  assert.match(RENDER, /function showLoadingPill\(\): void/);
-  assert.match(RENDER, /loadingPillEl\.textContent = "Loading earlier messages…";/);
-  const fn = RENDER.slice(RENDER.indexOf("function showLoadingPill(): void"), RENDER.indexOf("function hideLoadingPill(): void"));
+test("the ONE landing notice shows while a navigation's window is on the wire, pinned top-center of the chat SECTION, never the viewport (T365, T386 stage 2)", () => {
+  assert.match(RENDER, /function showLandingNotice\(sid: string, t: number \| null \| undefined\): void/);
+  assert.match(RENDER, /landingNoticeEl\.textContent = landingNotice\(t, clockOf\);/, "its words come from the pure rule: the target's time in the reader's clock, and the click to stay");
+  assert.match(RENDER, /landingNoticeEl\.addEventListener\("click", \(\) => cancelLanding\(\)\);/, "clicking it is the ONLY cancel");
+  const fn = RENDER.slice(RENDER.indexOf("function showLandingNotice(sid: string"), RENDER.indexOf("function hideLandingNotice(): void"));
   // T365 (the user 2026-09-12): a viewport-fixed pill appended to the body sat on the tabs, and on the tabs themselves
   // once the strip wrapped; it now rides a zero-height anchor inserted right before #content, the transcript's top edge
   assert.doesNotMatch(fn, /document\.body\.appendChild/, "the pill no longer lands in the body");
   assert.match(fn, /anchor\.className = "tx-loading-anchor";/);
   assert.match(fn, /content\.parentNode\.insertBefore\(anchor, content\);/, "the anchor sits right before #content, below the strip and the ledger box");
-  assert.match(fn, /if \(!loadingPillEl\.isConnected\)/, "idempotent: one anchor, re-made only if a rebuild dropped it");
+  assert.match(fn, /if \(!landingNoticeEl\.isConnected\)/, "idempotent: one anchor, re-made only if a rebuild dropped it");
+  assert.ok(!CSS.includes("#live-paused") && !CSS.includes(".live-paused"), "the paused strip's CSS is gone with the strip (T386 stage 2)");
   const anchorRule = CSS.slice(CSS.indexOf(".tx-loading-anchor {")); const anchorBody = anchorRule.slice(0, anchorRule.indexOf("}"));
   assert.match(anchorBody, /position: relative;/); assert.match(anchorBody, /height: 0;/); assert.match(anchorBody, /pointer-events: none;/);
-  const pillRule = CSS.slice(CSS.indexOf(".tx-loading-pill {")); const pillBody = pillRule.slice(0, pillRule.indexOf("}"));
+  const pillRule = CSS.slice(CSS.indexOf(".tx-landing-notice {")); const pillBody = pillRule.slice(0, pillRule.indexOf("}"));
   assert.match(pillBody, /position: absolute; top: 10px; left: 50%; transform: translateX\(-50%\);/);
   assert.doesNotMatch(pillBody, /position: fixed/);
   // the surface is tokened for both themes (reads on cream): no hard-coded dark rgba background or border
@@ -132,7 +134,7 @@ test("an oversized view (window grew past the cap) re-collapses to the tail on s
 });
 
 test("a deep-link off the current window renders a fresh window AROUND the target unit, then lands", () => {
-  assert.match(RENDER, /let u = items\.findIndex\(\(it\) => it\.kind === "toolgroup" \|\| it\.kind === "noticegroup" \? it\.indices\.includes\(idx\) : it\.index === idx\);/);   // noticegroup since 2026-09-08
+  assert.match(RENDER, /let u = items\.findIndex\(\(it\) => it\.kind === "toolgroup" \|\| it\.kind === "noticegroup" \? it\.indices\.includes\(idx\) : it\.kind === "event" && it\.index === idx\);/, "a gap item indexes no event (T386 stage 2)");
   assert.match(RENDER, /renderWindowItems\(v, s, items, Math\.max\(0, u - WINDOW_RADIUS\), Math\.min\(items\.length, u \+ WINDOW_RADIUS\), working\);/);
 });
 

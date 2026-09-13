@@ -29096,8 +29096,6 @@ def _ledger_memo_report():
 # The build itself is unchanged (every session still builds its full events + ledger — so the Fleet ledger
 # that rides the chat builds is intact); only what crosses the wire is trimmed.
 WIRE_TAIL = 250                                 # events shipped on a full chat send; older streams in on scroll-back
-REATTACH_KEYS = 512                              # the newest resident keys a proto-2 client sends with its re-attach ask
-REATTACH_KEYS_CLIENTS = 16                       # sessions whose posted keys one client may hold at once (the oldest dropped)
 WIRE_CHUNK = 250                                 # events per loadOlder (chatHead) response
 
 
@@ -42945,20 +42943,6 @@ def _client_reset_chat_sid(client, sid):
         _release_skeleton_locked(client, sid)   # a needFull for a skeleton tab (a click, the idle prefetch) loads it
 
 
-def _reattach_edge(client, sid, msg):
-    """The base a proto-2 client's needFull("reattach") leaves behind the reset (round 3, A): its run's first and last
-    edges under a `reattach` marker, so the full frame the repair push sends (the marker asks for it) keeps the run's older
-    first edge when the frame overlaps the run, as the client's merge does. Without it the kernel re-based the first to
-    the wire tail's while the client kept the older one: a later window into the walked part read detached here and
-    attached there, and the client froze. None for any other ask, an index client, or a client with no base."""
-    if msg.get("why") != "reattach" or client.get("proto") != 2:
-        return None
-    with _client_lock(client):
-        old = (client.get("echat") or {}).get(sid)
-        keys = (client.get("reattachKeys") or {}).pop(sid, None)   # the client's newest resident keys (reattachKeys, M1)
-    if not isinstance(old, dict) or not old.get("first"):
-        return None
-    return {"first": old["first"], "last": old.get("last"), "detached": False, "reattach": True, "keys": keys}
 
 
 def _client_reset_chat_base(client):
@@ -43679,8 +43663,6 @@ def _send_chat(c, m, ms, change_from, led_changed):
 
 
 _UUID_POS = {}                                   # sid → (the current events list, {key: index}); one live entry per session
-_BASE_ALIVE_MEMO = {}                            # (sid, first, last) → (id of the parse's turns, alive): _base_alive's memo, bounded
-_BASE_ALIVE_MAX = 256
 _WIRE_MEMO_LOCK = threading.Lock()               # the two memos above: handler threads write, the pusher forgets
 PAGE_TURNS = 16                                  # turns per rendered page of pre-floor history (aligned to multiples)
 WINDOW_TURNS = 8                                 # turns each side of a loadAround anchor
@@ -43979,10 +43961,14 @@ def _turn_of_uuid(turns, uuid):
 
 
 def _chat_history_reply(sid, msg, now, base=None):
-    """The reply to a proto-2 history request (loadOlder / loadAround / loadNewer), built from the session's floor'd
+    """The reply to a proto-2 history request (loadOlder / loadAround / loadTurns), built from the session's floor'd
     list (the pusher's build, cache-backed) and the page renderer for the turns before the floor. Every window is
-    turn-aligned, so a client's oldest or newest resident event is a turn's first or last. The reply's `_base` is
-    the client's new echat base, popped by the handler."""
+    turn-aligned, so a client's oldest or newest resident event is a turn's first or last, and every reply names the
+    TURN SPAN [lo, hi) its events cover (T386 stage 2: the page keeps its history as runs and gaps over the kernel's
+    turn numbering). The client's base is its TAIL run alone ({first, last}); a reply moves the base's first edge only
+    when its events prepend to that run (the ask named the tail's own first edge, or the span ends where the tail
+    begins), as `_base` {"first": key}, popped by the handler. loadNewer and the walk toward the tail retired with the
+    detached client (the tail is always resident)."""
     kind = msg.get("type")
     live_map = _live_map()
     sess = next((x for x in _sessions(now) if x["sid"] == sid), None)
@@ -44021,20 +44007,24 @@ def _chat_history_reply(sid, msg, now, base=None):
             lo = lo2
         return out, lo
 
+    tail_edge = isinstance(base, dict) and bool(base.get("first"))   # the client's tail run has a first edge the kernel knows
+
     if kind == "loadOlder":
         before = str(msg.get("before") or "")
         p = pos.get(before)
+        into_tail = tail_edge and base.get("first") == before        # the ask is from the tail run's own older edge: the base's first advances
         if p is not None and p > 0:
             frm = _snap_turn_start(tix, max(0, p - WIRE_CHUNK))
             more = frm > 0 or floor > 0
             return {"type": "chatHead", "id": sid, "beforeUuid": before, "events": (head_cards if not more else []) + evs[frm:p],
-                    "more": more, "_base": ({"first": _event_key(evs[frm]), "keepLast": True} if p > frm else None)}
+                    "more": more, "span": [max(0, tix[frm]), max(0, tix[p - 1]) + 1],
+                    "_base": ({"first": _event_key(evs[frm])} if (p > frm and into_tail) else None)}
         j = floor if p == 0 else _turn_of_uuid(turns, before)
         if j is None:
             return {"type": "chatHead", "id": sid, "beforeUuid": before, "events": [], "more": False, "missing": True}
         out, lo = older_than_turn(j, WIRE_CHUNK)
         return {"type": "chatHead", "id": sid, "beforeUuid": before, "events": (head_cards if lo == 0 else []) + out, "more": lo > 0,
-                "_base": ({"first": _event_key(out[0]), "keepLast": True} if out else None)}   # the run's first edge advances (round 2, item 1)
+                "span": [lo, j], "_base": ({"first": _event_key(out[0])} if (out and into_tail) else None)}
     if kind == "loadAround":
         anchor = str(msg.get("uuid") or "")
         p = pos.get(anchor)
@@ -44064,53 +44054,41 @@ def _chat_history_reply(sid, msg, now, base=None):
                     w_span = (lo, tix[b - 1])
             else:
                 more_after = True
-        connected = False
-        if out and isinstance(base, dict) and base.get("first") and base.get("last") and not base.get("detached"):
-            # the window OVERLAPS the run the client holds through the live tail, by turn span (round 2, item 1: the run's
-            # first edge advances with every loadOlder, and a window inside the run holds neither edge): it stays attached,
-            # its last stays (review find G)
-            _bf, _bl = _turn_of_key(base["first"]), _turn_of_key(base["last"])
-            if None not in (_bf, _bl) + tuple(w_span) and w_span[1] >= _bf and w_span[0] <= _bl:
-                connected = True
+        span = [max(0, w_span[0]), w_span[1] + 1] if None not in w_span else None   # the head cards ride turn -1: the span starts at 0
+        # the window prepends to the tail run when its span reaches the tail's first turn: the base's first edge moves to the
+        # window's first event; any other window leaves the base alone (T386 stage 2)
         nb = None
-        if out:
-            _first = body_first or _event_key(out[0])
-            if connected and (_bf < w_span[0] or (_bf == w_span[0] and (pos.get(base["first"]) is None or pos.get(_first) is None
-                                                                        or pos[base["first"]] <= pos[_first]))):
-                _first = base["first"]                    # the run's own first edge is the older one (a same-turn tie: by position,
-            #                                                a first frame's tail is not turn-snapped)
-            nb = {"first": _first, "last": base["last"] if connected else _last_anchor(out),
-                  "detached": False if connected else bool(more_after)}
+        if out and span and tail_edge:
+            _bf = _turn_of_key(base["first"])
+            if _bf is not None and span[1] >= _bf >= span[0]:
+                nb = {"first": body_first or _event_key(out[0])}
         return {"type": "chatWindow", "id": sid, "anchor": anchor, "events": out, "moreBefore": more_before,
-                "moreAfter": more_after, "connected": connected, "_base": nb}
-    if kind == "loadNewer":
-        after = str(msg.get("after") or "")
-        p = pos.get(after)
-        if p is not None:
-            b = _snap_turn_end(tix, min(len(evs), p + 1 + WIRE_CHUNK))
-            out = evs[p + 1:b]
-            more = b < len(evs)
-        else:
-            j = _turn_of_uuid(turns, after)
-            if j is None:
-                return {"type": "chatMore", "id": sid, "afterUuid": after, "events": [], "more": False, "missing": True}
-            out, hi = [], j + 1                           # whole turns after turn j, a chunk's worth, page-aligned
-            while hi < floor and len(out) < WIRE_CHUNK:
-                hi2 = min(floor, (hi // PAGE_TURNS + 1) * PAGE_TURNS)
-                out = out + pages(hi, hi2)
-                hi = hi2
-            if hi >= floor:                               # the pages reached the floor'd list: continue into it
-                b = _snap_turn_end(tix, min(len(evs), WIRE_CHUNK))
-                out = out + evs[:b]
-                more = b < len(evs)
-            else:
-                more = True
-        reply = {"type": "chatMore", "id": sid, "afterUuid": after, "events": out, "more": more,
-                 "_base": {"first": None, "last": (_last_anchor(out) if out else after), "detached": bool(more), "keepFirst": True}}
-        if not more:                                      # back at the live tail: the frame's status and ledger ride along,
-            reply["status"] = m.get("status")             #  so the client needs no full frame to re-attach (review find L)
-            reply["ledger"] = m.get("ledger")
-        return reply
+                "moreAfter": more_after, "span": span, "_base": nb}
+    if kind == "loadNewer":                           # retired with the detached client (T386 stage 2): the tail is always resident
+        return {"type": "chatMore", "id": sid, "afterUuid": str(msg.get("after") or ""), "events": [], "more": False, "missing": True, "retired": True}
+    if kind == "loadTurns":
+        # a gap's page, asked directly (T386 stage 2): the turns [lo, hi) as pages before the floor and, past it, the floor'd
+        # list's own events by turn; `head` says the head is reached (the head cards ride along); an empty span is missing
+        try:
+            lo, hi = max(0, int(msg.get("lo"))), int(msg.get("hi"))
+        except (TypeError, ValueError):
+            return {"type": "chatTurns", "id": sid, "span": [msg.get("lo"), msg.get("hi")], "events": [], "missing": True}
+        hi = min(hi, len(turns))
+        if hi <= lo:
+            return {"type": "chatTurns", "id": sid, "span": [lo, hi], "events": [], "missing": True}
+        out = pages(lo, min(hi, floor)) if lo < floor else []
+        if hi > floor:
+            a = next((i for i, ti in enumerate(tix) if ti >= max(lo, floor)), len(evs))
+            b = next((i for i, ti in enumerate(tix) if ti >= hi), len(evs))
+            out = out + evs[a:b]
+        if lo == 0:
+            out = head_cards + out
+        nb = None
+        if out and tail_edge:
+            _bf = _turn_of_key(base["first"])
+            if _bf is not None and lo <= _bf <= hi:       # the span reaches the tail's first turn: the tail run grows upward
+                nb = {"first": _event_key(out[0])}
+        return {"type": "chatTurns", "id": sid, "span": [lo, hi], "events": out, "head": lo == 0, "_base": nb}
     return None
 
 
@@ -44138,8 +44116,6 @@ def _forget_chat_positions(live_sids):
     with _WIRE_MEMO_LOCK:                             # handler threads insert meanwhile: snapshot and pop under the lock
         for sid in [s for s in list(_UUID_POS) if s not in live_sids]:
             _UUID_POS.pop(sid, None)
-        for k in [k for k in list(_BASE_ALIVE_MEMO) if k[0] not in live_sids]:
-            _BASE_ALIVE_MEMO.pop(k, None)
 
 
 def _uuid_positions(evs, sid=None):
@@ -44160,35 +44136,6 @@ def _uuid_positions(evs, sid=None):
     return pos
 
 
-def _base_alive(sid, base, now=None):
-    """Whether a proto-2 base's edges are still in the session's transcript (a detached run lies before the floor'd
-    list by design, so the list cannot say): a /clear, a fork or a rewind that took both edges away leaves the client
-    holding a conversation that no longer exists, and only a full frame can put it right (review find A)."""
-    now = time.time() if now is None else now
-    sess = next((x for x in _sessions(now) if x["sid"] == sid), None)
-    if sess is None:
-        return False
-    try:
-        turns = _parse(sess["path"], sid, now)["turns"]
-    except Exception:
-        return False
-    key = (sid, base.get("first"), base.get("last"))
-    # the tree's identity without holding it: its address AND its shape (a replacement parse allocated at the same address
-    # differs in length or in its last turn's id or end; round 4)
-    ident = (id(turns), len(turns), turns[-1].get("id") if turns else None, turns[-1].get("end") if turns else None)
-    with _WIRE_MEMO_LOCK:                             # per (sid, edges), valid for one parse tree (re-read from the store above
-        hit = _BASE_ALIVE_MEMO.get(key)               #  on every call, never held): it runs on every push for every detached
-    if hit is not None and hit[0] == ident:           #  client under the client lock (round 2, 8)
-        return hit[1]
-    # ATOM-keyed edges only (round 2, item 8): a note's key (orphan:<t>:<n>, retried:<t>:<n>, branch:<cut>) resolves by
-    # time, to turn 0 on any newer transcript, so a run whose edge was a note read as alive after a /clear
-    edges = [str(k) for k in key[1:] if k and ":" not in str(k)]
-    alive = any(_turn_of_uuid(turns, e) is not None for e in edges)
-    with _WIRE_MEMO_LOCK:
-        _BASE_ALIVE_MEMO[key] = (ident, alive)
-        while len(_BASE_ALIVE_MEMO) > _BASE_ALIVE_MAX:
-            _BASE_ALIVE_MEMO.pop(next(iter(_BASE_ALIVE_MEMO)))
-    return alive
 
 
 def _turn_index_of_events(evs, turns):
@@ -44231,27 +44178,19 @@ def _last_anchor(evs):
 
 
 def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
-    """The uuid-anchored wire (T323 stage 4b) for a client whose ready said proto 2. Its base is {first, last,
-    detached}: the uuids of the oldest and newest events it holds and whether it sits on an older window. A
-    change inside or right after what it holds is a chatTail {afterUuid, events}: it truncates after afterUuid
-    and appends; a change before its first event, a base the new list no longer holds (a fork, a rewind), or no
-    base is a full session frame carrying the list's tail with firstUuid/lastUuid, headKnown and headTotal. A
-    DETACHED client (its window's moreAfter was true) gets no delta at all: a delta would land past what it
-    holds; needFull, or its own loadNewer reaching the tail, re-attaches it."""
+    """The uuid-anchored wire (T323 stage 4b) for a client whose ready said proto 2. Its base is {first, last}: the uuids
+    of the oldest and newest events of its TAIL run, the one run every client always holds and always live (T386 stage
+    2: history above it is runs and gaps the client asks for by turn span, and never detaches it from the tail). A
+    change inside or right after what it holds is a chatTail {afterUuid, events}: it truncates after afterUuid and
+    appends; a change before its first event, a base the new list no longer holds (a fork, a rewind), or no base is a
+    full session frame carrying the list's tail with firstUuid/lastUuid, headKnown, headTotal and tailLo (the turn the
+    tail run begins at, so the page can size its head gap)."""
     sid = m["id"]
     evs = m.get("events") or []
     total = len(evs)
-    if isinstance(pc, dict) and total and not pc.get("reattach"):   # a re-attach marker asks for the full frame below
+    if isinstance(pc, dict) and total:
         pos = _uuid_positions(evs, sid)
         pf, pl = pos.get(pc.get("first")), pos.get(pc.get("last"))
-        if pc.get("detached"):
-            # a detached run lies before the list by design: no delta, unless both its edges are gone from the
-            # transcript itself (a /clear minted a new one, a fork or rewind cut them, a floor climb after an index
-            # client left rebuilt the list): then a full frame is the only recovery (review find A)
-            if pf is None and pl is None and not _base_alive(sid, pc):
-                pass                                      # fall through to the full frame
-            else:
-                return ms
         if pf is None and pl is not None:
             pf = 0                                        # the client's run begins before the floor'd list (pages it scrolled
         #                                                    into): the list's first event is inside what it holds
@@ -44266,7 +44205,7 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
                 if led_changed:
                     tail["ledger"] = m.get("ledger")
                 _send_client(c, ("chat", sid), tail, kind="delta")
-                st[sid] = {"first": pc["first"], "last": _last_anchor(evs), "detached": False}
+                st[sid] = {"first": pc["first"], "last": _last_anchor(evs)}
                 return ms
     if isinstance(pc, dict) and os.environ.get("ROMP_READER_TRACE"):
         pos = _uuid_positions(evs, sid)
@@ -44284,30 +44223,25 @@ def _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc):
     m_send["headTotal"] = total if head_known else None
     m_send["firstUuid"] = _event_key(evs[head_from]) if head_from < total else None
     m_send["lastUuid"] = _event_key(evs[-1]) if total else None
+    m_send["tailLo"] = 0 if head_known else _tail_lo(sid, evs, head_from, int(time.time()))   # the tail run's first turn (T386 stage 2)
+    m_send["pageTurns"] = PAGE_TURNS                  # the page the gaps ask by (chat-regions.ts pagesToAsk)
     _send_client(c, ("chat", sid), m_send)
-    first = m_send["firstUuid"]
-    if isinstance(pc, dict) and pc.get("reattach") and pc.get("first") and total:
-        # the frame answers the client's own re-attach ask (round 3, A): the client merges it into the run it holds when
-        # the run's newest event is inside the frame, and the run's first edge stays the older of the two; a run whose
-        # newest event left the list (a fork, a /clear) is replaced on the client, and the frame's first is the base's
-        pos = _uuid_positions(evs, sid)
-        pf, pl = pos.get(pc["first"]), pos.get(pc.get("last"))
-        # the run shares a key with the frame (the client's merge overlaps on ANY resident key) when the highest RESIDENT
-        # key of the run, as the client holds it, lies inside the frame: the client sends its newest REATTACH_KEYS keys with
-        # the ask (reattachKeys), and a fork that cut them all leaves no shared key (the client replaces, and the base takes
-        # the frame's first with it). The broadcast diff's change index is no fork point here: the repair frame is a
-        # connect push over an unchanged build (M1). An older bundle sends no keys: its newest edge decides. A resident key
-        # is required either way (M2): a run the fork cut entirely is replaced, never given a first that is in no list.
-        keys = pc.get("keys")
-        if keys is not None:
-            res = [pos[k] for k in keys if k in pos]
-            shared = bool(res) and max(res) >= head_from
-        else:
-            shared = pl is not None and pl >= head_from
-        if shared and (pf is None or pf < head_from):
-            first = pc["first"]
-    st[sid] = {"first": first, "last": _last_anchor(evs), "detached": False}
+    st[sid] = {"first": m_send["firstUuid"], "last": _last_anchor(evs)}
     return ms
+
+
+def _tail_lo(sid, evs, head_from, now):
+    """The TURN index of the wire tail's first event (T386 stage 2): the page's tail run begins there, and the turns before it
+    are its head gap until it asks for them by span. None when the parse cannot say (the page then asks by the tail's first
+    key, loadOlder, as before)."""
+    try:
+        sess = next((x for x in _sessions(now) if x["sid"] == sid), None)
+        if sess is None or head_from >= len(evs):
+            return None
+        tix = _turn_index_of_events(evs, _parse(sess["path"], sid, now)["turns"])
+        return max(0, tix[head_from]) if head_from < len(tix) else None
+    except Exception:
+        return None
 
 
 def _send_chat_locked(c, m, ms, change_from, led_changed):
@@ -58591,19 +58525,6 @@ class Handler(BaseHTTPRequestHandler):
             client.setdefault("resync", set()).add(str(msg["slot"]))
             _pusher_wake.set()
             return
-        if msg and msg.get("type") == "reattachKeys" and msg.get("id"):
-            # a proto-2 client's newest resident keys, sent right before its needFull("reattach") (T323 follow-up, M1): the
-            # repair frame's shared clause reads THESE, the run as the client holds it, not the broadcast diff's change index
-            keys = [str(k) for k in (msg.get("keys") or []) if k][-REATTACH_KEYS:]
-            sid = str(msg["id"])
-            with _client_lock(client):
-                if sid not in (client.get("echat") or {}):
-                    return                            # a session this client holds no base for: nothing to re-attach (1448 low b)
-                d = client.setdefault("reattachKeys", {})
-                d.pop(sid, None); d[sid] = keys
-                while len(d) > REATTACH_KEYS_CLIENTS:  # bounded: a posted list with no ask behind it never grows the map
-                    d.pop(next(iter(d)))
-            return
         if msg and msg.get("type") == "needFull" and msg.get("id"):
             # The client REJECTED a delta because it started past what it holds (render.ts chatTail's gap
             # branch) — it is missing events and cannot self-repair. Our own per-client bookkeeping can't
@@ -58613,14 +58534,10 @@ class Handler(BaseHTTPRequestHandler):
             # whole session (_send_chat's full path fires when echat has no entry for the sid) and the
             # delta stream re-bases from there. Per-CLIENT, so one stale pane never re-sends for the rest.
             sid = str(msg["id"])
-            _keep = _reattach_edge(client, sid, msg)          # round 3, A (see the helper)
             _client_reset_chat_sid(client, sid)               # …and drop the dedup slot, so the full send lands
-            if _keep:
-                with _client_lock(client):
-                    client.setdefault("echat", {})[sid] = _keep
             self._push_one(client)                            # repair NOW, not on the next 0.5-3s tick
             return
-        if msg and msg.get("type") in ("loadOlder", "loadAround", "loadNewer") and msg.get("id") \
+        if msg and msg.get("type") in ("loadOlder", "loadAround", "loadNewer", "loadTurns") and msg.get("id") \
                 and (client.get("proto") or 1) >= 2 and not isinstance(msg.get("before"), int):
             # The uuid-anchored history requests (T323 stage 4b): answered from the floor'd list and the page
             # renderer, one round trip each; the client's base is updated so the pusher's next delta fits it.
@@ -58632,17 +58549,10 @@ class Handler(BaseHTTPRequestHandler):
                 if reply is not None:
                     with _client_lock(client):
                         base = reply.pop("_base", None)
-                        if base is not None:
+                        if isinstance(base, dict) and base.get("first"):   # the tail run's first edge advances (T386 stage 2); the last stands
                             old = client.get("echat", {}).get(sid)
-                            if base.pop("keepFirst", False):
-                                base["first"] = old.get("first") if isinstance(old, dict) else None
-                            if base.pop("keepLast", False):       # a loadOlder moves the run's first edge only (round 2, item 1)
-                                if isinstance(old, dict):
-                                    base["last"], base["detached"] = old.get("last"), bool(old.get("detached"))
-                                else:
-                                    base = None                   # no base to advance: the next push sends a full frame
-                            if base is not None:
-                                client.setdefault("echat", {})[sid] = base
+                            if isinstance(old, dict):
+                                client.setdefault("echat", {})[sid] = {"first": base["first"], "last": old.get("last")}
                         client["send"](json.dumps(reply))
             except Exception:
                 sys.stderr.write("%s: %s\n" % (msg.get("type"), traceback.format_exc()))
