@@ -110,14 +110,16 @@ await page.waitForTimeout(400);
 const afterDrop5 = await state();
 const askState5 = await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid);   // the wedge is gone: landingGaps, gapLoading and loadingOlder all cleared by wsdown (medium 1)
 // the gap is not wedged: a deep link into a turn STILL in a gap (read from the regions, so no prior road made it resident) asks again
-const aroundBefore5 = await sentOf("loadAround");
+const asks5 = () => page.evaluate(() => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length);
+const asksBefore5 = await asks5();
 const gapTurn5 = await page.evaluate(() => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; if (!rs) return null; const g = rs.find((r) => r.kind === "gap" && r.hi - r.lo >= 4); return g ? Math.floor((g.lo + g.hi) / 2) : null; });
 const deep5b = gapTurn5 != null ? "11111111-2222-3333-4444-" + pad(2 * gapTurn5) : deep5;
+const resBefore5 = await page.evaluate((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), deep5b);
 await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, deep5b, cfg.base + 2 * (gapTurn5 != null ? gapTurn5 : 25)]);
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore5, { timeout: 8000 }).catch(() => {});
-const reask5 = (await sentOf("loadAround")) - aroundBefore5;
+await page.waitForFunction((n) => (window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length) > n, asksBefore5, { timeout: 8000 }).catch(() => {});
+const reask5 = (await asks5()) - asksBefore5;
 const reNotice5 = (await state()).notice;
-const resident5 = await page.evaluate((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), deep5b);
+const resident5 = resBefore5;
 process.stdout.write("RESULT:" + JSON.stringify({ head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
@@ -173,8 +175,8 @@ class ServedLandingNotice(WindowLab):
         self.assertFalse(r["afterDrop5"]["notice"], "the socket death brought the notice down (wsdown cleared the landing): %r" % r["afterDrop5"])
         a = r["askState5"]
         self.assertEqual((a["landingGaps"], a["gapLoading"], a["loadingOlder"]), (0, 0, False), "the wedge is gone: every in-flight ask's state cleared (medium 1): %r" % a)
-        self.assertFalse(r["resident5"], "the probe turn was still in a gap (not made resident by a prior road): %r" % r["resident5"])
-        self.assertGreaterEqual(r["reask5"], 1, "a later deep link into the gap asked again: not wedged for the page's life: %r" % r["reask5"])
+        self.assertFalse(r["resident5"], "the probe turn was in a gap before the deep link (not already resident): %r" % r["resident5"])
+        self.assertGreaterEqual(r["reask5"], 1, "a later deep link into the gap asked again (loadAround or loadTurns): not wedged for the page's life: %r" % r["reask5"])
         self.assertTrue(r["reNotice5"], "…and the notice shows for the fresh landing: %r" % r["reNotice5"])
 
     def test_a_span_less_window_from_an_older_host_tells_the_reader_and_is_not_dropped_silently(self):
