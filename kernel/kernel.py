@@ -12941,9 +12941,9 @@ def _nudge_placement_gate(sid, turns, store):
     except Exception:
         unplanned = False                        # minimal/legacy turn shapes → the closer gate stands alone,
         _NUDGE_GATE_STATS["failed"] += 1         # counted, so a test can pin that this leg was never entered
-        sys.stderr.write("auto-nudge placement gate (session %s): %s\n"   # but never SILENTLY (the user
-                         % (sid, traceback.format_exc()))                 #  2026-07-21: a mute gate error
-        return unplanned                         #  would wave nudges through); a failed derivation is not cached
+        sys.stderr.write("auto-nudge placement gate (session %s): %s\n"   # and said, so the failure is visible
+                         % (sid, traceback.format_exc()))                 #  (the user 2026-07-21: a mute gate
+        return unplanned                         #  error would wave nudges through); a failed derivation is not cached
     _NUDGE_GATE_STATS["derived"] += 1
     if parse_key is not None:
         try:

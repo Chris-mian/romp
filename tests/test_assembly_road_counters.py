@@ -158,9 +158,48 @@ class AssemblyRoadCounters(Harness):
         with em._ASM_CKPT_LOCK:
             self.assertIn(rk, em._ASM_CKPT_REFUSED, "the refusal recorded inside the window survives the write's pop")
 
-    def test_the_nudge_gates_docstring_no_longer_says_silently(self):
-        import inspect
-        self.assertNotIn("silently", inspect.getsource(kernel_module()._nudge_placement_gate), "low E: the leg is counted and said")
+    def test_a_refusal_recorded_during_the_build_is_popped_by_the_write(self):
+        """Round one, low 1: the window opened at the write's first line, so a refusal a judge recorded DURING the document build
+        (against the document still on disk, which the note unlinks) survived the pop and mislabelled the next parse. The stamp is
+        taken just before the replace: a refusal before it was against the retired document and goes; one after it stands."""
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("build", records(), sent=sent)
+        self.fresh(); self.parse(path)
+        real = em._carry_encode
+        def carry_and_a_refusal(st):
+            em._asm_ckpt_note(path, "guard")                                 # a judge refuses the OLD document while this one builds
+            return real(st)
+        em._carry_encode = carry_and_a_refusal
+        self.addCleanup(setattr, em, "_carry_encode", real)
+        self.assertTrue(self.doc(path))
+        rk = os.path.realpath(path)
+        with em._ASM_CKPT_LOCK:
+            self.assertNotIn(rk, em._ASM_CKPT_REFUSED, "a refusal recorded before the replace was against the retired document: popped")
+
+    def test_the_writes_docstring_stands(self):
+        """Round one, low 2: the window's stamp was inserted above the docstring, which made the string a bare expression."""
+        self.assertTrue((em.asm_checkpoint_write.__doc__ or "").startswith("Write the leaf's assembly checkpoint"),
+                        "asm_checkpoint_write.__doc__: %r" % (em.asm_checkpoint_write.__doc__,))
+
+    def test_the_nudge_gates_failure_leg_is_counted_and_said_as_its_docstring_claims(self):
+        """Low E and its round-one pin: the docstring claims the leg is counted under failed and said on stderr; the test drives
+        the leg (a planner that raises) and checks both, not a word's absence in the source."""
+        import contextlib, io
+        km = kernel_module(); jd = km.jd
+        self.assertIn("counted under failed and said on stderr", km._nudge_placement_gate.__doc__ or "")
+        saved = jd.plan_units
+        self.addCleanup(setattr, jd, "plan_units", saved)
+        def failing_planner(session, store, **kw):
+            raise RuntimeError("synthetic gate failure")
+        jd.plan_units = failing_planner
+        km._NUDGE_GATE_STATS["failed"] = 0
+        turns = [{"id": "t1", "t": 1.0, "end": 2.0, "ended": True, "atoms": [], "trigger": None}]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertFalse(km._nudge_placement_gate(SID, turns, {"placements": {}}), "a failed gate answers not unplanned")
+        self.assertEqual(km._NUDGE_GATE_STATS["failed"], 1, "counted under failed")
+        self.assertIn("auto-nudge placement gate", err.getvalue(), "said on stderr")
+        self.assertIn("synthetic gate failure", err.getvalue(), "with its traceback")
 
 if __name__ == "__main__":
     unittest.main()

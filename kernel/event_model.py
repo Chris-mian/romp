@@ -795,6 +795,7 @@ def read_bytes_report():
 _CKPT_V = 1
 _CKPT_DIR_FN = None               # () -> Path of the checkpoint directory; None = checkpoints off
 _CKPT_STATS = {"restored": 0, "writes": 0, "swept": 0, "skippedFolds": 0, "fallbacks": {}, "restoredFolds": {}, "droppedRestores": 0,
+               "docConsults": 0,      # fold documents loaded by the shared validated read (seeded: the key stands before the first load)
                "oversizeFolds": {}, "coldFolds": {}, "coldWrites": {},
                "refolds": {},         # per fold name: {"count", "bytes"} of whole refolds that READ (a fold with no cursor and nothing to
 #                                       restore over a tail entry reads the file whole; T377 named the boot's whole reads this way)
@@ -957,6 +958,7 @@ def set_checkpoint_dir(fn):
     with _CKPT_LOCK:
         _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear(); _DROP_OWED.clear()
         _RETIRED_FOLDS.clear()                            # a retirement never outlives a state rebind (round two, low 2)
+        _DOC_MEMO.clear(); _DOC_MEMO_BYTES[0] = 0         # nor does a memoized document (the harnesses' fresh process is this setter)
         _CKPT_CYCLE["cap"] = _ckpt_cycle_default_cap(); _CKPT_CYCLE["spent"] = 0
 
 
@@ -1464,7 +1466,7 @@ def checkpoint_write(path, force=False):
         _CKPT_SEQ[key] = seq
         _CKPT_STATS["writes"] += 1
         _CKPT_DOC_FOLDS[key] = _doc_fold_shapes(folds)
-        _DOC_MEMO.pop(key, None)                          # the document moved under the memo: the next consult reads the new one
+        _doc_memo_drop(key)                               # the document moved under the memo: the next consult reads the new one
         if omitted:                                       # the retirements this document honoured are done; any that arrived
             rem = _RETIRED_FOLDS.get(key)                 #  after the check above stay, and keep the path dirty for the next write
             if rem is not None:
@@ -1594,6 +1596,7 @@ def checkpoint_stats():
         out["coldWrites"] = dict(_CKPT_STATS["coldWrites"]); out["converge"] = dict(_CKPT_STATS["converge"])
         out["refolds"] = {k: dict(v) for k, v in _CKPT_STATS["refolds"].items()}
         out["rewoundMemo"] = dict(_REWOUND_STATS)
+        out["docMemo"] = {"entries": len(_DOC_MEMO), "bytes": _DOC_MEMO_BYTES[0], "capBytes": _DOC_MEMO_CAP}
     d = _ckpt_dir()
     with _READ_BYTES_LOCK:
         out["documentBytes"] = sum(n for p_, n in _READ_BYTES.items() if d is not None and p_.startswith(str(d) + os.sep))
@@ -5112,6 +5115,18 @@ def _retire_fold(path, name):
 
 _DOC_MEMO = {}                     # path -> (document file's (mtime_ns, size), the loaded document): one read shared between the
 #                                   retirement's consult and the write's carry (T391 follow-up, low C), dropped when the file moves
+_DOC_MEMO_BYTES = [0]              # the documents' sizes on disk (a plain JSON file; the parsed dict weighs a few times that), summed
+_DOC_MEMO_CAP = _env_or("ROMP_DOC_MEMO_CAP_MB", max(64 * 1024 ** 2, _machine_memory_bytes() // 512), 1024 * 1024)
+#                                    the memo's byte cap: MemTotal / 512, never under 64 MiB (236 MiB on a 118 GiB machine; a count
+#                                    cap said nothing about bytes and held whole documents for files no writer touched again), reported
+#                                    under checkpoints.docMemo
+
+
+def _doc_memo_drop(key):
+    """Forget `key`'s memoized document (under _CKPT_LOCK), its bytes let go with it."""
+    old = _DOC_MEMO.pop(key, None)
+    if old is not None:
+        _DOC_MEMO_BYTES[0] -= old[0][1]
 
 
 def _ckpt_doc_shared(key):
@@ -5131,13 +5146,12 @@ def _ckpt_doc_shared(key):
             return hit[1]
     doc = _ckpt_load(key)                                 # the validated read: version, path and shape (low A: a raw read raised
     with _CKPT_LOCK:                                      #  on a folds that is not a dict, retired from another path's or an old
-        _CKPT_STATS["docConsults"] = _CKPT_STATS.get("docConsults", 0) + 1   #  version's document, re-read a corrupt one forever)
+        _CKPT_STATS["docConsults"] += 1                   #  version's document, re-read a corrupt one forever)
+        _doc_memo_drop(key)
         if doc is not None:
-            _DOC_MEMO[key] = (sig, doc)
-            while len(_DOC_MEMO) > 256:
-                _DOC_MEMO.pop(next(iter(_DOC_MEMO)), None)
-        else:
-            _DOC_MEMO.pop(key, None)
+            _DOC_MEMO[key] = (sig, doc); _DOC_MEMO_BYTES[0] += sig[1]
+            while _DOC_MEMO_BYTES[0] > _DOC_MEMO_CAP and len(_DOC_MEMO) > 1:   # bounded in bytes (the caches rule): the oldest
+                _doc_memo_drop(next(iter(_DOC_MEMO)))                          #  documents go; the newest stays for the write it shares
     return doc
 
 
@@ -5362,7 +5376,6 @@ def _tree_key(tree):
 
 
 def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason_out=None, who="settle"):
-    _t_write = time.monotonic()                           # the write's window begins: a refusal stamped after this survives its pop
     """Write the leaf's assembly checkpoint from its WHOLE assembly entry. False when there is nothing to write: no
     entry, an entry restored from a document (its cut stands until a compaction moves it), no compaction boundary in
     the tree (the whole file would be the tail), a cut that would not split the chronological order the fold's gate
@@ -5686,7 +5699,8 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             cp.parent.mkdir(parents=True, exist_ok=True)
             tmp = cp.with_name("%s.%d.%x.tmp" % (cp.name, os.getpid(), threading.get_ident()))
             tmp.write_bytes(data)
-            os.replace(tmp, cp)
+            _t_write = time.monotonic()                   # the window's edge: a refusal stamped before this was against the document
+            os.replace(tmp, cp)                           #  the replace retires (popped below); one stamped after it stands
             meta = cp.with_name(cp.name + ".meta")            # {"av", "path"}: what the boot sweep reads, never the document
             mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
             mtmp.write_text(json.dumps(_asm_sidecar(doc)))   # the inputs' fsids and whether resume links joined them: what

@@ -587,6 +587,59 @@ class RewoundMemo(Harness):
         self.assertEqual(em.read_bytes_report().get(str(cp), 0) - before, size, "one document read across the consult and the carry")
         self.assertEqual(em.checkpoint_stats().get("docConsults", 0) - n0, 1)
 
+    def documented(self, name):
+        """A frozen file with a fold document on disk, and the document's size."""
+        path = self.frozen(name)
+        em.fold_records({}, path, list, lambda st, r: st, ckpt="cFold"); self.assertTrue(em.checkpoint_write(path))
+        return path, os.path.getsize(em._ckpt_file(path))
+
+    def test_the_consult_counter_is_seeded_in_a_fresh_interpreter(self):
+        """Round one, the medium: `docConsults` was created lazily by the first validated load, so checkpoint_stats() lacked the
+        documented /perf key until then and the key-list pin was red alone. The key is seeded at zero: a fresh interpreter that
+        loaded nothing reports it."""
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if not k.startswith("ROMP_")}
+        env["XDG_STATE_HOME"] = str(self.td); env["XDG_CONFIG_HOME"] = str(self.td); env["XDG_CACHE_HOME"] = str(self.td)
+        out = subprocess.run([sys.executable, "-c", "import kernel.event_model as em; s = em.checkpoint_stats(); "
+                              "print(s.get('docConsults'), sorted(s['docMemo']))"],
+                             cwd=os.path.dirname(HERE), env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), "0 ['bytes', 'capBytes', 'entries']", out.stdout + out.stderr)
+
+    def test_a_state_rebind_forgets_the_memoized_document(self):
+        """Round one, low 3: set_checkpoint_dir cleared every checkpoint table but the document memo; the harnesses' fresh process
+        is that setter, so a document memoized by one test served the next."""
+        path, size = self.documented("rebind")
+        self.fresh_process()
+        with em._CKPT_LOCK:
+            em._CKPT_DOC_FOLDS.pop(path, None)
+        em._doc_folds_on_disk(path)
+        with em._CKPT_LOCK:
+            self.assertIn(path, em._DOC_MEMO)
+        em.set_checkpoint_dir(lambda: self.ck)
+        with em._CKPT_LOCK:
+            self.assertNotIn(path, em._DOC_MEMO, "a rebind forgets the memoized documents")
+            self.assertEqual(em._DOC_MEMO_BYTES[0], 0, "and their bytes")
+
+    def test_the_memo_is_bounded_in_bytes_and_reports_its_cap(self):
+        """Round one, low 4: the memo was bounded by a count (256) that said nothing about bytes and held whole documents for
+        files no writer touched again. It is bounded in bytes (the documents' sizes on disk; MemTotal / 512, never under 64 MiB,
+        ROMP_DOC_MEMO_CAP_MB) and reports entries, bytes and the cap under checkpoints.docMemo; the newest document stays for the
+        write it shares even when it alone is over the cap."""
+        p1, s1 = self.documented("bound1"); p2, s2 = self.documented("bound2")
+        self.fresh_process()
+        with em._CKPT_LOCK:
+            em._CKPT_DOC_FOLDS.pop(p1, None); em._CKPT_DOC_FOLDS.pop(p2, None)
+        self.assertGreaterEqual(em._DOC_MEMO_CAP, 64 * 1024 ** 2)
+        saved = em._DOC_MEMO_CAP; em._DOC_MEMO_CAP = 1
+        self.addCleanup(setattr, em, "_DOC_MEMO_CAP", saved)
+        em._doc_folds_on_disk(p1); em._doc_folds_on_disk(p2)
+        with em._CKPT_LOCK:
+            self.assertEqual(list(em._DOC_MEMO), [p2], "over the cap the oldest goes and the newest stays")
+        self.assertEqual(em.checkpoint_stats()["docMemo"], {"entries": 1, "bytes": s2, "capBytes": 1})
+        em._doc_folds_on_disk(p2)                                           # served from the memo: no growth
+        self.assertEqual(em.checkpoint_stats()["docMemo"]["bytes"], s2)
+
 
 if __name__ == "__main__":
     unittest.main()
