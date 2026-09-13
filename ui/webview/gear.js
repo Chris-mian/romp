@@ -117,7 +117,7 @@ var GEAR_HTML =
   // into the object and save() wrote the whole object on ANY change, so a profile that touched any setting in that
   // window carries filesControl: true without ever touching this box; the old key is never read and load() drops it,
   // so the next save leaves it behind.
-  '<label class=rs-row><input type=checkbox id=rs-filesctl>' +
+  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-filesctl>' +   // a Panes row like the three above it, so the off-dashboard hide takes it too (T404's tidy)
   '<span><b>Files</b>' +   // the row's name follows Sessions, Outline and Feed above it (T407, the user 2026-09-13); the id, the key and the default stand
   '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links then open over the pane you clicked.</span>' +
   '</span></label>' +
@@ -199,7 +199,7 @@ var GEAR_HTML =
   "<div class='rs-sec'>Thinking</div>" +
   "<label class='rs-row'><input type=checkbox id=rs-thinksum>" +
   '<span><b>Thinking summaries</b>' +
-  '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
+  '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). The summaries are output tokens the session pays for, which is why this row sits under Chat and not Display. Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
   '</span></label>' +
   // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own): the strip's gear opens the
   // panel here (data-section is the anchor showSection scrolls the card to), then the strip's own controls follow
@@ -356,7 +356,7 @@ function initGear(post, opts) {
   // Context bar read as on at 50 percent whatever the user had chosen, and a save of ANY setting wrote the empty prefs and
   // rewrote the mirror. A store with no tabWidgets derives the prefs from tabCtx at read time (widgetPrefs, the same
   // derivation settings.ts makes), and only a widget change writes the key (saveWidgets).
-  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
+  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; delete o.fileLinkPane; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
   function tabCtxMode(v) { return (v === 'always' || v === 'never') ? v : (v === false ? 'never' : 'over50'); }
@@ -1388,7 +1388,7 @@ function initGear(post, opts) {
   // Auto Nudge is one switch for every connected machine, but each kernel keeps its own copy — and
   // /version answers for THIS one alone. So the box takes the local kernel's setting, then checks the
   // others: a connected host that disagrees puts the box in the mixed state (a tri-state checkbox plus
-  // the word beside the label — glanceable) and is NAMED in the hover line, one level down. Before this
+  // the word beside the label — glanceable) and is NAMED in the row's permanent line under the label (T408), one level down. Before this
   // the box quietly spoke for machines it could not see, and the other kernel went on nudging for days
   // behind an unchecked box (the user 2026-08-14). Clicking a mixed box picks one answer for everyone,
   // since the post goes to every kernel.
@@ -1517,6 +1517,26 @@ function initGear(post, opts) {
       document.body.classList.remove('rs-lifted'); document.body.classList.remove('rs-pane-gone');
       clearPaneVars();
       window.removeEventListener('resize', onRsResize); } }
+  // THE POPOVER STAYS INSIDE THE CARD (the T408 read, 2026-09-13): a row's hover description is absolutely positioned under the
+  // row inside the card, the modal's one scroll box, so a row near the card's bottom sent it past the edge, the card grew a
+  // scrollbar for it and clipped it (four rows measured 23 to 47 px past). On hover the row measures where its popover ends;
+  // past the card's visible bottom, with room above the row, the row wears rs-up and the popover opens above it (gear.css).
+  // Measured per hover, since the card scrolls and the rows move; dropped when the pointer leaves, so the next hover measures afresh.
+  var pcard = document.querySelector('#rsettings .rs-card');
+  function rowOf(t) { return t && t.closest ? t.closest('#rsettings .rs-row, #rsettings .rs-widget') : null; }
+  function placeSub(row) {
+    var sub = row.querySelector('.rs-sub');
+    if (!sub || !pcard) return;
+    row.classList.remove('rs-up');
+    var sr = sub.getBoundingClientRect(), cr = pcard.getBoundingClientRect();
+    if (!sr.height) return;   // no popover shown (a picker open, the mixed mark hovered): nothing to place
+    var rr = row.getBoundingClientRect();
+    if (sr.bottom > cr.bottom && rr.top - sr.height - 2 >= cr.top) row.classList.add('rs-up');
+  }
+  if (pcard) {
+    pcard.addEventListener('mouseover', function (e) { var row = rowOf(e.target); if (row) placeSub(row); });
+    pcard.addEventListener('mouseout', function (e) { var row = rowOf(e.target); if (row && !(e.relatedTarget && row.contains(e.relatedTarget))) row.classList.remove('rs-up'); });
+  }
   function closeSettings() { clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
   function openSettings(tab, section) {
     if (tab === 'appearance' && !section) section = 'appearance';   // the former Appearance tab is General's section (T404)

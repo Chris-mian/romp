@@ -379,6 +379,8 @@ class ServedTabLock(unittest.TestCase):
             d = t["dense"]; td = "\n  " + theme + " dense=" + json.dumps(d)
             self.assertLessEqual(abs(d["tab"] - 25), 0.6, theme + ": compact tabs are 25px" + td)
             self.assertLessEqual(d["gear"], d["tab"] + 0.01, theme + ": the gear button stands inside the dense row (round two, the medium: it was 26px and stretched the row)" + td)
+            self.assertLessEqual(abs(d["gear"] - 24), 0.6, theme + ": the dense gear button is 24px (an 18px line, 2 x 2px padding, the border); with the dense rule gone it reads 26 and the row stretches with it" + td)
+            self.assertLessEqual(abs(d["contentTop"] - 31), 0.6, theme + ": the transcript's top stays at 31px under compact tabs (32 with the stretched row)" + td)
             self.assertLessEqual(abs(d["gearbox"] - d["tab"]), 0.6, theme + ": the gear box is the row's height" + td)
             self.assertLessEqual(abs(d["tagbox"] - d["tab"]), 0.6, theme + ": the tags box too" + td)
         self.assertEqual(s["store"]["tabsLocked"], "absent", "nothing written until pressed" + table)

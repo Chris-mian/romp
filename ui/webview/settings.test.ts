@@ -118,10 +118,6 @@ test("Compact tabs and agents defaults OFF (the user 2026-09-08); the opt-in rou
   delete store["romp:settings"];
 });
 
-// Where a chat file-link click opens on the web (the Files pane, a column of its own, or the viewer over
-// the pane you clicked): OFF by default, so a dashboard that never turns it on changes nothing. Only the
-// literal "pane" opts in; anything else a store might hold reads as the default, so a corrupt entry may
-// cost the preference, never the click (tabCtxMode's normalization idiom). Read at click time
 // The file-links preference is GONE (T404, the user 2026-09-13): where a chat file link opens follows whether the Files pane
 // is open (file-route.ts fileLinkRoute takes no setting). A store that still carries the old key reads without it and the next
 // save leaves it behind, the T317-era filesControl key's way.

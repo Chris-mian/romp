@@ -71,10 +71,20 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
             && G.indexOf(">This machine<") < G.indexOf("id=rs-conserve") && G.indexOf("id=rs-conserve") < G.indexOf("id=rs-updates") && G.indexOf("id=rs-updates") < G.indexOf(">Keyboard shortcuts<"),
             "General: Account, Panes (with the Files control), Appearance, Permissions, This machine, Keyboard shortcuts");
   assert.match(G, /<b>Allow file editing<\/b>/, "the permission row's name (T404)");
-  assert.match(G, /<input type=checkbox id=rs-filesctl>' \+\s*\n\s*'<span><b>Files<\/b>'/, "the Files row reads Files, like Sessions, Outline and Feed above it (T407)");
+  assert.match(G, /<label class="rs-row rs-panes-row"><input type=checkbox id=rs-filesctl>' \+[^\n]*\n\s*'<span><b>Files<\/b>'/, "the Files row reads Files, like Sessions, Outline and Feed above it (T407), and is a Panes row like them, so the off-dashboard hide takes it (T404's tidy)");
+  assert.match(GEAR, /delete o\.filesControl; delete o\.fileLinkPane;/, "load() drops both dead keys, so neither survives a gear save (T404's tidy)");
+  assert.match(ps.chat, /The summaries are output tokens the session pays for, which is why this row sits under Chat and not Display\./, "the Thinking row says why it is Chat's (T404's tidy)");
+  // the popover stays inside the card (the T408 read): a row whose popover would run past the card's bottom opens it above
+  assert.match(GEAR, /function placeSub\(row\) \{\s*\n\s*var sub = row\.querySelector\('\.rs-sub'\);/);
+  assert.match(GEAR, /if \(sr\.bottom > cr\.bottom && rr\.top - sr\.height - 2 >= cr\.top\) row\.classList\.add\('rs-up'\);/, "past the card's bottom and with room above: up");
+  assert.match(GEAR, /pcard\.addEventListener\('mouseover', function \(e\) \{ var row = rowOf\(e\.target\); if \(row\) placeSub\(row\); \}\);/);
+  assert.match(GEAR, /pcard\.addEventListener\('mouseout', function \(e\) \{ var row = rowOf\(e\.target\); if \(row && !\(e\.relatedTarget && row\.contains\(e\.relatedTarget\)\)\) row\.classList\.remove\('rs-up'\); \}\);/, "the class goes with the pointer, so the next hover measures afresh");
+  const CSS2 = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.css"), "utf8");
+  assert.match(CSS2, /#rsettings \.rs-row\.rs-up:hover \.rs-sub, #rsettings \.rs-widget\.rs-up:hover \.rs-sub \{ top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; \}/, "the up rule outranks the hover rule by one class");
   assert.doesNotMatch(GEAR, /Files control in the dashboard bar/, "the old words are gone from the gear");
   assert.match(G, /<b>Updates install automatically <span class=rs-mixed hidden><\/span><\/b>/, "the updates row's name (T404)");
-  assert.doesNotMatch(GEAR, /id=rs-filelink\b|File links open in|fileLinkPane/, "the file-links setting is gone: the route follows the open Files pane (T404)");
+  assert.doesNotMatch(GEAR, /id=rs-filelink\b|File links open in/, "the file-links setting is gone: the route follows the open Files pane (T404)");
+  assert.equal((GEAR.match(/fileLinkPane/g) || []).length, 1, "the dead key is named once, where load() drops it");
   assert.doesNotMatch(GEAR, /id=rs-activeonly\b|id=rs-collapsegaps\b|>Sessions pane</, "the Sessions-pane rows left settings: the pane carries them (T404)");
   assert.doesNotMatch(GEAR, /data-pane=appearance\b|\['appearance', 'Appearance'\]/, "no Appearance pane or pill remains");
   // Chat: Display (the transcript rows, the text scheme, the strip's one-group-per-row), Comments, Thinking, Tab widgets

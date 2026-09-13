@@ -132,6 +132,28 @@ const out = {};
       out.automationRows[theme] = { rest, hoverCard: hover.card, theme };
     }
     out.panesLabels = await setF.evaluate(() => ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); return row ? row.querySelector("b").textContent : null; }));
+    out.panesRowClasses = await setF.evaluate(() => ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); return row ? row.className : null; }));
+    // the popover stays inside the card (the T408 read): four rows near their pane's bottom sent it past the card's edge, which grew a
+    // scrollbar for it and clipped it; hovered, each must leave the card unscrollable with the popover inside the card's rect
+    const hoverRow = async (tab, id) => {
+      await setF.click('#rsettings .rs-tab[data-tab="' + tab + '"]'); await setF.waitForTimeout(120);
+      await page.mouse.move(4, 4); await setF.waitForTimeout(60);
+      await setF.hover(".rs-row:has(#" + id + "), label:has(#" + id + ")"); await setF.waitForTimeout(160);   // the ROW: two of the four controls are hidden selects
+      const r = await setF.evaluate((rid) => { const el = document.getElementById(rid), row = el.closest(".rs-row") || el.closest("label") || el, card = document.querySelector("#rsettings .rs-card");
+        const sub = row.querySelector(".rs-sub"); const sr = sub ? sub.getBoundingClientRect() : null, cr = card.getBoundingClientRect();
+        return { id: rid, shown: !!sr && sr.height > 0, subTop: sr ? sr.top : null, subBottom: sr ? sr.bottom : null, cardTop: cr.top, cardBottom: cr.bottom, inside: !!sr && sr.top >= cr.top - 1 && sr.bottom <= cr.bottom + 1,
+                 up: row.classList.contains("rs-up"), card: { scrollHeight: card.scrollHeight, clientHeight: card.clientHeight, scrollable: card.scrollHeight > card.clientHeight + 1 } }; }, id);
+      await page.mouse.move(4, 4); await setF.waitForTimeout(60);
+      return r;
+    };
+    out.hoverRows = {};
+    for (const theme of ["dark", "light"]) {
+      for (const f of [page, setF]) await f.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
+      await page.waitForTimeout(150);
+      out.hoverRows[theme] = [];
+      for (const [tab, id] of [["feed", "rs-feedcollapsed"], ["sessions", "rs-backend"], ["tasks", "rs-indexeffort"], ["tasks", "rs-judgeconc"]]) out.hoverRows[theme].push(await hoverRow(tab, id));
+    }
+    for (const f of [page, setF]) await f.evaluate(() => document.body.classList.remove("theme-light"));
     for (const f of [page, setF]) await f.evaluate(() => document.body.classList.remove("theme-light"));
     await setF.click('#rsettings .rs-tab[data-tab="debug"]'); await setF.waitForTimeout(150);
     out.debug = await readPanel(setF);
@@ -295,6 +317,25 @@ class ServedSettingsTabs(unittest.TestCase):
         # T407 (the user 2026-09-13, a screenshot of the Panes section): the row read "Files control in the dashboard bar"
         r = self._run(); table = "\n  " + json.dumps(r.get("panesLabels"))
         self.assertEqual(r.get("panesLabels"), ["Sessions", "Outline", "Feed", "Files"], table)
+
+    def test_the_files_row_is_a_panes_row_like_the_three_above_it(self):
+        r = self._run(); table = "\n  " + json.dumps(r.get("panesRowClasses"))
+        for cls in r.get("panesRowClasses") or [None] * 4:
+            self.assertIsNotNone(cls, table)
+            self.assertIn("rs-panes-row", cls.split(), "every Panes row carries the class the off-dashboard hide reads (T404's tidy)" + table)
+
+    def test_a_row_near_its_panes_bottom_opens_its_popover_above_and_the_card_does_not_scroll(self):
+        # the T408 read: Feed rs-feedcollapsed, Sessions rs-backend and Task tracking rs-indexeffort and rs-judgeconc sent their hover
+        # popover 23 to 47 px past the card's bottom, and the card grew a scrollbar for it
+        h = self._run()["hoverRows"]
+        for theme in ("dark", "light"):
+            rows = h[theme]; table = "\n  " + theme + ": " + json.dumps(rows)
+            self.assertEqual([x["id"] for x in rows], ["rs-feedcollapsed", "rs-backend", "rs-indexeffort", "rs-judgeconc"], table)
+            for x in rows:
+                self.assertTrue(x["shown"], x["id"] + ": the popover shows on hover" + table)
+                self.assertTrue(x["inside"], x["id"] + ": the popover stays inside the card (%.0f to %.0f in %.0f to %.0f)" % (x["subTop"], x["subBottom"], x["cardTop"], x["cardBottom"]) + table)
+                self.assertFalse(x["card"]["scrollable"], x["id"] + ": the card grows no scrollbar for it" + table)
+            self.assertTrue(any(x["up"] for x in rows), "at least one of the four opened above its row" + table)
 
     def test_the_automation_rows_carry_a_line_each_no_tooltip_and_the_card_does_not_scroll_at_rest_or_under_the_pointer(self):
         # T408 (the user 2026-09-13, a screenshot of the Automation tab): the pane scrolled over two rows because a hover tooltip

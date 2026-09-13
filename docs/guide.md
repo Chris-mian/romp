@@ -332,10 +332,9 @@ otherwise over the chat. Pick a file in the
 listing and it opens where the listing is. Selecting a passage in the viewer
 puts the quote in the chat's composer, as it does from the viewer over the
 chat. When no file is open, the pane lists the files most recently opened in
-it; click one to open it again. The pane and its control are both off by
-default: the gear's **Files** row (Settings, General, Panes) adds a Files
-toggle to the bottom bar (on a phone, a Files tab like the others), and that
-toggle turns the pane on.
+it; click one to open it again. The gear's **Files** row (Settings, General,
+Panes) adds a Files toggle to the bottom bar (on a phone, a Files tab like the
+others), and that toggle turns the pane on.
 
 ## Automatic nudges
 

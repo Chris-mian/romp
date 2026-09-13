@@ -6855,7 +6855,7 @@ function renderTabs() {
       mslot.append(mBtn, mChips);
     }
     const mv2 = effViews();
-    syncTagFilter(mslot.children[0] as HTMLElement, mslot.children[1] as HTMLElement,
+    syncTagFilter(mslot.children[0] as HTMLElement, phoneLayout() ? (mslot.children[1] as HTMLElement) : null,   // the chips only where the mount shows (the T405 read): the button's state syncs either way
       surfaceLens(mv2, "chat"), viewTagUnion(mv2), (l) => {
         postLens({ actives: Object.assign({}, (mv2 || {}).actives, { chat: l }) });
       });
