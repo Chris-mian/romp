@@ -554,7 +554,8 @@ class InterruptBlockTickUnderAFault(_InterruptTickRig):
                                           "(the real writer, in MidTickFaultThenHeal; this rig's stub marks nothing)")
 
     def test_a_fault_landing_mid_tick_leaves_the_block_it_filed_to_its_writers_mark_and_then_stands_down(self):
-        # the tag check at the arm's top proves; the fault lands before the marker write. The block IS in
+        # the tag check at the arm's top proves on the tick's ONE ledger read; the fault lands on the marker write's own
+        # read (no second ledger read sits between the check and the write since the one-read change). The block IS in
         # the goal store — a proved write, whose writer marks the views dirty (the real one; MidTickFaultThenHeal
         # pins the mark) — so the flip reaches the next cycle whatever the marker's fate, and the tick pushes
         # nothing inline; every later faulted tick stands down at the check: no storm

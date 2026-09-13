@@ -4812,7 +4812,8 @@ class LazyIndex:
         self.records = doc["records"]
         self.fsids = list(doc.get("fsids") or [])
         self._user_facts = {}                             # the interrupt-marks tally's light facts by row (user_facts), bounded by _USER_FACTS_CAP
-        _LIVE_INDEXES.add(self)
+        with _MAT_LOCK:                                   # the add under the lock the userFacts gauge sums under: an add beside the sum raised
+            _LIVE_INDEXES.add(self)                       #  "set changed size during iteration" and /perf answered 500 (1597 low 1)
 
     def build(self, k):
         with _MAT_LOCK:
