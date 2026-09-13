@@ -2027,6 +2027,39 @@ _KILL_RC = -signal.SIGALRM               # the other kill shape: the perl `alarm
 #                                          install would have tombstoned every turn it touched after three passes).
 
 
+# ── the Task tracking master switch's census (T404, the user 2026-09-13) ─────────────────────────
+# Every kernel-initiated model call goes through _judge_run, and every caller names its judge. MODEL_CALLERS
+# lists each judge name with its relation to the kernel's master switch: "tracking" stands down while the
+# switch is off (the producer starts no tier; this gate catches any path that still asks, the nudge's
+# redundancy check among them). A judge with NO entry proceeds but says so loudly (a judge-errors row), and
+# tests/test_task_tracking_switch.py holds this table to an ast census of _judge_run's call sites, so a new
+# caller cannot ship undeclared; a call that names no judge at all (a harness, a direct probe) is not gated.
+# The kernel installs its _task_tracking_on as TASK_TRACKING_ON at boot; the romp-judge CLI runs with the
+# default (on): a pass the user starts by hand is the user's.
+TASK_TRACKING_ON = lambda: True
+MODEL_CALLERS = {
+    "captioner": "tracking", "archiver": "tracking", "gister": "tracking", "titler": "tracking",   # the index tier and its title work
+    "planner": "tracking", "opener": "tracking", "placer": "tracking", "grouper": "tracking", "consolidator": "tracking",
+    "closer": "tracking", "unblocker": "tracking", "courier": "tracking",                          # the triage tier
+    "distiller": "tracking", "briefer": "tracking", "staller": "tracking",                          # the distill tier
+    "nudge-check": "tracking",                                                                     # the auto-nudge's redundancy read
+}
+
+
+def _model_call_allowed(judge):
+    """Whether a model call by `judge` may go out now: a declared "tracking" judge only while the Task tracking switch
+    is on; a declared "user" judge always; an undeclared NAME proceeds but files a judge-errors row (the census test
+    is the gate that refuses it, at merge time); an unnamed call is not this gate's business."""
+    if judge is None:
+        return True
+    rel = MODEL_CALLERS.get(judge)
+    if rel is None:
+        _log_judge_error(judge, getattr(_judge_ctx, "fsid", None), "unregistered-caller",
+                         note="judge %r is not in judge.py MODEL_CALLERS: declare its relation to the Task tracking switch" % (judge,))
+        return True
+    return rel != "tracking" or bool(TASK_TRACKING_ON())
+
+
 def _call_shape(model, sys_prompt, user, sent):
     """The grep-able shape of a FAILED call for its 'call' row: the model, the prompt size in chars
     (system + user — the SIZE only, never the text) and the wall-clock ms since it was sent. 2026-09-03:
@@ -2061,6 +2094,9 @@ def _judge_run_impl(model, sys_prompt, user, effort=None, judge=None, tier="tria
             return ""                                 # from a real call failure — event-based, no time window
     except Exception:
         pass
+    if not _model_call_allowed(judge):                # the Task tracking switch off for a declared tracking judge (T404):
+        _judge_ctx.paused = True                      # a stand-down like a pause, never a failure to count
+        return ""
     fsid = getattr(_judge_ctx, "fsid", None)
     engine = _judge_engine()                          # "claude" | "codex" (docs/codex.md §judges)
     try:

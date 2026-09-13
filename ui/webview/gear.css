@@ -262,3 +262,10 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-widget-demo .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
 #rsettings .rs-widget-demo .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted, #9aa0a6); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.18));
   border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
+
+/* A control that depends on the Task tracking switch while it is off (T404): the row greys by token (the fast-mode box's
+   dress), keeps its hover so the title says what to enable, and its inputs are inert (disabled, and no pointer on them or
+   their house pickers). */
+#rsettings .rs-row.rs-off, #rsettings .rs-jrow.rs-off { color: var(--text-faint, #6e7681); cursor: default; }
+#rsettings .rs-row.rs-off > *, #rsettings .rs-jrow.rs-off > * { pointer-events: none; }
+#rsettings .rs-row.rs-off input, #rsettings .rs-jrow.rs-off input, #rsettings .rs-jrow.rs-off select, #rsettings .rs-jrow.rs-off button { opacity: .4; }

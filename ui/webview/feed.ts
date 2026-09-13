@@ -5963,6 +5963,12 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
     return;
   }
   if (m.type === "feed") {
+    // the Task tracking switch off (T404): the kernel builds no feed and sends this flag; the page shows its notice in
+    // place of the list (rendered by the kernel, hidden while on) and applies nothing; the next real frame swaps back
+    const ttOff = document.getElementById("tt-off"), ttList = document.getElementById("feed-list");
+    if (ttOff) ttOff.hidden = !m.off;
+    if (ttList) ttList.hidden = !!m.off;
+    if (m.off) return;
     // HOVER-FREEZE: a hovered card must not move on screen — queue the payload (newest wins) and
     // hint the deferred churn on the headers instead; mouseleave/blur flush it (see freezeEnter).
     if (freezeKey || tabScopeKey) { pendingFeedPayload = m; paintFreezeBadges(); return; }
@@ -6347,3 +6353,8 @@ setFileViewIdentity((id) => {
 initFileBrowse((m) => vscodeApi?.postMessage(m));   // …and a Browse files ask lands its sibling overlay
 
 vscodeApi?.postMessage({ type: "ready" });
+
+// the notice's button while the Task tracking switch is off (T404): asks the shell to open the settings on Task tracking
+document.getElementById("tt-off-btn")?.addEventListener("click", () => {
+  try { (window.parent !== window ? window.parent : window).postMessage({ romp: "openSettings", tab: "tasks" }, "*"); } catch { /* no shell to ask */ }
+});

@@ -758,6 +758,12 @@ listenForFrames(perfFrameHandler("fleet", (m) => vscodeApi?.postMessage(m), (e: 
     return;
   }
   if (m.type !== "feed") return;                     // the Outline rides the FEED payload (proven channel); reads its `ledgers`
+  // the Task tracking switch off (T404): the frame carries `off` and no ledgers; the notice the kernel rendered shows in
+  // place of the list, and nothing below applies; the next real frame swaps back
+  const ttOff = document.getElementById("tt-off"), ttList = document.getElementById("fleet-list");
+  if (ttOff) ttOff.hidden = !m.off;
+  if (ttList) ttList.hidden = !!m.off;
+  if (m.off) return;
   // "loaded" means the kernel actually BUILT the fleet's ledgers (the key is present, even if []) — NOT merely
   // that some feed message arrived. A feed push can reach us before the (cold) ledger build finishes; treating
   // that as loaded would drop the loader onto an empty pane (the user 2026-06-29). Until ledgers land, keep the
@@ -1047,3 +1053,8 @@ const _keepLoader = setInterval(() => {
 }, 1000);
 
 export {};   // module scope — keep its globals off feed.ts's (a global script)
+
+// the notice's button while the Task tracking switch is off (T404): asks the shell to open the settings on Task tracking
+document.getElementById("tt-off-btn")?.addEventListener("click", () => {
+  try { (window.parent !== window ? window.parent : window).postMessage({ romp: "openSettings", tab: "tasks" }, "*"); } catch { /* no shell to ask */ }
+});
