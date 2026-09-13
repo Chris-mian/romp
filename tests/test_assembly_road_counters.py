@@ -378,6 +378,46 @@ class AssemblyRoadCounters(Harness):
                 self._append(path, tail(t0))
                 self._seeded_vs_cold(name, path, expect_refused=(boot_road == "whole"))
 
+    # Round six: reachability, not membership. Tails that re-root themselves while every parent names a tail record.
+    REROOT_SHAPES = {
+        "x4_self_link_last": lambda t0: [G.uline(t0 + 700, "a self-linked record", "u_self", "u_self")],
+        "x13_self_link_mid_tail_with_reply": lambda t0: [G.uline(t0 + 700, "a self-linked record", "u_self", "u_self"),
+                                                         G.aline(t0 + 710, "reply under it", "a_self", "u_self", stop="end_turn")],
+        "x11_boundary_cycle": lambda t0: [G.compact_line(t0 + 700, "b2", "u7"), G.compact_summary_line(t0 + 701, "s2", "b2"),
+                                          G.uline(t0 + 710, "closes the cycle", "u7", "s2")],
+        "x5_anchorless_boundary_segment_names_a_tail_record": lambda t0: [
+            {"type": "system", "subtype": "compact_boundary", "timestamp": G.iso(t0 + 700), "uuid": "b2", "parentUuid": None, "isMeta": False,
+             "compactMetadata": {"trigger": "auto", "preTokens": 1, "preservedSegment": {"headUuid": "a5", "anchorUuid": "a5", "tailUuid": "a5"}}},
+            G.compact_summary_line(t0 + 701, "s2", "b2"), G.uline(t0 + 710, "after", "u7", "s2")],
+        "x6_anchorless_boundary_segment_names_the_tip": lambda t0: [
+            {"type": "system", "subtype": "compact_boundary", "timestamp": G.iso(t0 + 700), "uuid": "b2", "parentUuid": None, "isMeta": False,
+             "compactMetadata": {"trigger": "auto", "preTokens": 1, "preservedSegment": {"headUuid": "a3", "anchorUuid": "a3", "tailUuid": "a3"}}},
+            G.compact_summary_line(t0 + 701, "s2", "b2"), G.uline(t0 + 710, "after", "u7", "s2")],
+    }
+
+    def test_a_tail_that_reroots_itself_is_refused_by_reachability(self):
+        """Round six, medium: the predicate tested set membership (each parent names a tail record or the proven tip), so a
+        self-linked record (a root to the parse), a boundary cycle, or an anchorless boundary whose preserved segment names a
+        tail record or the tip was approved while a cold parse dropped the pre-cut conversation; the dangerous face was the
+        seeded readers (file_rewound naming six records the cold walk files as clear). Every tail record's parent chain must
+        now REACH the proven tip; five shapes on the descent road, at boot and through both readers, against a cold parse."""
+        for name, tail in self.REROOT_SHAPES.items():
+            boundary = "boundary" in name
+            with self.subTest(shape=name, road="descent"):
+                path, t0 = self._documented("reroot-" + name)
+                self._append(path, tail(t0)); em._read_jsonl_entry(path, tail_ok=True)
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, "boundary" if boundary else "whole", path, reason="boundary" if boundary else "descent")
+            with self.subTest(shape=name, road="boot"):
+                path, t0 = self._documented("reroot-boot-" + name)
+                self._append(path, tail(t0)); self.fresh(); self._reset()
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, "whole", path, reason=None, boot=True)
+            with self.subTest(shape=name, road="seeded"):
+                path, t0 = self._documented("reroot-seeded-" + name)
+                self._append(path, tail(t0))
+                self._seeded_vs_cold(name, path, expect_refused=True)
+
     def test_the_seeded_readers_take_the_chain_rule_and_fall_to_the_cold_walk(self):
         """Round four, medium 2: chain_membership and file_rewound seeded an adapter from the document with no chain rule, and
         the goal sweep archived on their answer (over a rewound tail the seeded signature named one eclipsed record where the

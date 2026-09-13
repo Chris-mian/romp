@@ -6019,10 +6019,13 @@ def _entry_current(entry, candidate_files):
 
 def _boundary_effective_parent(r, known):
     """A compact_boundary's parent as the parse resolves it (FileAdapter._ingest, then _repair_compaction_stitches): its
-    logicalParentUuid when that names a known record, else the first of compactMetadata.preservedSegment's tail, anchor and
-    head that does; None when nothing does (an unknown anchor: the boundary re-roots the graph)."""
+    parentUuid or logicalParentUuid when that names a known record; when it names an UNKNOWN one, the first of
+    compactMetadata.preservedSegment's tail, anchor and head that does (the stitch repair re-points only a truthy, unknown
+    target); None when the resolved target is falsy (the parse leaves such a boundary a root) or nothing is known."""
     target = r.get("parentUuid") or r.get("logicalParentUuid")
-    if target and target in known:
+    if not target:
+        return None                                       # the parse leaves such a boundary a ROOT and never reads the segment
+    if target in known:
         return target
     seg = (r.get("compactMetadata") or {}).get("preservedSegment") or {}
     for k in ("tailUuid", "anchorUuid", "headUuid"):
@@ -6043,8 +6046,8 @@ def _tail_chains_onto_the_document(leaf_path, doc):
     record; one anchored in the pre-cut interior, or on no known record, invalidated the document. A missing parentUuid key
     counts as a null root. So a /clear fork, a rewind onto any pre-cut record but a proven-childless tip, a system spur
     anchored before the cut, an orphan parent, a summary or sidechain record parented into the pre-cut part, a compaction
-    re-anchored into the interior or onto an unknown uuid all refuse to the whole parse: graph invalidations the document's
-    byte checks cannot see, after which the pre-cut verdicts the document carries may be stale (T402 rounds one to five). The
+    re-anchored into the interior or onto an unknown uuid, a self-linked record, a parent cycle, a boundary with no anchor at all, all refuse to the whole parse: graph invalidations the document's
+    byte checks cannot see, after which the pre-cut verdicts the document carries may be stale (T402 rounds one to six). The rule is REACHABILITY: the tail is a forest whose only root parent is the proven tip and every record's parent chain reaches it (a boundary through its effective parent); set membership alone approved a tail that re-rooted itself while a cold parse dropped the pre-cut conversation. The
     childless tip is exempt because a first child cannot change which pre-cut branch is active, and the live manual /compact
     chains its command wrappers onto the pre-compact leaf, a childless tip, in ten of thirteen corpus cases (the golden detached
     scenario). One predicate for EVERY read that seeds an adapter from a document: the boot restore, the restore after a
@@ -6059,20 +6062,44 @@ def _tail_chains_onto_the_document(leaf_path, doc):
     recs = ent[4] if ent is not None else []
     if ent is not None and ent[5] < int(cut[1]):          # a whole entry: the tail is the records past the cut
         recs = recs[int(cut[1]) - ent[5]:]
-    tail_uuids = {r.get("uuid") for r in recs if isinstance(r, dict) and r.get("uuid")}
-    rows, spine = doc.get("records") or [], doc.get("spine") or []
+    nodes = [r for r in recs if isinstance(r, dict) and (r.get("uuid") or "parentUuid" in r)]   # the graph nodes; a
+    by_uuid = {r["uuid"]: r for r in nodes if r.get("uuid")}                                     #  file-history snapshot or a
+    rows, spine = doc.get("records") or [], doc.get("spine") or []                                #  summary index row is none
     pre_uuids = {row[0] for row in rows}
     tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
-    allowed = tail_uuids | ({tip} if tip is not None and doc.get("tipChildless") is True else set())
-    known = pre_uuids | tail_uuids
-    for r in recs:
-        if not isinstance(r, dict) or not (r.get("uuid") or "parentUuid" in r):
-            continue                                      # no graph node: a file-history snapshot, a summary index row
+    tip_ok = tip if tip is not None and doc.get("tipChildless") is True else None
+    known = pre_uuids | set(by_uuid)
+
+    def parent_of(r):
+        """The record's parent as the parse resolves it; None for a root (a null or missing parent, a self-link)."""
         if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
-            parent = _boundary_effective_parent(r, known)   # the boundary's anchor as the parse resolves it (round five, medium 2)
+            p = _boundary_effective_parent(r, known)      # the boundary's anchor as the parse resolves it (round five, medium 2)
         else:
-            parent = r.get("parentUuid")
-        if parent not in allowed:
+            p = r.get("parentUuid")
+        return None if (not p or p == r.get("uuid")) else p
+
+    reaches = {}                                          # uuid -> whether its parent chain reaches the proven tip (memoized)
+    for r in nodes:                                       # REACHABILITY, not membership (round six, medium): every tail record's
+        path, cur = [], r                                 #  parent chain must end at the proven tip; a chain ending at any other
+        while True:                                       #  root (null, missing, self-link, unknown), revisiting a record (a
+            u = cur.get("uuid")                           #  cycle) or leaving the tail into the pre-cut part refuses
+            if u is not None and u in reaches:
+                ok = reaches[u]; break
+            if u is not None and u in path:
+                ok = False; break                         # a cycle
+            if u is not None:
+                path.append(u)
+            p = parent_of(cur)
+            if p is None:
+                ok = False; break                         # a root that is not the tip: the tail re-roots the graph
+            if p == tip_ok:
+                ok = True; break
+            if p in by_uuid:
+                cur = by_uuid[p]; continue
+            ok = False; break                             # the pre-cut interior, an unproven tip, or an unknown uuid
+        for x in path:
+            reaches[x] = ok
+        if not ok:
             return False
     return True
 
