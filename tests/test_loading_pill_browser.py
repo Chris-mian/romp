@@ -38,12 +38,21 @@ await page.evaluate(() => {
   const watch = () => { const p = document.querySelector(".tx-loading-pill"); if (!p) return false; new MutationObserver(() => { if (getComputedStyle(p).display !== "none") window.__pillSeen++; }).observe(p, { attributes: true, attributeFilter: ["style"] }); if (getComputedStyle(p).display !== "none") window.__pillSeen++; return true; };
   if (!watch()) new MutationObserver((_, o) => { if (watch()) o.disconnect(); }).observe(document.body, { childList: true, subtree: true });
 });
+const painted = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
+const pillShown = () => page.waitForFunction(() => { const p = document.querySelector(".tx-loading-pill"); return !!p && getComputedStyle(p).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
+const pillHidden = () => page.waitForFunction(() => { const p = document.querySelector(".tx-loading-pill"); return !p || getComputedStyle(p).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
+const latch = () => page.evaluate(() => (typeof window.__rompLatch === "function" ? window.__rompLatch() : null));   // the head's hook; the base has none, and its roads must still run to their own red
 const pill = () => page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); return { present: !!p, visible: !!p && p.isConnected && getComputedStyle(p).display !== "none", text: p ? p.textContent : null, seen: window.__pillSeen }; });
 const atBottom = () => page.evaluate(() => { const c = document.getElementById("content"); return { top: c.scrollTop, max: c.scrollHeight - c.clientHeight, atBottom: c.scrollHeight - c.scrollTop - c.clientHeight < 2 }; });
 // a pill click LATCHES the tab's older asks until the reader's own scroll evidence (round three, medium 1), so a road that stands in for
 // the reader's scroll with a script jump first gives that evidence: one real wheel tick over the transcript, waited on by its event
 const unlatch = async () => { const b = await page.evaluate(() => { const r = document.getElementById("content").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, n: window.__wheels }; }); await page.mouse.move(b.x, b.y); await page.mouse.wheel(0, -1); await page.waitForFunction((n) => window.__wheels > n, b.n, { timeout: 3000 }); };
 // the drop hook rides the same send wrapper the head installs: a frame whose type is in __drop is recorded and not sent
+// the page's own life, recorded (round four): a crash, a close, a console error or an uncaught error explains a driver that dies mid-road
+const pageEvents = [];
+page.on("crash", () => pageEvents.push("crash")); page.on("close", () => pageEvents.push("close"));
+page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") pageEvents.push(m.type() + ":" + m.text().slice(0, 240)); });
+page.on("pageerror", (e) => pageEvents.push("pageerror:" + String(e).slice(0, 240)));
 await page.evaluate(() => { const orig = WebSocket.prototype.send; window.__hold = new Set(); window.__heldRaw = []; window.__in = []; window.__wheels = 0; window.addEventListener("wheel", () => { window.__wheels++; }, { capture: true, passive: true });
   window.addEventListener("message", (e) => { const m = e.data; if (m && m.type && e.source !== window) window.__in.push(m.type); }, true);
   WebSocket.prototype.send = function (d) { window.__ws = this; try { const m = JSON.parse(d); if (m && m.type && window.__drop.has(m.type)) { window.__sent.push(m); return; } if (m && m.type && window.__hold.has(m.type)) { window.__sent.push(m); window.__heldRaw.push(d); return; } } catch (e) {} return orig.call(this, d); };
@@ -58,9 +67,9 @@ await page.waitForTimeout(500);
 const start = await pill(); const b0 = await atBottom();
 for (let i = 0; i < 3; i++) {
   fs.appendFileSync(cfg.transcript, JSON.stringify({ type: "user", uuid: cfg.liveU.slice(0, -1) + i, parentUuid: cfg.lastUuid, timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, ".000Z"), promptSource: "sdk", sessionId: cfg.sid, message: { role: "user", content: "another live question " + i } }) + "\n");
-  await page.waitForTimeout(1200);
+  await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), cfg.liveU.slice(0, -1) + i, { timeout: 10000 }).catch(() => {});   // the row itself (round four, low 4)
 }
-await page.waitForTimeout(1500);
+await painted();   // the last row's paint and the tail's stick write
 const grown = await pill(); const bGrown = await atBottom();
 const liveRows = await page.evaluate(() => document.querySelectorAll('#content .turn-user').length);
 // ROAD 6, second, while older history is still on the server (round two, medium 1): two tabs. The reader's older ask on tab A is dropped at the socket, so its wait stands; on
@@ -81,7 +90,7 @@ await page.waitForTimeout(300);
 const onBClicked6 = await pill();
 await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); if (t) t.click(); }, cfg.sid);
 await page.waitForFunction((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid, { timeout: 8000 }).catch(() => {});
-await page.waitForTimeout(400);
+await pillShown();   // A's own wait shows again on the return (round four, low 4)
 const backOnA6 = await pill();
 await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });
 await page.waitForFunction(() => { const p = document.querySelector(".tx-loading-pill"); return !p || getComputedStyle(p).display === "none"; }, null, { timeout: 4000 }).catch(() => {});
@@ -156,7 +165,7 @@ await page.evaluate(() => { window.__drop.add("loadOlder"); });
 const olderBefore1 = await sentOf("loadOlder");
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });   // a jump to the top: the head band asks once
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n, olderBefore1, { timeout: 8000 }).catch(() => {});
-await page.waitForTimeout(300);
+await pillShown();
 const asked1 = await pill();
 await page.evaluate(() => { window.__drop.delete("loadOlder"); window.__ws.close(); });   // the socket dies; the shim redials
 await page.waitForTimeout(400);
@@ -176,10 +185,10 @@ await page.evaluate(() => { window.__drop.add("loadOlder"); });
 const olderBefore2 = await sentOf("loadOlder");
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n, olderBefore2, { timeout: 8000 }).catch(() => {});
-await page.waitForTimeout(300);
+await pillShown();
 const shown2 = await pill();
 if (shown2.visible) await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // a DOM click: at main the pill takes no pointer and a real click hangs on the turn beneath
-await page.waitForTimeout(300);
+await pillHidden();
 const clicked2 = await pill();
 // the cancel LATCHES (round three, medium 1): at the edge with no move of the reader's own, no re-ask and no pill, sampled twice
 await page.waitForTimeout(500);
@@ -204,8 +213,93 @@ await page.mouse.wheel(0, -400);
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n + 1, olderBefore2, { timeout: 8000 }).catch(() => {});
 const olderAfter2 = await sentOf("loadOlder");
 const reasked2 = await pill();
-await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
+const out = {};
+try {
+// ROAD 8 (round four, medium 1): the latch clears only on THIS tab's own evidence over ITS transcript. The ask dropped, the pill clicked
+// (latched); a click into the composer and a typed character, then the edge nudge: no ask (a keystroke that scrolls the field is no
+// evidence); tab B's transcript wheeled and A returned to, the nudge again: no ask (another tab's gesture is none either); a real wheel over
+// A's transcript: the edge asks again
+out.step = "8:ask";
+await page.evaluate(() => { window.__drop.add("loadOlder"); });
+out.olderBefore8 = await sentOf("loadOlder");
+// the history is deeper here than in road 2 (its re-ask was answered), so one jump to the top re-windows first and the edge asks on the
+// scroll that follows: jump, and if nothing asked, step once more (bounded: three tries)
+for (let i = 0; i < 3 && (await sentOf("loadOlder")) === out.olderBefore8; i++) {
+  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 300; });
+  await painted();
+  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
+  await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n, out.olderBefore8, { timeout: 3000 }).catch(() => {});
+}
+await pillShown();
+out.asked8 = { pill: await pill(), older: (await sentOf("loadOlder")) - out.olderBefore8, latch: await latch() };
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });
+await pillHidden();
+out.clicked8 = { pill: await pill(), latch: await latch() };
+const nudge = async () => {   // a script scroll down and back to the top band: at the base the edge asks again here
+  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 300; });
+  await painted();
+  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
+  await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n + 1, out.olderBefore8, { timeout: 1500 }).catch(() => {});
+  return { pill: await pill(), older: (await sentOf("loadOlder")) - out.olderBefore8, around: await sentOf("loadAround"), latch: await latch(),
+           top: await page.evaluate(() => document.getElementById("content").scrollTop),
+           sent: await page.evaluate(() => window.__sent.slice(-10).map((m) => m.type + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") : "") + (m.why ? ":" + m.why : ""))) };
+};
+out.step = "8:click-done";
+await page.focus("#composer-input");   // the composer itself (the page's message box), by its id
+await page.keyboard.type("x");
+out.composer8 = await page.evaluate(() => { const c = document.getElementById("composer-input"); return c ? c.value : null; });
+out.step = "8:typed";
+out.nudgeKey8 = await nudge();
+out.step = "8:nudged-key";
+await page.evaluate((sid2) => { const t = document.querySelector('#tabs .tab[data-id="' + sid2 + '"]'); if (t) t.click(); }, cfg.sid2);
+await page.waitForFunction((sid2) => { const t = document.querySelector('#tabs .tab[data-id="' + sid2 + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid2, { timeout: 8000 }).catch(() => {});
+await page.mouse.move(box2.x, box2.y);
+await page.mouse.wheel(0, -100);
+await painted();
+await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); if (t) t.click(); }, cfg.sid);
+await page.waitForFunction((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid, { timeout: 8000 }).catch(() => {});
+await painted();
+out.nudgeTab8 = await nudge();
+out.step = "8:nudged-tab";
+await page.mouse.move(box2.x, box2.y);
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 200; });
+await painted();
+await page.mouse.wheel(0, -400);
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n + 1, out.olderBefore8, { timeout: 8000 }).catch(() => {});
+await pillShown();
+out.freed8 = { pill: await pill(), older: (await sentOf("loadOlder")) - out.olderBefore8 };
+await page.evaluate(() => { const c = document.getElementById("composer-input"); if (c) c.value = ""; });   // the typed character cleared
+out.step = "9:start";
+// ROAD 9 (round four, medium 2): a card click's window ask HELD, the pill clicked away (cancelled), a wheel up that asks older (the reader's
+// wait stands, the pill on), then the FIRST ask's fault arrives: silent, and the outstanding ask keeps its wait
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // road 8's dropped ask clicked away first
+await pillHidden();
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const deep9 = "11111111-2222-3333-4444-" + pad(2 * 5);   // turn 5: history the page does not hold
+const aroundBefore9 = await sentOf("loadAround");
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep9, anchorT: cfg.base + 2 * 5 });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore9, { timeout: 8000 }).catch(() => {});
+await pillShown();
+out.asked9 = await pill();
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // the window ask clicked away
+await pillHidden();
+out.cancelled9 = await pill();
+const olderBefore9 = await sentOf("loadOlder");
+await page.mouse.move(box2.x, box2.y);
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 200; });
+await painted();
+await page.mouse.wheel(0, -400);   // the reader's own wheel: the latch clears and the edge asks older (dropped: the wait stands)
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n, olderBefore9, { timeout: 8000 }).catch(() => {});
+await pillShown();
+out.wheeled9 = { pill: await pill(), older: (await sentOf("loadOlder")) - olderBefore9 };
+await page.evaluate(([sid, anchor]) => window.postMessage({ type: "chatWindow", id: sid, anchor, events: [], moreBefore: false, moreAfter: false, missing: true, fault: true, error: "synthetic fault" }, "*"), [cfg.sid, deep9]);
+await page.waitForFunction(() => !!document.querySelector(".locate-toast"), null, { timeout: 1200 }).catch(() => {});   // a bounded negative: no toast should come
+out.step = "9:faulted";
+out.faulted9 = { pill: await pill(), toast: await page.evaluate(() => { const t = document.querySelector(".locate-toast"); return t ? t.textContent : null; }) };
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; window.__drop.delete("loadOlder"); });
+} catch (e) { out.roadError = String(e && e.message || e); }
+process.stdout.write("RESULT:" + JSON.stringify({ ...out, pageEvents, start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
+try { await browser.close(); } catch (e) { /* the page may already be gone */ }
 """
 
 
@@ -303,6 +397,28 @@ class ServedLoadingPill(WindowLab):
         self.assertFalse(r["onBClicked6"]["visible"], "a click on B changes nothing: %r" % r["onBClicked6"])
         self.assertTrue(r["backOnA6"]["visible"], "back on A the wait still stands: %r" % r["backOnA6"])
         self.assertFalse(r["endedOnA6"]["visible"], "the click on A ends it: %r" % r["endedOnA6"])
+
+    def test_the_latch_ignores_a_keystroke_into_the_composer_and_another_tabs_wheel_and_clears_on_this_tabs_own_wheel(self):
+        # round four, medium 1: the evidence is per tab and per surface
+        r = self._result()
+        self.assertIn("freed8", r, "the road did not complete: %r" % r.get("roadError"))
+        for k in ("nudgeKey8", "nudgeTab8"):
+            self.assertEqual(r[k]["older"], 1, "%s: the click's latch stood through it: one ask (the clicked one), no re-ask: %r" % (k, r[k]))
+            self.assertFalse(r[k]["pill"]["visible"], "%s: no pill returned: %r" % (k, r[k]))
+        self.assertGreaterEqual(r["freed8"]["older"], 2, "a real wheel over this tab's transcript freed the edge: %r" % r["freed8"])
+        self.assertTrue(r["freed8"]["pill"]["visible"], "…and the reader's ask shows the pill again: %r" % r["freed8"])
+
+    def test_a_cancelled_asks_fault_is_silent_and_ends_no_later_ask(self):
+        # round four, medium 2: the stand-down keys on the ask the reply answers
+        r = self._result()
+        self.assertIn("faulted9", r, "the road did not complete (at the base the page closed under the pill's click): %r" % r.get("roadError"))
+        self.assertTrue(r["asked9"]["visible"], "the card click's window ask showed the pill: %r" % r["asked9"])
+        self.assertFalse(r["cancelled9"]["visible"], "the click hid it: %r" % r["cancelled9"])
+        self.assertEqual(r["wheeled9"]["older"], 1, "the reader's wheel asked older once (the latch cleared by their own move): %r" % r["wheeled9"])
+        self.assertTrue(r["wheeled9"]["pill"]["visible"], "…and that ask's wait shows the pill: %r" % r["wheeled9"])
+        f = r["faulted9"]
+        self.assertIsNone(f["toast"], "the cancelled ask's fault toasts nothing at the reader: %r" % f)
+        self.assertTrue(f["pill"]["visible"], "…and ends nothing the later ask holds: the pill stays on: %r" % f)
 
     def test_a_fault_on_the_ordinary_deep_link_road_stands_the_landing_down_at_once(self):
         # round three, medium 2: the stand-down keys on the wait the ask recorded, not on the landing's mark landActive clears

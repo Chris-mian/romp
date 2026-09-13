@@ -20,7 +20,8 @@ test("the pill is for the ACTIVE tab's outstanding reader ask only: not the virt
   assert.match(fn("requestAround"), /const nav = !relandAsk;[\s\S]*noteAsk\(sid, nav\);/, "requestAround: a navigation's ask is a reader wait; the re-land of the reader's own row is the page's ask and shows nothing (round three, low 2)");
   assert.match(fn("requestAround"), /if \(nav\) olderCancelled\.delete\(sid\);/, "a navigation's ask ends the click's latch: the reader's own intent (round three)");
   assert.match(fn("fetchOlderForAnchor"), /olderCancelled\.delete\(sid\);/, "the index wire's deep link too");
-  for (const f of ["chatHead", "chatWindow", "chatMore"]) assert.match(fn(f), /^\s*endAsk\(msg\.id\);/m, f + ": the reply ends the wait and re-evaluates the pill");
+  for (const f of ["chatHead", "chatMore"]) assert.match(fn(f), /^\s*endAsk\(msg\.id\);/m, f + ": the reply ends the wait and re-evaluates the pill");
+  assert.match(fn("chatWindow"), /^\s*if \(!cancelled\) endAsk\(msg\.id\);/m, "chatWindow: an uncancelled reply ends the wait and re-evaluates the pill; a cancelled one ends nothing (round four, medium 2)");
   assert.match(RENDER, /function syncLoadingPill\(\): void \{ if \(activeId && readerWaits\.has\(activeId\)\) showLoadingPill\(\); else hideLoadingPill\(\); \}/, "the pill follows the ACTIVE tab's reader wait");
   assert.match(RENDER, /updateLivePaused\(\);[^\n]*\n\s*syncLoadingPill\(\);/, "…re-evaluated on a tab switch, after the strip's own re-evaluation");
   assert.match(RENDER, /function noteAsk\(sid: string, reader: boolean\): void \{ loadingOlder\.add\(sid\); askedGen\.set\(sid, askGen\); if \(reader\) readerWaits\.set\(sid, askGen\); syncLoadingPill\(\); \}/);
@@ -55,21 +56,33 @@ test("a click ends the ACTIVE tab's wait and hides the pill whatever the other t
 });
 
 test("a reply the kernel could not build is a FAULT routed apart from a genuine miss: the wait ends, nothing is re-based, no 'couldn't locate' (round two, lows 2 and 3)", () => {
-  assert.match(fn("chatHead"), /if \(msg\.fault\) \{ forget\(msg\.id\); return; \}/, "chatHead: a fault ends the wait only");
+  assert.match(fn("chatHead"), /if \(msg\.fault\) \{\s*\n[\s\S]*?forget\(msg\.id\);\s*\n\s*if \(msg\.id === activeId && deepLink && \(hadWait \|\| anchorPendingOlder\)\)/, "chatHead: a fault ends the wait, re-bases nothing, and stands a deep link's landing down (round four, low 2)");
   assert.match(fn("chatHead"), /if \(msg\.missing\) \{ forget\(msg\.id\); return; \}\s*\/\/ the index wire's fault reply/, "the index wire's fault never reads as the head reached");
   assert.match(fn("chatWindow"), /if \(msg\.fault\) \{[\s\S]*?landTrail\.push\("window-fault"\); landToast\("the history could not be loaded just now"\);/, "chatWindow: a fault is not a verdict on the anchor");
   assert.match(fn("chatMore"), /if \(msg\.fault\) return;/, "chatMore: the walked pages stay");
 });
 
 test("round three: a click's cancel latches at the edge until the reader's own evidence; a fault stands the landing down by the recorded wait; a flip and the pipe's down edge clear and end", () => {
-  assert.match(RENDER, /function olderLatched\(sid: string\): boolean \{\s*\n\s*const at = olderCancelled\.get\(sid\);\s*\n\s*if \(at == null\) return false;\s*\n\s*if \(settleLastOwnInput > at \|\| \(settleScrollerHeld && settleHeldAt > at\)\) \{ olderCancelled\.delete\(sid\); return false; \}/, "the latch clears on a wheel, a key, a touch or a scrollbar grab after the click, never on a pointer's click");
-  assert.match(RENDER, /if \(e\.type === "wheel" \|\| e\.type === "keydown" \|\| e\.type\.startsWith\("touch"\)\) settleLastOwnInput = Date\.now\(\);/, "the reader's own input is recorded apart from the pointer's");
+  assert.match(RENDER, /function olderLatched\(sid: string\): boolean \{\s*\n\s*const at = olderCancelled\.get\(sid\);\s*\n\s*if \(at == null\) return false;\s*\n\s*if \(\(olderEvidence\.get\(sid\) \?\? 0\) > at\) \{ olderCancelled\.delete\(sid\); return false; \}/, "the latch stands until THIS tab's own evidence after the click (round four, medium 1)");
+  const inp = RENDER.slice(RENDER.indexOf("function settleInput(e: Event): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function settleInput(e: Event): void {")));
+  assert.match(inp, /settleLastInput = Date\.now\(\);\s*\n[\s\S]*?if \(e\.type === "wheel" \|\| e\.type === "keydown" \|\| e\.type\.startsWith\("touch"\) \|\| \(e\.type === "pointerdown" && settleScrollerHeld\)\) noteOlderEvidence\(activeId\);/, "the evidence is stamped for the ACTIVE tab, by the inputs the settle machinery accepts (round four, medium 1)");
+  assert.ok(inp.indexOf("isContentEditable)) return;") < inp.indexOf("noteOlderEvidence(activeId)") && inp.indexOf("!c.contains(e.target)) return;") < inp.indexOf("noteOlderEvidence(activeId)"), "…after the editable-field and the scroller's-own-box returns: a keystroke into the composer, a hover, a pointer off the scroller stamp nothing");
+  assert.doesNotMatch(RENDER, /settleLastOwnInput|settleHeldAt/, "the page-global stamps are gone");
+  assert.match(RENDER, /if \(after !== before && writerIsReader\(writer\)\) noteOlderEvidence\(activeId\);/, "a reader writer's own move (a trail or fragment-link jump, the live-tail chip, a key) is evidence too (round four, low 1)");
+  const win4 = fn("chatWindow");
+  assert.match(win4, /const cancelled = cancelledAsks\.delete\(msg\.id\);\s*\n\s*const later = cancelled && loadingOlder\.has\(msg\.id\);[^\n]*\n\s*const hadWait = !cancelled && readerWaits\.has\(msg\.id\);\s*\n\s*if \(!cancelled\) endAsk\(msg\.id\);/, "the reply answers the ask the reader clicked away, or the one on the books: a cancelled ask's reply ends nothing a later ask holds (round four, medium 2)");
+  assert.match(win4, /if \(!later\) \{ pendingOlderAnchor\.delete\(msg\.id\); pendingOlderKeepY\.delete\(msg\.id\); \}/, "…nor the later ask's anchor");
+  assert.equal((win4.match(/if \(!cancelled && msg\.id === activeId && \(hadWait \|\| pendingAnchor === anchorUuid\)\)/g) || []).length, 2, "both stand-downs (fault, missing) are silent for a cancelled ask");
+  assert.ok(win4.indexOf("const ask = cancelled ? null : (pendingWindowNav.get(msg.id) ?? null);") < win4.indexOf("if (!s) return;") && win4.indexOf("if (!cancelled) pendingWindowNav.delete(msg.id);") < win4.indexOf("if (msg.fault) {"), "the nav entry is read and forgotten before any return (round four, low 3)");
+  const head4 = fn("chatHead");
+  assert.match(head4, /const hadWait = readerWaits\.has\(msg\.id\);\s*\n\s*const deepLink = pendingOlderAnchor\.has\(msg\.id\) && !pendingOlderKeepY\.has\(msg\.id\);[^\n]*\n\s*endAsk\(msg\.id\);/, "chatHead reads the wait and the deep-link mark before ending the ask");
+  assert.match(head4, /if \(msg\.id === activeId && deepLink && \(hadWait \|\| anchorPendingOlder\)\) \{ pendingAnchor = null; anchorPendingOlder = false; landTrail\.push\("head-fault"\); landToast\("the history could not be loaded just now"\); clearSeek\(\); \}/, "the index wire's deep-link fault stands the landing down at once (round four, low 2)");
   assert.match(fn("virtualizeToViewport"), /&& upward && !olderLatched\(activeId\)\) \{ requestOlder\(activeId, v, content\); return; \}/, "the virtualiser asks nothing while the latch stands");
   assert.match(fn("requestOlder"), /\|\| olderLatched\(sid\)\) return;/);
   assert.match(fn("cancelOlderWait"), /if \(why === "click"\) olderCancelled\.set\(sid, Date\.now\(\)\);/);
   const win = fn("chatWindow");
-  assert.match(win, /const hadWait = readerWaits\.has\(msg\.id\);/, "the stand-down keys on the wait the ask recorded (medium 2)");
-  assert.match(win, /if \(msg\.id === activeId && \(hadWait \|\| pendingAnchor === anchorUuid\)\) \{ if \(pendingAnchor === anchorUuid\) pendingAnchor = null; anchorPendingOlder = false; landTrail\.push\("window-fault"\); landToast\("the history could not be loaded just now"\); clearSeek\(\); \}/);
+  assert.match(win, /const hadWait = !cancelled && readerWaits\.has\(msg\.id\);/, "the stand-down keys on the wait the ask recorded, for an uncancelled reply (medium 2; round four)");
+  assert.match(win, /if \(!cancelled && msg\.id === activeId && \(hadWait \|\| pendingAnchor === anchorUuid\)\) \{ if \(pendingAnchor === anchorUuid\) pendingAnchor = null; anchorPendingOlder = false; landTrail\.push\("window-fault"\); landToast\("the history could not be loaded just now"\); clearSeek\(\); \}/);
   assert.match(win, /landTrail\.push\("window-missing"\); landToast\("couldn't locate this in the transcript"\); clearSeek\(\); \}/);
   assert.match(RENDER, /function onSocketFlipFrame\(\): void \{ if \(!flipPending\) askGen\+\+; flipPending = false; cancelledAsks\.clear\(\); cancelOlderWait\("flip"\); \}/, "a flip clears the cancelled set (low 1)");
   assert.match(fn("requestAround"), /noteAsk\(sid, nav\);/, "a re-land is the page's own ask: no reader wait, no pill (low 2)");

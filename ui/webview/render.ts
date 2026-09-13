@@ -11119,6 +11119,7 @@ function writeScroll(content: HTMLElement, top: number, writer: string, stick = 
   // are their takeover (round four: their writes read as another mover's and land-realign undid three arrow steps), every other
   // writer's move is a sample for the settle rule, which re-lands (T386)
   if (after !== before && landSettling && !landSettling.done && writer !== "land-on" && writer !== "land-realign") { if (writerIsReader(writer)) settleGesture(); else settleSample(); }
+  if (after !== before && writerIsReader(writer)) noteOlderEvidence(activeId);   // the reader's own move by a writer of theirs clears a cancelled ask's latch too (round four, low 1)
 }
 // EVERY mover of #content goes through writeScroll (T262j, the user 2026-09-08: an unwritten move the journal could
 // not name). scrollBy and scrollIntoView are scrollTop writes expressed differently, so they are expressed as such:
@@ -11409,10 +11410,13 @@ let settleLastInput = 0;
  *  SETTLE_INPUT_MS made every scroll a sample, and land-realign wrote the reader back). While the hold stands every scroll is
  *  the reader's, whatever the clock says; the timed window stays for wheels, keys, touches and drags inside the content. */
 let settleScrollerHeld = false;
-let settleLastOwnInput = 0;   // the reader's last input that is not a pointer's (a wheel, a key, a touch): the evidence a cancelled ask's latch waits for (T402 round three)
-let settleHeldAt = 0;         // when the scrollbar was last grabbed: a drag after a cancel is the reader's own move too
+/** sid → when the reader last gave SCROLL EVIDENCE on that tab (T402 round four, medium 1): an input the settle machinery accepts over
+ *  #content (a wheel, a touch, a key outside an editable field, a grab of the scrollbar) or a reader writer's own write (a trail or
+ *  fragment-link jump, the live-tail chip). Per tab and per surface: a keystroke into the composer, or a gesture on another tab's
+ *  transcript, is no evidence for this tab's older edge. A cancelled ask's latch (olderLatched) waits for it. */
+const olderEvidence = new Map<string, number>();
+function noteOlderEvidence(sid: string | null | undefined): void { if (sid) olderEvidence.set(sid, Date.now()); }
 function settleInput(e: Event): void {
-  if (e.type === "wheel" || e.type === "keydown" || e.type.startsWith("touch")) settleLastOwnInput = Date.now();
   const c = document.getElementById("content");
   if (e.type === "pointerup" || e.type === "pointercancel") { settleScrollerHeld = false; return; }
   if (e.type === "keydown") {
@@ -11423,10 +11427,13 @@ function settleInput(e: Event): void {
     if (!c || !(e.target instanceof Node) || !c.contains(e.target)) return;   // the scroller and its scrollbar (its own box), nothing else
     if (e.type === "pointerdown") {
       const pe = e as PointerEvent, cr = c.getBoundingClientRect();
-      if (scrollerGrab(e.target === c, pe.clientX - cr.left, pe.clientY - cr.top, c.clientWidth, c.clientHeight)) { settleScrollerHeld = true; settleHeldAt = Date.now(); }
+      if (scrollerGrab(e.target === c, pe.clientX - cr.left, pe.clientY - cr.top, c.clientWidth, c.clientHeight)) settleScrollerHeld = true;
     }
   }
   settleLastInput = Date.now();
+  // the evidence the older edge's latch waits for: the same inputs, once past the editable-field and the scroller's-own-box returns above, so a
+  // keystroke into the composer or a hover never counts; a pointer counts only as a grab of the scrollbar (a press on the pill never reaches here as one)
+  if (e.type === "wheel" || e.type === "keydown" || e.type.startsWith("touch") || (e.type === "pointerdown" && settleScrollerHeld)) noteOlderEvidence(activeId);
 }
 for (const ev of ["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchmove", "wheel", "keydown"]) window.addEventListener(ev, settleInput, { capture: true, passive: true });
 // a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round four, low 1): the hold ends
@@ -13766,6 +13773,8 @@ function onPipeDown(): void { askGen++; flipPending = true; cancelledAsks.clear(
 // the served geometry lab (tests/test_loading_pill_anchor_browser.py) shows the pill on demand: its real
 // showings last the span of a fetch, too brief to measure against the strip
 if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLoadingPill(); else hideLoadingPill(); };
+// the served labs read the older edge's latch on demand: the click's time, this tab's last evidence, and the verdict (T402 round four)
+if (typeof window !== "undefined") (window as any).__rompLatch = (): unknown => { const sid = activeId || ""; return { at: olderCancelled.get(sid) ?? null, evidence: olderEvidence.get(sid) ?? null, latched: !!sid && olderLatched(sid), loading: !!sid && loadingOlder.has(sid), wait: !!sid && readerWaits.has(sid) }; };
 
 // ---- ledger box (rolling per-session digest, just below the tabs) ----
 
@@ -17222,7 +17231,7 @@ const olderCancelled = new Map<string, number>();       // sid → the click's t
 function olderLatched(sid: string): boolean {
   const at = olderCancelled.get(sid);
   if (at == null) return false;
-  if (settleLastOwnInput > at || (settleScrollerHeld && settleHeldAt > at)) { olderCancelled.delete(sid); return false; }
+  if ((olderEvidence.get(sid) ?? 0) > at) { olderCancelled.delete(sid); return false; }   // this tab's own evidence, after the click
   return true;
 }
 function syncLoadingPill(): void { if (activeId && readerWaits.has(activeId)) showLoadingPill(); else hideLoadingPill(); }
@@ -17235,11 +17244,19 @@ const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to r
 // jumped (the user 2026-08-02).
 const pendingOlderKeepY = new Map<string, number>();
 function chatHead(msg: any) {
+  const hadWait = readerWaits.has(msg.id);
+  const deepLink = pendingOlderAnchor.has(msg.id) && !pendingOlderKeepY.has(msg.id);   // a deep link's fetch (fetchOlderForAnchor), not a scroll-back's
   endAsk(msg.id);
   const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); };
   const s = sessions.get(msg.id);
   if (!s) { forget(msg.id); return; }
-  if (msg.fault) { forget(msg.id); return; }   // the kernel could not answer this time (T402 round two, low 3): the wait ends, nothing is re-based, the next scroll asks again
+  if (msg.fault) {
+    // the kernel could not answer this time (T402 round two, low 3): the wait ends, nothing is re-based, the next scroll asks again; a
+    // deep link's fetch stands its landing down at once with the same word as a window's fault (round four, low 2), not at the backstop
+    forget(msg.id);
+    if (msg.id === activeId && deepLink && (hadWait || anchorPendingOlder)) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push("head-fault"); landToast("the history could not be loaded just now"); clearSeek(); }
+    return;
+  }
   const before = msg.before | 0, from = msg.from | 0;
   const older = (msg.events || []) as ChatEvent[];
   if (typeof msg.beforeUuid === "string") {
@@ -17361,23 +17378,29 @@ function requestNewer(sid: string): void {
   vscodeApi?.postMessage({ type: "loadNewer", id: sid, after: s.lastUuid });
 }
 function chatWindow(msg: any) {
-  const hadWait = readerWaits.has(msg.id);   // the reader's own ask (round three, medium 2): landActive clears pendingAnchor at the end of every landing pass, so the stand-downs below key on the wait, never on it
-  endAsk(msg.id);
+  // the reply answers ONE ask: the one the reader clicked away (cancelled: its marks went with the click, and whatever stands now is a
+  // LATER ask's, which this reply may not end), or the ask on the books, whose recorded wait keys the stand-downs below (round three,
+  // medium 2: landActive clears pendingAnchor at the end of every landing pass, so the landing's own mark cannot be the key)
+  const cancelled = cancelledAsks.delete(msg.id);
+  const later = cancelled && loadingOlder.has(msg.id);   // a later ask of this tab's is in flight: its marks are not this reply's to end (round four, medium 2)
+  const hadWait = !cancelled && readerWaits.has(msg.id);
+  if (!cancelled) endAsk(msg.id);
   const s = sessions.get(msg.id);
   const anchorUuid = pendingOlderAnchor.get(msg.id);
   const keepY = pendingOlderKeepY.get(msg.id);   // present ⇒ the anchor is the READER's own row and the arrival preserves its offset (a cancelled ask, medium 2)
-  const cancelled = cancelledAsks.delete(msg.id);
-  pendingOlderAnchor.delete(msg.id); pendingOlderKeepY.delete(msg.id);
+  if (!later) { pendingOlderAnchor.delete(msg.id); pendingOlderKeepY.delete(msg.id); }
+  const ask = cancelled ? null : (pendingWindowNav.get(msg.id) ?? null);   // read and forgotten HERE, before any return (round four, low 3): a faulted or missing reply leaked its entry
+  if (!cancelled) pendingWindowNav.delete(msg.id);
   if (!s) return;
   if (msg.fault) {
     // the kernel could not answer this time (T402 round two, low 3): not a verdict on the anchor, so no "couldn't locate"; the
-    // landing stands down with its own word and the next click asks again
-    if (msg.id === activeId && (hadWait || pendingAnchor === anchorUuid)) { if (pendingAnchor === anchorUuid) pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-fault"); landToast("the history could not be loaded just now"); clearSeek(); }
+    // landing stands down with its own word and the next click asks again. A CANCELLED ask's fault is silent (round four, medium 2)
+    if (!cancelled && msg.id === activeId && (hadWait || pendingAnchor === anchorUuid)) { if (pendingAnchor === anchorUuid) pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-fault"); landToast("the history could not be loaded just now"); clearSeek(); }
     return;
   }
   if (msg.missing || !(msg.events || []).length) {
-    // the honest end of a deep link: the anchor is in no page the kernel can render
-    if (msg.id === activeId && (hadWait || pendingAnchor === anchorUuid)) { if (pendingAnchor === anchorUuid) pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-missing"); landToast("couldn't locate this in the transcript"); clearSeek(); }
+    // the honest end of a deep link: the anchor is in no page the kernel can render; silent for a cancelled ask (round four, medium 2)
+    if (!cancelled && msg.id === activeId && (hadWait || pendingAnchor === anchorUuid)) { if (pendingAnchor === anchorUuid) pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-missing"); landToast("couldn't locate this in the transcript"); clearSeek(); }
     return;
   }
   stripOptimistic(s);
@@ -17392,9 +17415,7 @@ function chatWindow(msg: any) {
   // reader's own (the re-land of their row after a rebuild), never takes them off it (T366, the user 2026-09-12: the
   // paused strip mid-flick toward the bottom): the window is not adopted, and the kernel, whose base for this client
   // moved to the window, is asked to re-base it on the tail (a full frame that merges into the held run)
-  const ask = pendingWindowNav.get(msg.id) ?? null;
   const landing = windowLanding(detached, msg.id === activeId && !wasDetached, ask?.nav ?? false);
-  pendingWindowNav.delete(msg.id);
   // the reader clicked this ask's wait away (T402 round two, medium 2): the window may not move them. Attached, it is not adopted and
   // the kernel re-bases on the tail (the reattach path below); detached, a window that holds their row is adopted and their row
   // restored at its offset (keepY), and one that does not is dropped for a window around their own row, asked as a re-land
