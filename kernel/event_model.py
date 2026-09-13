@@ -4746,7 +4746,12 @@ def _asm_fold(entry, delta, leaf_recs, leaf_key, leaf_stem, rompuuid, postal_ind
 # ids and atom uuids. Bodies come back on demand (hydrate). Anything that does not verify is a counted fallback to a
 # whole parse; a compaction landing after the document demotes the tail fold to a whole parse exactly as before, and
 # the next settle writes a new document with the new cut.
-_ASM_CKPT_V = 5                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
+_ASM_CKPT_V = 6                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
+#                                       6: the atom rows are stored as pre-serialized JSON STRINGS (T401 (4)): the whole-document
+#                                          loads builds strs instead of dicts and the lazy index takes each row's bytes with one
+#                                          encode and no dumps (on the largest live document: loads 182 to 136 ms, the index's
+#                                          re-encode 98 to 2 ms, the JSON 6.5 percent larger, the gzip 0.7 percent); a row that
+#                                          is not a string in a version-6 document is refused (`rows`), never read by a second road
 #                                       4: a `turns` section over the pre-cut rows (T323 stage 4c: the lazy index)
 #                                       5: lazy markers carry pc (assistant prose chars) and mid (postal message ids); a turn row
 #                                          carries pcs and hT, a segment row w, mids and hp (T358: the per-cycle walkers read scalars).
@@ -4808,7 +4813,7 @@ class LazyIndex:
     def __init__(self, doc, rompuuid, leaf_path):
         self.rompuuid = str(rompuuid)
         self.leaf = str(leaf_path)
-        self.rowb = [json.dumps(r, separators=(",", ":")).encode("utf-8") for r in doc["atoms"]]
+        self.rowb = [r.encode("utf-8") for r in doc["atoms"]]   # v6: the document's rows are JSON strings already (T401 (4))
         self.records = doc["records"]
         self.fsids = list(doc.get("fsids") or [])
         self._user_facts = {}                             # the interrupt-marks tally's light facts by row (user_facts), bounded by _USER_FACTS_CAP
@@ -5153,6 +5158,10 @@ def asm_index_stats():
 #                                                                                       live indexes (a dropped index takes its cache with it)
 _ASM_CKPT_CAP = 16 * 1024 * 1024   # a document past this is not written (counted): that session parses whole as today
 _ASM_CKPT_STATS = {"written": 0, "restored": 0, "fallbacks": {}, "skipped": {}, "hydratedBytes": 0, "hydratedAtoms": 0,
+                   "restoreMs": {"load": 0.0, "verify": 0.0, "index": 0.0, "seed": 0.0},   # the restore's four parts since boot, ms
+                   #                     (T401 (4)): the document's read and checks, the section's identity and coverage (or the
+                   #                     atoms-only form's build and identity), the lazy index, the adapter seed; each bumped on
+                   #                     the return it names so a boot read names the mover; whole ms on /perf, floats inside
                    "hydratedBy": {},     # bytes per calling function: a whole-tree hydration anywhere shows here
                    "converge": {"writes": 0, "bytes": 0, "deferred": 0, "candidates": 0, "skipped": {}}}   # the pass's writes for
 #                                          idle leaves from the boot's own parse (T376): looked at, written, deferred for the budget,
@@ -5429,9 +5438,16 @@ def _asm_ckpt_skip(reason):
     return False
 
 
+def _restore_ms(part, t0):
+    """Add the restore part's elapsed time (perf_counter since `t0`) under asmCheckpoint.restoreMs, on the return it names."""
+    with _ASM_CKPT_LOCK:
+        _ASM_CKPT_STATS["restoreMs"][part] = _ASM_CKPT_STATS["restoreMs"].get(part, 0.0) + (time.perf_counter() - t0) * 1000.0
+
+
 def asm_checkpoint_stats():
     with _ASM_CKPT_LOCK:
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
+        out["restoreMs"] = {k: int(round(v)) for k, v in (out.get("restoreMs") or {}).items()}   # whole ms; the sums stay floats
         out["hydratedBy"] = dict(out["hydratedBy"]); out["removed"] = dict(out.get("removed") or {})
         out["hydratedByStage"] = dict(out.get("hydratedByStage") or {})   # T401: bytes per (stage, calling function)
         cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
@@ -5888,7 +5904,8 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 del pre_atoms[n0:]                        # …whose rows are the emit's alone, the identity's count (M1)
         doc = {"av": _ASM_CKPT_V, "path": os.path.realpath(str(leaf_path)), "rompuuid": str(rompuuid), "sdkHuman": bool(sdk_human),
                "cands": list(entry["cands"]), "links": dict(entry["links"]), "files": files, "fsids": fsids, "cutSeq": cut_seq,
-               "records": rows, "atoms": pre_atoms, "spine": spine, "seqTs": seq_ts, "lastTs": last_ts,
+               "records": rows, "atoms": [json.dumps(r_, separators=(",", ":")) for r_ in pre_atoms],   # v6: string rows
+               "spine": spine, "seqTs": seq_ts, "lastTs": last_ts,
                "turns": turns_doc, "treeIdentity": _tree_identity_of_doc(turns_doc, identity) if turns_doc else None,
                "gates": {"prompt_ids": sorted(ad.prompt_ids), "boundary_pids": sorted(ad.boundary_pids),
                          "skill_use_ids": sorted(ad.skill_use_ids), "src_tool_links": sorted(ad.src_tool_links),
@@ -6137,6 +6154,8 @@ def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet
         _asm_ckpt_note(leaf_path, "corrupt", str(e)[:80]); return None
     if not isinstance(doc, dict) or doc.get("av") != _ASM_CKPT_V:
         _asm_ckpt_note(leaf_path, "version"); return None
+    if not isinstance(doc.get("atoms"), list) or not all(isinstance(r_, str) for r_ in doc["atoms"]):
+        _asm_ckpt_note(leaf_path, "rows"); return None     # v6 rows are strings; anything else is not this version's document
     if doc.get("path") != os.path.realpath(str(leaf_path)) or doc.get("rompuuid") != str(rompuuid) \
             or bool(doc.get("sdkHuman")) != bool(sdk_human):
         _asm_ckpt_note(leaf_path, "session"); return None
@@ -6318,12 +6337,16 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
     if _asm_refusal_stands(leaf_path):
         _asm_stat("restore:refusedStanding")             # refused for the tail's shape at this very stat: no proof, no rewrite (round two)
         return None
+    _t0 = time.perf_counter()
     doc = _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
+    _restore_ms("load", _t0)                              # the load's return, a document or a counted refusal (T401 (4))
     if doc is None:
         return None
     asm_sidecar_refresh(leaf_path, doc)                   # an older sidecar gains the inputs list here (round one, low 2)
     try:
+        _t0 = time.perf_counter()
         seed, landed = _seed_from_doc(doc)
+        _restore_ms("seed", _t0)
         if not _tail_chains_onto_the_document(leaf_path, doc):
             _asm_stat("restore:chainRefused")             # the tail does not chain onto the document: the whole parse (T402); the
             _why = ("unproven" if doc.get("tipChildless") is None and _tail_chains_onto_the_document(leaf_path, doc, assume_childless=True)
@@ -6338,18 +6361,25 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
         if doc.get("turns"):
             # the lazy index (T323 stage 4c): the turns from the section, their atoms built on demand; the section's own
             # digest proves it is the one the writer verified against the whole parse (no atom built here)
+            _t0 = time.perf_counter()
             if _tree_identity_of_doc(doc["turns"], doc.get("identity")) != doc.get("treeIdentity"):
-                _asm_ckpt_note(leaf_path, "identity"); return None
+                _restore_ms("verify", _t0); _asm_ckpt_note(leaf_path, "identity"); return None
             if sorted(k_ for td in doc["turns"] for k_ in td["atoms"]) != list(range(len(doc["atoms"]))):
-                _asm_ckpt_note(leaf_path, "coverage"); return None   # the section does not cover the rows: never a short history
+                _restore_ms("verify", _t0); _asm_ckpt_note(leaf_path, "coverage"); return None   # the section does not cover the
+            _restore_ms("verify", _t0)                                                    #  rows: never a short history
+            _t0 = time.perf_counter()
             index = LazyIndex(doc, rompuuid, leaf_path)
             pre_turns = _pre_turns_of(doc, index)
             doc["atoms"] = None                                # the rows live in the index as bytes from here
             with _MAT_LOCK:
                 _ASM_INDEX_STATS["restoredTurns"] += len(pre_turns)
+            _restore_ms("index", _t0)
         else:
-            prefix = _restore_prefix_atoms(doc["atoms"], rompuuid, doc["records"], fsids)
-            if _pre_tree_identity(prefix, rompuuid) != doc.get("identity"):
+            _t0 = time.perf_counter()
+            prefix = _restore_prefix_atoms([json.loads(r_) for r_ in doc["atoms"]], rompuuid, doc["records"], fsids)   # v6 string rows
+            ok_ = _pre_tree_identity(prefix, rompuuid) == doc.get("identity")
+            _restore_ms("verify", _t0)                         # the atoms-only form: its rows built and its identity proven, one part
+            if not ok_:
                 _asm_ckpt_note(leaf_path, "identity"); return None
         ad = FileAdapter(candidate_files, leaf_path, resume_links=links, seed=seed)
         ad.sdk_human = sdk_human

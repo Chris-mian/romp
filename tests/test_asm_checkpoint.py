@@ -161,6 +161,69 @@ def kernel_module():
     return _KM[0]
 
 
+class StringRowsAndRestoreSplit(Harness):
+    """T401 (4): the document's atom rows are stored as pre-serialized JSON strings (version 6), so the whole-document loads
+    builds strs and the lazy index takes bytes with no dumps; a version-6 document whose row is not a string is refused as
+    `rows`, never read by a second road; the previous version is refused as `version` and the next settle writes version 6
+    (the deploy boot is the migration); the restore's four parts are timed on the returns they name."""
+
+    def _compacting(self, name="manual_compact_detached"):
+        records, sent = G.SINGLE_FILE[name]
+        path = self.write(name, records(), sent=sent)
+        self.fresh(); self.parse(path)
+        self.assertTrue(self.doc(path), em.asm_checkpoint_stats())
+        return path
+
+    def test_a_written_document_is_version_6_with_string_rows_and_restores_equal(self):
+        path = self._compacting()
+        d = _doc(path)
+        self.assertEqual(d["av"], 6)
+        self.assertGreater(len(d["atoms"]), 0)
+        self.assertTrue(all(isinstance(r, str) for r in d["atoms"]), "every atom row is a JSON string")
+        self.assertTrue(all(isinstance(json.loads(r), dict) for r in d["atoms"]), "each decodes to the row it was")
+        whole = self.cold(path)
+        got, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"]); self.assertGreater(n_lazy, 0)
+        self.assertEqual(got, whole, "restored equals the whole parse over string rows")
+
+    def test_a_version_6_document_with_a_dict_row_is_refused_as_rows_and_the_whole_parse_serves(self):
+        path = self._compacting()
+        d = _doc(path)
+        d["atoms"][0] = json.loads(d["atoms"][0])                 # one row left as a dict: not this version's document
+        _write_doc(path, d)
+        em._ASM_CKPT_STATS["fallbacks"] = {}
+        self.fresh(); modes = []; tree = self.parse(path, modes)
+        self.assertEqual(modes, ["full"], "the whole parse serves")
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "counted once under `rows`: %s" % em.asm_checkpoint_stats()["fallbacks"])
+        self.assertEqual(_strip(tree), self.cold(path))
+
+    def test_the_previous_version_is_refused_and_the_next_settle_writes_version_6(self):
+        path = self._compacting()
+        d = _doc(path)
+        d["av"] = 5; d["atoms"] = [json.loads(r) for r in d["atoms"]]   # the previous version's document: dict rows
+        _write_doc(path, d)
+        em._ASM_CKPT_STATS["fallbacks"] = {}
+        self.fresh(); modes = []; self.parse(path, modes)
+        self.assertEqual(modes, ["full"]); self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("version"), 1, "the migration boot's road")
+        self.assertTrue(self.doc(path), "the settle rewrites it")
+        self.assertEqual(_doc(path)["av"], 6)
+        got, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"])
+
+    def test_the_restore_split_lands_on_the_four_parts(self):
+        with em._ASM_CKPT_LOCK:
+            em._ASM_CKPT_STATS["restoreMs"] = {"load": 0.0, "verify": 0.0, "index": 0.0, "seed": 0.0}
+        path = self._compacting()
+        got, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"])
+        ms = em.asm_checkpoint_stats()["restoreMs"]
+        self.assertEqual(set(ms), {"load", "verify", "index", "seed"})
+        self.assertTrue(all(isinstance(v, int) and v >= 0 for v in ms.values()), ms)
+        with em._ASM_CKPT_LOCK:
+            raw = dict(em._ASM_CKPT_STATS["restoreMs"])
+        self.assertTrue(all(raw[k] > 0.0 for k in ("load", "verify", "index", "seed")), "every part ran and was timed: %r" % raw)
+
+
 class RestoredEqualsWhole(Harness):
     def test_every_compacting_golden_scenario_restores_identical(self):
         self.assertTrue(COMPACTING, "the golden set holds compaction scenarios")

@@ -29,6 +29,11 @@ def _stats():
     return d
 
 
+def _rows(rows):
+    """A synthetic document's atom rows as the v6 document stores them: pre-serialized JSON strings (T401 (4))."""
+    return [json.dumps(r, separators=(",", ":")) for r in rows]
+
+
 def _turns(*atoms):
     return [{"id": "t1", "t": 1000, "atoms": list(atoms)}]
 
@@ -307,7 +312,7 @@ class RowTallyEqualsAtomTally(TA.Harness):
             elif lz:
                 row["lz"] = dict(lz, k="user", h="00000000", nt=True); row["i"] = i
             rows.append(row)
-        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
+        index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
         self.assertTrue(index.user_facts(1).get("_build"), "the inline-body row is flagged for the build")
         self.assertIsNone(index.user_facts(0).get("_build")); self.assertIsNone(index.user_facts(2).get("_build"))
         atoms = em.LazyAtoms(index, range(len(rows)))
@@ -324,7 +329,7 @@ class RowTallyEqualsAtomTally(TA.Harness):
         n = 50
         recs = [["r%d" % i, None, "u", None, i, 1000 + i, 0, None, None, None] for i in range(n)]
         rows = [{"r": i, "s": {"type": "user", "author": "human", "t": 1000 + i}, "seq": i} for i in range(n)]
-        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "z.jsonl")
+        index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "z.jsonl")
         atoms = em.LazyAtoms(index, range(n))
         users = km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}])
         self.assertEqual(len(users), n)
@@ -347,7 +352,7 @@ class RowTallyEqualsAtomTally(TA.Harness):
             row = {"r": i, "s": dict(sc), "seq": i}
             if lz: row["lz"] = dict(lz, k="user", h="00000000", nt=True); row["i"] = i   # a lazy row names its body's index
             rows.append(row)
-        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "x.jsonl")
+        index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "x.jsonl")
         atoms = em.LazyAtoms(index, range(len(rows)))
         facts = km._interrupt_marks_atoms(km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}]), 0.0, "")
         built = km._interrupt_marks_atoms([atoms[i] for i in range(len(rows))], 0.0, "")
@@ -360,7 +365,7 @@ class RowTallyEqualsAtomTally(TA.Harness):
             recs = [[("u%d" % i), None, "u" if i % 2 == 0 else "a", None, i, 1000 + i, 0, None, None, None] for i in range(n)]
             rows = [{"r": i, "s": {"type": "user" if i % 2 == 0 else "assistant", "author": "human" if i % 2 == 0 else None, "t": 1000 + i}, "seq": i}
                     for i in range(n)]
-            index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
+            index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
             return [{"id": "t1", "t": 1000, "atoms": em.LazyAtoms(index, range(n))}]
         m0 = em._ASM_INDEX_STATS["materialized"]
         t0 = time.perf_counter(); r1 = km._interrupt_marks_atoms(km._interrupt_marks_facts(lazy(4000)), 0.0, ""); dt1 = time.perf_counter() - t0
