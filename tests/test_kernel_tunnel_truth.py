@@ -377,7 +377,7 @@ class SourcePins(unittest.TestCase):
 
 class SupervisorPassWhileInTransition(unittest.TestCase):
     """The laptop's dial ledger (2026-09-13): ssh up within a second, the row "up" 16 to 18 s later, a devbox restart a
-    16 s gap: the steady 15 s pass was the whole cost. A row in transition makes the next pass 1 s, for at most 60 s."""
+    16 s gap: the steady 15 s pass was the whole cost. A row in transition makes the next pass follow the probe round trip (a quarter-second gap), for at most 60 s."""
 
     def setUp(self):
         km._fast_since.clear()

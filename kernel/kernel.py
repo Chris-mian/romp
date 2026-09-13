@@ -24588,16 +24588,18 @@ def _tunnel_supervisor():
 
 
 SUPERVISOR_PASS_S = 15.0          # the steady pass: every attached tunnel polled end to end this often
-SUPERVISOR_FAST_PASS_S = 1.0      # the pass while a row is in transition (dialing, starting, restarting, no kernel answering)
+SUPERVISOR_FAST_PASS_S = 0.25     # the GAP between passes while a row is in transition (dialing, starting, restarting, no kernel
+#                                   answering): a pass is one synchronous probe round trip per row, so the pace coalesces on the
+#                                   round trip itself (the user 2026-09-13) and nothing here needs to know how long it takes
 SUPERVISOR_FAST_WINDOW_S = 60.0   # how long one transition keeps the fast pass before the steady pass resumes
 _TRANSITIONAL = frozenset(("starting", "connecting", "restarting", "no-kernel"))
 _fast_since = {}                  # host -> when its current transition began (dropped when the row reads up or down)
 
 
 def _supervisor_wait_s(now, rows=None):
-    """How long the supervisor sleeps before its next pass: the steady 15 s, or 1 s while any tunnel row is in
-    transition, for at most 60 s per transition (the user 2026-09-13: while we know we should reconnect, poll about as
-    fast as the round trip allows; one small request a second through the tunnel is the floor, not a timer). The laptop's dial ledger (the user, 2026-09-13): every dial had
+    """How long the supervisor sleeps before its next pass: the steady 15 s, or a quarter-second gap while any tunnel
+    row is in transition, for at most 60 s per transition (the user 2026-09-13: while we know we should reconnect, probe
+    back to back; the pass is one probe round trip per row, so the pace is the round trip's own and no timer guesses it). The laptop's dial ledger (the user, 2026-09-13): every dial had
     its ssh up within a second and the row read "up" 16 to 18 s later, and a devbox kernel restart read as a 16 s
     gap, because nothing polled sooner than the next steady pass. A transition is the event; the bound keeps a
     host that never comes back from being polled every second for good (the backoff ladder still spaces its dials)."""
