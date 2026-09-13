@@ -82,6 +82,8 @@ const PAIRS: Array<[string, string, number]> = [
   ["--st-ready-fg", "--st-ready-bg", 3],
   ["--st-blocked-fg", "--st-blocked-bg", 3],
   ["--st-retrying-fg", "--st-retrying-bg", 3],       // 2026-09-08: the retrying amber tokenised (#e67e22/#2a1500 dark, #9C4A0C/#fff light)
+  ["--st-ask-fg", "--st-ask-bg", 3],                 // 2026-09-13: the ask yellow (#f5d33f/#332600 dark, #7a6400/#fff light)
+  ["--st-ask-bg", "--bg", 3],                        // …and the ask RING is a line on the page (the tab's dashed outline, the folded header's pip)
   // (--st-compacting-fg on --st-compacting-bg is deliberately NOT paired: the dark teal + white pairing predates
   // this file and sits at 2.49:1, and decision 3 of the 2026-09-08 notice audit keeps dark byte-identical; the
   // light re-ink — #0F766E, 4.30:1 on the card, white on it 5.47:1 — is pinned by value in notice-vocab.test.ts)

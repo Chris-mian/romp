@@ -13,6 +13,7 @@ export interface TabStateLike {
   apiModelLimit?: boolean;
   apiAuthErr?: boolean;
   apiRefusal?: boolean;
+  needsYou?: boolean | null;   // the FEED's per-session needs-you verdict (build_session's status; null before the first feed build)
 }
 
 /** The tab's state class for a status, or "" for a state with no tab treatment (ready/idle). */
@@ -32,15 +33,40 @@ export function tabStateClass(s: TabStateLike | null | undefined): string {
   return "";
 }
 
-export type SectionPip = "blocked" | "retrying" | "working";
+/** THE ASK RING (the user 2026-09-13): "tab-ask" when the feed files a card of this session under needs-you —
+ *  it asked something, a decision is pending, a peer's message waits for a say, a stall needs eyes — and the
+ *  tab is not already red or dead; else "". A SECOND class beside the state class, not a state of its own:
+ *  the session may be idle, awaiting background work or still WORKING while the card waits, and the ring
+ *  must show in every one of those (a session with something waiting on you should grab attention without a
+ *  click, even while it goes on working in the background), so it composes with the working dot rather than
+ *  replacing it. The red ring — a LIVE prompt (tab-awaiting) or an API stop only you can clear (tab-blocked)
+ *  — already says "needs you now" and outranks it; a closed tab is past tense and wears nothing. It does
+ *  outrank the amber retrying ring: a transient API retry needs no attention, the ask does (styles.css orders
+ *  the outline rules to match). Reads status.needsYou: the kernel's per-session read of the feed's needs_input
+ *  column (build_session), the same verdict the section-at-a-glance row's chip and the feed's Blocked list
+ *  speak, so the three can never disagree; null (no feed build yet) and false are the same nothing. */
+export function tabAskClass(s: TabStateLike | null | undefined): string {
+  if (s?.needsYou !== true) return "";
+  const st = tabStateClass(s);
+  return st === "tab-awaiting" || st === "tab-blocked" || st === "tab-closed" ? "" : "tab-ask";
+}
+
+/** Every class a tab wears for its status: the state class, then the ask ring (either may be absent). */
+export function tabClasses(s: TabStateLike | null | undefined): string[] {
+  return [tabStateClass(s), tabAskClass(s)].filter(Boolean);
+}
+
+export type SectionPip = "blocked" | "ask" | "retrying" | "working";
 
 /** A folded header's ONE pip for its members' states, in the tab's own colours and by the tab's own
- *  rule: red when a member is blocked on you or waiting for you; else gold when one is working; else
+ *  rule: red when a member is blocked on you or waiting for you; else yellow when one has something
+ *  waiting on you (the ask ring, whatever else it is doing); else gold when one is working; else
  *  amber when one is stalled on an API error that is auto-retrying (shown only when nothing in the
  *  group is making progress — it is not on you); null when nothing is happening. */
 export function sectionPip(states: ReadonlyArray<TabStateLike | null | undefined>): SectionPip | null {
-  const cls = states.map(tabStateClass);
+  const cls = states.flatMap(tabClasses);
   if (cls.some((c) => c === "tab-blocked" || c === "tab-awaiting")) return "blocked";
+  if (cls.includes("tab-ask")) return "ask";
   if (cls.includes("tab-working")) return "working";
   if (cls.includes("tab-retrying")) return "retrying";
   return null;
@@ -49,28 +75,31 @@ export function sectionPip(states: ReadonlyArray<TabStateLike | null | undefined
 /** The pip's phrase for ONE session (and the bare phrase when no name is known). */
 export const SECTION_PIP_TITLE: Record<SectionPip, string> = {
   blocked: "a session in this group is blocked or waiting on you",
+  ask: "a session in this group has something waiting on you",
   working: "a session in this group is working",
   retrying: "a session in this group hit an API error and is retrying on its own",
 };
 
-/** The same three for SEVERAL sessions, counted: a singular phrase before a list of names read as one
+/** The same four for SEVERAL sessions, counted: a singular phrase before a list of names read as one
  *  session, then two. */
 export const SECTION_PIP_TITLE_MANY: Record<SectionPip, (n: number) => string> = {
   blocked: (n) => `${n} sessions in this group are blocked or waiting on you`,
+  ask: (n) => `${n} sessions in this group have something waiting on you`,
   working: (n) => `${n} sessions in this group are working`,
   retrying: (n) => `${n} sessions in this group hit an API error and are retrying on their own`,
 };
 
 const PIP_CLASSES: Record<SectionPip, readonly string[]> = {
-  blocked: ["tab-blocked", "tab-awaiting"], working: ["tab-working"], retrying: ["tab-retrying"],
+  blocked: ["tab-blocked", "tab-awaiting"], ask: ["tab-ask"], working: ["tab-working"], retrying: ["tab-retrying"],
 };
 
 export interface TabMemberLike { name?: string; status?: TabStateLike | null }
 
-/** The members whose own tab wears the pip's color — the sessions its tooltip names, in strip order. */
+/** The members whose own tab wears the pip's color — the sessions its tooltip names, in strip order. A tab
+ *  wears up to two classes (the state and the ask ring), so a member matches on any of them. */
 export function sectionPipMembers(kind: SectionPip, members: ReadonlyArray<TabMemberLike | null | undefined>): string[] {
   const names: string[] = [];
-  for (const m of members) if (m && PIP_CLASSES[kind].includes(tabStateClass(m.status))) names.push(String(m.name || "").trim() || "(unnamed)");
+  for (const m of members) if (m && tabClasses(m.status).some((c) => PIP_CLASSES[kind].includes(c))) names.push(String(m.name || "").trim() || "(unnamed)");
   return names;
 }
 

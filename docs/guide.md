@@ -171,6 +171,21 @@ paths found in the text wear a dotted underline that turns solid under the point
 link that names a file keeps the ordinary link look. Selecting text across a link works as
 before, and a click that lands while text is selected inside a link opens nothing.
 
+**A session that needs you.** A tab wears a dashed red ring while its session is stopped on a
+permission or picker prompt. When the feed shows one of the session's cards under Blocked (it
+asked you something, it is waiting on a decision, a peer's message is waiting for your say, or
+a stalled task needs a look), the tab wears a dashed yellow ring instead, whether the session
+is idle, waiting on background work or still working, so the sessions that need you stand out
+in the strip without a click through each of them; a working session keeps its gold dot inside
+the ring. The ring follows the feed, one refresh behind it at most, and goes when the card
+does: answer it, resolve it or clear it and the tab is plain again. A red ring outranks the
+yellow one; the amber ring of a session retrying an API error on its own gives way to it. With
+notifications on, the card entering Blocked is also what notifies you (see [Notifications on
+your phone](#notifications-on-your-phone)): the ring is that card, shown in the strip, and it
+stays as long as the card does, including across a kernel restart, which announces nothing. On
+a phone, the session picker marks the same sessions with a yellow bar at the row's left edge,
+and the button that names the current session wears the dashed yellow border.
+
 **Tags and groups.** A tag is a named, colored set of sessions; a session can be in
 several. Right-click a tab and open **Tags** to add or remove them. Tags filter every
 surface (the tag button in the strip narrows the tabs to the tags you pick), and they group
@@ -180,9 +195,9 @@ own at the end. A session with several tags appears under each of them; every co
 session (click either to open it, and closing either ends it). Each header shows the tag's color and name, then a chevron and a
 member count. Click a header, or press Enter on it, to fold its section down to the header
 alone; the count then says how many tabs are folded away, and a small dot after it shows when
-one of them is busy or needs you: red when one is blocked or waiting on you, otherwise gold
-when one is working, otherwise amber when one hit an API error and is retrying on its own
-(hover it for their names). To keep one tab visible while its section is folded, right-click
+one of them is busy or needs you: red when one is blocked or waiting on you, otherwise yellow
+when one has something waiting on you, otherwise gold when one is working, otherwise amber
+when one hit an API error and is retrying on its own (hover it for their names). To keep one tab visible while its section is folded, right-click
 the tab and pick **Show when folded** under **Tags**;
 the header's count then leaves that tab out; when every tab in a section is set to
 show, the folded header shows the full count and its tooltip says nothing is hidden. Pick it

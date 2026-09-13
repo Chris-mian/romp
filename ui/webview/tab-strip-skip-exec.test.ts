@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import { planStrip, parseTabGroups, headWords } from "./tab-groups";
-import { tabStateClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
+import { tabStateClass, tabAskClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
 import { newSkeletonState, renderKind } from "./skeleton-tabs";
 import type { TagUnion } from "./session-views";
 
@@ -64,7 +64,7 @@ type Hooks = {
   phone: boolean;             // the phone layout: the plan is the flat strip there
   heads: HeadCall[];          // every group header the paint minted, in order
   planStrip: typeof planStrip; parseTabGroups: typeof parseTabGroups; headWords: typeof headWords;
-  tabStateClass: typeof tabStateClass; tabDotClass: typeof tabDotClass; tabDotTitle: typeof tabDotTitle; sectionPip: typeof sectionPip; sectionPipMembers: typeof sectionPipMembers; sectionPipTitle: typeof sectionPipTitle;
+  tabStateClass: typeof tabStateClass; tabAskClass: typeof tabAskClass; tabDotClass: typeof tabDotClass; tabDotTitle: typeof tabDotTitle; sectionPip: typeof sectionPip; sectionPipMembers: typeof sectionPipMembers; sectionPipTitle: typeof sectionPipTitle;
   newSkeletonState: typeof newSkeletonState; renderKind: typeof renderKind;   // the skeleton strip (2026-09-07): empty here, so every listed id is a loaded tab or a placeholder
   skeletons: number;          // skeleton tabs minted (none expected: the set stays empty in these worlds)
   timers: Array<() => void>;  // the deferred checks renderTabs schedules (setTimeout 0), fired by the test when it chooses
@@ -134,7 +134,7 @@ function lift(): (hooks: Hooks) => Api {
     const readTabGroups = (u) => H.parseTabGroups(H.groupsRaw, u);
     const tabGroups = () => readTabGroups(H.unions); const writeTabGroups = () => {};
     const phoneLayout = () => H.phone;
-    const tabStateClass = H.tabStateClass, tabDotClass = H.tabDotClass, tabDotTitle = H.tabDotTitle, sectionPip = H.sectionPip, sectionPipMembers = H.sectionPipMembers, sectionPipTitle = H.sectionPipTitle;   // tabDotClass: the state-dot slot every tab carries (the tab-strip fix, 2026-09-08); tabDotTitle: what the slot says on hover
+    const tabStateClass = H.tabStateClass, tabAskClass = H.tabAskClass, tabDotClass = H.tabDotClass, tabDotTitle = H.tabDotTitle, sectionPip = H.sectionPip, sectionPipMembers = H.sectionPipMembers, sectionPipTitle = H.sectionPipTitle;   // tabAskClass: the ask ring (2026-09-13); tabDotClass: the state-dot slot every tab carries (the tab-strip fix, 2026-09-08); tabDotTitle: what the slot says on hover
     const mentionRosterChanged = () => {};   // the @-mention roster hook at the top of renderTabs: not the strip's (composer-mention-pane.test.ts)
     function makeGroupHead(sec, folded, active, hidden) {
       const h = el("div", "tab-group-head" + (folded ? " collapsed" : ""));
@@ -182,7 +182,7 @@ function world(): { H: Hooks; api: Api; sessions: Map<string, any>; tabMeta: Map
   const H: Hooks = { FakeEl, bar: new FakeEl("div"), mslot: null, only: "", hidden: new Set(), down: new Set(), notes: {},
                      keyHint: "Open a session (K)", lens: { all: true }, unions: [], tips: [], aftermaths: [], rowPaints: 0, tagSyncs: 0, placeholders: 0,
                      groupsRaw: null, phone: false, heads: [],
-                     planStrip, parseTabGroups, headWords, tabStateClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
+                     planStrip, parseTabGroups, headWords, tabStateClass, tabAskClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
                      newSkeletonState, renderKind, skeletons: 0, timers: [], activated: [] };
   const api = lift()(H);
   const sessions = new Map<string, any>([["a", session("web", "ready")], ["b", session("api", "working")]]);
@@ -317,6 +317,36 @@ test("the paint wears the shared state → class rule (tab-state.ts), and the si
   assert.equal(H.bar.wipes, 2);
   const tab2 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
   assert.ok(tab2.has("tab-retrying") && !tab2.has("tab-blocked"), "a transient API error auto-retries: amber");
+});
+
+test("the ASK RING rides beside the state class — a working tab wears both — and its flip alone repaints the strip once (2026-09-13)", () => {
+  const { H, api, sessions } = world();
+  api.renderTabs();
+  assert.equal(H.bar.wipes, 1);
+  // the feed files a card of the WORKING session under needs-you: the tab keeps its working class and gains the ring
+  sessions.get("b").status = { state: "working", needsYou: true };
+  api.renderTabs();
+  assert.equal(H.bar.wipes, 2, "the verdict alone is a repaint: the signature reads tabAskClass");
+  const b = H.bar.tabs().find((t) => t.dataset.id === "b")!;
+  assert.ok(b.has("tab-working") && b.has("tab-ask"), "gold dot AND yellow ring: the ask does not replace the state");
+  api.renderTabs();
+  assert.equal(H.bar.wipes, 2, "unchanged: no rebuild");
+  // the card leaves the column (answered, cleared): the ring goes, the working class stays
+  sessions.get("b").status = { state: "working", needsYou: false };
+  api.renderTabs();
+  assert.equal(H.bar.wipes, 3);
+  const b2 = H.bar.tabs().find((t) => t.dataset.id === "b")!;
+  assert.ok(b2.has("tab-working") && !b2.has("tab-ask"));
+  // an idle session that asked: the ring alone (the common case the state rule never sees)
+  sessions.get("a").status = { state: "ready", needsYou: true };
+  api.renderTabs();
+  const a = H.bar.tabs().find((t) => t.dataset.id === "a")!;
+  assert.ok(a.has("tab-ask") && !a.has("tab-working") && !a.has("tab-awaiting"));
+  // a live prompt on the same session: the red ring alone — never two rings
+  sessions.get("a").status = { state: "needsInput", needsYou: true };
+  api.renderTabs();
+  const a2 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
+  assert.ok(a2.has("tab-awaiting") && !a2.has("tab-ask"), "red outranks yellow");
 });
 
 test("the dot slot explains its state on hover: a visible dot carries the feed's phrase for that state, the hidden slot says nothing", () => {
