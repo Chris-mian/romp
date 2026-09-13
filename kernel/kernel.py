@@ -3124,9 +3124,19 @@ def _debt_asks(sid, alive_ids):
     for (f, t_), rec in last_ask.items():
         if t_ != str(sid):
             continue
-        if f not in (alive_ids or ()):
-            _nudge_clock(None, "deadAsker")                         # an ask from a peer not alive now: its revival owes the reminder, and no
-            continue                                   #  file of this session says so (T401 (2) round three, medium)
+        if f in (getattr(_NUDGE_HORIZON, "over_askers", None) or ()):
+            _nudge_clock(None, "askerOverflow")        # beyond the eight keyed rows: its row is outside the key, so the look is
+        #                                                unbounded whatever the asker's liveness (round three, low 3)
+        if f in (getattr(_NUDGE_HORIZON, "keyed_askers", None) or ()):
+            row_alive = _asker_row_alive(f)            # the asker's registry row is in the debtor's key, so its content decides
+            if row_alive is False:                     #  (round two, medium: the pass's alive set is older than the key; a
+                continue                               #  revival landing between the two would record a memo that owes nothing)
+            if row_alive is None:                      # a row that cannot be read or carries no alive bit is UNPROVEN: the memo is
+                _nudge_clock(None, "askerRowUnproved")   #  never skippable on that evidence (round three), and the ASK is decided by
+                if f not in (alive_ids or ()):         #  the alive set, the backend's own row-or-last-good-row answer (round four:
+                    continue                           #  keeping it unconditionally sent a reminder to answer a dead peer)
+        elif f not in (alive_ids or ()):
+            continue                                   # not keyed: the alive set decides, as before the rows were keyed
         ts = rec[0]
         if last_any.get((t_, f), 0) >= ts:
             continue                                   # answered with ANYTHING back → no debt
@@ -10095,6 +10105,87 @@ _NUDGE_WALK_STATS = {"looks": 0, "skippedParses": 0, "parses": 0, "coldParses": 
                      "clockDue": 0, "wakeOnly": 0, "unboundedBy": {}}   # unboundedBy: the None notes per leg (T401 follow-up)
 _NUDGE_LOOK_STATS = {}                # sid -> the stat the pass took before its snapshots, for the look (a side map: the session
 #                                       rows are shared, read-only and memoised per cycle, never written into)
+_NUDGE_LOOK_ASKERS = {}               # sid -> (the asker sids whose registry rows the key carries, the ones beyond the bound)
+_NUDGE_ASKER_ROWS_MAX = 8             # the debtor's key carries at most this many askers' registry rows (oldest open asks first)
+
+
+def _nudge_asks_by_target():
+    """{debtor sid: [asker sids, oldest ask first]} for every OPEN ask in the postal wait maps (an inbound reply-expecting ask
+    with nothing sent back since), built once per pass (round two, low 3: a scan and a sort per alive session would have
+    charged the quiet sessions the gate exists to make free); the maps themselves are memoised on the postal log's stat."""
+    try:
+        last_any, last_ask, _aw = _postal_wait_maps()
+    except Exception:
+        return {}
+    by = {}
+    for (f, t_), rec in sorted(last_ask.items(), key=lambda kv: kv[1][0]):
+        if last_any.get((t_, f), 0) < rec[0]:
+            by.setdefault(t_, []).append(f)
+    return by
+
+
+def _nudge_asker_rows(sid, index=None):
+    """The peers with an OPEN ask on this session, oldest ask first. A dead asker's ask becomes answerable only when the asker
+    REVIVES, and a revival writes the asker's registry row (STATE/sdk/<asker>.json, the SDK backend's liveness record: alive
+    true or false), so that row is the file the debtor's verdict depends on: the first _NUDGE_ASKER_ROWS_MAX rows join the
+    debtor's memo key (an absent row stats as a stable absent marker, so a peer gone for good keeps the memo standing), and
+    the debt leg reads the keyed asker's aliveness from that same row, so the verdict and the key come from one file and
+    cannot disagree (T401 (2) follow-up: the dead-asker notes were about four in five of the unbounded notes on one boot,
+    asks of long-gone peers). The limit: the invariant holds for the SDK backend only; a Codex session's liveness is
+    in-memory with its registry at STATE/codex/registry.json, so a Codex asker's revival would move nothing in a debtor's
+    key (not reachable today: a Codex session cannot identify itself to the bus and so cannot ask)."""
+    if index is None:
+        index = _nudge_asks_by_target()
+    return list(index.get(str(sid), ()))
+
+
+def _asker_row_alive(asker):
+    """The asker's aliveness as its registry row says it (the row the debtor's key stats), three-valued: True for alive true
+    and not a comment thread (the SDK backend's live_sessions rule), False for a MISSING row (the key carries the absent
+    marker) or an explicit alive false, and None, UNPROVEN, for a row that cannot be read (EACCES, EIO, EMFILE: the class the
+    backend's own list_regs serves its last good row over) or parses without an alive bit (a gutted row _backend_rows keeps
+    alive while its driver runs). Unproven is neither dead nor alive: the caller notes the look unbounded (so one transient
+    read fault cannot latch a skippable memo under an unmoved key, round three) and decides the ask by the alive set, the
+    backend's own answer over the same row or its last good content (round four), so the send agrees with the backend in
+    both directions."""
+    p = jd.STATE / "sdk" / (str(asker) + ".json")
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):                       # a read fault, or bytes that are not UTF-8 (UnicodeDecodeError is a
+        return None                                     #  ValueError: uncaught it aborted the look, round four medium 2)
+    try:
+        reg = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(reg, dict) or "alive" not in reg:
+        return None
+    return bool(reg.get("alive") and not reg.get("threadOf"))
+
+
+_NUDGE_POSTAL_KEY_AT = 14              # the postal log's (mtime, size) sits at elements 14 and 15 of the ten-file key (the eighth file)
+
+
+def _nudge_look_stat(s, index=None, postal_stat=None):
+    """(the debtor's memo key, the askers keyed, the askers beyond the bound): the ten files' stats plus one (mtime, size) per
+    keyed asker's registry row, zeros for an absent row, so the persisted memo row is 22 to 38 elements. `postal_stat`, when
+    the pass hands it, is the postal log's (mtime, size) taken BEFORE the asker index was built from that log, and it
+    replaces the key's own stat of the log: the asker selection is an input to the key, so the key must not claim a newer
+    log than the selection read (round three, low 5)."""
+    sid = str(s.get("sid") or "")
+    askers = _nudge_asker_rows(sid, index)
+    keyed, over = askers[:_NUDGE_ASKER_ROWS_MAX], askers[_NUDGE_ASKER_ROWS_MAX:]
+    out = list(_session_files_stat(s))
+    if postal_stat is not None:
+        out[_NUDGE_POSTAL_KEY_AT:_NUDGE_POSTAL_KEY_AT + 2] = [float(postal_stat[0]), int(postal_stat[1])]
+    for f in keyed:
+        try:
+            st_ = os.stat(jd.STATE / "sdk" / (str(f) + ".json"))
+            out += [st_.st_mtime, st_.st_size]
+        except OSError:
+            out += [0.0, 0]
+    return tuple(out), keyed, over
 _NUDGE_WALK_FIRST = {"skipped": [], "parsed": [], "deferred": 0}   # the boot's first cycle, for its health row (T401 (2))
 _NUDGE_WALK_CURSOR = [None]           # the sid the yield deferred first: the next pass rotates the recency order to start there,
 #                                       so a session whose parse never warms cannot hold the rest of the walk behind it
@@ -10131,8 +10222,13 @@ def _nudge_look_check(s, now):
     (_session_files_stat) are unchanged since the last COMPLETED look (this kernel's or a previous one's, the persisted memo) and that look noted
     no clock leg that could have flipped by `now` (the earliest flip is in the memo; None there means a leg whose release is
     not one of these files, never skipped). `verdict` is the recorded look's result, repeated by the skip."""
-    st = tuple(_NUDGE_LOOK_STATS.get(str(s.get("sid") or "")) or _session_files_stat(s))   # the pass's stat, taken before its
-    if not st[0]:                                                #  snapshots (round seven); a caller handing snapshots of its own stats first
+    sid = str(s.get("sid") or "")
+    st = _NUDGE_LOOK_STATS.get(sid)                             # the pass's key, taken before its snapshots (round seven); a caller
+    if st is None:                                              #  outside a pass takes its own here
+        st, keyed, over = _nudge_look_stat(s)
+        _NUDGE_LOOK_ASKERS[sid] = (keyed, over)
+    st = tuple(st)
+    if not st[0]:                                                #  a caller handing snapshots of its own stats first
         return False, st, None
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(("auto-nudge", str(s.get("sid") or "")))
@@ -11338,9 +11434,15 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     off, the walk runs WAKE-ONLY — the awaiting dead-man still fires (see _auto_nudge_tick). An UNPROVED
     ledger snapshot (a read fault) stands the whole pass down — see _auto_nudge_pause."""
     alive = list(_alive_sessions(now, live_map))
-    _NUDGE_LOOK_STATS.clear()
+    _NUDGE_LOOK_STATS.clear(); _NUDGE_LOOK_ASKERS.clear()
+    try:
+        _pst = os.stat(str(jd.STATE / "timeline" / "messages.jsonl")); postal_stat = (_pst.st_mtime, _pst.st_size)
+    except OSError:
+        postal_stat = (0.0, 0)                            # the postal log's stat FIRST, then the asker index built from that log
+    asks_by_target = _nudge_asks_by_target()              # once per pass: the open asks by debtor
     for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
-        _NUDGE_LOOK_STATS[s["sid"]] = _session_files_stat(s)   # stat is taken here, before the ledger, the peer graph and the clear set
+        _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s, asks_by_target, postal_stat)   # key (the ten files and its open asks'
+        _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  asker rows) is taken here, before the ledger, the peer graph and the clear set
     #                                                       are read, so no snapshot handed to a look is older than the key its memo
     #                                                       is recorded under (an undo between a pass-top snapshot and a look moved the
     #                                                       clears log and the store under a memo that then silenced the un-cleared goal)
@@ -11409,7 +11511,7 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
         except Exception:
             sys.stderr.write("auto-nudge (session %s): %s\n"
                              % (s.get("sid") or "?", traceback.format_exc()))
-    _NUDGE_LOOK_STATS.clear()                             # the stats were this pass's: a look outside a pass stats for itself
+    _NUDGE_LOOK_STATS.clear(); _NUDGE_LOOK_ASKERS.clear()   # the keys were this pass's: a look outside a pass keys for itself
     try:
         _relay_tick(now, alive_ids)                    # T334: a worker's block toward its delegating peer goes out as its
         #                                                question, once per block (mail, not an injected message: the toggle
@@ -13213,12 +13315,14 @@ _NUDGE_FILE_KEYED_ROADS = {       # the functions each marked verdict's road rea
     "progressing": ("_last_state",),
     "closer-unsettled": ("_closer_settled",),
     "planner-queue": ("_nudge_placement_gate",),
+    "walk-completed": ("_debt_asks", "_asker_row_alive", "_nudge_asks_by_target"),   # the other skippable exit (r is False with the walk
+    #                                    completed) rides the debt leg: its readers are traced too (round three, low 2)
 }
 #   The roads whose verdict is a pure function of the files the memo keys on (_session_files_stat: the transcript, the state
 #   log, the store with its override journal and archive, the episode log, the clears log, the postal log, the kernel's
 #   downtime log, the nudge ledger, ten in all), marked so that a
 #   look ending in one may record a skippable memo. Every OTHER exit of the look, marked or not, records an unbounded memo
-#   (None) by default: the SDK overlay, the backend's queue, an armed rollback, a store fault, a dead asker's revival, a peer's
+#   (None) by default: the SDK overlay, the backend's queue, an armed rollback, a store fault, an asker beyond the keyed rows (alive or not), a peer's
 #   bounce (T401 (2) round three: the class, not the instances; an unmarked road can never silence a session). The full goal
 #   walk's own completion is marked at its return, after every declining leg has noted its clock or None.
 
@@ -13246,11 +13350,14 @@ def _nudge_look_gated(fn):
         else:                                         #  unqueued) precede every send, the debt reminder's included (round one, medium 1)
             _NUDGE_WALK_STATS["wakeOnly"] += 1        # nudges off: the toggle is not a file, so the look neither skips nor records
         _NUDGE_HORIZON.notes, _NUDGE_HORIZON.parsed, _NUDGE_HORIZON.walk_completed = [], False, False
-        try:
+        _keyed, _over = _NUDGE_LOOK_ASKERS.get(sid, ((), ()))
+        _NUDGE_HORIZON.keyed_askers, _NUDGE_HORIZON.over_askers = set(_keyed), set(_over)   # for the debt leg: the keyed askers'
+        try:                                                                                #  rows decide, the overflow ones note
             r = fn(s, now, live_map, nudged, waitfor, alive_ids, wake_only, cleared)
         finally:
             notes, parsed = getattr(_NUDGE_HORIZON, "notes", []) or [], getattr(_NUDGE_HORIZON, "parsed", False)
             _NUDGE_HORIZON.notes = None
+            _NUDGE_HORIZON.keyed_askers = _NUDGE_HORIZON.over_askers = None   # the sets die with the look (round three, low 1)
         if parsed and not wake_only and r is not True:    # a fire moved the files anyway; a look that never parsed has nothing to skip
             file_keyed = (r in _NUDGE_FILE_KEYED_VERDICTS) or (r is False and getattr(_NUDGE_HORIZON, "walk_completed", False))
             if not file_keyed:

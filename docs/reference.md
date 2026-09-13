@@ -1866,18 +1866,52 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   session's key and the next pass re-evaluates each alive session once);
   the pass takes every session's stat before it reads any pass-level
   snapshot, so no input a look reads is older than the key its memo is
-  recorded under; `unboundedBy` counts the unbounded NOTES per leg at the
-  look that recorded them (the stamped wait, a standing deferral, a dead
-  asker, a store fault, a queued send, a legacy record with no anchor, an
-  unmarked verdict when no named leg noted the look); the legs partition
-  the NOTES, not the looks (a look over two top goals can note two legs); the
-  `deadAsker` leg (an ask in the postal wait maps whose asker is not alive
-  now) carried 33,579 of 43,173 notes on the first boot with the counts,
-  since an ask a dead peer left in the log stays there for good; ageing such
-  an ask out of the wait maps would delete a wait the postal surfaces show
-  and is the user's call, the open hygiene question here; while
-  `unbounded` counts a LATER look's refused skip, so the two are not
-  comparable;
+  recorded under; a debtor's key also carries the registry row
+  (`STATE/sdk/<asker>.json`, an absent row as a stable absent marker) of
+  each peer with an open ask on it, oldest asks first and at most eight
+  (the persisted memo row is 22 to 38 elements: the ten files and up to
+  eight rows), because a dead asker's ask becomes owed again only when the
+  asker revives and a revival writes that row; the debt leg reads a keyed
+  asker's aliveness from that same row (alive true or false, the SDK
+  backend's own liveness record), never from the pass's alive set, which is
+  older than the key, so the verdict and the key come from one file and a
+  revival landing between the two cannot record a memo that owes nothing;
+  a row that cannot be read or decoded, or parses without an alive bit, is
+  unproven, neither dead nor alive: the look notes None under
+  `askerRowUnproved`, so one transient read fault never latches a
+  skippable memo, and the ask follows the pass's alive set, the backend's
+  own answer over that row or its last good content, so the reminder never
+  asks a debtor to answer a peer the backend calls dead (a missing row is
+  dead, the key's absent marker); a keyed
+  dead asker notes nothing and the debtor skips like any quiet session;
+  any asker beyond the eight keyed rows notes None under `askerOverflow`,
+  alive or not, since its row is outside the key. The pass stats the postal
+  log before it builds the asker index from it and the key carries that
+  earlier stat, so the key never claims a newer log than the selection
+  read. The limit:
+  the row invariant holds for the SDK backend only; a Codex session's
+  liveness is in memory with its registry at `STATE/codex/registry.json`,
+  so a Codex asker's revival would move nothing in a debtor's key (not
+  reachable today: a Codex session cannot identify itself to the bus and so
+  cannot ask). The honest measure of what remains unbounded is
+  `memos.nudgeWalk.unbounded` over looks on the first boot after this lands,
+  since the leg counts are notes, not looks. `unboundedBy` counts the
+  unbounded NOTES per leg at the look that recorded them; the legs the
+  kernel emits are `askerOverflow`, `askerRowUnproved`, `debtUnproved`,
+  `debtUnlanded`, `deferralNew`, `pausedTiers`, `deferralStanding`,
+  `queuedSend`, `storeFault`, `allDelegated`, `awaitingPeer`,
+  `stampedWait`, `unjudgeable`, `refusedWrite`, `legacyNoAnchor`, and
+  `unmarked:<verdict>` when no named leg noted the look (the None-site
+  census in the gate's test pins that every site names its leg with a
+  literal); the legs partition the NOTES,
+  not the looks (a look over two top goals can note two legs); the
+  dead-asker notes (an ask in the postal wait maps whose asker is not alive
+  now) were about four in five of the notes on the first boot with the
+  counts, since an ask a dead peer left in the log stays there for good,
+  which the keyed rows answer for the memo; ageing such an ask out of the
+  wait maps would delete a wait the postal surfaces show and is the user's
+  call, the open hygiene question here; while `unbounded` counts a LATER
+  look's refused skip, so the two are not comparable;
   `spendTree` is the spend guard's memo of each live
   session's subagents tree (`entries`, `bytes`, `bound`, a sixty-fourth of
   the machine's memory or `ROMP_SPEND_GUARD_TREE_MEMO_BYTES`, and the
