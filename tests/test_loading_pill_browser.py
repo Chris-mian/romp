@@ -320,8 +320,44 @@ await page.waitForFunction((u) => { const t = document.querySelector('#content .
 await pillHidden();
 out.landed10 = { pill: await pill(), target: await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { visible: r.bottom > c.top && r.top < c.bottom }; }, deep10), toast: await page.evaluate(() => { const t = document.querySelector(".locate-toast"); return t ? t.textContent : null; }) };
 out.step = "10:done";
+// ROAD 11 (round seven, medium 1): a same-key re-ask must not throw the reader off the message they opened. A card's window ask held,
+// the pill clicked (cancelledWire keeps the twin's key), the SAME card clicked again (re-ask, same anchor). The kernel answers BOTH: reply
+// one matches the live re-ask and lands; reply two is the cancelled twin, consumed silently — it must NOT re-base (no needFull, the reader
+// stays on the message).
+out.step = "11:start";
+const deep11 = "11111111-2222-3333-4444-" + pad(2 * 7);
+const around11 = [{ uuid: deep11, kind: "user", md: "the opened message" }, { uuid: "11111111-2222-3333-4444-" + pad(2 * 7 + 1), kind: "assistant", md: "its reply" }];
+const win11 = () => ({ type: "chatWindow", id: cfg.sid, anchor: deep11, events: around11, span: [7, 9], moreBefore: true, moreAfter: true, connected: true });
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep11, anchorT: cfg.base + 2 * 7 });
+await pillShown();
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // cancel: the twin stays on the wire
+await pillHidden();
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep11, anchorT: cfg.base + 2 * 7 });   // the same card again
+await pillShown();
+const fullBefore11 = await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach").length);
+await page.evaluate((f) => window.postMessage(f, "*"), win11());   // reply one: matches the live re-ask, lands
+await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), deep11, { timeout: 8000 }).catch(() => {});
+await pillHidden();
+const landed11 = await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, deep11);
+await page.evaluate((f) => window.postMessage(f, "*"), win11());   // reply two: the cancelled twin, silent
+await page.waitForTimeout(400);
+out.reask11 = { landed: landed11, after: await page.evaluate((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, deep11), reattach: (await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach").length)) - fullBefore11 };
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
+// ROAD 12 (round seven, medium 2): a served stranger window for a NON-active session re-bases that session, so its live tail does not
+// silently freeze. Switch to tab B (SID2 active), inject an unasked served window for SID (attached, its tab not active): a needFull
+// reattach for SID goes out, and a following chatTail for SID lands (the session kept updating).
+out.step = "12:start";
+await page.evaluate((sid2) => { const t = document.querySelector('#tabs .tab[data-id="' + sid2 + '"]'); if (t) t.click(); }, cfg.sid2);
+await page.waitForFunction((sid2) => { const t = document.querySelector('#tabs .tab[data-id="' + sid2 + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid2, { timeout: 8000 }).catch(() => {});
+const fullBefore12 = await page.evaluate((sid) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid).length, cfg.sid);
+const deep12 = "11111111-2222-3333-4444-" + pad(2 * 9);
+await page.evaluate((f) => window.postMessage(f, "*"), { type: "chatWindow", id: cfg.sid, anchor: deep12, events: [{ uuid: deep12, kind: "user", md: "an unasked window for the background tab" }], span: [9, 10], moreBefore: true, moreAfter: true });
+await page.waitForFunction((sid, n) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid).length > n, [cfg.sid, fullBefore12], { timeout: 8000 }).catch(() => {});
+out.stranger12 = { reattach: (await page.evaluate((sid) => window.__sent.filter((m) => m.type === "needFull" && m.why === "reattach" && m.id === sid).length, cfg.sid)) - fullBefore12 };
+out.step = "12:done";
 } catch (e) { out.roadError = String(e && e.message || e); }
-process.stdout.write("RESULT:" + JSON.stringify({ ...out, pageEvents, start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ ...out, reask11: out.reask11, stranger12: out.stranger12, pageEvents, start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
 try { await browser.close(); } catch (e) { /* the page may already be gone */ }
 """
 
@@ -442,6 +478,22 @@ class ServedLoadingPill(WindowLab):
         f = r["faulted9"]
         self.assertIsNone(f["toast"], "the cancelled ask's fault toasts nothing at the reader: %r" % f)
         self.assertTrue(f["pill"]["visible"], "…and ends nothing the later ask holds: the pill stays on: %r" % f)
+
+    def test_a_same_key_re_ask_lands_reply_one_and_reply_two_the_cancelled_twin_never_re_bases(self):
+        # round seven, medium 1: a card clicked, the pill clicked, the same card clicked; both kernel replies come
+        r = self._result()
+        self.assertIn("reask11", r, "the road did not complete: %r" % r.get("roadError"))
+        rk = r["reask11"]
+        self.assertTrue(rk["landed"] and rk["landed"]["visible"], "reply one landed the reader on the opened message: %r" % rk)
+        self.assertTrue(rk["after"] and rk["after"]["visible"], "reply two (the cancelled twin) left the reader on the message: %r" % rk)
+        self.assertLessEqual(abs(rk["after"]["top"] - rk["landed"]["top"]), 4, "…at the same offset, not snapped to the bottom: %r" % rk)
+        self.assertEqual(rk["reattach"], 0, "reply two re-based nothing (the kernel's base is where reply one put it): %r" % rk)
+
+    def test_a_served_stranger_window_for_a_background_tab_re_bases_that_session(self):
+        # round seven, medium 2: a served window for a non-active attached session must re-base it, or its tail freezes silently
+        r = self._result()
+        self.assertIn("stranger12", r, "the road did not complete: %r" % r.get("roadError"))
+        self.assertGreaterEqual(r["stranger12"]["reattach"], 1, "a served stranger window for the background session re-based it (needFull reattach for its sid): %r" % r["stranger12"])
 
     def test_a_stale_reply_for_an_older_ask_clicked_away_is_silent_and_the_card_ask_it_would_have_ended_lands(self):
         # round five, medium: chatHead answers the ask its key names, never whichever ask is on the books

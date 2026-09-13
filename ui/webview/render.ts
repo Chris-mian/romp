@@ -17254,7 +17254,7 @@ function olderLatched(sid: string): boolean {
   return true;
 }
 function syncLoadingPill(): void { if (activeId && readerWaits.has(activeId)) showLoadingPill(); else hideLoadingPill(); }
-function noteAsk(sid: string, reader: boolean, kind: AskKind, key: string | number | null | undefined): void { loadingOlder.add(sid); askedGen.set(sid, askGen); cancelledWire.delete(wireKey(sid, kind, String(key ?? ""))); liveAskKey.set(sid, { kind, key: String(key ?? "") }); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); }   // a fresh ask supersedes a cancelled twin of its key (round six, low 2)
+function noteAsk(sid: string, reader: boolean, kind: AskKind, key: string | number | null | undefined): void { loadingOlder.add(sid); askedGen.set(sid, askGen); liveAskKey.set(sid, { kind, key: String(key ?? "") }); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); }   // a cancelled twin of this key STAYS in cancelledWire (round seven, medium 1): the kernel answers both asks, and reply one matches the live re-ask (match live first) while reply two is the cancelled twin, consumed silently — deleting the twin here made reply two a stranger that re-based the reader off the message they opened
 function endAsk(sid: string): void { loadingOlder.delete(sid); askedGen.delete(sid); liveAskKey.delete(sid); readerWaits.delete(sid); syncLoadingPill(); }
 const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to re-anchor on when the chunk lands
 // sid → the on-screen y that uuid must come back to. PRESENT ⇒ the fetch was a scroll-back (requestOlder) and
@@ -17269,8 +17269,11 @@ function chatHead(msg: any) {
   // (round six, low 1), so it is matched by the live ask's kind, keeping the branch's own `before !== headFrom` staleness guard below.
   // a reply the kernel could not key back verbatim (round six, low 1): the index wire clamps its numeric `before` to the build length,
   // and a proto-2 fault for a null-key ask carries beforeUuid null; neither can be key-matched, so both are matched by the live ask's
-  // kind (a cancelled older ask left no live older key, so its late keyless reply still stays silent), keeping the index branch's own
-  // `before !== headFrom` staleness guard below. A proto-2 reply that DOES echo its uuid is keyed as round five made it.
+  // kind, keeping the index branch's own `before !== headFrom` staleness guard below. A proto-2 reply that DOES echo its uuid is keyed
+  // as round five made it. LIMIT (round seven, low): on the INDEX wire every chatHead is keyless, so a cancelled older ask's late reply
+  // cannot be told from the live older ask's — it ends the live wait early, the `before !== headFrom` guard drops it, and the live reply
+  // then finds the ask gone and is dropped too, so the chunk lands on the next scroll rather than at once; the proto-2 wire (keyed) has
+  // no such ambiguity, and the index wire is legacy (the cost is one extra scroll, never a wrong landing).
   const keyed = typeof msg.beforeUuid === "string";
   const which = keyed ? matchAsk(msg.id, "older", msg.beforeUuid)
                       : (liveAskKey.get(msg.id)?.kind === "older" ? "live" : "none");
@@ -17422,8 +17425,8 @@ function chatWindow(msg: any) {
     // it does not (round six, the CI red on the never-detaches road). A fault or a missing window served nothing: no re-base. A later
     // live ask's marks are untouched (a stranger never reads or ends them).
     const st = sessions.get(msg.id);
-    if (st && st.proto === 2 && !st.detached && msg.id === activeId && !msg.fault && !msg.missing && Array.isArray(msg.events) && msg.events.length) {
-      landTrail.push("window-stranger");
+    if (st && st.proto === 2 && !st.detached && !msg.fault && !msg.missing && Array.isArray(msg.events) && msg.events.length) {
+      landTrail.push("window-stranger");   // whatever tab is active (round seven, medium 2): a served window moved THIS session's base; an attached client the page will not adopt is frozen (no delta) until it re-bases, and reattachLive carries the sid
       reattachLive(msg.id, true);
     }
     return;
@@ -17520,7 +17523,13 @@ function edgeCheckAfterWindow(sid: string): void {
   virtualizeToViewport();
 }
 function chatMore(msg: any) {
-  if (matchAsk(msg.id, "newer", typeof msg.afterUuid === "string" ? msg.afterUuid : null) !== "live") return;   // by the ask's key (round five)
+  if (matchAsk(msg.id, "newer", typeof msg.afterUuid === "string" ? msg.afterUuid : null) !== "live") {
+    // a stranger newer page (round seven, medium 2): loadNewer moved the base (last + detached), so an attached client the page will not
+    // adopt is frozen until it re-bases; a fault or missing moved nothing. Whatever tab is active (reattachLive carries the sid).
+    const st = sessions.get(msg.id);
+    if (st && st.proto === 2 && !st.detached && !msg.fault && !msg.missing && Array.isArray(msg.events) && msg.events.length) { landTrail.push("more-stranger"); reattachLive(msg.id, true); }
+    return;
+  }
   endAsk(msg.id);
   const s = sessions.get(msg.id);
   if (!s) return;
