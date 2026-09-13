@@ -195,7 +195,12 @@ reorders the tags on every surface (the timeline's tag table shows the same orde
 a tab into another group, right-click it and pick **Move to <tag>** under **Tags**: one click
 adds that tag and drops the tag of the group you right-clicked it in, leaving its other tags alone. The row's
 **+** adds the tag without moving the tab. **Group tabs by tag**, at the foot of the tag
-button's menu, turns the sections off for this browser. Every group starts on its own row; turning off
+button's menu, turns the sections off for this browser. The Sessions pane has the same
+sections: **Group by tag** in its Filter menu (off until you turn it on, per browser) lays the
+lanes out one section per tag in the same order, each session under every tag it carries and
+the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row
+of its own; a section folded in either place is folded in both, and while grouped the lanes
+follow the tag order (dragging a lane pans, it does not reorder). Every group starts on its own row; turning off
 the gear's **One tag group per row in the tab strip** lets the groups follow one another across the
 strip and wrap as they need, with the untagged sessions behind a thin divider, so a strip with many
 tags stays short.
