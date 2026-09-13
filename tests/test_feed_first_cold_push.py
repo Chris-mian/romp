@@ -93,6 +93,15 @@ class FeedFirstColdPush(unittest.TestCase):
         self.assertEqual(km._wire_stats["feed_first"], 1)
         self.assertEqual(self.feed_calls[0], False, "the early build is the cycle's own, not a connect serve")
 
+    def test_a_connect_push_during_the_first_cycle_builds_the_feed_too(self):
+        # the realistic boot: the browser reconnects a moment after the kernel serves, so the first push with a feed pane is the
+        # connect push; the connect arm of the cache serves only a warmed build, which a cold kernel has not got
+        feed_c = self._client("feed")
+        km._push([feed_c], connect=True)
+        self.assertEqual(km._wire_stats["feed_first"], 1, "the early pass ran on the connect push")
+        self.assertEqual(self.feed_calls[0], False, "and it BUILT (connect False to the cache), rather than serving a warmed build it has not got")
+        self.assertIn(("feed", "feed"), self.seq)
+
     def test_a_warm_kernel_takes_no_extra_step(self):
         feed_c, chat_c = self._client("feed"), self._client("chat")
         km._built_feed[1] = json.loads(json.dumps(FEED))          # a feed already built since start

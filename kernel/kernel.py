@@ -47436,7 +47436,11 @@ def _feed_first(now, live_map, targets, connect):
     global _feed_wire
     _t0 = time.monotonic()
     fsig = _fleet_view_sig(now, live_map)
-    feed_src = _cached_feed(now, live_map, fsig, connect)
+    # ALWAYS a build here, connect or not: the realistic boot has the browser reconnecting a moment after the kernel
+    # serves, so the first push with a feed pane is the CONNECT push on the socket's thread, and _cached_feed's connect arm
+    # serves only a warmed build, which a cold kernel has not got (the 7:39 AM Pacific boot, 2026-09-13: push.feedFirst 0.0
+    # with the dashboard open). The early frame is the whole point, so the cold kernel builds it for the connect too.
+    feed_src = _cached_feed(now, live_map, fsig, False)
     if feed_src is None:
         return False
     feed = dict(feed_src)                            # the copy the send stage would make; no ledgers yet (no session build ran)
