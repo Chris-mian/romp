@@ -17518,14 +17518,20 @@ function fillInPlace(sid: string, v: View | undefined): void {
   // (round five, medium B: the plan's own rule, the content change, not the view's own coordinates, which read as a tautology)
   const keepVisible = !!keep && keep.y < content.clientHeight - 1;
   const items = displayItems(s);
-  const pointBefore = turnUnderTop(v, s, items, turnOfEvents(s), content, topBefore);
+  const turnsNow = turnOfEvents(s);
+  const pointBefore = turnUnderTop(v, s, items, turnsNow, content, topBefore);
   let u = -1;
   if (keepVisible && keep) {
     const idx = s.events.findIndex((e) => e.uuid === keep.uuid);
     u = idx >= 0 ? items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(idx) : it.kind === "event" && it.index === idx) : -1;
     if (u < 0 && idx >= 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= idx));
   } else {
-    u = unitAtScroll(v, content);   // no row on screen: the reader sits in a gap/spacer — render the window around the unit under the viewport top
+    // no row on screen: render the window around the unit holding the point's TURN in the NEW items (the unit index the old view held
+    // is in the old item space; a wide window inserted above shifts every index, and rendering around the stale one left the reader's
+    // turn unrendered and the point unmappable, round five)
+    const t0 = pointBefore != null ? Math.floor(pointBefore) : null;
+    if (t0 != null) u = items.findIndex((it) => it.kind === "gap" ? (t0 >= it.lo && t0 < it.hi) : (() => { const f = itemFirstEvent(it); return f >= 0 && f < turnsNow.length && turnsNow[f] === t0; })());
+    if (u < 0) u = unitAtScroll(v, content);
   }
   v.stick = false;   // a fill never follows the tail: the reader is where they are
   if (u >= 0) renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), s.status.state === "working" || s.status.state === "compacting");
@@ -17537,7 +17543,7 @@ function fillInPlace(sid: string, v: View | undefined): void {
   let y: number;
   if (row && keep) y = row.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop - keep.y;
   else {
-    const mapped = pointBefore != null ? yOfTurn(v, s, items, turnOfEvents(s), content, pointBefore) : null;
+    const mapped = pointBefore != null ? yOfTurn(v, s, items, turnsNow, content, pointBefore) : null;
     y = mapped != null ? mapped : topBefore;
   }
   writeScroll(content, y, "gap-fill", false, topBefore);

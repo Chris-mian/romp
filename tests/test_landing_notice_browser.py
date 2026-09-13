@@ -80,25 +80,25 @@ await painted();
 // answers within the round trip), the landing once released
 await page.evaluate(() => { window.__hold.add("loadAround"); });
 const aroundBefore1 = await sentOf("loadAround");
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: cfg.deepUuid, anchorT: cfg.deepT });
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: ("11111111-2222-3333-4444-" + pad(2 * 125)), anchorT: (cfg.base + 2 * 125) });
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore1, { timeout: 10000 }).catch(() => {});
 const asked1 = await state();   // sampled while the ask is on the wire: the notice up, the view inside the gap
 const trace1 = await trace();
 const guess1 = await writes("land-guess");
 await page.evaluate(() => { window.__hold.delete("loadAround"); });
 const released1 = await page.evaluate(() => window.__release());
-await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), cfg.deepUuid, { timeout: 15000 }).catch(() => {});
+await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), ("11111111-2222-3333-4444-" + pad(2 * 125)), { timeout: 15000 }).catch(() => {});
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
 await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
-await page.waitForFunction((u) => window.__sent.some((m) => m.type === "locateDiag" && m.anchor === u && m.ok === true), cfg.deepUuid, { timeout: 8000 }).catch(() => {});   // the landing's own row files when its settle ends
+await page.waitForFunction((u) => window.__sent.some((m) => m.type === "locateDiag" && m.anchor === u && m.ok === true), ("11111111-2222-3333-4444-" + pad(2 * 125)), { timeout: 8000 }).catch(() => {});   // the landing's own row files when its settle ends
 const landed1 = await state(); const regionsLanded = await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null));
-const target1 = await onScreen(cfg.deepUuid);
+const target1 = await onScreen(("11111111-2222-3333-4444-" + pad(2 * 125)));
 const rows1 = await locateRows();
 // ROAD 2: a second deep link, the ask held; the notice clicked away; the reply released late
-const deep2 = "11111111-2222-3333-4444-" + pad(2 * 130);   // turn 130: inside the gap the first landing left (its window covered the head to about turn 70), clear of the tail
+const deep2 = "11111111-2222-3333-4444-" + pad(2 * 190);   // turn 130: inside the gap the first landing left (its window covered the head to about turn 70), clear of the tail
 await page.evaluate(() => { window.__hold.add("loadAround"); });
 const aroundBefore2 = await sentOf("loadAround"); const locBefore2 = rows1.length;
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep2, anchorT: cfg.base + 2 * 130 });
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep2, anchorT: cfg.base + 2 * 190 });
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore2, { timeout: 10000 }).catch(() => {});
 const asked2 = await state();
 const trace2 = await trace();
@@ -169,7 +169,7 @@ const resident5 = resBefore5;
 process.stdout.write("RESULT:" + JSON.stringify({ inGap6, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, redialAsk5, redialed5, gapLo5: gapLo5Out, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
-  late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 130, bootTop: boot.top }) + "\n");
+  late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 190, bootTop: boot.top }) + "\n");
 await browser.close();
 """
 
