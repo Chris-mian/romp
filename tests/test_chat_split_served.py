@@ -461,7 +461,7 @@ const peekTabMenuIn = async (pg, fid, sid) => {   // a window's tab menu labels,
 };
 const bellLabelIn = async (pg, fid, sid) => (await peekTabMenuIn(pg, fid, sid)).find((l) => l === "Notify me" || l === "Stop notifying") || null;
 const bellReadsIn = async (pg, fid, sid, want, why) => {   // the menu is a snapshot: re-peek until the kernel's push has landed the flag
-  for (let i = 0; i < 40; i++) { if ((await bellLabelIn(pg, fid, sid)) === want) return want; await pg.waitForTimeout(250); }
+  for (let i = 0; i < 100; i++) { if ((await bellLabelIn(pg, fid, sid)) === want) return want; await pg.waitForTimeout(100); }
   await die(why);
 };
 const runPalette = async (fid, query) => {   // the chord from inside a column's document; the shell's palette answers
@@ -606,9 +606,18 @@ out.s9.after = await shell();
 out.s9.afterDrop = await page.evaluate(() => { const g = document.getElementById("col-ghost"); return { cls: g.className, display: getComputedStyle(g).display, zones: document.querySelectorAll(".col-drop").length }; });
 out.s9.col1Tabs = await tabsIn("f-chat"); out.s9.col2Tabs = await tabsIn("f-chat-2"); out.s9.col1Active = await activeIn("f-chat");
 out.s9.pane1W = await width("chat-pane"); out.s9.pane2W = await width("chat-pane-2");
-// …and back: B's tab from column 2 (its only member: no edge zone) onto column 1's pane
+// …and back: B's tab from column 2 (its only member: no edge zone) onto column 1's pane. The column is a fresh page:
+// its tab drags only once its manager is up (fedMissing) and nothing holds it (the lock, a pin), so wait for the
+// draggable flag the story assumes, and if the zone still never comes, say what the tab looked like (a CI-only
+// timeout here on 2026-09-13 left no trace)
+const tabStateIn = (fid, sid) => page.evaluate(([fid, sid]) => { const f = document.getElementById(fid); const d = f && f.contentDocument; const t = d && d.querySelector('#tabs .tab[data-id="' + sid + '"]');
+  return { tab: !!t, draggable: !!(t && t.draggable), cls: t ? t.className : null, settings: localStorage.getItem("romp:settings"), pins: localStorage.getItem("romp:tabpins"), zones: document.querySelectorAll(".col-drop").length, frames: window.__rompChatFrameIds(), log: (window.__shellLog || []).slice(-6) }; }, [fid, sid]);
+await waitFn(([fid, sid]) => { const f = document.getElementById(fid); const d = f && f.contentDocument; const t = d && d.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!(t && t.draggable); }, ["f-chat-2", cfg.sidB], "B's tab in the new column never became draggable");
 await dragStart("f-chat-2", cfg.sidB);
-await waitFn(() => !!document.querySelector('#chat-pane > .col-drop'), null, "column 1's zone never mounted for the drag back");
+if (!(await page.waitForFunction(() => !!document.querySelector('#chat-pane > .col-drop'), null, { timeout: T }).then(() => true).catch(() => false))) {
+  out.s9.dragBackDiag = await tabStateIn("f-chat-2", cfg.sidB);
+  await die("column 1's zone never mounted for the drag back: " + JSON.stringify(out.s9.dragBackDiag));
+}
 out.s9.backZones = await zones();
 const z1 = out.s9.backZones.find((z) => z.pane === "chat-pane");
 await page.mouse.move(z1.left + z1.width / 2, z1.rtop + z1.height / 2, { steps: 8 });
@@ -1013,7 +1022,9 @@ class ServedChatSplit(unittest.TestCase):
 
     def test_8_the_whole_story_runs_in_well_under_half_a_minute(self):
         r = self._r()
-        self.assertLess(r["msStory"], 30000, "the driver waits on conditions, never on fixed sleeps: %d ms" % r["msStory"])
+        # 30 s before the hot-key, pin and bell steps joined (2026-09-13): three more steps and a second browser window (the
+        # bell's other-window check) added about a third locally, and the CI runner is slower again
+        self.assertLess(r["msStory"], 40000, "the driver waits on conditions, never on fixed sleeps: %d ms" % r["msStory"])
         # steps 11 and 12 each wait past the close backstop by design (shortened to CLOSE_ACK_MS_LAB), so they are bounded apart
         self.assertLess(r["ms"] - r["msStory"], 4 * CLOSE_ACK_MS_LAB + 10000, "steps 11 and 12: two backstops plus their waits on conditions: %d ms" % (r["ms"] - r["msStory"]))
 
