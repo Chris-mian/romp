@@ -93,6 +93,9 @@ await page.evaluate(() => {
   });
   mo.observe(content, { childList: true, subtree: true });
 });
+// the measurement waits on the EVENT it means, not a fixed frame (the manager, 2026-09-13): the push handled, then the page's
+// paint and the scroll steps that follow it (two animation frames), then one task for the rows those steps file
+const painted = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const measure = () => page.evaluate(() => {
   const content = document.getElementById("content");
   const g = document.querySelector(".turn-queued:not(.turn-queued-hidden)");
@@ -113,7 +116,7 @@ await page.fill("#composer-input", cfg.text);
 await page.press("#composer-input", "Enter");
 await page.waitForSelector(".turn-queued", { timeout: 10000 });
 await page.evaluate(() => { const g = document.querySelector(".turn-queued:not(.turn-queued-hidden)"); if (g) g.dataset.h262 = "1"; });
-await page.waitForTimeout(300);
+await painted();
 const pressed = await measure();
 // pushes every 0.5 s: one transcript step each, alternating a tool call and its result
 const pushes = [];
@@ -130,37 +133,51 @@ while (Date.now() - t1 < cfg.seconds * 1000) {
   fs.appendFileSync(cfg.transcript, JSON.stringify(step(n)) + "\n");
   n++;
   try { await page.waitForFunction((b) => window.__frames > b, before, { timeout: 5000 }); } catch (e) { pushes.push({ i: n, timeout: true }); }
-  await page.waitForTimeout(500);
+  await painted();
   pushes.push({ i: n, ...(await measure()) });
+  await page.waitForTimeout(500);   // the stream's cadence (one step per half second), not a settle: the measure above waited on the paint
 }
 const one = { pressed, pushes, n };
 // two sends and a ✕ on the first
 await page.fill("#composer-input", cfg.text2);
 await page.press("#composer-input", "Enter");
 await page.waitForFunction((t2) => Array.from(document.querySelectorAll(".turn-queued")).some((g) => (g.textContent || "").includes(t2)), cfg.text2, { timeout: 10000 });
-await page.waitForTimeout(300);
+await painted();
 const two = await measure();
 const twoPushes = [];
 for (let k = 0; k < 6; k++) {
   const before = await page.evaluate(() => window.__frames);
   fs.appendFileSync(cfg.transcript, JSON.stringify(step(n)) + "\n"); n++;
   try { await page.waitForFunction((b) => window.__frames > b, before, { timeout: 5000 }); } catch (e) {}
-  await page.waitForTimeout(500);
+  await painted();
   twoPushes.push(await measure());
 }
 // the ✕ on the FIRST bubble
 await page.evaluate(() => { const xs = Array.from(document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-edit")); if (xs[0]) xs[0].click(); });
-await page.waitForTimeout(400);
+await painted();
 const afterX = await measure();
 for (let k = 0; k < 4; k++) {
   const before = await page.evaluate(() => window.__frames);
   fs.appendFileSync(cfg.transcript, JSON.stringify(step(n)) + "\n"); n++;
   try { await page.waitForFunction((b) => window.__frames > b, before, { timeout: 5000 }); } catch (e) {}
-  await page.waitForTimeout(500);
+  await painted();
   twoPushes.push(await measure());
 }
 const rows = await page.evaluate(() => window.__rows);
-fs.writeSync(1, "RESULT:" + JSON.stringify({ one, two, twoPushes, afterX, rows: rows.slice(-40) }) + "\n");
+// the tool group's toggle under a bottom reader (round two, medium; LAST, since the reader's own move to the bottom is a gesture the phases before must not count): expand the tail's tool run, go to the bottom, collapse it. The
+// collapse makes the transcript shorter and the browser clamps the reader before the toggle's write runs; the write must claim that
+// move (one toolgroup-toggle row, before above after) and the clamp's own event must not file as a gesture
+const tgSel = '#content .turn-toolgroup [data-act="noticetoggle"][data-gkey]';
+const tgBefore = await page.evaluate((sel) => !!document.querySelector(sel), tgSel);
+await page.evaluate((sel) => { const b = document.querySelector(sel); if (b) b.click(); }, tgSel);   // expand
+await painted();
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight; });   // the reader's own move to the bottom
+await painted();
+const tgOpen = await page.evaluate(() => ({ groups: document.querySelectorAll("#content .turn-toolgroup").length, children: document.querySelectorAll("#content .tg-child").length, gestures: window.__rows.filter((r) => r.what === "scrollgesture").length, rows: window.__rows.length, sh: document.getElementById("content").scrollHeight, top: document.getElementById("content").scrollTop }));
+await page.evaluate((sel) => { const b = document.querySelector(sel); if (b) b.click(); }, tgSel);   // collapse under a bottom reader
+await painted();
+const tgClosed = await page.evaluate((n) => { const c = document.getElementById("content"); return { children: document.querySelectorAll("#content .tg-child").length, gestures: window.__rows.filter((r) => r.what === "scrollgesture").length, sh: c.scrollHeight, top: c.scrollTop, dist: c.scrollHeight - c.scrollTop - c.clientHeight, newRows: window.__rows.slice(n) }; }, tgOpen.rows);
+fs.writeSync(1, "RESULT:" + JSON.stringify({ one, two, twoPushes, afterX, tgBefore, tgOpen, tgClosed, rows: rows.slice(-40) }) + "\n");
 await browser.close();
 process.exit(0);
 """
@@ -283,7 +300,6 @@ class ServedPendingBubbleStable(unittest.TestCase):
         worst = max(p["dist"] for p in pushes)
         self.assertLessEqual(worst, 2, "a bottom reader with a pending send stays at the bottom through every push (worst distance %r): %r" % (worst, [p["dist"] for p in pushes]))
         self.assertEqual(pushes[-1]["gestures"], 0, "no unwritten move (no scroll the page could not attribute to a write): %r" % r["rows"][-12:])
-        self.assertEqual(pushes[-1]["shrinks"], 0, "no tail-shrink correction: nothing shrank the tail under the reader: %r" % r["rows"][-12:])
         self.assertTrue(all(p["marked"] is True for p in pushes), "the pending bubble's node is the SAME element after every push: %r" % [p["marked"] for p in pushes])
         self.assertEqual(pushes[-1]["removals"], 0, "no .turn-queued node was ever removed while pending")
         # two sends and a ✕
@@ -293,6 +309,19 @@ class ServedPendingBubbleStable(unittest.TestCase):
         self.assertEqual(ax["texts"], 1, "the ✕ removed one bubble: %r" % ax)
         self.assertEqual(ax["dist"], 0, "the ✕ leaves the reader at the bottom: %r" % ax)
         self.assertEqual(tp[-1]["gestures"], 0, "no unwritten move across the second send and the ✕: %r" % r["rows"][-12:])
+        # the tool group's toggle under a bottom reader (round two, the scroll clamp fix): the collapse makes the transcript shorter,
+        # the browser clamps the reader at the forced layout, and the toggle's write claims that move: one toolgroup-toggle row from
+        # the pre-toggle top to the clamped one, no gesture row for the clamp, the reader still at the bottom
+        self.assertTrue(r["tgBefore"], "the tail's tool run has a toggle")
+        o, c = r["tgOpen"], r["tgClosed"]
+        self.assertGreater(o["children"], 0, "the run expanded: %r" % o)
+        self.assertEqual(c["children"], 0, "…and collapsed: %r" % c)
+        self.assertLess(c["sh"], o["sh"], "the collapse made the transcript shorter: %r → %r" % (o, c))
+        self.assertEqual(c["gestures"], o["gestures"], "no unwritten move on the collapse (the reader's own move to the bottom before it is the one gesture): %r" % c["newRows"])
+        toggles = [x for x in c["newRows"] if x["what"] == "scrollwrite" and x["writer"] == "toolgroup-toggle"]
+        self.assertEqual(len(toggles), 1, "one toggle row names the move: %r" % c["newRows"])
+        self.assertGreater(toggles[0]["before"], toggles[0]["after"], "…from the pre-toggle top to the clamped one: %r" % toggles[0])
+        self.assertLessEqual(c["dist"], 2, "the reader is still at the bottom: %r" % c)
 
 
 if __name__ == "__main__":

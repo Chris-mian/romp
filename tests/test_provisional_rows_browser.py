@@ -16,7 +16,7 @@ the transcript by hand lands nothing (the kernel keeps the copy, and the page ri
 id). That transition is executed on the rule itself in ui/webview/send-pending-overlay.test.ts.
 
 A second class on the same boot (the review's MEDIUM: a held copy under a to-do card released by its landing) drives the page by
-frames through the shim's own door, the T262i lab's route (tests/test_queued_copy_held.py): the kernel's real session frame is the
+frames through the shim's own door, the T262i lab's route (tests/test_queued_copy_held_browser.py): the kernel's real session frame is the
 base; a queue frame lists the kernel's copy of a message with a to-do card after it; a queue frame without the copy (taken, not
 landed) makes the page hold the card as landing; a transcript frame lands the record carrying the copy's id, the card still last.
 After the landing there is one user row and no held card. Before the fold the hold anchored on the card's word uuid, read no
