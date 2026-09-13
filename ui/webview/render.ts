@@ -12052,11 +12052,16 @@ function lastCompactUnit(s: Session, items: DisplayItem[]): number {
 // Append one display unit's DOM to v.el (a turn, or a folded toolgroup + its expansion), tagging every node
 // with data-unit = u for the scroll↔unit map. Returns the advanced prevEpoch (the rail's raw chain, for the same-minute
 // rule); `walk` is the day walk's high-water mark, advanced over the unit's exit (unitExit) and never rewound (T339).
-function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEpoch: number | null, walk: DayWalk, working: boolean): number | null {
+function appendItem(v: View, s: Session, items: DisplayItem[], u: number, prevEpoch: number | null, walk: DayWalk, working: boolean, turns: number[] | null = null): number | null {
   const it = items[u];
   const nodes: HTMLElement[] = [];   // every node this unit appends: stamped with the walk's day on the way out (T342)
   const stamped = new Set<HTMLElement>();   // …unless stamped mid-unit: an expanded tool run's rows, each in its own day
-  const tag = (node: HTMLElement): HTMLElement => { node.dataset.unit = String(u); nodes.push(node); return node; };
+  // …and with the unit's absolute TURN (T386 stage 2, round six): a row names its own place in the transcript, so the fill's
+  // point-naming reads the row, never a uuid lookup into s.events, which a row anchored on a tool_result uuid (an answered
+  // AskUserQuestion) or a word key can never satisfy; turn numbers are the kernel's and do not move when a gap fills
+  const f0 = it.kind === "gap" ? -1 : itemFirstEvent(it);
+  const turnOf = turns && f0 >= 0 && f0 < turns.length ? String(turns[f0]) : null;
+  const tag = (node: HTMLElement): HTMLElement => { node.dataset.unit = String(u); if (turnOf != null) node.dataset.turn = turnOf; nodes.push(node); return node; };
   const adv = (i: number) => { const ep = eventEpoch(s.events[i]); if (ep != null) prevEpoch = ep; };
   // A new day opens with its divider, above whatever unit starts that day (tagged with the same
   // data-unit so the scroll↔unit map still resolves every node it walks). The unit is placed and timed by its ANCHOR
@@ -12125,7 +12130,8 @@ function renderWindowItems(v: View, s: Session, items: DisplayItem[], unitStart:
   if (unitStart > 0) v.el.appendChild(el("div", "tx-spacer tx-spacer-top"));
   let prevEpoch = unitStart > 0 && unitStart < total ? prevTimedEpoch(s.events, itemFirstEvent(items[unitStart])) : null;
   const walk = dayWalkBefore(s, items, unitStart);   // the mark a walk from the top would hold here (T339)
-  for (let u = unitStart; u < unitEnd; u++) prevEpoch = appendItem(v, s, items, u, prevEpoch, walk, working);
+  const turns = s.regions ? turnOfEvents(s) : null;   // once per paint: every row it appends names its turn (round six)
+  for (let u = unitStart; u < unitEnd; u++) prevEpoch = appendItem(v, s, items, u, prevEpoch, walk, working, turns);
   if (unitEnd < total) v.el.appendChild(el("div", "tx-spacer tx-spacer-bot"));
   v.winStart = unitStart; v.winEnd = unitEnd;
   v.spacerCount = unitStart; v.spacerCountBot = total - unitEnd; v.unitTotal = total;
@@ -12163,7 +12169,8 @@ function sizeSpacers(v: View): void {
     let h = 0, turns = 0;
     for (const c of Array.from(v.el.children) as HTMLElement[]) {
       if (c.classList.contains("tx-spacer") || c.classList.contains("tx-gap") || !c.classList.contains("turn")) continue;   // only turn rows: cards and dividers are not turn content (round five)
-      h += c.offsetHeight;
+      let acts = 0; for (const a of Array.from(c.querySelectorAll(".msg-acts")) as HTMLElement[]) acts += a.offsetHeight;   // the action strip under a bubble is chrome, not turn content (round six, low)
+      h += Math.max(0, c.offsetHeight - acts);
       if (c.classList.contains("turn-user")) turns++;
     }
     if (h > 0 && turns > 0) v.pxPerTurn = h / turns;
@@ -17471,7 +17478,8 @@ function turnOfEvents(s: Session): number[] {
   if (!s.regions) return out;
   let i = 0;
   for (const r of runsOf(s.regions)) {
-    let t = r.lo - 1;
+    const first = s.events[i] as { kind?: string } | undefined;
+    let t = first && first.kind === "user" ? r.lo - 1 : r.lo;   // a run opening mid-turn (the wire tail sliced below a user row) starts AT lo, and its first user row begins lo + 1 (round six, low)
     for (let k = 0; k < r.events.length && i < s.events.length; k++, i++) {
       const e = s.events[i] as { kind?: string };
       if (e && e.kind === "user") t++;
@@ -17490,8 +17498,8 @@ function turnUnderTop(v: View, s: Session, items: DisplayItem[], turns: number[]
     const y0 = c.getBoundingClientRect().top - cTop + st, h = c.offsetHeight, y1 = y0 + h;
     if (!(top >= y0 && top < y1) || h <= 0) continue;
     if (c.classList.contains("tx-gap")) { const lo = Number(c.dataset.lo), hi = Number(c.dataset.hi); return lo + (hi - lo) * ((top - y0) / h); }
-    const uuid = c.dataset.uuid; const idx = uuid ? s.events.findIndex((e) => e.uuid === uuid) : -1;
-    if (idx >= 0) return turns[idx] + (top - y0) / h;
+    const tr = c.dataset.turn;   // the row's own turn, stamped at its paint (round six): by position, never a uuid lookup
+    if (tr != null && tr !== "") return Number(tr) + (top - y0) / h;
   }
   const spacer = v.el.querySelector(".tx-spacer-top") as HTMLElement | null;
   const topH = spacer ? spacer.offsetHeight : 0;
@@ -17513,9 +17521,8 @@ function yOfTurn(v: View, s: Session, items: DisplayItem[], turns: number[], con
     if (c.classList.contains("tx-gap")) { const lo = Number(c.dataset.lo), hi = Number(c.dataset.hi); if (t >= lo && t < hi) return c.getBoundingClientRect().top - cTop + st + c.offsetHeight * ((t - lo) / (hi - lo)); }
   }
   for (const c of Array.from(v.el.children) as HTMLElement[]) {
-    const uuid = c.dataset.uuid; if (!uuid) continue;
-    const idx = s.events.findIndex((e) => e.uuid === uuid);
-    if (idx >= 0 && turns[idx] === whole) return c.getBoundingClientRect().top - cTop + st + c.offsetHeight * Math.min(1, Math.max(0, t - whole));
+    const tr = c.dataset.turn; if (tr == null || tr === "" || Number(tr) !== whole) continue;   // the row names its turn (round six)
+    return c.getBoundingClientRect().top - cTop + st + c.offsetHeight * Math.min(1, Math.max(0, t - whole));
   }
   const avg = v.avgTurnH ?? 60; let y = 0;
   for (let u = 0; u < (v.winStart ?? 0) && u < items.length; u++) {
@@ -17544,12 +17551,14 @@ function fillInPlace(sid: string, v: View | undefined): void {
     const idx = s.events.findIndex((e) => e.uuid === keep.uuid);
     u = idx >= 0 ? items.findIndex((it) => it.kind === "toolgroup" || it.kind === "noticegroup" ? it.indices.includes(idx) : it.kind === "event" && it.index === idx) : -1;
     if (u < 0 && idx >= 0) u = Math.max(0, items.findIndex((it) => itemFirstEvent(it) >= idx));
+    // an anchor row no event uuid names (an answered AskUserQuestion anchored on its tool_result uuid) still names its TURN: the unit
+    // holding that turn is the window's centre (round six, medium: a uuid lookup left u at -1 and the view re-synced in a stale item space)
+    if (u < 0) { const rowEl = v.el.querySelector(`.turn[data-uuid="${cssEscape(keep.uuid)}"]`) as HTMLElement | null; const tr = rowEl?.dataset.turn; if (tr) u = unitOfTurn(items, turnsNow, Number(tr)); }
   } else {
     // no row on screen: render the window around the unit holding the point's TURN in the NEW items (the unit index the old view held
     // is in the old item space; a wide window inserted above shifts every index, and rendering around the stale one left the reader's
     // turn unrendered and the point unmappable, round five)
-    const t0 = pointBefore != null ? Math.floor(pointBefore) : null;
-    if (t0 != null) u = items.findIndex((it) => it.kind === "gap" ? (t0 >= it.lo && t0 < it.hi) : (() => { const f = itemFirstEvent(it); return f >= 0 && f < turnsNow.length && turnsNow[f] === t0; })());
+    if (pointBefore != null) u = unitOfTurn(items, turnsNow, Math.floor(pointBefore));
     if (u < 0) u = unitAtScroll(v, content);
   }
   v.stick = false;   // a fill never follows the tail: the reader is where they are
@@ -17566,8 +17575,42 @@ function fillInPlace(sid: string, v: View | undefined): void {
     y = mapped != null ? mapped : topBefore;
   }
   writeScroll(content, y, "gap-fill", false, topBefore);
+  // a fill that leaves NO row on screen (the window rendered elsewhere than the point: the unit search missed, the mapped y fell
+  // outside the window) re-windows once around the named point and puts it back (round six, medium)
+  if (pointBefore != null && !rowOnScreen(v, content)) {
+    const u2 = unitOfTurn(items, turnsNow, Math.floor(pointBefore));
+    if (u2 >= 0) {
+      renderWindowItems(v, s, items, Math.max(0, u2 - WINDOW_RADIUS), Math.min(items.length, u2 + WINDOW_RADIUS), s.status.state === "working" || s.status.state === "compacting");
+      const y2 = yOfTurn(v, s, items, turnsNow, content, pointBefore);
+      writeScroll(content, y2 != null ? y2 : topBefore, "gap-fill", false, topBefore);
+    }
+  }
   if (activeId) applyCommentMarks(activeId);
   scheduleRailSticky();
+}
+
+// The display unit holding an absolute turn: the gap whose [lo, hi) contains it, else the LAST run unit whose first event's turn is
+// at or below it (a turn's later units, its tool runs, begin in the same turn; equality on the first unit alone missed a turn whose
+// user row is folded into a group). -1 when no unit reaches the turn. (T386 stage 2, round six)
+function unitOfTurn(items: DisplayItem[], turns: number[], t: number): number {
+  let u = -1;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind === "gap") { if (t >= it.lo && t < it.hi) return i; if (it.lo > t) break; continue; }
+    const f = itemFirstEvent(it); if (f < 0 || f >= turns.length) continue;
+    if (turns[f] <= t) u = i; else break;
+  }
+  return u;
+}
+
+// Whether any turn row intersects the viewport (the fill's post-check: a window rendered away from the point shows the reader nothing)
+function rowOnScreen(v: View, content: HTMLElement): boolean {
+  const cTop = content.getBoundingClientRect().top, ch = content.clientHeight;
+  for (const c of Array.from(v.el.children) as HTMLElement[]) {
+    if (!c.classList.contains("turn")) continue;
+    const r = c.getBoundingClientRect(); if (r.bottom - cTop > 0 && r.top - cTop < ch && r.height > 0) return true;
+  }
+  return false;
 }
 const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to re-anchor on when the chunk lands
 // sid → the on-screen y that uuid must come back to. PRESENT ⇒ the fetch was a scroll-back (requestOlder) and

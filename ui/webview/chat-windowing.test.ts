@@ -166,7 +166,7 @@ test("round four and five fixes each carry a pin (T386 stage 2, round five low 1
   assert.match(fill, /const keepVisible = !!keep && keep\.y < content\.clientHeight - 1;/, "a row anchors the fill when it intersects the viewport, whatever the sign of its top (medium 1)");
   assert.doesNotMatch(fill, /keep\.y >= -1/, "…no lower bound on the row's top");
   assert.match(fill, /const turnsNow = turnOfEvents\(s\);\s*\n\s*const pointBefore = turnUnderTop\(v, s, items, turnsNow, content, topBefore\);/, "the point under the viewport top is named as a turn before the rebuild (medium B)");
-  assert.match(fill, /if \(t0 != null\) u = items\.findIndex\(\(it\) => it\.kind === "gap" \? \(t0 >= it\.lo && t0 < it\.hi\)/, "…and the window renders around the unit holding that turn in the NEW items, never a stale unit index");
+  assert.match(fill, /if \(pointBefore != null\) u = unitOfTurn\(items, turnsNow, Math\.floor\(pointBefore\)\);/, "…and the window renders around the unit holding that turn in the NEW items, never a stale unit index (round six: unitOfTurn)");
   assert.match(fill, /const mapped = pointBefore != null \? yOfTurn\(v, s, items, turnsNow, content, pointBefore\) : null;\s*\n\s*y = mapped != null \? mapped : topBefore;/, "…and put back by its turn after it, scrollTop kept only when the point cannot be named (medium A: the anchor row gone falls to the turn, never a doubled write)");
   assert.doesNotMatch(fill, /heightAbove/, "the view-coordinate tautology is gone");
   assert.match(RENDER, /function turnUnderTop\(v: View, s: Session, items: DisplayItem\[\], turns: number\[\], content: HTMLElement, top: number\): number \| null \{/, "the turn-under-top helper");
@@ -177,6 +177,34 @@ test("round four and five fixes each carry a pin (T386 stage 2, round five low 1
   assert.match(RENDER, /const preJumpOrigin = preJumpFrom\.get\(msg\.id\); preJumpFrom\.delete\(msg\.id\);/, "the pre-jump origin is consumed by every window reply (low 2)");
   const px = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
   assert.match(px, /\|\| !c\.classList\.contains\("turn"\)\) continue;/, "px-per-turn counts turn rows only, never cards or dividers (round five)");
+});
+
+test("round six fixes each carry a pin (T386 stage 2): rows name their turn, the fill reads it, a fill that shows nothing re-windows", () => {
+  const fill = RENDER.slice(RENDER.indexOf("function fillInPlace(sid: string, v: View | undefined): void {"), RENDER.indexOf("\nfunction ", RENDER.indexOf("function fillInPlace(sid: string, v: View | undefined): void {") + 1));
+  const under = RENDER.slice(RENDER.indexOf("function turnUnderTop("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function turnUnderTop(") + 1));
+  const yOf = RENDER.slice(RENDER.indexOf("function yOfTurn("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function yOfTurn(") + 1));
+  const append = RENDER.slice(RENDER.indexOf("function appendItem("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function appendItem(") + 1));
+  // medium: the point is named by POSITION, the row's own turn stamped at its paint, never a uuid lookup into s.events (a row anchored on a tool_result uuid has none)
+  assert.match(append, /const turnOf = turns && f0 >= 0 && f0 < turns\.length \? String\(turns\[f0\]\) : null;/, "appendItem knows the unit's absolute turn");
+  assert.match(append, /node\.dataset\.unit = String\(u\); if \(turnOf != null\) node\.dataset\.turn = turnOf;/, "…and stamps it on every node the unit appends, beside data-unit");
+  assert.match(RENDER, /const turns = s\.regions \? turnOfEvents\(s\) : null;\s*\/\/[^\n]*\n\s*for \(let u = unitStart; u < unitEnd; u\+\+\) prevEpoch = appendItem\(v, s, items, u, prevEpoch, walk, working, turns\);/, "renderWindowItems names the turns once per paint and hands them to every unit");
+  assert.match(under, /const tr = c\.dataset\.turn;[^\n]*\n\s*if \(tr != null && tr !== ""\) return Number\(tr\) \+ \(top - y0\) \/ h;/, "turnUnderTop reads the row's own turn");
+  assert.doesNotMatch(under, /s\.events\.findIndex/, "…and looks nothing up by uuid");
+  assert.match(yOf, /const tr = c\.dataset\.turn; if \(tr == null \|\| tr === "" \|\| Number\(tr\) !== whole\) continue;/, "yOfTurn finds the row by its own turn");
+  assert.doesNotMatch(yOf, /s\.events\.findIndex/, "…and looks nothing up by uuid either");
+  // the unit holding a turn is the gap containing it or the LAST run unit at or below it (equality on a first unit missed folded user rows)
+  assert.match(RENDER, /function unitOfTurn\(items: DisplayItem\[\], turns: number\[\], t: number\): number \{[\s\S]*?if \(turns\[f\] <= t\) u = i; else break;/, "unitOfTurn: the last unit at or below the turn");
+  assert.match(fill, /if \(u < 0\) \{ const rowEl = v\.el\.querySelector\(`\.turn\[data-uuid="\$\{cssEscape\(keep\.uuid\)\}"\]`\) as HTMLElement \| null; const tr = rowEl\?\.dataset\.turn; if \(tr\) u = unitOfTurn\(items, turnsNow, Number\(tr\)\); \}/, "an anchor row no event uuid names still centres the window by its turn");
+  // a fill that leaves no row on screen re-windows once around the named point and puts it back
+  assert.match(fill, /if \(pointBefore != null && !rowOnScreen\(v, content\)\) \{\s*\n\s*const u2 = unitOfTurn\(items, turnsNow, Math\.floor\(pointBefore\)\);[\s\S]*?const y2 = yOfTurn\(v, s, items, turnsNow, content, pointBefore\);\s*\n\s*writeScroll\(content, y2 != null \? y2 : topBefore, "gap-fill", false, topBefore\);/, "the zero-row post-check re-windows around the point");
+  assert.match(RENDER, /function rowOnScreen\(v: View, content: HTMLElement\): boolean \{/, "the on-screen row check");
+  // low: a run opening mid-turn starts AT its lo, so its first user row begins lo + 1 (the tail slice that opens with an assistant)
+  const turnsFn = RENDER.slice(RENDER.indexOf("function turnOfEvents(s: Session): number[] {"), RENDER.indexOf("\nfunction ", RENDER.indexOf("function turnOfEvents(s: Session): number[] {") + 1));
+  assert.match(turnsFn, /let t = first && first\.kind === "user" \? r\.lo - 1 : r\.lo;/, "turnOfEvents: only a user-first run counts up from lo - 1");
+  assert.doesNotMatch(turnsFn, /let t = r\.lo - 1;/, "…the unconditional lo - 1 is gone");
+  // low: the action strip under a bubble is chrome, not turn content, in the px-per-turn measure
+  const px = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
+  assert.match(px, /for \(const a of Array\.from\(c\.querySelectorAll\("\.msg-acts"\)\) as HTMLElement\[\]\) acts \+= a\.offsetHeight;\s*\/\/[^\n]*\n\s*h \+= Math\.max\(0, c\.offsetHeight - acts\);/, "px-per-turn subtracts the action strips");
 });
 
 test("the spacer is invisible, non-interactive vertical space", () => {
