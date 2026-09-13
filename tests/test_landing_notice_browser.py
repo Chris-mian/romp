@@ -88,6 +88,8 @@ await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: si
 await page.waitForFunction((n) => (window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length) > n, asksBefore5, { timeout: 8000 }).catch(() => {});
 const reask5 = (await asks5()) - asksBefore5;
 const reNotice5 = (await state()).notice;
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 15000 }).catch(() => {});   // the probe's landing completes (its window arrives and lands) before the next road, or its late reply would yank the reader mid-road
+await painted();
 const resident5 = resBefore5;
 // ROAD 6 (round five, medium B; runs right after the span-less road, while the head gap is whole, and returns the reader to the tail after):
 // the point under the viewport top holds through a fill that lands ABOVE a reader standing INSIDE the head gap. The fill is the cancel road's
@@ -96,6 +98,8 @@ const resident5 = resBefore5;
 // them; the point under the viewport top, named as a turn, must move by less than a turn (the old view-coordinate compensation carried it
 // about 2.6 turns; 81c0dca5 about 2.8).
 const sentAt6 = await page.evaluate(() => window.__sent.length);
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight; });   // from the tail: the gap above the tail run is rendered, so its element can be measured
+await painted();
 await page.evaluate(() => { window.__hold.add("loadAround"); });
 const around6 = await sentOf("loadAround");
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: "11111111-2222-3333-4444-" + pad(2 * 60), anchorT: cfg.base + 2 * 60 });   // turn 60: its window (about turns 25 to 95) lands ABOVE a reader standing near turn 120, and clear of the other roads' targets
@@ -237,7 +241,7 @@ class ServedLandingNotice(WindowLab):
         # reask5 (loadAround or loadTurns after a deep link into a live gap) is kept as a best-effort signal, not asserted.
         self.assertFalse(r["afterDrop5"]["notice"], "the socket death brought the notice down (wsdown cleared the landing): %r" % r["afterDrop5"])
         a = r["askState5"]
-        self.assertEqual((a["landingGaps"], a["gapLoading"], a["loadingOlder"]), (0, 0, False), "the wedge is gone: every in-flight ask's state cleared, so the gap can ask again (medium 1): %r" % a)
+        self.assertEqual((a["landingGaps"], a["loadingOlder"]), (0, False), "the wedge is gone: the landing's held gap and the older-ask set cleared, so the gap can ask again (medium 1; a page ask the healed socket already carries is not a wedge): %r" % a)
         self.assertGreaterEqual(r["redialed5"], 1, "the shim redialed and the kernel re-sent the session after the close: %r" % r["redialed5"])
         self.assertIsNotNone(r["gapLo5"], "a gap still stood after the redial to ask into: %r" % r.get("gapLo5"))
         self.assertGreaterEqual(r["redialAsk5"], 1, "a deep link into that gap on the healed socket asked again (loadAround or loadTurns): not wedged (round four, low 6): %r" % r["redialAsk5"])
