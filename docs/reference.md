@@ -1549,7 +1549,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   its fallback reason counted), `bypass` (a pending cut armed on the session)
   and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,
   beside `asmCheckpoint.removed`, the document files removed per reason (a
-  fallback's reason, or the boot sweep).
+  fallback's reason, or the boot sweep). The row also carries `nudgeWalk`
+  (T401): the session ids whose parses the boot's nudge walk `skipped` on
+  its memo, those it `parsed`, and how many it `deferred` to a later pass.
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
@@ -1755,7 +1757,17 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   read-only store cache (`hit`, `miss`, `compare_miss`, `refuse`, `dup`,
   `absent`, `corrupt`, `unreadable_journal`, `evict`, `fallback`, `poisoned`,
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
-  (`hit`, `miss`, `populate`, `bypass`); `nudgeGate` is the auto-nudge walk's
+  (`hit`, `miss`, `populate`, `bypass`); `nudgeWalk` is the auto-nudge walk's
+  parse gate (T401): `looks`, `skippedParses` (a session whose transcript,
+  state log and store are unchanged since its last completed look and whose
+  clock legs, noted by that look with the instant each could flip, have not
+  come due; the skip repeats the recorded verdict and still runs the
+  parse-free debt reminder), `parses`, `coldParses` (parses no cache held),
+  `deferredSessions` (the yield: with a client connected the pass stops after
+  its first cold parse and the rest of the recency-ordered walk waits for the
+  next pass), `unbounded` (memos refused because a leg's release is not one
+  of the session's files, a deferral retired by a judge pass) and `clockDue`
+  (memos refused because a noted flip has come); `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue

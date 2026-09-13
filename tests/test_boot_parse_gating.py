@@ -271,8 +271,11 @@ class TickJobsKeyOnAChange(unittest.TestCase):
             self.assertIn('_tick_job_done("%s", s, files_st)' % job, src, "%s: a completed evaluation is marked done" % job)
         self.assertEqual(inspect.getsource(km._interrupt_block_tick).count('_tick_job_done("interrupt-block", s, files_st)'), 4,
                          "done on the four landed outcomes (filed, standing, lifted, nothing to lift); never on a refused write or an unproved ledger")
-        self.assertNotIn("_tick_job_check", inspect.getsource(km._auto_nudge_session),
-                         "the nudge has wall-clock timers, so it keeps its per-cycle evaluation (documented in _tick_job_check)")
+        walk = inspect.getsource(km._auto_nudge_session)               # T401 (2): the nudge's gate is its own (the memo plus the
+        self.assertNotIn("_tick_job_check", walk + inspect.getsource(km._nudge_look_gated),   # earliest clock flip), never the
+                         "the nudge has wall-clock legs: never the plain memo check (documented in _tick_job_check)")   # plain check
+        self.assertTrue(walk.startswith("@_nudge_look_gated"), "the look is wrapped by its parse gate")
+        self.assertTrue(hasattr(km._auto_nudge_session, "__wrapped__"))
         cyc = inspect.getsource(km._pusher_cycle_jobs)
         self.assertLess(cyc.index("_job_stage('interruptBlock', lambda: _interrupt_block_tick(now, live_map))"),
                         cyc.index("_job_stage('persistTickSeen', lambda: _persist_tick_seen())"), "the memo is written after the tick jobs")
