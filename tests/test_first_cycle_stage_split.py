@@ -204,10 +204,13 @@ class LabBootFirstCycle(unittest.TestCase):
         km._append_restart_cut = lambda row: self.rows.append(row)
         km._BOOT_HEALTH_DONE[0] = False
         km._PERF_STATS.reset()
+        self.saved_sampler = dict(km._FIRST_CYCLE_SAMPLER)               # the sampler's slot, restored after (round two, low 5)
+        km._FIRST_CYCLE_SAMPLER.update({"started": False, "stop": threading.Event(), "rows": [], "thread": None, "failed": 0})
 
     def tearDown(self):
         km = self.km
         km.NAMES, km._live_map, km._push_all, km._append_restart_cut, km._BOOT_HEALTH_DONE[0] = self.saved
+        km._FIRST_CYCLE_SAMPLER.clear(); km._FIRST_CYCLE_SAMPLER.update(self.saved_sampler)
         km._PERF_STATS.reset()
 
     def test_the_boot_row_carries_the_pushers_stack_samples_from_the_first_cycle_only(self):
@@ -216,7 +219,6 @@ class LabBootFirstCycle(unittest.TestCase):
         samples ride the boot-health row as firstCycleStacks (seconds into the cycle, the stage mark, the innermost frames); a
         later cycle adds nothing and writes no row."""
         km = self.km
-        km._FIRST_CYCLE_SAMPLER.update({"started": False, "stop": threading.Event(), "rows": [], "thread": None})
         km._push_all = km._stage_marked("push")(lambda live_map=None: time.sleep(2.3))   # marked as the real push is
         with km._clients_lock:                                             # a client, so the cycle pushes (the sleep above)
             km._clients.append({"app": "feed", "wid": "lab", "send": lambda *a, **k: None, "alive": True})
@@ -243,6 +245,66 @@ class LabBootFirstCycle(unittest.TestCase):
         self.assertEqual(len(self.rows), 1, "a later cycle writes no row")
         self.assertEqual(len(km._FIRST_CYCLE_SAMPLER["rows"]), n, "and adds no sample")
         self.assertFalse(any(t.name == "first-cycle-sampler" for t in threading.enumerate()))
+
+    def _marked_push(self, seconds):
+        km = self.km
+        km._push_all = km._stage_marked("push")(lambda live_map=None: time.sleep(seconds))
+        with km._clients_lock:
+            km._clients.append({"app": "feed", "wid": "lab", "send": lambda *a, **k: None, "alive": True})
+        self.addCleanup(lambda: [km._clients.remove(c) for c in list(km._clients) if c.get("wid") == "lab"])
+
+    def test_a_sampler_thread_that_cannot_start_leaves_the_cycle_and_the_row_intact(self):
+        """Round two, MEDIUM: the sampler's start was an unguarded statement in the cycle's prologue, before the cycle's try,
+        and the pusher loop has no watchdog, so a start that raised (no thread slot at boot) would have ended the pusher for
+        the process's life: no push, no tick job, no boot-health row. The start degrades to no samples with one stderr line,
+        the thread is stored only once started, and the cycle completes and writes its row."""
+        km = self.km
+        self._marked_push(0.05)
+        import io
+        err = io.StringIO()
+        with mock.patch.object(threading.Thread, "start", side_effect=RuntimeError("can't start new thread")), \
+             mock.patch.object(sys, "stderr", err):
+            km._pusher_cycle()                                                 # must not raise
+        self.assertEqual(len(self.rows), 1, "the boot-health row was written")
+        self.assertEqual(self.rows[0].get("firstCycleStacks"), [], "with no samples")
+        self.assertIn("first-cycle sampler: not started", err.getvalue())
+        self.assertIsNone(km._FIRST_CYCLE_SAMPLER["thread"], "nothing unstarted is stored, so the stop joined nothing")
+        km._pusher_cycle()                                                     # the pusher goes on
+        self.assertEqual(len(self.rows), 1)
+
+    def test_a_failed_frame_walk_is_counted_and_sampling_goes_on(self):
+        """Round two, low 4: one transient exception in the walk ended sampling for the boot, and a short list read as a fast
+        cycle. The failure is counted (firstCycleStacksFailed on the row) and the next second samples again."""
+        km = self.km
+        self._marked_push(2.3)
+        real = km._first_cycle_sample; calls = []
+        def flaky(tid, t0):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("frame gone")
+            return real(tid, t0)
+        with mock.patch.object(km, "_first_cycle_sample", flaky):
+            km._pusher_cycle()
+        row = self.rows[0]
+        self.assertEqual(row.get("firstCycleStacksFailed"), 1, sorted(row))
+        self.assertGreaterEqual(len(row["firstCycleStacks"]), 1, "sampling went on after the failure: %r" % calls)
+
+    def test_the_interval_widens_after_the_dense_samples(self):
+        """Round two, low 3: sixty one-second samples kept the first minute and dropped the rest, so an 84 s cycle never showed
+        where it ended; after FIRST_CYCLE_SAMPLE_DENSE samples the interval is FIRST_CYCLE_SAMPLE_WIDE_S, and the cap covers
+        three minutes."""
+        km = self.km
+        self._marked_push(1.4)
+        with mock.patch.object(km, "FIRST_CYCLE_SAMPLE_S", 0.2), mock.patch.object(km, "FIRST_CYCLE_SAMPLE_DENSE", 2), \
+             mock.patch.object(km, "FIRST_CYCLE_SAMPLE_WIDE_S", 0.5):
+            km._pusher_cycle()
+        ts = [row["t"] for row in self.rows[0]["firstCycleStacks"]]
+        self.assertGreaterEqual(len(ts), 3, ts)
+        self.assertLess(ts[1] - ts[0], 0.45, "dense at first: %r" % ts)
+        self.assertGreaterEqual(ts[2] - ts[1], 0.45, "then wide: %r" % ts)
+        self.assertEqual(km.FIRST_CYCLE_SAMPLE_DENSE * km.FIRST_CYCLE_SAMPLE_S
+                         + (km.FIRST_CYCLE_SAMPLES_MAX - km.FIRST_CYCLE_SAMPLE_DENSE) * km.FIRST_CYCLE_SAMPLE_WIDE_S, 180.0,
+                         "the cap covers three minutes")
 
     def test_the_boots_first_cycle_names_its_stages(self):
         km = self.km

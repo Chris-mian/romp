@@ -23692,10 +23692,12 @@ def _boot_row_due_locked():
 
 BOOT_FIRST_CYCLE_BOUND_S = float(os.environ.get("ROMP_BOOT_FIRST_CYCLE_BOUND_S", "10"))
 _BOOT_HEALTH_DONE = [False]
-FIRST_CYCLE_SAMPLE_S = 1.0             # the pusher's stack is sampled this often during the boot's FIRST cycle only
-FIRST_CYCLE_SAMPLES_MAX = 60           # and at most this many samples (a minute of a slow boot) ride the boot-health row
+FIRST_CYCLE_SAMPLE_S = 1.0             # the pusher's stack is sampled this often during the boot's FIRST cycle only ...
+FIRST_CYCLE_SAMPLE_DENSE = 30          # ... for this many samples; after them every FIRST_CYCLE_SAMPLE_WIDE_S, so the cap below
+FIRST_CYCLE_SAMPLE_WIDE_S = 5.0        #  covers three minutes (30 s dense, 150 s wide) and an 84 s cycle shows where it ended
+FIRST_CYCLE_SAMPLES_MAX = 60           # at most this many samples ride the boot-health row
 FIRST_CYCLE_SAMPLE_FRAMES = 8          # innermost frames kept per sample: enough to name the lock or the read, not the whole stack
-_FIRST_CYCLE_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None}
+_FIRST_CYCLE_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None, "failed": 0}
 
 
 def _first_cycle_sample(tid, t0):
@@ -23713,13 +23715,16 @@ def _first_cycle_sample(tid, t0):
 
 def _first_cycle_sampler_run(tid, t0):
     ev = _FIRST_CYCLE_SAMPLER["stop"]
-    while not ev.wait(FIRST_CYCLE_SAMPLE_S):              # loop-ok: bounded by the first cycle's end and the sample cap
+    while True:                                           # loop-ok: bounded by the first cycle's end and the sample cap
+        n = len(_FIRST_CYCLE_SAMPLER["rows"]) + _FIRST_CYCLE_SAMPLER["failed"]
+        if ev.wait(FIRST_CYCLE_SAMPLE_S if n < FIRST_CYCLE_SAMPLE_DENSE else FIRST_CYCLE_SAMPLE_WIDE_S):
+            return
         if len(_FIRST_CYCLE_SAMPLER["rows"]) >= FIRST_CYCLE_SAMPLES_MAX:
             return
         try:
             _FIRST_CYCLE_SAMPLER["rows"].append(_first_cycle_sample(tid, t0))
         except Exception:
-            return
+            _FIRST_CYCLE_SAMPLER["failed"] += 1           # one failed walk is counted, not the end of sampling (round two, low 4)
 
 
 def _first_cycle_sampler_start(t0):
@@ -23727,21 +23732,32 @@ def _first_cycle_sampler_start(t0):
     /perf stack sample could not be taken in time (the watch's poll latency was longer than the cycle). A daemon thread
     samples the PUSHER's stack once a second for the first cycle only, at most FIRST_CYCLE_SAMPLES_MAX rows, and the rows
     ride the boot-health row as `firstCycleStacks`, so a boot read names the read or the lock the cycle waited in without
-    the kernel alive. Cost: one sys._current_frames() and one walk of one thread's frames a second (tens of microseconds)
-    for the length of the first cycle, then the thread ends; nothing after the first cycle."""
+    the kernel alive. Cost: one sys._current_frames() and one walk of one thread's frames a second (about 7 us, 25 with two
+    hundred threads live) for the length of the first cycle, then the thread ends; nothing after the first cycle. The row
+    grows by about 330 bytes a sample (20 KB for 60, 30 KB worst case), on a ledger with no rotation that its readers
+    slice from the tail: it grows by that once per boot whose first cycle ran the samples' length."""
     if _FIRST_CYCLE_SAMPLER["started"]:
         return
     _FIRST_CYCLE_SAMPLER["started"] = True
-    th = threading.Thread(target=_first_cycle_sampler_run, args=(threading.get_ident(), t0), name="first-cycle-sampler", daemon=True)
-    _FIRST_CYCLE_SAMPLER["thread"] = th
-    th.start()
+    try:
+        th = threading.Thread(target=_first_cycle_sampler_run, args=(threading.get_ident(), t0), name="first-cycle-sampler", daemon=True)
+        th.start()
+        _FIRST_CYCLE_SAMPLER["thread"] = th                 # stored only once started: the stop joins nothing unstarted
+    except Exception as e:                                  # a start that raises (no thread slot at boot) degrades to no samples,
+        try:                                                #  never ends the pusher (round two, medium: the sibling starts' discipline)
+            sys.stderr.write("first-cycle sampler: not started (%s); the boot-health row carries no stack samples\n" % e)
+        except Exception:
+            pass
 
 
 def _first_cycle_sampler_stop():
     _FIRST_CYCLE_SAMPLER["stop"].set()
     th = _FIRST_CYCLE_SAMPLER.get("thread")
-    if th is not None:
-        th.join(timeout=2.0)
+    if th is not None and th.ident is not None:
+        try:
+            th.join(timeout=2.0)
+        except Exception:
+            pass
 
 
 def _boot_health_first_cycle(dt):
@@ -23765,6 +23781,8 @@ def _boot_health_first_cycle(dt):
     row["nudgeWalk"] = {"skipped": list(_NUDGE_WALK_FIRST["skipped"]), "parsed": list(_NUDGE_WALK_FIRST["parsed"]),
                         "deferred": _NUDGE_WALK_FIRST["deferred"]}   #  deferred to a later pass
     row["firstCycleStacks"] = list(_FIRST_CYCLE_SAMPLER["rows"])   # the pusher's stack once a second through the cycle (T401 (3))
+    if _FIRST_CYCLE_SAMPLER["failed"]:
+        row["firstCycleStacksFailed"] = _FIRST_CYCLE_SAMPLER["failed"]   # walks that raised: a short list is then not a fast cycle
     if row["slow"]:
         try:
             sys.stderr.write("boot health: the first pusher cycle took %.1f s (bound %.0f s): sessions and cards waited behind it; "
@@ -50062,7 +50080,8 @@ def _pusher_cycle():
     ran before them."""
     _t_cycle = time.monotonic()
     if not _BOOT_HEALTH_DONE[0]:
-        _first_cycle_sampler_start(_t_cycle)   # the boot's first cycle: the pusher's stack sampled once a second (T401 (3))
+        _first_cycle_sampler_start(_t_cycle)   # the boot's first cycle: the pusher's stack sampled once a second (T401 (3)); the
+        #                                        start never raises (it degrades to no samples), so it stands outside the try
     _PERF_STATS.cycle_begin()               # T397 round two, low 3: the split opens with the cycle, so the prelude below (the
     #                                         liveness snapshot, the names) is a stage of its own and the stages sum to the wall
     _c_cycle = time.thread_time()           # this thread's CPU: the wall above includes lock waits and any forked child
