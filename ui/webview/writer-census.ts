@@ -10,6 +10,12 @@
  *  nested, a method, an arrow), is a wrapper and must be registered; a registered name that passes nothing through is stale.
  *  The table's root (the write helper itself) is the one entry that forwards to nothing.
  *
+ *  The census reads SYNTAX, not data flow (round seven, low 1): a family function called through a property access
+ *  (`x.writeScroll(...)`, `writeScroll.call(...)`) or given another name (`const w = writeScroll`) is a FAILURE naming the site,
+ *  since a call by any other route would count nothing; a wrapper's writer parameter that a block const shadows or a reassignment
+ *  changes before the family call is NOT followed: the census counts the caller's literal, and the string written may differ.
+ *  Neither shape occurs in render.ts; the pin holds the first, the second is the stated limit.
+ *
  *  Node-only: the tests import it; the webview bundle never does. */
 import * as ts from "typescript";
 
@@ -59,7 +65,16 @@ export function writerCensus(src: string, table: Readonly<Record<string, number>
     return null;
   };
 
+  const inTable = (name: string): boolean => Object.prototype.hasOwnProperty.call(table, name);
   const visit = (n: ts.Node): void => {
+    // a family function reached by any route but its bare name counts nothing here, so it fails loudly (round seven, low 1)
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+      const pa = n.expression;
+      if (inTable(pa.name.text)) fail(n, shown(n), pa.name.text + " is called through a property access; the census reads a call by its bare name only");
+      else if (ts.isIdentifier(pa.expression) && inTable(pa.expression.text)) fail(n, shown(n), pa.expression.text + "." + pa.name.text + " calls the family by another route; the census reads a call by its bare name only");
+    }
+    if (ts.isVariableDeclaration(n) && n.initializer && ts.isIdentifier(n.initializer) && inTable(n.initializer.text))
+      fail(n, shown(n), n.initializer.text + " is given another name; a call through it would count nothing");
     if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && Object.prototype.hasOwnProperty.call(table, n.expression.text)) {
       const callee = n.expression.text;
       const pos = table[callee];

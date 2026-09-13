@@ -119,3 +119,16 @@ test("the root must be declared: a table whose root is missing fails", () => {
   const c = writerCensus('function other(el: HTMLElement, w: string): void { el.scrollTop = 0; }', { writeScroll: 2 });
   assert.match(c.failures.find((f) => f.call === "writeScroll")!.why, /not declared as a function/);
 });
+
+// round seven, low 1: a family function reached by any route but its bare name fails loudly, since the census would count nothing
+for (const [shape, body, why] of [
+  ["a method-style call", 'api.writeScroll(el, 0, "land-on");', /writeScroll is called through a property access/],
+  ["a .call on the function", 'writeScroll.call(null, el, 0, "land-on");', /writeScroll\.call calls the family by another route/],
+  ["an alias", 'const w = writeScroll;\nw(el, 0, "land-on");', /writeScroll is given another name/],
+] as const) {
+  test("low 1: " + shape + " fails the census naming the site", () => {
+    const c = census(body);
+    assert.ok(c.failures.some((f) => why.test(f.why)), whys(c).join(" | "));
+    assert.ok(!c.literals.includes("land-on"), "nothing counted through the other route: " + c.literals.join(","));
+  });
+}

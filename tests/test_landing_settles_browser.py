@@ -194,19 +194,19 @@ const rowsBefore12 = (await rows()).length; const ledgerBefore12 = (await ledger
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: q(42), anchorT: cfg.base + 84 });
 try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(42), { timeout: 20000 }); }
 catch (e) { const st = await state(); console.error("the link road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
-const planted12 = await page.evaluate(([from, to]) => { const src = document.querySelector('#content .turn[data-uuid="' + from + '"] .md'); const dst = document.querySelector('#content .turn[data-uuid="' + to + '"] .md');
-  if (!src || !dst) return null; dst.id = "lab-frag"; const a = document.createElement("a"); a.href = "#lab-frag"; a.className = "lab-frag"; a.textContent = "further down"; src.insertBefore(a, src.firstChild);   // first in the landed message: its top is the viewport's top, so the link is in view without a scroll
-  return { landed: document.getElementById("content").scrollTop, srcOk: true }; }, [q(42), q(44)]);
+// the plant and the click in ONE task (round seven, medium): the pane's rewindow re-render rebuilds every turn from its record, and
+// a hand-planted anchor, which belongs to no record, is destroyed by it; three Playwright round trips between planting and clicking
+// (boundingBox, viewportSize, mouse.click) lost the node 6 of 6 drives on the devbox (page.click never reached its actionability
+// scroll: it timed out waiting for a node that was gone). So the link is planted first in the landed message, its box read against
+// the viewport, and clicked, all in the same task. The click is the DOM's own (an untrusted event): the road covers the page's
+// fragment-link handler and the writer it classifies as the reader's (section-link), not the pointer's delivery.
+const planted12 = await page.evaluate(([from, to]) => { const src = document.querySelector('#content .turn[data-uuid="' + from + '"] .md'); const dst = document.querySelector('#content .turn[data-uuid="' + to + '"]');
+  if (!src || !dst) return null; dst.id = "lab-frag"; const a = document.createElement("a"); a.href = "#lab-frag"; a.className = "lab-frag"; a.textContent = "further down"; src.insertBefore(a, src.firstChild);
+  const b = a.getBoundingClientRect(); const inView = b.top >= 0 && b.bottom <= window.innerHeight && b.left >= 0 && b.right <= window.innerWidth;
+  const landed = document.getElementById("content").scrollTop; a.click();
+  return { landed, srcOk: true, inView }; }, [q(42), q(44)]);
 if (!planted12) { console.error("the link road found no message bodies to plant in"); process.exit(1); }
-// the click as a DOM event on the link itself: the mouse's own click would first scroll the link into view (Playwright's actionability),
-// a scroll the settle then re-lands, and the two fight past the click's timeout when the link sits below the viewport
-// a REAL mouse click at the link's own box (page.mouse.click), not page.click: Playwright's click first scrolls its target into
-// view, a scroll the settle re-lands, and the two fought past the click's timeout on the head (2026-09-13); the link sits inside the
-// landed message, so its box is in the viewport and the click needs no scroll
-const linkBox12 = await page.locator(".lab-frag").boundingBox();
-const vp12 = page.viewportSize() || { width: 0, height: 0 };
-const linkInView12 = !!linkBox12 && linkBox12.y >= 0 && linkBox12.y + linkBox12.height <= vp12.height && linkBox12.x >= 0 && linkBox12.x + linkBox12.width <= vp12.width;
-if (linkBox12) await page.mouse.click(linkBox12.x + linkBox12.width / 2, linkBox12.y + linkBox12.height / 2);
+const linkInView12 = !!planted12.inView;
 await page.waitForTimeout(1400);
 const after12 = await page.evaluate(() => document.getElementById("content").scrollTop);
 const link12 = (await ledger()).slice(ledgerBefore12).filter((wr) => wr.writer === "section-link").length;
@@ -447,13 +447,15 @@ class ServedLandingSettles(WindowLab):
         self.assertTrue(taken[0].get("gesture"), "the row says the reader took the landing over: %r" % taken[0])
 
     def test_a_click_on_a_fragment_link_inside_a_message_during_the_settle_is_the_readers_takeover(self):
-        """The click is a REAL mouse click at the link's own box (page.mouse.click), never page.click: Playwright's click scrolls its
-        target into view first, a scroll the settle re-lands, and the two fought past the click's timeout on the head (2026-09-13). The
-        link sits inside the landed message, so its box is in the viewport and no scroll is needed; the road asserts that."""
+        """The link is planted and clicked in ONE page task: the pane's rewindow re-render rebuilds every turn from its record and
+        destroys a hand-planted node, so any round trip between the plant and the click lost the link (6 of 6 drives on the devbox,
+        2026-09-13; page.click timed out on a node that was gone, never reaching its actionability scroll). The click is the DOM's own,
+        an untrusted event: the road covers the page's fragment-link handler and its writer's class (section-link, the reader's), not
+        the pointer's delivery; the link's box is read against the viewport in the same task and asserted in view."""
         # round five, medium: a real click on a link planted in the landed body, pointing at a later turn's body (section-link)
         r = self._result()
         self.assertIsNotNone(r["planted12"], "the link and its target were planted in two message bodies")
-        self.assertTrue(r["linkInView12"], "the link's box was in the viewport for the real click: %r" % r.get("linkInView12"))
+        self.assertTrue(r["linkInView12"], "the link's box was in the viewport at the click: %r" % r.get("linkInView12"))
         self.assertGreaterEqual(r["link12"], 1, "the click wrote the pane (section-link): %s writes" % r["link12"])
         self.assertGreater(r["after12"] - r["planted12"]["landed"], 100, "the view ends at the link's target, below the landing: %s from %s" % (r["after12"], r["planted12"]["landed"]))
         self.assertEqual(r["writes12"], [], "no land-realign wrote the reader's link step back: %r" % r["writes12"])
