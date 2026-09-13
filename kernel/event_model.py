@@ -4275,9 +4275,11 @@ def chain_membership(leaf_path, candidate_files=None, states=None, leaf_override
                 return _membership_of(entry["ad"])        # the display's own current graph, under its lock
         if _CKPT_DIR_FN is not None:
             doc = _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
-            if doc is not None:                              # no current entry: the document's pre-cut facts plus the
-                try:                                         #  tail read now, the whole graph's verdicts without the
-                    seed, _landed = _seed_from_doc(doc)      #  whole read (the emit is the parse's, not needed here)
+            if doc is not None and not _tail_chains_onto_the_document(leaf_path, doc):
+                _asm_stat("seeded:chainRefused"); doc = None   # the tail re-parents into the pre-cut part: the cold walk, as
+            if doc is not None:                              #  before T391 (T402 round four)
+                try:                                         # no current entry: the document's pre-cut facts plus the tail
+                    seed, _landed = _seed_from_doc(doc)      #  read now, the whole graph's verdicts without the whole read
                     adapter = FileAdapter(candidate_files, leaf_path, resume_links=links, seed=seed)
                     how = "seeded"
                 except Exception as e:                       # noqa: BLE001
@@ -4301,7 +4303,9 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
     ad = None
     if rompuuid is not None and _CKPT_DIR_FN is not None:
         doc = _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True)
-        if doc is not None:
+        if doc is not None and not _tail_chains_onto_the_document(path, doc):
+            _asm_stat("seeded:chainRefused"); doc = None      # the cold walk over a tail that re-parents into the pre-cut
+        if doc is not None:                                   #  part (T402 round four)
             try:
                 seed, _landed = _seed_from_doc(doc)
                 ad = FileAdapter([str(path)], str(path), seed=seed)
@@ -4474,11 +4478,20 @@ _TS_REPAIRED_SEEN = set()    # record uuids already counted in ts-repair — dis
 #                              not parse volume; races only overcount by one, acceptable
 
 
+_ASM_DEMOTE_TL = threading.local()   # the calling thread's last demotion reason: what _assemble reads to pick the road after it
+_ASM_RESTORE_AFTER_DEMOTE = ("descent", "rewrite", "nonleaf")   # the demotions the document still stands for (T402): the tail
+#                                   moved (a spur, a rewind, a fork), the leaf's record entry was replaced, a lineage file moved; the
+#                                   load's own checks refuse a document that no longer fits. Every other reason (a new boundary or
+#                                   summary in the tail, a prompt id, a skill link, a stamp out of order, ...) keeps the whole parse.
+
+
 def _asm_demote(reason):
     """Count WHY a fold demoted to a full parse (g:<reason> in _ASM_STATS) and return None —
-    the hit-rate diagnosis this cache lives or dies by, in prod and in the corpus replay."""
+    the hit-rate diagnosis this cache lives or dies by, in prod and in the corpus replay. The reason is
+    left on the thread for _assemble, which tries the restore road for the reasons the document still stands for."""
     k = "g:" + reason
     _asm_stat(k)
+    _ASM_DEMOTE_TL.reason = reason
     return None
 
 
@@ -4579,9 +4592,11 @@ def _asm_gates(entry, leaf_path, candidate_files, links):
     for r in delta:
         t, u = r.get("type"), r.get("uuid")
         if u:
-            if u in ad.by_uuid or u in ad.dangling:
-                return _asm_demote("uuid-known")   # a re-write rebinds last-write-wins index
-                #                  state; a resurrected dangling target rebinds repaired stitches
+            if u in ad.by_uuid or u in ad.dangling or u in ((ad.seed or {}).get("verdicts") or {}):
+                return _asm_demote("uuid-known")   # a re-write rebinds last-write-wins index state; a resurrected dangling target
+                #                                    rebinds repaired stitches; a RESTORED entry's adapter holds only the tail's
+                #                                    records, its pre-cut uuids live in the seed (round seven: a reuse of a pre-cut
+                #                                    uuid folded and served u1 a1 u2 a2 where a cold parse clears them)
             p = r.get("parentUuid") or r.get("logicalParentUuid")
             parent_d[u] = None if p == u else p
             new_leaf = u
@@ -5607,6 +5622,12 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 chain.append(u)
             u = ad.parent_of.get(u); guard_n += 1
         spine = [row_of[u] for u in reversed(chain) if u in row_of]   # record indexes, root to cut
+        tip = chain[0] if chain else None                 # the pre-cut spine's tip: the first pre-cut record on the leaf's path
+        tip_childless = tip is not None and not any(    # decided HERE from the RESOLVED graph (parentUuid or logicalParentUuid,
+            p == tip and ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid   #  the stitch repair applied): a pre-cut child of
+            for u, p in ad.parent_of.items())           #  the tip, a compaction anchored on it included, means a tail child would
+        #                                                   decide the fork (T402 round five, medium 1); the restore reads this
+        #                                                   bit, never the rows' raw parents
         seq_ts = None
         i = bisect.bisect_left(ad._seq_ts, (cut_seq,)) - 1
         if i >= 0:
@@ -5724,7 +5745,7 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                "gates": {"prompt_ids": sorted(ad.prompt_ids), "boundary_pids": sorted(ad.boundary_pids),
                          "skill_use_ids": sorted(ad.skill_use_ids), "src_tool_links": sorted(ad.src_tool_links),
                          "dangling": sorted(ad.dangling)},
-               "carry": _carry_encode(st), "identity": identity, "t": time.time()}
+               "carry": _carry_encode(st), "identity": identity, "t": time.time(), "tipChildless": bool(tip_childless)}
         try:
             text = json.dumps(doc, separators=(",", ":"))
         except TypeError:
@@ -6046,6 +6067,101 @@ def _entry_current(entry, candidate_files):
     return True
 
 
+def _boundary_effective_parent(r, known):
+    """A compact_boundary's parent as the parse resolves it (FileAdapter._ingest, then _repair_compaction_stitches): its
+    parentUuid or logicalParentUuid when that names a known record; when it names an UNKNOWN one, the first of
+    compactMetadata.preservedSegment's tail, anchor and head that does (the stitch repair re-points only a truthy, unknown
+    target); None when the resolved target is falsy (the parse leaves such a boundary a root) or nothing is known."""
+    target = r.get("parentUuid") or r.get("logicalParentUuid")
+    if not target:
+        return None                                       # the parse leaves such a boundary a ROOT and never reads the segment
+    if target in known:
+        return target
+    seg = (r.get("compactMetadata") or {}).get("preservedSegment") or {}
+    for k in ("tailUuid", "anchorUuid", "headUuid"):
+        cand = seg.get(k)
+        if cand and cand in known:
+            return cand
+    return None
+
+
+def _tail_chains_onto_the_document(leaf_path, doc):
+    """Whether the leaf's tail (its records past the document's cut) CHAINS onto the document: every tail record that bears a
+    uuid or a parentUuid key, whatever its type (user, assistant, a system spur, a summary, a sidechain record, an attachment),
+    parents a record IN THE TAIL, or the pre-cut SPINE TIP when the document says the writer proved the tip had no pre-cut
+    child (`tipChildless`, decided at write time from the resolved graph, a compaction anchored on the tip counting as a child;
+    an older document without the bit is not proven, so the exemption does not apply). A compaction boundary in the tail is
+    held to the same rule through its EFFECTIVE parent, resolved as the parse resolves it (logicalParentUuid, else the
+    preserved segment's tail, anchor or head that names a known record): the boundary at the cut anchors on the tip or a tail
+    record; one anchored in the pre-cut interior, or on no known record, invalidated the document. A missing parentUuid key
+    counts as a null root. So a /clear fork, a rewind onto any pre-cut record but a proven-childless tip, a system spur
+    anchored before the cut, an orphan parent, a summary or sidechain record parented into the pre-cut part, a compaction
+    re-anchored into the interior or onto an unknown uuid, a self-linked record, a parent cycle, a boundary with no anchor at all, a tail uuid reusing a pre-cut record's, all refuse to the whole parse; a uuid repeated within the tail is the parse's last-wins node: graph invalidations the document's
+    byte checks cannot see, after which the pre-cut verdicts the document carries may be stale (T402 rounds one to six). The rule is REACHABILITY: the tail is a forest whose only root parent is the proven tip and every record's parent chain reaches it (a boundary through its effective parent); set membership alone approved a tail that re-rooted itself while a cold parse dropped the pre-cut conversation. The
+    childless tip is exempt because a first child cannot change which pre-cut branch is active, and the live manual /compact
+    chains its command wrappers onto the pre-compact leaf, a childless tip, in ten of thirteen corpus cases (the golden detached
+    scenario). One predicate for EVERY read that seeds an adapter from a document: the boot restore, the restore after a
+    descent, rewrite or nonleaf demotion, the chain-membership and file-rewound readers. A leaf with no cut in the document
+    has no tail to chain."""
+    fsid = Path(leaf_path).stem
+    f = (doc.get("files") or {}).get(fsid) or {}
+    cut = f.get("cut")
+    if not cut or f.get("skip"):
+        return True
+    ent = _read_jsonl_entry(leaf_path, tail_ok=True, tail_from=(int(cut[0]), int(cut[1]), bytes.fromhex(cut[2])))
+    recs = ent[4] if ent is not None else []
+    if ent is not None and ent[5] < int(cut[1]):          # a whole entry: the tail is the records past the cut
+        recs = recs[int(cut[1]) - ent[5]:]
+    nodes = [r for r in recs if isinstance(r, dict) and (r.get("uuid") or "parentUuid" in r)]   # the graph nodes; a
+    by_uuid = {r["uuid"]: r for r in nodes if r.get("uuid")}                                     #  file-history snapshot or a
+    rows, spine = doc.get("records") or [], doc.get("spine") or []                                #  summary index row is none
+    pre_uuids = {row[0] for row in rows}
+    tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
+    tip_ok = tip if tip is not None and doc.get("tipChildless") is True else None
+    known = pre_uuids | set(by_uuid)
+    if any(u in pre_uuids for u in by_uuid):
+        return False                                      # a tail uuid reusing a pre-cut record's: a cycle across the spine, and the parse
+    #                                                       would re-bind a frozen record (round seven). A uuid REPEATED within the tail is
+    #                                                       resolved as the parse resolves it: the last record wins (by_uuid), so the walk
+    #                                                       below runs over one node per uuid with the last copy's parent; the common real
+    #                                                       shape (a verbatim duplicate, 3.5 percent of transcripts) grafts, and a repeat
+    #                                                       whose last copy is a non-tip root refuses through reachability (round eight)
+    walk_nodes = list(by_uuid.values()) + [r for r in nodes if not r.get("uuid")]
+
+    def parent_of(r):
+        """The record's parent as the parse resolves it; None for a root (a null or missing parent, a self-link)."""
+        if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
+            p = _boundary_effective_parent(r, known)      # the boundary's anchor as the parse resolves it (round five, medium 2)
+        else:
+            p = r.get("parentUuid")
+        return None if (not p or p == r.get("uuid")) else p
+
+    reaches = {}                                          # uuid -> whether its parent chain reaches the proven tip (memoized)
+    for r in walk_nodes:                                  # REACHABILITY, not membership (round six, medium): every tail node's
+        path, on_path, cur = [], set(), r                 #  parent chain must end at the proven tip; a chain ending at any other
+        while True:                                       #  root (null, missing, self-link, unknown), revisiting a record (a
+            u = cur.get("uuid")                           #  cycle) or leaving the tail into the pre-cut part refuses
+            if u is not None and u in reaches:
+                ok = reaches[u]; break
+            if u is not None and u in on_path:
+                ok = False; break                         # a cycle (the set beside the path keeps a backwards-written tail linear)
+            if u is not None:
+                path.append(u); on_path.add(u)
+            p = parent_of(cur)
+            if p is None:
+                ok = False; break                         # a root that is not the tip: the tail re-roots the graph
+            if p == tip_ok:
+                ok = True; break
+            if p in by_uuid:
+                cur = by_uuid[p]; continue
+            ok = False; break                             # the pre-cut interior, an unproven tip, or an unknown uuid
+        for x in path:
+            reaches[x] = ok
+        if not ok:
+            return False
+    return True
+
+
 def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human):
     """The entry restored from the leaf's assembly checkpoint, served; None when there is none or it does not verify.
     The pre-cut turns come from the document as lazy atoms; the tail is read from the cut and parsed through an
@@ -6056,6 +6172,9 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
     asm_sidecar_refresh(leaf_path, doc)                   # an older sidecar gains the inputs list here (round one, low 2)
     try:
         seed, landed = _seed_from_doc(doc)
+        if not _tail_chains_onto_the_document(leaf_path, doc):
+            _asm_stat("restore:chainRefused")             # the tail does not chain onto the document: the whole parse (T402); the
+            return None                                   #  document stands on disk until the next write replaces it
         fsids = list(doc.get("fsids") or [])
         pre_turns, prefix = [], []
         if doc.get("turns"):
@@ -6267,6 +6386,7 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
                     _ASM_CACHE.pop(key, None)
                     _ASM_CACHE[key] = entry       # a served entry is a USED entry (LRU touch)
             if entry is not None:
+                _ASM_DEMOTE_TL.reason = None
                 got = _asm_gates(entry, leaf_path, candidate_files, links)
                 if got is not None:
                     delta, leaf_recs = got
@@ -6282,6 +6402,21 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
                         return served
                 with _ASM_LOCK:                   # gate/invariance demotion: the entry is stale
                     _ASM_CACHE.pop(key, None)
+                # A demoted entry falls to the RESTORE road before the whole parse (T402): for a descent (the delta does not
+                # chain the new leaf to the old: an api_error spur, a rewind, a /clear fork in the tail), a rewrite or a moved
+                # lineage file, the document still stands for the pre-cut part and its own load checks refuse it when it does
+                # not fit; the tail read from the cut covers the moved leaf. The first instrumented boot (T398) paid two whole
+                # parses under g:descent inside the auto-nudge tick where a restore would have read the tail.
+                _why = getattr(_ASM_DEMOTE_TL, "reason", None)
+                if _CKPT_DIR_FN is not None and _why in _ASM_RESTORE_AFTER_DEMOTE:
+                    # every restore over a document, this one and the boot's, first asks whether the tail CHAINS onto it
+                    # (_tail_chains_onto_the_document); a rewind into the pre-cut interior, a /clear fork, a system spur
+                    # anchored before the cut or an orphan parent refuses to the whole parse, as before (rounds one and two)
+                    served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
+                    if served is not None:
+                        _asm_stat("restore"); _asm_stat("restore:afterDemote")
+                        _mode("restore")
+                        return served
             elif _CKPT_DIR_FN is not None:
                 served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
                 if served is not None:

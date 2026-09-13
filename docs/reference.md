@@ -1545,10 +1545,38 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   bookkeeping could not close. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
   stage without the kernel alive, and `parse`, the assembly's road counters at
-  the first cycle's end (T398): `serve`, `fold`, `restore`, `full` with
+  the first cycle's end (T398): `serve`, `fold`, `restore` (with
+  `restore:afterDemote`, the restores taken over an entry the gates demoted
+  instead of a whole parse, and `restore:chainRefused`, a document that stood
+  but whose leaf tail does not chain onto it: every tail record bearing a
+  uuid or a parentUuid key must REACH, through its parent chain within the
+  tail, the pre-cut spine tip, and only when the document's `tipChildless` bit says the writer proved,
+  from the resolved graph, that the tip had no pre-cut child (a compaction
+  anchored on it counts; an older document without the bit is not proven); a
+  compaction boundary in the tail is held to the same rule through its
+  effective parent, resolved as the parse resolves it (the logical parent,
+  else, for a truthy anchor naming no known record, the preserved segment's
+  tail, anchor or head that does; a boundary with no anchor is a root); so a
+  null or missing parent, a self-link, a cycle, a tail uuid reusing a pre-cut
+  record's (a uuid repeated within the tail is resolved as the parse resolves
+  it, the last record's parent winning), a parent anywhere else in the pre-cut part,
+  an unproven tip, an unknown parent, or a boundary re-anchored into the
+  interior or onto an unknown uuid refuses, whatever the record's type (one
+  standing disagreement with the cold parse remains outside the rule: a tail
+  record whose stamp precedes the cut or the tip chains soundly but the
+  write-time stamp-order guard is not re-checked, so such a restore can
+  differ from a cold parse; a later round); a document written before the bit is unproven, so every standing
+  document is refused once at its first restore after the change and booked
+  `full:refused`, then rewritten with the bit; the restore falls to the whole parse, at boot
+  and after a demotion alike, and `seeded:chainRefused` counts the same
+  refusal by the chain-membership and file-rewound readers, which then walk
+  the file cold, T402), `full` with
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
+  `descent` when the new leaf does not chain to the old through the delta,
   `rewrite` when the leaf's record entry was replaced by a from-zero read
-  under a new generation, `nonleaf` when a lineage file moved),
+  under a new generation, `nonleaf` when a lineage file moved or grew,
+  `inputs`, `recs-gone`, `no-leaf-slot`, `empty-graph`, `uuid-known`,
+  `boundary`, `summary`, `promptid`, `skill-link`, `ts`, `kept`),
   `full:noDocument`, `full:noDir` (no checkpoint directory), `full:refused` (a document that stood but did not verify,
   its fallback reason counted), `bypass` (a pending cut armed on the session)
   and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,
