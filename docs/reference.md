@@ -1571,7 +1571,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `full:refused`, and rewritten from the whole parse that follows the
   refusal, then and there (`write:afterRefusal`, or
   `write:afterRefusalSkipped` when the writer declines), so the next
-  restore takes it; a whole parse whose resolved graph is cyclic writes no
+  restore takes it; a document refused for the tail's SHAPE (a re-rooted
+  tail, a reused pre-cut uuid) is marked refused in its sidecar at the leaf's
+  stat, and while that stat stands every road goes straight to the whole or
+  cold parse with no proof and no rewrite (`restore:refusedStanding`,
+  `seeded:refusedStanding`); the mark clears when the leaf moves or a write
+  the writer accepts replaces the sidecar; a whole parse whose resolved graph is cyclic writes no
   document (`skipped.cycle`); a record without a uuid is not a node of the
   chain walk; the restore falls to the whole parse, at boot
   and after a demotion alike, and `seeded:chainRefused` counts the same
@@ -1846,9 +1851,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   session's key and the next pass re-evaluates each alive session once);
   the pass takes every session's stat before it reads any pass-level
   snapshot, so no input a look reads is older than the key its memo is
-  recorded under; `unboundedBy` counts the unbounded notes per leg (the
-  stamped wait, a standing deferral, a dead asker, a store fault, a queued
-  send, an unmarked verdict, ...);
+  recorded under; `unboundedBy` counts the unbounded NOTES per leg at the
+  look that recorded them (the stamped wait, a standing deferral, a dead
+  asker, a store fault, a queued send, a legacy record with no anchor, an
+  unmarked verdict when no named leg noted the look), one leg per look, while
+  `unbounded` counts a LATER look's refused skip, so the two are not
+  comparable;
   `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;

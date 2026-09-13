@@ -490,6 +490,54 @@ class AssemblyRoadCounters(Harness):
                              "the whole parse offered its document to the writer: %s (skipped: %s)" % (parse, em.asm_checkpoint_stats()["skipped"]))
             self.assertEqual(tree, self._cold(path))
 
+    def test_a_document_refused_for_the_tails_shape_is_marked_and_no_road_retries_while_the_leaf_stands(self):
+        """Follow-up round two, medium 1: the rewrite converges only for the missing bit; for a tail whose SHAPE refuses (a
+        re-rooted tail here, x4) the same cut reproduces the same refusal, so every boot paid the proof and the rewrite attempt
+        again. The refusal is marked in the sidecar at the leaf's stat: three boots write once (the first parse's attempt) and
+        run the proof zero times after the mark; both seeded readers walk cold without the proof; the mark clears when the leaf
+        moves. The missing-bit case keeps its one rewrite (the test above)."""
+        import gzip as _gz
+        path, t0 = self._documented("marked-x4")
+        self._append(path, self.REROOT_SHAPES["x4_self_link_last"](t0))
+        rk = os.path.realpath(path)
+        for boot in (1, 2, 3):
+            with self.subTest(boot=boot):
+                self.fresh(); self._reset(); w0 = em.asm_checkpoint_stats()["written"]
+                tree, parse, reads = self._served(path)
+                if boot == 1:
+                    self.assertEqual(parse.get("restore:chainRefused"), 1, parse)
+                    self.assertEqual(parse.get("write:afterRefusal", 0) + parse.get("write:afterRefusalSkipped", 0), 1, "one write attempt: %s" % parse)
+                    meta = json.loads(em._asm_ckpt_file(path).with_name(em._asm_ckpt_file(path).name + ".meta").read_text())
+                    self.assertEqual(meta.get("refused", {}).get("reason"), "shape", meta)
+                    self.assertTrue(em._asm_refusal_stands(path))
+                else:
+                    self.assertEqual(parse.get("restore:refusedStanding"), 1, "%s: the mark stands: no proof" % boot)
+                    self.assertEqual(parse.get("restore:chainRefused", 0), 0, "%s: the proof did not run" % boot)
+                    self.assertEqual(parse.get("write:afterRefusal", 0) + parse.get("write:afterRefusalSkipped", 0), 0, "%s: no rewrite attempt" % boot)
+                    self.assertEqual(em.asm_checkpoint_stats()["written"] - w0, 0)
+                self.assertEqual(parse.get("full:refused"), 1, parse)
+                self.assertEqual(tree, self._cold(path))
+        with self.subTest(road="seeded"):
+            self.fresh(); self._reset()
+            n0 = em.asm_checkpoint_stats()["parse"].get("seeded:refusedStanding", 0)
+            seeded_m = em.chain_membership(path, [path], rompuuid=SID); seeded_r = em.file_rewound(path, rompuuid=SID)
+            parse = em.asm_checkpoint_stats()["parse"]
+            self.assertEqual(parse.get("seeded:refusedStanding", 0) - n0, 2, "both readers walked cold on the mark: %s" % parse)
+            self.assertEqual(parse.get("seeded:chainRefused", 0), 0, "no proof ran")
+            saved = em._CKPT_DIR_FN; em._CKPT_DIR_FN = None
+            try:
+                self.fresh(); cold_m = em.chain_membership(path, [path], rompuuid=SID); cold_r = em.file_rewound(path, rompuuid=SID)
+            finally:
+                em._CKPT_DIR_FN = saved
+            self.assertEqual((seeded_m, seeded_r), (cold_m, cold_r))
+        with self.subTest(road="the leaf moves"):
+            self._append(path, [G.uline(t0 + 800, "more", "u_more", "u_self")])
+            self.assertFalse(em._asm_refusal_stands(path), "a moved leaf clears the mark")
+            self.fresh(); self._reset()
+            tree, parse, reads = self._served(path)
+            self.assertEqual(parse.get("restore:refusedStanding", 0), 0, "the proof runs again for the moved leaf: %s" % parse)
+            self.assertEqual(tree, self._cold(path))
+
     def test_a_cyclic_resolved_graph_refuses_the_write_instead_of_walking_to_the_guard(self):
         """Follow-up (the demote gate's later low): a reused uuid can make the resolved graph cyclic, and the writer's spine walk
         ran to its 500,000 guard and stored the collected chain; the walk is bounded by the record count and a cycle refuses."""

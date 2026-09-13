@@ -957,6 +957,8 @@ def set_checkpoint_dir(fn):
     moves it. None turns checkpoints off."""
     global _CKPT_DIR_FN
     _CKPT_DIR_FN = fn
+    with _ASM_CKPT_LOCK:
+        _ASM_CHAIN_REFUSED_PATHS.clear()                  # a rebind forgets a refusal recorded against another directory's document
     with _CKPT_LOCK:
         _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear(); _DROP_OWED.clear()
         _RETIRED_FOLDS.clear()                            # a retirement never outlives a state rebind (round two, low 2)
@@ -4274,7 +4276,9 @@ def chain_membership(leaf_path, candidate_files=None, states=None, leaf_override
                     sys.stderr.write("chain: entry %s\n" % leaf_path)
                 return _membership_of(entry["ad"])        # the display's own current graph, under its lock
         if _CKPT_DIR_FN is not None:
-            doc = _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
+            doc = None if _asm_refusal_stands(leaf_path) else _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
+            if doc is None and _asm_refusal_stands(leaf_path):
+                _asm_stat("seeded:refusedStanding")       # the cold walk, no proof, while the mark stands (round two)
             if doc is not None and not _tail_chains_onto_the_document(leaf_path, doc):
                 _asm_stat("seeded:chainRefused"); doc = None   # the tail re-parents into the pre-cut part: the cold walk, as
             if doc is not None:                              #  before T391 (T402 round four)
@@ -4302,7 +4306,9 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
     path = Path(path)
     ad = None
     if rompuuid is not None and _CKPT_DIR_FN is not None:
-        doc = _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True)
+        doc = None if _asm_refusal_stands(path) else _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True)
+        if doc is None and _asm_refusal_stands(path):
+            _asm_stat("seeded:refusedStanding")           # the cold walk, no proof, while the mark stands (round two)
         if doc is not None and not _tail_chains_onto_the_document(path, doc):
             _asm_stat("seeded:chainRefused"); doc = None      # the cold walk over a tail that re-parents into the pre-cut
         if doc is not None:                                   #  part (T402 round four)
@@ -5119,6 +5125,59 @@ def asm_sidecar_refresh(leaf_path, doc):
         return False
 
 
+def _asm_leaf_stat(leaf_path):
+    try:
+        st_ = os.stat(leaf_path)
+        return [st_.st_size, st_.st_mtime]
+    except OSError:
+        return None
+
+
+def _asm_mark_refused(leaf_path, reason):
+    """Record in the document's sidecar that the chain proof refused the standing document for the TAIL's SHAPE (a re-rooted
+    tail, a reused pre-cut uuid), with the leaf's stat: while that stat stands, the same cut reproduces the same refusal, so
+    no road retries the proof or the rewrite (the missing-bit case is not marked: its one rewrite converges). The mark clears
+    when the leaf moves (the stat differs) or a write the writer accepts replaces the sidecar (T402 follow-up, round two)."""
+    cp = _asm_ckpt_file(leaf_path)
+    st_ = _asm_leaf_stat(leaf_path)
+    if cp is None or st_ is None:
+        return False
+    meta = cp.with_name(cp.name + ".meta")
+    with _ASM_CKPT_LOCK:
+        try:
+            d = json.loads(meta.read_bytes().decode("utf-8"))
+            if not isinstance(d, dict):
+                d = {}
+        except (OSError, ValueError):
+            d = {}
+        d["refused"] = {"reason": reason, "size": st_[0], "mtime": st_[1]}
+        try:
+            mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
+            mtmp.write_text(json.dumps(d)); os.replace(mtmp, meta)
+            return True
+        except OSError:
+            return False
+
+
+def _asm_refusal_stands(leaf_path):
+    """Whether the sidecar marks the standing document refused for the tail's shape at the leaf's CURRENT stat: a few bytes
+    read, no document, no tail; True sends every road straight to the whole or cold parse (restore:refusedStanding)."""
+    cp = _asm_ckpt_file(leaf_path)
+    if cp is None:
+        return False
+    meta = cp.with_name(cp.name + ".meta")
+    try:
+        text = meta.read_bytes(); _count_read(str(meta), len(text))
+        d = json.loads(text.decode("utf-8"))
+        ref = d.get("refused") if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return False
+    if not isinstance(ref, dict):
+        return False
+    st_ = _asm_leaf_stat(leaf_path)
+    return st_ is not None and [ref.get("size"), ref.get("mtime")] == st_
+
+
 def asm_document_seeds(leaf_path):
     """Whether the assembly document for `leaf_path` can SEED a one-file walk of the leaf: its inputs are the leaf alone. Read
     from the sidecar's `files` (a few bytes, never the document); a sidecar without the list (an older write) answers as
@@ -5251,7 +5310,8 @@ def _asm_ckpt_file(leaf_path):
     return Path(d) / (hashlib.sha1(os.path.realpath(str(leaf_path)).encode("utf-8")).hexdigest()[:20] + ".asm.json.gz")
 
 
-_ASM_CHAIN_REFUSED_PATHS = set()  # realpaths whose standing document the chain proof refused at this parse: parse_session
+_ASM_CHAIN_REFUSED_PATHS = {}     # realpath -> why the chain proof refused the standing document at this parse ("unproven": the
+#                                   missing bit; "shape": the tail's own shape): parse_session
 #                                   rewrites the document from the whole parse that follows, then and there (the writer has the
 #                                   resolved graph in hand and the refusal is the event), never leaving it to the entry's next
 #                                   quiescence drop, which a quiet session reaches slowly or never (T402 follow-up: sixteen of
@@ -6092,7 +6152,7 @@ def _boundary_effective_parent(r, known):
     return None
 
 
-def _tail_chains_onto_the_document(leaf_path, doc):
+def _tail_chains_onto_the_document(leaf_path, doc, assume_childless=False):
     """Whether the leaf's tail (its records past the document's cut) CHAINS onto the document: every tail record that bears a
     uuid or a parentUuid key, whatever its type (user, assistant, a system spur, a summary, a sidechain record, an attachment),
     parents a record IN THE TAIL, or the pre-cut SPINE TIP when the document says the writer proved the tip had no pre-cut
@@ -6125,7 +6185,7 @@ def _tail_chains_onto_the_document(leaf_path, doc):
     #                                                                       walked (T402 follow-up); a snapshot or index row is none
     pre_uuids = {row[0] for row in rows}
     tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
-    tip_ok = tip if tip is not None and doc.get("tipChildless") is True else None
+    tip_ok = tip if tip is not None and (doc.get("tipChildless") is True or assume_childless) else None
     known = pre_uuids | set(by_uuid)
     if any(u in pre_uuids for u in by_uuid):
         return False                                      # a tail uuid reusing a pre-cut record's: a cycle across the spine, and the parse
@@ -6174,6 +6234,9 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
     """The entry restored from the leaf's assembly checkpoint, served; None when there is none or it does not verify.
     The pre-cut turns come from the document as lazy atoms; the tail is read from the cut and parsed through an
     adapter seeded with the pre-cut graph facts and the carried emit state; the prefix's identity is proven."""
+    if _asm_refusal_stands(leaf_path):
+        _asm_stat("restore:refusedStanding")             # refused for the tail's shape at this very stat: no proof, no rewrite (round two)
+        return None
     doc = _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
     if doc is None:
         return None
@@ -6182,8 +6245,12 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
         seed, landed = _seed_from_doc(doc)
         if not _tail_chains_onto_the_document(leaf_path, doc):
             _asm_stat("restore:chainRefused")             # the tail does not chain onto the document: the whole parse (T402); the
+            _why = ("unproven" if doc.get("tipChildless") is None and _tail_chains_onto_the_document(leaf_path, doc, assume_childless=True)
+                    else "shape")                         # the missing bit alone, or the tail's own shape
             with _ASM_CKPT_LOCK:
-                _ASM_CHAIN_REFUSED_PATHS.add(os.path.realpath(str(leaf_path)))   # and the document is rewritten from that parse
+                _ASM_CHAIN_REFUSED_PATHS[os.path.realpath(str(leaf_path))] = _why   # the whole parse that follows offers its document
+            #                                               once; for the shape it then marks the sidecar at the leaf's stat, so the
+            #                                               same cut is not proved or rewritten again while the leaf stands (round two)
             return None                                   #  document stands on disk until the next write replaces it
         fsids = list(doc.get("fsids") or [])
         pre_turns, prefix = [], []
@@ -6567,16 +6634,19 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
         out["cutTurn"] = cut_turn                   # a restored tree only (T323 stage 4b): where its lazy atoms ended
     _rk = os.path.realpath(str(leaf_path))
     with _ASM_CKPT_LOCK:
-        _refused_here = _rk in _ASM_CHAIN_REFUSED_PATHS
-        _ASM_CHAIN_REFUSED_PATHS.discard(_rk)
-    if _refused_here and _CKPT_DIR_FN is not None:
+        _why = _ASM_CHAIN_REFUSED_PATHS.pop(_rk, None)
+    if _why is not None and _CKPT_DIR_FN is not None:
         try:                                        # the chain proof refused the standing document and this whole parse produced a
             if asm_checkpoint_write(leaf_path, rompuuid, sdk_human, tree=out, who="refusal"):   # sound tree: write its document now,
                 _asm_stat("write:afterRefusal")     #  carrying the childless bit, so the next restore takes it (T402 follow-up)
             else:
                 _asm_stat("write:afterRefusalSkipped")   # the writer declined (its own skip reason is counted under asmCheckpoint.skipped)
-        except Exception as e:                      # noqa: BLE001 — a write that fails is the settle's to retry
-            _say_once("assembly checkpoint: %s not rewritten after a refusal: %r" % (leaf_path, e))
+        except Exception as e:                      # noqa: BLE001 — the flag was popped above, so a write that RAISES is not retried
+            _say_once("assembly checkpoint: %s not rewritten after a refusal: %r" % (leaf_path, e))   # here: the settle's road writes
+            #                                                                                             the entry at its next drop
+        if _why == "shape":
+            _asm_mark_refused(leaf_path, "shape")   # AFTER the write, so an accepted write cannot erase it: the same cut reproduces
+            #                                         the same refusal until the leaf moves (round two, medium 1)
     return out
 
 

@@ -461,11 +461,12 @@ class NudgeWalkParseGate(unittest.TestCase):
                      _session_awaiting=lambda *a, **k: False)
         with mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: (None, OSError("EMFILE"))):
             self._look(r, now, calls, **quiet)
-        self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"].get("storeFault"), 1, km._NUDGE_WALK_STATS["unboundedBy"])
+        self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"], {"storeFault": 1}, "one unbounded look books exactly one leg (round two: the "
+                         "decorator's default fires only when no named leg noted the look)")
         km._TICK_SEEN.clear()
         self._look(r, now + 1, calls, _session_working=lambda turns: False, _interrupt_suppresses_nudge=lambda turns, sid="", **k: False,
                    _pending_ops={SID_OLD: [1]})
-        self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"].get("unmarked:queued-input"), 1, km._NUDGE_WALK_STATS["unboundedBy"])
+        self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"], {"storeFault": 1, "unmarked:queued-input": 1}, km._NUDGE_WALK_STATS["unboundedBy"])
         self.assertIn("unboundedBy", km._PERF_STATS.snapshot()["memos"]["nudgeWalk"])
 
     def test_the_pass_keeps_its_stats_in_a_side_map_and_leaves_the_shared_rows_untouched(self):

@@ -13252,11 +13252,12 @@ def _nudge_look_gated(fn):
         if parsed and not wake_only and r is not True:    # a fire moved the files anyway; a look that never parsed has nothing to skip
             file_keyed = (r in _NUDGE_FILE_KEYED_VERDICTS) or (r is False and getattr(_NUDGE_HORIZON, "walk_completed", False))
             if not file_keyed:
+                if None not in notes:                    # the default fires only when no named leg noted this look, so unboundedBy
+                    by = _NUDGE_WALK_STATS.get("unboundedBy"); _leg = "unmarked:%s" % r   # partitions the unbounded looks (round two)
+                    if not isinstance(by, dict):
+                        by = _NUDGE_WALK_STATS["unboundedBy"] = {}
+                    by[_leg] = by.get(_leg, 0) + 1
                 notes = list(notes) + [None]             # the default: an exit no audited road claimed is unbounded
-                by = _NUDGE_WALK_STATS.get("unboundedBy"); _leg = "unmarked:%s" % r
-                if not isinstance(by, dict):
-                    by = _NUDGE_WALK_STATS["unboundedBy"] = {}
-                by[_leg] = by.get(_leg, 0) + 1
             _nudge_look_done(s, files_st, notes, r)
         return r
     return gated
@@ -13642,7 +13643,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
                         if report_ts and rec0.get("redundantEvT") == report_ts \
                                 and rec0.get("redundantSettleT") == settle_t:
                             _anch = max(rec0.get("answeredAt") or 0, rec0.get("at") or 0)
-                            _nudge_clock((_anch + AWAITING_DEADMAN_SECS) if _anch else None)   # the parked dead-man this ruling
+                            _nudge_clock((_anch + AWAITING_DEADMAN_SECS) if _anch else None, "legacyNoAnchor")   # the parked dead-man this
                             #                                                                     stands under (T401 (2), high; a legacy
                             #                                                                     record with no anchor: unbounded)
                             if _anch and now - _anch > AWAITING_DEADMAN_SECS:
