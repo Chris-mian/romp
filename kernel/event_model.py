@@ -4845,10 +4845,13 @@ class LazyIndex:
             return None
         rr = self.records[ri] if ri is not None else None
         lz = row.get("lz") or {}
-        facts = {"type": "user", "uuid": rr[0] if rr else sc.get("uuid"), "t": rr[5] if rr else sc.get("t", 0),
-                 "lazy": {"ir": bool(lz.get("ir"))}, "_light": k}
-        if "author" in sc:
-            facts["author"] = sc["author"]
+        facts = {"type": "user", "uuid": rr[0] if rr else None, "t": rr[5] if rr else 0, "lazy": {"ir": bool(lz.get("ir"))}, "_light": k}
+        for f in ("type", "uuid", "t", "author"):      # the recorded scalars over the record row's fields, exactly as the build
+            if f in sc:                                #  applies them (a repaired timestamp lives in the scalars, not the record)
+                facts[f] = sc[f]
+        if "m" in row and lz == {}:                    # an inline body with no lazy header: the flag from the text, as the build's
+            facts["lazy"] = None                       #  atom would read it (is_interrupt_record falls to the text without `lazy`)
+            facts["message"] = row["m"]
         cache[k] = facts
         return facts
 
