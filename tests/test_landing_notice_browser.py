@@ -35,6 +35,24 @@ const rowAtTop = () => page.evaluate(() => {
   return null;
 });
 const onScreen = (uuid) => page.evaluate((u) => { const t = document.querySelector(`#content .turn[data-uuid="${u}"]`); if (!t) return null; const c = document.getElementById("content").getBoundingClientRect(); const r = t.getBoundingClientRect(); return { top: Math.round(r.top - c.top), visible: r.bottom > c.top && r.top < c.bottom }; }, uuid);
+// ROAD 6 (round five, medium B; runs FIRST, on the pristine boot with the head gap whole — later roads fill it): the point under the viewport top holds through a fill while the reader stands INSIDE the head gap,
+// far from the filled page: the head page [0,16) asked at the top edge and HELD; the reader then scrolls deep into
+// the gap (no row on screen); the reply released: the fill lands above them and the point under the viewport top, named as a turn, must
+// move by less than a turn (the old view-coordinate compensation carried them ~2.6 turns, 81c0dca5 ~2.8).
+const sentAt6 = await page.evaluate(() => window.__sent.length);
+await page.evaluate(() => { window.__hold.add("loadTurns"); });
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, await sentOf("loadTurns") - 1, { timeout: 8000 }).catch(() => {});
+const heldAsk6 = await page.evaluate(() => (window.__heldRaw || []).length);
+await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.round(gTop + Math.min(8000, (g ? g.offsetHeight : 9000) * 0.6)); });   // deep into the head gap, no row on screen
+await painted();
+const inGap6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); const rows = Array.from(c.querySelectorAll(".turn[data-uuid]")).filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; }).length; const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; const g = rs && rs.find((r) => r.kind === "gap"); return { top: c.scrollTop, rowsOnScreen: rows, gap: g ? { lo: g.lo, hi: g.hi } : null, regions: rs, heldTypes: (window.__heldRaw || []).map((d) => { try { return JSON.parse(d).type; } catch (e) { return "?"; } }) }; });
+const point6Before = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
+await page.evaluate(() => { window.__hold.delete("loadTurns"); window.__release(); });
+await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
+await painted();
+const point6After = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
+const fillWrites6 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill").map((m) => ({ b: m.data.before, a: m.data.after })), sentAt6);
 // ROAD 3 (T386 stage 2, medium 2): an OLDER host speaks the pre-regions window protocol — its chatWindow carries events but NO span.
 // A deep link into a gap, the ask held, then a span-less reply injected: the pre-jump moved the reader, so the notice comes down and
 // the reader is told the host is older, never dropped silently where the pre-jump left them.
@@ -138,25 +156,6 @@ await page.waitForFunction((n) => (window.__sent.filter((m) => m.type === "loadA
 const reask5 = (await asks5()) - asksBefore5;
 const reNotice5 = (await state()).notice;
 const resident5 = resBefore5;
-// ROAD 6 (round five, medium B): the point under the viewport top holds through a fill the reader stands ABOVE of? no: INSIDE the head gap,
-// far from the filled page. Reset to the boot tail; the head page [0,16) asked at the top edge and HELD; the reader then scrolls deep into
-// the gap (no row on screen); the reply released: the fill lands above them and the point under the viewport top, named as a turn, must
-// move by less than a turn (the old view-coordinate compensation carried them ~2.6 turns, 81c0dca5 ~2.8).
-await page.evaluate(() => { if (window.__bootSession) window.postMessage(window.__bootSession, "*"); });
-await painted();
-await page.evaluate(() => { window.__hold.add("loadTurns"); });
-await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, await sentOf("loadTurns") - 1, { timeout: 8000 }).catch(() => {});
-const heldAsk6 = await page.evaluate(() => (window.__heldRaw || []).length);
-await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.round(gTop + Math.min(8000, (g ? g.offsetHeight : 9000) * 0.6)); });   // deep into the head gap, no row on screen
-await painted();
-const inGap6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); const rows = Array.from(c.querySelectorAll(".turn[data-uuid]")).filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; }).length; const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; const g = rs && rs.find((r) => r.kind === "gap"); return { top: c.scrollTop, rowsOnScreen: rows, gap: g ? { lo: g.lo, hi: g.hi } : null }; });
-const point6Before = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
-await page.evaluate(() => { window.__hold.delete("loadTurns"); window.__release(); });
-await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
-await painted();
-const point6After = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
-const fillWrites6 = await page.evaluate(() => window.__sent.filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill").slice(-1).map((m) => ({ b: m.data.before, a: m.data.after })));
 process.stdout.write("RESULT:" + JSON.stringify({ inGap6, heldAsk6, point6Before, point6After, fillWrites6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, redialAsk5, redialed5, gapLo5: gapLo5Out, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
