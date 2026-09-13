@@ -1746,7 +1746,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   boot, appended tails only once the persisted index holds a file), `filesIndexed`, and
   `checked` (prompt anchors known not to be a wrapper, never read again).
 - `chatPages`: the rendered pages of chat history before a session's render
-  floor (the chat wire's `loadOlder`, `loadAround` and `loadNewer` answers, below):
+  floor (the chat wire's `loadOlder`, `loadAround` and `loadTurns` answers, below):
   `hits`, `misses`, `evictions`, `pages` and `bytes` resident (a bound of 32
   pages or 16 MB per kernel), `renderMs` spent rendering; the warming, after
   the pusher's send stage (`push.warm`), with a board client and a proto-2 chat
