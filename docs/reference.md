@@ -2205,7 +2205,11 @@ announces `chatProto2` in its `caps`:
   viewport, whatever the sign of its top; with no row on screen (or that row
   gone from the rebuild) it names the point under the viewport top as a TURN
   and a fraction into its gap and puts that turn back after the rebuild, so
-  the point moves by less than a turn (the head stays at zero);
+  the point moves by less than a turn (the head stays at zero); every row
+  carries its own turn, stamped when it is painted, so the point is named by
+  the row's position and never by looking its uuid up (a row anchored on an
+  answer's tool_result uuid has no event of its own), and a fill that leaves
+  no row on screen re-windows once around the named point;
 - the kernel's per-client base is TAIL-ONLY: a reply moves the base's first edge
   only when its span reaches the tail run, so the tail's deltas keep flowing to a
   reader in older history; a reconnect's `ready` starts a fresh base. A run whose
