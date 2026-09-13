@@ -58591,7 +58591,14 @@ class Handler(BaseHTTPRequestHandler):
                 sid = str(msg["id"])
                 with _client_lock(client):
                     _cur_base = (client.get("echat") or {}).get(sid)
-                reply = _chat_history_reply(sid, msg, int(time.time()), base=_cur_base if isinstance(_cur_base, dict) else None)
+                _reply_type = {"loadOlder": "chatHead", "loadAround": "chatWindow", "loadNewer": "chatMore"}[msg["type"]]
+                try:
+                    reply = _chat_history_reply(sid, msg, int(time.time()), base=_cur_base if isinstance(_cur_base, dict) else None)
+                except Exception as e:                    # the ask is answered even so (T402): the page waits on the reply to end its
+                    sys.stderr.write("%s: %s\n" % (msg.get("type"), traceback.format_exc()))   # loading pill, and an unanswered ask left it on for good
+                    reply = {"type": _reply_type, "id": sid, "missing": True, "error": "%s: %s" % (type(e).__name__, e)}
+                if reply is None:                         # no session or no build to answer from (T402): say so, never silence
+                    reply = {"type": _reply_type, "id": sid, "missing": True, "error": "no session to answer from"}
                 if reply is not None:
                     with _client_lock(client):
                         base = reply.pop("_base", None)
@@ -59148,7 +59155,7 @@ class Handler(BaseHTTPRequestHandler):
                 for _k in ("dist", "clamp"):
                     if isinstance(msg.get(_k), (int, float)) and not isinstance(msg.get(_k), bool):
                         rec[_k] = msg[_k]
-                for _k in ("settled", "superseded", "gesture"):   # gesture: the reader took the landing over (round three, low 3)
+                for _k in ("settled", "superseded", "gesture", "cancelled"):   # gesture: the reader took the landing over (round three, low 3); cancelled: they clicked the wait away (T402)
                     if isinstance(msg.get(_k), bool):
                         rec[_k] = msg[_k]
                 with open(jd.STATE / "locate-audit.jsonl", "a", encoding="utf-8") as f:

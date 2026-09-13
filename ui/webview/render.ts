@@ -13660,8 +13660,9 @@ function virtualizeToViewport(): void {
   const nearBotEdge = (v.winEnd ?? total) < total && st + vh > renderedBottom - edgePx;
   if (!nearTopEdge && !nearBotEdge) return;   // window comfortably covers the viewport
   revirtBusy = true;
-  showLoadingPill();
-  // Defer one frame so the pill paints before the (possibly heavy) render, then re-anchor on the focus unit.
+  // no pill here (T402, the user 2026-09-12: the pill sat on a reader at the tail with nothing to load): a re-window renders
+  // RESIDENT content and asks the kernel for nothing; the pill is for an older-history request the reader made and that is
+  // still outstanding, only. Defer one frame, then re-anchor on the focus unit.
   requestAnimationFrame(() => {
     try {
       // Read the focus unit at RENDER time, not scroll-event time: a fast scrollbar DRAG moves on between the
@@ -13684,7 +13685,6 @@ function virtualizeToViewport(): void {
       if (activeId) applyCommentMarks(activeId);   // the re-window rebuilt turns — re-anchor highlights
       scheduleRailSticky();
     } finally {
-      hideLoadingPill();
       revirtBusy = false;   // always release, even if a render threw — a wedged flag = no more loading
     }
   });
@@ -13709,7 +13709,13 @@ function showLoadingPill(): void {
   if (!loadingPillEl) {
     loadingPillEl = document.createElement("div");
     loadingPillEl.className = "tx-loading-pill";
-    loadingPillEl.textContent = "Loading earlier messages…";
+    loadingPillEl.textContent = "Loading earlier messages… click to stop waiting";
+    loadingPillEl.title = "stop waiting for the older messages; the view stays where it is";
+    // the ONE cancel (T402, the user 2026-09-12: the pill could not be made to go away): the click ends the wait for the
+    // active session's older-history ask, hides the pill, and drops a landing that was waiting on that ask (the reply, if it
+    // still comes, inserts its history and moves nothing; a new click on the card is a new landing). The same click that
+    // stage 2's landing notice will carry (plans/chat-history-regions.md).
+    loadingPillEl.addEventListener("click", () => cancelOlderWait("click"));
   }
   if (!loadingPillEl.isConnected) {   // the first show, or a rebuild that dropped the anchor
     const anchor = document.createElement("div");
@@ -13720,6 +13726,27 @@ function showLoadingPill(): void {
   loadingPillEl.style.display = "";
 }
 function hideLoadingPill(): void { if (loadingPillEl) loadingPillEl.style.display = "none"; }
+/** End the wait on the active session's older-history ask (T402): the in-flight mark goes, so the next scroll or click may ask
+ *  again; a landing waiting on that ask is dropped (its row files as cancelled); the pill hides. `why`: the click, or the socket's
+ *  reopen (every ask in flight died with the old socket: its reply comes on no socket, and the pill stayed on for the rest of
+ *  the page's life, the shape the user saw at the tail). */
+function cancelOlderWait(why: "click" | "wsup"): void {
+  const sids = why === "wsup" ? [...loadingOlder] : (activeId ? [activeId] : []);
+  for (const sid of sids) {
+    const waitingLanding = pendingOlderAnchor.get(sid);
+    loadingOlder.delete(sid); pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); pendingWindowNav.delete(sid);
+    if (why === "click" && sid === activeId && waitingLanding && pendingAnchor === waitingLanding) {
+      landTrail.push("cancelled");
+      vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: waitingLanding, anchorT: pendingAnchorT ?? undefined, kind: pendingAnchorKind ?? undefined, cancelled: true });
+      pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; anchorPendingOlder = false;
+      clearSeek();
+    }
+  }
+  if (loadingOlder.size === 0) hideLoadingPill();
+}
+// a reopened socket (the shim's romp:wsup) ends every wait: the asks in flight died with the old socket (T402); a landing still
+// pending re-asks on the next render pass, since its in-flight mark is gone
+window.addEventListener("romp:wsup", () => cancelOlderWait("wsup"));
 // the served geometry lab (tests/test_loading_pill_anchor_browser.py) shows the pill on demand: its real
 // showings last the span of a fetch, too brief to measure against the strip
 if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLoadingPill(); else hideLoadingPill(); };
@@ -17288,8 +17315,7 @@ function requestAround(sid: string, uuid: string): boolean {
 function requestNewer(sid: string): void {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || !s.detached || !s.lastUuid || loadingOlder.has(sid)) return;
-  loadingOlder.add(sid);
-  showLoadingPill();
+  loadingOlder.add(sid);   // no pill: the walk toward the tail is the page's own ask, not a reader waiting on older history (T402)
   vscodeApi?.postMessage({ type: "loadNewer", id: sid, after: s.lastUuid });
 }
 function chatWindow(msg: any) {

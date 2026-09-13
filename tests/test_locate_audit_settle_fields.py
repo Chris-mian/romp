@@ -51,8 +51,12 @@ class LocateAuditSettleFields(unittest.TestCase):
         self.post(dist=-38, settled=False, superseded=True)
         self.post(dist=0, settled=True, clamp=93)
         self.post(dist=3, settled=True, gesture=True)   # the reader took the landing over with the target on its row (round three, low 3)
+        self.post(ok=False, trail=["pointer-fetch-window", "cancelled"], cancelled=True)   # they clicked the wait away before the window came (T402)
         rows = self.rows()
-        self.assertEqual(len(rows), 4)
+        self.assertEqual(len(rows), 5)
+        self.assertEqual((rows[4]["ok"], rows[4]["cancelled"]), (False, True), "the cancel reaches the audit: %r" % rows[4])
+        for r in rows[:4]:
+            self.assertNotIn("cancelled", r, "no cancel mark on a landing nobody clicked away: %r" % r)
         self.assertEqual((rows[3]["settled"], rows[3]["gesture"]), (True, True), "the takeover mark reaches the audit: %r" % rows[3])
         for r in rows[:3]:
             self.assertNotIn("gesture", r, "no mark on a landing the reader left alone: %r" % r)
@@ -75,11 +79,11 @@ class LocateAuditSettleFields(unittest.TestCase):
 
     def test_mistyped_settle_fields_are_not_copied(self):
         # round two, low 2: the four fields are typed like the fields beside them; a bool is not a distance, a word is not a mark
-        self.post(dist="9", settled="yes", superseded=1, clamp=True, gesture="wheel")
+        self.post(dist="9", settled="yes", superseded=1, clamp=True, gesture="wheel", cancelled="yes")
         self.post(dist=True, settled=None, clamp=2.5)
         rows = self.rows()
         self.assertEqual(len(rows), 2)
-        for k in ("dist", "settled", "superseded", "clamp", "gesture"):
+        for k in ("dist", "settled", "superseded", "clamp", "gesture", "cancelled"):
             self.assertNotIn(k, rows[0], "a mistyped field is dropped, never written: %r" % rows[0])
         self.assertNotIn("dist", rows[1], "a bool is not a distance: %r" % rows[1])
         self.assertNotIn("settled", rows[1])

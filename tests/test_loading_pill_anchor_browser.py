@@ -94,7 +94,7 @@ const measure = (label, shownBy) => page.evaluate(([label, shownBy]) => {
   return { label, shownBy, rows: tops.length, tabs: r(tabs), tabbar: r(tabbar), content: r(content), viewport: { w: window.innerWidth, h: window.innerHeight },
            pill: pill ? r(pill) : null, pillShown: !!pill && cs.display !== "none" && cs.visibility !== "hidden",
            inBody: pill ? pill.parentElement === document.body : null, parent: pill ? pill.parentElement.className : null,
-           position: cs ? cs.position : null, pointer: cs ? cs.pointerEvents : null, bg: cs ? cs.backgroundColor : null, border: cs ? cs.borderTopColor : null };
+           position: cs ? cs.position : null, pointer: cs ? cs.pointerEvents : null, anchorPointer: (pill && pill.parentElement && pill.parentElement.classList.contains("tx-loading-anchor")) ? getComputedStyle(pill.parentElement).pointerEvents : null, bg: cs ? cs.backgroundColor : null, border: cs ? cs.borderTopColor : null };
 }, [label, shownBy]);
 const cases = [];
 // one row: the wide viewport
@@ -254,7 +254,8 @@ class ServedLoadingPillAnchor(unittest.TestCase):
         mid_pill, mid_box = (pill["left"] + pill["right"]) / 2, (box["left"] + box["right"]) / 2
         self.assertLess(abs(mid_pill - mid_box), 2.0, "centered in the section" + table)
         self.assertLess(pill["top"] - box["top"], 24.0, "at the top of the section (10px in), not floating lower" + table)
-        self.assertEqual(c["pointer"], "none", "non-interactive" + table)
+        self.assertEqual(c["pointer"], "auto", "clickable since T402 (the click ends the wait); the ANCHOR around it stays inert" + table)
+        self.assertEqual(c["anchorPointer"], "none", "the anchor never takes a click meant for the transcript" + table)
         self.assertIs(c["inBody"], False, "the pill no longer lands in the body" + table)
         self.assertEqual(c["parent"], "tx-loading-anchor", "its parent is the zero-height anchor before #content" + table)
         self.assertEqual(c["shownBy"], "hook", "the page shows its own pill (a build without the hook is the old one)" + table)
