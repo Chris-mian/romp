@@ -330,11 +330,16 @@ class _PerfStats:
     HTTP_PATHS = 256
     SLOTS = 32
     JOBS = ("beginCheckpointCycle", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
-            "autoNudge", "interruptBlock", "persistTickSeen", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
+            "autoNudge", "interruptBlock", "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
             "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
-    STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst") \
+    STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst",
+              "jobsPass", "jobs.prelude") \
         + tuple("jobs." + j for j in JOBS)   # every stage a fresh snapshot lists at zero: the cycle's prelude, the containers, the sub-stages
+    #                                          (`jobsPass` and `jobs.prelude` are the jobs thread's: its pass and its own opening)
+    OWNERS = ("pusher", "jobs")              # the two threads whose per-cycle splits the stats keep (the jobs thread since the split
+    #                                          of the housekeeping off the pusher, 2026-09-13; see _jobs_loop)
+    CONTAINERS = {"push": "push.", "jobs": "jobs.", "jobsPass": "jobs."}   # a container stage -> the prefix of its sub-stages
     BUILDS = ("chat", "feed", "timeline", "feedJson", "thread")
     # builds.chat's bg_miss labels: _chat_build_sig's components, a tab with no cached build, and a tab whose
     # signature could not be taken
@@ -359,11 +364,17 @@ class _PerfStats:
             # the process (firstCycleS alone could not name the stage a 59 s boot spent its time in, 2026-09-12) and
             # appends every cycle's split to `stage_ring`, a deque sized as a fraction of memory (_stage_ring_len), made
             # at the first cycle since the memory reader is defined below this class.
-            self.cycle_stages = {}
             self.first_cycle = None
             self.stage_ring = None
-            self._stage_mark = None
-            self._pusher_ident = None                 # the thread whose stages the split records: the pusher's, set at cycle_begin
+            # The jobs thread's pass (2026-09-13): the housekeeping jobs run on their own thread, so their splits and their pass
+            # durations are kept apart from the pusher's cycles; `jobs` mirrors `pusher` for that loop.
+            self.jobs = {"passes": 0, "pass_ms_sum": 0.0, "pass_ms_max": 0.0, "pass_ms_last": 0.0, "pass_cpu_ms_sum": 0.0,
+                         "passFailed": 0, "splitFailed": 0}
+            self.jobs_ring = collections.deque(maxlen=self.RING)
+            self.first_pass = None
+            self.pass_ring = None
+            self._owners = {}                         # owner kind -> the thread ident whose stages that owner's split records
+            self._cycle_state = {k: {"stages": {}, "mark": None} for k in self.OWNERS}   # per owner: the open split, the byte mark
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0,
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
@@ -448,10 +459,9 @@ class _PerfStats:
             if ms > p["cycle_ms_max"]:
                 p["cycle_ms_max"] = ms
             self.ring.append(ms)
+            st = self._cycle_state["pusher"]
             try:                                          # the split's bookkeeping never ends the pusher thread (it runs in
-                split = {"s": round(dt, 3), "t": time.time(),   #  the cycle's finally, caught nowhere): a failure is counted
-                         "stages": {k: {"ms": round(v["ms"], 1), "bytes": v["bytes"], "hydrated": v["hydrated"]}
-                                    for k, v in self.cycle_stages.items()}}
+                split = self._split(dt, st)               #  the cycle's finally, caught nowhere): a failure is counted
                 if self.first_cycle is None:
                     self.first_cycle = split
                 if self.stage_ring is None:
@@ -459,8 +469,46 @@ class _PerfStats:
                 self.stage_ring.append(split)
             except Exception:
                 p["splitFailed"] = p.get("splitFailed", 0) + 1
-            self.cycle_stages = {}
-            self._stage_mark = None
+            st["stages"] = {}
+            st["mark"] = None
+
+    @staticmethod
+    def _split(dt, st):
+        return {"s": round(dt, 3), "t": time.time(),
+                "stages": {k: {"ms": round(v["ms"], 1), "bytes": v["bytes"], "hydrated": v["hydrated"]}
+                           for k, v in st["stages"].items()}}
+
+    def jobs_pass(self, dt, cpu_dt=0.0):
+        """One pass of the jobs thread (the housekeeping loop split off the pusher, 2026-09-13): its wall and its own CPU
+        seconds, the boot's FIRST pass's split kept for the process (the boot arc reads it beside the pusher's first cycle),
+        and every pass's split on a ring of the same length as the pusher's."""
+        ms = dt * 1000.0
+        with self.lock:
+            j = self.jobs
+            j["passes"] += 1
+            j["pass_ms_sum"] += ms
+            j["pass_ms_last"] = ms
+            j["pass_cpu_ms_sum"] += cpu_dt * 1000.0
+            if ms > j["pass_ms_max"]:
+                j["pass_ms_max"] = ms
+            self.jobs_ring.append(ms)
+            st = self._cycle_state["jobs"]
+            try:
+                split = self._split(dt, st)
+                if self.first_pass is None:
+                    self.first_pass = split
+                if self.pass_ring is None:
+                    self.pass_ring = collections.deque(maxlen=_stage_ring_len())
+                self.pass_ring.append(split)
+            except Exception:
+                j["splitFailed"] = j.get("splitFailed", 0) + 1
+            st["stages"] = {}
+            st["mark"] = None
+
+    def pass_failed(self):
+        """A jobs pass that raised out of its loop and was skipped (the loop's guard), the jobs thread's cycleFailed."""
+        with self.lock:
+            self.jobs["passFailed"] = self.jobs.get("passFailed", 0) + 1
 
     @staticmethod
     def _byte_marks():
@@ -476,56 +524,75 @@ class _PerfStats:
         """Whether the calling thread is the one whose cycle the split records (the pusher's, set at cycle_begin): a
         dashboard's connect push runs _push on the HTTP handler thread through the same stage calls, and its whole build
         landed in the pusher cycle's split, in firstCycle and in the boot-health row, the boot being exactly when pages
-        redial (round one, medium). The cumulative totals take every thread's stages as before."""
-        return self._pusher_ident is not None and threading.get_ident() == self._pusher_ident
+        redial (round one, medium). The cumulative totals take every thread's stages as before. Returns the OWNER KIND
+        ("pusher" or "jobs", the two threads that open cycles: see OWNERS) or None for any other thread."""
+        tid = threading.get_ident()
+        for kind, ident in self._owners.items():
+            if ident == tid:
+                return kind
+        return None
 
     def stage_boundary(self):
         """A stage boundary that closes no stage: the bytes read since the last boundary belong to the stage that closes
         next (the pusher's jobs before the push: `_push` marks its own start so its first sub-stage does not carry them)."""
         marks = self._byte_marks()
         with self.lock:
-            if not self._mine():
+            kind = self._mine()
+            if not kind:
                 return
-            prev = self._stage_mark
-            self._stage_mark = marks
+            st = self._cycle_state[kind]
+            prev = st["mark"]
+            st["mark"] = marks
             if prev is not None:                            # bytes between the jobs' own stages: the glue, a sub-stage of jobs
-                cs = self.cycle_stages.setdefault("jobs.other", {"ms": 0.0, "bytes": 0, "hydrated": 0})
+                cs = st["stages"].setdefault("jobs.other", {"ms": 0.0, "bytes": 0, "hydrated": 0})
                 cs["bytes"] += max(0, marks[0] - prev[0]); cs["hydrated"] += max(0, marks[1] - prev[1])
 
     def stage(self, name, dt):
         marks = self._byte_marks()
         with self.lock:
             self.stages[name] = self.stages.get(name, 0.0) + dt * 1000.0
-            if not self._mine():
+            kind = self._mine()
+            if not kind:
                 return                                      # another thread's push: the totals alone
-            cs = self.cycle_stages.setdefault(name, {"ms": 0.0, "bytes": 0, "hydrated": 0})
+            st = self._cycle_state[kind]
+            stages = st["stages"]
+            cs = stages.setdefault(name, {"ms": 0.0, "bytes": 0, "hydrated": 0})
             cs["ms"] += dt * 1000.0
-            if name in ("push", "jobs"):                    # a container: its bytes are its sub-stages' (already attributed),
-                prev = self._stage_mark                     #  the glue since the last sub-stage closed going to `<name>.other`
+            pfx = self.CONTAINERS.get(name)
+            if pfx:                                         # a container: its bytes are its sub-stages' (already attributed),
+                prev = st["mark"]                           #  the glue since the last sub-stage closed going to `<prefix>other`
                 if prev is not None and (marks[0] > prev[0] or marks[1] > prev[1]):
-                    g = self.cycle_stages.setdefault(name + ".other", {"ms": 0.0, "bytes": 0, "hydrated": 0})
+                    g = stages.setdefault(pfx + "other", {"ms": 0.0, "bytes": 0, "hydrated": 0})
                     g["bytes"] += max(0, marks[0] - prev[0]); g["hydrated"] += max(0, marks[1] - prev[1])
-                self._stage_mark = marks
-                cs["bytes"] = sum(v["bytes"] for k, v in self.cycle_stages.items() if k.startswith(name + "."))
-                cs["hydrated"] = sum(v["hydrated"] for k, v in self.cycle_stages.items() if k.startswith(name + "."))
+                st["mark"] = marks
+                cs["bytes"] = sum(v["bytes"] for k, v in stages.items() if k.startswith(pfx))
+                cs["hydrated"] = sum(v["hydrated"] for k, v in stages.items() if k.startswith(pfx))
             else:
-                prev = self._stage_mark
+                prev = st["mark"]
                 if prev is not None:
                     cs["bytes"] += max(0, marks[0] - prev[0]); cs["hydrated"] += max(0, marks[1] - prev[1])
-                self._stage_mark = marks
+                st["mark"] = marks
 
-    def cycle_begin(self):
-        """The cycle's opening, on the pusher's thread: the thread the split records, the split emptied (a push in the gap
-        between cycles, on any thread, lands in no cycle), and the first byte mark the stages are measured from."""
+    def cycle_begin(self, kind="pusher"):
+        """The cycle's opening, on the owner's thread (the pusher's by default; the jobs thread passes "jobs"): the thread
+        that owner's split records, the split emptied (a push in the gap between cycles, on any thread, lands in no cycle),
+        and the first byte mark the stages are measured from."""
         marks = self._byte_marks()
+        tid = threading.get_ident()
         with self.lock:
-            self._pusher_ident = threading.get_ident()
-            self.cycle_stages = {}
-            self._stage_mark = marks
+            for k in [k for k, ident in self._owners.items() if ident == tid and k != kind]:
+                del self._owners[k]                    # a thread owns one cycle kind at a time (a test drives both loops on one)
+            self._owners[kind] = tid
+            self._cycle_state[kind] = {"stages": {}, "mark": marks}
 
     def first_cycle_split(self):
         with self.lock:
             return dict(self.first_cycle) if self.first_cycle is not None else None
+
+    def first_pass_split(self):
+        """The jobs thread's first pass's split (see jobs_pass), None before it closed."""
+        with self.lock:
+            return dict(self.first_pass) if self.first_pass is not None else None
 
     def parse_hit(self):
         """The kernel's _parse served from the shared store (T323 stage 2)."""
@@ -644,6 +711,12 @@ class _PerfStats:
             pusher["stageRing"] = sr if ring_all else sr[-self.STAGE_RING_SERVED:]   # the newest few by default: the whole ring
             pusher["stageRingLen"] = len(sr)                                          #  is up to a few MB of JSON (round one, low 3)
             pusher["stageRingMax"] = self.stage_ring.maxlen if self.stage_ring is not None else _stage_ring_len()
+            jring = sorted(self.jobs_ring)
+            jobs = dict(self.jobs)                          # the jobs thread's pass counters, the same shape as the pusher's
+            jobs["firstPass"] = dict(self.first_pass) if self.first_pass is not None else None
+            pr = list(self.pass_ring) if self.pass_ring is not None else []
+            jobs["stageRing"] = pr if ring_all else pr[-self.STAGE_RING_SERVED:]
+            jobs["stageRingLen"] = len(pr)
             stages = dict(self.stages)
             builds = {k: dict(v) for k, v in self.builds.items()}
             builds["chat"]["bg_miss"] = dict(self.builds["chat"]["bg_miss"])   # the nested map: a copy too
@@ -664,6 +737,10 @@ class _PerfStats:
         pusher["cycle_ms_p50"] = self._pct(ring, 0.5)
         pusher["cycle_ms_p90"] = self._pct(ring, 0.9)
         pusher["cycle_ms_ring_max"] = ring[-1] if ring else 0.0
+        jobs["ring_n"] = len(jring)
+        jobs["pass_ms_p50"] = self._pct(jring, 0.5)
+        jobs["pass_ms_p90"] = self._pct(jring, 0.9)
+        jobs["pass_ms_ring_max"] = jring[-1] if jring else 0.0
         judge["ms_mean"] = (judge["ms_sum"] / judge["passes"]) if judge["passes"] else 0.0
         try:
             workers = float(jd.judge_worker_cpu_ms())
@@ -715,7 +792,7 @@ class _PerfStats:
         #                                                                              on a runner nobody can log into), on demand
         #                                                                              through GET /perf?stacks=1 (T401)
         return {"now": now, "since": since, "uptime_s": now - _STARTED, "log": _PERF, "stacks": stacks,
-                "process": _process_stats(), "pusher": pusher, "stages_ms": stages,
+                "process": _process_stats(), "pusher": pusher, "jobs": jobs, "stages_ms": stages,
                 "builds": builds, "sends": sends, "goals": goals, "memos": memos, "judge": judge, "skillLoadIndex": skill_idx, "http": http,
                 "fileSlice": file_slice,                   # T351: the preview popover's slice cache (hit / miss / bytes / warm)
                 "glossary": glossary_stats,                # T351 stage 2: files parsed, frames / terms / bytes BUILT per cycle, entries cut, files refused
@@ -1009,6 +1086,9 @@ def _interrupt_cause(nxt_atom):
     cuts romp itself caused and is already continuing (via the injected resume notice) — never a
     user-chosen stop, so they must not suppress the nudge nor paint the "you stopped this" badge (the
     user 2026-07-14). Pure per-atom classifier; _machine_cut_cause owns FINDING the notice."""
+    slot = nxt_atom.get("_slot") if nxt_atom is not None else None
+    if slot is not None:
+        nxt_atom = slot[0][slot[1]]                       # a romp row's light facts: the atom built now, this row alone (T401 (3b))
     if nxt_atom is not None and nxt_atom.get("lazy") is not None: em.hydrate([nxt_atom])   # a body before the cut (T323 stage 4a)
     body = (_atom_user_text(nxt_atom) or "") if nxt_atom else ""
     if INTR_RESTART_SIG in body:
@@ -1104,16 +1184,135 @@ def _machine_cut_cause(users, i, cut_t=0.0, cut_cause=""):
 # a lost insert or a double clear is one extra miss, never a wrong answer.
 _intr_marks_memo = {}
 _INTR_MARKS_MEMO_MAX = 512
-_intr_marks_memo_stats = {"hit": 0, "miss": 0, "evict": 0}
+_intr_marks_memo_stats = {"hit": 0, "miss": 0, "evict": 0, "restored": 0, "refused": 0, "computeMs": 0.0}
 _INTR_MARKS_STATS_LOCK = threading.Lock()
+_INTR_MARKS_FILE = "intr-marks.json"   # the marks memo PERSISTED under the state dir (T401 (3) target 3): {"v": 2, "rows": {sid:
+#                                        [mtime_ns, size, cut_t, cut_cause, sdk_owned, last_intr, last_human]}}, one row per alive session,
+#                                        written when a row changed by the persist job and at exit, loaded at boot; a row that is
+#                                        malformed, of another length or not under a uuid-shaped sid is REFUSED (counted, recomputed)
+_INTR_MARKS_DISK = {}                  # sid -> [mtime_ns, size, cut_t, cut_cause, sdk_owned, last_intr, last_human] (_INTR_MARKS_ROW_LEN)
+_INTR_MARKS_DISK_DIRTY = [False]
+_INTR_MARKS_DISK_LOCK = threading.Lock()
+_INTR_MARKS_DISK_V = 2                 # v2 (rounds two and three): the parse's sdk-ownership bit joined the key; a v1 file loads nothing
+_INTR_MARKS_ROW_LEN = 7
+_UUIDISH_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")   # the one uuid shape (also
+#                                        the postal index's; defined here because the marks memo loads at import, below)
+
+
+def _intr_marks_path():
+    return jd.STATE / _INTR_MARKS_FILE
+
+
+def _load_intr_marks():
+    """The previous kernel's marks memo into _INTR_MARKS_DISK (best-effort; a missing or torn file is an empty memo). Every
+    row is checked: _INTR_MARKS_ROW_LEN elements of the right types under a uuid-shaped sid (the key's five: mtime_ns, size,
+    cut_t, cut_cause, the sdk-ownership bit; then the two maxima), else refused (counted under intrMarks.refused) and
+    recomputed on its first miss; a refused row is never trusted and never read as a dead session, and it stands on disk
+    until the next changed write replaces the file."""
+    try:
+        d = json.loads(_intr_marks_path().read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    rows = d.get("rows") if isinstance(d, dict) and d.get("v") == _INTR_MARKS_DISK_V else None
+    if not isinstance(rows, dict):
+        _intr_marks_bump("refused", 1 if d else 0)
+        return 0
+    n = 0
+    with _INTR_MARKS_DISK_LOCK:
+        for sid, v in rows.items():
+            ok = (isinstance(sid, str) and _UUIDISH_RE.match(sid) and isinstance(v, list) and len(v) == _INTR_MARKS_ROW_LEN
+                  and isinstance(v[0], int) and isinstance(v[1], int) and isinstance(v[2], (int, float)) and isinstance(v[3], str)
+                  and v[4] in (0, 1) and isinstance(v[5], (int, float)) and isinstance(v[6], (int, float)))
+            if not ok:
+                _intr_marks_bump("refused")
+                continue
+            _INTR_MARKS_DISK[sid] = list(v); n += 1
+    return n
+
+
+_INTR_MARKS_WRITE_SAID = [False]       # the marks persist's failure said once per fault episode: re-armed by a clean write
+
+
+def _persist_intr_marks(force=False):
+    """Write the marks memo when a row changed since the last write (or `force`, the exit): atomic, under a per-writer tmp
+    name (pid and thread id: the exit's force write and the persist job may run at once), the tmp unlinked when the
+    replace fails; best-effort, never raises."""
+    with _INTR_MARKS_DISK_LOCK:
+        if not (_INTR_MARKS_DISK_DIRTY[0] or force):
+            return False
+        snap = {"v": _INTR_MARKS_DISK_V, "rows": {k: list(v) for k, v in _INTR_MARKS_DISK.items()}}
+        _INTR_MARKS_DISK_DIRTY[0] = False
+    p = _intr_marks_path()
+    tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(snap), encoding="utf-8")
+        os.replace(tmp, p)
+        _INTR_MARKS_WRITE_SAID[0] = False                 # a clean write re-arms the say-once latch
+        return True
+    except Exception as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        with _INTR_MARKS_DISK_LOCK:
+            _INTR_MARKS_DISK_DIRTY[0] = True              # retried by the next persist
+        if not _INTR_MARKS_WRITE_SAID[0]:                 # said once per fault episode (1610 round two, low 4: the tick-seen persist
+            _INTR_MARKS_WRITE_SAID[0] = True              #  credited this persist with a line it did not have)
+            print("interrupt-marks memo: not written: %s: %s (said once per episode; retried by the next persist)" % (type(e).__name__, str(e)[:120]), file=sys.stderr)
+        return False
+
+
+def _intr_marks_key(sid, path):
+    """The persisted memo's key, taken BEFORE the tally reads a row (the arc's rule): the transcript's (mtime_ns, size), the
+    states log's newest machine-cut pair, and the parse's sdk-ownership bit (jd._sdk_owned(sid), the very input
+    parsed_session hands the adapter as sdk_human: whether a promptSource "sdk" prompt is the human's, which re-authors the
+    user rows; its SDK half is memoised on the registry row's stat and its Codex half is an in-memory record, so the BIT
+    is keyed, not the file: round three, low 2), which together with the transcript's records are the judge parse's
+    inputs to the marks. None when the transcript cannot be statted, and None while a bare rollback's cut is ARMED for
+    the session (jd._pending_cut: the parse is then the truncated world, which no file records, so nothing is served or
+    persisted until the arm clears; _interrupt_marks re-checks the arm after its tally before it persists)."""
+    try:
+        st = os.stat(path)
+    except (OSError, TypeError):
+        return None
+    if sid and jd._pending_cut(sid):
+        return None
+    cut = _last_machine_cut(sid) if sid else (0.0, "")
+    return (st.st_mtime_ns, st.st_size, float(cut[0]), str(cut[1]), 1 if jd._sdk_owned(str(sid)) else 0)
+
+
+def _interrupt_marks_facts(turns):
+    """The USER atoms of `turns` for the tally, building no pre-cut atom: a lazy turn hands its built slots and light facts
+    (type, t, author, lazy.ir) through LazyAtoms.user_facts, a plain turn its atoms. The romp-authored rows are the one
+    kind the classifier may need the BODY of (the resume notice that names a machine cut, _interrupt_cause), but only
+    the notice _machine_cut_cause's forward scan from a stop record actually reaches; so a romp row's light facts carry
+    its container and slot (`_slot`), and _interrupt_cause builds that row on demand when the scan reads it (T401 (3b):
+    the deploy boot's cold pass BUILT every romp row of every transcript from the document rows, 3,220 atoms, their
+    allocation and LRU residency and their row decodes, though the scan reaches about a fifth of the romp rows offered
+    (1,268 of 6,061 on the local corpus); a build reads no body, so no disk byte is saved: the notices reached are
+    hydrated exactly as before; a stop-free transcript now builds nothing). The list is what _interrupt_marks_atoms
+    consumes, so the tally over rows equals the tally over atoms by construction (a test runs both over every golden)."""
+    users = []
+    for turn in turns:
+        atoms = turn.get("atoms") or []
+        if isinstance(atoms, em.LazyAtoms):
+            for i, a in atoms.user_facts():
+                if a.get("_light") is not None and a.get("author") == "romp":
+                    a = dict(a, _slot=(atoms, i))              # a copy: the index's cached facts never pin the container
+                users.append(a)
+        else:
+            users.extend(a for a in atoms if a.get("type") == "user")
+    return users
+
 
 
 def _intr_marks_bump(key, n=1):
     with _INTR_MARKS_STATS_LOCK:
-        _intr_marks_memo_stats[key] = _intr_marks_memo_stats.get(key, 0) + n
+        _intr_marks_memo_stats[key] = _intr_marks_memo_stats.get(key, 0) + n   # computeMs sums milliseconds (a float)
 
 
-def _interrupt_marks(turns, sid="", family=None):
+def _interrupt_marks(turns, sid="", family=None, path=None):
     """(newest genuine user STOP, newest genuine human PROMPT) on this thread, in transcript time —
     the one place the two are tallied, so the predicate below and the interrupt block's EVIDENCE stamp
     read the same events. A MACHINE cut (kernel restart / process death) mints the same stop record but
@@ -1142,16 +1341,39 @@ def _interrupt_marks(turns, sid="", family=None):
     pass frame is open the tick alternates between the frame-pinned parse and the cache object, one
     miss per swap. No family, or an empty sid, means no memo (the pure-atom test callers; a sid-less key
     would be one slot thrashed by every caller)."""
-    cut = _last_machine_cut(sid) if sid else (0.0, "")
+    dkey = _intr_marks_key(sid, path) if (sid and path and family != "display") else None   # KEY FIRST: the stat, the cut pair
+    #                                    and the ownership bit before any row. The persisted row is keyed by sid alone and holds the
+    #                                    JUDGE parse's maxima: the display family's parse carries live-merged atoms no file records, so
+    #                                    it takes no disk key whatever its caller passes (round three, low 9; the caller passes none)
+    cut = (dkey[2], dkey[3]) if dkey is not None else (_last_machine_cut(sid) if sid else (0.0, ""))
     key = (sid, family) if (sid and family) else None
     if key is not None:
         e = _intr_marks_memo.get(key)
         if e is not None and e[0] is turns and e[1] == cut:
             _intr_marks_bump("hit")
             return e[2]
+    if dkey is not None:                                  # the persisted memo (T401 (3) target 3): a row under this exact key
+        with _INTR_MARKS_DISK_LOCK:                       #  serves the two maxima without a tally, across boots
+            row = _INTR_MARKS_DISK.get(sid)
+        if row is not None and tuple(row[:5]) == dkey:
+            _intr_marks_bump("restored")
+            res = (row[5], row[6])
+            if key is not None:
+                _intr_marks_memo[key] = (turns, cut, res)
+            return res
+    if key is not None:
         _intr_marks_bump("miss")
-    atoms = [a for turn in turns for a in (turn.get("atoms") or [])]
-    res = _interrupt_marks_atoms(atoms, cut[0], cut[1])
+    _t0 = time.perf_counter()
+    res = _interrupt_marks_atoms(_interrupt_marks_facts(turns), cut[0], cut[1])   # the tally over rows: no pre-cut atom built
+    _intr_marks_bump("computeMs", (time.perf_counter() - _t0) * 1000.0)
+    if dkey is not None and not jd._pending_cut(sid):    # re-checked AFTER the tally (round three, low 3): a cut armed since the key
+        #                                                 was taken means the tally may have read the truncated world; it is answered
+        #                                                 but never persisted under the plain key
+        new = list(dkey) + [res[0], res[1]]
+        with _INTR_MARKS_DISK_LOCK:
+            if _INTR_MARKS_DISK.get(sid) != new:          # dirty by CHANGE only (the 1589 lesson): compare before assign
+                _INTR_MARKS_DISK[sid] = new
+                _INTR_MARKS_DISK_DIRTY[0] = True
     if key is not None:
         if len(_intr_marks_memo) >= _INTR_MARKS_MEMO_MAX and key not in _intr_marks_memo:
             _intr_marks_bump("evict", len(_intr_marks_memo))   # the repo's overflow idiom: clear whole
@@ -1168,6 +1390,9 @@ def _intr_marks_forget(alive):
     for k in list(_intr_marks_memo):
         if k[0] not in alive and _intr_marks_memo.pop(k, None) is not None:
             _intr_marks_bump("evict")
+    with _INTR_MARKS_DISK_LOCK:                          # the persisted rows are bounded by the same alive set (T401 (3) target 3)
+        for sid in [x for x in _INTR_MARKS_DISK if x not in alive]:
+            _INTR_MARKS_DISK.pop(sid, None); _INTR_MARKS_DISK_DIRTY[0] = True
 
 
 def _intr_marks_memo_report():
@@ -1178,6 +1403,9 @@ def _intr_marks_memo_report():
     with _INTR_MARKS_STATS_LOCK:
         out = dict(_intr_marks_memo_stats)
     out["entries"] = len(_intr_marks_memo)
+    out["computeMs"] = int(round(float(out.get("computeMs", 0.0))))   # whole milliseconds on /perf; the sum is kept as a float
+    with _INTR_MARKS_DISK_LOCK:
+        out["persisted"] = len(_INTR_MARKS_DISK)
     return out
 
 
@@ -1212,7 +1440,7 @@ def _interrupt_marks_atoms(atoms, cut_t=0.0, cut_cause=""):
     return last_intr, last_human
 
 
-def _interrupt_suppresses_nudge(turns, sid="", family=None):
+def _interrupt_suppresses_nudge(turns, sid="", family=None, path=None):
     """True while the session's most recent USER action is a GENUINE user INTERRUPT: the user stopped
     the agent and hasn't spoken since, so they're at the controls — auto-nudge stays suppressed until
     their NEXT message (the user 2026-07-05, refined via ui: re-engage on the user-message EVENT, never
@@ -1229,7 +1457,7 @@ def _interrupt_suppresses_nudge(turns, sid="", family=None):
     resume notice that FOLLOWS its record (_interrupt_cause) and is EXCLUDED from the user-stop tally —
     or, in the window before that notice reaches disk, by the backend's machineCut stamp (pass `sid`).
     `family` is _interrupt_marks' memo family, passed through by the per-cycle callers."""
-    last_intr, last_human = _interrupt_marks(turns, sid, family)
+    last_intr, last_human = _interrupt_marks(turns, sid, family, path)
     return last_intr > last_human
 
 
@@ -10040,7 +10268,8 @@ def _tick_seen_bump(job, key, n=1):
 
 
 def _tick_key_miss_by(job, st, prev):
-    """Count a miss with a previous entry: which of the key's positions differed (twenty comparisons, nothing else). A key of
+    """Count a miss with a previous entry: which of the key's positions differed (one comparison per (mtime_ns, size) pair of
+    the key: ten for the tick's ten-file key, eighteen for the walk's, which adds the asker rows; nothing else). A key of
     another length than the recorded one counts once under `shape`, as does a previous entry that is not a sequence (an
     observation counter is never the raising path); a differing element past the ten files is `askerRow`."""
     with _TICK_SEEN_LOCK:
@@ -10085,22 +10314,45 @@ def _load_tick_seen():
     return n
 
 
+_TICK_SEEN_WRITE_SAID = [False]        # the persist's failure said once per fault EPISODE: re-armed by a clean write (1603 low 1)
+
+
 def _persist_tick_seen(force=False):
     """Write the memo when a completed evaluation moved it since the last write (or `force`); atomic, best-effort."""
     with _TICK_SEEN_LOCK:
         if not (_TICK_SEEN_DIRTY[0] or force):
             return False
         snap = {"%s|%s" % k: list(v) for k, v in _TICK_SEEN.items()}
+        try:
+            body = json.dumps(snap)                  # serialized BEFORE the flag clears, under the lock the writers take: an
+        except (TypeError, ValueError) as e:         #  unserializable entry is a bug that raises to the pusher's guard (counted)
+            _tick_seen_say("not serialized: %s: %s" % (type(e).__name__, str(e)[:120]))   # with the flag still dirty, so the
+            raise                                    #  next persist retries once the entry is gone (1610 round two, medium 3)
         _TICK_SEEN_DIRTY[0] = False
-    try:
-        p = _tick_seen_path()
+    p = _tick_seen_path()
+    tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per WRITER: the exit's force write
+    try:                                                                                #  runs beside the pusher's persist
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps(snap), encoding="utf-8")
+        tmp.write_text(body, encoding="utf-8")
         os.replace(tmp, p)
+        _TICK_SEEN_WRITE_SAID[0] = False             # a clean write re-arms the say-once latch: the next fault episode is said too
         return True
-    except Exception:
+    except Exception as e:                           # the tmp unlinked, the memo dirty again (retried by the next persist), the
+        try:                                         #  failure said once per episode (the marks persist does the same three)
+            tmp.unlink()
+        except OSError:
+            pass
+        with _TICK_SEEN_LOCK:
+            _TICK_SEEN_DIRTY[0] = True
+        _tick_seen_say("not written: %s: %s" % (type(e).__name__, str(e)[:120]))
         return False
+
+
+def _tick_seen_say(text):
+    """The tick-seen persist's failure on stderr, once per fault episode (the latch re-arms on a clean write)."""
+    if not _TICK_SEEN_WRITE_SAID[0]:
+        _TICK_SEEN_WRITE_SAID[0] = True
+        print("tick-seen memo: %s (said once per episode; retried by the next persist)" % text, file=sys.stderr)
 
 
 _INTERRUPT_BLOCK_UNREAD = (5, 7)      # the key positions the interrupt tick never reads: the episode log and the postal log. The CLEARS log
@@ -10112,7 +10364,7 @@ _TICK_KEY_UNREAD = (-1.0, -1)         # the constant written at a position a job
 
 
 def _interrupt_block_key(s, data=None):
-    """The interrupt tick's key: the ten files' SHAPE (so memos.tickSeen.missBy decodes as for every job) with only the files
+    """The interrupt tick's key: the ten files' SHAPE (so memos.tickSeen.byJob[job].missBy decodes as for every job) with only the files
     the road reads moving it. The quiet boot read of 2026-09-13 (memos.tickSeen at 116 s: interrupt-block misses 125, missBy
     messages 50, ledger 50, cleared 25) named three box-wide files the tick reads none of: every postal message, every clear
     and every walk write to the nudge ledger re-evaluated every alive session's interrupt block, and at boot the walk's
@@ -10166,7 +10418,7 @@ def _tick_job_check(job, s, st=None):
     if st == prev:
         _tick_seen_bump(job, "hits")
         return True, st
-    _tick_key_miss_by(job, st, prev)          # which position moved: the boot read decodes it (memos.tickSeen.missBy)
+    _tick_key_miss_by(job, st, prev)          # which position moved: the boot read decodes it (memos.tickSeen.byJob[job].missBy)
     return False, st
 
 
@@ -10365,6 +10617,7 @@ def _nudge_look_done(s, st, notes, verdict):
 
 
 _load_tick_seen()               # the previous kernel's last evaluations, if it left them
+_load_intr_marks()              # and its interrupt-marks memo (T401 (3) target 3)
 try:
     em.checkpoint_sweep()       # checkpoints of files that are gone (cleared, removed sessions) leave with the boot (T323 stage 3)
 except Exception:
@@ -10865,7 +11118,7 @@ def _interrupt_block_tick(now, live_map):
             turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
         except Exception:
             continue
-        stop_t, human_t = _interrupt_marks(turns, sid, family="judge")   # the two EVENTS this tick reasons
+        stop_t, human_t = _interrupt_marks(turns, sid, family="judge", path=s["path"])   # the two EVENTS this tick reasons
         #                                                  about — and the evidence times both writes are
         #                                                  stamped with (memo family: the judge parse)
         block_it = bool(turns) and not _session_working(turns) and stop_t > human_t
@@ -12400,8 +12653,10 @@ def _dead_wait_shared_view(sid, stats=None):
     spending the death transition silently (round two, low 2); such a fault is counted, and named on stderr once per episode
     through the pass's collapse (`stats`, round three: the base printed a traceback, silence is not an option). Counted under
     memos.deadWait: sharedLoads, loadFaults, and sharedFallback for a view that degraded INTERNALLY to a private load (an
-    absent store file, an unreadable journal, unparseable bytes, the shared cache switched off), told by the RETURNED object
-    (the shared view hands back a FrozenStore; every fallback road hands back load_goals' plain private store), never by a
+    absent store file, an unreadable journal, unparseable bytes, the shared cache switched off, and the journal-unread road,
+    whose store load_goals marks `_unread` before handing it back), told by the RETURNED object (the shared view hands back a
+    FrozenStore; every fallback road, the `_unread` one included, hands back load_goals' plain private store, so ANY
+    non-FrozenStore return counts, whatever its road), never by a
     delta over a process-global counter, which another thread's private load would move (round four, medium); so /perf
     cannot claim the saving while the cache is off."""
     _DEAD_WAIT_STATS["sharedLoads"] += 1
@@ -13615,7 +13870,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
     #                                                  unbounded: the gate sits ABOVE the marked roads (T401 (2) round five, medium 1)
     if _session_working(turns):                      # still actively working (event model) → not orphaned
         return "working"
-    if _interrupt_suppresses_nudge(turns, sid, family="judge"):   # the user's LAST action was a GENUINE interrupt → they're
+    if _interrupt_suppresses_nudge(turns, sid, family="judge", path=s.get("path")):   # the user's LAST action was a GENUINE interrupt → they're
         return "user-interrupt"                                # driving; suppressed until their NEXT message. The stopped
         #                                              focus goal's BLOCKED-on-you flip is owned by the always-on
         #                                              _interrupt_block_tick (a needs-you rule, not a nudge feature).
@@ -24007,12 +24262,17 @@ def _boot_row_due_locked():
 
 BOOT_FIRST_CYCLE_BOUND_S = float(os.environ.get("ROMP_BOOT_FIRST_CYCLE_BOUND_S", "10"))
 _BOOT_HEALTH_DONE = [False]
+_BOOT_FIRST = {"pusher": None, "jobs": None}   # each loop's first wall seconds once it closed, cleared when the row is written
+_JOBS_THREAD_STARTED = [False]               # main() started the jobs thread: the boot row then waits for its first pass too
+BOOT_JOBS_PASS_ROW_BACKSTOP_S = float(os.environ.get("ROMP_BOOT_JOBS_PASS_ROW_BACKSTOP_S", "600"))   # the row is written
+#                                              without the jobs pass after this long (a pass that never ends still leaves a row)
 FIRST_CYCLE_SAMPLE_S = 1.0             # the pusher's stack is sampled this often during the boot's FIRST cycle only ...
 FIRST_CYCLE_SAMPLE_DENSE = 30          # ... for this many samples; after them every FIRST_CYCLE_SAMPLE_WIDE_S, so the cap below
 FIRST_CYCLE_SAMPLE_WIDE_S = 5.0        #  covers three minutes (30 s dense, 150 s wide) and an 84 s cycle shows where it ended
 FIRST_CYCLE_SAMPLES_MAX = 60           # at most this many samples ride the boot-health row
 FIRST_CYCLE_SAMPLE_FRAMES = 8          # innermost frames kept per sample: enough to name the lock or the read, not the whole stack
-_FIRST_CYCLE_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None, "failed": 0}
+_FIRST_CYCLE_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None, "failed": 0}   # the pusher's
+_FIRST_PASS_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None, "failed": 0}    # the jobs thread's
 
 
 def _first_cycle_sample(tid, t0):
@@ -24028,21 +24288,22 @@ def _first_cycle_sample(tid, t0):
     return {"t": round(time.monotonic() - t0, 1), "stage": _STAGE_BY_TID.get(tid), "frames": rows}
 
 
-def _first_cycle_sampler_run(tid, t0):
-    ev = _FIRST_CYCLE_SAMPLER["stop"]
+def _first_cycle_sampler_run(tid, t0, sampler=None):
+    sampler = _FIRST_CYCLE_SAMPLER if sampler is None else sampler
+    ev = sampler["stop"]
     while True:                                           # loop-ok: bounded by the first cycle's end and the sample cap
-        n = len(_FIRST_CYCLE_SAMPLER["rows"]) + _FIRST_CYCLE_SAMPLER["failed"]
+        n = len(sampler["rows"]) + sampler["failed"]
         if ev.wait(FIRST_CYCLE_SAMPLE_S if n < FIRST_CYCLE_SAMPLE_DENSE else FIRST_CYCLE_SAMPLE_WIDE_S):
             return
         if n >= FIRST_CYCLE_SAMPLES_MAX:                  # rows AND failed walks fill the cap, so an all-failing sampler retires
             return                                        #  with the cap rather than waking for the whole cycle (1588 low 4)
         try:
-            _FIRST_CYCLE_SAMPLER["rows"].append(_first_cycle_sample(tid, t0))
+            sampler["rows"].append(_first_cycle_sample(tid, t0))
         except Exception:
-            _FIRST_CYCLE_SAMPLER["failed"] += 1           # one failed walk is counted, not the end of sampling (round two, low 4)
+            sampler["failed"] += 1                        # one failed walk is counted, not the end of sampling (round two, low 4)
 
 
-def _first_cycle_sampler_start(t0):
+def _first_cycle_sampler_start(t0, sampler=None):
     """The boot's first pusher cycle is where a slow boot spends its time, and two live reads of it were missed because the
     /perf stack sample could not be taken in time (the watch's poll latency was longer than the cycle). A daemon thread
     samples the PUSHER's stack once a second for the first cycle only, at most FIRST_CYCLE_SAMPLES_MAX rows, and the rows
@@ -24050,14 +24311,18 @@ def _first_cycle_sampler_start(t0):
     the kernel alive. Cost: one sys._current_frames() and one walk of one thread's frames a second (about 7 us, 25 with two
     hundred threads live) for the length of the first cycle, then the thread ends; nothing after the first cycle. The row
     grows by about 330 bytes a sample (20 KB for 60, 30 KB worst case), on a ledger with no rotation that its readers
-    slice from the tail: it grows by that once per boot whose first cycle ran the samples' length."""
-    if _FIRST_CYCLE_SAMPLER["started"]:
+    slice from the tail: it grows by that once per boot whose first cycle ran the samples' length.
+
+    `sampler` is the slot: the pusher's (_FIRST_CYCLE_SAMPLER, the default) or the jobs thread's (_FIRST_PASS_SAMPLER), since
+    the housekeeping's first pass runs on its own thread (2026-09-13) and is sampled the same way for the same row."""
+    sampler = _FIRST_CYCLE_SAMPLER if sampler is None else sampler
+    if sampler["started"]:
         return
-    _FIRST_CYCLE_SAMPLER["started"] = True
+    sampler["started"] = True
     try:
-        th = threading.Thread(target=_first_cycle_sampler_run, args=(threading.get_ident(), t0), name="first-cycle-sampler", daemon=True)
+        th = threading.Thread(target=_first_cycle_sampler_run, args=(threading.get_ident(), t0, sampler), name="first-cycle-sampler", daemon=True)
         th.start()
-        _FIRST_CYCLE_SAMPLER["thread"] = th                 # stored only once started: the stop joins nothing unstarted
+        sampler["thread"] = th                              # stored only once started: the stop joins nothing unstarted
     except Exception as e:                                  # a start that raises (no thread slot at boot) degrades to no samples,
         try:                                                #  never ends the pusher (round two, medium: the sibling starts' discipline)
             sys.stderr.write("first-cycle sampler: not started (%s); the boot-health row carries no stack samples\n" % e)
@@ -24065,9 +24330,10 @@ def _first_cycle_sampler_start(t0):
             pass
 
 
-def _first_cycle_sampler_stop():
-    _FIRST_CYCLE_SAMPLER["stop"].set()
-    th = _FIRST_CYCLE_SAMPLER.get("thread")
+def _first_cycle_sampler_stop(sampler=None):
+    sampler = _FIRST_CYCLE_SAMPLER if sampler is None else sampler
+    sampler["stop"].set()
+    th = sampler.get("thread")
     if th is not None and th.ident is not None:
         try:
             th.join(timeout=2.0)
@@ -24075,19 +24341,50 @@ def _first_cycle_sampler_stop():
             pass
 
 
-def _boot_health_first_cycle(dt):
+def _boot_health_first_cycle(dt, kind="pusher"):
     """The pusher's first cycle after a boot is what gates sessions and cards appearing (the user, 2026-09-11: 84 s
     cycles read as romp unusable and nothing said so). One row in the restart ledger per boot with the cycle's wall
-    seconds and whether it crossed the bound, and a loud stderr line when it did, naming where to look. Returns the
-    row the first time, None after."""
+    seconds and whether it crossed the bound, and a loud stderr line when it did, naming where to look.
+
+    Since the housekeeping split off the pusher (2026-09-13; the user asked why the reminder walk had to finish before
+    the UI showed at all), the row carries TWO firsts: `firstCycleS`, the pusher's first cycle (the browser's own wait,
+    the meaning every earlier row had), and `jobsFirstPassS`, the jobs thread's first pass (where the cold reads now sit,
+    the number the boot arc's targets are measured on). Each loop reports its first here with its `kind`; the row is
+    written by whichever reports LAST, so it carries both splits, both stack samples and the walk's parse facts. With
+    no jobs thread started (a test driving one cycle) the pusher's report writes the row at once. Returns the row when
+    it wrote one, None otherwise."""
+    if _BOOT_HEALTH_DONE[0]:
+        return None
+    _BOOT_FIRST[kind] = dt
+    if _JOBS_THREAD_STARTED[0] and (_BOOT_FIRST["pusher"] is None or _BOOT_FIRST["jobs"] is None):
+        return None                                        # the other loop's first is still open: it writes the row
+    return _boot_health_row()
+
+
+def _boot_health_row(pending=False):
     if _BOOT_HEALTH_DONE[0]:
         return None
     _BOOT_HEALTH_DONE[0] = True
-    row = {"t": int(time.time()), "pid": os.getpid(), "bootHealth": True, "firstCycleS": round(dt, 2),
-           "boundS": BOOT_FIRST_CYCLE_BOUND_S, "slow": dt > BOOT_FIRST_CYCLE_BOUND_S}
-    split = _PERF_STATS.first_cycle_split()                # T397: the cycle's stage split rides the row (the ledger reader
-    if split is not None:                                  #  sees which stage a slow boot spent its time in without the kernel)
-        row["stages"] = split.get("stages")
+    cyc, pas = _BOOT_FIRST["pusher"], _BOOT_FIRST["jobs"]
+    _BOOT_FIRST["pusher"] = _BOOT_FIRST["jobs"] = None
+    row = {"t": int(time.time()), "pid": os.getpid(), "bootHealth": True, "boundS": BOOT_FIRST_CYCLE_BOUND_S}
+    if cyc is not None:
+        row["firstCycleS"] = round(cyc, 2)
+        row["slow"] = cyc > BOOT_FIRST_CYCLE_BOUND_S
+    if pas is not None:
+        row["jobsFirstPassS"] = round(pas, 2)
+        row["jobsSlow"] = pas > BOOT_FIRST_CYCLE_BOUND_S
+    if pending:
+        row["jobsFirstPassPending"] = True                 # the backstop wrote the row: the jobs pass had not ended
+    stages = {}
+    for split in (_PERF_STATS.first_cycle_split(), _PERF_STATS.first_pass_split()):   # T397: both splits ride the row (the
+        for k, v in ((split or {}).get("stages") or {}).items():                       #  ledger reader sees which stage a slow
+            if k in stages:                                                            #  boot spent its time in without the
+                stages[k] = {f: stages[k][f] + v[f] for f in ("ms", "bytes", "hydrated")}   # kernel); a key both threads own
+            else:                                                                      #  (jobs.other, the glue) is summed
+                stages[k] = dict(v)
+    if stages:
+        row["stages"] = stages
     try:
         row["parse"] = em.asm_checkpoint_stats().get("parse")   # T398: the parse's roads at the first cycle's end (serve, fold,
     except Exception:                                           #  restore, full with its reason, bypass, the g:<reason> demotions)
@@ -24098,18 +24395,40 @@ def _boot_health_first_cycle(dt):
     row["firstCycleStacks"] = list(_FIRST_CYCLE_SAMPLER["rows"])   # the pusher's stack once a second through the cycle (T401 (3))
     if _FIRST_CYCLE_SAMPLER["failed"]:
         row["firstCycleStacksFailed"] = _FIRST_CYCLE_SAMPLER["failed"]   # walks that raised: a short list is then not a fast cycle
-    if row["slow"]:
-        try:
+    if _JOBS_THREAD_STARTED[0] or _FIRST_PASS_SAMPLER["started"]:
+        row["firstPassStacks"] = list(_FIRST_PASS_SAMPLER["rows"])     # the jobs thread's, through its first pass
+        if _FIRST_PASS_SAMPLER["failed"]:
+            row["firstPassStacksFailed"] = _FIRST_PASS_SAMPLER["failed"]
+    try:
+        if row.get("slow"):
             sys.stderr.write("boot health: the first pusher cycle took %.1f s (bound %.0f s): sessions and cards waited behind it; "
                              "read /perf builds, checkpoints.coldFolds, asmIndex.evictions and recordCache.budgetEvictions\n"
-                             % (dt, BOOT_FIRST_CYCLE_BOUND_S))
-        except Exception:
-            pass
+                             % (cyc, BOOT_FIRST_CYCLE_BOUND_S))
+        if row.get("jobsSlow"):
+            sys.stderr.write("boot health: the first housekeeping pass took %.1f s (bound %.0f s) on the jobs thread; the browser "
+                             "did not wait on it; read the row's jobs.* stages and firstPassStacks\n" % (pas, BOOT_FIRST_CYCLE_BOUND_S))
+    except Exception:
+        pass
     try:
         _append_restart_cut(row)
     except Exception:
         pass
     return row
+
+
+def _boot_health_row_backstop(now_mono):
+    """The pusher's later cycles: the jobs thread's first pass still open BOOT_JOBS_PASS_ROW_BACKSTOP_S after the pusher's
+    first cycle closed writes the row without it (jobsFirstPassPending), so a pass that never ends still leaves a boot row.
+    `now_mono` is time.monotonic(); the pusher's first close is remembered on the same clock."""
+    t0 = _BOOT_FIRST_CLOSED_MONO[0]
+    if _BOOT_HEALTH_DONE[0] or t0 is None or _BOOT_FIRST["pusher"] is None or _BOOT_FIRST["jobs"] is not None:
+        return None
+    if now_mono - t0 < BOOT_JOBS_PASS_ROW_BACKSTOP_S:
+        return None
+    return _boot_health_row(pending=True)
+
+
+_BOOT_FIRST_CLOSED_MONO = [None]             # time.monotonic() when the pusher's first cycle closed, for the backstop above
 
 
 def _boot_row_backstop(now=None):
@@ -25860,7 +26179,7 @@ def _session_stamped_tops(sid):
     return _session_stamp_read(sid)[1]
 
 
-_UUIDISH_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+# _UUIDISH_RE: defined beside the interrupt-marks memo above (one source for the uuid shape; the memo loads at import)
 
 
 def _peer_identity(psid):
@@ -39458,7 +39777,8 @@ def _persist_spend_trees(force=False, only=None):
             continue                                         # `only` writes the one memo too, and only when dirty (low 5: an
         #                                                      eviction on a binding bound fires every cycle)
         p = _spend_tree_path(leaf)
-        tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
+        tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per WRITER (pid and thread): the exit's
+        #                                                      force write and the pusher's persist on one leaf never share a staged file
         body = None
         for _ in range(3):                                   # the exit's write runs beside the pusher, which may be
             try:                                             #  mutating the dicts (round two, low 2): a resize under the
@@ -39572,8 +39892,8 @@ def _spend_window_files(leaf, since, now=None):
                     m["files"].pop(p, None)
                 continue
             if cur != mt:
-                m["dirs"][d] = cur
-                _spend_tree_list_dir(d, m, set(m["dirs"]))
+                m["dirs"][d] = cur; m["dirty"] = True         # dirty at the assignment: the listing below marks dirty only when its
+                _spend_tree_list_dir(d, m, set(m["dirs"]))    #  scandir succeeds, and a memo whose mtime moved must be written (1589 low 1)
         if root not in m["dirs"]:
             _SPEND_TREE_CACHE.pop(key, None)                 # the tree is gone: listed afresh if it returns
             return [key]
@@ -50585,7 +50905,8 @@ def _pusher_cycle():
     few-hundred-ms staleness by construction — they always saw a snapshot aged by however many jobs
     ran before them."""
     _t_cycle = time.monotonic()
-    if not _BOOT_HEALTH_DONE[0]:
+    first = not _BOOT_HEALTH_DONE[0] and _BOOT_FIRST["pusher"] is None
+    if first:
         _first_cycle_sampler_start(_t_cycle)   # the boot's first cycle: the pusher's stack sampled once a second (T401 (3)); the
         #                                        start never raises (it degrades to no samples), so it stands outside the try
     _PERF_STATS.cycle_begin()               # T397 round two, low 3: the split opens with the cycle, so the prelude below (the
@@ -50625,9 +50946,12 @@ def _pusher_cycle():
         _live_scope.msgsum = None
         _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
                           idle=(_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle)
-        if not _BOOT_HEALTH_DONE[0]:
+        if first:
             _first_cycle_sampler_stop()                         # the samples are complete before the row reads them
-        _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
+            _BOOT_FIRST_CLOSED_MONO[0] = time.monotonic()
+            _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
+        elif not _BOOT_HEALTH_DONE[0]:
+            _boot_health_row_backstop(time.monotonic())         # the jobs pass still open long after: the row without it
 
 
 def _job_stage(name, thunk):
@@ -50646,6 +50970,11 @@ def _job_stage(name, thunk):
 
 
 def _pusher_cycle_jobs(now, live_map, any_client):
+    """The pusher cycle's own jobs, around the push: what feeds a frame or shares the cycle's checkpoint byte budget. Everything
+    else (the sweeps, the reminder walk, the interrupt tick, the persists, the pause and retry family) runs on the JOBS thread
+    (_jobs_pass, 2026-09-13): the housekeeping's cold reads at boot held the browser's first frames behind a 30 to 60 s first
+    cycle (the user asked why the reminder walk had to finish before the UI showed at all), and their writers already end in
+    _mark_views_dirty, which wakes this loop, so nothing they decide waits for anything here."""
     _t_jobs = time.monotonic()            # /perf: this function minus the _push_all below is the `jobs` stage
     if not _PERF_STATS._mine():
         _PERF_STATS.cycle_begin()         # a caller that did not open the cycle (a test driving the jobs alone) opens it here
@@ -50676,6 +51005,39 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("turn-notify: %s\n" % traceback.format_exc())
     # (the WS keepalive lives on its own _heartbeat thread — NOT here — so a slow push can't starve it)
+    try:                                  # the folds' checkpoints, written for a session at its settle or a states-log
+        _job_stage('persistCheckpoints', lambda: _persist_checkpoints(now))         # move (T323 stage 3): the next kernel folds the tails, not the files
+        _job_stage('convergeCheckpoints', lambda: _converge_checkpoints(now))        # ...and the documents a boot's whole reads left dirty, bounded per cycle (T360)
+    except Exception:
+        sys.stderr.write("checkpoints: %s\n" % traceback.format_exc())
+    try:                                  # the boot row's backstop: written without attachDone once the bound has passed
+        _job_stage('bootRowBackstop', lambda: _boot_row_backstop(now))
+    except Exception:
+        pass
+    try:                                  # the kernel's own size at 5, 30 and 60 minutes and every hour (kernel-samples.jsonl)
+        _job_stage('kernelSample', lambda: _kernel_sample_tick(now))
+    except Exception:
+        pass
+    try:                                  # the bottom bar's API health cell: built AFTER this cycle's pause
+        _job_stage('apiHealth', lambda: _api_health_push(_api_health_frame(now, live_map)))   # decisions, every cycle (a connecting shell gets a
+    except Exception:                     # current frame), sent only when it changed
+        sys.stderr.write("api-health-frame: %s\n" % traceback.format_exc())
+    _PERF_STATS.stage("jobs", (time.monotonic() - _t_jobs) - _t_push)
+
+
+
+
+def _jobs_pass(now, live_map):
+    """One pass of the housekeeping jobs, in the order they always ran (the lift before the walk, the walk before the interrupt
+    tick, the deferral sweep before the walk: each comment below names its reason), on the jobs thread, with the pass's own
+    liveness snapshot. Split off _pusher_cycle_jobs on 2026-09-13 so the pusher's cycle, and with it every browser frame, never
+    waits on these: at boot the walk and the interrupt tick read every session's transcript cold (24 s and 6 s on the 11:55 AM
+    boot that decided it, 30 to 60 s first cycles all day), and the push sat behind them on one thread. Their writers end in
+    _mark_views_dirty (a dirty mark plus the pusher's wake), so a card move a job decides rides the pusher's next cycle exactly
+    as it did when the job ran on that thread. The stage container is `jobsPass`; each job is still its `jobs.<name>` stage."""
+    _t_pass = time.monotonic()
+    if not _PERF_STATS._mine():
+        _PERF_STATS.cycle_begin("jobs")   # a caller that did not open the pass (a test driving the jobs alone) opens it here
     try:                                  # EXACT retraction first: dispatches returned → the stamp is spent,
         _job_stage('liftSpentAwaiting', lambda: _lift_spent_awaiting(now, live_map))   # so the nudge tick below never wakes a wait that already ended
     except Exception:
@@ -50703,22 +51065,16 @@ def _pusher_cycle_jobs(now, live_map, any_client):
         sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
     try:                                  # the tick jobs' evaluation memo, persisted when a completed evaluation
         _job_stage('persistTickSeen', lambda: _persist_tick_seen())          # moved it (T323 stage 1): the next kernel's first look starts from here
-        _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
     except Exception:
         sys.stderr.write("tick-seen: %s\n" % traceback.format_exc())
-    try:                                  # the folds' checkpoints, written for a session at its settle or a states-log
-        _job_stage('persistCheckpoints', lambda: _persist_checkpoints(now))         # move (T323 stage 3): the next kernel folds the tails, not the files
-        _job_stage('convergeCheckpoints', lambda: _converge_checkpoints(now))        # ...and the documents a boot's whole reads left dirty, bounded per cycle (T360)
+    try:                                  # each persist on its own: one memo's raise never skips the other two (1610 round three)
+        _job_stage('persistIntrMarks', lambda: _persist_intr_marks())    # the interrupt-marks memo, when a row changed (T401 (3) target 3)
     except Exception:
-        sys.stderr.write("checkpoints: %s\n" % traceback.format_exc())
-    try:                                  # the boot row's backstop: written without attachDone once the bound has passed
-        _job_stage('bootRowBackstop', lambda: _boot_row_backstop(now))
+        sys.stderr.write("interrupt-marks: %s\n" % traceback.format_exc())
+    try:
+        _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
     except Exception:
-        pass
-    try:                                  # the kernel's own size at 5, 30 and 60 minutes and every hour (kernel-samples.jsonl)
-        _job_stage('kernelSample', lambda: _kernel_sample_tick(now))
-    except Exception:
-        pass
+        sys.stderr.write("spend-tree: %s\n" % traceback.format_exc())
     try:                                  # hitting a usage limit auto-engages the retry-pause (before the resume check)
         _job_stage('autoPauseOnLimit', lambda: _auto_pause_on_limit())
     except Exception:
@@ -50733,7 +51089,7 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("auto-pause-on-spend-limit: %s\n" % traceback.format_exc())
     try:                                  # the spend guard (T350): a session over the hourly ceiling is stopped and told,
-        if _PERF_STATS.pusher.get("cycles", 0) >= 1:   # never the boot's FIRST cycle: the guard's first pass lists every alive session's
+        if _PERF_STATS.jobs.get("passes", 0) >= 1:     # never the boot's FIRST pass: the guard's first pass lists every alive session's
             _job_stage('spendGuard', lambda: _spend_guard_tick(now, live_map))   # subagents tree (4.2 s on one boot), and a runaway
             #                                             spend is minutes, not the first cycle (T401 follow-up); every dashboard
             #                                             warned, a session-events row filed, once per crossing
@@ -50743,10 +51099,6 @@ def _pusher_cycle_jobs(now, live_map, any_client):
         _job_stage('autoResumeRetry', lambda: _auto_resume_retry(now, live_map))
     except Exception:
         sys.stderr.write("auto-resume-retry: %s\n" % traceback.format_exc())
-    try:                                  # the bottom bar's API health cell: built AFTER this cycle's pause
-        _job_stage('apiHealth', lambda: _api_health_push(_api_health_frame(now, live_map)))   # decisions, every cycle (a connecting shell gets a
-    except Exception:                     # current frame), sent only when it changed
-        sys.stderr.write("api-health-frame: %s\n" % traceback.format_exc())
     try:                                  # a per-session interrupt-suppressed retry re-arms once that thread lands a clean turn
         _job_stage('autoResumeSession', lambda: _auto_resume_session_retry(now, live_map))
     except Exception:
@@ -50763,7 +51115,74 @@ def _pusher_cycle_jobs(now, live_map, any_client):
         _job_stage('clearDoneNotes', lambda: _clear_done_working_notes(now, live_map))
     except Exception:
         sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
-    _PERF_STATS.stage("jobs", (time.monotonic() - _t_jobs) - _t_push)
+    _PERF_STATS.stage("jobsPass", time.monotonic() - _t_pass)
+
+
+JOBS_PASS_S = 0.5                                  # the jobs thread's pace between passes: the pusher's backstop, so a job that read
+#                                                    the world within half a second of an event before still does
+
+
+def _jobs_cycle():
+    """ONE pass of the jobs thread: the pass's liveness snapshot and scopes opened exactly as _pusher_cycle opens the pusher's
+    (thread-confined, so the two loops never share a snapshot), _jobs_pass inside them, the scopes closed in the finally, the
+    pass counted under /perf `jobs`, and the boot's first pass sampled and reported to the boot row like the pusher's first
+    cycle."""
+    _t = time.monotonic()
+    first = not _BOOT_HEALTH_DONE[0] and _BOOT_FIRST["jobs"] is None
+    if first:
+        _first_cycle_sampler_start(_t, _FIRST_PASS_SAMPLER)
+    _PERF_STATS.cycle_begin("jobs")
+    _c = time.thread_time()
+    now = int(time.time())
+    live_map = _live_map()
+    _live_scope.snapshot = live_map
+    try:
+        _live_scope.paths = {}
+        _live_scope.sessions = {}
+        _live_scope.auth = {}
+        _live_scope.msgsum = [_MSGSUM_UNSET]
+        _live_scope.names = _names_snapshot()
+        _PERF_STATS.stage("jobs.prelude", time.monotonic() - _t)
+        _jobs_pass(now, live_map)
+    finally:
+        _chat_push_scopes_close()
+        _live_scope.snapshot = None
+        _live_scope.names = None
+        _live_scope.paths = None
+        _live_scope.sessions = None
+        _live_scope.auth = None
+        _live_scope.msgsum = None
+        _PERF_STATS.jobs_pass(time.monotonic() - _t, time.thread_time() - _c)
+        if first:
+            _first_cycle_sampler_stop(_FIRST_PASS_SAMPLER)
+            _boot_health_first_cycle(time.monotonic() - _t, "jobs")
+
+
+_JOBS_FAILED_SAID = {}                             # exception type name -> said once per kernel life (the jobs loop's)
+
+
+def _jobs_loop():
+    """The jobs thread: _jobs_cycle at JOBS_PASS_S, the same guard as _pusher's (a pass that raises is counted under /perf
+    jobs.passFailed, said once per kind, and retried at the pusher's failure pace), stopped by _LOOPS_STOP with the other loops."""
+    streak = 0
+    while not _LOOPS_STOP.is_set():
+        try:
+            _jobs_cycle()
+            streak = 0
+        except Exception as e:                        # Exception, never BaseException: a deliberate loop stop passes
+            _PERF_STATS.pass_failed()
+            kind = type(e).__name__
+            if kind not in _JOBS_FAILED_SAID:
+                _JOBS_FAILED_SAID[kind] = True
+                try:
+                    sys.stderr.write("jobs: a pass raised %s and was skipped (counted under /perf jobs.passFailed; said "
+                                     "once per kind): %s\n" % (kind, traceback.format_exc().rstrip().splitlines()[-1]))
+                except Exception:
+                    pass
+            streak += 1
+            _LOOPS_STOP.wait(PUSHER_FAIL_BACKOFF_S[min(streak, len(PUSHER_FAIL_BACKOFF_S)) - 1])
+            continue
+        _LOOPS_STOP.wait(JOBS_PASS_S)
 
 
 _PUSHER_FAILED_SAID = {}                           # exception type name -> said once per kernel life
@@ -53680,8 +54099,8 @@ if(m.romp==='filesViewerClosed'){var back=window.__rompFilesTabFrom;window.__rom
   if(back&&window.__rompMobileOn&&window.__rompMobileOn()){try{window.__rompMobileTab&&window.__rompMobileTab(back);}catch(e){}}}
 // A folder clicked in the chat (the folder under the transcript, the system context card's Directory row, a
 // tab menu's Browse files, a chat-hosted viewer's directory link; render.ts openBrowse) walks the file link's
-// ladder (ui/webview/file-route.ts browseRoute) and, routed to the FILES pane (the pane is on screen, or the
-// the open pane is the route since T404), posts browseFiles up with pane:'pane'. The shell brings that pane
+// ladder (ui/webview/file-route.ts browseRoute) and, routed to the FILES pane (the pane is on screen: the
+// open pane is the route since T404), posts browseFiles up with pane:'pane'. The shell brings that pane
 // forward, the click being the one gesture that moves it, and forwards the ask with the session's identity
 // the chat resolved (files.ts caches it, so a file picked from the listing names its session in the chip).
 // The pane STAYS up, so none of the feed route's was-off flag or browseClosed restore below applies; on a
@@ -55019,7 +55438,7 @@ _LANDING_COLLAPSE_JS = """
   if(qp!==null){po={chat:false,fleet:false,feed:false,timeline:false,files:false};qp.split(',').forEach(function(k){k=k.trim();if(k in po)po[k]=true;});}
   function saveP(){try{localStorage.setItem(PK,JSON.stringify(po));}catch(e){}}
   var LBL={chat:'chat',fleet:'fleet',feed:'feed',timeline:'timeline',files:'files pane'};
-  // THE FILES CONTROL'S OWN SETTING (T317, the user 2026-09-10): the gear's "Files control in the dashboard bar"
+  // THE FILES CONTROL'S OWN SETTING (T317, the user 2026-09-10): the gear's Files row (Settings, General, Panes; T407)
   // (romp:settings.showFilesControl, gear.js; hidden unless the store holds the literal true: OFF by default since T317b,
   // the user 2026-09-10, who wants the control asked for, not shipped. A FRESH key: the T317-era gear saved its merged-in
   // filesControl: true on any settings change, so that key cannot tell a chosen on from a merged-in one and is never read).
@@ -55192,7 +55611,7 @@ function refusal(f,sid){try{var w=f&&f.contentWindow&&f.contentWindow.__rompMove
 function busy(f){try{var b=f&&f.contentWindow&&f.contentWindow.__rompColumnBusy;return typeof b==='function'&&!!b();}catch(e){return false;}}
 function loaded(f){try{return !!(f&&f.contentWindow&&typeof f.contentWindow.__rompTakeSessionState==='function');}catch(e){return false;}}   // the page's bundle has evaluated, so a posted message is heard
 var BUSY='A session is still being created in this column.';
-var LOCKED='The tabs are locked: unlock them with the padlock in the tab strip to move this session.';
+var LOCKED='The tabs are locked: unlock them in the tab strip\\u2019s gear menu (Lock the tabs in place) to move this session.';
 function make(n,sid,state){var have=document.getElementById(frameId(n));if(have)return have;
 var g=document.createElement('div');g.className='gv gv-chat';g.id='gv-chat-'+n;
 var p=document.createElement('div');p.className='pane chat-col';p.id=paneId(n);p.setAttribute('data-col',String(n));
@@ -55582,6 +56001,33 @@ _REFRESH_SVG = (
     # the arrowhead must READ at 18px (the user 2026-07-27: the first cut's ~3px triangle was invisible) —
     # a 4.4-wide, 3.4-deep triangle straddling the arc's end point, pointing along its clockwise tangent
     "<path d='M9.5 5.4 L11.7 1.6 L13.5 5.2 Z' fill='currentColor'/></svg>")
+
+
+_GEAR_GLYPH_FALLBACK = "\u26ed"   # the failure mode only (the UI tree unreadable): pinned equal to icons.ts GEAR_GLYPH by strip-chrome.test.ts
+_gear_glyph_memo = {}
+
+
+def _gear_glyph():
+    """THE settings gear's character (T405, the user 2026-09-13: one gear, one glyph, from one source): read from
+    ui/webview/icons.ts GEAR_GLYPH, the constant the chat strip's gear renders, so the rail's glyph at the bottom right of
+    every romp page and the strip's cannot drift. Read once per kernel life (the UI tree is the checkout's); an unreadable
+    or unparseable file falls to the same character as a literal, said in the log."""
+    if "glyph" in _gear_glyph_memo:
+        return _gear_glyph_memo["glyph"]
+    glyph = _GEAR_GLYPH_FALLBACK
+    try:
+        src = (UI / "webview" / "icons.ts").read_text(encoding="utf-8")
+        # \x22 is the double quote: no literal one in this pattern, because ui/webview/api-health-axis.test.ts pairs the
+        # module's double quotes to find the landing's stylesheet rules, and an odd count here would flip that pairing
+        m = re.search(r'export const GEAR_GLYPH = \x22((?:\\u[0-9a-fA-F]{4}|[^\x22\\])+)\x22;', src)
+        if m:
+            glyph = re.sub(r"\\u([0-9a-fA-F]{4})", lambda mm: chr(int(mm.group(1), 16)), m.group(1))
+        else:
+            print("[rail] icons.ts declares no GEAR_GLYPH; the rail wears the fallback character", file=sys.stderr)
+    except OSError as e:
+        print("[rail] icons.ts unreadable (%s); the rail wears the fallback character" % e, file=sys.stderr)
+    _gear_glyph_memo["glyph"] = glyph
+    return glyph
 
 
 def _rail_buttons_html():
@@ -56713,7 +57159,7 @@ def _landing():
             " fill='none' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/>"
             "<path d='M6.5 13 A1.7 1.7 0 0 0 9.5 13' fill='none' stroke='currentColor' stroke-width='1.2'/>"
             "<line class='bell-slash' x1='2.8' y1='2.2' x2='13.2' y2='13.8' stroke='currentColor' stroke-width='1.2' stroke-linecap='round'/></svg></div>"
-            "<div class=rail-act id=rail-gear data-keycmd=settings.open title=Settings aria-label=Settings>⛭</div>"   # ⛭ (gear-without-hub): the bigger, bolder gear the user prefers (restored 2026-06-29)
+            "<div class=rail-act id=rail-gear data-keycmd=settings.open title=Settings aria-label=Settings>" + _gear_glyph() + "</div>"   # the gear-without-hub the user prefers (restored 2026-06-29), read from icons.ts (T405: one glyph, one source)
             "</div>"   # /.rail-acts
             "</div>"   # /.pane-rail (bottom bar)
             "</div>"
@@ -61255,11 +61701,20 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
     reason_err = ""
     be = _sdk_backend or None
     _exit_log("romp-kernel: %s, draining SDK sessions\n" % what)
+    # the three memos the next kernel starts from, each persisted on its own: one memo's raise never costs the other two
+    # (1610 round two, medium 3), and a failure is logged by name
     try:
         _persist_tick_seen(force=True)    # the tick jobs' memo for the next kernel's first look (T323 stage 1)
+    except Exception as _e:
+        _exit_log("romp-kernel: the tick-seen memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
+    try:
+        _persist_intr_marks(force=True)   # the interrupt-marks memo (T401 (3) target 3)
+    except Exception as _e:
+        _exit_log("romp-kernel: the interrupt-marks memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
+    try:
         _persist_spend_trees(force=True)  # the spend guard's tree memos: the next kernel stats directories, lists nothing
-    except Exception:
-        pass
+    except Exception as _e:
+        _exit_log("romp-kernel: the spend-tree memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
     try:
         _drain_sessions = [_s for _s in _sessions(time.time()) if _s.get("sid") and _s.get("path")]
     except Exception:
@@ -61379,6 +61834,8 @@ def main():
     #                                                           of pre-fix residue, marker-gated
     threading.Thread(target=_producer, daemon=True, name="producer").start()   # named: the stack sample says whose frames
     threading.Thread(target=_pusher, daemon=True, name="pusher").start()
+    _JOBS_THREAD_STARTED[0] = True                            # the boot row waits for this thread's first pass too
+    threading.Thread(target=_jobs_loop, daemon=True, name="jobs").start()   # the housekeeping, off the pusher (see _jobs_pass)
     threading.Thread(target=_heartbeat, daemon=True).start()  # WS keepalive on its own thread (see _heartbeat)
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()

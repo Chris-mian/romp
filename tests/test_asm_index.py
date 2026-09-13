@@ -223,7 +223,7 @@ class Coverage(Restored):
         self.assertTrue(self.doc(path), em.asm_checkpoint_stats())
         d = T._doc(path)
         self.assertIsNotNone(d["turns"]); self.assertIsNone(d["turns"][0]["uuids"][0], "the idle atom's row leads the section's first turn")
-        row = d["atoms"][d["turns"][0]["atoms"][0]]
+        row = json.loads(d["atoms"][d["turns"][0]["atoms"][0]])                     # v6: the rows are JSON strings
         self.assertEqual((row.get("syn"), "m" in row, row["s"]["type"]), (1, False, "idle"), "…as a synthesized row (an idle span has no message)")
         got, modes, n_lazy = self.restored(path)
         self.assertEqual(modes, ["restore"]); self.assertEqual(got, whole)
@@ -241,7 +241,7 @@ class Coverage(Restored):
         self.assertTrue(em.asm_checkpoint_write(path, SID, tree={**full, "turns": full["turns"][:1]}))   # a short tree: refused
         self.assertEqual(em.asm_checkpoint_stats()["skipped"].get("turnsCoverage"), 1)
         d = T._doc(path)
-        self.assertIsNone(d["turns"]); self.assertFalse(any(r.get("syn") for r in d["atoms"]), "no synthesized row left behind")
+        self.assertIsNone(d["turns"]); self.assertFalse(any(json.loads(r).get("syn") for r in d["atoms"]), "no synthesized row left behind")
         em._ASM_CKPT_STATS["fallbacks"] = {}
         got, modes, n_lazy = self.restored(path)
         self.assertEqual(modes, ["restore"], "a fresh process restores the atoms-only document: %s" % em.asm_checkpoint_stats()["fallbacks"])
@@ -267,7 +267,7 @@ class Coverage(Restored):
         self.assertIsNone(em.asm_checkpoint_stats()["skipped"].get("turnsCoverage"), "not refused")
         d = T._doc(path)
         self.assertIsNotNone(d["turns"], "the section was written")
-        rows = [r for r in d["atoms"] if "r" not in r and not r.get("syn")]
+        rows = [r for r in (json.loads(r_) for r_ in d["atoms"]) if "r" not in r and not r.get("syn")]   # v6: string rows
         self.assertTrue(rows, "the attachment's row: no record behind it")
         self.assertTrue(all("lz" not in r and "m" in r for r in rows), "…its body inline, no lazy marker")
         got, modes, n_lazy = self.restored(path)
@@ -508,7 +508,8 @@ class ScalarWalkers(Restored):
                                                                 em._prose_chars, em.atom_prose_chars, em.postal_mids, em._encoded_mids,
                                                                 em.is_interrupt_record, em._content, em._text_of, em._lazy_of, em.atom_mids,
                                                                 em._machine_written)) + "\n" + em.POSTAL_RE.pattern
-        self.assertEqual((em._ASM_CKPT_V, hashlib.sha1(rule.encode()).hexdigest()[:10]), (5, "56888f276a"),
+        self.assertEqual((em._ASM_CKPT_V, hashlib.sha1(rule.encode()).hexdigest()[:10]), (6, "56888f276a"),   # v6 (T401 (4)): the row
+        #                                                                                      format moved, the work rule did not
                          "the stored verdicts' rules changed: bump em._ASM_CKPT_V and re-pin the digest here")
 
     def test_the_stored_rules_on_odd_content_shapes(self):

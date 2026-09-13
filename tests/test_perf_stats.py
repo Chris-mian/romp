@@ -46,7 +46,7 @@ SID = "11111111-2222-3333-4444-555555555555"
 # A PRIVATE synthetic sid for the goal-store tests: load_goals replays the per-sid override journal,
 # and node ids collide across test modules under the shared placeholder (CLAUDE.md, goal-store fixtures).
 GOAL_SID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
-TOP_KEYS = {"now", "since", "uptime_s", "log", "process", "pusher", "stages_ms", "builds", "sends",
+TOP_KEYS = {"now", "since", "uptime_s", "log", "process", "pusher", "jobs", "stages_ms", "builds", "sends",   # jobs: the jobs thread's passes
             "goals", "memos", "judge", "http", "parses",   # parses: cold event-model parses (T323 stage 1)
             "checkpoints",                                 # checkpoints: the folds' checkpoints (T323 stage 3)
             "asmCheckpoint",                               # asmCheckpoint: the assembly documents (T323 stage 4a)
@@ -143,7 +143,8 @@ class Collector(unittest.TestCase):
             self.assertIsInstance(v, int, k)
         # the two memos the interrupt tick trims to its alive set: the interrupt-marks memo and the awaiting
         # overlay's states-log fold, each with its counters and its occupancy
-        self.assertEqual(set(snap["memos"]["intrMarks"]), {"hit", "miss", "evict", "entries"})
+        self.assertEqual(set(snap["memos"]["intrMarks"]), {"hit", "miss", "evict", "entries", "restored", "refused", "computeMs", "persisted"},
+                         "the identity memo's counters and the persisted memo's (T401 (3) target 3)")
         self.assertEqual(snap["memos"]["intrMarks"], km._intr_marks_memo_report())
         self.assertEqual(set(snap["memos"]["statesOverlay"]), {"hit", "append", "refold", "fail", "evict", "entries"})
         self.assertEqual(snap["memos"]["statesOverlay"], km._states_overlay_report())
@@ -178,6 +179,19 @@ class Collector(unittest.TestCase):
         self.assertGreaterEqual(snap["process"]["rss_kb"], 0)
         self.assertGreaterEqual(snap["uptime_s"], 0)
         json.dumps(snap)                                     # the whole thing serializes as-is
+
+    def test_the_asm_checkpoint_block_names_the_restore_parts(self):
+        """1606 low 4: nothing pinned restoreMs on /perf. The block's restoreMs sub-keys: the four named parts and the total."""
+        st = km.em.asm_checkpoint_stats()
+        self.assertEqual(set(st["restoreMs"]), {"load", "verify", "index", "seed", "total"})
+        self.assertTrue(all(isinstance(v, float) for v in st["restoreMs"].values()), st["restoreMs"])
+
+    def test_the_asm_index_block_carries_the_documented_keys(self):
+        """The lazy index's block (asmIndex): its keys pinned, the light-facts gauge among them (T401 (3) target 3, round three:
+        the gauge was documented on /perf but never exposed)."""
+        st = km.em.asm_index_stats()
+        self.assertEqual(set(st), {"cap", "evictions", "materialized", "materializedBy", "resident", "restoredTurns", "rowDecodes", "userFacts"})
+        self.assertIsInstance(st["userFacts"], int); self.assertGreaterEqual(st["userFacts"], 0)
 
     def test_the_feed_build_block_carries_the_per_session_card_memo(self):
         """builds.feed gained `memo` (T368): the feed's per-session card memo beside the build counters, its hits and

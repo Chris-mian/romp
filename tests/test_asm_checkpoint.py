@@ -14,6 +14,7 @@ import time
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from romp_load import load_source
 
@@ -159,6 +160,172 @@ def kernel_module():
         os.environ.setdefault("ROMP_KERNEL_NO_OPEN", "1")
         _KM.append(load_source("romp_kernel_t323s4a", os.path.join(BIN, "romp-kernel")))
     return _KM[0]
+
+
+class StringRowsAndRestoreSplit(Harness):
+    """T401 (4): the document's atom rows are stored as pre-serialized JSON strings (version 6), so the whole-document loads
+    builds strs and the lazy index takes bytes with no dumps; a version-6 document whose row is not a string is refused as
+    `rows`, never read by a second road; the previous version is refused as `version` and the next settle writes version 6
+    (the deploy boot is the migration); the restore's four parts are timed on the returns they name."""
+
+    def _compacting(self, name="manual_compact_detached"):
+        records, sent = G.SINGLE_FILE[name]
+        path = self.write(name, records(), sent=sent)
+        self.fresh(); self.parse(path)
+        self.assertTrue(self.doc(path), em.asm_checkpoint_stats())
+        return path
+
+    def test_a_written_document_is_version_6_with_string_rows_and_restores_equal(self):
+        path = self._compacting()
+        d = _doc(path)
+        self.assertEqual(d["av"], 6)
+        self.assertGreater(len(d["atoms"]), 0)
+        self.assertTrue(all(isinstance(r, str) for r in d["atoms"]), "every atom row is a JSON string")
+        self.assertTrue(all(isinstance(json.loads(r), dict) for r in d["atoms"]), "each decodes to the row it was")
+        whole = self.cold(path)
+        got, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"]); self.assertGreater(n_lazy, 0)
+        self.assertEqual(got, whole, "restored equals the whole parse over string rows")
+
+    def test_a_version_6_document_with_a_dict_row_is_refused_as_rows_and_the_whole_parse_serves(self):
+        path = self._compacting()
+        d = _doc(path)
+        d["atoms"][0] = json.loads(d["atoms"][0])                 # one row left as a dict: not this version's document
+        _write_doc(path, d)
+        em._ASM_CKPT_STATS["fallbacks"] = {}
+        self.fresh(); modes = []; tree = self.parse(path, modes)
+        self.assertEqual(modes, ["full"], "the whole parse serves")
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "counted once under `rows`: %s" % em.asm_checkpoint_stats()["fallbacks"])
+        self.assertEqual(_strip(tree), self.cold(path))
+
+    def test_the_previous_version_is_refused_and_the_next_settle_writes_version_6(self):
+        path = self._compacting()
+        d = _doc(path)
+        d["av"] = 5; d["atoms"] = [json.loads(r) for r in d["atoms"]]   # the previous version's document: dict rows
+        _write_doc(path, d)
+        em._ASM_CKPT_STATS["fallbacks"] = {}
+        self.fresh(); modes = []; self.parse(path, modes)
+        self.assertEqual(modes, ["full"]); self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("version"), 1, "the migration boot's road")
+        self.assertTrue(self.doc(path), "the settle rewrites it")
+        self.assertEqual(_doc(path)["av"], 6)
+        got, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"])
+
+    def test_the_restore_split_reports_every_part_above_zero_after_one_fast_restore(self):
+        """1606 low 3 and 1610 round two, medium 2: whole milliseconds, then tenths, reported zeros for the fast parts of one
+        restore (raw 0.0136, 0.0146, 0.0175 ms), and the pin read the raw floats, not the report. The REPORT is pinned: three
+        decimals, every part above zero after a single fast restore, a `total` on every return of _asm_restore that holds
+        each part, and the report equal to the intended rounding of the raw sums."""
+        with em._ASM_CKPT_LOCK:
+            em._ASM_CKPT_STATS["restoreMs"] = {"load": 0.0, "verify": 0.0, "index": 0.0, "seed": 0.0, "total": 0.0}
+        path = self._compacting()
+        got, modes, n_lazy = self.restored(path)
+        self.assertEqual(modes, ["restore"])
+        ms = em.asm_checkpoint_stats()["restoreMs"]
+        self.assertEqual(set(ms), {"load", "verify", "index", "seed", "total"})
+        self.assertTrue(all(isinstance(v, float) and v > 0.0 for v in ms.values()), "every part reads above zero on /perf: %r" % ms)
+        with em._ASM_CKPT_LOCK:
+            raw = dict(em._ASM_CKPT_STATS["restoreMs"])
+        self.assertEqual(ms, {k: round(v, 3) for k, v in raw.items()}, "the report is the raw sums at three decimals")
+        self.assertGreaterEqual(raw["total"], max(raw[k] for k in ("load", "verify", "index", "seed")), "the total holds each part")
+
+    def test_a_corrupt_last_row_of_any_shape_is_refused_whole_and_the_whole_parse_serves(self):
+        """1610 round two, medium 1: the rows guard decoded row 0 only, so a document whose LAST row was a bare string, a list, a
+        number or not JSON took the restore road and raised at the consumer. Every row's shape is checked at load (cheaply:
+        an object's braces); each variant is refused as `rows` and the parse serves cold-equal."""
+        for bad in ('"a bare string"', "[1, 2]", "7", "not json at all", '{"r": 0'):
+            with self.subTest(last_row=bad):
+                path = self._compacting()
+                d = _doc(path); d["atoms"][-1] = bad; _write_doc(path, d)
+                em._ASM_CKPT_STATS["fallbacks"] = {}
+                self.fresh(); modes = []; tree = self.parse(path, modes)
+                self.assertEqual(modes, ["full"], "the whole parse serves")
+                self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "counted once: %s" % em.asm_checkpoint_stats()["fallbacks"])
+                self.assertEqual(_strip(tree), self.cold(path))
+
+    def test_a_corrupt_row_refuses_the_document_on_every_accessor_road_and_the_next_parse_is_whole(self):
+        """1610 round three, mediums 1 and 2: the belt covered LazyIndex.build only; text_flags and uuid_of (the orphan
+        synthesis walks every pre-cut row through them) did a bare json.loads whose JSONDecodeError escaped uncounted with the
+        document left on disk, so the leaf never parsed again; and user_facts returned None for the row, so the tally answered
+        from one row fewer than the whole parse with nothing counted. One helper now serves every accessor: the first read on
+        ANY road notes `rows` once, unlinks the document, drops the entry and raises; the next parse is whole and cold-equal."""
+        km_ = kernel_module()
+        roads = {
+            "build": lambda la, k: la[k],
+            "text_flags": lambda la, k: la._index.text_flags(la._rows[k]),
+            "uuid_of": lambda la, k: la._index.uuid_of(la._rows[k]),
+            "uuids": lambda la, k: la.uuids(),
+            "user_facts (the tally)": lambda la, k: km_._interrupt_marks_facts([{"id": "t", "t": 0, "atoms": la}]),
+        }
+        for name, road in roads.items():
+            with self.subTest(road=name):
+                path = self._compacting()
+                cold = self.cold(path)
+                d = _doc(path); last = len(d["atoms"]) - 1; d["atoms"][last] = "{not json inside}"; _write_doc(path, d)
+                em._ASM_CKPT_STATS["fallbacks"] = {}
+                self.fresh(); modes = []; tree = self.parse(path, modes)
+                self.assertEqual(modes, ["restore"], "the shape check passes: the restore serves")
+                la = next(t["atoms"] for t in tree["turns"] if isinstance(t.get("atoms"), em.LazyAtoms) and last in t["atoms"]._rows)
+                k = la._rows.index(last)
+                with self.assertRaises(em.LazyIndexError):
+                    road(la, k)
+                self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "noted once on the %s road" % name)
+                self.assertFalse(em._asm_ckpt_file(path).exists(), "the document is unlinked")
+                modes = []; tree2 = self.parse(path, modes)
+                self.assertEqual(modes, ["full"], "the entry was dropped: the next parse is whole")
+                self.assertEqual(_strip(tree2), cold)
+                self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "still counted once")
+
+    def test_an_object_shaped_row_that_does_not_decode_is_noted_at_its_first_build_and_the_next_parse_is_whole(self):
+        """1610 round two, medium 1, the residual: a row shaped as an object whose inside is not JSON passes the load's shape
+        check; the first build notes the document `rows` once, drops its assembly entry and raises for that build alone; the
+        next parse of the leaf is the whole parse, cold-equal, and the note counted once."""
+        path = self._compacting()
+        d = _doc(path); last = len(d["atoms"]) - 1; d["atoms"][last] = "{not json inside}"; _write_doc(path, d)
+        em._ASM_CKPT_STATS["fallbacks"] = {}
+        self.fresh(); modes = []; tree = self.parse(path, modes)
+        self.assertEqual(modes, ["restore"], "the shape check passes: the restore serves")
+        lazy = [t["atoms"] for t in tree["turns"] if isinstance(t.get("atoms"), em.LazyAtoms)]
+        self.assertTrue(lazy)
+        with self.assertRaises(em.LazyIndexError):
+            for la in lazy:
+                for i in range(len(la)):
+                    la[i]                                                # the corrupt row's build raises, once, loudly
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "noted once at the first failing build")
+        with self.assertRaises(em.LazyIndexError):
+            for la in lazy:
+                for i in range(len(la)):
+                    la[i]                                                # a second consumer of the same index: raised again,
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "  but noted once")
+        modes = []; tree2 = self.parse(path, modes)
+        self.assertEqual(modes, ["full"], "the entry was dropped: the next parse is whole")
+        self.assertEqual(_strip(tree2), self.cold(path))
+
+    def test_a_version_6_document_whose_first_row_is_not_an_object_is_refused_as_rows(self):
+        """1606 low 2: the rows guard checked the type only; a string row that decodes to a list took the restore road and
+        raised at its first build, uncounted. One row is decoded at load."""
+        path = self._compacting()
+        d = _doc(path)
+        d["atoms"][0] = "[1, 2]"                                   # a JSON string, not a JSON object
+        _write_doc(path, d)
+        em._ASM_CKPT_STATS["fallbacks"] = {}
+        self.fresh(); modes = []; tree = self.parse(path, modes)
+        self.assertEqual(modes, ["full"], "the whole parse serves")
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "counted once under `rows`")
+        self.assertEqual(_strip(tree), self.cold(path))
+
+    def test_an_unencodable_atom_row_is_the_counted_skip_not_a_raise(self):
+        """1606 low 1: the per-row json.dumps sat above the writer's guard, so an unencodable row raised out of
+        asm_checkpoint_write instead of the counted `unencodable` skip."""
+        records, sent = G.SINGLE_FILE["manual_compact_detached"]
+        path = self.write("unenc", records(), sent=sent)
+        self.fresh(); self.parse(path)
+        em._ASM_CKPT_STATS["skipped"] = {}
+        orig = em._atom_scalars
+        with mock.patch.object(em, "_atom_scalars", lambda a: dict(orig(a), weird={1, 2})):   # a set: not JSON-encodable
+            wrote = self.doc(path)
+        self.assertFalse(wrote, "not written")
+        self.assertEqual(em.asm_checkpoint_stats()["skipped"].get("unencodable"), 1, "counted: %s" % em.asm_checkpoint_stats()["skipped"])
 
 
 class RestoredEqualsWhole(Harness):

@@ -1,13 +1,12 @@
 // Where a click on a FILE or a FOLDER opens: one ladder, two callers (render.ts openPath for a file link,
 // openBrowse for a folder), pure and DOM-free so the table runs for real in tests (file-route.test.ts,
 // browse-route.test.ts). The caller reads every input at CLICK time:
-//              a foreign stored value reads as the default.
 //   framed     window.parent !== window: a shell exists to relay to. Standalone /chat has no shell and no
 //              other pane, so everything opens in place there.
 //   filesOpen  the shell's Files-pane bit (render.ts panesOn.files, cached from the shell's own broadcast):
 //              the pane is ON SCREEN, a desktop column toggled on or the tab showing on a phone.
 //   filesAvail the shell's word that the Files control exists (render.ts panesAvail.files, the same broadcast):
-//              the gear's "Files control in the dashboard bar" is on (off by default since T317b). Off, there is no pane to
+//              the gear's Files row (Settings, General, Panes) is on (off by default since T317b). Off, there is no pane to
 //              bring forward, so a click that would have gone there opens here (T317).
 // A verdict names the TARGET: "pane" is the Files pane (the shell brings a closed one forward; the click is
 // the gesture), "here" is this document, the viewer or the file browser as a modal over the pane that was

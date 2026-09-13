@@ -490,6 +490,10 @@ class NudgeWalkParseGate(unittest.TestCase):
             "_NUDGE_ASKER_ROWS_MAX",                # a constant
             "_views_dirty", "_pusher_wake",         # the writers' dirty mark and the pusher's wake (_mark_views_dirty): outputs of a
             #                                         block filed or lifted, never inputs to the verdict
+            "_INTR_MARKS_DISK", "_INTR_MARKS_DISK_LOCK", "_INTR_MARKS_DISK_DIRTY",   # the persisted interrupt-marks memo (T401 (3)
+            #                                         target 3): rows keyed on the transcript's stat, the states log's cut pair (both
+            #                                         keyed files) and the parse's own sdk-ownership bit (jd._sdk_owned, the input
+            #                                         parsed_session reads as sdk_human), holding only the tally's own two maxima
         }
         DISPLAY_ONLY = {"_name_of": "the asker's display name for the reminder's TEXT (the names snapshot): never a verdict input"}
         ROAD_FORBIDDEN = {                          # a road whose KEY writes constants at some positions must never read those files (T401 (3)):
@@ -513,12 +517,20 @@ class NudgeWalkParseGate(unittest.TestCase):
                     "GOALDIR", "CLOSER_ON", "load_goals_shared_or_fault", "_seg_key", "_segment_id", "episode_floor", "_view_cleared",
                     "GOALARCHDIR", "_overrides_dir",   # the two keyed-file paths _session_files_stat itself names (the interrupt tick's key)
                     "load_goals_or_fault", "record_verdict", "append_block", "rollup_status", "save_goals", "INTERRUPT_BLOCK_WHY",
-                    "_intr_paused_only"}   # the interrupt arms' store readers and writers (T401 (3) round two): they load and write
+                    "_intr_paused_only",   # the interrupt arms' store readers and writers (T401 (3) round two): they load and write
+                    "_pending_cut",    # the armed bare-rollback cut the judge parse reads live (no file): the marks memo takes NO key while it is armed
+                    "_sdk_owned"}      # the parse's sdk-ownership bit (parsed_session hands it to the adapter as sdk_human): the
+        #                                    marks memo's key carries the bit itself (round three, low 2)
         #                                    the goal store through its own API, the store, its journal and its archive being keyed
         #                                    files 3 to 5, and the override replay inside load_goals reads the clears log (keyed file 7,
         #                                    which is why the interrupt key keeps that position real); _intr_paused_only is a pure
-        #                                    reader of the loaded store; INTERRUPT_BLOCK_WHY a constant
-        EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record"}   # pure readers of a record or an atom
+        #                                    reader of the loaded store; INTERRUPT_BLOCK_WHY a constant. rollup_status is on the list
+        #                                    because the arms call it; it reads the nudge ledger (stalled_facts) for a stall WARNING
+        #                                    only, never a status input. _set_intr_blocked, the third arm writer with its own fresh
+        #                                    ledger read, is OFF the interrupt-block road by design (the road's twelve members are
+        #                                    pinned in test_boot_parse_gating) (1595 low 3)
+        EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record",   # pure readers of a record or an atom
+                    "LazyAtoms"}   # the pre-cut turn's container: its user_facts reads the document's rows, the transcript's own records
         stat_src = inspect.getsource(km._session_files_stat)
         def module_name(n, g):
             return n in g

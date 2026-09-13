@@ -1509,6 +1509,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `process`: `rss_kb` (resident set size in KB: the current size on Linux,
   read from `/proc`; the peak, `ru_maxrss`, on macOS, which has no `/proc`),
   `threads`, `cpu_s`, `pid`.
+- `jobs`: the jobs thread, which runs the housekeeping (the sweeps, the
+  reminder walk, the interrupt tick, the persists, the pause and retry
+  family) off the pusher since 2026-09-13, so no browser frame waits on a
+  cold read: `passes`, `pass_ms_sum`, `pass_ms_max`, `pass_ms_last`,
+  `pass_cpu_ms_sum`, `pass_ms_p50`, `pass_ms_p90`, `pass_ms_ring_max`,
+  `ring_n`, `passFailed` (a pass that raised out of the loop and was
+  skipped), `splitFailed`, `firstPass` (the boot's first pass's stage split,
+  the shape of `pusher.firstCycle`) and `stageRing`. The pass's container
+  stage is `jobsPass`, its opening `jobs.prelude`; each job is still its
+  `jobs.<job>` stage, so a stage name says which thread ran it by the list
+  in `_pusher_cycle_jobs` (the pusher's: the checkpoint cycle, pending ops,
+  turn notify, the checkpoint persist and converge, the boot row backstop,
+  the kernel sample, the API health frame) against `_jobs_pass`.
 - `pusher`: `cycles`, `wakes` (every wake call; a burst of wakes runs one
   cycle), `wakes_event` and `wakes_backstop` (how the loop's wait ended),
   `cycle_ms_sum`, `cycle_ms_max` (since start), `cycle_ms_last`,
@@ -1551,7 +1564,15 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   until a clean cycle, so a cycle that woke the pusher itself before raising
   cannot spin the loop. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
-  stage without the kernel alive, and `parse`, the assembly's road counters at
+  stage without the kernel alive. Since the housekeeping moved to the jobs
+  thread the row carries two firsts: `firstCycleS` and `slow` are the
+  pusher's first cycle, the browser's own wait, the meaning every earlier
+  row had; `jobsFirstPassS` and `jobsSlow` are the jobs thread's first pass,
+  where the boot's cold reads now sit. The row is written by whichever loop
+  finishes its first LAST, so `stages` carries both splits (a key both own,
+  `jobs.other`, is summed); a jobs pass still open ten minutes after the
+  pusher's first cycle closed has the row written without it, marked
+  `jobsFirstPassPending`. The row also carries `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood
@@ -1608,7 +1629,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   boot's nudge walk `skipped` on its memo, those it `parsed` (at most forty
   each), and how many it `deferred` to a later pass.
   `firstCycleStacks` is the pusher's stack sampled through the first cycle
-  only, once a second for the first thirty samples and every five seconds
+  only (and `firstPassStacks` the jobs thread's through its first pass, the
+  same shape, with `firstPassStacksFailed`), once a second for the first thirty samples and every five seconds
   after, so the sixty-row cap covers three minutes and a long cycle shows
   where it ended (each row the seconds into the cycle, the stage mark and
   the eight innermost frames as "function (file:line)", the /perf sample's
@@ -1693,7 +1715,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `judge-index`, `judge-triage` and the other tiers' pool workers, `pool`
   for an unprefixed pool worker, `thread` for a default name with no target,
   `pusher`, `producer`, `index`, `triage`, `parse-warm`, `boot-warm`,
-  `sdk-boot`, `first-cycle-sampler`, `main`; never a session's name, sid, host or path (the ident
+  `sdk-boot`, `first-cycle-sampler`, `jobs` (the housekeeping loop split off the pusher), `main`; never a
+  session's name, sid, host or path (the ident
   keeps two workers sharing a kind apart). Each row has `self` (the thread building the
   sample), `stage` (the thread's current stage mark: the pusher's
   `jobs.<job>` or `push`, a handler's `connect`, `null` outside one) and
@@ -1716,7 +1739,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   browser reload or reconnect), `none` outside those (T401), and `asmCheckpoint.hydratedByStage`
   does the same for the hydration rows.
 - `asmCheckpoint`: the assembly documents since boot: `written`, `restored`,
-  `fallbacks` per reason (`version`, `session`, `inputs`, `lineage`, `shrunk`,
+  `fallbacks` per reason (`version`, `rows` (a version-6 document whose atom
+  row fails its shape check at load, or fails its decode at the first read
+  by any accessor of the index: the document is refused to the whole parse,
+  at load or at that first read, counted once),
+  `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
   `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`;
@@ -1732,7 +1759,20 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   place at equal length plus an append passes the 64-byte guard, like a
   same-size same-mtime rewrite),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
-  a cut), `hydratedBy` (those bytes per calling function), and `converge`: the
+  a cut), `hydratedBy` (those bytes per calling function), `restoreMs`, the
+  restore's parts since boot in milliseconds to three decimals, each added on the
+  return it names (`load`: the document read, decompressed, decoded and its
+  file checks; `verify`: the turns section's identity and coverage, or the
+  atoms-only form's rows built and its identity proven; `index`: the lazy
+  index over the rows and the pre-cut turns; `seed`: the adapter's pre-cut
+  graph facts; `total`: the whole restore, entry to return, so the unnamed
+  remainder, the tail's parse through the seeded adapter, is `total` minus
+  the four), so a boot read names the mover; since document version 6 the
+  atom rows are stored as pre-serialized JSON strings, so the decode builds
+  strings, not dicts, and the index takes each row's bytes with no re-encode
+  (the deploy boot of that version refuses every standing document as
+  `version` and the settle rewrites it: that boot is the migration, the boot
+  after is the read), and `converge`: the
   pass's writes of idle leaves' documents from the boot's own parse
   (`candidates`, `writes`, `bytes`, `deferred`, `skipped` per the writer's
   reason).
@@ -2022,7 +2062,36 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   entry per (session, parse family) keyed on the parse object's identity and
   the machine-cut stamp (`hit`, `miss`, `evict` for entries released when a
   session leaves the alive set or the memo is cleared at its cap, and the
-  gauge `entries`). `deadWait` is the dead-wait sweep's reads: `passes`,
+  gauge `entries`), and behind it a memo PERSISTED across boots at
+  `STATE/intr-marks.json` (version 2: `{"v": 2, "rows": {sid: [mtime_ns,
+  size, cut_t, cut_cause, sdk_owned, last_intr, last_human]}}`),
+  one row per alive session keyed on the transcript's stat, the states log's
+  newest machine-cut pair and the parse's sdk-ownership bit (the input that
+  decides whether a programmatic prompt is the human's), all taken before
+  the tally reads a row, and no key at all while a bare rollback's cut is
+  armed for the session (the parse is then a truncated world no file
+  records, so nothing is served or persisted until the arm clears; the arm
+  is checked again after the tally, so a cut armed meanwhile is answered
+  but not persisted); the row is the judge family's alone (the display
+  family's parse carries live-merged atoms and takes no disk key); written
+  when a row changed and at exit, dropped with the session when it leaves
+  the alive set: `restored` counts a boot's marks served from a row under a
+  matching key with no tally, `refused` a row the load would not trust
+  (malformed, of another length or version, not under a uuid-shaped sid:
+  recomputed, never read as dead; a refused row stands on disk until the
+  next changed write), `computeMs` the whole milliseconds the cold tallies
+  took, `persisted` the rows held. The light facts the tally reads are cached
+  per pre-cut index (user rows only, about 447 bytes each, at most 8192 rows
+  an index, the cache cleared whole past that; the parse cache holds up to
+  256 indexes, so about 937 MB at the theoretical worst; `asmIndex.userFacts`
+  on `/perf` is the gauge of resident facts summed over the live indexes,
+  falling when an index is dropped) and never built into atoms; a row
+  whose interrupt flag lives only in an inline body is handed to the build. The cold tally itself walks the transcript's USER rows
+  through the pre-cut container's light facts (type, time, the recorded
+  author, the interrupt flag from the lazy header) and builds no atom but
+  the romp-authored notices a stop's classification reads, so a session that
+  moved pays a tally linear in its rows instead of the whole atom build; the
+  display family's live-merged atoms are not on disk and miss as before. `deadWait` is the dead-wait sweep's reads: `passes`,
   `candidates` (corroborated-dead sessions walked), `sharedLoads` (reads
   through the shared read-only store view, one per store per pass: the
   candidate's own and every alive session's for the peer-death arm),
@@ -2053,7 +2122,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   parse on a matched key that a clock leg refused to serve: a flip due, a
   None flip, the closer toggle off), and `missBy[file]`, which counts, per
   miss, each key position that differed from the recorded one so a boot read
-  can name what moved; the positions in order are `transcript`, `states`
+  can name what moved (the counts overlap: one miss counts under every
+  position that moved, so their sum can exceed `misses`; read them beside
+  `misses`); the positions in order are `transcript`, `states`
   (the state log), `store` (the goal store), `overrides` (its journal),
   `archive`, `episode`, `cleared`, `messages` (the postal log), `downtime`,
   `ledger` (the nudge ledger, one file for the box), then `askerRow` for the
@@ -2072,9 +2143,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   interrupt block (the quiet boot read of 2026-09-13 counted 125 interrupt
   block misses: messages 50, the ledger 50, cleared 25, and no episode
   row; the two constant positions and the ledger row answer 100 of them).
-  `statesOverlay` is the
-  awaiting overlay's read of the
-  states log through the shared append-incremental reader, one carried answer
+  `statesOverlay` is the awaiting overlay's read of the states log through
+  the shared append-incremental reader, one carried answer
   per states file (`hit`: the records were the cached ones and no row was
   stepped; `append`: only the appended rows were stepped; `refold`: every row
   was stepped again, after a rewrite or a shrink or on the file's first read;

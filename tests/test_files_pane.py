@@ -242,7 +242,7 @@ class Shell(unittest.TestCase):
                       "c.contains('po-fleet')?'fleet-pane':lastChat();},'files-pane');", self.html)
 
     def test_the_files_controls_own_setting_hides_it_in_both_layouts(self):
-        # T317 (the user 2026-09-10): the gear's "Files control in the dashboard bar" (romp:settings.showFilesControl,
+        # T317 (the user 2026-09-10): the gear's Files row, "Files control in the dashboard bar" until T407 (romp:settings.showFilesControl,
         # hidden unless the store holds the literal true: OFF by default since T317b; a FRESH key, since the T317-era gear's
         # whole-object save left filesControl: true in any profile that touched a setting). The shell reads the gear's store key itself, hides the
         # rail's toggle and the phone's tab by one body class, closes an open pane on the same apply, refuses to
@@ -264,7 +264,7 @@ class Shell(unittest.TestCase):
         _has(self, "<input type=checkbox id=rs-filesctl>", gear)
         self.assertNotIn("id=rs-filesctl checked", gear, "off by default: the box is not pre-checked")
         self.assertEqual(gear.count("showFilesControl: false, stripGroupRows"), 2, "the gear's load defaults (the assign and its catch) say off")
-        _has(self, "delete o.filesControl; return o; } catch (e) {", gear)   # load() drops the T317-era key, so the next save leaves it behind
+        _has(self, "delete o.filesControl; delete o.fileLinkPane; return o; } catch (e) {", gear)   # load() drops the T317-era key and the T404-era file-links key, so the next save leaves both behind
         # the box has a NAME OF ITS OWN in the gear's one var list (review find: a second `fc` shadowed the feed's
         # collapsed box, so the new row was dead and the feed box wrote this setting)
         _has(self, "fsc = document.getElementById('rs-filesctl')", gear)
@@ -284,9 +284,11 @@ class Shell(unittest.TestCase):
         self.assertLess(gear.index("id=rs-filesctl"), gear.index("data-section=appearance>Appearance<"), "…before the Appearance section")
         render = (UI / "render.ts").read_text()
         _has(self, "fileLinkRoute(window.parent !== window, panesOn.files === true, panesAvail.files !== false)", render)   # no setting since T404
-        # the hint in the pane stays true: it speaks of the pane being open or closed, never of the control
+        # the hint in the pane stays true: it speaks of the pane being open or closed, never of the control (its third sentence,
+        # which told a reader with the pane open to turn on the control that must already be on, went with T407)
         files = (UI / "files.ts").read_text()
-        _has(self, "Closed, they open over the pane you clicked. Turn on the Files control in the dashboard bar (Settings, General, Panes) to open this pane.", files)
+        _has(self, 'hint.textContent = "While this pane is open, a file or folder clicked in the chat opens here. Closed, they open over the pane you clicked.";', files)
+        self.assertNotIn("Files control in the dashboard bar", files, "the row is named Files now (T407)")
 
     def test_mobile_tab_and_the_palette_command(self):
         _has(self, "#chat-pane,#fleet-pane,#feed-pane,#files-pane,#tl-pane{display:contents!important}", self.html)

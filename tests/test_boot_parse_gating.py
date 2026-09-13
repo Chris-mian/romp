@@ -6,6 +6,7 @@ session whose transcript and state log are unchanged since their last look (the 
 /perf counts every cold parse so the effect is measurable. Hermetic: synthetic files under a temp root, the kernel and
 judge loaded against a temp state directory, threads joined explicitly."""
 import inspect
+import io
 import json
 import os
 import tempfile
@@ -155,13 +156,89 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         km._tick_job_done("interrupt-block", r, st)
         self.assertTrue(km._tick_job_skips("interrupt-block", r))
 
+    def test_a_failed_persist_leaves_no_tmp_re_arms_the_dirty_flag_and_says_it_once(self):
+        """1603 low 1: the tick-seen persist took only the tmp NAME from the marks persist; on a failed replace it left the tmp
+        on disk, left the memo clean (never written again until something else dirtied it) and said nothing. The three
+        things the precedent does: unlink the tmp, re-arm dirty, say it once."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        skip, st = km._tick_job_check("interrupt-block", r); km._tick_job_done("interrupt-block", r, st)
+        p = km._tick_seen_path(); p.parent.mkdir(parents=True, exist_ok=True)
+        err = io.StringIO()
+        def broken_replace(a, b):                                          # the fault on the REPLACE (1610 round three, medium 3):
+            raise OSError("EIO: replace refused")                          #  the tmp was written, so the unlink leg has power
+        with mock.patch.object(km, "_TICK_SEEN_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err), \
+             mock.patch("os.replace", side_effect=broken_replace):
+            self.assertFalse(km._persist_tick_seen(), "the replace failed")
+            with km._TICK_SEEN_LOCK:
+                self.assertTrue(km._TICK_SEEN_DIRTY[0], "the memo is dirty again: the next persist retries")
+            self.assertEqual(list(p.parent.glob(p.name + ".tmp.*")), [], "the written tmp was unlinked")
+            self.assertFalse(km._persist_tick_seen(), "still failing")
+            self.assertEqual(list(p.parent.glob(p.name + ".tmp.*")), [], "and unlinked again")
+        self.assertEqual(err.getvalue().count("tick-seen memo: not written"), 1, "said once: %r" % err.getvalue())
+        self.assertTrue(km._persist_tick_seen(), "the fault gone: the retried persist writes")
+
+    def test_an_unserializable_entry_raises_with_the_flag_still_dirty_and_is_said_once(self):
+        """1610 round two, medium 3: json.dumps sat after the flag cleared, so an unserializable entry raised with the memo left
+        clean and no later persist retried. The dumps runs before the clear; the failure is said once; the memo stays dirty."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        skip, st = km._tick_job_check("interrupt-block", r); km._tick_job_done("interrupt-block", r, st)
+        key = ("interrupt-block", "99999999-2222-4333-8444-0000000000b9")
+        err = io.StringIO()
+        with km._TICK_SEEN_LOCK:
+            km._TICK_SEEN[key] = [{1, 2}]                                   # a set inside the entry: not JSON
+        try:
+            with mock.patch.object(km, "_TICK_SEEN_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err):
+                with self.assertRaises(TypeError):
+                    km._persist_tick_seen()
+                with km._TICK_SEEN_LOCK:
+                    self.assertTrue(km._TICK_SEEN_DIRTY[0], "the flag is still dirty: the next persist retries")
+                with self.assertRaises(TypeError):
+                    km._persist_tick_seen()
+                self.assertEqual(err.getvalue().count("tick-seen memo: not serialized"), 1, "said once: %r" % err.getvalue())
+        finally:
+            with km._TICK_SEEN_LOCK:
+                km._TICK_SEEN.pop(key, None)
+        self.assertTrue(km._persist_tick_seen(), "the entry gone: the retried persist writes")
+
+    def test_the_say_once_latch_re_arms_on_a_clean_write(self):
+        """1610 round two, low 8: the latch never re-armed, so a second fault episode hours later was silent."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        p = km._tick_seen_path(); p.parent.mkdir(parents=True, exist_ok=True)
+        blocker = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))
+        err = io.StringIO()
+        with mock.patch.object(km, "_TICK_SEEN_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err):
+            skip, st = km._tick_job_check("interrupt-block", r); km._tick_job_done("interrupt-block", r, st)
+            blocker.mkdir(); self.assertFalse(km._persist_tick_seen()); blocker.rmdir()      # episode one
+            self.assertTrue(km._persist_tick_seen(), "a clean write")
+            km._tick_job_done("interrupt-block", r, st)
+            blocker.mkdir(); self.assertFalse(km._persist_tick_seen()); blocker.rmdir()      # episode two, hours later
+        self.assertEqual(err.getvalue().count("tick-seen memo: not written"), 2, "each episode said once: %r" % err.getvalue())
+
+    def test_the_exit_drain_persists_each_memo_on_its_own(self):
+        """1610 round two, medium 3: the exit drain wrapped the three persists in one bare except, so one memo's raise silently
+        cost the other two. A source pin: each persist in its own try, the failure logged by name."""
+        import inspect
+        src = inspect.getsource(km._drain_and_exit)
+        for name in ("tick-seen", "interrupt-marks", "spend-tree"):
+            self.assertIn('_exit_log("romp-kernel: the %s memo was not persisted at exit' % name, src, name)
+        self.assertEqual(src.count('    except Exception as _e:\n        _exit_log("romp-kernel: the '), 3, "each persist in its own try")
+        self.assertNotIn("        _persist_tick_seen(force=True)\n        _persist_intr_marks(force=True)", src, "no shared try")
+
     def test_the_memo_persists_and_the_next_kernel_starts_from_it(self):
         d = tempfile.mkdtemp()
         settled = _row(d, SID_OLD, old=True)             # settled by the previous kernel, untouched since
         moved = _row(d, SID_NEW, old=True)               # settled, then moved in the gap before this boot
         skip, st = km._tick_job_check("interrupt-block", settled); km._tick_job_done("interrupt-block", settled, st)
         skip, st = km._tick_job_check("interrupt-block", moved); km._tick_job_done("interrupt-block", moved, st)
-        self.assertTrue(km._persist_tick_seen(), "dirty → written")
+        seen = []; real = os.replace
+        def capture(a, b): seen.append(str(a)); return real(a, b)
+        with mock.patch("os.replace", side_effect=capture):
+            self.assertTrue(km._persist_tick_seen(), "dirty → written")
+        self.assertTrue(seen and seen[0].endswith(".tmp.%d.%x" % (os.getpid(), threading.get_ident())),
+                        "staged under a per-WRITER tmp (pid and thread id): the exit's force write runs beside the pusher's (1589 low 2): %r" % seen)
         self.assertFalse(km._persist_tick_seen(), "clean → nothing to write")
         # the gap: a stop lands in `moved` after the previous kernel's last tick, before this boot (mtime still < _STARTED)
         with open(moved["path"], "a") as f:
@@ -401,8 +478,21 @@ class TickJobsKeyOnAChange(unittest.TestCase):
                           "_interrupt_focus_top", "_intr_block_stands", "_lift_interrupt_block"),
                          "the road's exact members: the key builder, the verdict's readers and the arms' store readers (round two)")
         self.assertEqual(km._INTERRUPT_BLOCK_UNREAD, (5, 7), "the constant positions: the episode log and the postal log; the clears log is real")
-        km._tick_job_done("interrupt-block", r, None)
-        self.assertNotIn(("interrupt-block", me + "-never"), km._TICK_SEEN, "a None key records nothing")
+        with km._TICK_SEEN_LOCK:
+            km._TICK_SEEN.pop(("interrupt-block", me), None); km._TICK_SEEN_DIRTY[0] = False
+        km._tick_job_done("interrupt-block", r, None)                       # the REAL key with no stat: nothing recorded (1595 low 1)
+        with km._TICK_SEEN_LOCK:
+            self.assertNotIn(("interrupt-block", me), km._TICK_SEEN, "a None key records nothing for this session")
+            self.assertFalse(km._TICK_SEEN_DIRTY[0], "and dirties nothing")
+        with km._TICK_SEEN_LOCK:                                           # the mutation the guard prevents: a None entry makes the
+            km._TICK_SEEN[("interrupt-block", me)] = None; km._TICK_SEEN_DIRTY[0] = True   #  persist's json.dumps raise (list(None))
+        try:
+            with self.assertRaises(TypeError, msg="a None entry makes the persist RAISE under its lock (a raise per cycle, caught only by the "
+                                                  "pusher's guard): what the `if st is None: return` keeps out"):
+                km._persist_tick_seen()
+        finally:
+            with km._TICK_SEEN_LOCK:
+                km._TICK_SEEN.pop(("interrupt-block", me), None); km._TICK_SEEN_DIRTY[0] = False
 
     def test_jobs_keep_separate_memos(self):
         d = tempfile.mkdtemp()
@@ -421,7 +511,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         stopped = [{"id": "t1", "t": 1000, "atoms": [{"t": 1000, "type": "user"}]}]
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
-                      _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
+                      _interrupt_marks=lambda turns, sid, family="judge", path=None: (1000, 900), _session_working=lambda turns: False,
                       _auto_nudge_pause=lambda why: None, _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {},
                       _intr_blocked=lambda sid=None, data=None: None)
         with km._TICK_SEEN_LOCK:
@@ -455,7 +545,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         stopped = [{"id": "t1", "t": 1000, "atoms": [{"t": 1000, "type": "user"}]}]
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
-                      _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
+                      _interrupt_marks=lambda turns, sid, family="judge", path=None: (1000, 900), _session_working=lambda turns: False,
                       _auto_nudge_pause=lambda why: None, _auto_nudge_resume=lambda: None)
         with mock.patch.multiple(km, **common), \
              mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now: {"turns": stopped}), \
@@ -476,7 +566,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         stopped = [{"id": "t1", "t": 1000, "atoms": [{"t": 1000, "type": "user"}]}]
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
-                      _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
+                      _interrupt_marks=lambda turns, sid, family="judge", path=None: (1000, 900), _session_working=lambda turns: False,
                       _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {}, _intr_blocked=lambda sid=None, data=None: "g1")
         with mock.patch.multiple(km, **common), \
              mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now: {"turns": stopped}), \
@@ -497,7 +587,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         stopped = [{"id": "t1", "t": 1000, "atoms": [{"t": 1000, "type": "user"}]}]
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
-                      _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
+                      _interrupt_marks=lambda turns, sid, family="judge", path=None: (1000, 900), _session_working=lambda turns: False,
                       _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {}, _intr_blocked=lambda sid=None, data=None: None,
                       _record_interrupt_block=lambda sid, ev: "g1")
         for refused, marked in ((False, False), (True, True)):
@@ -524,7 +614,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
                          "the nudge has wall-clock legs: never the plain memo check (documented in _tick_job_check)")   # plain check
         self.assertTrue(walk.startswith("@_nudge_look_gated"), "the look is wrapped by its parse gate")
         self.assertTrue(hasattr(km._auto_nudge_session, "__wrapped__"))
-        cyc = inspect.getsource(km._pusher_cycle_jobs)
+        cyc = inspect.getsource(km._jobs_pass)                          # the jobs thread's list (the housekeeping split, 2026-09-13)
         self.assertLess(cyc.index("_job_stage('interruptBlock', lambda: _interrupt_block_tick(now, live_map))"),
                         cyc.index("_job_stage('persistTickSeen', lambda: _persist_tick_seen())"), "the memo is written after the tick jobs")
         self.assertIn("_persist_tick_seen(force=True)", inspect.getsource(km._drain_and_exit), "and at exit")

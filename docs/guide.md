@@ -200,7 +200,7 @@ sections: **Group by tag** in its Filter menu (off until you turn it on, per bro
 lanes out one section per tag in the same order, each session under every tag it carries and
 the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row
 of its own; a section folded in either place is folded in both, and while grouped the lanes
-follow the tag order (dragging a lane pans, it does not reorder). A session reached from a card or the chat while its section is folded unfolds that section, in the strip too, and the arrow keys walk the rows on screen. Every group starts on its own row; turning off
+follow the tag order (dragging a lane pans, it does not reorder). A session reached from a card or the chat while its section is folded unfolds that section, in the strip too, and the arrow keys walk the rows on screen. The gear at the strip's right end, the same gear as the one at the bottom right of every romp page, opens a small menu: **Lock the tabs in place** freezes every tab move (a drag, a Move to, the Sessions pane's lanes) until you turn it off, and **Tab widgets…** opens the settings on the Chat tab's widget rows. The strip's tag button, at the other end of the controls from the gear, shows no chips of its own: the tags show in the strip's sections when the tabs are grouped, and the button wears the accent while a filter is on. Every group starts on its own row; turning off
 the gear's **One tag group per row in the tab strip** lets the groups follow one another across the
 strip and wrap as they need, with the untagged sessions behind a thin divider, so a strip with many
 tags stays short.
@@ -322,7 +322,7 @@ The Files pane holds the file viewer in a column of its own, beside the chat
 and the feed, so an open file covers neither. While the pane is open, a file
 link clicked in the chat opens in it. When it is closed, a link opens over the
 pane you clicked; there is no setting to decide otherwise, the open pane is the
-rule. The Files control (Settings, General, Panes) shows or hides the pane's
+rule. The Files row (Settings, General, Panes) shows or hides the pane's
 toggle; it is off by default. On a phone, closing the file takes you back to the
 tab you came from. The folder
 shown under the chat (the session's working directory), the **Directory** row
@@ -332,10 +332,9 @@ otherwise over the chat. Pick a file in the
 listing and it opens where the listing is. Selecting a passage in the viewer
 puts the quote in the chat's composer, as it does from the viewer over the
 chat. When no file is open, the pane lists the files most recently opened in
-it; click one to open it again. The pane and its control are both off by
-default: the gear's **Files control in the dashboard bar** setting adds a
-Files toggle to the bottom bar (on a phone, a Files tab like the others), and
-that toggle turns the pane on.
+it; click one to open it again. The gear's **Files** row (Settings, General,
+Panes) adds a Files toggle to the bottom bar (on a phone, a Files tab like the
+others), and that toggle turns the pane on.
 
 ## Automatic nudges
 

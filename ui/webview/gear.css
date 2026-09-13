@@ -61,11 +61,22 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-row:hover .rs-sub, #rsettings .rs-widget:hover .rs-sub { display: block; position: absolute; left: 0; right: 0; top: 100%; z-index: 10;
   margin-top: 2px; color: var(--text-soft, #cdd3da); font-size: 0.92em; line-height: 1.35; background: var(--input-bg, #1b1b1c); border: 1px solid var(--hairline, #3a3a3a);
   border-radius: 6px; padding: 6px 9px; box-shadow: 0 4px 14px #000000aa; pointer-events: none; }
+/* the popover opens ABOVE a row whose popover would run past the card's bottom (gear.js placeSub sets rs-up on hover): the card
+   is the modal's scroll box, and a popover past its bottom grew it a scrollbar and was clipped (the T408 read) */
+#rsettings .rs-row.rs-up:hover .rs-sub, #rsettings .rs-widget.rs-up:hover .rs-sub { top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; }
+/* the Fast mode box's own popover, positioned against its row like the row's (the box is static, so the row is the
+   containing block and the popover keeps the row's width): the box carries rs-up itself (gear.js hostOf). Specificity
+   (1,5,0): two classes above the hover rule and one above the row's own rs-up rule, so the box's placement wins whatever the
+   row wears, whatever the order in this sheet */
+#rsettings .rs-row:hover .rs-fastin.rs-up .rs-sub { top: auto; bottom: 100%; margin-top: 0; margin-bottom: 2px; }
 #rsettings .rs-sub code { background: #0d0d0d; border-radius: 3px; padding: 0 3px; }
 /* an inline live status beside a control (the login flow's "starting…") — visible when non-empty,
    never a popover (as an rs-sub it doubled the Account row's tooltip, 2026-09-02) */
 #rsettings .rs-note { color: var(--text-muted, #9aa0a6); font-size: 0.92em; }
 #rsettings .rs-note:empty { display: none; }
+/* a row's permanent one-sentence line under its label (T408, the Automation rows): the note's dress on its own line, in
+   the flow (never a popover, so it cannot run past the card and scroll it the way a hover rs-sub does on a short pane) */
+#rsettings .rs-line { display: block; color: var(--text-muted, #9aa0a6); font-size: 0.92em; line-height: 1.35; margin-top: 1px; }
 /* ONE tooltip at a time: while a picker dropdown is open, or the pointer is on the tri-state
    'mixed' mark (whose own title names the differing hosts), the row's description stands down —
    otherwise the native tooltip and the description popover stack (2026-09-02) */

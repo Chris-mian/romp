@@ -26,8 +26,8 @@ test("the label anchors to whichever stamp owns the top slot, and hands off at t
   assert.match(RENDER, /const realLeads = markerShown && markerTop >= slotLine;/,
     "the handoff threshold moves with the slot, so stamp and label swap on the same pixels");
   assert.match(RENDER, /stamp\.style\.top = slotLine \+ "px";/);
-  assert.match(RENDER, /m\.style\.visibility = top < slotLine \+ g\.height \? "hidden" : "";/,
-    "an incoming stamp hides before it can superimpose the sticky or the label riding above the slot");
+  assert.match(RENDER, /m\.style\.visibility = top < slotLine \+ stampH \? "hidden" : "";/,
+    "an incoming stamp hides before it can superimpose the sticky or the label riding above the slot (the sticky's own band: two lines for a today label, T406)");
   assert.match(RENDER, /if \(slotTop > cBottom\) \{ day\.style\.display = "none"; return; \}/,
     "an off-screen anchor paints nothing");
   assert.match(RENDER, /\} else day\.style\.display = "none";/, "today → the label hides, never lingers stale");

@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
+import { GEAR_GLYPH, ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -27,9 +27,9 @@ import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./sub
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS, openRowsMenu } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
-import { markerLabel, dayContext, DayWalk } from "./time-marker";
+import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
 import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, type Region, type Run, type Gap } from "./chat-regions";
@@ -3108,14 +3108,38 @@ function eventEpoch(ev: ChatEvent): number | null {
 // Nothing re-reveals a suppressed marker: a stamp marks a time CHANGE and nothing else
 // (the user 2026-07-23) — see paintRailSticky for why the rail no longer needs repeats.
 function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
-  const { text, day, hm } = markerLabel(epoch, prevEpoch, Date.now());
   const m = el("div", "time-marker");
-  m.dataset.hm = hm;
   m.dataset.epoch = String(epoch);   // the row's own moment; the top-of-view day-context label reads data-day, the walk's mark (stampWalkDay), and falls back to this (paintRailSticky)
+  m.dataset.prev = prevEpoch == null ? "" : String(prevEpoch);   // the raw previous timed row the chain compared against, for the minute tick's repaint (the same reference, so a tick can never stamp what the render suppressed)
   // The gutter shows the TIME and nothing else. The date rides a full-width day divider
-  // instead (dayDividerFor below) — no date word has to fit 47px of rail any more.
-  if (text) m.textContent = day ? hm : text;
+  // instead (dayDividerFor below) — no date word has to fit the 56px slot of rail any more.
+  paintMarker(m, epoch, prevEpoch, Date.now());
   return m;
+}
+
+// The marker's text from its moment, the raw previous timed row's and the clock: ONE writer for the render above and
+// for the rail's minute tick (refreshRelativeMarkers), so the two can never disagree. A row of TODAY reads how long ago
+// (time-marker.ts relativeLabel; T406, the user 2026-09-13), the words they asked for in place of the clock; the exact
+// HH:MM rides its tooltip; and the label is stamped where it CHANGES from the previous timed row's, the rail's
+// same-minute rule at the label's own grain, so two rows an hour apart that both read "2 hours ago" stamp once, like
+// two rows of one minute. Such a marker keeps the `rel` class shown or not, so the tick can stamp it again when the
+// labels part (119 and 120 minutes ago read differently) and can hand it back to the clock time once its day is over
+// (the divider for that day comes with the next render). Any other day: the HH:MM exactly as before, empty when the
+// minute repeats.
+// Every write is guarded by a read (round two of the review): the tick repaints every today marker each minute and most
+// labels do not change, and an unguarded textContent assignment replaces the text node even when the text is the same,
+// four mutation records a minute per marker and the death of any selection the user has laid across a stamp.
+function paintMarker(m: HTMLElement, epoch: number, prevEpoch: number | null, now: number): void {
+  const { text, day, hm } = markerLabel(epoch, prevEpoch, now);
+  const rel = relativeLabel(epoch, now);
+  const isRel = !!rel;
+  const shown = isRel && rel !== (prevEpoch == null ? "" : relativeLabel(prevEpoch, now));
+  const want = isRel ? (shown ? relativeLines(rel) : "") : (text ? (day ? hm : text) : "");
+  const title = shown ? hm : null;
+  if (m.dataset.hm !== hm) m.dataset.hm = hm;
+  if (m.classList.contains("rel") !== isRel) m.classList.toggle("rel", isRel);
+  if (m.textContent !== want) m.textContent = want;
+  if ((m.getAttribute("title") ?? null) !== title) { if (title == null) m.removeAttribute("title"); else m.title = title; }
 }
 
 // The day boundary itself: a hairline rule across the prose column with the date on it
@@ -3123,8 +3147,8 @@ function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
 // of a new (non-today) day. Returns null on every other turn.
 //
 // Why it is not in the rail (the user 2026-08-01): the date used to stack on its own row
-// inside the .time-marker, but the gutter is only 47px wide and "Yesterday" measures 52.6px
-// bold, so its "Y" was clipped by the pane's overflow. Nothing that has to FIT a fixed 47px
+// inside the .time-marker, but the marker's slot was only 48px wide and "Yesterday" measures 52.6px
+// bold, so its "Y" was clipped by the pane's overflow. Nothing that has to FIT a fixed slot
 // is safe — `--fs` follows --vscode-chat-font-size, so a bigger chat font re-clips whatever
 // just barely fit at 13px. Out here the label has the whole column and can never be cut off.
 //
@@ -3513,12 +3537,15 @@ function paintRailSticky(): void {
   // (offsets ≥ stamp height), which is realLeads — this branch never runs. Markers at or below the sticky's
   // bottom stay visible — they are the genuine lower stamps, not doubles.
   const g = (anyMarker || marker!).getBoundingClientRect();
-  for (const [m, top] of all) m.style.visibility = top < slotLine + g.height ? "hidden" : "";
-  stamp.textContent = hm;
+  const rel = relativeLabel(Number(marker!.dataset.epoch), Date.now());   // a row of today reads how long ago at the top too, as its own marker does (T406)
+  stamp.classList.toggle("rel", !!rel);
+  stamp.textContent = rel ? relativeLines(rel) : hm;
   stamp.style.left = g.left + "px";
   stamp.style.width = g.width + "px";
   stamp.style.top = slotLine + "px";
   stamp.style.display = "";
+  const stampH = stamp.getBoundingClientRect().height || g.height;   // the sticky's OWN band (two lines for a today label), not the first marker's
+  for (const [m, top] of all) m.style.visibility = top < slotLine + stampH ? "hidden" : "";
   paintDay(slotLine);
 }
 
@@ -3532,6 +3559,27 @@ function scheduleRailSticky(): void {
   railStickyPending = true;
   requestAnimationFrame(() => { railStickyPending = false; paintRailSticky(); paintScrollMarks(); updateCommentRail(); if (activeId && hasUnreadOpenThread(activeId)) paintCommentOutlines(activeId); });
 }
+
+// The rail's MINUTE TICK (T406): today's labels age. ONE page-level timer, re-armed to fire just past each clock-minute
+// boundary (the labels are in calendar minutes, so nothing can change between two boundaries), repaints the SHOWN
+// transcript's today markers from the moment and the previous row each stored at render (paintMarker, the same writer):
+// a textContent write only where the text differs, then the sticky's usual rAF repaint. Never a timer per marker.
+// Hidden tabs are skipped and refreshed the moment a switch shows them (the switch below, showActive); a hidden window
+// skips too and catches up on visibilitychange. Cost per fire: one querySelectorAll over the shown transcript's today
+// markers, an integer label each, no layout read of its own (the sticky's paint reads as it always did).
+function refreshRelativeMarkers(root: HTMLElement | null | undefined): void {
+  if (!root) return;
+  const now = Date.now();
+  for (const m of Array.from(root.querySelectorAll<HTMLElement>(".time-marker.rel")))
+    paintMarker(m, Number(m.dataset.epoch), m.dataset.prev ? Number(m.dataset.prev) : null, now);
+  scheduleRailSticky();
+}
+function railMinuteTick(): void {
+  if (!document.hidden && activeId) refreshRelativeMarkers(views.get(activeId)?.el);
+  setTimeout(railMinuteTick, 60000 - (Date.now() % 60000) + 50);   // just past the next boundary
+}
+// (armed, with the visibilitychange catch-up, beside the pre-build's own listener further down: module-level statements
+// here would run inside the source-lifting test harnesses that slice this region, chat-proto2-exec.test.ts)
 
 function renderEventInner(ev: ChatEvent): HTMLElement {
   if (ev.kind === "system") return renderSystem(ev);
@@ -6604,7 +6652,7 @@ function renderTabs() {
   // the active tab. Captured before the tab rule below, which keeps its pinned two-line shape.
   const focusedEl = document.activeElement as HTMLElement | null;
   const focusedGroup = (focusedEl?.closest(".tab-group-head") as HTMLElement | null)?.dataset.group;
-  const focusedLock = !!focusedEl?.closest(".tab-lock");   // a keyboard press on the lock rebuilt the strip: the lock keeps the focus (T395 round one)
+  const focusedGear = !!focusedEl?.closest(".tab-widgets-gear");   // the gear held the keyboard when a push rebuilt the strip (a lock toggle's rebuild finds the focus on the menu's row, and the menu's own Escape refocuses the live gear): the gear keeps the focus, not the active tab (T395 round one, moved by T405; round two, low 6)
   const refocusTab = bar.contains(document.activeElement);
   bar.replaceChildren();
   // A session under several tags has a COPY in each group (T264b, the user 2026-09-08: tags are
@@ -6713,23 +6761,8 @@ function renderTabs() {
   add.title = titleWithKey("Open a session", "session.new");
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
-  // THE TAB LOCK (T395, the user 2026-09-12): right after the + tab and before the tags box, in a little rounded box like
-  // the tags box (the user says the position may move later): the padlock the Sessions pane shows at its bottom (icons.ts,
-  // one drawing). A press freezes every tab move until the next press (setTabsLocked); locked, the box wears the menu
-  // vocabulary's current dress, the accent on the glyph and its outline, never a fill. The state is in the strip's
-  // signature, so the toggle repaints through it; the click is the node's own, click-safe because the strip is rebuilt
-  // only when its signature changes.
-  const lockBox = el("span", "tab-lockbox");
-  const lock = el("button", "tab-lock" + (settings.tabsLocked ? " on" : "")) as HTMLButtonElement;
-  lock.type = "button";
-  lock.innerHTML = settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN;
-  lock.title = settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again";
-  lock.setAttribute("aria-label", "Lock tabs");
-  lock.style.setProperty("--tab-lock-border", TAG_BTN_BORDER_CSS);   // the tag button's border, from its one source (tag-menu.ts): the themed token, so the two boxes match in every theme
-  lock.setAttribute("aria-pressed", settings.tabsLocked ? "true" : "false");
-  lock.addEventListener("click", (e) => { e.stopPropagation(); setTabsLocked(!settings.tabsLocked); });
-  lockBox.appendChild(lock);
-  bar.appendChild(lockBox);
+  // (THE TAB LOCK's button left the strip 2026-09-13, T405, the user: the lock is a row inside the strip's gear below; its
+  // state, its drag rules and its saveSettings road are unchanged, only where it is toggled moved.)
   // the shared TAG-ICON filter (the user 2026-08-25): identical across surfaces, opening the one
   // multi-select lens menu — this instance governs the TAB STRIP (actives.chat)
   const tagBtn = tagMenuButton("filter these tabs by tag", (btn) => {
@@ -6756,30 +6789,45 @@ function renderTabs() {
   tagBox.appendChild(tagBtn);
   // THE BUTTON CONVENTION (the user 2026-08-25): gray alone at rest; accent + the chips of
   // everything selected when narrowed — the shared renderer, identical on every mount
-  const tagChipsHost = el("span", "tab-tagchips");
-  tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
-  tagBox.appendChild(tagChipsHost);
-  // THE TAB-WIDGETS GEAR (T379, the user 2026-09-12): one glyph at the strip's right end, inside the tag box so it
-  // takes no extra height, opening the settings on the Chat tab scrolled to its Tab widgets section (the widget rows;
-  // the user's amendment 2026-09-12: no tab of their own). The ask rides the openSettings
-  // message every opener uses, with the tab named: to the shell when this pane sits in one (the kernel's
-  // __rompOpenSettings relays it into the settings iframe), else to this window (the VS Code chat hosts its own
-  // gear). A standalone /chat with neither has no gear to open, so it shows no glyph (an honest absence, never a
-  // dead control). Built once per strip paint like the tag button beside it; the click is its own, click-safe
-  // because the strip is rebuilt only when its signature changes.
-  if ((window as any).__rompShowStrip || inRompShell()) {
+  // T405 (the user 2026-09-13): the strip's control no longer DISPLAYS what it filters to, no "(no tags)" and no tag chips
+  // beside the button: with Group tabs by tag on the tags show in the strip's sections anyway, and otherwise whoever is
+  // interested clicks the button, which still wears the accent while narrowed. The filter itself is unchanged; the shared
+  // sync runs with no chips host, so it builds no chip (round two, low 3: two chips were built and dropped per paint)
+  bar.appendChild(tagBox);
+  // THE STRIP'S GEAR (T379, the user 2026-09-12; T405, the user 2026-09-13): ONE glyph, the shell's own settings gear
+  // (icons.ts GEAR_GLYPH, the character the rail wears at the bottom right of every romp page, read by the kernel from the
+  // same file), in a box of its own appended LAST and pushed to the strip's farthest right (styles.css .tab-gearbox,
+  // margin-left auto on the last flex line). It opens a small menu in the house vocabulary (tag-menu.ts openRowsMenu):
+  // "Lock the tabs in place", the tab lock's toggle row with the two titles the strip's button wore (T395: the state,
+  // its drag rules and its saveSettings road are unchanged); and "Tab widgets…", the settings on the Chat tab scrolled to
+  // its Tab widgets section (T379's ask, through the shell or this window's own gear as before), that row only where a
+  // settings gear can be reached (an honest absence elsewhere); the strip's gear itself is everywhere the strip is, since
+  // the lock's button was. Built once per strip paint; the click is its own, click-safe because the strip is rebuilt
+  // only when its signature changes; a keyboard press on the gear then on the row keeps the focus on the row.
+  {
+    const settingsReachable = !!((window as any).__rompShowStrip || inRompShell());
+    const gearBox = el("span", "tab-gearbox");
     const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
     gear.type = "button";
-    gear.title = "Tab widgets…";
-    gear.setAttribute("aria-label", "Tab widgets");
-    gear.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
-    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("chat", "tabwidgets"); });
-    tagBox.appendChild(gear);
+    gear.title = settingsReachable ? "Tab strip: lock, widgets…" : "Tab strip: lock";   // no widgets row where no settings gear can be reached, and the title says so (round two, low 1)
+    gear.setAttribute("aria-label", "Tab strip settings");
+    gear.setAttribute("aria-haspopup", "menu");
+    gear.textContent = GEAR_GLYPH;
+    gear.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRowsMenu(gear, () => [
+        { label: "Lock the tabs in place", current: settings.tabsLocked, glyph: settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN,
+          title: settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again",
+          press: () => { setTabsLocked(!settings.tabsLocked); return false; } },
+        ...(settingsReachable ? [{ label: "Tab widgets…", dim: true, press: () => { openSettingsOn("chat", "tabwidgets"); } }] : []),
+      ]);
+    });
+    gearBox.appendChild(gear);
+    bar.appendChild(gearBox);
   }
-  bar.appendChild(tagBox);
   {
     const v = effViews();
-    syncTagFilter(tagBtn, tagChipsHost, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
+    syncTagFilter(tagBtn, null, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
       postLens({ actives: Object.assign({}, (v || {}).actives, { chat: l }) });
     });
   }
@@ -6808,7 +6856,7 @@ function renderTabs() {
       mslot.append(mBtn, mChips);
     }
     const mv2 = effViews();
-    syncTagFilter(mslot.children[0] as HTMLElement, mslot.children[1] as HTMLElement,
+    syncTagFilter(mslot.children[0] as HTMLElement, phoneLayout() ? (mslot.children[1] as HTMLElement) : null,   // the chips only where the mount shows (the T405 read): the button's state syncs either way
       surfaceLens(mv2, "chat"), viewTagUnion(mv2), (l) => {
         postLens({ actives: Object.assign({}, (mv2 || {}).actives, { chat: l }) });
       });
@@ -6820,7 +6868,7 @@ function renderTabs() {
     const h = Array.from(bar.querySelectorAll<HTMLElement>(".tab-group-head")).find((x) => x.dataset.group === focusedGroup);
     // the group gone, or now holding the active tab (no stop): the old rule
     if (h && h.tabIndex >= 0) h.focus(); else focusActiveTab();
-  } else if (focusedLock) (bar.querySelector(".tab-lock") as HTMLElement | null)?.focus();   // not the active tab: Enter again would drop the caret into the composer
+  } else if (focusedGear) (bar.querySelector(".tab-widgets-gear") as HTMLElement | null)?.focus();   // not the active tab: Enter again would drop the caret into the composer
   else if (refocusTab) focusActiveTab();
   stripAftermath(visibleIds, ids);
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
@@ -7243,7 +7291,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
             row.appendChild(bodyE);
             // the tab lock (T395): a move row is a tab move, so it reads held (the label dims, the row answers nothing); the + beside
             // it still tags (adding is not a move), so it keeps its strength and says so itself (round one, LOW 1)
-            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock in the tab strip"; }
+            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock is in the tab strip's gear menu"; }
             const plus = el("button", "ctx-tag-x ctx-tag-plus") as HTMLButtonElement;
             plus.type = "button"; plus.textContent = "+";
             plus.title = "add this tag too (the session keeps its other tags)" + (settings.tabsLocked ? ": adding is not a move, so the lock does not hold it" : "");
@@ -12418,6 +12466,10 @@ function paneHidden(): boolean {
 // The prefetch never runs while the browser tab is hidden (nextPrefetch); coming back is the event that re-arms
 // it. (A display:none pane has no event for its CSS flip — it re-arms on the next upsert / click instead.)
 document.addEventListener("visibilitychange", () => { if (!document.hidden) schedulePrebuild(); });
+// the rail's minute tick (T406, refreshRelativeMarkers above): armed once here for the page, re-armed by each fire; a
+// window shown again after minutes hidden catches its today labels up at once rather than at the next boundary
+setTimeout(railMinuteTick, 60000 - (Date.now() % 60000) + 50);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && activeId) refreshRelativeMarkers(views.get(activeId)?.el); });
 
 function runPrebuild(deadline: IdleDeadline): void {
   prebuildHandle = null;
@@ -12956,6 +13008,7 @@ function showActive(keep?: { uuid: string; y: number } | null) {
     v.rendered = 0; v.winStart = 0; v.avgTurnH = undefined; v.stick = true;   // → firstBuild rebuilds the tail, lands at bottom
   }
   for (const [vid, vv] of views) vv.el.style.display = vid === activeId ? "" : "none";
+  if (!reshow) refreshRelativeMarkers(v.el);   // a tab shown after minutes hidden: its today labels catch up before the eye lands (T406; the minute tick skips hidden tabs)
   renderSubHead();   // the viewer's header above its transcript (hidden for every real session)
   updateStatusline();
   // The transcript BUILD is the only expensive part of a switch. A view already built for the current

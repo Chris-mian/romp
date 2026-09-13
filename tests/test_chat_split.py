@@ -322,7 +322,7 @@ let STORE = {};
 const CALLS = { register: [], unregister: [], growFair: [], splitGrow: [], splitShrink: [], gutter: [], wireFocus: [], wireEsc: [], colGone: [], events: [], posted: [], focus: [], notify: [], toggle: [], taken: [], sets: [] };
 let SEQ = [];             // the order of the shell's side effects across stubs (a store write, a post, a grow, a key drop)
 let UNMOVABLE = new Set(); // ids the pages answer "not a session a column can hold" for (a create in flight, a viewer)
-let LOCKED_SIDS = new Set(); // ids whose page answers 'locked' (the tab lock, T395): the toast names the padlock
+let LOCKED_SIDS = new Set(); // ids whose page answers 'locked' (the tab lock, T395): the toast names the gear's menu (T405)
 let BUSY = {};            // frame id → whether that page reports a create in flight
 global.localStorage = { getItem: (k) => (k in STORE ? STORE[k] : null), setItem: (k, v) => { STORE[k] = String(v); CALLS.sets.push(k); SEQ.push('set:' + k); }, removeItem: (k) => { delete STORE[k]; } };
 let BODY_CLASSES = new Set(['po-chat', 'po-feed', 'po-timeline']);
@@ -556,7 +556,7 @@ out.unmovable = { prov: window.__rompMoveTab(PROV, 'new'), provInto2: window.__r
 BYID['f-chat']._active = PROV; CALLS.notify = [];
 out.unmovable.palette = { r: window.__rompSplitChat(), notify: CALLS.notify.slice(), stored: cols(), ids: ids() };
 BYID['f-chat']._active = '';
-// the tab lock (T395 round one): the page answers 'locked', and the toast names the padlock, not "an open session"
+// the tab lock (T395 round one): the page answers 'locked', and the toast names the gear's menu (T405), not "an open session"
 LOCKED_SIDS.add(API); CALLS.notify = [];
 out.locked = { r: window.__rompMoveTab(API, 2), notify: CALLS.notify.slice(), stored: cols(), ids: ids() };
 LOCKED_SIDS = new Set();
@@ -864,12 +864,12 @@ class SplitExecutes(unittest.TestCase):
         self.assertEqual(p["notify"], [["warn", "Only an open session can be moved between columns."]])
         self.assertEqual(p["stored"], u["stored"]); self.assertEqual(p["ids"], ["f-chat", "f-chat-2"])
 
-    def test_a_locked_page_refuses_the_move_with_a_toast_that_names_the_padlock(self):
+    def test_a_locked_page_refuses_the_move_with_a_toast_that_names_the_gears_menu(self):
         # T395 round one (MEDIUM 2): the page's answer carries its reason; a lock is not "not an open session", and the toast
         # says the way back
         l = self.out["locked"]
         self.assertIsNone(l["r"])
-        self.assertEqual(l["notify"], [["warn", "The tabs are locked: unlock them with the padlock in the tab strip to move this session."]])
+        self.assertEqual(l["notify"], [["warn", "The tabs are locked: unlock them in the tab strip\u2019s gear menu (Lock the tabs in place) to move this session."]])
         self.assertEqual(l["stored"], self.out["unmovable"]["stored"], "the store is untouched")
         self.assertEqual(l["ids"], self.out["unmovable"]["ids"], "no column opened")
 

@@ -56,7 +56,7 @@ test("the phone gets the chat tag control too — the SHARED button mounted into
                            RENDER.indexOf("paintTabRowLines(bar);"));
   assert.match(mnt, /tagMenuButton\("filter sessions by tag"/, "the SHARED component, never a copy");
   assert.match(mnt, /postLens\(\{ actives: Object\.assign\(\{\}, \(effViews\(\) \|\| \{\}\)\.actives, \{ chat: l \}\) \}\)/, "writes land on the chat lens — per-surface semantics — as a lens write on the store's blob (the 2026-09-05 review)");
-  assert.match(mnt, /syncTagFilter\(mslot\.children\[0\] as HTMLElement, mslot\.children\[1\] as HTMLElement,/,
+  assert.match(mnt, /syncTagFilter\(mslot\.children\[0\] as HTMLElement, phoneLayout\(\) \? \(mslot\.children\[1\] as HTMLElement\) : null,/,
     "the mobile pair re-syncs every render like the desktop one");
 });
 
