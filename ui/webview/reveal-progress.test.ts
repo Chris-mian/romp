@@ -150,7 +150,10 @@ function liftWorld(): (hooks: Hooks, mod: typeof MOD, doc: ReturnType<typeof fak
     const showLoadingPill = () => { H.pillShown++; };
     const readerWaits = new Map(), askedGen = new Map(); let askGen = 0;   // the per-tab wait set (T402 round two): the slices call noteAsk/endAsk
     const olderCancelled = new Map();   // the click's latch (round three): the deep-link ask clears it
-    const liveAskKey = { get: () => ({ kind: "older" }), set() {}, delete() {} };   // the live ask's identity (round five/six); these slices drive one older ask, so chatHead's keyless branch matches it by kind
+    const liveAskKey = { get: () => ({ kind: "older" }), set() {}, delete() {} };
+    const baseStale = { has: () => false, add() {}, delete: () => false };   // the deferred-reattach set (round nine): these slices drive one older ask, never a deferred re-base
+    const reattachLive = () => {};
+    const settleReattach = () => {};   // the live ask's identity (round five/six); these slices drive one older ask, so chatHead's keyless branch matches it by kind
     const matchAsk = () => "live";      // the reply answers the ask on the books
     const syncLoadingPill = () => { if (activeId && readerWaits.has(activeId)) showLoadingPill(); else hideLoadingPill(); };
     const noteAsk = (sid, reader) => { loadingOlder.add(sid); askedGen.set(sid, askGen); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); };

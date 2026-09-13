@@ -150,7 +150,7 @@ test("render.ts wires the three rules, tracks the pending needFull reason, hides
   assert.ok(win.includes("const detached = windowDetached(!!msg.moreAfter, !!msg.connected, wasDetached, r.mode, heldLast, newLast);"), "chatWindow decides through the rule, with the state before the merge");
   assert.ok(win.includes("const landing = windowLanding(detached, msg.id === activeId && !wasDetached, ask?.nav ?? false);"), "…and the landing rule decides whether the verdict is adopted (T366)");
   assert.ok(win.indexOf("const landing = windowLanding(") < win.indexOf("s.events = r.events as ChatEvent[];"), "the landing is decided BEFORE the window's events replace the run");
-  assert.ok(win.includes('if (landing === "reattach") {') && win.includes("reattachLive(msg.id, true);"), "a window not adopted re-bases the kernel on the tail at once");
+  assert.ok(win.includes('if (landing === "reattach") {') && win.includes("deferReattach(msg.id);"), "a window not adopted defers the re-base to the session's last ask (T402 round nine)");
   assert.ok(win.indexOf('if (landing === "reattach") {') < win.indexOf("s.detached = detached;"), "…and returns before the detached flag is set: no strip");
   assert.ok(win.includes("window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));"), "a window runs the edge check once it painted");
   assert.ok(RENDER.includes("if (cur && cur.detached && c && c.scrollHeight <= c.clientHeight + 1) { requestNewer(sid); return; }"), "a detached run that does not overflow asks for its next page directly");

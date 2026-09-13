@@ -13771,14 +13771,15 @@ function cancelOlderWait(why: "click" | "flip"): void {
 // in frame order like the skeleton machine's socket-flip marker, ends the waits asked before it; a redial the shim abandoned fires no
 // wsdown, so the frame moves the generation itself when none did (T402 round two, low 4)
 window.addEventListener("romp:wsdown", () => { askGen++; flipPending = true; });
-function onSocketFlipFrame(): void { if (!flipPending) askGen++; flipPending = false; cancelledWire.clear(); cancelOlderWait("flip"); }   // a window ask clicked away before the flip is gone with it (round three, low 1)
+function onSocketFlipFrame(): void { if (!flipPending) askGen++; flipPending = false; cancelledWire.clear(); baseStale.clear(); cancelOlderWait("flip"); }   // a window ask clicked away before the flip is gone with it (round three, low 1)
 /** The VS Code pipe has no socket-flip frame (its edge is pipeState): its DOWN edge ends every ask in flight the same way (round three, low 3). */
-function onPipeDown(): void { askGen++; flipPending = true; cancelledWire.clear(); cancelOlderWait("flip"); }
+function onPipeDown(): void { askGen++; flipPending = true; cancelledWire.clear(); baseStale.clear(); cancelOlderWait("flip"); }
 // the served geometry lab (tests/test_loading_pill_anchor_browser.py) shows the pill on demand: its real
 // showings last the span of a fetch, too brief to measure against the strip
 if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLoadingPill(); else hideLoadingPill(); };
 // the served labs read the older edge's latch on demand: the click's time, this tab's last evidence, and the verdict (T402 round four)
 if (typeof window !== "undefined") (window as any).__rompLatch = (): unknown => { const sid = activeId || ""; const at = olderCancelled.get(sid) ?? null; return { at, evidence: olderEvidence.get(sid) ?? null, latched: at != null && !((olderEvidence.get(sid) ?? 0) > at), loading: !!sid && loadingOlder.has(sid), wait: !!sid && readerWaits.has(sid), live: liveAskKey.get(sid) ?? null }; };   // read without the delete olderLatched performs (round five, low 4)
+if (typeof window !== "undefined") (window as any).__rompBaseStale = (sid?: string): boolean => baseStale.has(sid || activeId || "");   // the deferred-reattach flag, for the lab (round nine)
 
 // ---- ledger box (rolling per-session digest, just below the tabs) ----
 
@@ -17134,7 +17135,7 @@ function chatTail(msg: any) {
   if (typeof msg.afterUuid === "string") {
     const kernelEvents = s.events.filter((e) => !isOptimistic(e) && !isHeldGroup(e));
     const at = indexOfUuid(kernelEvents as { uuid?: string }[], msg.afterUuid);
-    if (at < 0) { requestFullSession(msg.id, "gap"); return; }   // the anchor is not resident: a gap, whatever opened it
+    if (at < 0) { if (s.detached) requestFullSession(msg.id, "reattach"); else requestFullSession(msg.id, "gap"); return; }   // the anchor is not resident: a gap; but a page that holds a window MERGES the full frame (reattach: keeps the walked pages) rather than replacing (round nine)
     from = at + 1;
     const inc = (msg.events || []) as ChatEvent[];
     s.lastUuid = inc.length ? (keyOf(inc[inc.length - 1] as { uuid?: string; key?: string }) ?? s.lastUuid) : keyOf(kernelEvents[at] as { uuid?: string; key?: string }) ?? s.lastUuid;
@@ -17158,8 +17159,9 @@ function chatTail(msg: any) {
     // socket happened to drop and a fresh connect re-sent the whole session (the user 2026-07-28, whose tab
     // went stale twice in one afternoon: locate-audit.jsonl recorded six pointer-not-rendered misses, then
     // pointer-exact on the SAME anchor the moment a kernel restart forced a reconnect).
-    // So ASK for the full session — the one message that closes this desync class whatever opened it.
-    requestFullSession(msg.id, "gap");
+    // So ASK for the full session — the one message that closes this desync class whatever opened it. A page that holds a window MERGES
+    // it (reattach) so the walked pages stay; an attached page replaces (gap).
+    if (s.detached) requestFullSession(msg.id, "reattach"); else requestFullSession(msg.id, "gap");   // a page holding a window MERGES (reattach), an attached page replaces (gap) (round nine)
     return;
   }
   if (from < 0) return;                            // below the loaded head → our resident tail is still valid
@@ -17216,6 +17218,19 @@ function chatTail(msg: any) {
 // The kernel replies with the previous chunk; PREPEND it to the resident tail (lowering headFrom) and re-
 // anchor on the row the user was at, so the older content appears ABOVE without the view jumping.
 const loadingOlder = new Set<string>();                 // sessions with a loadOlder in flight
+// T402 round nine: the kernel's per-client base moves when it serves a window (or a newer page), and a reply the page will NOT adopt
+// (a cancelled reply, a window it re-bases from, a stranger) leaves that base pointing where the page no longer is. Re-basing at once
+// is wrong while another ask of the session is LIVE — the live reply is the one that should set the base, and an eager reattach makes
+// the live reply come back `connected` against a tail base the page never held (the different-key re-ask bug). So DEFER: mark the base
+// stale, and fire ONE reattach when the session's LAST in-flight reply lands, unless that reply restored agreement (the page adopted it
+// as the detached window the kernel's base sits on).
+const baseStale = new Set<string>();
+function deferReattach(sid: string): void { if (liveAskKey.has(sid)) baseStale.add(sid); else reattachLive(sid, true); }
+function settleReattach(sid: string, adoptedDetached: boolean): void {
+  if (liveAskKey.has(sid)) return;             // more asks in flight: wait for the last one
+  if (!baseStale.delete(sid)) return;          // nothing deferred for this sid
+  if (!adoptedDetached) reattachLive(sid, true);   // agreement not restored (a fault, a merge that stayed attached, a non-adopted reply): re-base now
+}
 // T402 round two (medium 1): the pill is PAGE-WIDE and the waits are PER TAB, so the pill shows for the ACTIVE tab's own
 // outstanding READER ask only (a scroll-back's older chunk, a deep link's older chunk or window), never for the walk toward the
 // tail (the page's own ask, in loadingOlder alone), and is re-evaluated whenever a wait starts or ends and whenever the active tab
@@ -17283,6 +17298,7 @@ function chatHead(msg: any) {
   const hadWait = readerWaits.has(msg.id);
   const deepLink = pendingOlderAnchor.has(msg.id) && !pendingOlderKeepY.has(msg.id);   // a deep link's fetch (fetchOlderForAnchor), not a scroll-back's
   endAsk(msg.id);
+  settleReattach(msg.id, false);   // a loadOlder reply keeps the base where it was (kernel keepLast): it does not restore agreement, so a deferred re-base fires here if this was the last ask (T402 round nine, case c)
   const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); };
   const s = sessions.get(msg.id);
   if (!s) { forget(msg.id); return; }
@@ -17428,9 +17444,10 @@ function chatWindow(msg: any) {
     // live ask's marks are untouched (a stranger never reads or ends them).
     const st = sessions.get(msg.id);
     if (st && st.proto === 2 && !st.detached && !msg.fault && !msg.missing && Array.isArray(msg.events) && msg.events.length) {
-      landTrail.push("window-stranger");   // whatever tab is active (round seven, medium 2): a served window moved THIS session's base; an attached client the page will not adopt is frozen (no delta) until it re-bases, and reattachLive carries the sid
-      reattachLive(msg.id, true);
+      landTrail.push("window-stranger");   // a served window moved THIS session's base; an attached client the page will not adopt is frozen until it re-bases (round seven, medium 2)
+      deferReattach(msg.id);
     }
+    settleReattach(msg.id, false);
     return;
   }
   const cancelled = which === "cancelled";
@@ -17448,11 +17465,13 @@ function chatWindow(msg: any) {
     // the kernel could not answer this time (T402 round two, low 3): not a verdict on the anchor, so no "couldn't locate"; the
     // landing stands down with its own word and the next click asks again. A CANCELLED ask's fault is silent (round four, medium 2)
     if (!cancelled && msg.id === activeId && (hadWait || pendingAnchor === anchorUuid)) { if (pendingAnchor === anchorUuid) pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-fault"); landToast("the history could not be loaded just now"); clearSeek(); }
+    settleReattach(msg.id, false);   // the kernel moved no base for a fault/missing, but a PRIOR deferred re-base fires here on the last ask (round nine, case a)
     return;
   }
   if (msg.missing || !(msg.events || []).length) {
     // the honest end of a deep link: the anchor is in no page the kernel can render; silent for a cancelled ask (round four, medium 2)
     if (!cancelled && msg.id === activeId && (hadWait || pendingAnchor === anchorUuid)) { if (pendingAnchor === anchorUuid) pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-missing"); landToast("couldn't locate this in the transcript"); clearSeek(); }
+    settleReattach(msg.id, false);   // the kernel moved no base for a fault/missing, but a PRIOR deferred re-base fires here on the last ask (round nine, case a)
     return;
   }
   stripOptimistic(s);
@@ -17471,32 +17490,41 @@ function chatWindow(msg: any) {
   // the reader clicked this ask's wait away (T402 round two, medium 2): the window may not move them. Attached, it is not adopted and
   // the kernel re-bases on the tail (the reattach path below); detached, a window that holds their row is adopted and their row
   // restored at its offset (keepY), and one that does not is dropped for a window around their own row, asked as a re-land
-  if (cancelled && msg.id === activeId && anchorUuid && !(msg.events || []).some((e: { uuid?: string; key?: string }) => keyOf(e) === anchorUuid)) {
+  if (cancelled && msg.id === activeId) {
+    // a cancelled reply is NEVER adopted, whatever the window's shape or the anchor state (T402 round nine, low 3: in the reverse release
+    // order B's landing deletes the anchor, and the old gate then adopted A, pulling the reader off B). The kernel served this window and
+    // moved the base to it, so the base is stale; a detached reader whose row the window does not hold gets a re-land of their own row,
+    // everyone else defers the re-base to the session's last ask (never an eager reattach that makes a live reply look connected).
     reconcileOptimistic(s);
     landTrail.push("window-cancelled");
-    if (!wasDetached) {
-      // another ask of this session is LIVE (a different-key re-ask: card A clicked away, card B in flight): its reply will set the base,
-      // so this cancelled reply must NOT re-base to the tail (T402 round eight, medium half 1) — doing so left B's reply looking connected
-      // against a tail base while the page held only B. With no live ask, re-base as before.
+    const holdsRow = anchorUuid != null && (msg.events || []).some((e: { uuid?: string; key?: string }) => keyOf(e) === anchorUuid);
+    // agreement already holds when the page's run holds the cancelled window's anchor (a same-key re-ask: reply one landed the window,
+    // reply two is the cancelled twin of the same window — the kernel's base is that window, the page holds it, so no re-base is owed).
+    // Key on the REPLY's own echoed anchor (msg.anchor), not pendingOlderAnchor, which reply one already deleted (round nine).
+    const replyAnchor = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
+    const anchorResident = replyAnchor != null && (s.events as { uuid?: string; key?: string }[]).some((e) => keyOf(e) === replyAnchor);
+    if (wasDetached && anchorUuid != null && !holdsRow) {
+      relandAsk = true;
+      let went = false;
+      try { went = requestAround(msg.id, anchorUuid); } finally { relandAsk = false; }
+      if (went) pendingOlderKeepY.set(msg.id, keepY ?? 0);   // the re-land's reply restores the reader's row at its offset (round five, low 3)
+    } else if (!anchorResident) {
       anchorPendingOlder = false;
-      if (!liveAskKey.has(msg.id)) reattachLive(msg.id, true);
-      updateLivePaused();
-      return;
+      deferReattach(msg.id);
     }
-    relandAsk = true;
-    let went = false;
-    try { went = requestAround(msg.id, anchorUuid); } finally { relandAsk = false; }
-    if (went) pendingOlderKeepY.set(msg.id, keepY ?? 0);   // the re-land's reply restores the reader's row at its offset; a later ask in flight refused it, and keeps its own marks (round five, low 3)
+    settleReattach(msg.id, false);
     updateLivePaused();
     return;
   }
   if (landing === "reattach") {
-    // the kernel's base for this client is the window until the re-attach lands; a tail it pushes meanwhile misses its
-    // afterUuid here and asks for a full frame as a gap, which requestFullSession drops while the re-attach ask is in
-    // flight (awaitingFull), so the pending reason stays reattach and the frame MERGES into the held run (verifier low 4)
+    // the window is not adopted and the kernel's base moved to it: re-base the client on the tail. DEFER while another ask is live (this
+    // is the road the REAL window takes when it contains a later card's anchor, T402 round nine, medium 1): the live reply sets the base,
+    // and the deferred reattach fires on the last ask if agreement was not restored. A tail pushed meanwhile misses its afterUuid and asks
+    // a full frame; the gap road merges it (fullFrameMerges honours reattach) so the walked pages stay.
     reconcileOptimistic(s);
     if (msg.id === activeId) { if (pendingAnchor === anchorUuid) { pendingAnchor = null; pendingAnchorKeepY = null; } anchorPendingOlder = false; landTrail.push("window-not-adopted"); }
-    reattachLive(msg.id, true);
+    deferReattach(msg.id);
+    settleReattach(msg.id, false);
     updateLivePaused();
     return;
   }
@@ -17510,6 +17538,9 @@ function chatWindow(msg: any) {
   reconcileOptimistic(s);
   const v = views.get(msg.id);
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
+  // agreement is restored only when the page ADOPTED this window as detached (the kernel's base is this window and the page holds it);
+  // a merge that stayed attached does not, so a deferred re-base still fires on the last ask (T402 round nine)
+  settleReattach(msg.id, detached);
   if (msg.id !== activeId) return;
   // a keep offset names the READER's own row (a cancelled ask re-pointed there, medium 2): the arrival restores it at that offset
   // and moves nothing; otherwise the window's anchor, else the ask's
@@ -17535,12 +17566,17 @@ function edgeCheckAfterWindow(sid: string): void {
 function chatMore(msg: any) {
   if (matchAsk(msg.id, "newer", typeof msg.afterUuid === "string" ? msg.afterUuid : null) !== "live") {
     // a stranger newer page (round seven, medium 2): loadNewer moved the base (last + detached), so an attached client the page will not
-    // adopt is frozen until it re-bases; a fault or missing moved nothing. Whatever tab is active (reattachLive carries the sid).
+    // adopt is frozen until it re-bases; a fault or missing moved nothing. more:false already re-attaches (its _base sets detached false),
+    // but ONLY when the page's run reaches the served tail — from an attached-but-behind run, more:false still leaves the base detached, so
+    // reattach then (round nine, low 1). Deferred while another ask is live; settled on the last.
     const st = sessions.get(msg.id);
-    if (st && st.proto === 2 && !st.detached && !msg.fault && !msg.missing && msg.more !== false && Array.isArray(msg.events) && msg.events.length) { landTrail.push("more-stranger"); reattachLive(msg.id, true); }   // more:false already re-attaches (its _base sets detached false, status and ledger riding along): no needless reattach (round eight, low 2)
+    const reachesTail = !!st && !!st.lastUuid && typeof msg.afterUuid === "string" && st.lastUuid === msg.afterUuid;   // the run's newest is the page the kernel appended after: caught up
+    if (st && st.proto === 2 && !st.detached && !msg.fault && !msg.missing && Array.isArray(msg.events) && msg.events.length && !(msg.more === false && reachesTail)) { landTrail.push("more-stranger"); deferReattach(msg.id); }
+    settleReattach(msg.id, false);
     return;
   }
   endAsk(msg.id);
+  settleReattach(msg.id, false);
   const s = sessions.get(msg.id);
   if (!s) return;
   if (msg.fault) return;   // the kernel could not answer this time (T402 round two, low 3): the walked pages stay, the next edge check asks again
