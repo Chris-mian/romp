@@ -538,6 +538,49 @@ class AssemblyRoadCounters(Harness):
             self.assertEqual(parse.get("restore:refusedStanding", 0), 0, "the proof runs again for the moved leaf: %s" % parse)
             self.assertEqual(tree, self._cold(path))
 
+    def test_a_declined_unproven_rewrite_is_marked_so_the_proof_is_not_repeated(self):
+        """Round three, low 3: an unproven refusal (the missing bit) whose offered rewrite the writer DECLINES repeated the proof,
+        the second walk, the build and the offer at every boot with no mark; a declined offer marks the sidecar like a shape."""
+        path, t0 = self._documented("declined-bit"); self._strip_bit(path)
+        self.fresh(); self._reset()
+        saved = em.asm_checkpoint_write
+        em.asm_checkpoint_write = lambda *a, **k: False              # the writer declines (a document past the cap, say)
+        try:
+            tree, parse, reads = self._served(path)
+        finally:
+            em.asm_checkpoint_write = saved
+        self.assertEqual((parse.get("restore:chainRefused"), parse.get("write:afterRefusalSkipped")), (1, 1), parse)
+        self.assertTrue(em._asm_refusal_stands(path), "a declined offer leaves the mark")
+        self.fresh(); self._reset()
+        tree, parse, reads = self._served(path)
+        self.assertEqual((parse.get("restore:refusedStanding"), parse.get("restore:chainRefused", 0)), (1, 0), "no second proof: %s" % parse)
+        self.assertEqual(tree, self._cold(path))
+
+    def test_the_seeded_readers_read_the_mark_once_per_call(self):
+        """Round three, low 4: each reader evaluated the standing mark twice per call, reading the sidecar twice."""
+        path, t0 = self._documented("once")
+        calls = []
+        real = em._asm_refusal_stands
+        em._asm_refusal_stands = lambda p: (calls.append(p), real(p))[1]
+        try:
+            self.fresh(); em.chain_membership(path, [path], rompuuid=SID); n1 = len(calls)
+            em.file_rewound(path, rompuuid=SID); n2 = len(calls) - n1
+        finally:
+            em._asm_refusal_stands = real
+        self.assertEqual((n1, n2), (1, 1), "one sidecar read per reader call")
+
+    def test_the_mark_writes_under_its_own_tmp_name_and_reads_back(self):
+        """Round three, low 2: the mark's read-modify-write shared the writer's and the refresh's tmp name under a different lock;
+        it takes the writer's key lock, writes under a tmp name of its own and reads the file back."""
+        import inspect
+        src = inspect.getsource(em._asm_mark_refused)
+        self.assertIn('".mark.%d.%x.tmp"', src); self.assertIn("_asm_key_lock(key)", src)
+        path, t0 = self._documented("mark-own")
+        self.assertTrue(em._asm_mark_refused(path, "shape", SID))
+        self.assertTrue(em._asm_refusal_stands(path))
+        meta = em._asm_ckpt_file(path).with_name(em._asm_ckpt_file(path).name + ".meta")
+        self.assertEqual([p.name for p in meta.parent.glob("*.tmp")], [], "no tmp left behind")
+
     def test_a_cyclic_resolved_graph_refuses_the_write_instead_of_walking_to_the_guard(self):
         """Follow-up (the demote gate's later low): a reused uuid can make the resolved graph cyclic, and the writer's spine walk
         ran to its 500,000 guard and stored the collected chain; the walk is bounded by the record count and a cycle refuses."""

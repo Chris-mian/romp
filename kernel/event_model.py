@@ -4276,8 +4276,9 @@ def chain_membership(leaf_path, candidate_files=None, states=None, leaf_override
                     sys.stderr.write("chain: entry %s\n" % leaf_path)
                 return _membership_of(entry["ad"])        # the display's own current graph, under its lock
         if _CKPT_DIR_FN is not None:
-            doc = None if _asm_refusal_stands(leaf_path) else _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
-            if doc is None and _asm_refusal_stands(leaf_path):
+            _standing = _asm_refusal_stands(leaf_path)   # one sidecar read per call (low 4)
+            doc = None if _standing else _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
+            if _standing:
                 _asm_stat("seeded:refusedStanding")       # the cold walk, no proof, while the mark stands (round two)
             if doc is not None and not _tail_chains_onto_the_document(leaf_path, doc):
                 _asm_stat("seeded:chainRefused"); doc = None   # the tail re-parents into the pre-cut part: the cold walk, as
@@ -4306,8 +4307,9 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
     path = Path(path)
     ad = None
     if rompuuid is not None and _CKPT_DIR_FN is not None:
-        doc = None if _asm_refusal_stands(path) else _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True)
-        if doc is None and _asm_refusal_stands(path):
+        _standing = _asm_refusal_stands(path)              # one sidecar read per call (low 4)
+        doc = None if _standing else _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True)
+        if _standing:
             _asm_stat("seeded:refusedStanding")           # the cold walk, no proof, while the mark stands (round two)
         if doc is not None and not _tail_chains_onto_the_document(path, doc):
             _asm_stat("seeded:chainRefused"); doc = None      # the cold walk over a tail that re-parents into the pre-cut
@@ -5133,7 +5135,7 @@ def _asm_leaf_stat(leaf_path):
         return None
 
 
-def _asm_mark_refused(leaf_path, reason):
+def _asm_mark_refused(leaf_path, reason, rompuuid=None, sdk_human=False):
     """Record in the document's sidecar that the chain proof refused the standing document for the TAIL's SHAPE (a re-rooted
     tail, a reused pre-cut uuid), with the leaf's stat: while that stat stands, the same cut reproduces the same refusal, so
     no road retries the proof or the rewrite (the missing-bit case is not marked: its one rewrite converges). The mark clears
@@ -5143,19 +5145,23 @@ def _asm_mark_refused(leaf_path, reason):
     if cp is None or st_ is None:
         return False
     meta = cp.with_name(cp.name + ".meta")
-    with _ASM_CKPT_LOCK:
-        try:
-            d = json.loads(meta.read_bytes().decode("utf-8"))
-            if not isinstance(d, dict):
+    key = (os.path.realpath(str(leaf_path)), str(rompuuid), bool(sdk_human))   # the writer's own key (asm_checkpoint_write)
+    with _asm_key_lock(key):                                 # the writer and the sidecar refresh write this file under the KEY lock;
+        try:                                                  #  the mark joins them there (round three, low 2), with a tmp name of its
+            d = json.loads(meta.read_bytes().decode("utf-8"))   #  own, and re-reads after its replace: a writer racing in between
+            if not isinstance(d, dict):                        #  leaves the mark absent, which the next refusal re-applies
                 d = {}
         except (OSError, ValueError):
             d = {}
         d["refused"] = {"reason": reason, "size": st_[0], "mtime": st_[1]}
         try:
-            mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
+            mtmp = meta.with_name(meta.name + ".mark.%d.%x.tmp" % (os.getpid(), threading.get_ident()))
             mtmp.write_text(json.dumps(d)); os.replace(mtmp, meta)
-            return True
         except OSError:
+            return False
+        try:
+            return (json.loads(meta.read_bytes().decode("utf-8")).get("refused") or {}).get("reason") == reason
+        except (OSError, ValueError, AttributeError):
             return False
 
 
@@ -6641,11 +6647,14 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
                 _asm_stat("write:afterRefusal")     #  carrying the childless bit, so the next restore takes it (T402 follow-up)
             else:
                 _asm_stat("write:afterRefusalSkipped")   # the writer declined (its own skip reason is counted under asmCheckpoint.skipped)
+                _why = "shape"                          # a declined offer, whatever the refusal's reason (a legacy document whose
+                #                                         whole parse builds past the cap, say), would repeat the proof, the second
+                #                                         walk, the build and the offer at every boot: marked like a shape (low 3)
         except Exception as e:                      # noqa: BLE001 — the flag was popped above, so a write that RAISES is not retried
             _say_once("assembly checkpoint: %s not rewritten after a refusal: %r" % (leaf_path, e))   # here: the settle's road writes
             #                                                                                             the entry at its next drop
         if _why == "shape":
-            _asm_mark_refused(leaf_path, "shape")   # AFTER the write, so an accepted write cannot erase it: the same cut reproduces
+            _asm_mark_refused(leaf_path, "shape", rompuuid, sdk_human)   # AFTER the write, so an accepted write cannot erase it: the same cut reproduces
             #                                         the same refusal until the leaf moves (round two, medium 1)
     return out
 
