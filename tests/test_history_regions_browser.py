@@ -100,8 +100,8 @@ class ServedHistoryRegions(WindowLab):
 
     def test_a_gap_entering_the_viewport_asks_for_its_own_page_and_the_reply_fills_the_space_in_place(self):
         r = self._result()
+        self.assertIsNotNone(r["boot"]["regions"], "the page holds no regions (the base has none: no runs and gaps, only the old window protocol)")
         tail_lo = r["boot"]["regions"][0]["hi"]
-        self.assertIsNotNone(r["boot"]["regions"] if "regions" in r["boot"] else r.get("trace1", {}).get("regions"), "the page holds no regions (the base has none: no runs and gaps, only the old window protocol)")
         self.assertEqual(len(r["asks"]), 1, "the gap met the viewport once and asked once: %r" % r["asks"])
         first = r["asks"][0]
         self.assertEqual(first["hi"], tail_lo, "the ask meets the gap at its bottom edge, the edge the reader scrolled up to: %r" % first)
