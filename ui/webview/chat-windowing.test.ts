@@ -200,7 +200,7 @@ test("round six fixes each carry a pin (T386 stage 2): rows name their turn, the
   assert.match(RENDER, /function rowOnScreen\(v: View, content: HTMLElement\): boolean \{/, "the on-screen row check");
   // low: a run opening mid-turn starts AT its lo, so its first user row begins lo + 1 (the tail slice that opens with an assistant)
   const turnsFn = RENDER.slice(RENDER.indexOf("function turnOfEvents(s: Session): number[] {"), RENDER.indexOf("\nfunction ", RENDER.indexOf("function turnOfEvents(s: Session): number[] {") + 1));
-  assert.match(turnsFn, /let t = first && first\.kind === "user" \? r\.lo - 1 : r\.lo;/, "turnOfEvents: only a user-first run counts up from lo - 1");
+  assert.match(turnsFn, /let t = \(first && first\.kind === "user"\) \|\| r\.lo === 0 \? r\.lo - 1 : r\.lo;/, "turnOfEvents: a user-first run and the head run (head cards precede turn 0) count up from lo - 1; a run opening mid-turn starts at lo");
   assert.doesNotMatch(turnsFn, /let t = r\.lo - 1;/, "…the unconditional lo - 1 is gone");
   // low: the action strip under a bubble is chrome, not turn content, in the px-per-turn measure
   const px = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));

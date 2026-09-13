@@ -30,6 +30,10 @@ TURNS = 320   # 640 events: past the wire tail, so older history stays on the se
 TOOL_TURN = 40   # the turn whose reply opens with four tool calls and ends with the words (T386's card-anchor road)
 TOOL_TURN_TEXT = ("The four checks passed. Two questions for you: which bound do we keep for the retry curve, "
                   "and do we drop the second plot?")
+AUQ_TURN = 100   # the turn whose reply asks the user a question and gets its answer (AskUserQuestion): the page anchors that row on
+                 # the ANSWER's uuid, a tool_result line no event carries as its own uuid (T386 stage 2, round six: the fill's anchor road)
+AUQ_RESULT_UUID = "66666666-7777-8888-9999-%012d" % (2 * AUQ_TURN)
+AUQ_QUESTION = "Which bound do we keep for the retry curve?"
 
 
 def _free_port():
@@ -165,6 +169,22 @@ class WindowLab(unittest.TestCase):
                                  "toolUseResult": {"stdout": "ok", "stderr": "", "interrupted": False, "isImage": False}})
                     pa = tru
                 text = TOOL_TURN_TEXT
+            if k == AUQ_TURN:
+                # one turn whose reply asks the user a question, answered: the answer is a tool_result line whose uuid the kernel
+                # files on the tool event as resultUuid, and the page anchors the row on it (the timeline's deep-link anchor)
+                tu_id = "toolu_auq_%03d" % k
+                tuu = "44444444-5555-6666-7777-%012d" % (10 * k)
+                recs.append({"type": "assistant", "uuid": tuu, "parentUuid": pa, "timestamp": ta, "sessionId": SID,
+                             "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "tool_use",
+                                         "content": [{"type": "tool_use", "id": tu_id, "name": "AskUserQuestion",
+                                                      "input": {"questions": [{"question": AUQ_QUESTION, "header": "Bound", "multiSelect": False,
+                                                                               "options": [{"label": "upper", "description": "the upper bound"},
+                                                                                           {"label": "lower", "description": "the lower bound"}]}]}}]}})
+                recs.append({"type": "user", "uuid": AUQ_RESULT_UUID, "parentUuid": tuu, "timestamp": ta, "sessionId": SID,
+                             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tu_id, "content": "User answered: upper"}]},
+                             "toolUseResult": {"questions": [{"question": AUQ_QUESTION}], "answers": {AUQ_QUESTION: "upper"}}})
+                pa = AUQ_RESULT_UUID
+                text = "Upper it is: the retry curve keeps its upper bound."
             recs.append({"type": "assistant", "uuid": a, "parentUuid": pa, "timestamp": ta, "sessionId": SID,
                          "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "end_turn",
                                      "content": [{"type": "text", "text": text}]}})
@@ -176,6 +196,7 @@ class WindowLab(unittest.TestCase):
         cls.tool_uuid = "44444444-5555-6666-7777-%012d" % (10 * TOOL_TURN)   # the tool turn's FIRST atom: a card's anchor (T386)
         cls.tool_t = base + 2 * TOOL_TURN + 1
         cls.tool_quote = "which bound do we keep for the retry curve"
+        cls.auq_result_uuid = AUQ_RESULT_UUID                     # the answered question's row anchor (round six)
         cls.base = base
         cls.port = _free_port()
         cls.token = "testtok-livepaused"

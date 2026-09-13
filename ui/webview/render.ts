@@ -17479,7 +17479,10 @@ function turnOfEvents(s: Session): number[] {
   let i = 0;
   for (const r of runsOf(s.regions)) {
     const first = s.events[i] as { kind?: string } | undefined;
-    let t = first && first.kind === "user" ? r.lo - 1 : r.lo;   // a run opening mid-turn (the wire tail sliced below a user row) starts AT lo, and its first user row begins lo + 1 (round six, low)
+    // a run opening mid-turn (the wire tail sliced below a user row) starts AT lo and its first user row begins lo + 1 (round six, low);
+    // a run at the HEAD opens with the head cards, which precede turn 0, so its first user row IS turn 0 (the answered-question road
+    // read 101 for turn 100 after a head fill); every other window is turn-aligned and opens with a user row
+    let t = (first && first.kind === "user") || r.lo === 0 ? r.lo - 1 : r.lo;
     for (let k = 0; k < r.events.length && i < s.events.length; k++, i++) {
       const e = s.events[i] as { kind?: string };
       if (e && e.kind === "user") t++;
