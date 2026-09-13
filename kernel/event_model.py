@@ -4592,10 +4592,10 @@ def _asm_gates(entry, leaf_path, candidate_files, links):
         t, u = r.get("type"), r.get("uuid")
         if u:
             if u in ad.by_uuid or u in ad.dangling or u in ((ad.seed or {}).get("verdicts") or {}):
-                return _asm_demote("uuid-known")   # a re-write rebinds last-write-wins index; a RESTORED entry's adapter holds
-                #                                    only the tail's records, its pre-cut uuids live in the seed (round seven: a
-                #                                    reuse of a pre-cut uuid folded and served u1 a1 u2 a2 where a cold parse clears them)
-                #                  state; a resurrected dangling target rebinds repaired stitches
+                return _asm_demote("uuid-known")   # a re-write rebinds last-write-wins index state; a resurrected dangling target
+                #                                    rebinds repaired stitches; a RESTORED entry's adapter holds only the tail's
+                #                                    records, its pre-cut uuids live in the seed (round seven: a reuse of a pre-cut
+                #                                    uuid folded and served u1 a1 u2 a2 where a cold parse clears them)
             p = r.get("parentUuid") or r.get("logicalParentUuid")
             parent_d[u] = None if p == u else p
             new_leaf = u
@@ -6048,7 +6048,7 @@ def _tail_chains_onto_the_document(leaf_path, doc):
     record; one anchored in the pre-cut interior, or on no known record, invalidated the document. A missing parentUuid key
     counts as a null root. So a /clear fork, a rewind onto any pre-cut record but a proven-childless tip, a system spur
     anchored before the cut, an orphan parent, a summary or sidechain record parented into the pre-cut part, a compaction
-    re-anchored into the interior or onto an unknown uuid, a self-linked record, a parent cycle, a boundary with no anchor at all, a uuid repeated in the tail or reusing a pre-cut record's, all refuse to the whole parse: graph invalidations the document's
+    re-anchored into the interior or onto an unknown uuid, a self-linked record, a parent cycle, a boundary with no anchor at all, a tail uuid reusing a pre-cut record's, all refuse to the whole parse; a uuid repeated within the tail is the parse's last-wins node: graph invalidations the document's
     byte checks cannot see, after which the pre-cut verdicts the document carries may be stale (T402 rounds one to six). The rule is REACHABILITY: the tail is a forest whose only root parent is the proven tip and every record's parent chain reaches it (a boundary through its effective parent); set membership alone approved a tail that re-rooted itself while a cold parse dropped the pre-cut conversation. The
     childless tip is exempt because a first child cannot change which pre-cut branch is active, and the live manual /compact
     chains its command wrappers onto the pre-compact leaf, a childless tip, in ten of thirteen corpus cases (the golden detached
@@ -6071,11 +6071,14 @@ def _tail_chains_onto_the_document(leaf_path, doc):
     tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
     tip_ok = tip if tip is not None and doc.get("tipChildless") is True else None
     known = pre_uuids | set(by_uuid)
-    seen_uuids = [r["uuid"] for r in nodes if r.get("uuid")]
-    if len(set(seen_uuids)) != len(seen_uuids) or any(u in pre_uuids for u in seen_uuids):
-        return False                                      # a uuid repeated in the tail, or reusing a pre-cut record's: the parse keeps the
-    #                                                       LAST record's parent while a memo keyed by uuid would keep the first's, and a
-    #                                                       reuse of a pre-cut uuid closes a cycle across the spine (round seven, medium)
+    if any(u in pre_uuids for u in by_uuid):
+        return False                                      # a tail uuid reusing a pre-cut record's: a cycle across the spine, and the parse
+    #                                                       would re-bind a frozen record (round seven). A uuid REPEATED within the tail is
+    #                                                       resolved as the parse resolves it: the last record wins (by_uuid), so the walk
+    #                                                       below runs over one node per uuid with the last copy's parent; the common real
+    #                                                       shape (a verbatim duplicate, 3.5 percent of transcripts) grafts, and a repeat
+    #                                                       whose last copy is a non-tip root refuses through reachability (round eight)
+    walk_nodes = list(by_uuid.values()) + [r for r in nodes if not r.get("uuid")]
 
     def parent_of(r):
         """The record's parent as the parse resolves it; None for a root (a null or missing parent, a self-link)."""
@@ -6086,7 +6089,7 @@ def _tail_chains_onto_the_document(leaf_path, doc):
         return None if (not p or p == r.get("uuid")) else p
 
     reaches = {}                                          # uuid -> whether its parent chain reaches the proven tip (memoized)
-    for r in nodes:                                       # REACHABILITY, not membership (round six, medium): every tail record's
+    for r in walk_nodes:                                  # REACHABILITY, not membership (round six, medium): every tail node's
         path, on_path, cur = [], set(), r                 #  parent chain must end at the proven tip; a chain ending at any other
         while True:                                       #  root (null, missing, self-link, unknown), revisiting a record (a
             u = cur.get("uuid")                           #  cycle) or leaving the tail into the pre-cut part refuses

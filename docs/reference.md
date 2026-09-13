@@ -1553,8 +1553,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   effective parent, resolved as the parse resolves it (the logical parent,
   else, for a truthy anchor naming no known record, the preserved segment's
   tail, anchor or head that does; a boundary with no anchor is a root); so a
-  null or missing parent, a self-link, a cycle, a uuid repeated in the tail
-  or reusing a pre-cut record's, a parent anywhere else in the pre-cut part,
+  null or missing parent, a self-link, a cycle, a tail uuid reusing a pre-cut
+  record's (a uuid repeated within the tail is resolved as the parse resolves
+  it, the last record's parent winning), a parent anywhere else in the pre-cut part,
   an unproven tip, an unknown parent, or a boundary re-anchored into the
   interior or onto an unknown uuid refuses, whatever the record's type (one
   standing disagreement with the cold parse remains outside the rule: a tail
