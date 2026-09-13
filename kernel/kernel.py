@@ -1114,7 +1114,7 @@ _INTR_MARKS_DISK = {}                  # sid -> [mtime_ns, size, cut_t, cut_caus
 _INTR_MARKS_DISK_DIRTY = [False]
 _INTR_MARKS_DISK_LOCK = threading.Lock()
 _INTR_MARKS_DISK_V = 2                 # v2 (round two): the SDK registry row's stat joined the key; a v1 file loads nothing
-_INTR_MARKS_ROW_LEN = 8
+_INTR_MARKS_ROW_LEN = 7
 _UUIDISH_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")   # the one uuid shape (also
 #                                        the postal index's; defined here because the marks memo loads at import, below)
 
@@ -1125,8 +1125,10 @@ def _intr_marks_path():
 
 def _load_intr_marks():
     """The previous kernel's marks memo into _INTR_MARKS_DISK (best-effort; a missing or torn file is an empty memo). Every
-    row is checked: six elements of the right types under a uuid-shaped sid, else refused (counted under intrMarks.refused)
-    and recomputed on its first miss; a refused row is never trusted and never read as a dead session."""
+    row is checked: _INTR_MARKS_ROW_LEN elements of the right types under a uuid-shaped sid (the key's five: mtime_ns, size,
+    cut_t, cut_cause, the sdk-ownership bit; then the two maxima), else refused (counted under intrMarks.refused) and
+    recomputed on its first miss; a refused row is never trusted and never read as a dead session, and it stands on disk
+    until the next changed write replaces the file."""
     try:
         d = json.loads(_intr_marks_path().read_text(encoding="utf-8"))
     except Exception:
@@ -1140,7 +1142,7 @@ def _load_intr_marks():
         for sid, v in rows.items():
             ok = (isinstance(sid, str) and _UUIDISH_RE.match(sid) and isinstance(v, list) and len(v) == _INTR_MARKS_ROW_LEN
                   and isinstance(v[0], int) and isinstance(v[1], int) and isinstance(v[2], (int, float)) and isinstance(v[3], str)
-                  and isinstance(v[4], int) and isinstance(v[5], int) and isinstance(v[6], (int, float)) and isinstance(v[7], (int, float)))
+                  and v[4] in (0, 1) and isinstance(v[5], (int, float)) and isinstance(v[6], (int, float)))
             if not ok:
                 _intr_marks_bump("refused")
                 continue
@@ -1176,11 +1178,13 @@ def _persist_intr_marks(force=False):
 
 def _intr_marks_key(sid, path):
     """The persisted memo's key, taken BEFORE the tally reads a row (the arc's rule): the transcript's (mtime_ns, size), the
-    states log's newest machine-cut pair, and the SDK registry row's (mtime_ns, size) (STATE/sdk/<sid>.json, which decides
-    sdk_human: whether a promptSource "sdk" prompt is the human's, so its arrival or departure re-authors the user rows;
-    zeros when absent), which together with the transcript's records are the judge parse's inputs to the marks. None when
-    the transcript cannot be statted, and None while a bare rollback's cut is ARMED for the session (jd._pending_cut: the
-    parse is then the truncated world, which no file records, so nothing is served or persisted until the arm clears)."""
+    states log's newest machine-cut pair, and the parse's sdk-ownership bit (jd._sdk_owned(sid), the very input
+    parsed_session hands the adapter as sdk_human: whether a promptSource "sdk" prompt is the human's, which re-authors the
+    user rows; its SDK half is memoised on the registry row's stat and its Codex half is an in-memory record, so the BIT
+    is keyed, not the file: round three, low 2), which together with the transcript's records are the judge parse's
+    inputs to the marks. None when the transcript cannot be statted, and None while a bare rollback's cut is ARMED for
+    the session (jd._pending_cut: the parse is then the truncated world, which no file records, so nothing is served or
+    persisted until the arm clears; _interrupt_marks re-checks the arm after its tally before it persists)."""
     try:
         st = os.stat(path)
     except (OSError, TypeError):
@@ -1188,11 +1192,7 @@ def _intr_marks_key(sid, path):
     if sid and jd._pending_cut(sid):
         return None
     cut = _last_machine_cut(sid) if sid else (0.0, "")
-    try:
-        rs = os.stat(jd.STATE / "sdk" / (str(sid) + ".json")); sdk = (rs.st_mtime_ns, rs.st_size)
-    except OSError:
-        sdk = (0, 0)
-    return (st.st_mtime_ns, st.st_size, float(cut[0]), str(cut[1]), sdk[0], sdk[1])
+    return (st.st_mtime_ns, st.st_size, float(cut[0]), str(cut[1]), 1 if jd._sdk_owned(str(sid)) else 0)
 
 
 def _interrupt_marks_facts(turns):
@@ -1249,7 +1249,10 @@ def _interrupt_marks(turns, sid="", family=None, path=None):
     pass frame is open the tick alternates between the frame-pinned parse and the cache object, one
     miss per swap. No family, or an empty sid, means no memo (the pure-atom test callers; a sid-less key
     would be one slot thrashed by every caller)."""
-    dkey = _intr_marks_key(sid, path) if (sid and path) else None   # KEY FIRST: the transcript's stat and the cut pair before any row
+    dkey = _intr_marks_key(sid, path) if (sid and path and family != "display") else None   # KEY FIRST: the stat, the cut pair
+    #                                    and the ownership bit before any row. The persisted row is keyed by sid alone and holds the
+    #                                    JUDGE parse's maxima: the display family's parse carries live-merged atoms no file records, so
+    #                                    it takes no disk key whatever its caller passes (round three, low 9; the caller passes none)
     cut = (dkey[2], dkey[3]) if dkey is not None else (_last_machine_cut(sid) if sid else (0.0, ""))
     key = (sid, family) if (sid and family) else None
     if key is not None:
@@ -1260,9 +1263,9 @@ def _interrupt_marks(turns, sid="", family=None, path=None):
     if dkey is not None:                                  # the persisted memo (T401 (3) target 3): a row under this exact key
         with _INTR_MARKS_DISK_LOCK:                       #  serves the two maxima without a tally, across boots
             row = _INTR_MARKS_DISK.get(sid)
-        if row is not None and tuple(row[:6]) == dkey:
+        if row is not None and tuple(row[:5]) == dkey:
             _intr_marks_bump("restored")
-            res = (row[6], row[7])
+            res = (row[5], row[6])
             if key is not None:
                 _intr_marks_memo[key] = (turns, cut, res)
             return res
@@ -1271,7 +1274,9 @@ def _interrupt_marks(turns, sid="", family=None, path=None):
     _t0 = time.perf_counter()
     res = _interrupt_marks_atoms(_interrupt_marks_facts(turns), cut[0], cut[1])   # the tally over rows: no pre-cut atom built
     _intr_marks_bump("computeMs", (time.perf_counter() - _t0) * 1000.0)
-    if dkey is not None:
+    if dkey is not None and not jd._pending_cut(sid):    # re-checked AFTER the tally (round three, low 3): a cut armed since the key
+        #                                                 was taken means the tally may have read the truncated world; it is answered
+        #                                                 but never persisted under the plain key
         new = list(dkey) + [res[0], res[1]]
         with _INTR_MARKS_DISK_LOCK:
             if _INTR_MARKS_DISK.get(sid) != new:          # dirty by CHANGE only (the 1589 lesson): compare before assign

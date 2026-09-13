@@ -180,6 +180,13 @@ class Collector(unittest.TestCase):
         self.assertGreaterEqual(snap["uptime_s"], 0)
         json.dumps(snap)                                     # the whole thing serializes as-is
 
+    def test_the_asm_index_block_carries_the_documented_keys(self):
+        """The lazy index's block (asmIndex): its keys pinned, the light-facts gauge among them (T401 (3) target 3, round three:
+        the gauge was documented on /perf but never exposed)."""
+        st = km.em.asm_index_stats()
+        self.assertEqual(set(st), {"cap", "evictions", "materialized", "materializedBy", "resident", "restoredTurns", "rowDecodes", "userFacts"})
+        self.assertIsInstance(st["userFacts"], int); self.assertGreaterEqual(st["userFacts"], 0)
+
     def test_the_feed_build_block_carries_the_per_session_card_memo(self):
         """builds.feed gained `memo` (T368): the feed's per-session card memo beside the build counters, its hits and
         misses per session per build, the misses attributed to the key component that moved (plus `cold`), the

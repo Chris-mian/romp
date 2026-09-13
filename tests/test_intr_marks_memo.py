@@ -57,7 +57,7 @@ class MarksMemo(unittest.TestCase):
         return km._intr_marks_key(SID, self.path)
 
     def test_a_persisted_row_under_a_standing_key_serves_the_marks_without_a_tally(self):
-        k = self._key(); self.assertEqual(len(k), 6, "the transcript's stat, the cut pair, the SDK registry row's stat")
+        k = self._key(); self.assertEqual(len(k), 5, "the transcript's stat, the cut pair, the sdk-ownership bit")
         with km._INTR_MARKS_DISK_LOCK:
             km._INTR_MARKS_DISK[SID] = list(k) + [777, 888]
         s0 = _stats(); m0 = em._ASM_INDEX_STATS["materialized"]
@@ -75,7 +75,7 @@ class MarksMemo(unittest.TestCase):
         self.assertEqual(km._interrupt_marks(turns, SID, "judge", path=self.path), (1200, 1000))
         s1 = _stats(); self.assertEqual(s1["miss"] - s0["miss"], 1); self.assertGreater(s1["computeMs"], s0["computeMs"])
         with km._INTR_MARKS_DISK_LOCK:
-            row = list(km._INTR_MARKS_DISK[SID]); self.assertEqual(row[6:], [1200, 1000]); self.assertTrue(km._INTR_MARKS_DISK_DIRTY[0])
+            row = list(km._INTR_MARKS_DISK[SID]); self.assertEqual(row[5:], [1200, 1000]); self.assertTrue(km._INTR_MARKS_DISK_DIRTY[0])
         km._intr_marks_memo.clear()                                        # a new parse object: the identity memo misses
         with open(self.path, "a") as f:
             f.write("{}\n")                                                # appended: size moves
@@ -106,12 +106,15 @@ class MarksMemo(unittest.TestCase):
 
     def test_malformed_persisted_rows_are_refused_and_good_ones_loaded(self):
         p = km._intr_marks_path(); p.parent.mkdir(parents=True, exist_ok=True)
-        good = [1, 2, 0.0, "", 0, 0, 5, 6]
+        good = [1, 2, 0.0, "", 1, 5, 6]
         p.write_text(json.dumps({"v": 2, "rows": {SID: good, "not-a-uuid": good, "22222222-2222-4333-8444-0000000000c4": [1, 2, 3],
-                                                  "33333333-2222-4333-8444-0000000000c5": ["x", 2, 0.0, "", 0, 0, 5, 6]}}))
+                                                  "33333333-2222-4333-8444-0000000000c5": ["x", 2, 0.0, "", 0, 5, 6],
+                                                  "44444444-2222-4333-8444-0000000000c6": [1, 2, 0.0, "", 2, 5, 6],       # the bit is 0 or 1
+                                                  "55555555-2222-4333-8444-0000000000c7": [1, 2, 0.0, "", 0, 0, 5, 6]}}))   # a round-two row
         s0 = _stats()
         self.assertEqual(km._load_intr_marks(), 1, "one row trusted")
-        self.assertEqual(_stats()["refused"] - s0["refused"], 3, "the non-uuid sid, the short row and the mistyped row refused")
+        self.assertEqual(_stats()["refused"] - s0["refused"], 5,
+                         "the non-uuid sid, the short row, the mistyped row, the bad bit and the eight-element row refused")
         with km._INTR_MARKS_DISK_LOCK:
             self.assertEqual(km._INTR_MARKS_DISK, {SID: good})
         p.write_text(json.dumps({"v": 1, "rows": {SID: [1, 2, 0.0, "", 5, 6]}}))
@@ -128,7 +131,7 @@ class MarksMemo(unittest.TestCase):
         km._intr_marks_memo.clear()
         km._interrupt_marks(turns, SID, "judge", path=self.path)           # the same result under the same key: no change
         self.assertFalse(km._persist_intr_marks(), "the same row again is not a change")
-        d = json.loads(km._intr_marks_path().read_text()); self.assertEqual(d["v"], 2); self.assertEqual(len(d["rows"][SID]), 8)
+        d = json.loads(km._intr_marks_path().read_text()); self.assertEqual(d["v"], 2); self.assertEqual(len(d["rows"][SID]), km._INTR_MARKS_ROW_LEN)
         import inspect
         self.assertIn('".tmp.%d.%x" % (os.getpid(), threading.get_ident())', inspect.getsource(km._persist_intr_marks), "a per-writer tmp")
         with km._INTR_MARKS_DISK_LOCK:
@@ -147,10 +150,11 @@ class MarksMemo(unittest.TestCase):
             self.assertNotIn(SID, km._INTR_MARKS_DISK); self.assertTrue(km._INTR_MARKS_DISK_DIRTY[0])
         self.assertIn("persisted", _stats())
 
-    def test_an_armed_rollback_cut_takes_no_key_and_the_sdk_registry_row_is_keyed(self):
+    def test_an_armed_rollback_cut_takes_no_key_and_the_sdk_ownership_bit_is_keyed(self):
         """Round two, medium 3: the key omitted two live inputs of the judge parse: the armed bare-rollback cut (read live, no file)
-        and sdk_human (the SDK registry row). Arm, evaluate, clear, evaluate: the second evaluation tallies again and nothing was
-        served or persisted from the armed world; the registry row's arrival moves the key."""
+        and sdk_human. Arm, evaluate, clear, evaluate: the second evaluation tallies again and nothing was served or persisted
+        from the armed world. Round three, low 2: the parse reads jd._sdk_owned (an in-memory record for a Codex session), so the
+        key carries that bit itself; flipping it moves the key."""
         turns = _turns(_user(1000, "hello"))
         saved = km.jd._PENDING_CUT_FN
         km.jd.set_pending_cut_provider(lambda fsid: "cccccccc-2222-4333-8444-0000000000c9" if fsid == SID else "")
@@ -170,11 +174,44 @@ class MarksMemo(unittest.TestCase):
         with km._INTR_MARKS_DISK_LOCK:
             self.assertIn(SID, km._INTR_MARKS_DISK)
         km._intr_marks_memo.clear()
-        reg = km.jd.STATE / "sdk" / (SID + ".json"); reg.parent.mkdir(parents=True, exist_ok=True)
-        reg.write_text(json.dumps({"sid": SID, "alive": True}))                # the registry row arrives: sdk_human flips
-        s2 = _stats()
-        km._interrupt_marks(turns, SID, "judge", path=self.path)
-        self.assertEqual((_stats()["miss"] - s2["miss"], _stats()["restored"] - s2["restored"]), (1, 0), "the registry row is keyed")
+        bit = self._key()[4]; self.assertIn(bit, (0, 1))
+        with mock.patch.object(km.jd, "_SDK_OWNER_FN", lambda fsid: not bit):    # the ownership bit flips (no file moves)
+            self.assertEqual(self._key()[4], 1 - bit, "the bit itself is keyed")
+            s2 = _stats()
+            km._interrupt_marks(turns, SID, "judge", path=self.path)
+            self.assertEqual((_stats()["miss"] - s2["miss"], _stats()["restored"] - s2["restored"]), (1, 0), "a flipped bit misses")
+
+    def test_a_cut_armed_after_the_key_and_before_the_persist_is_answered_but_not_persisted(self):
+        """Round three, low 3: the armed-cut bit was read once, before the tally; a cut armed between the key and the persist would
+        have persisted a tally over the truncated world under the plain key. The arm is re-checked after the tally."""
+        turns = _turns(_user(1000, "hello"))
+        calls = []
+        saved = km.jd._PENDING_CUT_FN
+        km.jd.set_pending_cut_provider(lambda fsid: (calls.append(fsid) or "") if len(calls) == 0 else "cccccccc-2222-4333-8444-0000000000c9")
+        try:
+            s0 = _stats()
+            self.assertEqual(km._interrupt_marks(turns, SID, "judge", path=self.path), (0, 1000), "answered")
+            self.assertEqual(_stats()["miss"] - s0["miss"], 1, "tallied")
+            with km._INTR_MARKS_DISK_LOCK:
+                self.assertNotIn(SID, km._INTR_MARKS_DISK, "not persisted: the arm came after the key")
+            self.assertGreaterEqual(len(calls), 1)
+        finally:
+            km.jd.set_pending_cut_provider(saved)
+
+    def test_the_display_family_takes_no_disk_row_even_when_a_path_is_passed(self):
+        """Round three, low 9: the persisted row is keyed by sid alone and holds the judge parse's maxima; the display family's
+        parse carries live-merged atoms no file records, so it never reads or writes the row."""
+        turns = _turns(_user(1000, "hello"))
+        self.assertEqual(km._interrupt_marks(turns, SID, "display", path=self.path), (0, 1000))
+        with km._INTR_MARKS_DISK_LOCK:
+            self.assertNotIn(SID, km._INTR_MARKS_DISK, "the display family: no row")
+        with km._INTR_MARKS_DISK_LOCK:
+            km._INTR_MARKS_DISK[SID] = list(self._key()) + [777, 888]     # a row under the standing key
+        km._intr_marks_memo.clear()
+        s0 = _stats()
+        self.assertEqual(km._interrupt_marks(turns, SID, "display", path=self.path), (0, 1000), "tallied, not served from the row")
+        self.assertEqual(_stats()["restored"] - s0["restored"], 0)
+        self.assertEqual(km._interrupt_marks(turns, SID, "judge", path=self.path), (777, 888), "the judge family is served")
 
     def test_without_a_path_the_tally_runs_and_nothing_is_persisted(self):
         turns = _turns(_user(1000, "hello"))
@@ -211,17 +248,30 @@ class RowTallyEqualsAtomTally(TA.Harness):
         self.assertGreater(len(lazy_seen), 0, "the compacting goldens restore lazily: %r" % lazy_seen)
 
     def test_every_user_row_of_every_golden_document_agrees_field_by_field(self):
-        """Round two, medium 1: the maxima can agree while a row's fields do not; every user row of every golden document is
-        compared field by field, the light facts against the built atom: type, t, author and the interrupt flag."""
-        rows = mism = 0
-        for name in sorted(TA.G.SINGLE_FILE):
-            records, sent = TA.G.SINGLE_FILE[name]
-            path = self.write(name, records(), sent=sent)
-            self.fresh(); self.parse(path); self.doc(path); self.fresh(); tree = self.parse(path)
+        """Round two, medium 1, round three, low 1: the maxima can agree while a row's fields do not; every user row of every
+        golden document is compared field by field, the light facts against the built atom: type, t, author and the interrupt
+        flag. Every single-file golden is made to compact so each writes a document (natively only three do), which puts the
+        absorbed queued prompt (its scalars carry the landing time, its record row the send time) and the dequeued queued
+        prompt on the real document road; a synthetic scenario adds an interrupt record after an absorbed prompt. The sweep
+        asserts it met a scalar-override row and an interrupt-flag row, so it is the pin for both shapes."""
+        G = TA.G
+        def irq_after_absorbed():
+            return G.scenario_multi_input_absorbed() + [
+                G.uline(G.T0 + 100, "[Request interrupted by user]", "ui1", "a2", ps="typed"),
+                G.aline(G.T0 + 110, "stopped there", "a3", "ui1", stop="end_turn")]
+        scenarios = [(n, G.SINGLE_FILE[n][0], G.SINGLE_FILE[n][1]) for n in sorted(G.SINGLE_FILE)] + [("irq_absorbed", irq_after_absorbed, None)]
+        rows = mism = ir_rows = override_rows = docs = 0
+        for name, records, sent in scenarios:
+            path = self.write("variant-" + name, TA.compacting_variant(records(), name[:6]), sent=sent)
+            self.fresh(); self.parse(path); self.assertTrue(self.doc(path), "%s: a document is written: %s" % (name, em.asm_checkpoint_stats()))
+            self.fresh(); modes = []; tree = self.parse(path, modes)
+            self.assertEqual(modes, ["restore"], name)
+            lazy = False
             for t in tree["turns"]:
                 atoms = t.get("atoms")
                 if not isinstance(atoms, em.LazyAtoms):
                     continue
+                lazy = True
                 for i, f in atoms.user_facts():
                     if f.get("_light") is None:
                         continue
@@ -230,8 +280,60 @@ class RowTallyEqualsAtomTally(TA.Harness):
                     want = (a.get("type"), a.get("t"), a.get("author", ""), em.is_interrupt_record(a))
                     if got != want:
                         mism += 1
-        self.assertGreater(rows, 0, "the goldens carry lazy user rows")
+                    if want[3]:
+                        ir_rows += 1
+                    row = json.loads(atoms._index.rowb[atoms._rows[i]])
+                    if row.get("r") is not None and atoms._index.records[row["r"]][5] != f.get("t"):
+                        override_rows += 1                                 # the recorded scalars' time differs from the record row's
+            docs += 1 if lazy else 0
         self.assertEqual(mism, 0, "%d of %d user rows differ between the light facts and the built atom" % (mism, rows))
+        self.assertEqual(docs, len(scenarios), "every scenario restored lazily")
+        self.assertGreaterEqual(rows, len(scenarios), "at least one lazy user row a document")
+        self.assertGreater(ir_rows, 0, "an interrupt-flag row was swept")
+        self.assertGreater(override_rows, 0, "a scalar-override row (the absorbed queued prompt) was swept")
+
+    def test_an_inline_body_row_with_no_lazy_header_is_handed_to_the_build_and_counted(self):
+        """Round three, low 8: a row whose body is inline (an emitted atom with no record behind it) has its interrupt flag in the
+        TEXT, which only the audited body readers may read: the light facts flag it and the facts builder builds that row alone."""
+        records = [("r0", "u", 1000, {"type": "user", "author": "human", "t": 1000}, None),
+                   ("r1", "u", 1100, {"type": "user", "author": "human", "t": 1100}, "inline"),
+                   ("r2", "u", 1200, {"type": "user", "author": "human", "t": 1200}, {"ir": False})]
+        recs = [[u, None, kind, None, i, t, 0, None, None, None] for i, (u, kind, t, sc, lz) in enumerate(records)]
+        rows = []
+        for i, (u, kind, t, sc, lz) in enumerate(records):
+            row = {"r": i, "s": dict(sc), "seq": i}
+            if lz == "inline":
+                row["m"] = {"role": "user", "content": "[Request interrupted by user]"}   # no lazy header: the flag is in the text
+            elif lz:
+                row["lz"] = dict(lz, k="user", h="00000000", nt=True); row["i"] = i
+            rows.append(row)
+        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
+        self.assertTrue(index.user_facts(1).get("_build"), "the inline-body row is flagged for the build")
+        self.assertIsNone(index.user_facts(0).get("_build")); self.assertIsNone(index.user_facts(2).get("_build"))
+        atoms = em.LazyAtoms(index, range(len(rows)))
+        m0 = em._ASM_INDEX_STATS["materialized"]
+        users = km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}])
+        self.assertEqual(em._ASM_INDEX_STATS["materialized"] - m0, 1, "that row alone is built")
+        self.assertEqual(km._interrupt_marks_atoms(users, 0.0, ""), (1100, 1200), "the inline interrupt counts as the stop")
+
+    def test_the_user_facts_gauge_counts_the_live_indexes_and_falls_when_one_is_dropped(self):
+        """Round three medium: asmIndex.userFacts is a GAUGE of the light facts resident across the live indexes, summed at report
+        time from each index's own cache (no lock on the tally's hot path), and it falls when an index is dropped."""
+        import gc
+        g0 = em.asm_index_stats()["userFacts"]
+        n = 50
+        recs = [["r%d" % i, None, "u", None, i, 1000 + i, 0, None, None, None] for i in range(n)]
+        rows = [{"r": i, "s": {"type": "user", "author": "human", "t": 1000 + i}, "seq": i} for i in range(n)]
+        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "z.jsonl")
+        atoms = em.LazyAtoms(index, range(n))
+        users = km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}])
+        self.assertEqual(len(users), n)
+        self.assertEqual(em.asm_index_stats()["userFacts"] - g0, n, "the gauge counts this index's facts")
+        km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}])
+        self.assertEqual(em.asm_index_stats()["userFacts"] - g0, n, "a second tally adds nothing: the rows were cached")
+        del index, atoms, users; gc.collect()
+        self.assertEqual(em.asm_index_stats()["userFacts"], g0, "the dropped index took its cache with it")
+        self.assertNotIn("userFacts", em._ASM_INDEX_STATS, "no running counter beside the gauge")
 
     def test_a_stop_between_a_queued_prompts_send_and_its_landing_agrees(self):
         """The shape medium 1 named: an absorbed queued prompt carries its LANDING time in the scalars and its SEND time in the
