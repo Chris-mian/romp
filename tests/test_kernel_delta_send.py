@@ -172,7 +172,7 @@ class RenderHandlesTheTail(unittest.TestCase):
         # …only on an upward or unchanged move of the view (T366: a downward flick inside the estimate's top band never asks)
         self.assertIn("if (gesture) v.edgeUp = olderRequestAllowed(v.edgeTop, st);", r)
         self.assertIn("const upward = v.edgeUp !== false;", r)
-        self.assertIn("if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx && upward) { requestOlder(", r)
+        self.assertIn("if (moreOnServer && (v.winStart ?? 0) === 0 && st < topH + edgePx && upward && !olderLatched(activeId)) { requestOlder(", r)   # T402 round three: a pill click's cancel latches the edge until the reader's own move
         # chatHead PREPENDS the chunk + lowers headFrom + re-anchors
         self.assertIn('else if (m.type === "chatHead") chatHead(m);', r)
         self.assertIn("if (older.length) s.events = older.concat(s.events);", r)

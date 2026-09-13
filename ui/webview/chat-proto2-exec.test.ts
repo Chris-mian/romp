@@ -177,7 +177,7 @@ function liftAsk(relandAsk: boolean, keepY: number | null, anchorT: number | nul
     loadingOlder: new Set<string>(), relandAsk, pendingAnchorKeepY: keepY, pendingAnchorT: anchorT, pendingAnchorKind: kind, pendingAnchorIntent: null,
     document: { getElementById: () => null }, atBottom: () => false, landTrail: ["pointer-fetch-window"],
     scrollDiagRow: (k: string, d: any) => rows.push({ k, d }), pendingOlderAnchor: new Map(), pendingOlderKeepY: new Map(),
-    showLoadingPill: () => undefined, vscodeApi: { postMessage: (m: any) => posted.push(m) },
+    showLoadingPill: () => undefined, olderCancelled: new Map<string, number>(), vscodeApi: { postMessage: (m: any) => posted.push(m) },   // the click's latch (T402 round three): a navigation's ask clears it
   };
   const js = liftBetween("const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null; kind: string | null }>();", "// The page after a DETACHED window's newest event");
   const api = liftWith(js, scope, ["requestAround", "pendingWindowNav"]);

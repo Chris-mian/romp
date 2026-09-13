@@ -40,8 +40,11 @@ await page.evaluate(() => {
 });
 const pill = () => page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); return { present: !!p, visible: !!p && p.isConnected && getComputedStyle(p).display !== "none", text: p ? p.textContent : null, seen: window.__pillSeen }; });
 const atBottom = () => page.evaluate(() => { const c = document.getElementById("content"); return { top: c.scrollTop, max: c.scrollHeight - c.clientHeight, atBottom: c.scrollHeight - c.scrollTop - c.clientHeight < 2 }; });
+// a pill click LATCHES the tab's older asks until the reader's own scroll evidence (round three, medium 1), so a road that stands in for
+// the reader's scroll with a script jump first gives that evidence: one real wheel tick over the transcript, waited on by its event
+const unlatch = async () => { const b = await page.evaluate(() => { const r = document.getElementById("content").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, n: window.__wheels }; }); await page.mouse.move(b.x, b.y); await page.mouse.wheel(0, -1); await page.waitForFunction((n) => window.__wheels > n, b.n, { timeout: 3000 }); };
 // the drop hook rides the same send wrapper the head installs: a frame whose type is in __drop is recorded and not sent
-await page.evaluate(() => { const orig = WebSocket.prototype.send; window.__hold = new Set(); window.__heldRaw = []; window.__in = [];
+await page.evaluate(() => { const orig = WebSocket.prototype.send; window.__hold = new Set(); window.__heldRaw = []; window.__in = []; window.__wheels = 0; window.addEventListener("wheel", () => { window.__wheels++; }, { capture: true, passive: true });
   window.addEventListener("message", (e) => { const m = e.data; if (m && m.type && e.source !== window) window.__in.push(m.type); }, true);
   WebSocket.prototype.send = function (d) { window.__ws = this; try { const m = JSON.parse(d); if (m && m.type && window.__drop.has(m.type)) { window.__sent.push(m); return; } if (m && m.type && window.__hold.has(m.type)) { window.__sent.push(m); window.__heldRaw.push(d); return; } } catch (e) {} return orig.call(this, d); };
   window.__release = () => { const ws = window.__ws; const held = window.__heldRaw; window.__heldRaw = []; for (const d of held) orig.call(ws, d); return held.length; }; });
@@ -133,7 +136,22 @@ const released5 = await page.evaluate(() => window.__release());
 await page.waitForFunction(() => window.__in.includes("chatWindow"), null, { timeout: 8000 }).catch(() => {});
 await page.waitForTimeout(1500);   // the reply's adoption, its re-base ask and the frame that answers it
 const afterReply5 = await atBottom(); const pillAfterReply5 = await pill();
-// ROAD 1: the ask goes out and the socket dies with it in flight
+// ROAD 7 (round three, medium 2): the ordinary deep-link road (landActive clears the landing's own mark while the ask is in flight),
+// the ask HELD, and a FAULT reply arriving in its place through the shim's door: the landing must stand down at once (the toast, the
+// seek note gone, no pill), not thirty seconds later by the backstop
+const deep7 = "11111111-2222-3333-4444-" + pad(2 * 10);   // turn 10: no earlier road loads it (road 5 released a window around turn 60, road 4 landed around 100)
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const aroundBefore7 = await sentOf("loadAround");
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep7, anchorT: cfg.base + 2 * 10 });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore7, { timeout: 8000 }).catch(() => {});
+const asked7 = await pill();
+await page.evaluate(([sid, anchor]) => window.postMessage({ type: "chatWindow", id: sid, anchor, events: [], moreBefore: false, moreAfter: false, missing: true, fault: true, error: "synthetic fault" }, "*"), [cfg.sid, deep7]);
+await page.waitForFunction(() => !!document.querySelector(".locate-toast"), null, { timeout: 3000 }).catch(() => {});
+await page.waitForTimeout(300);
+const faulted7 = { pill: await pill(), toast: await page.evaluate(() => { const t = document.querySelector(".locate-toast"); return t ? t.textContent : null; }), seekNote: await page.evaluate(() => !!document.getElementById("seek-note")) };
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });   // the held ask is dropped, not released: one ask has one reply
+// ROAD 1: the ask goes out and the socket dies with it in flight (the clicks of roads 6 and 5 latched the tab: the reader's wheel first)
+await unlatch();
 await page.evaluate(() => { window.__drop.add("loadOlder"); });
 const olderBefore1 = await sentOf("loadOlder");
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });   // a jump to the top: the head band asks once
@@ -153,6 +171,7 @@ await page.evaluate(() => { const c = document.getElementById("content"); if (c.
 await page.waitForTimeout(800);
 const back1 = await pill(); const bBack1 = await atBottom();
 // ROAD 2: an ask never answered, the click ends the wait and frees the next ask
+await unlatch();
 await page.evaluate(() => { window.__drop.add("loadOlder"); });
 const olderBefore2 = await sentOf("loadOlder");
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
@@ -162,14 +181,31 @@ const shown2 = await pill();
 if (shown2.visible) await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // a DOM click: at main the pill takes no pointer and a real click hangs on the turn beneath
 await page.waitForTimeout(300);
 const clicked2 = await pill();
-await page.evaluate(() => { window.__drop.delete("loadOlder"); const c = document.getElementById("content"); c.scrollTop = 200; });   // the drop lifted: the re-ask reaches the kernel and is answered, so nothing stays outstanding
-await page.waitForTimeout(200);
+// the cancel LATCHES (round three, medium 1): at the edge with no move of the reader's own, no re-ask and no pill, sampled twice
+await page.waitForTimeout(500);
+const held2a = { pill: await pill(), older: (await sentOf("loadOlder")) - olderBefore2 };
+await page.waitForTimeout(1000);
+const held2b = { pill: await pill(), older: (await sentOf("loadOlder")) - olderBefore2 };
+// a scroll with no input behind it (a script, the browser's own anchoring) is not the reader's evidence: the edge still asks nothing.
+// Down and back up to the top band in two frames, far enough for the virtualiser to run its edge check (a one-pixel move did not, so the
+// base stayed green on this sample); at the base the check asks again here
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 300; });
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n + 1, olderBefore2, { timeout: 1500 }).catch(() => {});
+const held2c = { pill: await pill(), older: (await sentOf("loadOlder")) - olderBefore2 };
+// …until the reader's OWN evidence: a real wheel over the transcript (the latch clears), then the edge asks again
+await page.evaluate(() => { window.__drop.delete("loadOlder"); });   // the drop lifted: the re-ask reaches the kernel and is answered, so nothing stays outstanding
+const box2 = await page.evaluate(() => { const r = document.getElementById("content").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+await page.mouse.move(box2.x, box2.y);
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 200; });
+await page.waitForTimeout(200);
+await page.mouse.wheel(0, -400);
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n + 1, olderBefore2, { timeout: 8000 }).catch(() => {});
 const olderAfter2 = await sentOf("loadOlder");
 const reasked2 = await pill();
 await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, held2a, held2b, held2c, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, asked7, faulted7, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
 """
 
 
@@ -227,6 +263,9 @@ class ServedLoadingPill(WindowLab):
         self.assertTrue(r["shown2"]["visible"], "the unanswered ask showed the pill: %r" % r["shown2"])
         self.assertIn("click to stop waiting", r["shown2"]["text"] or "", "the pill says it can be clicked away: %r" % r["shown2"])
         self.assertFalse(r["clicked2"]["visible"], "the click hid it: %r" % r["clicked2"])
+        for k in ("held2a", "held2b", "held2c"):   # round three, medium 1 (held2c: a script scroll at the edge is not the reader's evidence): the cancel holds at the edge with no move of the reader's own
+            self.assertFalse(r[k]["pill"]["visible"], "%s: the pill stays hidden after the click: %r" % (k, r[k]))
+            self.assertEqual(r[k]["older"], 1, "%s: no re-ask while the latch stands: %r" % (k, r[k]))
         self.assertGreaterEqual(r["olderAfter2"] - r["olderBefore2"], 2, "the next scroll into history asked again (the in-flight mark went with the click): %s asks" % (r["olderAfter2"] - r["olderBefore2"]))
 
     def test_the_reader_at_the_bottom_of_a_history_run_sees_no_pill_for_the_newer_ask(self):
@@ -264,6 +303,15 @@ class ServedLoadingPill(WindowLab):
         self.assertFalse(r["onBClicked6"]["visible"], "a click on B changes nothing: %r" % r["onBClicked6"])
         self.assertTrue(r["backOnA6"]["visible"], "back on A the wait still stands: %r" % r["backOnA6"])
         self.assertFalse(r["endedOnA6"]["visible"], "the click on A ends it: %r" % r["endedOnA6"])
+
+    def test_a_fault_on_the_ordinary_deep_link_road_stands_the_landing_down_at_once(self):
+        # round three, medium 2: the stand-down keys on the wait the ask recorded, not on the landing's mark landActive clears
+        r = self._result()
+        self.assertTrue(r["asked7"]["visible"], "the deep link's ask showed the pill: %r" % r["asked7"])
+        f = r["faulted7"]
+        self.assertFalse(f["pill"]["visible"], "the fault ended the wait: %r" % f)
+        self.assertEqual(f["toast"], "the history could not be loaded just now", "the reader is told at once, in the fault's own words: %r" % f)
+        self.assertFalse(f["seekNote"], "the seek note is gone with the landing")
 
 
 if __name__ == "__main__":

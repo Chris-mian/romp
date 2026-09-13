@@ -16,7 +16,10 @@ test("the pill is for the ACTIVE tab's outstanding reader ask only: not the virt
   assert.doesNotMatch(virt, /showLoadingPill\(\)|hideLoadingPill\(\)|syncLoadingPill\(\)/, "a re-window renders resident content and asks for nothing (T402)");
   assert.match(virt, /revirtBusy = true;\s*\n\s*\/\/ no pill here \(T402/);
   assert.match(fn("requestNewer"), /noteAsk\(sid, false\);/, "the walk toward the tail is the page's own ask: in flight, never a reader wait, never a hold on the pill");
-  for (const f of ["requestOlder", "fetchOlderForAnchor", "requestAround"]) assert.match(fn(f), /noteAsk\(sid, true\);/, f + ": the reader's ask into unloaded history is a reader wait");
+  for (const f of ["requestOlder", "fetchOlderForAnchor"]) assert.match(fn(f), /noteAsk\(sid, true\);/, f + ": the reader's ask into unloaded history is a reader wait");
+  assert.match(fn("requestAround"), /const nav = !relandAsk;[\s\S]*noteAsk\(sid, nav\);/, "requestAround: a navigation's ask is a reader wait; the re-land of the reader's own row is the page's ask and shows nothing (round three, low 2)");
+  assert.match(fn("requestAround"), /if \(nav\) olderCancelled\.delete\(sid\);/, "a navigation's ask ends the click's latch: the reader's own intent (round three)");
+  assert.match(fn("fetchOlderForAnchor"), /olderCancelled\.delete\(sid\);/, "the index wire's deep link too");
   for (const f of ["chatHead", "chatWindow", "chatMore"]) assert.match(fn(f), /^\s*endAsk\(msg\.id\);/m, f + ": the reply ends the wait and re-evaluates the pill");
   assert.match(RENDER, /function syncLoadingPill\(\): void \{ if \(activeId && readerWaits\.has\(activeId\)\) showLoadingPill\(\); else hideLoadingPill\(\); \}/, "the pill follows the ACTIVE tab's reader wait");
   assert.match(RENDER, /updateLivePaused\(\);[^\n]*\n\s*syncLoadingPill\(\);/, "…re-evaluated on a tab switch, after the strip's own re-evaluation");
@@ -45,7 +48,7 @@ test("a click ends the ACTIVE tab's wait and hides the pill whatever the other t
   assert.match(win, /const target = \(keepY != null && anchorUuid\) \? anchorUuid : \(typeof msg\.anchor === "string" \? msg\.anchor : anchorUuid\);/, "a keep offset names the reader's own row: the arrival restores it, never the window's anchor");
   assert.doesNotMatch(RENDER, /window\.addEventListener\("romp:wsup", \(\) => cancelOlderWait/, "the reopen cancel no longer rides the DOM event the shim fires after flushing the queued asks (low 4)");
   assert.match(RENDER, /window\.addEventListener\("romp:wsdown", \(\) => \{ askGen\+\+; flipPending = true; \}\);/, "the socket's death moves the generation");
-  assert.match(RENDER, /function onSocketFlipFrame\(\): void \{ if \(!flipPending\) askGen\+\+; flipPending = false; cancelOlderWait\("flip"\); \}/, "the reopen FRAME ends the waits asked before the flip");
+  assert.match(RENDER, /function onSocketFlipFrame\(\): void \{ if \(!flipPending\) askGen\+\+; flipPending = false; cancelledAsks\.clear\(\); cancelOlderWait\("flip"\); \}/, "the reopen FRAME forgets the asks clicked away before the flip and ends the waits asked before it (round three, low 1)");
   assert.match(RENDER, /else if \(m\.type === "wsup"\) \{ onSocketUp\(skeletonTabs\); skeletonDiagArmed = true; onSocketFlipFrame\(\); \}/, "…in frame order, as the skeleton machine's socket-flip marker");
   assert.match(CSS, /\.tx-loading-pill \{[^}]*pointer-events: auto; cursor: pointer;/, "the pill takes the click (its anchor stays pointer-events none)");
   assert.match(CSS, /\.tx-loading-pill:hover \{ border-color: var\(--accent\); \}/);
@@ -56,4 +59,20 @@ test("a reply the kernel could not build is a FAULT routed apart from a genuine 
   assert.match(fn("chatHead"), /if \(msg\.missing\) \{ forget\(msg\.id\); return; \}\s*\/\/ the index wire's fault reply/, "the index wire's fault never reads as the head reached");
   assert.match(fn("chatWindow"), /if \(msg\.fault\) \{[\s\S]*?landTrail\.push\("window-fault"\); landToast\("the history could not be loaded just now"\);/, "chatWindow: a fault is not a verdict on the anchor");
   assert.match(fn("chatMore"), /if \(msg\.fault\) return;/, "chatMore: the walked pages stay");
+});
+
+test("round three: a click's cancel latches at the edge until the reader's own evidence; a fault stands the landing down by the recorded wait; a flip and the pipe's down edge clear and end", () => {
+  assert.match(RENDER, /function olderLatched\(sid: string\): boolean \{\s*\n\s*const at = olderCancelled\.get\(sid\);\s*\n\s*if \(at == null\) return false;\s*\n\s*if \(settleLastOwnInput > at \|\| \(settleScrollerHeld && settleHeldAt > at\)\) \{ olderCancelled\.delete\(sid\); return false; \}/, "the latch clears on a wheel, a key, a touch or a scrollbar grab after the click, never on a pointer's click");
+  assert.match(RENDER, /if \(e\.type === "wheel" \|\| e\.type === "keydown" \|\| e\.type\.startsWith\("touch"\)\) settleLastOwnInput = Date\.now\(\);/, "the reader's own input is recorded apart from the pointer's");
+  assert.match(fn("virtualizeToViewport"), /&& upward && !olderLatched\(activeId\)\) \{ requestOlder\(activeId, v, content\); return; \}/, "the virtualiser asks nothing while the latch stands");
+  assert.match(fn("requestOlder"), /\|\| olderLatched\(sid\)\) return;/);
+  assert.match(fn("cancelOlderWait"), /if \(why === "click"\) olderCancelled\.set\(sid, Date\.now\(\)\);/);
+  const win = fn("chatWindow");
+  assert.match(win, /const hadWait = readerWaits\.has\(msg\.id\);/, "the stand-down keys on the wait the ask recorded (medium 2)");
+  assert.match(win, /if \(msg\.id === activeId && \(hadWait \|\| pendingAnchor === anchorUuid\)\) \{ if \(pendingAnchor === anchorUuid\) pendingAnchor = null; anchorPendingOlder = false; landTrail\.push\("window-fault"\); landToast\("the history could not be loaded just now"\); clearSeek\(\); \}/);
+  assert.match(win, /landTrail\.push\("window-missing"\); landToast\("couldn't locate this in the transcript"\); clearSeek\(\); \}/);
+  assert.match(RENDER, /function onSocketFlipFrame\(\): void \{ if \(!flipPending\) askGen\+\+; flipPending = false; cancelledAsks\.clear\(\); cancelOlderWait\("flip"\); \}/, "a flip clears the cancelled set (low 1)");
+  assert.match(fn("requestAround"), /noteAsk\(sid, nav\);/, "a re-land is the page's own ask: no reader wait, no pill (low 2)");
+  assert.match(RENDER, /function onPipeDown\(\): void \{ askGen\+\+; flipPending = true; cancelledAsks\.clear\(\); cancelOlderWait\("flip"\); \}/, "the VS Code pipe's down edge ends the asks in flight (low 3)");
+  assert.match(RENDER, /if \(m\.type === "pipeState"\) \{ if \(!m\.up\) \{ markPendingLost\("connection"\); onPipeDown\(\); \}/);
 });

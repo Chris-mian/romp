@@ -136,7 +136,7 @@ test("render.ts wiring, round one: the gesture verdict ends the settle by any in
   const inp = RENDER.slice(RENDER.indexOf("function settleInput(e: Event): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function settleInput(e: Event): void {")));
   assert.match(inp, /if \(e\.type === "pointermove" && !\(e as PointerEvent\)\.buttons\) return;/, "a hover is not a hand on the scroller; a drag inside the content is");
   assert.match(inp, /if \(e\.type === "pointerup" \|\| e\.type === "pointercancel"\) \{ settleScrollerHeld = false; return; \}/, "the release ends the hold (round three)");
-  assert.match(inp, /if \(scrollerGrab\(e\.target === c, pe\.clientX - cr\.left, pe\.clientY - cr\.top, c\.clientWidth, c\.clientHeight\)\) settleScrollerHeld = true;/, "a press on the scroller itself or in its gutter starts the hold");
+  assert.match(inp, /if \(scrollerGrab\(e\.target === c, pe\.clientX - cr\.left, pe\.clientY - cr\.top, c\.clientWidth, c\.clientHeight\)\) \{ settleScrollerHeld = true; settleHeldAt = Date\.now\(\); \}/, "a press on the scroller itself or in its gutter starts the hold, and stamps it (T402 round three: the click's latch clears on the reader's own hold)");
   assert.match(RENDER, /settleLastInput = 0; settleScrollerHeld = false;   \/\/ the input that caused this landing/, "landOn clears the timed evidence and the hold: the click that landed is not a takeover (rounds three and four)");
   assert.match(RENDER, /gesture: undefined, settled: false, superseded: true/, "a superseded row wears no takeover mark");
   assert.match(inp, /if \(!c \|\| !\(e\.target instanceof Node\) \|\| !c\.contains\(e\.target\)\) return;/, "on the scroller and its scrollbar only");
