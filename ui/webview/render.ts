@@ -12169,8 +12169,7 @@ function sizeSpacers(v: View): void {
     let h = 0, turns = 0;
     for (const c of Array.from(v.el.children) as HTMLElement[]) {
       if (c.classList.contains("tx-spacer") || c.classList.contains("tx-gap") || !c.classList.contains("turn")) continue;   // only turn rows: cards and dividers are not turn content (round five)
-      let acts = 0; for (const a of Array.from(c.querySelectorAll(".msg-acts")) as HTMLElement[]) acts += a.offsetHeight;   // the action strip under a bubble is chrome, not turn content (round six, low)
-      h += Math.max(0, c.offsetHeight - acts);
+      h += c.offsetHeight;   // the whole row, action strip included: a gap stands for rows as they will render, and every user row carries the strip (the regions lab's sizing road: without it the gap ran 16 percent short)
       if (c.classList.contains("turn-user")) turns++;
     }
     if (h > 0 && turns > 0) v.pxPerTurn = h / turns;

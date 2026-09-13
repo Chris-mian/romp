@@ -202,9 +202,11 @@ test("round six fixes each carry a pin (T386 stage 2): rows name their turn, the
   const turnsFn = RENDER.slice(RENDER.indexOf("function turnOfEvents(s: Session): number[] {"), RENDER.indexOf("\nfunction ", RENDER.indexOf("function turnOfEvents(s: Session): number[] {") + 1));
   assert.match(turnsFn, /let t = \(first && first\.kind === "user"\) \|\| r\.lo === 0 \? r\.lo - 1 : r\.lo;/, "turnOfEvents: a user-first run and the head run (head cards precede turn 0) count up from lo - 1; a run opening mid-turn starts at lo");
   assert.doesNotMatch(turnsFn, /let t = r\.lo - 1;/, "…the unconditional lo - 1 is gone");
-  // low: the action strip under a bubble is chrome, not turn content, in the px-per-turn measure
+  // the px-per-turn measure takes the WHOLE row, action strip included: a gap stands for rows as they will render, and every user row
+  // (history rows too) carries the strip; subtracting it drew the gap 16 percent short in the regions lab's sizing road
   const px = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
-  assert.match(px, /for \(const a of Array\.from\(c\.querySelectorAll\("\.msg-acts"\)\) as HTMLElement\[\]\) acts \+= a\.offsetHeight;\s*\/\/[^\n]*\n\s*h \+= Math\.max\(0, c\.offsetHeight - acts\);/, "px-per-turn subtracts the action strips");
+  assert.match(px, /h \+= c\.offsetHeight;/, "px-per-turn sums whole rows");
+  assert.doesNotMatch(px, /msg-acts/, "…and subtracts no action strip");
 });
 
 test("the spacer is invisible, non-interactive vertical space", () => {
