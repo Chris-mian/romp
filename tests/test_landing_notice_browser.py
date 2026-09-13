@@ -115,17 +115,17 @@ const askState5 = await page.evaluate((sid) => (typeof window.__rompAskState ===
 const recvBefore5 = await page.evaluate(() => window.__recv.filter((x) => x.startsWith("session")).length);
 await page.waitForFunction((n) => window.__recv.filter((x) => x.startsWith("session")).length > n, recvBefore5, { timeout: 15000 }).catch(() => {});
 await painted();
-const turnsBefore5b = await sentOf("loadTurns");
-await page.evaluate(() => { const c = document.getElementById("content"); const sp = document.querySelector("#content .tx-spacer-top"); c.scrollTop = sp ? sp.offsetHeight + 1 : 0; });
-await painted();
-for (let i = 0; i < 60; i++) {
-  if ((await sentOf("loadTurns")) > turnsBefore5b) break;
-  const seen = await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); if (!g) return false; const r = g.getBoundingClientRect(), cr = c.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; });
-  if (seen) { await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, turnsBefore5b, { timeout: 5000 }).catch(() => {}); break; }
-  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = Math.max(0, c.scrollTop - c.clientHeight); });
-  await painted();
+// after the redial the head may be largely resident (earlier roads' fills merge into the fresh frame), so the re-ask targets whatever
+// gap the regions still hold, of ANY size: a deep link into its first turn asks (loadAround) or pages (loadTurns) — never a scroll hunt
+const asksAll5 = () => page.evaluate(() => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length);
+const asksBefore5b = await asksAll5();
+const gapLo5 = await page.evaluate((sid) => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions(sid) : null; const g = rs && rs.find((r) => r.kind === "gap" && r.hi != null && r.hi > r.lo); return g ? g.lo : null; }, cfg.sid);
+if (gapLo5 != null) {
+  await page.evaluate(([sid, u, tt]) => window.postMessage({ type: "focus", id: sid, anchor: u, anchorT: tt }, "*"), [cfg.sid, "11111111-2222-3333-4444-" + pad(2 * gapLo5), cfg.base + 2 * gapLo5]);
+  await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length > n, asksBefore5b, { timeout: 8000 }).catch(() => {});
 }
-const redialAsk5 = (await sentOf("loadTurns")) - turnsBefore5b;
+const redialAsk5 = (await asksAll5()) - asksBefore5b;
+const gapLo5Out = gapLo5;
 const redialed5 = (await page.evaluate(() => window.__recv.filter((x) => x.startsWith("session")).length)) - recvBefore5;
 // the gap is not wedged: a deep link into a turn STILL in a gap (read from the regions, so no prior road made it resident) asks again
 const asks5 = () => page.evaluate(() => window.__sent.filter((m) => m.type === "loadAround" || m.type === "loadTurns").length);
@@ -138,7 +138,7 @@ await page.waitForFunction((n) => (window.__sent.filter((m) => m.type === "loadA
 const reask5 = (await asks5()) - asksBefore5;
 const reNotice5 = (await state()).notice;
 const resident5 = resBefore5;
-process.stdout.write("RESULT:" + JSON.stringify({ head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, redialAsk5, redialed5, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
+process.stdout.write("RESULT:" + JSON.stringify({ head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, redialAsk5, redialed5, gapLo5: gapLo5Out, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 130, bootTop: boot.top }) + "\n");
@@ -198,7 +198,8 @@ class ServedLandingNotice(WindowLab):
         a = r["askState5"]
         self.assertEqual((a["landingGaps"], a["gapLoading"], a["loadingOlder"]), (0, 0, False), "the wedge is gone: every in-flight ask's state cleared, so the gap can ask again (medium 1): %r" % a)
         self.assertGreaterEqual(r["redialed5"], 1, "the shim redialed and the kernel re-sent the session after the close: %r" % r["redialed5"])
-        self.assertGreaterEqual(r["redialAsk5"], 1, "the head gap, met again on the healed socket, asked a fresh page (loadTurns): not wedged (round four, low 6): %r" % r["redialAsk5"])
+        self.assertIsNotNone(r["gapLo5"], "a gap still stood after the redial to ask into: %r" % r.get("gapLo5"))
+        self.assertGreaterEqual(r["redialAsk5"], 1, "a deep link into that gap on the healed socket asked again (loadAround or loadTurns): not wedged (round four, low 6): %r" % r["redialAsk5"])
 
     def test_a_span_less_window_from_an_older_host_tells_the_reader_and_is_not_dropped_silently(self):
         # T386 stage 2, medium 2: a chatWindow with events but no span is an older host's pre-regions reply
