@@ -729,6 +729,8 @@ def record_cache_stats() -> dict:
                "countCap": _JSONL_CACHE_MAX, **_RECORD_CACHE_STATS}
         table = _RECORD_CACHE_STATS.get("wholeReads")
         out["wholeReads"] = {k: dict(v) for k, v in table.items()} if isinstance(table, dict) else {}
+        bys = _RECORD_CACHE_STATS.get("wholeReadsByStage")             # T401: the same reads per (stage, caller)
+        out["wholeReadsByStage"] = {k: dict(v) for k, v in bys.items()} if isinstance(bys, dict) else {}
         return out
 
 
@@ -1661,6 +1663,25 @@ def _read_jsonl_incremental(path, on_fail=None):
 _TAIL_OK = threading.local()      # .flag: the calling fold accepts a tail entry (set by fold_records around its read)
 _READER_TRACE = bool(os.environ.get("ROMP_READER_TRACE"))   # one stderr line per read that pulled bytes (a diagnosis aid)
 _WHOLE_READ_KINDS = ("zero", "rewrite", "guard", "shrunk", "upgrade")   # the reader's kinds that pull a file whole (T384's counter)
+_READ_STAGE_FN = [None]           # T401: the kernel's answer to "which stage is the calling thread in" (a job or push sub-stage name,
+#                                   None outside the pusher's cycle), so a whole read or a hydration is also counted per (stage, caller)
+
+
+def set_read_stage_provider(fn):
+    """Install fn() -> the calling thread's current stage name or None (the kernel's per-thread stage mark), so the whole-read
+    and hydration rows are also counted per stage (T401: the first instrumented boot said jobs.autoNudge read 162.8 MB and
+    the callers' rows could not say which of them read it inside that job)."""
+    _READ_STAGE_FN[0] = fn
+
+
+def _read_stage():
+    fn = _READ_STAGE_FN[0]
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
 _WHOLE_READ_PASSTHROUGH = set()   # the CODE objects of the parse family every walker shares (this module's parse_session, the judges'
 #                                   parsed_session, parse_cached and _parse_store, the kernel's _parse, each registered where it is
 #                                   defined): the whole-read row names the first caller beyond them, the real walker. Matched by code
@@ -1818,6 +1839,12 @@ def _read_jsonl_entry_unlocked(path, on_fail=None, tail_ok=False, tail_from=None
                         table = _RECORD_CACHE_STATS["wholeReads"] = {}
                     wr = table.setdefault("%s<-%s" % (kind, who), {"count": 0, "bytes": 0})
                     wr["count"] += 1; wr["bytes"] += len(data)
+                    stg = _read_stage() or "none"          # T401: the same read under its stage, so a job's reads name their callers
+                    bys = _RECORD_CACHE_STATS.get("wholeReadsByStage")
+                    if not isinstance(bys, dict):
+                        bys = _RECORD_CACHE_STATS["wholeReadsByStage"] = {}
+                    ws = bys.setdefault("%s:%s<-%s" % (stg, kind, who), {"count": 0, "bytes": 0})
+                    ws["count"] += 1; ws["bytes"] += len(data)
             if _READER_TRACE:
                 fr, inner = sys._getframe(1), []          # the caller outside this module, and the path through it
                 while fr is not None and fr.f_code.co_filename == __file__:
@@ -5200,6 +5227,7 @@ def asm_checkpoint_stats():
     with _ASM_CKPT_LOCK:
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
         out["hydratedBy"] = dict(out["hydratedBy"]); out["removed"] = dict(out.get("removed") or {})
+        out["hydratedByStage"] = dict(out.get("hydratedByStage") or {})   # T401: bytes per (stage, calling function)
         cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
     with _ASM_CKPT_LOCK:
         out["parse"] = dict(_ASM_STATS)               # the parse's roads (T398): serve, fold, restore, full (with its reason), bypass,
@@ -6145,6 +6173,9 @@ def hydrate(atoms, rompuuid=None, by=None):
                     _ASM_CKPT_STATS["hydratedBytes"] += ln; _ASM_CKPT_STATS["hydratedAtoms"] += 1
                     _THREAD_BYTES.hydrated = getattr(_THREAD_BYTES, "hydrated", 0) + ln   # this thread's share (T397)
                     _ASM_CKPT_STATS["hydratedBy"][by] = _ASM_CKPT_STATS["hydratedBy"].get(by, 0) + ln
+                    hbs = _ASM_CKPT_STATS.setdefault("hydratedByStage", {})   # T401: the same bytes under the calling thread's stage
+                    hk = "%s:%s" % (_read_stage() or "none", by)
+                    hbs[hk] = hbs.get(hk, 0) + ln
                     if a.get("uuid"):
                         _HYDRATED[a["uuid"]] = (rec, ln); _HYDRATED_BYTES[0] += ln
                         while _HYDRATED_BYTES[0] > _HYDRATED_CAP and _HYDRATED:

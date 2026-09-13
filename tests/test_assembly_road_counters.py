@@ -140,6 +140,69 @@ class AssemblyRoadCounters(Harness):
         self.assertEqual(em.asm_checkpoint_stats()["removed"], {"sweep": 1})
         self.assertFalse(em._asm_ckpt_file(path).exists())
 
+    def test_whole_reads_and_hydrations_are_counted_under_the_calling_threads_stage(self):
+        """T401: the first instrumented boot said jobs.autoNudge read 162.8 MB, and the callers' rows could not say which caller
+        inside that job read it. The kernel marks the thread's stage for each tick job and the push; the event model counts
+        every whole read and hydration under (stage, caller) too, `none` outside the cycle."""
+        km = kernel_module()
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("bystage", records(), sent=sent)
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path))
+        self.fresh()
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReads"] = {}; em._RECORD_CACHE_STATS["wholeReadsByStage"] = {}
+        em._ASM_CKPT_STATS["hydratedByStage"] = {}
+        tree = km._job_stage("probe", lambda: self.parse(path))           # a restore inside a job: no whole read
+        km._job_stage("probe", lambda: em.hydrate([a for t in tree["turns"] for a in t["atoms"] if a.get("lazy") is not None][:2], by="probeReader"))
+        km._job_stage("probe", lambda: em._read_jsonl_entry(path, tail_ok=False))   # a whole read inside the job
+        st = em.record_cache_stats()
+        by_stage = st["wholeReadsByStage"]
+        self.assertTrue(any(k.startswith("jobs.probe:upgrade<-") for k in by_stage), "the whole read under its job: %r" % by_stage)
+        hb = em.asm_checkpoint_stats()["hydratedByStage"]
+        self.assertTrue(any(k.startswith("jobs.probe:probeReader") for k in hb), "the hydration under its job: %r" % hb)
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.pop(path, None)
+        em._read_jsonl_entry(path, tail_ok=False)                          # outside any stage
+        self.assertTrue(any(k.startswith("none:zero<-") for k in em.record_cache_stats()["wholeReadsByStage"]), "outside the cycle: none")
+        self.assertIsNone(km._current_read_stage(), "the mark returns after the job")
+
+    def test_the_push_mark_is_restored_on_every_exit_and_the_pushs_reads_count_under_push(self):
+        """T401 round one, medium: _push set the thread's mark inline and restored it at its end, so a caught build failure returned
+        before the restore and the pusher thread stayed marked `push` for the process's life, booking every later read outside a
+        stage under push:. The mark is a decorator with a finally. And a read inside the push books push:<kind><-<caller>."""
+        km = kernel_module()
+        saved = (km._chat_tab_sessions, km._live_map, km.NAMES)
+        def restore():
+            km._chat_tab_sessions, km._live_map, km.NAMES = saved
+        self.addCleanup(restore)
+        km._live_map = lambda: {}; km.NAMES = {}
+        def boom(now, live_map):
+            raise RuntimeError("a synthetic build failure")
+        km._chat_tab_sessions = boom
+        import io
+        err = io.StringIO(); saved_err = sys.stderr; sys.stderr = err
+        try:
+            km._push([{"app": "chat", "wid": "lab", "send": lambda *a, **k: None, "alive": True, "dedup": {}}], live_map={})
+        except Exception:
+            pass
+        finally:
+            sys.stderr = saved_err
+        self.assertIsNone(km._current_read_stage(), "the mark is restored after a build failure (the leak)")
+        # a read inside the push books push:<kind><-<caller>
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("pushread", records(), sent=sent)
+        self.fresh()
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReadsByStage"] = {}
+        km._chat_tab_sessions = lambda now, live_map: (em._read_jsonl_entry(path, tail_ok=False), [])[1]   # a whole read inside the push
+        try:
+            km._push([{"app": "chat", "wid": "lab", "send": lambda *a, **k: None, "alive": True, "dedup": {}}], live_map={})
+        except Exception:
+            pass
+        rows = em.record_cache_stats()["wholeReadsByStage"]
+        self.assertTrue(any(k.startswith("push:zero<-") for k in rows), "the push's read under its mark: %r" % rows)
+        self.assertIsNone(km._current_read_stage())
+        self.assertTrue(hasattr(km._push, "__wrapped__"), "the push carries the stage decorator (set at entry, restored in a finally)")
 
 if __name__ == "__main__":
     unittest.main()

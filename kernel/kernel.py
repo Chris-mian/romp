@@ -731,6 +731,35 @@ class _PerfStats:
 _PERF_STATS = _PerfStats()
 
 
+_STAGE_TL = threading.local()     # the calling thread's current stage name (T401): set by _job_stage and the push, read by the
+#                                   event model's per-stage read and hydration rows through set_read_stage_provider
+
+
+def _current_read_stage():
+    return getattr(_STAGE_TL, "name", None)
+
+
+def _stage_marked(name):
+    """Decorator: the calling thread's stage mark is `name` for the function's duration and restored on EVERY exit, a raise or an
+    early return included (T401 round one: _push set the mark inline and restored it at its end, so a caught build failure
+    returned before the restore and the pusher thread stayed marked `push` for the process's life)."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def marked(*args, **kwargs):
+            prev = getattr(_STAGE_TL, "name", None)
+            _STAGE_TL.name = name
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _STAGE_TL.name = prev
+        return marked
+    return deco
+
+
+em.set_read_stage_provider(_current_read_stage)   # T401: the thread's stage mark, so reads and hydrations count per (stage, caller)
+
+
+
 class _CountedEvent(threading.Event):
     """A threading.Event whose set() also counts in _PERF_STATS: the pusher's wake. Counting at the
     event keeps every existing call site as it is, including the bound-method callbacks
@@ -46747,6 +46776,7 @@ def _feed_first(now, live_map, targets, connect):
     return True
 
 
+@_stage_marked("push")             # T401: the push's reads count under "push", the mark restored whatever exit the body takes
 def _push(targets, connect=False, live_map=None):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
@@ -49713,11 +49743,15 @@ def _pusher_cycle():
 def _job_stage(name, thunk):
     """One tick job as a sub-stage of `jobs` in the cycle's split (T398): the boot's first split said jobs 25 s with 224 MB read
     and nothing finer, so each job here closes its own `jobs.<name>` stage and the row names the job that read. The job is a
-    thunk (`lambda: _x_tick(now, live_map)`), so the call reads as before on its line and the tests that pin those lines hold."""
+    thunk (`lambda: _x_tick(now, live_map)`), so the call reads as before on its line and the tests that pin those lines hold.
+    The thread's stage mark is `jobs.<name>` for the job's duration (T401: the reads inside it count under it)."""
     _t = time.monotonic()
+    prev = getattr(_STAGE_TL, "name", None)
+    _STAGE_TL.name = "jobs." + name
     try:
         return thunk()
     finally:
+        _STAGE_TL.name = prev
         _PERF_STATS.stage("jobs." + name, time.monotonic() - _t)
 
 
