@@ -22,17 +22,17 @@ km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 class SettingsSectionsTest(unittest.TestCase):
-    """The panel is in TABS since T379 (the user 2026-09-12): six pills (Chat, Feed, Sessions, Automatic, Appearance,
-    System), one pane each (the tab widgets are a section of Chat, the user's amendment); every row keeps its id and its key; each pane opens with a first section head and keeps its
+    """The panel is in TABS since T379 (the user 2026-09-12): seven pills (General, Chat, Feed, Sessions, Task tracking,
+    Appearance, Debug: T400's cut, the user 2026-09-12), one pane each (the tab widgets are a section of Chat); every row keeps its id and its key; each pane opens with a first section head and keeps its
     sub-heads in the approved order; the version footer stays last."""
-    PANES = ("chat", "feed", "sessions", "automatic", "appearance", "system")
+    PANES = ("general", "chat", "feed", "sessions", "tasks", "appearance", "debug")
 
     def test_the_subsection_headers_are_present_in_order(self):
         h = _gear_src()
-        self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=chat"), "the pills come first")
-        for pane, heads in (("chat", ["Transcript", "Files", "Text and comments", "Tab widgets", "Strip"]), ("feed", ["Cards", "Judging bands"]),
-                            ("sessions", ["New sessions", "Panes", "Sessions pane"]), ("automatic", ["Sessions", "Judges"]), ("appearance", ["Appearance"]),
-                            ("system", ["Account", "Keyboard shortcuts", "Updates & debug"])):
+        self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=general"), "the pills come first")
+        for pane, heads in (("general", ["Account", "Panes", "Keyboard shortcuts"]), ("chat", ["Transcript", "Files", "Text and comments", "Tab widgets", "Strip"]),
+                            ("feed", ["Cards"]), ("sessions", ["New sessions", "Sessions pane"]), ("tasks", ["Sessions", "Judges"]), ("appearance", ["Appearance"]),
+                            ("debug", ["Updates", "Judging bands", "Diagnostics"])):
             p = _pane(h, pane)
             self.assertIn("<div class='rs-sec rs-sec-first'>%s</div>" % heads[0], p, pane + " opens with its first head")
             idx = [p.index(">%s<" % t) for t in heads]
@@ -41,38 +41,41 @@ class SettingsSectionsTest(unittest.TestCase):
         # the tab widgets are a SECTION of Chat (the user 2026-09-12), its head the anchor the strip's gear opens the panel at; no Tabs tab
         self.assertIn("<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>", _pane(h, "chat"))
         self.assertNotIn("data-pane=tabs", h)
-        self.assertLess(h.index(">Updates & debug<"), h.index(">romp · version<"), "version last")
+        self.assertLess(h.index(">Diagnostics<"), h.index(">romp · version<"), "version last")
 
     def test_each_setting_sits_under_the_right_section(self):
         h = _gear_src()
         where = {
+            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed"],
             "chat": ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-filelink", "rs-filesctl", "rs-chatscheme", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-widgets", "rs-striprows"],
-            "feed": ["rs-feedcollapsed", "rs-judges-index", "rs-judges-triage"],
-            "sessions": ["rs-defaultdir", "rs-backend", "rs-fileedit", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-activeonly", "rs-collapsegaps"],
-            "automatic": ["rs-autonudge", "rs-suggestcompact", "rs-conserve", "rs-thinksum", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
+            "feed": ["rs-feedcollapsed"],
+            "sessions": ["rs-defaultdir", "rs-backend", "rs-fileedit", "rs-activeonly", "rs-collapsegaps"],
+            "tasks": ["rs-autonudge", "rs-suggestcompact", "rs-conserve", "rs-thinksum", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
             "appearance": ["rs-theme", "rs-cmap", "rs-pal"],
-            "system": ["rs-billing", "rs-login-btn", "rs-updates", "ra-open", "rs-log-open", "rsver"],
+            "debug": ["rs-updates", "rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
         }
         panes = {k: _pane(h, k) for k in self.PANES}
         for pane, ids in where.items():
             for rid in ids:
                 homes = [k for k in self.PANES if ("id=%s " % rid) in panes[k] or ("id=%s>" % rid) in panes[k] or ("id=%s " % rid).rstrip() + "\n" in panes[k]]
                 self.assertEqual(homes, [pane], "%s lives in %s alone (found in %r)" % (rid, pane, homes))
-        # the keyboard-shortcuts rows ride the SHORTCUT_ROWS variable into the System pane
-        self.assertIn("+ SHORTCUT_ROWS +", panes["system"])
+        # the keyboard-shortcuts rows ride the SHORTCUT_ROWS variable into the General pane (T400)
+        self.assertIn("+ SHORTCUT_ROWS +", panes["general"])
         # Panes (the user 2026-09-10): three rows, one hint each, Sessions before Outline before Feed; the chat is required, Files keeps its rail toggle
-        pn = panes["sessions"]
+        pn = panes["general"]   # the Panes section moved to General (T400)
         self.assertEqual(pn.count('<label class="rs-row rs-panes-row">'), 3)
         self.assertLess(pn.index("<b>Sessions</b>"), pn.index("<b>Outline</b>"))
         self.assertLess(pn.index("<b>Outline</b>"), pn.index("<b>Feed</b>"))
         self.assertNotIn("id=rs-pane-chat", h, "the chat is required")
         self.assertNotIn("id=rs-pane-files", h, "the Files pane keeps its rail toggle")
         # Automatic: the kernel-side toggles in their order, then the judge tiers
-        au = panes["automatic"]
+        au = panes["tasks"]   # Automatic is Task tracking since T400
         self.assertTrue(au.index("id=rs-autonudge") < au.index("id=rs-suggestcompact") < au.index("id=rs-conserve") < au.index("id=rs-thinksum") < au.index(">Judges<") < au.index("id=rs-judgemodel") < au.index("id=rs-indexeffort"))
-        # System: the login leads, Open log is the section's last row before the version (T290)
-        sy = panes["system"]
-        self.assertTrue(sy.index(">Account<") < sy.index("id=rs-login-btn") < sy.index(">Keyboard shortcuts<") < sy.index(">Updates & debug<") < sy.index("id=rs-updates") < sy.index("id=ra-open") < sy.index("id=rs-log-open") < sy.index("id=rsver"))
+        # General: the login leads, then the panes, then the shortcuts (T400); Debug: updates, the judges' debug views, then Open log as the last button before the version (T290)
+        ge = panes["general"]
+        self.assertTrue(ge.index(">Account<") < ge.index("id=rs-login-btn") < ge.index("id=rs-panes-sec") < ge.index(">Keyboard shortcuts<"))
+        de = panes["debug"]
+        self.assertTrue(de.index(">Updates<") < de.index("id=rs-updates") < de.index(">Judging bands<") < de.index("id=rs-judges-index") < de.index(">Diagnostics<") < de.index("id=ra-open") < de.index("id=rs-log-open") < de.index("id=rsver"))
         self.assertNotIn("rs-oldest", h)
         # the old Context gauge row is gone: its WHEN is the Context bar widget's option in the Chat tab's Tab widgets section
         self.assertNotIn("id=rs-tabctx", h)
