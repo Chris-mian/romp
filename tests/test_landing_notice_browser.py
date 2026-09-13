@@ -106,20 +106,15 @@ await page.waitForFunction(() => !!document.querySelector(".tx-landing-notice") 
 await page.evaluate(() => { window.__ws && window.__ws.close(); });   // the socket dies with the ask in flight; the shim redials
 await page.waitForTimeout(400);
 const afterDrop5 = await state();
-const turnsBefore5 = await sentOf("loadTurns");
-// meet the head gap again: jump to the top spacer's end, then step up a viewport at a time until the gap element renders and asks (the
-// head gap is folded into the top spacer at the tail, so a single jump renders no gap element for the observer)
-await page.evaluate(() => { const c = document.getElementById("content"); const sp = document.querySelector("#content .tx-spacer-top"); c.scrollTop = sp ? sp.offsetHeight + 1 : 0; });
-await painted();
-for (let i = 0; i < 60; i++) {
-  if ((await sentOf("loadTurns")) > turnsBefore5) break;
-  const seen = await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); if (!g) return false; const r = g.getBoundingClientRect(), cr = c.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; });
-  if (seen) { await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, turnsBefore5, { timeout: 5000 }).catch(() => {}); break; }
-  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = Math.max(0, c.scrollTop - c.clientHeight); });
-  await painted();
-}
-const reask5 = (await sentOf("loadTurns")) - turnsBefore5;
-process.stdout.write("RESULT:" + JSON.stringify({ head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
+const aroundBefore5 = await sentOf("loadAround");
+// the gap is not wedged: a later deep link into the head gap asks again (the wsdown cleared landingGaps and loadingOlder, so the
+// ask is not refused with pointer-fetch-busy nor blocked by gapHasAsk) and the notice shows once more
+const deep5b = "11111111-2222-3333-4444-" + pad(2 * 12);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep5b, anchorT: cfg.base + 2 * 12 });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore5, { timeout: 8000 }).catch(() => {});
+const reask5 = (await sentOf("loadAround")) - aroundBefore5;
+const reNotice5 = (await state()).notice;
+process.stdout.write("RESULT:" + JSON.stringify({ head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 130, bootTop: boot.top }) + "\n");
@@ -171,8 +166,9 @@ class ServedLandingNotice(WindowLab):
     def test_a_landing_ask_lost_to_a_socket_death_does_not_wedge_the_gap(self):
         # MEDIUM 1: a landing's window ask dropped at a dead socket; the gap re-asks on the healed socket
         r = self._result()
-        self.assertFalse(r["afterDrop5"]["notice"], "the socket death brought the notice down: %r" % r["afterDrop5"])
-        self.assertGreaterEqual(r["reask5"], 1, "the gap asked a fresh page after the socket healed, not wedged for the page's life: %r reask" % r["reask5"])
+        self.assertFalse(r["afterDrop5"]["notice"], "the socket death brought the notice down (wsdown cleared the landing): %r" % r["afterDrop5"])
+        self.assertGreaterEqual(r["reask5"], 1, "a later deep link asked again: the gap is not wedged for the page's life: %r" % r["reask5"])
+        self.assertTrue(r["reNotice5"], "…and the notice shows for the fresh landing: %r" % r["reNotice5"])
 
     def test_a_span_less_window_from_an_older_host_tells_the_reader_and_is_not_dropped_silently(self):
         # T386 stage 2, medium 2: a chatWindow with events but no span is an older host's pre-regions reply
