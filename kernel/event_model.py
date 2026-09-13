@@ -4766,7 +4766,9 @@ _ASM_CKPT_V = 6                       # 2: atom rows carry [offset, len], nt for
 _MAT_CAP = _env_or("ROMP_ASM_INDEX_CAP", max(500_000, _machine_memory_bytes() // (32 * 1024)))
 _MAT_LRU = collections.OrderedDict()  # (id(LazyAtoms), row) → (LazyAtoms, row): eviction drops the memo, never a field in place
 _MAT_LOCK = threading.Lock()
-_ASM_INDEX_STATS = {"materialized": 0, "materializedBy": {}, "resident": 0, "evictions": 0, "restoredTurns": 0, "rowDecodes": 0}
+_ASM_INDEX_STATS = {"materialized": 0, "materializedBy": {}, "materializedByStage": {}, "resident": 0, "evictions": 0,
+                    "restoredTurns": 0, "rowDecodes": 0}   # materializedByStage: the same builds under "<stage>:<caller>" (T401 (5a):
+#                                                              a build from an unmarked thread reads "none:<caller>", the read boot's face)
 _PRE_TURN_KEYS = ("pre", "uuids", "lastT", "maxT", "lastModel", "tools", "segs", "pcs", "hT")   # a pre-turn's fields beyond a plain turn's
 
 
@@ -4856,9 +4858,10 @@ class LazyIndex:
         per index, said once per leaf), its assembly entry is dropped so the next parse of the leaf is the whole parse, and the
         document is removed by the note (the settle rewrites it). The caller raises for THIS build; nothing lazier is possible
         once a consumer holds the row."""
-        if self._rows_noted:
-            return
-        self._rows_noted = True
+        with _ASM_CKPT_LOCK:                              # compare-and-set under the note's own lock (1610 low 4): two threads
+            if self._rows_noted:                          #  finding the row at once note it once
+                return
+            self._rows_noted = True
         _asm_ckpt_note(self.leaf, "rows", detail)
         if self._cache_key is not None:
             with _ASM_LOCK:
@@ -4869,8 +4872,8 @@ class LazyIndex:
         type, uuid, t, author (the recorded scalars applied over the record row's fields, exactly as the build applies them)
         and lazy.ir (the interrupt flag), as a light dict that is never stored in the slot or the LRU; None for a row that
         is not a user record. What is cached: the USER rows' facts, per index in self._user_facts, cleared whole past
-        _USER_FACTS_CAP; a non-user row is re-decoded on every tally
-        (a broken row refuses the document, see _row), so a second tally
+        _USER_FACTS_CAP; a non-user row is re-decoded on every tally (a broken row refuses the document, see _row), so a
+        second tally over the same index decodes every non-user row again. That second tally is rare: the
         kernel's identity memo answers a repeated tally over the same parse before this method runs, and a changed
         transcript restores a new index. The gauge asmIndex.userFacts is the sum of the live indexes' caches, taken at
         report time (asm_index_stats), so this hot path takes no lock but the row-decode counter's."""
@@ -4955,6 +4958,8 @@ class LazyAtoms(list):
             _MAT_LRU[(id(self), i)] = (self, i)
             _ASM_INDEX_STATS["materialized"] += 1
             _ASM_INDEX_STATS["materializedBy"][by] = _ASM_INDEX_STATS["materializedBy"].get(by, 0) + 1
+            bs = "%s:%s" % (_read_stage() or "none", by)      # the calling thread's stage mark beside the caller (T401 (5a))
+            _ASM_INDEX_STATS["materializedByStage"][bs] = _ASM_INDEX_STATS["materializedByStage"].get(bs, 0) + 1
             while len(_MAT_LRU) > _MAT_CAP:
                 _, (lz, j) = _MAT_LRU.popitem(last=False)
                 list.__setitem__(lz, j, _UNMAT)
@@ -5172,6 +5177,7 @@ def plain_tree(session):
 def asm_index_stats():
     with _MAT_LOCK:
         return {"materialized": _ASM_INDEX_STATS["materialized"], "materializedBy": dict(_ASM_INDEX_STATS["materializedBy"]),
+                "materializedByStage": dict(_ASM_INDEX_STATS["materializedByStage"]),
                 "resident": len(_MAT_LRU), "evictions": _ASM_INDEX_STATS["evictions"], "cap": _MAT_CAP,
                 "restoredTurns": _ASM_INDEX_STATS["restoredTurns"], "rowDecodes": _ASM_INDEX_STATS["rowDecodes"],
                 "userFacts": sum(len(ix._user_facts) for ix in list(_LIVE_INDEXES))}   # a GAUGE: the light facts resident across the

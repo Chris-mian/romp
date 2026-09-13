@@ -1778,7 +1778,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   reason).
 - `asmIndex`: the lazy index (T323 stage 4c) a restored session's pre-cut turns
   come from: `materialized` atoms built from the document's rows since boot,
-  `materializedBy` (per consumer), `resident` (the process-wide LRU, `cap`
+  `materializedBy` (per consumer), `materializedByStage` (the same builds
+  under the calling thread's stage mark beside the consumer, as
+  `hydratedByStage` does for bodies: `push`, `connect`, `jobs.<job>`,
+  `judge.<tier>`, `http.<METHOD>.<route segment>` for every request and
+  the socket it may become, `warm.parse`, `warm.boot`, `producer`,
+  `revive`, `sdk-boot`, `rewind.migration`, `rewind.holds`, `move`,
+  `remote-ws`; `none` names a thread that carries no mark, which the
+  kernel's thread census keeps empty), `resident` (the process-wide LRU, `cap`
   20000 atoms across every session; eviction drops the memo, never a field in
   place), `evictions`, and `restoredTurns`.
 - `skillLoadIndex`: the judge's skill-load boot pass (the tops older stores minted from

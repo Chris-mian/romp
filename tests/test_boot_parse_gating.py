@@ -217,6 +217,19 @@ class TickJobsKeyOnAChange(unittest.TestCase):
             blocker.mkdir(); self.assertFalse(km._persist_tick_seen()); blocker.rmdir()      # episode two, hours later
         self.assertEqual(err.getvalue().count("tick-seen memo: not written"), 2, "each episode said once: %r" % err.getvalue())
 
+    def test_the_jobs_pass_persists_each_memo_on_its_own(self):
+        """1610 low 2: the per-cycle persist road on the jobs thread had no pin; the exit drain's has one. Each persist stage
+        in its own try, the failure written under its own name."""
+        import inspect
+        src = inspect.getsource(km._jobs_pass)
+        for stage, name in (("persistTickSeen", "tick-seen"), ("persistIntrMarks", "interrupt-marks"), ("persistSpendTrees", "spend-tree")):
+            i = src.index("_job_stage('%s'" % stage)
+            tail = src[i:i + 400]
+            self.assertIn('sys.stderr.write("%s: %%s\\n" %% traceback.format_exc())' % name, tail, "%s is logged under its own name" % stage)
+        a, b, c = (src.index("_job_stage('%s'" % s_) for s_ in ("persistTickSeen", "persistIntrMarks", "persistSpendTrees"))
+        self.assertIn("except Exception", src[a:b], "tick-seen's try closes before the marks persist")
+        self.assertIn("except Exception", src[b:c], "the marks persist's try closes before the spend-tree persist")
+
     def test_the_exit_drain_persists_each_memo_on_its_own(self):
         """1610 round two, medium 3: the exit drain wrapped the three persists in one bare except, so one memo's raise silently
         cost the other two. A source pin: each persist in its own try, the failure logged by name."""
