@@ -3052,8 +3052,11 @@ def _debt_asks(sid, alive_ids):
     last_any, last_ask, _aw = _postal_wait_maps()
     out = []
     for (f, t_), rec in last_ask.items():
-        if t_ != str(sid) or f not in (alive_ids or ()):
+        if t_ != str(sid):
             continue
+        if f not in (alive_ids or ()):
+            _nudge_clock(None)                         # an ask from a peer not alive now: its revival owes the reminder, and no
+            continue                                   #  file of this session says so (T401 (2) round three, medium)
         ts = rec[0]
         if last_any.get((t_, f), 0) >= ts:
             continue                                   # answered with ANYTHING back → no debt
@@ -9880,8 +9883,9 @@ def _warm_wanted(s, tm):
 
 def _session_files_stat(s):
     """(mtime, size) of the transcript, the state log, the session's goal store, its override journal and archive, its
-    episode log and the clears log, zeros for a missing file: the inputs every event-keyed tick job reads (the store's
-    shared view is identified by its three files, bin/romp-judge's ident; the nudge's placement gate reads the two logs). A change in any of them is the only event that can change the
+    episode log, the clears log and the postal log, zeros for a missing file: the inputs every event-keyed tick job reads
+    (the store's shared view is identified by its three files, bin/romp-judge's ident; the nudge's placement gate reads the
+    two logs; the debt reminder's ask set comes from the postal log). A change in any of them is the only event that can change the
     job's answer; the store is in the tuple because a judge can clear or complete the goal a marker points at with
     no transcript change at all, and the interrupt tick must re-block on exactly that (its docstring's stale-marker
     rule; tests/test_kernel_interrupt_machine_cut.py pins it)."""
@@ -9889,8 +9893,9 @@ def _session_files_stat(s):
     out = []
     for p in (s.get("path") or "", str(jd.STATE / "states" / (sid + ".jsonl")), str(jd.GOALDIR / (sid + ".json")),
               str(jd._overrides_dir() / (sid + ".jsonl")), str(jd.GOALARCHDIR / (sid + ".json")),   # the shared store's identity is
-              str(jd.EPIDIR / (sid + ".jsonl")), str(jd.STATE / "cleared.jsonl")):                # three files; the placement gate
-        #                                                                                           reads the episode and clears logs
+              str(jd.EPIDIR / (sid + ".jsonl")), str(jd.STATE / "cleared.jsonl"),                 # three files; the placement gate
+              str(jd.STATE / "timeline" / "messages.jsonl")):                                      # reads the episode and clears logs;
+        #                                                                                           the debt reminder reads the postal log
         try:
             st = os.stat(p)
             out += [st.st_mtime, st.st_size]
@@ -13080,9 +13085,19 @@ def _nudge_placement_gate(sid, turns, store):
     return unplanned
 
 
-_NUDGE_UNBOUNDED_VERDICTS = ("awaiting-dispatch", "queued-input", "rewind-pending", "parse-failed", "empty-parse")
-#                                    verdicts whose release is not one of the session's files (the SDK overlay, the backend's
-#                                    queue, an armed rollback): a look ending in one is never skipped (T401 (2))
+_NUDGE_FILE_KEYED_VERDICTS = frozenset({
+    "working",              # _session_working(turns): the transcript
+    "user-interrupt",       # _interrupt_suppresses_nudge: the transcript's marks and the store's interrupt marker
+    "progressing",          # _last_state: the state log, against the transcript's last turn
+    "closer-unsettled",     # _closer_settled: the store's closedTurns against the transcript
+    "planner-queue",        # _nudge_placement_gate: the store's placements, the episode and clears logs, the transcript
+})
+#   The roads whose verdict is a pure function of the files the memo keys on (_session_files_stat: the transcript, the state
+#   log, the store with its override journal and archive, the episode log, the clears log, the postal log), marked so that a
+#   look ending in one may record a skippable memo. Every OTHER exit of the look, marked or not, records an unbounded memo
+#   (None) by default: the SDK overlay, the backend's queue, an armed rollback, a store fault, a dead asker's revival, a peer's
+#   bounce (T401 (2) round three: the class, not the instances; an unmarked road can never silence a session). The full goal
+#   walk's own completion is marked at its return, after every declining leg has noted its clock or None.
 
 
 def _nudge_look_gated(fn):
@@ -13107,15 +13122,16 @@ def _nudge_look_gated(fn):
                 return verdict                        # the recorded verdict and nothing else: the full road's gates (idle, judged,
         else:                                         #  unqueued) precede every send, the debt reminder's included (round one, medium 1)
             _NUDGE_WALK_STATS["wakeOnly"] += 1        # nudges off: the toggle is not a file, so the look neither skips nor records
-        _NUDGE_HORIZON.notes, _NUDGE_HORIZON.parsed = [], False
+        _NUDGE_HORIZON.notes, _NUDGE_HORIZON.parsed, _NUDGE_HORIZON.walk_completed = [], False, False
         try:
             r = fn(s, now, live_map, nudged, waitfor, alive_ids, wake_only, cleared)
         finally:
             notes, parsed = getattr(_NUDGE_HORIZON, "notes", []) or [], getattr(_NUDGE_HORIZON, "parsed", False)
             _NUDGE_HORIZON.notes = None
         if parsed and not wake_only and r is not True:    # a fire moved the files anyway; a look that never parsed has nothing to skip
-            if r in _NUDGE_UNBOUNDED_VERDICTS:
-                notes = list(notes) + [None]
+            file_keyed = (r in _NUDGE_FILE_KEYED_VERDICTS) or (r is False and getattr(_NUDGE_HORIZON, "walk_completed", False))
+            if not file_keyed:
+                notes = list(notes) + [None]             # the default: an exit no audited road claimed is unbounded
             _nudge_look_done(s, files_st, notes, r)
         return r
     return gated
@@ -13226,6 +13242,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
     # and recorded rather than landing a write.
     store, fault = jd.load_goals_shared_or_fault(sid)
     if fault is not None:
+        _nudge_clock(None)                           # a fault heals without a file write (EMFILE, EACCES, EIO): unbounded (round three)
         return None                                  # its row is filed; nothing fires or stamps on a store we cannot read
     # Don't nudge until the CLOSER has classified this turn AT ITS CURRENT SIZE (session-level gate). A turn
     # that ENDS by asking you a question is "working" only in the window before the closer marks its goal
@@ -13633,7 +13650,8 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
         # to the asker's card), so a failed reminder never just evaporates.
         _debt_reminder_outcomes(sid, lt, now)
         fired = _fire_debt_reminder(sid, now, alive_ids)
-    return fired
+    _NUDGE_HORIZON.walk_completed = True                 # the full road ran to its end: every declining leg above noted its clock
+    return fired                                         #  or None, so a False here may record a skippable memo (T401 (2))
 
 
 # Diary sources whose rows can never mean "a judge ruled on a turn romp hasn't seen end" — the one thing

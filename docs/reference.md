@@ -1759,14 +1759,17 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `absent`, `corrupt`, `unreadable_journal`, `evict`, `fallback`, `poisoned`,
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
   (`hit`, `miss`, `populate`, `bypass`); `nudgeWalk` is the auto-nudge walk's
-  parse gate (T401): `looks`, `skippedParses` (a session whose transcript,
-  state log and store are unchanged since its last completed look and whose
-  clock legs, noted by that look with the instant each could flip, have not
-  come due; the skip repeats the recorded verdict and still runs the
-  parse-free debt reminder), `parses`, `coldParses` (parses no cache held),
-  `deferredSessions` (the yield: with a client connected the pass stops after
-  its first cold parse and the rest of the recency-ordered walk waits for the
-  next pass), `unbounded` (memos refused because a leg's release is not one
+  parse gate (T401): `looks`, `skippedParses` (a session whose files are
+  unchanged since its last completed look and whose clock legs, noted by that
+  look with the instant each could flip, have not come due; the skip repeats
+  the recorded verdict and does nothing else; only a look whose verdict came
+  from a road marked file-keyed, or the full walk run to its end, records a
+  skippable memo, every other exit an unbounded one), `parses`, `coldParses`
+  (parses no cache held), `deferredSessions` (the yield: with a client
+  connected the pass stops after a look that paid a cold parse; the first
+  deferred session is the resume cursor, so the next pass rotates the
+  recency order to start there and every session is reached within as many
+  passes as there are cold parses), `unbounded` (memos refused because a leg's release is not one
   of the session's files: a deferral retired by a judge pass, a stamped wait
   a peer's bounce can end, an owed reminder a refused ledger write left
   standing), `clockDue` (memos refused because a noted flip has come) and
@@ -1774,7 +1777,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   record because the toggle is not a file, so that configuration keeps the
   boot's cold parses); the files the memo keys on are the transcript, the
   state log, the goal store with its override journal and archive, the
-  episode log and the clears log; `nudgeGate` is the auto-nudge walk's
+  episode log, the clears log and the postal log; `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue

@@ -114,7 +114,7 @@ class NudgeWalkParseGate(unittest.TestCase):
         saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
         try:
             st0 = km._session_files_stat(r)
-            self.assertEqual(len(st0), 14, "seven files, (mtime, size) each")
+            self.assertEqual(len(st0), 16, "eight files, (mtime, size) each")
             jp = km.jd._overrides_dir() / (SID_OLD + ".jsonl"); jp.parent.mkdir(parents=True, exist_ok=True); jp.write_text("{}\n")
             self.assertNotEqual(km._session_files_stat(r), st0, "the override journal moves the stat")
             st1 = km._session_files_stat(r)
@@ -165,6 +165,66 @@ class NudgeWalkParseGate(unittest.TestCase):
             km._auto_nudge_pass(time.time(), {}, True)                   # no client: the whole walk, cold or not
         self.assertEqual(seen, [SID_NEW, SID_OLD])
         self.assertEqual(km._NUDGE_WALK_STATS["deferredSessions"], 1, "no yield without a client")
+
+    def test_only_a_file_keyed_road_records_a_skippable_memo(self):
+        """Round three: the class fix. A look records a skippable memo only when its verdict came from a road marked file-keyed
+        (the set names each road and the files it reads) or from the full walk run to its end; every other exit records an
+        unbounded memo by default. The census: each file-keyed verdict driven and skippable; a verdict outside the set unbounded;
+        a store fault (the round-three high) unbounded; the marked set reads only the files the memo keys on."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); now = time.time()
+        for verdict, over in (("working", {}),
+                              ("progressing", {"_session_working": lambda turns: False, "_interrupt_suppresses_nudge": lambda turns, sid="", **k: False,
+                                               "_pending_ops": {}, "_backend_queued": lambda sid: False, "_backend_rewind_pending": lambda sid: False,
+                                               "_last_state": lambda sid: ("working", 10 ** 12)}),
+                              ("user-interrupt", {"_session_working": lambda turns: False, "_interrupt_suppresses_nudge": lambda turns, sid="", **k: True})):
+            with self.subTest(verdict=verdict):
+                km._TICK_SEEN.clear(); calls = []
+                self.assertEqual(self._look(r, now, calls, **over), verdict)
+                memo = km._TICK_SEEN.get(("auto-nudge", SID_OLD))
+                self.assertIsNotNone(memo); self.assertEqual(memo[-2], -1.0, "%s: a file-keyed road, skippable" % verdict)
+                self.assertIn(verdict, km._NUDGE_FILE_KEYED_VERDICTS)
+        for verdict, over in (("queued-input", {"_session_working": lambda turns: False, "_interrupt_suppresses_nudge": lambda turns, sid="", **k: False,
+                                                "_pending_ops": {SID_OLD: [1]}}),
+                              ("rewind-pending", {"_session_working": lambda turns: False, "_interrupt_suppresses_nudge": lambda turns, sid="", **k: False,
+                                                  "_pending_ops": {}, "_backend_queued": lambda sid: False, "_backend_rewind_pending": lambda sid: True})):
+            with self.subTest(verdict=verdict):
+                km._TICK_SEEN.clear(); calls = []
+                self.assertEqual(self._look(r, now, calls, **over), verdict)
+                self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "%s: not marked, so unbounded by default" % verdict)
+                self.assertNotIn(verdict, km._NUDGE_FILE_KEYED_VERDICTS)
+        with self.subTest(verdict="store-fault"):
+            km._TICK_SEEN.clear(); calls = []
+            quiet = dict(_session_working=lambda turns: False, _interrupt_suppresses_nudge=lambda turns, sid="", **k: False, _pending_ops={},
+                         _backend_queued=lambda sid: False, _backend_rewind_pending=lambda sid: False, _last_state=lambda sid: ("", 0),
+                         _session_awaiting=lambda *a, **k: False)
+            with mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: (None, OSError("EMFILE"))):
+                self.assertIsNone(self._look(r, now, calls, **quiet))
+            self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "a store fault heals without a file write: unbounded")
+            n_before = len(calls)
+            self._look(r, now + 60, calls, **quiet)                          # the healed look (the store reads again)
+            self.assertEqual(len(calls), n_before + 1, "the look after the fault parsed again: nothing was skipped")
+
+    def test_an_ask_from_a_dead_peer_keeps_the_debtor_unskippable(self):
+        """Round three, medium: the debt reminder's ask set filters the postal wait maps by the ASKER's liveness, neither a
+        session file; a peer that asked and died before the next pass left the debtor recording a skippable memo, and the
+        peer's revival owed a reminder nobody would look for. An ask from a peer not alive now notes an unbounded release, and
+        the postal log joins the files the memo keys on."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); now = time.time(); calls = []
+        asker = SID_NEW
+        maps = ({}, {(asker, SID_OLD): (now - 100, "question", "are we done?")}, {})
+        quiet = dict(_session_working=lambda turns: False, _interrupt_suppresses_nudge=lambda turns, sid="", **k: False, _pending_ops={},
+                     _backend_queued=lambda sid: False, _backend_rewind_pending=lambda sid: False, _last_state=lambda sid: ("", 0),
+                     _session_awaiting=lambda *a, **k: False, _closer_settled=lambda *a: True, _nudge_placement_gate=lambda *a: False,
+                     _postal_wait_maps=lambda: maps, _debt_reminder_outcomes=lambda sid, lt, now: None)
+        km._TICK_SEEN.clear()
+        with mock.patch.multiple(km, **quiet), \
+             mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
+             mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now: (calls.append(sid), {"turns": STOPPED})[1]), \
+             mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
+            r1 = km._auto_nudge_session(r, now, {}, {}, {}, alive_ids={SID_OLD})          # the asker is not alive: no ask owed
+        self.assertIs(r1, False)
+        self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "a dead peer's ask: the debtor's memo is unbounded")
+        self.assertEqual(len(km._session_files_stat(r)), 16, "eight files: the postal log joined the memo's inputs")
 
     def test_the_perf_memos_and_the_boot_row_carry_the_walk(self):
         self.assertIn("nudgeWalk", km._PERF_STATS.snapshot()["memos"])
