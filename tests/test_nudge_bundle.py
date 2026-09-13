@@ -276,7 +276,7 @@ class AutoNudgeBundlesSameTick(unittest.TestCase):
         km._revivers_pending = lambda *a: None
         km._pending_ops = {}
         jd._segs = lambda tn, store: []
-        jd.plan_units = lambda session, store: []
+        jd.plan_units = lambda session, store, **kw: []   # the callers pass lazy_text (T396)
         self.turns = [{"id": "t1", "t": T0, "end": T0 + 10, "ended": True, "atoms": [{}, {}, {}]}]
         jd.parsed_session = lambda sid, paths, now: {"turns": self.turns}
         self.store = _store({G1: _node(G1, "Ship the auth refactor"),

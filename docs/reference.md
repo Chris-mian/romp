@@ -1519,6 +1519,37 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   longer wait between cycles would have skipped; a conservative undercount,
   since a wake set by another thread or a periodic repost of an unchanged
   frame marks a cycle busy).
+  `firstCycle` and `stageRing` (T397): the boot's first pusher cycle's stage
+  split and the newest cycles' splits, each `{s, t, stages}` with, per stage,
+  its wall `ms` (one decimal), the reader's `bytes` off disk and the assembly
+  cut's `hydrated` bytes ON THE PUSHER'S THREAD since the previous stage
+  boundary (another thread's reads in the window, the judges' first pass or
+  a boot warm, are not the pusher's; a dashboard's connect push, which runs
+  the same stages on the HTTP handler thread, feeds `stages_ms` and never the
+  split); the `push` container carries its sub-stages' sums, the jobs before
+  the push land in `jobs`, and the boundary sits at the push's entry, before
+  the cards-first path. A plain GET carries the newest 16 splits and
+  `stageRingLen` (how many splits the ring holds now, not how many were
+  served); `GET /perf?ring=all` carries the whole ring, which holds
+  `stageRingMax` cycles: `ROMP_PERF_STAGE_RING` when set, else one per 256 MiB
+  of the machine's memory floored at 16, resolved once, never a literal
+  count, and an override above the fraction is clamped to it. Under `jobs`
+  every tick job is a sub-stage (`jobs.<job>`), and the bytes read between
+  them go to `jobs.other`, which carries bytes only, never `ms` (the same for
+  `push.other`); `prelude` is the cycle's opening (the liveness snapshot, the
+  names), so the top stages sum to `s`; `splitFailed` counts a split the
+  bookkeeping could not close. The restart ledger's boot-health row carries
+  the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
+  stage without the kernel alive, and `parse`, the assembly's road counters at
+  the first cycle's end (T398): `serve`, `fold`, `restore`, `full` with
+  `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
+  `rewrite` when the leaf's record entry was replaced by a from-zero read
+  under a new generation, `nonleaf` when a lineage file moved),
+  `full:noDocument`, `full:refused` (a document that stood but did not verify,
+  its fallback reason counted), `bypass` (a pending cut armed on the session)
+  and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,
+  beside `asmCheckpoint.removed`, the document files removed per reason (a
+  fallback's reason, or the boot sweep).
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
@@ -1557,10 +1588,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   resident instead, since the chain walk reads them at every pass; a leaf
   with no assembly document, one with no compaction boundary, takes the memo
   road too, since the leaf road's seeded walk had nothing to seed and read it
-  whole at every boot). The
+  whole at every boot, and so does every cleared or resume-forked session's
+  leaf, whose document is written over its lineage and cannot seed the
+  one-file walk). The
   counters: the memo's answers (`served`), the walks it took (`walked`), the
   walks over a memo the file's growth or rewrite retired (`stale`; a file
-  whose entry merely left memory and came back is walked, not stale) and the
+  whose entry merely left memory and came back is walked, not stale; a growing
+  file on the memo road, a live leaf without a seeding document or a growing
+  anchor named in a scan, ticks it once per judge pass, the routine retirement
+  by growth, so a rising count beside a growing file is expected and only a
+  rise with no growth is a surprise) and the
   walks whose memo could not be read or stored (`fallback`: a document state
   of the wrong shape, or no reader entry after the walk).
 - `stacks`: every thread's last six frames, keyed by the thread's ident and
@@ -1635,10 +1672,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (every hit). The acceptance number of the lazy-transcript work: a boot with
   no client connected reads `kernel` zero, and a connecting chat client adds
   at most its shown tabs.
-- `stages_ms`: `jobs` (the cycle's tick jobs outside the push), `push`, and
-  inside it `push.chat`, `push.feed`, `push.timeline`, `push.send`. The
-  `push.*` stages count every push, including the one a connecting page gets,
-  so they can add up to more than `push`.
+- `stages_ms`: `prelude` (the cycle's opening: the liveness snapshot and the
+  names), `jobs` (the cycle's tick jobs outside the push) and inside it one
+  `jobs.<job>` per tick job (`jobs.interruptBlock`, `jobs.autoNudge`,
+  `jobs.convergeCheckpoints` and the rest, T398), `push`, and inside it
+  `push.chat`, `push.feed`, `push.timeline`, `push.send`, `push.warm`,
+  `push.feedFirst`; a fresh snapshot lists every one at zero. The `push.*`
+  stages count every push, including the one a connecting page gets, so they
+  can add up to more than `push`.
 - `builds`: `chat`, `feed`, `timeline`, each with `cached`, `built`, `ms`.
   Every chat tab, the watched one included, is served from its cached build
   while one complete per-session signature holds: one component per input the
@@ -1712,8 +1753,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
   (`hit`, `miss`, `populate`, `bypass`); `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
-  both stand (`served`, `derived`; a healthy quiet box serves almost every
-  cycle); `cleared` is the feed's clear set, parsed once per state of
+  both stand (`served`, `derived`, and `failed`: the derivations that raised;
+  the except leg answers NOT unplanned, so the walk skips the planner-queue
+  hold and proceeds on the closer gate alone, and a non-zero `failed` means
+  nudges were waved PAST the planner gate, not held; zero on a healthy box, and
+  a healthy quiet box serves almost every cycle); `cleared` is the feed's clear set, parsed once per state of
   `cleared.jsonl` (its stat, taken before the read) and served while the file
   stands (`served`, `derived`); `courierSkip` is the courier's change gate
   (`skipped`, `scanned`, `recorded`: a session whose parse, store, journal,

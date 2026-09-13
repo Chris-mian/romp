@@ -142,14 +142,15 @@ test("the box groups the rows by kind, headers only when more than one group sho
   const body = RENDER.split("function renderBgTasks(")[1].split("\nfunction ")[0];
   assert.match(body, /const groups = groupRows\(items\);/);
   assert.match(body, /const leftovers = tasks\.filter\(\(t\) => !itemIds\.has\(t\.id\)\);/, "tracked tasks the wait does not name still list");
-  assert.match(body, /const headers = groups\.length \+ \(leftovers\.length \? 1 : 0\) >= 2;/);
+  assert.match(body, /const headers = sections\.length >= 2;/, "the sections: the kinds the rows bring, and the kinds only a kept row brings (T394)");
   assert.match(body, /if \(headers\) \{ const gh = el\("div", "bg-group-head"\); gh\.textContent = GROUP_TITLE\[g\.kind\] \|\| "Other"; list\.appendChild\(gh\); \}/);
-  // the trailing group's title (pin changed 2026-09-06): "Background tasks" was the legacy list's word and the
-  // renderer must not say it anywhere; a tracked task the wait does not name is simply also running
-  assert.match(body, /if \(headers\) \{ const gh = el\("div", "bg-group-head"\); gh\.textContent = BG_LEFTOVER_TITLE; list\.appendChild\(gh\); \}/);
-  assert.match(RENDER, /const BG_LEFTOVER_TITLE = "Also running";/);
-  // the header: mixed → "Awaiting <n> · <breakdown>"; one kind → the sentence as before
-  assert.match(body, /\} else if \(groups\.length > 1\) \{\s*\n\s*lab\.textContent = "Awaiting " \+ word \+ " · " \+ awaitBreakdown\(items\);/);
+  // no trailing section for the tracked tasks the wait does not name (T394, the user 2026-09-12: its title said nothing of why
+  // the rows were there): each lists in its KIND's section, after the awaited rows, dimmed, the judge's verdict as a suffix
+  assert.doesNotMatch(RENDER, /BG_LEFTOVER_TITLE|"Also running"|"Background tasks"/, "no section of its own, under either of its old names");
+  assert.match(body, /for \(const row of kept\) if \(row\.kind === g\.kind\) list\.appendChild\(bgRow\(row, sid\)\);/);
+  // the header: mixed → "Awaiting <n> · <breakdown of every listed row, then the kept subset>"; one kind → the sentence as before, the kept count after it
+  assert.match(body, /\} else if \(groups\.length > 1\) \{\s*\n\s*lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(counted, keptN\);/);
+  assert.match(body, /lab\.textContent = "Awaiting" \+ \(word \? " " \+ word : ""\) \+ " · " \+ why\.replace\(\/\^\(waiting on\|awaiting\)\\s\+\/i, ""\) \+ \(kept\.length \? " · " \+ listBreakdown\(counted, keptN\) : ""\);/);
   // the no-rows fallback still expands to the full sentence — never a dead end
   assert.match(body, /if \(!groups\.length && !leftovers\.length\) \{[\s\S]*?const w = el\("div", "bg-await-why"\); w\.textContent = why;/);
   // the header vocabulary is .bg-status's — the notice SOURCE-label rung (0.72em uppercase, 2026-09-08; was 10px), dim
@@ -250,7 +251,7 @@ test("ONE renderer: the grouped rows render whenever rows exist, idle or not; th
   // output tail and Stop handle (awaitRowSpec's `tracked`), and list on their own when the wait names none
   assert.match(body, /const taskById = new Map<string, BgTask>\(tasks\.map\(\(t\) => \[t\.id, t\]\)\);/);
   assert.match(body, /for \(const it of g\.rows\) \{\s*list\.appendChild\(bgRow\(awaitRowSpec\(it, taskById\.get\(it\.id \|\| ""\), peerByName\), sid\)\);/);   // the loop is a block since 2026-09-10 (each agent row's nested waits follow it)
-  assert.match(body, /for \(const t of leftovers\) list\.appendChild\(bgRow\(taskRowSpec\(t, awaited\.has\(t\.id\)\), sid\)\);/);
+  assert.match(body, /const kept = leftovers\.map\(\(t\) => taskRowSpec\(t, awaited\.has\(t\.id\), services\.has\(t\.id\)\)\);/, "the tracked tasks the wait does not name, as rows of their kind, the judge's verdict riding in (T394)");
   // the awaited outline keys on the wait / the awaited ids' presence as before — never the chip state
   assert.match(body, /host\.classList\.toggle\("bg-awaited", !!why \|\| tasks\.some\(\(t\) => awaited\.has\(t\.id\)\)\);/);
   assert.doesNotMatch(body, /status\.state/, "nothing in the renderer reads the chip state");
@@ -259,8 +260,8 @@ test("ONE renderer: the grouped rows render whenever rows exist, idle or not; th
 test("the header follows the wait: idle → 'Awaiting …' + the idle note; working → 'In the background · <breakdown>' and NO note", () => {
   const body = RENDER.split("function renderBgTasks(")[1].split("\nfunction ")[0];
   assert.match(body, /if \(why\) \{[\s\S]*?const word = awaitWord\(s\.status\.awaitingKind, s\.status\.awaitingCount, items\);/, "idle: today's label, agreeing in number with the chip");
-  assert.match(body, /\} else \{[\s\S]*?const counted: AwaitRow\[\] = items\.length \? items : leftovers\.map\(\(t\) => \(\{ kind: "commands", id: t\.id, label: t\.summary \}\)\);\s*\n\s*lab\.textContent = "In the background · " \+ awaitBreakdown\(counted\);/,
-    "working: the same rows, worded as what they are; a tracked service with no awaited row counts as the command it is");
+  assert.match(body, /\} else \{[\s\S]*?lab\.textContent = "In the background · " \+ listBreakdown\(counted, keptN\);/,
+    "working: the same rows, worded as what they are; the header counts every top-level row the list shows, then the kept subset (T394)");
   // the idle note is appended under a wait only — once at the end of the list, once in the no-rows fallback
   assert.match(body, /if \(why\) list\.appendChild\(bgIdleNote\(\)\);/);
   assert.match(body, /det\.appendChild\(bgIdleNote\(\)\);/);
@@ -270,7 +271,7 @@ test("the header follows the wait: idle → 'Awaiting …' + the idle note; work
   // the header dot: await-green under a wait (like the chip), else the worst tracked status — a failed task
   // stays glanceable while collapsed, running-yellow otherwise (never completed-blue for a box of live rows)
   assert.match(body, /const head = el\("div", "bg-fold-head " \+ \(why \? "bg-await" : "bg-" \+ worst\) \+ \(open \? " open" : ""\)\);/);
-  assert.match(body, /const worst = tasks\.reduce\(\(w, t\) => \(BG_RANK\[t\.status\] \|\| 0\) > \(BG_RANK\[w\] \|\| 0\) \? t\.status : w, "running"\);/);
+  assert.match(body, /const worst = tasks\.reduce\(\(w, t\) => \(BG_RANK\[t\.status\] \|\| 0\) > \(BG_RANK\[w\] \|\| 0\) \? t\.status : w, tasks\.length \? \(tasks\[0\]\.status \|\| "running"\) : "running"\);/);
   // the words, EXECUTED: the same rows word both headers, singular and plural
   const rows = [agent("a"), agent("b"), command("c")];
   assert.equal("Awaiting " + awaitWord("mixed", 3, rows) + " · " + awaitBreakdown(rows), "Awaiting 3 · 2 agents · 1 command");
@@ -373,8 +374,8 @@ test("the box draws an agent's waits as indented sub-rows in the SAME row vocabu
   assert.doesNotMatch(STYLES.match(/\.bg-waits-on \{[^}]*\}/)![0], /#[0-9a-fA-F]{3,6}/, "tokens, never hex");
 });
 
-test("the header and the chip count the top level only: the breakdown reads `items`, and nested ids still keep their tracked task out of 'Also running'", () => {
-  assert.match(RENDER, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ awaitBreakdown\(items\);/, "the mixed header's breakdown is the top-level rows");
+test("the header and the chip count the top level only: the breakdown reads `items`, and nested ids still keep their tracked task from listing twice as a leftover of its kind", () => {
+  assert.match(RENDER, /lab\.textContent = "Awaiting " \+ word \+ " · " \+ listBreakdown\(counted, keptN\);/, "the mixed header's breakdown is every listed row by kind, then how many wear the verdict (T394)");
   assert.match(RENDER, /const word = awaitWord\(s\.status\.awaitingKind, s\.status\.awaitingCount, items\);/, "the header word: top-level rows + the kernel's top-level count");
   assert.match(RENDER, /const itemIds = rowIds\(items\);/, "a task an agent's wait names is named, not a leftover");
 });

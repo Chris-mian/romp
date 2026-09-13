@@ -2702,8 +2702,9 @@ def _unit_nonempty(atoms):
     nothing (the one case a scalar cannot see). The planner's emptiness gate asks this in place of reading the unit text,
     which hydrated every assistant body of every unplaced segment at every pass (42.8 MB on one boot)."""
     for a in atoms:
-        if a.get("type") == "assistant" and not a.get("isApiError") and (em._has_text(a) or em.atom_tool_uses(a)):
-            return True
+        if a.get("type") == "assistant" and not a.get("isApiError") \
+                and (em._has_text(a) or any(nm for _i, nm in em.atom_tool_uses(a))):   # a tool call counts with a NAME, as
+            return True                                                                  #  _unit_text frames it (round three, low 1)
     return any(_FOLLOWUP_MARKER_RE.sub("", _atom_text(a)).strip()
                for a in atoms if a.get("type") == "user" and a.get("author") is not None and em._has_text(a))
 
@@ -6133,7 +6134,12 @@ def _per_file_rewound(fsid, files):
             # pre-cut verdicts and the tail read now instead of the whole file (T323 stage 4a). A non-empty
             # transcript that yields ZERO records raises OSError there (the incremental reader swallows a
             # permissions break into an empty list): a failed read, not an empty file, and it must count like one.
-            if fp == leaf and em.asm_document_stands(fp):   # the leaf road: the document's pre-cut verdicts and the tail read now
+            if fp == leaf and len(files) == 1 and em.asm_document_seeds(fp):   # the leaf road: the document's pre-cut verdicts
+                em.rewound_memo_forget(fp)                #  and the tail read now; a document written over a two-file lineage (a
+                #                                           /clear anchor beside, or a resume fork's from-file among its inputs)
+                #                                           cannot seed the one-file walk, and the leaf takes the memo road (round
+                #                                           one, low 1); the memo's cursor from the leaf's documentless days is
+                #                                           dropped at the flip so the checkpoint's cut follows the live folds (low 2)
                 out |= em.file_rewound(fp, rompuuid=fsid, sdk_human=_sdk_owned(fsid))
             else:                                         # a dead episode's frozen file, or a leaf with no assembly document (no
                 #                                           compaction boundary yet, or ever: its seeded walk had nothing to seed
@@ -9309,8 +9315,9 @@ def plan_units(session, store=None, floor=_UNSET_FLOOR, lazy_text=False):
                     # own reopen/dismiss row is the release, and _strip_unevidenced_dones keeps a
                     # workless reply from CLAIMING completion (the closer holds done authority). Nudges
                     # keep their skip: their machinery re-asks and escalates on its own.
-                    _put("work", _wt, _seg_human(seg), _seg_followup(seg))
-                continue
+                    _wn = _work_note(seg)                 # ONE text rule with the ended work-run below and with unit_text_for
+                    _put("work", (lambda: (_wn + _wt()) if _wt() else "") if _wn else _wt, _seg_human(seg), _seg_followup(seg))
+                continue                                  #  (round three, low 2: the lazy road resolves through unit_text_for)
             _pm = _seg_peer(seg)
             if _pm and _pm[0]:                            # POSTAL segment with a KNOWN sender → DELEGATION work-run
                 if not is_open_final:                     # ended → the recipient's work is known; place it under G
@@ -11334,6 +11341,13 @@ def _plan_session(fsid, path, now):
                 continue
             text = unit_text_for(seg, phase)
             if not text:
+                # A unit the lazy gate yielded whose text reads empty (a shape the scalars cannot see: an assistant message
+                # whose content is a bare string; a blind spot of any later kind): RETIRE it, never skip it. Skipped, it
+                # wrote no placement and no retirement, and the nudge placement gate read its key as unplanned on every
+                # tick and silenced the session's escalation ladder (the 2026-08-16 wedge shape; round three, low 1). The
+                # unit's OWN key: `key` here is the collection loop's last binding, not this unit's (round four, medium).
+                store["placements"][_unit_key(seg_id, phase)] = None
+                save_goals(fsid, store)
                 continue
             if vq is None:
                 vq = _mint_quote(seg)

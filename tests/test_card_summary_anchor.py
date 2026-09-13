@@ -133,7 +133,7 @@ class TheTextAtom(unittest.TestCase):
         self.assertEqual(first[0], "t5")
 
 
-# The six states the verifier executed, one row each: (name, distillState, column, completed, blocked). The webview
+# The states the verifier executed plus the one producible pair they left out, one row each: (name, distillState, column, completed, blocked). The webview
 # test ui/webview/distiller-line.test.ts carries the SAME rows for distillInputs; TheLineRuleTable pins both sides.
 LINE_RULE_TABLE = [
     ("stall floor", None, "needs_input", False, True),
@@ -142,6 +142,7 @@ LINE_RULE_TABLE = [
     ("done confirming", None, "working", False, False),
     ("completed", "completed", "completed", True, False),
     ("plain working", None, "working", False, False),
+    ("completed under a needs-input column", "completed", "needs_input", True, False),   # the producible pair the six named states left untabled
 ]
 
 
@@ -154,12 +155,22 @@ class TheLineRuleTable(unittest.TestCase):
                 self.assertEqual(got_completed, completed, name)
                 self.assertEqual(line, "the brief" if blocked else ("the takeaway" if completed else None), name)
 
-    def test_the_webview_test_carries_the_same_table(self):
+    def test_the_webview_test_carries_the_same_table_and_executes_it(self):
         ts = open(os.path.join(ROOT, "ui", "webview", "distiller-line.test.ts"), encoding="utf-8").read()
+        table = ts.index("const LINE_RULE_TABLE:")
         for name, state, column, completed, blocked in LINE_RULE_TABLE:
             row = '["%s", %s, "%s", %s, %s]' % (name, "null" if state is None else '"%s"' % state, column,
                                                 str(completed).lower(), str(blocked).lower())
             self.assertIn(row, ts, "the webview pins the same row: %s" % row)
+        # PRESENT is not EXECUTED (the manager's read of the merge): the rows must be driven through distillInputs by a
+        # test that stands beside them, or a deleted test block with the array kept would leave this pin green
+        head = 'test("distillInputs over the states the kernel\'s landing rule mirrors", () => {'
+        self.assertIn(head, ts, "the webview TEST that drives the table exists (present rows are not executed rows)")
+        call = ts.index(head)
+        self.assertGreater(call, table, "the test stands beside the table it drives")
+        block = ts[call:]
+        self.assertIn("for (const [name, state, column, completed, blocked] of LINE_RULE_TABLE)", block, "the test walks the table")
+        self.assertIn("assert.deepEqual(distillInputs(state, column), { completed, blocked }, name);", block, "…and asserts each row through distillInputs")
 
 
 class TheWiring(unittest.TestCase):

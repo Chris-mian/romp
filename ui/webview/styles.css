@@ -109,8 +109,12 @@ body.scheme-solarized-dark {
                                                        (postal-wash.ts), since --bg is host-derived in the webview (T337c) */
   /* THE romp accent — light blue (the user 2026-06-24). Use var(--accent) for accent/highlight chrome
      (selected toggles, in-progress loading dots, the Fleet pill, focus) — NOT for STATUS colors, which keep
-     their own meaning (--st-working-bg yellow = working, --st-blocked-bg red, etc.). --accent-fg reads on it. */
+     their own meaning (--st-working-bg yellow = working, --st-blocked-bg red, etc.). --accent-fg reads on it.
+     ONE exception (the user 2026-09-12, T394): the background box's command rows wear it as their KIND hue
+     (--kind-command, below), a kind and not a status; the status still overrides it for failed and completed rows. */
   --accent: #9cd2ff; --accent-fg: #0c1a2e;
+  --kind-command: var(--accent);   /* a command row's hue in the background box (T394): the accent blue the timeline lane icons wear;
+                                      the light block sets its own, its accent being the burnt orange that would read as an error */
   /* THE faint accent wash — the one alpha behind every selected/hovered accent chrome (0.10 and 0.14
      variants drifted in before 2026-08-26). Mirrored in feed.css (own :root). */
   --accent-wash: rgba(156, 210, 255, 0.12);
@@ -257,6 +261,7 @@ body.theme-light {
                                                        a cool one's distance from the ground (T337c, the review of 2026-09-11) */
   --err: #B02A1C;
   --accent: #C2410C; --accent-fg: #FFF8F2;
+  --kind-command: #356890;   /* the dark accent's hue and chroma at OKLCH lightness 0.50 (T394): 4.67:1 as text on the cream box */
   --accent-wash: rgba(194, 65, 12, 0.10);
   --chip-wash: rgba(0, 0, 0, 0.07);   /* a hovered tag chip's ground (T343): on a light card the visible step is darker, and it stays distinct from the card's surface */
   --chip-sel-filter: brightness(0.75);   /* a SELECTED tag chip's strongest level on cream is DARKER (T343 review): brightness(1.3) here paled every selected chip below its faded neighbour; 0.75 lifts each tag's contrast above its rest value */
@@ -759,6 +764,11 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    feed view menu's .forced items wear */
 .ctx-sub .ctx-item.disabled { opacity: 0.45; cursor: default; }
 .ctx-sub .ctx-item.disabled:hover { background: transparent; color: inherit; }   /* .ctx-item:hover also recolours */
+/* a Move to row held by the tab lock (T395): the label dims and the row stops answering, but the + beside it still tags
+   (adding is not a move), so it keeps full strength and its own title; hence the dim on the body, not the row */
+.ctx-sub .ctx-item.ctx-item-locked { cursor: default; }
+.ctx-sub .ctx-item.ctx-item-locked > .ctx-item-body { opacity: 0.45; }
+.ctx-sub .ctx-item.ctx-item-locked:hover { background: transparent; color: inherit; }
 .ctx-sub .ctx-item.current::after {
   content: "✓"; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
   background: var(--check-bg); color: #fff; border-radius: 50%;
@@ -819,6 +829,15 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    pill and landed nearly flush under the tab row above, while a line the + shared had air (the
    user 2026-08-25). Inner centering keeps the pill and chips at their own sizes. */
 .tab-tagbox { display: inline-flex; align-items: center; flex-wrap: wrap; min-height: 31px; }
+/* THE TAB LOCK (T395, the user 2026-09-12): a little rounded box like the tags box, right after the + tab (the user says
+   the position may move later), with the same floor so a controls-only line stays as tall as one the + is on; the
+   padlock gray at rest, and locked it wears the menu vocabulary's current dress, the accent on the glyph and the
+   outline, never a colour fill. */
+.tab-lockbox { display: inline-flex; align-items: center; min-height: 31px; margin-left: 4px; }
+.tab-lock { display: inline-flex; align-items: center; background: transparent; border: 1px solid var(--tab-lock-border, var(--box-border)); border-radius: 6px; padding: 4px 6px; cursor: pointer; color: var(--dim); }   /* the border is the tag button's own value, set by the strip from tag-menu.ts (one source); the glyph is 14px like the tag's, so both boxes measure 28 by 24 */
+.tab-lock:hover { color: var(--fg); }
+.tab-lock.on { color: var(--accent); border-color: var(--accent); }
+.tab-lock svg { display: block; }
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
 /* (The .tab-fleet pill was removed 2026-06-24 — Fleet/Chat are now the rotated toggles in the chat pane's
    vertical strip, so the tab-bar pill was redundant.) */
@@ -1002,15 +1021,22 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .bg-stop:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 .bg-stop:disabled { opacity: 0.55; cursor: default; }
 .bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
-.bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }
+.bg-fold-head.bg-completed { --bgt: var(--dim); }   /* the header's completed tint follows the rows (T394): the ready blue would sit beside the command blue */
 .bg-fold-head.bg-await { --bgt: var(--st-awaitbg-bg); }   /* the Awaiting why header — await-green, like its chip */
 .bg-fold-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 /* level 2: a flat list of task LINES (no boxes) BELOW the header, fills the box and scrolls when many */
 .bg-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; padding: 4px 2px; }
 .bg-task { --bgt: var(--st-working-bg); }
+/* ONE HUE PER KIND (T394, the user 2026-09-12: the kinds could not be told apart, and orange reads as an error): agents keep the
+   working gold, watches the awaiting green, commands take the accent blue (--kind-command, per theme). The row's status still
+   overrides where it means something, in the rules that follow: a failed row's dot is the blocked red, a completed row's the
+   dim ink (the ready blue it wore would collide with the command hue). */
+.bg-task.bg-kind-agents { --bgt: var(--st-working-bg); }
+.bg-task.bg-kind-commands { --bgt: var(--kind-command); }
+.bg-task.bg-kind-watches { --bgt: var(--st-awaitbg-bg); }
 .bg-task.bg-failed { --bgt: var(--st-blocked-bg); }
-.bg-task.bg-completed { --bgt: var(--st-ready-bg); }
+.bg-task.bg-completed { --bgt: var(--dim); }
 /* an armed watch / a peer or timer wait: nothing is computing HERE — the dot wears the await-green (slice 2) */
 .bg-task.bg-armed, .bg-task.bg-waiting { --bgt: var(--st-awaitbg-bg); }
 /* the rows grouped by KIND (slice 2, 2026-09-05): a small dim header per group, in the .bg-status
@@ -1039,6 +1065,16 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    never push them off-screen; no spacer, no margin-left:auto, no space-between. */
 .bg-sum { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.92em; color: var(--fg); }
 .bg-status { flex: 0 0 auto; font-size: 0.72em; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; color: var(--bgt); }
+/* on cream the kind hues fail as TEXT (the gold 4.0:1, the green 2.1:1 on the box), so the caption word is the hue deepened to
+   OKLCH lightness 0.46, the postal head's rule (T390): gold 5.6:1, green 5.2:1, blue 5.6:1; the dot keeps the full hue (T394) */
+body.theme-light .bg-status { color: oklch(from var(--bgt) 0.46 c h); }
+/* a KEPT row (T394): a tracked task the judge called a service (kernel bgServiceIds), the verdict as a muted suffix beside a
+   dimmed label and dot; the caption word keeps its hue, and nothing dims by element opacity (a 55 percent dot read 2.0:1 on
+   cream). The dot is the kind hue greyed toward the dim ink, a colour: at this share every hue reads 3:1 or better on the box
+   in both themes (measured 2026-09-12: gold 6.3 dark, 4.9 cream; green 5.4, 3.6; blue 7.1, 5.2) */
+.bg-task.bg-kept .bg-dot { background: color-mix(in srgb, var(--bgt) 45%, var(--dim)); }
+.bg-task.bg-kept .bg-sum { color: var(--dim); }
+.bg-kept-word { flex: 0 0 auto; font-size: 0.82em; color: var(--dim); white-space: nowrap; }
 .bg-caret { flex: 0 0 auto; color: var(--dim); font-size: 0.72em; width: 10px; opacity: 0.7; }
 /* level 3: a task's command + output, each its own scrollable block, indented under the line (overscroll-
    contain so the wheel scrolls the body, not the chat behind it — the "expanded view won't scroll" fix) */
@@ -1904,7 +1940,7 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
   from { background: rgba(224, 176, 32, 0.30); }
   to   { background: transparent; }
 }
-.turn.anchor-flash { animation: anchor-flash 1.6s ease-out; border-radius: 6px; }
+.anchor-flash { animation: anchor-flash 1.6s ease-out; border-radius: 6px; }   /* the turn, or the aligned element inside it when the landing aligns on quoted words or a text atom (T386) */
 
 /* ---------- user turn — a Signal-style OUTGOING bubble (the user's own messages) ----
    solid saturated blue + white text, right-aligned, so "your voice" is unmistakable.
@@ -4370,6 +4406,7 @@ body.dense-chrome .tab-add { padding: 3px 8px; font-size: 1.1em; }              
    the 18px line + 2 x 3px dense padding + the 1px border; #tabs stretches every item on a row to the tallest, so
    without this the row holding the + and the tag control would stay 31px beside 25px rows */
 body.dense-chrome .tab-tagbox { min-height: 25px; }                                     /* 31px */
+body.dense-chrome .tab-lockbox { min-height: 25px; }                                    /* 31px; the lock box follows the tags box (T395) */
 body.dense-chrome .tab-group-head { gap: 4px; padding: 3px 5px; }                       /* 5px; 6px 7px — the dense tab's own padding, so the row keeps a tab's box here too (T322) */
 /* the untagged trail's divider (the inline layout, stripGroupRows off): its 1px line is the content area under fixed
    gutters, so the 8px gutters sized for the 32px row would leave a 9px line in the 25px row; 6px keeps the default's

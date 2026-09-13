@@ -347,9 +347,12 @@ right and is untouched; the box must not flap.
   `awaitBreakdown`), the worst tracked status as the dot (a failed task stays glanceable while collapsed;
   running-yellow otherwise), NO note. Row affordances are identical in both states (`bgRow` fed by
   `awaitRowSpec` / `taskRowSpec`; `s.bgTasks` still lends command rows their output tail and Stop handle).
-  Tracked tasks the wait does not name list under "Also running" (was "Background tasks"); when the kernel
-  names no rows at all the working header counts them as the commands they are ("In the background · 1
-  command" for a dev server). The `bg-awaited` outline is one toggle: a wait, or a tracked task named in
+  Tracked tasks the wait does not name list in their KIND's section after the awaited rows (T394, 2026-09-12;
+  before that under an "Also running" section, earlier "Background tasks"): agent-shaped by their agentId,
+  else commands. A task the judge called a service (kernel `bgServiceIds`, `_bg_split`'s furniture verdict)
+  is dimmed and carries "kept running, not waited on" as a muted suffix while it runs; a task the kernel
+  named neither awaited nor a service lists under its kind with no verdict word. The header counts every
+  row it lists: the awaited breakdown, then "N kept running" for the rows wearing the suffix. The `bg-awaited` outline is one toggle: a wait, or a tracked task named in
   `awaitingTaskIds` — the ids' presence, never the chip state; mid-turn the box wears its neutral border.
   `bgFoldOpen` is only ever written by the header toggle and the chip click, so the status-only frame that
   flips `awaitingWhy` (through `awaitKey`) finds the fold as it was.

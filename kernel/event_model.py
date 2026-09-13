@@ -744,9 +744,32 @@ _READ_BYTES = {}                  # path -> bytes this process read from it thro
 _READ_BYTES_LOCK = threading.Lock()
 
 
+_READ_BYTES_TOTAL = [0]           # the reader's bytes off disk since the process began, one integer (T397: a stage mark)
+_THREAD_BYTES = threading.local()  # the same, per THREAD (`read`, `hydrated`): the pusher's stage split reads its own thread's
+
+
 def _count_read(path, n):
     with _READ_BYTES_LOCK:
         _READ_BYTES[path] = _READ_BYTES.get(path, 0) + int(n)
+        _READ_BYTES_TOTAL[0] += int(n)
+    _THREAD_BYTES.read = getattr(_THREAD_BYTES, "read", 0) + int(n)
+
+
+def read_bytes_total():
+    """What the reader pulled off disk since the process began, as one number (the per-path table is read_bytes_report)."""
+    with _READ_BYTES_LOCK:
+        return _READ_BYTES_TOTAL[0]
+
+
+def thread_read_bytes():
+    """What the reader pulled off disk on the CALLING thread since it began (T397 round one, low 2: a stage's bytes are the
+    pusher's own, not the judges' first pass or a boot warm reading through the same window)."""
+    return getattr(_THREAD_BYTES, "read", 0)
+
+
+def thread_hydrated_bytes():
+    """The assembly cut's hydrated bytes on the CALLING thread since it began (the process total is asmCheckpoint.hydratedBytes)."""
+    return getattr(_THREAD_BYTES, "hydrated", 0)
 
 
 def read_bytes_report():
@@ -754,7 +777,7 @@ def read_bytes_report():
     file, so a test or /perf can say how much of a boot was tails and how much whole files."""
     with _READ_BYTES_LOCK:
         out = dict(_READ_BYTES)
-    out["total"] = sum(out.values())
+        out["total"] = _READ_BYTES_TOTAL[0]              # the running total, kept for this report alone (T397 round two, low 1)
     return out
 
 
@@ -933,6 +956,7 @@ def set_checkpoint_dir(fn):
     _CKPT_DIR_FN = fn
     with _CKPT_LOCK:
         _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear(); _DROP_OWED.clear()
+        _RETIRED_FOLDS.clear()                            # a retirement never outlives a state rebind (round two, low 2)
         _CKPT_CYCLE["cap"] = _ckpt_cycle_default_cap(); _CKPT_CYCLE["spent"] = 0
 
 
@@ -1397,6 +1421,11 @@ def checkpoint_write(path, force=False):
     if not folds and not force:
         return False
     folds.update(_carry_forward_states(key, folds, base, count, size, mtime))   # the disk document's states for folds this process never ran
+    with _CKPT_LOCK:
+        retired = set(_RETIRED_FOLDS.get(key, ()))        # taken AFTER the cursor snapshot and the carry: a forget that raced the
+    for n in retired:                                     #  snapshot still omits its fold here; every name taken is honoured by
+        folds.pop(n, None)                                #  this write whether the fold was present to pop or already absent
+    omitted = retired
     cut = min([f["count"] for f in folds.values()] or [count])   # the document's cut: the LOWEST written cursor (T359), so the
     moved = None                                          #  next process's tail read holds every record a lagging fold has
     if cut < count and len(ent) >= 8 and ent[7]:          #  yet to step (its append), bounded by the records this entry holds
@@ -1439,8 +1468,14 @@ def checkpoint_write(path, force=False):
         _CKPT_SEQ[key] = seq
         _CKPT_STATS["writes"] += 1
         _CKPT_DOC_FOLDS[key] = _doc_fold_shapes(folds)
-        if left_out:
-            _FOLD_DIRTY.add(key)                          # a lagging fold has no cursor in this document yet
+        if omitted:                                       # the retirements this document honoured are done; any that arrived
+            rem = _RETIRED_FOLDS.get(key)                 #  after the check above stay, and keep the path dirty for the next write
+            if rem is not None:
+                rem -= omitted
+                if not rem:
+                    _RETIRED_FOLDS.pop(key, None)
+        if left_out or _RETIRED_FOLDS.get(key):
+            _FOLD_DIRTY.add(key)                          # a lagging fold has no cursor in this document yet, or a retirement owed
         else:
             _FOLD_DIRTY.discard(key)
     return True
@@ -1545,7 +1580,8 @@ def checkpoint_sweep():
         if not keep:
             try:
                 cp.unlink(); gone += 1
-                if cp.name.endswith(".gz"):
+                if cp.name.endswith(".gz"):                # an assembly document: counted as removed, its sidecar with it
+                    _asm_removed("sweep")
                     cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
             except OSError:
                 pass
@@ -4388,7 +4424,8 @@ _ASM_CACHE_MAX = 256
 _ASM_LOCK = threading.Lock()       # guards the cache dict + the per-key lock registry only
 _ASM_KEYLOCKS = {}                 # key -> Lock; never pruned (a Lock is tiny, and swapping a
 #                                    key's lock mid-flight would let two folds interleave)
-_ASM_STATS = {"full": 0, "fold": 0, "serve": 0, "bypass": 0, "fallback": 0}   # observability + tests
+_ASM_STATS = {"full": 0, "fold": 0, "serve": 0, "restore": 0, "bypass": 0, "fallback": 0}   # observability + tests (restore
+#                                                                                             seeded: a row without it means zero)
 _ASM_WARNED = [False]
 _TS_REPAIR_NOTED = set()     # file stems already warned about a garbled stamp — once per file;
 #                              the cap CLEARS and re-arms (an occasional repeat note beats silence)
@@ -4996,10 +5033,93 @@ _HYDRATED_CAP = _env_or("ROMP_HYDRATED_CAP_MB", max(1024 ** 3, _machine_memory_b
 _LAZY_KINDS = ("a", "u", "c", "o", "k", "b")   # atom kinds whose message is lazy; boundary and refusal atoms carry no message
 
 
+def _asm_sidecar(doc):
+    """The document's sidecar ({"av", "path", "files", "linked"}): what the boot sweep and asm_document_seeds read, a few bytes,
+    never the document. `linked` says resume-fork links joined the inputs (the load refuses a document on its links too)."""
+    return {"av": _ASM_CKPT_V, "path": doc["path"], "files": sorted(doc["files"]), "linked": bool(doc.get("links"))}
+
+
+def asm_sidecar_refresh(leaf_path, doc):
+    """Rewrite an OLDER sidecar (one without the inputs list) beside a document just restored, so the scan's predicate stops
+    degenerating to the one-file lineage test for a session that already carried a document (round one, low 2): a write of
+    a few bytes, the document untouched."""
+    cp = _asm_ckpt_file(leaf_path)
+    if cp is None:
+        return False
+    meta = cp.with_name(cp.name + ".meta")
+    try:
+        text = meta.read_bytes(); _count_read(str(meta), len(text))   # counted like the seeds read (round two, low 3)
+        d = json.loads(text.decode("utf-8"))
+        if isinstance(d, dict) and isinstance(d.get("files"), list) and "linked" in d:
+            return False
+    except (OSError, ValueError):
+        pass
+    try:
+        mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
+        mtmp.write_text(json.dumps(_asm_sidecar(doc)))
+        os.replace(mtmp, meta)
+        return True
+    except OSError:
+        return False
+
+
+def asm_document_seeds(leaf_path):
+    """Whether the assembly document for `leaf_path` can SEED a one-file walk of the leaf: its inputs are the leaf alone. Read
+    from the sidecar's `files` (a few bytes, never the document); a sidecar without the list (an older write) answers as
+    asm_document_stands does, and the next write adds it. A cleared or resume-forked session's document is written over the
+    leaf plus its lineage, so file_rewound's load refused it on the inputs comparison and the leaf was read whole at every
+    process (T391 follow-up, round one, low 1): such a leaf takes the memo road."""
+    if not asm_document_stands(leaf_path):
+        return False
+    cp = _asm_ckpt_file(leaf_path)
+    meta = cp.with_name(cp.name + ".meta")
+    try:
+        text = meta.read_bytes(); _count_read(str(meta), len(text))   # the one steady-state read this predicate adds: counted
+        d = json.loads(text.decode("utf-8"))
+    except (OSError, ValueError):
+        return True                                       # no readable sidecar: the document stands, its inputs unknown
+    files = d.get("files") if isinstance(d, dict) else None
+    if not isinstance(files, list):
+        return True
+    return files == [Path(leaf_path).stem] and not d.get("linked")   # the leaf alone, no resume links among the inputs
+
+
+_RETIRED_FOLDS = {}                # path -> {fold name}: folds a caller retired whose cursor may still sit in the on-disk document;
+#                                   checkpoint_write consults it AFTER its cursor snapshot and its carry, so the document omits them
+#                                   (T391 follow-up, round one, medium: the carry re-added the memo's cursor from the document)
+
+
+def _retire_fold(path, name):
+    """Retire fold `name` of `path` for the next write: the in-memory cursor goes now, and the write skips the name when it
+    carries the on-disk document's states forward, so the document omits the fold and the cut follows the live folds."""
+    key = str(path)
+    with _CKPT_LOCK:
+        _RETIRED_FOLDS.setdefault(key, set()).add(name)
+        while len(_RETIRED_FOLDS) > _DROP_OWED_MAX:       # bounded like the owed drops: the oldest path's retirement is let go
+            _RETIRED_FOLDS.pop(next(iter(_RETIRED_FOLDS)), None)
+        _FOLD_DIRTY.add(key)
+
+
+def rewound_memo_forget(path):
+    """Drop the incident scan's memo cursor for `path` (T391 follow-up, round one, low 2): a leaf that took the memo road while it
+    had no assembly document carries a rewoundUuids cursor in its fold document; once its first compaction lands and the scan
+    flips to the leaf road for good, that cursor would never step again, and the checkpoint's cut, the minimum over the folds,
+    would drag behind it by up to the lag bound (about an eighth of the file) until growth passed it, every later boot's
+    restore reading that much more tail for every fold. Forgotten here, the next write omits the fold and the cut follows the
+    live folds."""
+    key = str(path)
+    had = _REWOUND_CACHE.pop(key, None) is not None
+    with _CKPT_LOCK:
+        on_disk = "rewoundUuids" in (_CKPT_DOC_FOLDS.get(key) or {})   # the document as last read or written carries the fold
+    if had or on_disk:                                    # retire only at the FLIP, when there is something to retire: a leaf-road
+        _retire_fold(key, "rewoundUuids")                 #  pass over a clean path retires nothing and dirties nothing (round two:
+    #                                                        an unconditional retirement popped a memo stored later in the process
+    #                                                        out of the next document and kept every leaf-road path dirty forever)
+
+
 def asm_document_stands(leaf_path):
     """Whether an assembly document file exists for `leaf_path` (a stat, no read; False with no checkpoint directory): the
-    judges' incident scan asks before taking the leaf road, whose seeded walk needs the document, and takes the memo road
-    for a leaf that has none (a leaf with no compaction boundary can never have one, and was read whole at every boot)."""
+    existence half of asm_document_seeds, the predicate the judges' incident scan asks before taking the leaf road."""
     cp = _asm_ckpt_file(leaf_path)
     return cp is not None and cp.exists()
 
@@ -5011,11 +5131,17 @@ def _asm_ckpt_file(leaf_path):
     return Path(d) / (hashlib.sha1(os.path.realpath(str(leaf_path)).encode("utf-8")).hexdigest()[:20] + ".asm.json.gz")
 
 
+_ASM_CKPT_REFUSED = {}            # realpath -> the reason a standing document was refused at this path's last restore: read
+#                                   by _assemble to book full:refused, since the note below unlinks the document before the
+#                                   parse decides its road (T398 round one, medium: a refused document read as none at all)
+
+
 def _asm_ckpt_note(path, reason, detail=""):
     with _ASM_CKPT_LOCK:
         _ASM_CKPT_STATS["fallbacks"][reason] = _ASM_CKPT_STATS["fallbacks"].get(reason, 0) + 1
         first = (str(path), reason) not in _ASM_CKPT_SAID
         _ASM_CKPT_SAID.add((str(path), reason))
+        _ASM_CKPT_REFUSED[os.path.realpath(str(path))] = str(reason)
     if first:
         try:
             sys.stderr.write("assembly checkpoint fallback (%s) for %s%s\n" % (reason, path, (": " + detail) if detail else ""))
@@ -5025,6 +5151,7 @@ def _asm_ckpt_note(path, reason, detail=""):
     if cp is not None:
         try:
             cp.unlink()
+            _asm_removed("fallback:" + str(reason))
             cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
         except OSError:
             pass
@@ -5039,9 +5166,18 @@ def _asm_ckpt_skip(reason):
 def asm_checkpoint_stats():
     with _ASM_CKPT_LOCK:
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
-        out["hydratedBy"] = dict(out["hydratedBy"])
+        out["hydratedBy"] = dict(out["hydratedBy"]); out["removed"] = dict(out.get("removed") or {})
         cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
-    return out
+    with _ASM_CKPT_LOCK:
+        out["parse"] = dict(_ASM_STATS)               # the parse's roads (T398): serve, fold, restore, full (with its reason), bypass,
+    return out                                        #  fallback, and every g:<reason> demotion, so a whole parse names its road
+
+
+def _asm_removed(reason):
+    """A document file removed, counted per reason (T398): the fallback that refused it, or the boot sweep."""
+    with _ASM_CKPT_LOCK:
+        r = _ASM_CKPT_STATS.setdefault("removed", {})
+        r[reason] = r.get(reason, 0) + 1
 
 
 def asm_converge_stat(name, n=1):
@@ -5497,7 +5633,8 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             os.replace(tmp, cp)
             meta = cp.with_name(cp.name + ".meta")            # {"av", "path"}: what the boot sweep reads, never the document
             mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
-            mtmp.write_text(json.dumps({"av": _ASM_CKPT_V, "path": doc["path"]}))
+            mtmp.write_text(json.dumps(_asm_sidecar(doc)))   # the inputs' fsids and whether resume links joined them: what
+            #                                                   asm_document_seeds reads, never the document
             os.replace(mtmp, meta)
         except OSError:
             return skip("write")
@@ -5804,6 +5941,7 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
     doc = _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
     if doc is None:
         return None
+    asm_sidecar_refresh(leaf_path, doc)                   # an older sidecar gains the inputs list here (round one, low 2)
     try:
         seed, landed = _seed_from_doc(doc)
         fsids = list(doc.get("fsids") or [])
@@ -5969,6 +6107,7 @@ def hydrate(atoms, rompuuid=None, by=None):
                     raise LazyBodyRead("atom %s: the record at its offset is %s" % (a.get("uuid"), rec.get("uuid")))
                 with _ASM_CKPT_LOCK:
                     _ASM_CKPT_STATS["hydratedBytes"] += ln; _ASM_CKPT_STATS["hydratedAtoms"] += 1
+                    _THREAD_BYTES.hydrated = getattr(_THREAD_BYTES, "hydrated", 0) + ln   # this thread's share (T397)
                     _ASM_CKPT_STATS["hydratedBy"][by] = _ASM_CKPT_STATS["hydratedBy"].get(by, 0) + ln
                     if a.get("uuid"):
                         _HYDRATED[a["uuid"]] = (rec, ln); _HYDRATED_BYTES[0] += ln
@@ -6031,8 +6170,26 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
             elif _CKPT_DIR_FN is not None:
                 served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
                 if served is not None:
+                    with _ASM_CKPT_LOCK:
+                        _ASM_STATS["restore"] += 1
                     _mode("restore")
                     return served
+            # A full parse names its road (T398): an entry the gates DEMOTED (the g:<reason> beside it: the leaf's record
+            # entry replaced by a from-zero read, a lineage file moved), a leaf with NO document file, a document that
+            # stood but was REFUSED at the restore (its fallback reason counted beside), or no checkpoint directory at all.
+            with _ASM_CKPT_LOCK:
+                refused = _ASM_CKPT_REFUSED.pop(os.path.realpath(str(leaf_path)), None)   # the restore's own refusal, if any
+            if entry is not None:
+                why = "demoted"
+            elif _CKPT_DIR_FN is None:
+                why = "noDir"
+            elif refused is not None:
+                why = "refused"                           # a document stood and did not verify (its reason under fallbacks); the
+            else:                                         #  note unlinked it, so the stat below would have read it as none
+                cp_ = _asm_ckpt_file(leaf_path)
+                why = "noDocument" if cp_ is None or not cp_.exists() else "refused"
+            with _ASM_CKPT_LOCK:
+                _ASM_STATS["full:" + why] = _ASM_STATS.get("full:" + why, 0) + 1
             _mode("full")
             return _asm_full(key, leaf_path, candidate_files, links, rompuuid,
                              postal_index, sdk_human)

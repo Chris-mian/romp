@@ -99,7 +99,7 @@ class AnsweredWakeFilesWhenItsCallerHoldsTheSharedView(unittest.TestCase):
         # the judges ruled on the wake's response: the answered leg is the one under test
         km._nudge_response_ready = lambda *a, **k: (True, {"id": "s9", "t": ANSWER})
         jd._segs = lambda tn, store: []
-        jd.plan_units = lambda session, store: []
+        jd.plan_units = lambda session, store, **kw: []   # the callers pass lazy_text (T396)
         self.turns = [{"id": "t1", "ended": True, "end": 100, "t": 90, "atoms": []}]
         jd.parsed_session = lambda sid, paths, now: {"turns": self.turns}
         self.fb = _FakeBackend()

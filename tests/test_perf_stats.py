@@ -163,7 +163,7 @@ class Collector(unittest.TestCase):
         self.assertEqual(set(snap["memos"]["goalArchive"]), {"served", "loaded"})
         self.assertEqual(set(snap["memos"]["backref"]), {"served", "built"},
                          "the sender-board walk behind the courier link repair: built once per input state (2026-09-09)")
-        self.assertEqual(snap["memos"]["nudgeGate"], {"served": 0, "derived": 0},
+        self.assertEqual(snap["memos"]["nudgeGate"], {"served": 0, "derived": 0, "failed": 0},
                          "the nudge walk's placement gate: served vs re-derived (2026-09-09)")
         self.assertEqual(set(snap["memos"]["cleared"]), {"served", "derived"},
                          "the clear set: parsed once per file state, served while it stands (2026-09-09)")
