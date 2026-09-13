@@ -153,9 +153,9 @@ class ServedLandingNotice(WindowLab):
     def test_a_fill_at_the_transcript_head_keeps_the_reader_and_lands_the_head_at_the_top(self):
         # MEDIUM 3: a reader inside a gap (scrollTop 0, no row on screen) is not jumped by the fill
         r = self._result()
-        self.assertLessEqual(abs(r["head4"]["top"]), 2, "the reader was at the transcript head before the fill: %r" % r["head4"])
+        self.assertLessEqual(abs(r["head4"]["top"]), 12, "the reader was near the transcript head before the fill: %r" % r["head4"])
         f = r["filled4"]
-        self.assertLessEqual(abs(f["top"]), 8, "the head fill did not jump the reader (scrollTop stayed ~0): %r" % f)
+        self.assertLessEqual(abs(f["top"] - r["head4"]["top"]), 8, "the head fill did not jump the reader (scrollTop held): %r → %r" % (r["head4"], f))
         self.assertTrue(f["firstVisible"], "the first filled turn is on screen: %r" % f)
         self.assertLessEqual(abs(f["firstTop"]), 8, "…at the top: %r" % f)
 

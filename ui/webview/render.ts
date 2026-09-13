@@ -17378,7 +17378,7 @@ function gapGlyph(): HTMLElement {
 function gapElement(s: Session, it: { lo: number; hi: number }, v: View): HTMLElement {
   const g = el("div", "tx-gap");
   g.dataset.lo = String(it.lo); g.dataset.hi = String(it.hi); g.dataset.sid = s.id;
-  g.style.height = gapHeight(it, v.avgTurnH) + "px";
+  g.style.height = gapHeight(it, v.pxPerTurn) + "px";   // per TURN, not per display unit (medium 2): the rendered gap element too, not only the spacer map
   if (gapHasAsk(s.id, it)) { g.classList.add("tx-gap-loading"); g.appendChild(gapGlyph()); }
   gapObserver?.observe(g);
   return g;
