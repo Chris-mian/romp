@@ -50,20 +50,20 @@ const nospan3 = { notice: (await state()).notice, toast: await page.evaluate(() 
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
 // ROAD 6 (round five, medium B; runs right after the span-less road, while the head gap is whole, and returns the reader to the tail after):
 // the point under the viewport top holds through a fill that lands ABOVE a reader standing INSIDE the head gap. The fill is the cancel road's
-// (deterministic, the same fillInPlace a page fill takes): a deep link into turn 8 asks its window (HELD), the notice is clicked away so
+// (deterministic, the same fillInPlace a page fill takes): a deep link into turn 60 asks its window (HELD), the notice is clicked away so
 // nobody is going to that window, the reader scrolls deep into the gap (no row on screen), the window is released and fills in place above
 // them; the point under the viewport top, named as a turn, must move by less than a turn (the old view-coordinate compensation carried it
 // about 2.6 turns; 81c0dca5 about 2.8).
 const sentAt6 = await page.evaluate(() => window.__sent.length);
 await page.evaluate(() => { window.__hold.add("loadAround"); });
 const around6 = await sentOf("loadAround");
-await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: "11111111-2222-3333-4444-" + pad(2 * 8), anchorT: cfg.base + 2 * 8 });
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: "11111111-2222-3333-4444-" + pad(2 * 60), anchorT: cfg.base + 2 * 60 });   // turn 60: its window (about turns 25 to 95) lands ABOVE a reader standing near turn 120, and clear of the other roads' targets
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, around6, { timeout: 8000 }).catch(() => {});
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
 const heldAsk6 = await page.evaluate(() => (window.__heldRaw || []).length);
 await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });   // the notice clicked away: the reply will fill in place
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
-await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.round(gTop + Math.min(8000, (g ? g.offsetHeight : 9000) * 0.6)); });   // deep into the head gap, no row on screen
+await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.round(gTop + (g ? g.offsetHeight : 9000) * 0.6); });   // about turn 117 of 195, deep into the head gap, no row on screen
 await painted();
 const inGap6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); const rows = Array.from(c.querySelectorAll(".turn[data-uuid]")).filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; }).length; const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; const g = rs && rs.find((r) => r.kind === "gap"); return { top: c.scrollTop, rowsOnScreen: rows, gap: g ? { lo: g.lo, hi: g.hi } : null }; });
 const point6Before = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
@@ -72,6 +72,7 @@ await page.evaluate(() => { window.__hold.delete("loadAround"); window.__release
 await page.waitForFunction((n0) => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.filter((r) => r.kind === "run").length > n0; }, (regionsBefore6 || []).filter((r) => r.kind === "run").length, { timeout: 10000 }).catch(() => {});
 await painted();
 const point6After = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
+const after6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); return { top: c.scrollTop, sh: c.scrollHeight, spacerTop: (document.querySelector("#content .tx-spacer-top") || {}).offsetHeight || 0, regions: typeof window.__rompRegions === "function" ? window.__rompRegions() : null, gaps: Array.from(document.querySelectorAll("#content .tx-gap")).map((g) => { const r = g.getBoundingClientRect(); return { lo: Number(g.dataset.lo), hi: Number(g.dataset.hi), y0: Math.round(r.top - cr.top + c.scrollTop), h: g.offsetHeight }; }), rows: c.querySelectorAll(".turn[data-uuid]").length }; });
 const fillWrites6 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill").map((m) => ({ b: m.data.before, a: m.data.after })), sentAt6);
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight; });   // back to the tail: the roads after start from the bottom as they always did
 await painted();
@@ -165,7 +166,7 @@ await page.waitForFunction((n) => (window.__sent.filter((m) => m.type === "loadA
 const reask5 = (await asks5()) - asksBefore5;
 const reNotice5 = (await state()).notice;
 const resident5 = resBefore5;
-process.stdout.write("RESULT:" + JSON.stringify({ inGap6, heldAsk6, point6Before, point6After, fillWrites6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, redialAsk5, redialed5, gapLo5: gapLo5Out, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
+process.stdout.write("RESULT:" + JSON.stringify({ inGap6, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, redialAsk5, redialed5, gapLo5: gapLo5Out, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 130, bootTop: boot.top }) + "\n");
