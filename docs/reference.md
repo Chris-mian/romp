@@ -1545,7 +1545,21 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   names), so the top stages sum to `s`; `splitFailed` counts a split the
   bookkeeping could not close. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
-  stage without the kernel alive, and `parse`, the assembly's road counters at
+  stage without the kernel alive; `firstCycleStacks`, the pusher's stack
+  sampled through the first cycle only, once a second for the first thirty
+  samples and every five seconds after, so the sixty-row cap covers three
+  minutes and a long cycle shows where it ended (each row the seconds into
+  the cycle, the stage mark and the eight innermost frames as "function
+  (file:line)", the /perf sample's shape, no session content), by a daemon
+  thread that ends with the cycle and whose start degrades to no samples
+  when a thread cannot be started; `firstCycleStacksFailed` counts walks
+  that raised, so a short list is not mistaken for a fast cycle. The cost
+  is one frame walk a sample (about 7 us) and about 330 bytes a sample on
+  the row (20 KB for sixty, 30 KB at worst) in a ledger with no rotation
+  that its readers slice from the tail, so the file grows by that once per
+  boot whose first cycle ran that long. The sampler exists because two live
+  reads of a slow boot missed the cycle (the watch's poll was slower than
+  it); and `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood
@@ -1665,7 +1679,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `judge-index`, `judge-triage` and the other tiers' pool workers, `pool`
   for an unprefixed pool worker, `thread` for a default name with no target,
   `pusher`, `producer`, `index`, `triage`, `parse-warm`, `boot-warm`,
-  `sdk-boot`, `main`; never a session's name, sid, host or path (the ident
+  `sdk-boot`, `first-cycle-sampler`, `main`; never a session's name, sid, host or path (the ident
   keeps two workers sharing a kind apart). Each row has `self` (the thread building the
   sample), `stage` (the thread's current stage mark: the pusher's
   `jobs.<job>` or `push`, a handler's `connect`, `null` outside one) and
