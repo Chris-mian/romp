@@ -58592,13 +58592,18 @@ class Handler(BaseHTTPRequestHandler):
                 with _client_lock(client):
                     _cur_base = (client.get("echat") or {}).get(sid)
                 _reply_type = {"loadOlder": "chatHead", "loadAround": "chatWindow", "loadNewer": "chatMore"}[msg["type"]]
+                # a reply the kernel could not build is a FAULT, not a verdict on the anchor (T402 round two, low 3): it carries the
+                # ask's own key back under the name the page reads (beforeUuid, anchor, afterUuid), so the page can match it to its
+                # wait and end it without re-basing or saying "couldn't locate"
+                _keys = {"loadOlder": ("beforeUuid", "before"), "loadAround": ("anchor", "uuid"), "loadNewer": ("afterUuid", "after")}[msg["type"]]
+                _fault = lambda why: {"type": _reply_type, "id": sid, _keys[0]: msg.get(_keys[1]), "missing": True, "fault": True, "error": why}
                 try:
                     reply = _chat_history_reply(sid, msg, int(time.time()), base=_cur_base if isinstance(_cur_base, dict) else None)
                 except Exception as e:                    # the ask is answered even so (T402): the page waits on the reply to end its
                     sys.stderr.write("%s: %s\n" % (msg.get("type"), traceback.format_exc()))   # loading pill, and an unanswered ask left it on for good
-                    reply = {"type": _reply_type, "id": sid, "missing": True, "error": "%s: %s" % (type(e).__name__, e)}
+                    reply = _fault("%s: %s" % (type(e).__name__, e))
                 if reply is None:                         # no session or no build to answer from (T402): say so, never silence
-                    reply = {"type": _reply_type, "id": sid, "missing": True, "error": "no session to answer from"}
+                    reply = _fault("no session to answer from")
                 if reply is not None:
                     with _client_lock(client):
                         base = reply.pop("_base", None)
@@ -58621,8 +58626,12 @@ class Handler(BaseHTTPRequestHandler):
             # Browser scrolled back to the top of the loaded tail and there's older history on disk → ship the
             # previous WIRE_CHUNK events so it can prepend them (the wire tail-windowing scroll-back, the user
             # 2026-06-25). build_session is cache-backed; we just slice + send the older range, no push cycle.
+            # …and this wire answers every ask too (T402 round two, low 2): a head already reached is an empty chunk from 0, a build that
+            # is empty or raises is a FAULT carrying the ask's `before`, so the page's wait ends whatever happened here
+            sid = str(msg.get("id")); before = 0
             try:
-                sid = str(msg["id"]); before = int(msg.get("before") or 0)
+                before = int(msg.get("before") or 0)
+                reply = None
                 if before > 0:
                     try:
                         m = build_session(sid, int(time.time()))
@@ -58632,10 +58641,18 @@ class Handler(BaseHTTPRequestHandler):
                     if evs:
                         before = min(before, len(evs)); frm = max(0, before - WIRE_CHUNK)
                         if frm < before:
-                            client["send"](json.dumps({"type": "chatHead", "id": sid, "from": frm,
-                                                       "before": before, "events": evs[frm:before]}))
-            except Exception:
+                            reply = {"type": "chatHead", "id": sid, "from": frm, "before": before, "events": evs[frm:before]}
+                    if reply is None:
+                        reply = {"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "no build to answer from"}
+                else:
+                    reply = {"type": "chatHead", "id": sid, "from": 0, "before": before, "events": []}   # nothing older: the head
+                client["send"](json.dumps(reply))
+            except Exception as e:
                 sys.stderr.write("loadOlder: %s\n" % traceback.format_exc())
+                try:
+                    client["send"](json.dumps({"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "%s: %s" % (type(e).__name__, e)}))
+                except Exception:
+                    pass
             return
         if msg and msg.get("type") == "loadEpisode" and msg.get("id"):
             # The "Conversation cleared" card was expanded → ship the pre-clear episode's events (a one-shot

@@ -21,6 +21,7 @@ import os
 import sys
 import time
 import unittest
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
@@ -40,7 +41,16 @@ await page.evaluate(() => {
 const pill = () => page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); return { present: !!p, visible: !!p && p.isConnected && getComputedStyle(p).display !== "none", text: p ? p.textContent : null, seen: window.__pillSeen }; });
 const atBottom = () => page.evaluate(() => { const c = document.getElementById("content"); return { top: c.scrollTop, max: c.scrollHeight - c.clientHeight, atBottom: c.scrollHeight - c.scrollTop - c.clientHeight < 2 }; });
 // the drop hook rides the same send wrapper the head installs: a frame whose type is in __drop is recorded and not sent
-await page.evaluate(() => { const orig = WebSocket.prototype.send; WebSocket.prototype.send = function (d) { window.__ws = this; try { const m = JSON.parse(d); if (m && m.type && window.__drop.has(m.type)) { window.__sent.push(m); return; } } catch (e) {} return orig.call(this, d); }; });
+await page.evaluate(() => { const orig = WebSocket.prototype.send; window.__hold = new Set(); window.__heldRaw = []; window.__in = [];
+  window.addEventListener("message", (e) => { const m = e.data; if (m && m.type && e.source !== window) window.__in.push(m.type); }, true);
+  WebSocket.prototype.send = function (d) { window.__ws = this; try { const m = JSON.parse(d); if (m && m.type && window.__drop.has(m.type)) { window.__sent.push(m); return; } if (m && m.type && window.__hold.has(m.type)) { window.__sent.push(m); window.__heldRaw.push(d); return; } } catch (e) {} return orig.call(this, d); };
+  window.__release = () => { const ws = window.__ws; const held = window.__heldRaw; window.__heldRaw = []; for (const d of held) orig.call(ws, d); return held.length; }; });
+// the page opens on the NEWEST session, the second one this lab writes after the boot (as a session created while the kernel runs
+// takes the strip's focus); the roads are the first session's, so its tab is activated first and its view lands at the bottom
+await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); if (t && !t.classList.contains("active")) t.click(); }, cfg.sid);
+await page.waitForFunction((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid, { timeout: 8000 });
+await page.waitForFunction(() => { const c = document.getElementById("content"); return c.scrollHeight > c.clientHeight + 2 && c.scrollHeight - c.scrollTop - c.clientHeight < 2; }, null, { timeout: 8000 });
+await page.waitForTimeout(500);
 // ROAD 3 first, on the fresh page at the bottom: live turns arrive, the pill never shows
 const start = await pill(); const b0 = await atBottom();
 for (let i = 0; i < 3; i++) {
@@ -50,7 +60,31 @@ for (let i = 0; i < 3; i++) {
 await page.waitForTimeout(1500);
 const grown = await pill(); const bGrown = await atBottom();
 const liveRows = await page.evaluate(() => document.querySelectorAll('#content .turn-user').length);
-// ROAD 4, second, on the page still at its fresh tail (the user's first sentence: at the bottom it said loading): a deep link lands the reader in a history run the page holds
+// ROAD 6, second, while older history is still on the server (round two, medium 1): two tabs. The reader's older ask on tab A is dropped at the socket, so its wait stands; on
+// tab B, which waits on nothing, the pill must not show, and a click there is inert; back on A the pill is there, and the click ends it.
+await page.evaluate(() => { window.__drop.add("loadOlder"); });
+const olderBefore6 = await sentOf("loadOlder");
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOlder").length > n, olderBefore6, { timeout: 8000 }).catch(() => {});
+await page.waitForFunction(() => { const p = document.querySelector(".tx-loading-pill"); return !!p && getComputedStyle(p).display !== "none"; }, null, { timeout: 4000 }).catch(() => {});
+const onA6 = await pill();
+const asked6 = { older: (await sentOf("loadOlder")) - olderBefore6, state: await state(), sentTail: await page.evaluate(() => window.__sent.slice(-8).map((m) => m.type + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") : ""))) };
+const tabB = await page.evaluate((sid2) => { const t = document.querySelector('#tabs .tab[data-id="' + sid2 + '"]'); if (!t) return false; t.click(); return true; }, cfg.sid2);
+await page.waitForFunction((sid2) => { const t = document.querySelector('#tabs .tab[data-id="' + sid2 + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid2, { timeout: 8000 }).catch(() => {});
+await page.waitForTimeout(400);
+const onB6 = await pill();
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });   // inert on B: nothing to end there
+await page.waitForTimeout(300);
+const onBClicked6 = await pill();
+await page.evaluate((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); if (t) t.click(); }, cfg.sid);
+await page.waitForFunction((sid) => { const t = document.querySelector('#tabs .tab[data-id="' + sid + '"]'); return !!t && t.classList.contains("active"); }, cfg.sid, { timeout: 8000 }).catch(() => {});
+await page.waitForTimeout(400);
+const backOnA6 = await pill();
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });
+await page.waitForFunction(() => { const p = document.querySelector(".tx-loading-pill"); return !p || getComputedStyle(p).display === "none"; }, null, { timeout: 4000 }).catch(() => {});
+const endedOnA6 = await pill();
+await page.evaluate(() => { window.__drop.delete("loadOlder"); });   // the roads after ask with a live socket
+// ROAD 4, third, on the page still at its fresh tail (the user's first sentence: at the bottom it said loading): a deep link lands the reader in a history run the page holds
 // apart from the live tail; at that run's BOTTOM the page asks the kernel for the newer turns, an ask the reader never made and
 // is not waiting on, so no pill shows for it (before T402, requestNewer showed one)
 // the target: the hundredth question, deep in history the fresh page does not hold (the boot holds the wire tail) and clear of the
@@ -79,6 +113,26 @@ await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", 
 await page.waitForFunction(() => { const c = document.getElementById("content"); return c.scrollHeight - c.scrollTop - c.clientHeight < 2; }, null, { timeout: 8000 }).catch(() => {});
 await page.waitForTimeout(800);
 const backLive4 = await atBottom();
+// ROAD 5 (round two, medium 2 and low 1): a deep link into history the page does not hold asks for a window; the ask is HELD at the
+// socket; the reader clicks the pill away (the landing files its row as cancelled); the reply is then released. The late window must
+// insert nothing under the reader and move nothing: the reader's spot and their place at the tail are what they were.
+const deep5 = "11111111-2222-3333-4444-" + pad(2 * 30);
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const aroundBefore5 = await sentOf("loadAround"); const locateBefore5 = await page.evaluate(() => window.__sent.filter((m) => m.type === "locateDiag").length);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep5, anchorT: cfg.base + 2 * 30 });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore5, { timeout: 8000 }).catch(() => {});
+await page.waitForFunction(() => { const p = document.querySelector(".tx-loading-pill"); return !!p && getComputedStyle(p).display !== "none"; }, null, { timeout: 4000 }).catch(() => {});
+const shown5 = await pill(); const pos5 = await atBottom();
+await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.click(); });
+await page.waitForFunction(() => { const p = document.querySelector(".tx-loading-pill"); return !p || getComputedStyle(p).display === "none"; }, null, { timeout: 4000 }).catch(() => {});
+const clicked5 = await pill();
+const cancelled5 = await page.evaluate((n) => window.__sent.filter((m) => m.type === "locateDiag").slice(n).map((m) => ({ ok: m.ok, cancelled: m.cancelled === true, anchor: m.anchor })), locateBefore5);
+const afterClick5 = await atBottom();
+await page.evaluate(() => { window.__hold.delete("loadAround"); });
+const released5 = await page.evaluate(() => window.__release());
+await page.waitForFunction(() => window.__in.includes("chatWindow"), null, { timeout: 8000 }).catch(() => {});
+await page.waitForTimeout(1500);   // the reply's adoption, its re-base ask and the frame that answers it
+const afterReply5 = await atBottom(); const pillAfterReply5 = await pill();
 // ROAD 1: the ask goes out and the socket dies with it in flight
 await page.evaluate(() => { window.__drop.add("loadOlder"); });
 const olderBefore1 = await sentOf("loadOlder");
@@ -115,17 +169,40 @@ await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadOl
 const olderAfter2 = await sentOf("loadOlder");
 const reasked2 = await pill();
 await browser.close();
-process.stdout.write("RESULT:" + JSON.stringify({ start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4 }) + "\n", () => process.exit(0));
+process.stdout.write("RESULT:" + JSON.stringify({ start, b0, grown, bGrown, liveRows, olderBefore1, asked1, down1, reopened, back1, bBack1, olderBefore2, shown2, clicked2, olderAfter2, reasked2, deepLanded4, deepResident4, kFirst4: kFirst, asks4, landed4, backLive4, newerBefore4, newerAfter4, bottom4, pill4, shown5, pos5, clicked5, cancelled5, afterClick5, released5, afterReply5, pillAfterReply5, onA6, asked6, tabB, onB6, onBClicked6, backOnA6, endedOnA6 }) + "\n", () => process.exit(0));
 """
 
 
+SID2 = "33333333-4444-5555-6666-000000000099"   # a second session, for the two-tab road (round two, medium 1)
+
+
 class ServedLoadingPill(WindowLab):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # a second session beside the first: its name, its backend record and a short transcript in the same project, so the
+        # kernel lists a second tab; written after the boot, which the kernel picks up like any session created while it runs
+        cwd = os.path.join(cls.lab, "proj")
+        Path(cls.state, "names", SID2).write_text("api\t%s\t\t\n" % cwd)
+        Path(cls.state, "sdk", SID2 + ".json").write_text(json.dumps(
+            {"sid": SID2, "name": "api", "cwd": cwd, "mode": "auto", "effort": "high",
+             "lastSid": SID2, "alive": True, "model": "claude-fable-5-1", "liveModel": "Fable 5.1"}))
+        proj = os.path.dirname(cls.transcript)
+        recs, prev, base = [], None, 1789000000 + 5000
+        for k in range(4):
+            u = "77777777-8888-9999-aaaa-%012d" % (2 * k); a = "88888888-9999-aaaa-bbbb-%012d" % (2 * k + 1)
+            tu = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(base + 2 * k)); ta = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(base + 2 * k + 1))
+            recs.append({"type": "user", "uuid": u, "parentUuid": prev, "timestamp": tu, "sessionId": SID2, "message": {"role": "user", "content": "api question %d" % k}})
+            recs.append({"type": "assistant", "uuid": a, "parentUuid": u, "timestamp": ta, "sessionId": SID2, "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "end_turn", "content": [{"type": "text", "text": "api answer %d" % k}]}})
+            prev = a
+        Path(proj, SID2 + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+
     _r = None
 
     def _result(self):
         cls = type(self)
         if cls._r is None:
-            cls._r = self._drive(DRIVER, "loading-pill", extra={"liveU": LIVE_U, "liveA": LIVE_A, "turns": TURNS, "lastUuid": "22222222-3333-4444-5555-%012d" % (2 * TURNS - 1)})
+            cls._r = self._drive(DRIVER, "loading-pill", extra={"sid2": SID2, "liveU": LIVE_U, "liveA": LIVE_A, "turns": TURNS, "lastUuid": "22222222-3333-4444-5555-%012d" % (2 * TURNS - 1)})
         print("RESULT:" + json.dumps(cls._r), file=sys.stderr)
         return cls._r
 
@@ -165,6 +242,28 @@ class ServedLoadingPill(WindowLab):
         self.assertEqual(r["pill4"]["seen"], r["landed4"]["seen"], "the newer ask at the run's bottom showed the pill for no moment: %r → %r" % (r["landed4"], r["pill4"]))
         self.assertFalse(r["pill4"]["visible"], "…and none is visible now: %r" % r["pill4"])
         self.assertTrue(r["backLive4"]["atBottom"], "the live chip returned the reader to the tail for the roads after: %r" % r["backLive4"])
+
+    def test_a_click_on_a_landings_ask_files_the_row_as_cancelled_and_the_late_reply_moves_nothing(self):
+        # round two, medium 2 and low 1: the ask held at the socket, the pill clicked away, the reply released afterwards
+        r = self._result()
+        self.assertTrue(r["shown5"]["visible"], "the landing's ask showed the pill: %r" % r["shown5"])
+        self.assertFalse(r["clicked5"]["visible"], "the click hid it: %r" % r["clicked5"])
+        self.assertTrue(any(c["cancelled"] and c["ok"] is False and c["anchor"] for c in r["cancelled5"]), "the landing filed its row as cancelled at the click: %r" % r["cancelled5"])
+        self.assertEqual(r["afterClick5"]["top"], r["pos5"]["top"], "the click moved nothing: %r → %r" % (r["pos5"], r["afterClick5"]))
+        self.assertGreaterEqual(r["released5"], 1, "the held ask went out after the click")
+        self.assertEqual(r["afterReply5"]["top"], r["afterClick5"]["top"], "the late reply moved nothing: %r → %r" % (r["afterClick5"], r["afterReply5"]))
+        self.assertEqual(r["afterReply5"]["atBottom"], r["afterClick5"]["atBottom"], "…and the reader's place at the tail is what it was")
+        self.assertFalse(r["pillAfterReply5"]["visible"], "no pill after the reply: %r" % r["pillAfterReply5"])
+
+    def test_the_pill_is_the_active_tabs_own_wait_and_a_click_ends_it_whatever_the_other_tab_holds(self):
+        # round two, medium 1: two tabs; the wait on A never shows on B and B's click is inert; back on A the pill stands and ends
+        r = self._result()
+        self.assertTrue(r["tabB"], "the second tab was on the strip")
+        self.assertTrue(r["onA6"]["visible"], "the dropped ask on A showed the pill: %r" % r["onA6"])
+        self.assertFalse(r["onB6"]["visible"], "on B, with nothing outstanding, no pill: %r" % r["onB6"])
+        self.assertFalse(r["onBClicked6"]["visible"], "a click on B changes nothing: %r" % r["onBClicked6"])
+        self.assertTrue(r["backOnA6"]["visible"], "back on A the wait still stands: %r" % r["backOnA6"])
+        self.assertFalse(r["endedOnA6"]["visible"], "the click on A ends it: %r" % r["endedOnA6"])
 
 
 if __name__ == "__main__":

@@ -64,6 +64,49 @@ class HistoryAskAlwaysAnswered(unittest.TestCase):
         self.assertTrue(fr[0].get("missing"))
         self.assertIn("synthetic fault", fr[0].get("error", ""))
 
+    # ---- round two (lows 2 and 3): a reply the kernel could not build is a FAULT carrying the ask's own key, on both wires ----
+
+    def test_a_fault_reply_carries_the_asks_key_under_the_name_the_page_reads_and_says_fault(self):
+        for kind, reply_type, ask_key, reply_key in (("loadOlder", "chatHead", "before", "beforeUuid"),
+                                                     ("loadAround", "chatWindow", "uuid", "anchor"),
+                                                     ("loadNewer", "chatMore", "after", "afterUuid")):
+            client, sent = self.client()
+            km.Handler._dispatch_ws(None, {"type": kind, "id": UNKNOWN, ask_key: "22222222-3333-4444-5555-000000000010"}, client)
+            fr = [f for f in self.frames(sent) if f.get("type") == reply_type]
+            self.assertEqual(len(fr), 1, kind)
+            self.assertTrue(fr[0].get("fault"), "%s: a fault, not a verdict on the anchor: %r" % (kind, fr[0]))
+            self.assertEqual(fr[0].get(reply_key), "22222222-3333-4444-5555-000000000010", "%s: the ask's key rides back as %s: %r" % (kind, reply_key, fr[0]))
+
+    def test_the_index_wire_answers_every_ask_too(self):
+        # the legacy loadOlder (an integer `before`, the index wire): a head already reached is an empty chunk from 0; an empty build
+        # and a raising build are FAULTS carrying the ask's `before`, so the page's wait ends whatever happened here
+        client, sent = self.client()
+        km.Handler._dispatch_ws(None, {"type": "loadOlder", "id": UNKNOWN, "before": 0}, client)
+        fr = [f for f in self.frames(sent) if f.get("type") == "chatHead"]
+        self.assertEqual(len(fr), 1, "before 0: answered: %r" % self.frames(sent))
+        self.assertEqual((fr[0].get("from"), fr[0].get("before"), fr[0].get("events")), (0, 0, []), "nothing older: the head: %r" % fr[0])
+        self.assertFalse(fr[0].get("missing"), fr[0])
+        client, sent = self.client()
+        km.Handler._dispatch_ws(None, {"type": "loadOlder", "id": UNKNOWN, "before": 40}, client)
+        fr = [f for f in self.frames(sent) if f.get("type") == "chatHead"]
+        self.assertEqual(len(fr), 1, "an empty build: answered: %r" % self.frames(sent))
+        self.assertTrue(fr[0].get("fault") and fr[0].get("missing"), "a fault, with the ask's before: %r" % fr[0])
+        self.assertEqual(fr[0].get("before"), 40, fr[0])
+        client, sent = self.client()
+        saved = km.build_session
+        def boom(*a, **k):
+            raise RuntimeError("synthetic fault in the build")
+        km.build_session = boom
+        try:
+            km.Handler._dispatch_ws(None, {"type": "loadOlder", "id": UNKNOWN, "before": 40}, client)
+        finally:
+            km.build_session = saved
+        fr = [f for f in self.frames(sent) if f.get("type") == "chatHead"]
+        self.assertEqual(len(fr), 1, "a raising build: answered: %r" % self.frames(sent))
+        self.assertTrue(fr[0].get("fault"), fr[0])
+        self.assertEqual(fr[0].get("before"), 40, fr[0])
+        self.assertIn("synthetic fault", fr[0].get("error", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

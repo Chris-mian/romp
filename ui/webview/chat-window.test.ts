@@ -124,7 +124,10 @@ test("render.ts asks for older history only on an upward move, marks each window
   assert.ok(around.includes("const nav = !relandAsk;") && around.includes("pendingWindowNav.set(sid, { nav,"), "a window ask records whether a navigation made it: every anchor landing but the re-land of the reader's own row across a rebuild");
   const keep = RENDER.slice(RENDER.indexOf("function keepPlaceAcrossWindow("), RENDER.indexOf("\n}\n", RENDER.indexOf("function keepPlaceAcrossWindow(")));
   assert.ok(keep.includes("relandAsk = true;\n  let landed = false;\n  try { landed = scrollToAnchor(keep.uuid); } finally { relandAsk = false; }"), "the re-land's own flag is set only around its landing (the reload restore shares the keep offset and must land)");
-  assert.equal((RENDER.match(/relandAsk = true;/g) || []).length, 1, "nothing else raises the flag");
+  // two raisers, both a re-land of the READER's own row: keepPlaceAcrossWindow's landing across a rebuild, and chatWindow's window asked
+  // around the reader's row after they clicked a landing's ask away (T402 round two, medium 2), whose reply restores that row at its offset
+  assert.equal((RENDER.match(/relandAsk = true;/g) || []).length, 2, "nothing else raises the flag");
+  assert.match(RENDER, /relandAsk = true;\s*\n\s*try \{ requestAround\(msg\.id, anchorUuid\); \} finally \{ relandAsk = false; \}/, "the cancelled ask's re-land holds the flag only around its own ask");
   assert.ok(around.includes('scrollDiagRow("windowask", {'), "…and files a diagnostic row under the scroll rows' per-minute budget: the report's rows had the landing but not the ask");
   assert.ok(RENDER.includes('| "unitchange" | "windowask", data: any): void {'), "the budgeted row kinds include it");
   assert.ok(around.indexOf("pendingWindowNav.set(sid, { nav,") < around.indexOf('type: "loadAround"'), "the mark is set before the ask goes out");

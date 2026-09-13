@@ -13726,27 +13726,37 @@ function showLoadingPill(): void {
   loadingPillEl.style.display = "";
 }
 function hideLoadingPill(): void { if (loadingPillEl) loadingPillEl.style.display = "none"; }
-/** End the wait on the active session's older-history ask (T402): the in-flight mark goes, so the next scroll or click may ask
- *  again; a landing waiting on that ask is dropped (its row files as cancelled); the pill hides. `why`: the click, or the socket's
- *  reopen (every ask in flight died with the old socket: its reply comes on no socket, and the pill stayed on for the rest of
- *  the page's life, the shape the user saw at the tail). */
-function cancelOlderWait(why: "click" | "wsup"): void {
-  const sids = why === "wsup" ? [...loadingOlder] : (activeId ? [activeId] : []);
+/** End the wait on a history ask (T402). `click`: the ACTIVE tab's wait, whatever the other tabs hold (round two, medium 1); the
+ *  in-flight fetch is not dropped but re-pointed at the reader's own row with its offset (releaseSeekFetch's move), so the chunk, if
+ *  it still comes, arrives as a pure prepend and moves nothing, never a yank to the abandoned target (round two, medium 2); a landing
+ *  waiting on that ask files its row as cancelled, whether or not landActive already cleared the landing's own mark while the ask
+ *  was in flight (round two, low 1), and is dropped. `flip`: the socket died, so every ask made before the flip died with it (its
+ *  reply comes on no socket); the asks the shim queued during the outage and flushes at the reopen keep their marks (round two,
+ *  low 4: the generation each wait was asked under). */
+function cancelOlderWait(why: "click" | "flip"): void {
+  const sids = why === "flip" ? [...loadingOlder].filter((sid) => (askedGen.get(sid) ?? -1) < askGen) : (activeId ? [activeId] : []);
   for (const sid of sids) {
+    if (!loadingOlder.has(sid)) continue;
     const waitingLanding = pendingOlderAnchor.get(sid);
-    loadingOlder.delete(sid); pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); pendingWindowNav.delete(sid);
-    if (why === "click" && sid === activeId && waitingLanding && pendingAnchor === waitingLanding) {
+    const wasLanding = waitingLanding != null && !pendingOlderKeepY.has(sid);   // a deep link's ask (a scroll-back keeps its offset)
+    releaseSeekFetch(sid);   // the fetch's anchor becomes the reader's own row (before the in-flight mark goes: the move reads it)
+    if (why === "click" && pendingWindowNav.has(sid)) cancelledAsks.add(sid);   // a window ask: its reply keeps the reader where they are (chatWindow)
+    loadingOlder.delete(sid); askedGen.delete(sid); readerWaits.delete(sid); pendingWindowNav.delete(sid);
+    if (why === "click" && wasLanding) {
       landTrail.push("cancelled");
       vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: waitingLanding, anchorT: pendingAnchorT ?? undefined, kind: pendingAnchorKind ?? undefined, cancelled: true });
-      pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; anchorPendingOlder = false;
+      if (pendingAnchor === waitingLanding) { pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; }
+      anchorPendingOlder = false;
       clearSeek();
     }
   }
-  if (loadingOlder.size === 0) hideLoadingPill();
+  syncLoadingPill();
 }
-// a reopened socket (the shim's romp:wsup) ends every wait: the asks in flight died with the old socket (T402); a landing still
-// pending re-asks on the next render pass, since its in-flight mark is gone
-window.addEventListener("romp:wsup", () => cancelOlderWait("wsup"));
+// the socket's death ends the asks in flight (their replies come on no socket): the generation moves, and the reopen FRAME, delivered
+// in frame order like the skeleton machine's socket-flip marker, ends the waits asked before it; a redial the shim abandoned fires no
+// wsdown, so the frame moves the generation itself when none did (T402 round two, low 4)
+window.addEventListener("romp:wsdown", () => { askGen++; flipPending = true; });
+function onSocketFlipFrame(): void { if (!flipPending) askGen++; flipPending = false; cancelOlderWait("flip"); }
 // the served geometry lab (tests/test_loading_pill_anchor_browser.py) shows the pill on demand: its real
 // showings last the span of a fetch, too brief to measure against the strip
 if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLoadingPill(); else hideLoadingPill(); };
@@ -16804,6 +16814,7 @@ function setActive(id: string, anchor?: string, anchorT?: number, anchorKind?: s
   activeId = id;
   vanishedId = null; vanishedWhy = null; vanishedName = ""; wantActive = null; wantActiveGone = null; vanishedByDecline = false;   // any activation ends the unfocused state (T357)
   updateLivePaused();   // the entering tab's own detached state shows or hides the strip (round 2, item 7)
+  syncLoadingPill();    // the pill is the ACTIVE tab's reader wait (T402 round two, medium 1)
   persistActive(id);   // the name rides beside the id: after a reload the unfocused body names the awaited tab before its host relays (T357)
   renderTabs();
   showActive();
@@ -17186,6 +17197,20 @@ function chatTail(msg: any) {
 // The kernel replies with the previous chunk; PREPEND it to the resident tail (lowering headFrom) and re-
 // anchor on the row the user was at, so the older content appears ABOVE without the view jumping.
 const loadingOlder = new Set<string>();                 // sessions with a loadOlder in flight
+// T402 round two (medium 1): the pill is PAGE-WIDE and the waits are PER TAB, so the pill shows for the ACTIVE tab's own
+// outstanding READER ask only (a scroll-back's older chunk, a deep link's older chunk or window), never for the walk toward the
+// tail (the page's own ask, in loadingOlder alone), and is re-evaluated whenever a wait starts or ends and whenever the active tab
+// changes; a click ends the active tab's wait and hides the pill whatever the other tabs hold. Each wait carries the socket
+// generation it was asked under (askGen): a socket flip ends the waits asked before it and leaves the asks the shim queued
+// during the outage, which it flushes at the reopen, to their replies (low 4).
+const readerWaits = new Map<string, number>();          // sid → askGen at the ask, for the reader's own history asks
+const askedGen = new Map<string, number>();             // sid → askGen at the ask, for every history ask in loadingOlder
+let askGen = 0;                                         // bumped at the socket's death (romp:wsdown) or, failing that, at its reopen frame
+let flipPending = false;                                // a wsdown seen since the last wsup frame
+const cancelledAsks = new Set<string>();                // sids whose window ask the reader clicked away: its reply may not move them (round two, medium 2)
+function syncLoadingPill(): void { if (activeId && readerWaits.has(activeId)) showLoadingPill(); else hideLoadingPill(); }
+function noteAsk(sid: string, reader: boolean): void { loadingOlder.add(sid); askedGen.set(sid, askGen); if (reader) readerWaits.set(sid, askGen); syncLoadingPill(); }
+function endAsk(sid: string): void { loadingOlder.delete(sid); askedGen.delete(sid); readerWaits.delete(sid); syncLoadingPill(); }
 const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to re-anchor on when the chunk lands
 // sid → the on-screen y that uuid must come back to. PRESENT ⇒ the fetch was a scroll-back (requestOlder) and
 // the arrival is POSITION PRESERVATION; ABSENT ⇒ it was a deep-link (fetchOlderForAnchor) and the arrival is a
@@ -17193,17 +17218,17 @@ const pendingOlderAnchor = new Map<string, string>();   // sid → the uuid to r
 // jumped (the user 2026-08-02).
 const pendingOlderKeepY = new Map<string, number>();
 function chatHead(msg: any) {
-  loadingOlder.delete(msg.id);
-  hideLoadingPill();
+  endAsk(msg.id);
   const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); };
   const s = sessions.get(msg.id);
   if (!s) { forget(msg.id); return; }
+  if (msg.fault) { forget(msg.id); return; }   // the kernel could not answer this time (T402 round two, low 3): the wait ends, nothing is re-based, the next scroll asks again
   const before = msg.before | 0, from = msg.from | 0;
   const older = (msg.events || []) as ChatEvent[];
   if (typeof msg.beforeUuid === "string") {
     // proto 2 (T323 stage 4b): the reply names the resident oldest; a stale one (the oldest moved on) is ignored,
     // a missing anchor is the honest end of the search, and `more: false` is the head: the count exists from here
-    if (msg.missing) { forget(msg.id); requestFullSession(msg.id, "gap"); return; }   // the anchor is gone from the transcript (a /clear, a fork): re-base
+    if (msg.missing) { forget(msg.id); requestFullSession(msg.id, "gap"); return; }   // the anchor is gone from the transcript (a /clear, a fork): re-base (a FAULT never reaches here: it returned above)
     const next = prependHead(s.events as { uuid?: string }[], msg.beforeUuid, older as { uuid?: string }[]);
     if (!next) { forget(msg.id); return; }
     s.events = next as ChatEvent[];
@@ -17211,6 +17236,7 @@ function chatHead(msg: any) {
     if (msg.more === false) { s.headKnown = true; s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0); }
   } else {
     if (before !== (s.headFrom ?? 0)) { forget(msg.id); return; }   // stale / overlapping → ignore
+    if (msg.missing) { forget(msg.id); return; }                    // the index wire's fault reply (T402 round two, low 2): the head is not reached, the wait just ends
     if (older.length) s.events = older.concat(s.events);
     s.headFrom = from;
   }
@@ -17242,8 +17268,7 @@ function fetchOlderForAnchor(sid: string, uuid: string): boolean {
   if (!s || !olderOnServer(s) || loadingOlder.has(sid)) return false;
   pendingOlderAnchor.set(sid, uuid);
   pendingOlderKeepY.delete(sid);   // a DEEP-LINK: land it properly (top-align + flash), not offset-preserved
-  loadingOlder.add(sid);
-  showLoadingPill();
+  noteAsk(sid, true);
   vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.proto === 2 ? s.firstUuid : s.headFrom });
   return true;
 }
@@ -17271,8 +17296,7 @@ function requestOlder(sid: string, v: View, content: HTMLElement): void {
   // keepY on EITHER branch: this arrival must never jump. With no capture (nothing visible at the viewport
   // top) 0 restores the fallback row to the top, which is where it already is.
   if (anchor) { pendingOlderAnchor.set(sid, anchor); pendingOlderKeepY.set(sid, keep?.y ?? 0); }
-  loadingOlder.add(sid);
-  showLoadingPill();
+  noteAsk(sid, true);
   vscodeApi?.postMessage({ type: "loadOlder", id: sid, before: s.proto === 2 ? s.firstUuid : s.headFrom });
 }
 
@@ -17305,8 +17329,7 @@ function requestAround(sid: string, uuid: string): boolean {
   scrollDiagRow("windowask", { sid, nav, kind, keep: pendingAnchorKeepY != null, reland: relandAsk, trail: landTrail.slice(-4), detached: !!s.detached, atBottom: !!cAsk && atBottom(cAsk) });
   pendingOlderAnchor.set(sid, uuid);
   pendingOlderKeepY.delete(sid);
-  loadingOlder.add(sid);
-  showLoadingPill();
+  noteAsk(sid, true);
   vscodeApi?.postMessage({ type: "loadAround", id: sid, uuid });
   return true;
 }
@@ -17315,16 +17338,23 @@ function requestAround(sid: string, uuid: string): boolean {
 function requestNewer(sid: string): void {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || !s.detached || !s.lastUuid || loadingOlder.has(sid)) return;
-  loadingOlder.add(sid);   // no pill: the walk toward the tail is the page's own ask, not a reader waiting on older history (T402)
+  noteAsk(sid, false);   // no pill, and no hold on it either: the walk toward the tail is the page's own ask, not a reader waiting on older history (T402)
   vscodeApi?.postMessage({ type: "loadNewer", id: sid, after: s.lastUuid });
 }
 function chatWindow(msg: any) {
-  loadingOlder.delete(msg.id);
-  hideLoadingPill();
+  endAsk(msg.id);
   const s = sessions.get(msg.id);
   const anchorUuid = pendingOlderAnchor.get(msg.id);
+  const keepY = pendingOlderKeepY.get(msg.id);   // present ⇒ the anchor is the READER's own row and the arrival preserves its offset (a cancelled ask, medium 2)
+  const cancelled = cancelledAsks.delete(msg.id);
   pendingOlderAnchor.delete(msg.id); pendingOlderKeepY.delete(msg.id);
   if (!s) return;
+  if (msg.fault) {
+    // the kernel could not answer this time (T402 round two, low 3): not a verdict on the anchor, so no "couldn't locate"; the
+    // landing stands down with its own word and the next click asks again
+    if (msg.id === activeId && pendingAnchor === anchorUuid) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-fault"); landToast("the history could not be loaded just now"); }
+    return;
+  }
   if (msg.missing || !(msg.events || []).length) {
     // the honest end of a deep link: the anchor is in no page the kernel can render
     if (msg.id === activeId && pendingAnchor === anchorUuid) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-missing"); landToast("couldn't locate this in the transcript"); }
@@ -17345,6 +17375,19 @@ function chatWindow(msg: any) {
   const ask = pendingWindowNav.get(msg.id) ?? null;
   const landing = windowLanding(detached, msg.id === activeId && !wasDetached, ask?.nav ?? false);
   pendingWindowNav.delete(msg.id);
+  // the reader clicked this ask's wait away (T402 round two, medium 2): the window may not move them. Attached, it is not adopted and
+  // the kernel re-bases on the tail (the reattach path below); detached, a window that holds their row is adopted and their row
+  // restored at its offset (keepY), and one that does not is dropped for a window around their own row, asked as a re-land
+  if (cancelled && msg.id === activeId && anchorUuid && !(msg.events || []).some((e: { uuid?: string; key?: string }) => keyOf(e) === anchorUuid)) {
+    reconcileOptimistic(s);
+    landTrail.push("window-cancelled");
+    if (!wasDetached) { anchorPendingOlder = false; reattachLive(msg.id, true); updateLivePaused(); return; }
+    relandAsk = true;
+    try { requestAround(msg.id, anchorUuid); } finally { relandAsk = false; }
+    pendingOlderKeepY.set(msg.id, keepY ?? 0);   // the re-land's reply restores the reader's row at its offset
+    updateLivePaused();
+    return;
+  }
   if (landing === "reattach") {
     // the kernel's base for this client is the window until the re-attach lands; a tail it pushes meanwhile misses its
     // afterUuid here and asks for a full frame as a gap, which requestFullSession drops while the re-attach ask is in
@@ -17366,10 +17409,12 @@ function chatWindow(msg: any) {
   const v = views.get(msg.id);
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) return;
-  const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
+  // a keep offset names the READER's own row (a cancelled ask re-pointed there, medium 2): the arrival restores it at that offset
+  // and moves nothing; otherwise the window's anchor, else the ask's
+  const target = (keepY != null && anchorUuid) ? anchorUuid : (typeof msg.anchor === "string" ? msg.anchor : anchorUuid);
   // the same landing re-armed, so the click's time and kind ride through (T386: the adoption used to reset them, and the
   // landing row lost the datum that ties it to the click); a window with no navigation behind it carries none
-  if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = ask?.t ?? null; pendingAnchorKind = ask?.kind ?? null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
+  if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = ask?.t ?? null; pendingAnchorKind = ask?.kind ?? null; flashedAnchor = null; pendingAnchorKeepY = keepY != null ? keepY : null; anchorPendingOlder = false; }
   showActive();
   updateLivePaused();
   window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));
@@ -17386,10 +17431,10 @@ function edgeCheckAfterWindow(sid: string): void {
   virtualizeToViewport();
 }
 function chatMore(msg: any) {
-  loadingOlder.delete(msg.id);
-  hideLoadingPill();
+  endAsk(msg.id);
   const s = sessions.get(msg.id);
   if (!s) return;
+  if (msg.fault) return;   // the kernel could not answer this time (T402 round two, low 3): the walked pages stay, the next edge check asks again
   if (msg.missing) { requestFullSession(msg.id, "gap"); return; }   // the run's newest event is gone from the transcript: re-base
   stripOptimistic(s);
   const next = appendMore(s.events as { uuid?: string }[], msg.afterUuid, (msg.events || []) as { uuid?: string }[]);
@@ -17822,7 +17867,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "chatEpisode") chatEpisode(m);
   else if (m.type === "subagent") applySubagentFrame(m);
   else if (m.type === "update") update(m);
-  else if (m.type === "wsup") { onSocketUp(skeletonTabs); skeletonDiagArmed = true; }   // the shim's socket-flip marker, in FRAME order: the dead socket's frames may still be draining from the FIFO when onopen fires (review find 2026-09-07)
+  else if (m.type === "wsup") { onSocketUp(skeletonTabs); skeletonDiagArmed = true; onSocketFlipFrame(); }   // the shim's socket-flip marker, in FRAME order: the dead socket's frames may still be draining from the FIFO when onopen fires (review find 2026-09-07)
   else if (m.type === "status") statusOnly(m);
   else if (m.type === "glossary" && typeof m.id === "string") {   // the session's glossary index (T351 stage 2): a new one re-links the view
     glossaries.set(m.id, m as GlossaryIndex);
