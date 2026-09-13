@@ -490,6 +490,9 @@ class NudgeWalkParseGate(unittest.TestCase):
             "_NUDGE_ASKER_ROWS_MAX",                # a constant
             "_views_dirty", "_pusher_wake",         # the writers' dirty mark and the pusher's wake (_mark_views_dirty): outputs of a
             #                                         block filed or lifted, never inputs to the verdict
+            "_INTR_MARKS_DISK", "_INTR_MARKS_DISK_LOCK", "_INTR_MARKS_DISK_DIRTY",   # the persisted interrupt-marks memo (T401 (3)
+            #                                         target 3): rows keyed on the transcript's stat and the states log's cut pair,
+            #                                         both keyed files, holding only the tally's own two maxima
         }
         DISPLAY_ONLY = {"_name_of": "the asker's display name for the reminder's TEXT (the names snapshot): never a verdict input"}
         ROAD_FORBIDDEN = {                          # a road whose KEY writes constants at some positions must never read those files (T401 (3)):
@@ -518,7 +521,8 @@ class NudgeWalkParseGate(unittest.TestCase):
         #                                    files 3 to 5, and the override replay inside load_goals reads the clears log (keyed file 7,
         #                                    which is why the interrupt key keeps that position real); _intr_paused_only is a pure
         #                                    reader of the loaded store; INTERRUPT_BLOCK_WHY a constant
-        EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record"}   # pure readers of a record or an atom
+        EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record",   # pure readers of a record or an atom
+                    "LazyAtoms"}   # the pre-cut turn's container: its user_facts reads the document's rows, the transcript's own records
         stat_src = inspect.getsource(km._session_files_stat)
         def module_name(n, g):
             return n in g

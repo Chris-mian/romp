@@ -330,7 +330,7 @@ class _PerfStats:
     HTTP_PATHS = 256
     SLOTS = 32
     JOBS = ("beginCheckpointCycle", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
-            "autoNudge", "interruptBlock", "persistTickSeen", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
+            "autoNudge", "interruptBlock", "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
             "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
     STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst") \
@@ -1104,16 +1104,112 @@ def _machine_cut_cause(users, i, cut_t=0.0, cut_cause=""):
 # a lost insert or a double clear is one extra miss, never a wrong answer.
 _intr_marks_memo = {}
 _INTR_MARKS_MEMO_MAX = 512
-_intr_marks_memo_stats = {"hit": 0, "miss": 0, "evict": 0}
+_intr_marks_memo_stats = {"hit": 0, "miss": 0, "evict": 0, "restored": 0, "refused": 0, "computeMs": 0.0}
 _INTR_MARKS_STATS_LOCK = threading.Lock()
+_INTR_MARKS_FILE = "intr-marks.json"   # the marks memo PERSISTED under the state dir (T401 (3) target 3): {"v": 1, "rows": {sid:
+#                                        [mtime_ns, size, cut_t, cut_cause, last_intr, last_human]}}, one row per alive session,
+#                                        written when a row changed by the persist job and at exit, loaded at boot; a row that is
+#                                        malformed, of another length or not under a uuid-shaped sid is REFUSED (counted, recomputed)
+_INTR_MARKS_DISK = {}                  # sid -> [mtime_ns, size, cut_t, cut_cause, last_intr, last_human]: the persisted rows in memory
+_INTR_MARKS_DISK_DIRTY = [False]
+_INTR_MARKS_DISK_LOCK = threading.Lock()
+_INTR_MARKS_DISK_V = 1
+_UUID_SHAPE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _intr_marks_path():
+    return jd.STATE / _INTR_MARKS_FILE
+
+
+def _load_intr_marks():
+    """The previous kernel's marks memo into _INTR_MARKS_DISK (best-effort; a missing or torn file is an empty memo). Every
+    row is checked: six elements of the right types under a uuid-shaped sid, else refused (counted under intrMarks.refused)
+    and recomputed on its first miss; a refused row is never trusted and never read as a dead session."""
+    try:
+        d = json.loads(_intr_marks_path().read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    rows = d.get("rows") if isinstance(d, dict) and d.get("v") == _INTR_MARKS_DISK_V else None
+    if not isinstance(rows, dict):
+        _intr_marks_bump("refused", 1 if d else 0)
+        return 0
+    n = 0
+    with _INTR_MARKS_DISK_LOCK:
+        for sid, v in rows.items():
+            ok = (isinstance(sid, str) and _UUID_SHAPE.match(sid) and isinstance(v, list) and len(v) == 6
+                  and isinstance(v[0], int) and isinstance(v[1], int) and isinstance(v[2], (int, float))
+                  and isinstance(v[3], str) and isinstance(v[4], (int, float)) and isinstance(v[5], (int, float)))
+            if not ok:
+                _intr_marks_bump("refused")
+                continue
+            _INTR_MARKS_DISK[sid] = list(v); n += 1
+    return n
+
+
+def _persist_intr_marks(force=False):
+    """Write the marks memo when a row changed since the last write (or `force`, the exit): atomic, under a per-writer tmp
+    name (pid and thread id: the exit's force write and the persist job may run at once), the tmp unlinked when the
+    replace fails; best-effort, never raises."""
+    with _INTR_MARKS_DISK_LOCK:
+        if not (_INTR_MARKS_DISK_DIRTY[0] or force):
+            return False
+        snap = {"v": _INTR_MARKS_DISK_V, "rows": {k: list(v) for k, v in _INTR_MARKS_DISK.items()}}
+        _INTR_MARKS_DISK_DIRTY[0] = False
+    p = _intr_marks_path()
+    tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(snap), encoding="utf-8")
+        os.replace(tmp, p)
+        return True
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        with _INTR_MARKS_DISK_LOCK:
+            _INTR_MARKS_DISK_DIRTY[0] = True              # retried by the next persist
+        return False
+
+
+def _intr_marks_key(sid, path):
+    """The persisted memo's key, taken BEFORE the tally reads a row (the arc's rule): the transcript's (mtime_ns, size) and
+    the states log's newest machine-cut pair, which together with the transcript's records are the marks' only inputs.
+    None when the transcript cannot be statted (no memo road)."""
+    try:
+        st = os.stat(path)
+    except (OSError, TypeError):
+        return None
+    cut = _last_machine_cut(sid) if sid else (0.0, "")
+    return (st.st_mtime_ns, st.st_size, float(cut[0]), str(cut[1]))
+
+
+def _interrupt_marks_facts(turns):
+    """The USER atoms of `turns` for the tally, building no pre-cut atom: a lazy turn hands its built slots and light facts
+    (type, t, author, lazy.ir) through LazyAtoms.user_facts, a plain turn its atoms; the romp-authored rows are the one
+    kind the classifier must read the body of (the resume notice that names a machine cut, _interrupt_cause), so those,
+    and only those, are built. The list is what _interrupt_marks_atoms consumes, so the tally over rows equals the tally
+    over atoms by construction (a test runs both over every golden)."""
+    users = []
+    for turn in turns:
+        atoms = turn.get("atoms") or []
+        if isinstance(atoms, em.LazyAtoms):
+            for i, a in atoms.user_facts():
+                if a.get("_light") is not None and a.get("author") == "romp":
+                    a = atoms[i]                               # the body the cause classifier reads: built, this row alone
+                users.append(a)
+        else:
+            users.extend(a for a in atoms if a.get("type") == "user")
+    return users
+
 
 
 def _intr_marks_bump(key, n=1):
     with _INTR_MARKS_STATS_LOCK:
-        _intr_marks_memo_stats[key] = _intr_marks_memo_stats.get(key, 0) + n
+        _intr_marks_memo_stats[key] = _intr_marks_memo_stats.get(key, 0) + n   # computeMs sums milliseconds (a float)
 
 
-def _interrupt_marks(turns, sid="", family=None):
+def _interrupt_marks(turns, sid="", family=None, path=None):
     """(newest genuine user STOP, newest genuine human PROMPT) on this thread, in transcript time —
     the one place the two are tallied, so the predicate below and the interrupt block's EVIDENCE stamp
     read the same events. A MACHINE cut (kernel restart / process death) mints the same stop record but
@@ -1142,16 +1238,34 @@ def _interrupt_marks(turns, sid="", family=None):
     pass frame is open the tick alternates between the frame-pinned parse and the cache object, one
     miss per swap. No family, or an empty sid, means no memo (the pure-atom test callers; a sid-less key
     would be one slot thrashed by every caller)."""
-    cut = _last_machine_cut(sid) if sid else (0.0, "")
+    dkey = _intr_marks_key(sid, path) if (sid and path) else None   # KEY FIRST: the transcript's stat and the cut pair before any row
+    cut = (dkey[2], dkey[3]) if dkey is not None else (_last_machine_cut(sid) if sid else (0.0, ""))
     key = (sid, family) if (sid and family) else None
     if key is not None:
         e = _intr_marks_memo.get(key)
         if e is not None and e[0] is turns and e[1] == cut:
             _intr_marks_bump("hit")
             return e[2]
+    if dkey is not None:                                  # the persisted memo (T401 (3) target 3): a row under this exact key
+        with _INTR_MARKS_DISK_LOCK:                       #  serves the two maxima without a tally, across boots
+            row = _INTR_MARKS_DISK.get(sid)
+        if row is not None and (row[0], row[1], row[2], row[3]) == dkey:
+            _intr_marks_bump("restored")
+            res = (row[4], row[5])
+            if key is not None:
+                _intr_marks_memo[key] = (turns, cut, res)
+            return res
+    if key is not None:
         _intr_marks_bump("miss")
-    atoms = [a for turn in turns for a in (turn.get("atoms") or [])]
-    res = _interrupt_marks_atoms(atoms, cut[0], cut[1])
+    _t0 = time.perf_counter()
+    res = _interrupt_marks_atoms(_interrupt_marks_facts(turns), cut[0], cut[1])   # the tally over rows: no pre-cut atom built
+    _intr_marks_bump("computeMs", (time.perf_counter() - _t0) * 1000.0)
+    if dkey is not None:
+        new = [dkey[0], dkey[1], dkey[2], dkey[3], res[0], res[1]]
+        with _INTR_MARKS_DISK_LOCK:
+            if _INTR_MARKS_DISK.get(sid) != new:          # dirty by CHANGE only (the 1589 lesson): compare before assign
+                _INTR_MARKS_DISK[sid] = new
+                _INTR_MARKS_DISK_DIRTY[0] = True
     if key is not None:
         if len(_intr_marks_memo) >= _INTR_MARKS_MEMO_MAX and key not in _intr_marks_memo:
             _intr_marks_bump("evict", len(_intr_marks_memo))   # the repo's overflow idiom: clear whole
@@ -1168,6 +1282,9 @@ def _intr_marks_forget(alive):
     for k in list(_intr_marks_memo):
         if k[0] not in alive and _intr_marks_memo.pop(k, None) is not None:
             _intr_marks_bump("evict")
+    with _INTR_MARKS_DISK_LOCK:                          # the persisted rows are bounded by the same alive set (T401 (3) target 3)
+        for sid in [x for x in _INTR_MARKS_DISK if x not in alive]:
+            _INTR_MARKS_DISK.pop(sid, None); _INTR_MARKS_DISK_DIRTY[0] = True
 
 
 def _intr_marks_memo_report():
@@ -1178,6 +1295,9 @@ def _intr_marks_memo_report():
     with _INTR_MARKS_STATS_LOCK:
         out = dict(_intr_marks_memo_stats)
     out["entries"] = len(_intr_marks_memo)
+    out["computeMs"] = int(round(float(out.get("computeMs", 0.0))))   # whole milliseconds on /perf; the sum is kept as a float
+    with _INTR_MARKS_DISK_LOCK:
+        out["persisted"] = len(_INTR_MARKS_DISK)
     return out
 
 
@@ -1212,7 +1332,7 @@ def _interrupt_marks_atoms(atoms, cut_t=0.0, cut_cause=""):
     return last_intr, last_human
 
 
-def _interrupt_suppresses_nudge(turns, sid="", family=None):
+def _interrupt_suppresses_nudge(turns, sid="", family=None, path=None):
     """True while the session's most recent USER action is a GENUINE user INTERRUPT: the user stopped
     the agent and hasn't spoken since, so they're at the controls — auto-nudge stays suppressed until
     their NEXT message (the user 2026-07-05, refined via ui: re-engage on the user-message EVENT, never
@@ -1229,7 +1349,7 @@ def _interrupt_suppresses_nudge(turns, sid="", family=None):
     resume notice that FOLLOWS its record (_interrupt_cause) and is EXCLUDED from the user-stop tally —
     or, in the window before that notice reaches disk, by the backend's machineCut stamp (pass `sid`).
     `family` is _interrupt_marks' memo family, passed through by the per-cycle callers."""
-    last_intr, last_human = _interrupt_marks(turns, sid, family)
+    last_intr, last_human = _interrupt_marks(turns, sid, family, path)
     return last_intr > last_human
 
 
@@ -10365,6 +10485,7 @@ def _nudge_look_done(s, st, notes, verdict):
 
 
 _load_tick_seen()               # the previous kernel's last evaluations, if it left them
+_load_intr_marks()              # and its interrupt-marks memo (T401 (3) target 3)
 try:
     em.checkpoint_sweep()       # checkpoints of files that are gone (cleared, removed sessions) leave with the boot (T323 stage 3)
 except Exception:
@@ -10865,7 +10986,7 @@ def _interrupt_block_tick(now, live_map):
             turns = jd.parsed_session(sid, [s["path"]], now)["turns"]
         except Exception:
             continue
-        stop_t, human_t = _interrupt_marks(turns, sid, family="judge")   # the two EVENTS this tick reasons
+        stop_t, human_t = _interrupt_marks(turns, sid, family="judge", path=s["path"])   # the two EVENTS this tick reasons
         #                                                  about — and the evidence times both writes are
         #                                                  stamped with (memo family: the judge parse)
         block_it = bool(turns) and not _session_working(turns) and stop_t > human_t
@@ -13615,7 +13736,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
     #                                                  unbounded: the gate sits ABOVE the marked roads (T401 (2) round five, medium 1)
     if _session_working(turns):                      # still actively working (event model) → not orphaned
         return "working"
-    if _interrupt_suppresses_nudge(turns, sid, family="judge"):   # the user's LAST action was a GENUINE interrupt → they're
+    if _interrupt_suppresses_nudge(turns, sid, family="judge", path=s.get("path")):   # the user's LAST action was a GENUINE interrupt → they're
         return "user-interrupt"                                # driving; suppressed until their NEXT message. The stopped
         #                                              focus goal's BLOCKED-on-you flip is owned by the always-on
         #                                              _interrupt_block_tick (a needs-you rule, not a nudge feature).
@@ -50763,7 +50884,8 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
     try:                                  # the tick jobs' evaluation memo, persisted when a completed evaluation
-        _job_stage('persistTickSeen', lambda: _persist_tick_seen())          # moved it (T323 stage 1): the next kernel's first look starts from here
+        _job_stage('persistTickSeen', lambda: _persist_tick_seen())
+        _job_stage('persistIntrMarks', lambda: _persist_intr_marks())    # the interrupt-marks memo, when a row changed (T401 (3) target 3)          # moved it (T323 stage 1): the next kernel's first look starts from here
         _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
     except Exception:
         sys.stderr.write("tick-seen: %s\n" % traceback.format_exc())
@@ -61316,6 +61438,7 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
     _exit_log("romp-kernel: %s, draining SDK sessions\n" % what)
     try:
         _persist_tick_seen(force=True)    # the tick jobs' memo for the next kernel's first look (T323 stage 1)
+        _persist_intr_marks(force=True)   # and the interrupt-marks memo (T401 (3) target 3)
         _persist_spend_trees(force=True)  # the spend guard's tree memos: the next kernel stats directories, lists nothing
     except Exception:
         pass

@@ -143,7 +143,8 @@ class Collector(unittest.TestCase):
             self.assertIsInstance(v, int, k)
         # the two memos the interrupt tick trims to its alive set: the interrupt-marks memo and the awaiting
         # overlay's states-log fold, each with its counters and its occupancy
-        self.assertEqual(set(snap["memos"]["intrMarks"]), {"hit", "miss", "evict", "entries"})
+        self.assertEqual(set(snap["memos"]["intrMarks"]), {"hit", "miss", "evict", "entries", "restored", "refused", "computeMs", "persisted"},
+                         "the identity memo's counters and the persisted memo's (T401 (3) target 3)")
         self.assertEqual(snap["memos"]["intrMarks"], km._intr_marks_memo_report())
         self.assertEqual(set(snap["memos"]["statesOverlay"]), {"hit", "append", "refold", "fail", "evict", "entries"})
         self.assertEqual(snap["memos"]["statesOverlay"], km._states_overlay_report())

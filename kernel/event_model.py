@@ -4822,6 +4822,36 @@ class LazyIndex:
         a.pop("_seq", None)                               # the read-order tiebreak: the section fixed the order (parse_session pops it too)
         return a
 
+    def user_facts(self, k):
+        """The fields the interrupt-marks tally reads from a USER row, from one decode and no atom build (T401 (3) target 3):
+        type, uuid, t, author (the recorded scalar the writer classified) and lazy.ir (the interrupt flag), as a light dict
+        that is never stored in the slot or the LRU; None for a row that is not a user record. Cached per index, so a
+        second tally over the same document decodes nothing."""
+        cache = self.__dict__.setdefault("_user_facts", {})
+        if k in cache:
+            return cache[k]
+        with _MAT_LOCK:
+            _ASM_INDEX_STATS["rowDecodes"] += 1
+        try:
+            row = json.loads(self.rowb[k])
+        except (IndexError, ValueError):
+            cache[k] = None
+            return None
+        ri = row.get("r"); sc = row.get("s") or {}
+        tname = {"u": "user", "a": "assistant", "s": "system"}
+        typ = sc.get("type") or (tname.get(self.records[ri][2], "user") if ri is not None else None)
+        if typ != "user":
+            cache[k] = None
+            return None
+        rr = self.records[ri] if ri is not None else None
+        lz = row.get("lz") or {}
+        facts = {"type": "user", "uuid": rr[0] if rr else sc.get("uuid"), "t": rr[5] if rr else sc.get("t", 0),
+                 "lazy": {"ir": bool(lz.get("ir"))}, "_light": k}
+        if "author" in sc:
+            facts["author"] = sc["author"]
+        cache[k] = facts
+        return facts
+
     def uuid_of(self, k):
         """A row's uuid without building its atom (the record row's, else the synthesized scalars')."""
         with _MAT_LOCK:
@@ -4893,6 +4923,26 @@ class LazyAtoms(list):
     def uuids(self):
         """The atoms' uuids without building them."""
         return [self._index.uuid_of(r) for r in self._rows]
+
+    def user_facts(self):
+        """[(slot, atom-or-facts)] for the USER rows in order, building nothing: a slot already built yields its atom, an
+        unbuilt one the index's light facts (T401 (3) target 3: the interrupt-marks tally used to build every atom of the
+        transcript through __iter__)."""
+        out = []
+        for i, r in enumerate(self._rows):
+            a = list.__getitem__(self, i)
+            if a is not _UNMAT:
+                if a.get("type") == "user":
+                    out.append((i, a))
+                continue
+            f = self._index.user_facts(r) if hasattr(self._index, "user_facts") else None
+            if f is None and not hasattr(self._index, "user_facts"):
+                a = self._at(i)                            # an index without the accessor: the build, as before
+                if a.get("type") == "user":
+                    out.append((i, a))
+            elif f is not None:
+                out.append((i, f))
+        return out
 
     def rows(self):
         return list(self._rows)

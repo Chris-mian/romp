@@ -2022,7 +2022,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   entry per (session, parse family) keyed on the parse object's identity and
   the machine-cut stamp (`hit`, `miss`, `evict` for entries released when a
   session leaves the alive set or the memo is cleared at its cap, and the
-  gauge `entries`). `deadWait` is the dead-wait sweep's reads: `passes`,
+  gauge `entries`), and behind it a memo PERSISTED across boots at
+  `STATE/intr-marks.json` (version 1: `{"v": 1, "rows": {sid: [mtime_ns,
+  size, cut_t, cut_cause, last_intr, last_human]}}`), one row per alive
+  session keyed on the transcript's stat and the states log's newest
+  machine-cut pair, taken before the tally reads a row, written when a row
+  changed and at exit, dropped with the session when it leaves the alive
+  set: `restored` counts a boot's marks served from a row under a matching
+  key with no tally, `refused` a row the load would not trust (malformed, of
+  another length, not under a uuid-shaped sid: recomputed, never read as
+  dead), `computeMs` the milliseconds the cold tallies took, `persisted`
+  the rows held. The cold tally itself walks the transcript's USER rows
+  through the pre-cut container's light facts (type, time, the recorded
+  author, the interrupt flag from the lazy header) and builds no atom but
+  the romp-authored notices a stop's classification reads, so a session that
+  moved pays a tally linear in its rows instead of the whole atom build; the
+  display family's live-merged atoms are not on disk and miss as before. `deadWait` is the dead-wait sweep's reads: `passes`,
   `candidates` (corroborated-dead sessions walked), `sharedLoads` (reads
   through the shared read-only store view, one per store per pass: the
   candidate's own and every alive session's for the peer-death arm),
