@@ -1009,6 +1009,9 @@ def _interrupt_cause(nxt_atom):
     cuts romp itself caused and is already continuing (via the injected resume notice) — never a
     user-chosen stop, so they must not suppress the nudge nor paint the "you stopped this" badge (the
     user 2026-07-14). Pure per-atom classifier; _machine_cut_cause owns FINDING the notice."""
+    slot = nxt_atom.get("_slot") if nxt_atom is not None else None
+    if slot is not None:
+        nxt_atom = slot[0][slot[1]]                       # a romp row's light facts: the atom built now, this row alone (T401 (3b))
     if nxt_atom is not None and nxt_atom.get("lazy") is not None: em.hydrate([nxt_atom])   # a body before the cut (T323 stage 4a)
     body = (_atom_user_text(nxt_atom) or "") if nxt_atom else ""
     if INTR_RESTART_SIG in body:
@@ -1197,17 +1200,20 @@ def _intr_marks_key(sid, path):
 
 def _interrupt_marks_facts(turns):
     """The USER atoms of `turns` for the tally, building no pre-cut atom: a lazy turn hands its built slots and light facts
-    (type, t, author, lazy.ir) through LazyAtoms.user_facts, a plain turn its atoms; the romp-authored rows are the one
-    kind the classifier must read the body of (the resume notice that names a machine cut, _interrupt_cause), so those,
-    and only those, are built. The list is what _interrupt_marks_atoms consumes, so the tally over rows equals the tally
-    over atoms by construction (a test runs both over every golden)."""
+    (type, t, author, lazy.ir) through LazyAtoms.user_facts, a plain turn its atoms. The romp-authored rows are the one
+    kind the classifier may need the BODY of (the resume notice that names a machine cut, _interrupt_cause), but only
+    the notice _machine_cut_cause's forward scan from a stop record actually reaches; so a romp row's light facts carry
+    its container and slot (`_slot`), and _interrupt_cause builds that row on demand when the scan reads it (T401 (3b):
+    the deploy boot's cold pass built every romp row of every transcript, 3,220 atoms hydrated from disk, for the few
+    notices a stop ever reaches; a stop-free transcript now builds nothing). The list is what _interrupt_marks_atoms
+    consumes, so the tally over rows equals the tally over atoms by construction (a test runs both over every golden)."""
     users = []
     for turn in turns:
         atoms = turn.get("atoms") or []
         if isinstance(atoms, em.LazyAtoms):
             for i, a in atoms.user_facts():
                 if a.get("_light") is not None and a.get("author") == "romp":
-                    a = atoms[i]                               # the body the cause classifier reads: built, this row alone
+                    a = dict(a, _slot=(atoms, i))              # a copy: the index's cached facts never pin the container
                 users.append(a)
         else:
             users.extend(a for a in atoms if a.get("type") == "user")
