@@ -747,7 +747,7 @@ def _stage_marked(name):
         @functools.wraps(fn)
         def marked(*args, **kwargs):
             prev = getattr(_STAGE_TL, "name", None)
-            _STAGE_TL.name = name
+            _STAGE_TL.name = name(*args, **kwargs) if callable(name) else name   # a callable names the stage from the call
             try:
                 return fn(*args, **kwargs)
             finally:
@@ -46776,7 +46776,9 @@ def _feed_first(now, live_map, targets, connect):
     return True
 
 
-@_stage_marked("push")             # T401: the push's reads count under "push", the mark restored whatever exit the body takes
+@_stage_marked(lambda targets, connect=False, live_map=None: "connect" if connect else "push")
+#                                   T401: the pusher's push reads under "push"; a fresh client's full push on its handler thread
+#                                   (a browser reload) under "connect", so push: rows stay the cycle's; restored whatever exit
 def _push(targets, connect=False, live_map=None):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting

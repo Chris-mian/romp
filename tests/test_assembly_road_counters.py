@@ -264,5 +264,35 @@ class AssemblyRoadCounters(Harness):
         self.assertIsNone(km._current_read_stage())
         self.assertTrue(hasattr(km._push, "__wrapped__"), "the push carries the stage decorator (set at entry, restored in a finally)")
 
+    def test_the_mark_returns_through_a_raise_and_a_connect_push_is_marked_connect(self):
+        """T401 round two, lows 1 and 2: the round-one test drove a CAUGHT build failure, which returns normally into the wrapper, so
+        a decorator restoring after the call would have passed it; the finally is pinned by a body that raises out. And a handler
+        thread's connect push (Handler._push_one: connect=True) was marked push too, booking a browser reload's reads into the
+        cycle's push: rows; it is marked connect."""
+        km = kernel_module()
+        km._STAGE_TL.name = "before"
+        self.addCleanup(setattr, km._STAGE_TL, "name", None)
+        def raiser():
+            self.assertEqual(km._current_read_stage(), "probe")
+            raise RuntimeError("synthetic")
+        with self.assertRaises(RuntimeError):
+            km._stage_marked("probe")(raiser)()
+        self.assertEqual(km._current_read_stage(), "before", "the previous mark returns after a raise (the finally)")
+        km._STAGE_TL.name = None
+        saved = km._chat_push_scopes_close                                 # the push's first call outside any try
+        self.addCleanup(setattr, km, "_chat_push_scopes_close", saved)
+        seen = []
+        def close_and_raise():
+            seen.append(km._current_read_stage())
+            raise RuntimeError("synthetic, out of the push")
+        km._chat_push_scopes_close = close_and_raise
+        client = {"app": "chat", "wid": "lab", "send": lambda *a, **k: None, "alive": True, "dedup": {}}
+        with self.assertRaises(RuntimeError):
+            km._push([client], connect=True, live_map={})
+        with self.assertRaises(RuntimeError):
+            km._push([client], live_map={})
+        self.assertEqual(seen, ["connect", "push"], "a fresh client's push is marked connect; the pusher's push, push")
+        self.assertIsNone(km._current_read_stage(), "restored after a raise out of the push")
+
 if __name__ == "__main__":
     unittest.main()
