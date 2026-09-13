@@ -29,6 +29,8 @@ km = load_source("romp_kernel_t323s1", os.path.join(BIN, "romp-kernel"))
 SID_OLD = "11111111-2222-4333-8444-000000000001"
 SID_NEW = "22222222-2222-4333-8444-000000000002"
 SID_WORK = "33333333-2222-4333-8444-000000000003"
+SID_T3 = "44444444-2222-4333-8444-0000000000b3"        # the interrupt key test's own sids (T401 (3))
+SID_T3_OTHER = "55555555-2222-4333-8444-0000000000b4"
 
 
 def _threads():
@@ -321,49 +323,62 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         the tick read it. The key carries this session's own row instead: another session's row rewritten keeps the skip,
         this session's row rewritten busts it, and an unproved ledger yields no key."""
         d = tempfile.mkdtemp()
-        r = _row(d, SID_OLD, old=True)
+        me, other = SID_T3, SID_T3_OTHER                                   # private synthetic sids: this test's rows never land under the
+        r = _row(d, me, old=True)                                           #  module's shared placeholders (the goal-store fixture rule)
+        shared = [km.jd.STATE / "timeline" / "messages.jsonl", km.jd.STATE / "cleared.jsonl", km.jd.STATE / "auto-nudge.json",
+                  km.jd.STATE / "states" / (me + ".jsonl"), km.jd.EPIDIR / (me + ".jsonl"), km._tick_seen_path()]
+        sizes = {p: (p.read_bytes() if p.exists() else None) for p in shared}
+        def restore():                                                      # every appended or written row undone, byte for byte
+            for p, b in sizes.items():
+                if b is None:
+                    p.unlink(missing_ok=True)
+                else:
+                    p.write_bytes(b)
+            with km._TICK_SEEN_LOCK:
+                km._TICK_SEEN.pop(("interrupt-block", me), None)
+        self.addCleanup(restore)
         led = km.jd.STATE / "auto-nudge.json"; led.parent.mkdir(parents=True, exist_ok=True)
         km._autonudge_cache.clear() if isinstance(getattr(km, "_autonudge_cache", None), dict) else None
         led.write_text(json.dumps({"enabled": True, "nudged": {}, "intrBlocked": {}}))
         key = km._interrupt_block_key(r); self.assertIsNotNone(key); self.assertEqual(len(key), 20)
         skip, st = km._tick_job_check("interrupt-block", r, key); km._tick_job_done("interrupt-block", r, st)
         self.assertTrue(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0], "unchanged: skip")
-        km._set_intr_blocked(SID_NEW, SID_NEW + ":g1")                     # ANOTHER session's row: the ledger's stat moves
+        km._set_intr_blocked(other, other + ":g1")                     # ANOTHER session's row: the ledger's stat moves
         self.assertTrue(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0],
                         "another session's row moved the ledger, not this session's key: the skip stands")
         log = km.jd.STATE / "timeline" / "messages.jsonl"; log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "a", encoding="utf-8") as f:                        # a postal message lands (position 8)
-            f.write(json.dumps({"kind": "coordinate", "from_id": SID_NEW, "to_sid": SID_OLD, "t": time.time()}) + "\n")
+            f.write(json.dumps({"kind": "coordinate", "from_id": other, "to_sid": me, "t": time.time()}) + "\n")
         os.utime(log, (time.time() + 3, time.time() + 3))
         self.assertTrue(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0],
                         "the tick reads no postal log: a message keeps the skip")
         cl = km.jd.STATE / "cleared.jsonl"
-        with open(cl, "a", encoding="utf-8") as f:                         # a clear lands (position 7)
-            f.write(json.dumps({"gid": SID_NEW + ":g1", "t": time.time()}) + "\n")
-        os.utime(cl, (time.time() + 3, time.time() + 3))
-        self.assertTrue(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0],
-                        "the tick reads no clears log: a clear keeps the skip")
-        ep = km.jd.EPIDIR / (SID_OLD + ".jsonl"); ep.parent.mkdir(parents=True, exist_ok=True)
+        with open(cl, "a", encoding="utf-8") as f:                         # a clear lands (position 7): an INPUT, by design (round two,
+            f.write(json.dumps({"gid": other + ":g1", "t": time.time()}) + "\n")   # medium 2: the store readers' override replay
+        os.utime(cl, (time.time() + 3, time.time() + 3))                   #  gates a journalled move on the clears log)
+        self.assertFalse(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0], "a clear busts the key")
+        skip, st = km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r)); km._tick_job_done("interrupt-block", r, st)
+        ep = km.jd.EPIDIR / (me + ".jsonl"); ep.parent.mkdir(parents=True, exist_ok=True)
         with open(ep, "a", encoding="utf-8") as f:                         # an episode row lands (position 6)
             f.write(json.dumps({"t": time.time(), "kind": "x"}) + "\n")
         os.utime(ep, (time.time() + 3, time.time() + 3))
         self.assertTrue(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0],
                         "the tick reads no episode log: an episode row keeps the skip")
-        stl = km.jd.STATE / "states" / (SID_OLD + ".jsonl"); stl.parent.mkdir(parents=True, exist_ok=True)
+        stl = km.jd.STATE / "states" / (me + ".jsonl"); stl.parent.mkdir(parents=True, exist_ok=True)
         with open(stl, "a", encoding="utf-8") as f:                        # a states-log row (position 2): an input (machineCut, working)
             f.write(json.dumps({"state": "idle", "t": time.time()}) + "\n")
         os.utime(stl, (time.time() + 3, time.time() + 3))
         self.assertFalse(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0], "a states-log row busts the key")
         skip, st = km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r)); km._tick_job_done("interrupt-block", r, st)
         km.jd.GOALDIR.mkdir(parents=True, exist_ok=True)
-        (km.jd.GOALDIR / (SID_OLD + ".json")).write_text("{}")             # the goal store (position 3): an input (the marker's card)
+        (km.jd.GOALDIR / (me + ".json")).write_text("{}")             # the goal store (position 3): an input (the marker's card)
         try:
             self.assertFalse(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0], "a store write busts the key")
             skip, st = km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r)); km._tick_job_done("interrupt-block", r, st)
         finally:
-            (km.jd.GOALDIR / (SID_OLD + ".json")).unlink()
+            (km.jd.GOALDIR / (me + ".json")).unlink()
         skip, st = km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r)); km._tick_job_done("interrupt-block", r, st)
-        km._set_intr_blocked(SID_OLD, SID_OLD + ":g7")                     # THIS session's row
+        km._set_intr_blocked(me, me + ":g7")                     # THIS session's row
         self.assertFalse(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0], "this session's row busts the key")
         by = km._tick_seen_report()["byJob"]["interrupt-block"]["missBy"]
         self.assertGreaterEqual(by.get("ledger", 0), 1, "the miss is counted under the ledger position: %r" % by)
@@ -376,10 +391,18 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         skip, st = km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r)); km._tick_job_done("interrupt-block", r, st)
         self.assertTrue(km._persist_tick_seen(force=True))
         km._TICK_SEEN.clear(); self.assertGreaterEqual(km._load_tick_seen(), 1)
-        km._set_intr_blocked(SID_NEW, None)                                # the walk's ledger write at the next boot's first pass
+        km._set_intr_blocked(other, None)                                # the walk's ledger write at the next boot's first pass
         self.assertTrue(km._tick_job_check("interrupt-block", r, km._interrupt_block_key(r))[0], "the next kernel skips the quiet session")
         with mock.patch.object(km, "_auto_nudge_data", lambda: {km.UNPROVED: "EIO"}):
             self.assertIsNone(km._interrupt_block_key(r), "an unproved ledger: no key, the tick evaluates")
+        self.assertEqual(km._NUDGE_FILE_KEYED_ROADS["interrupt-block"],
+                         ("_interrupt_block_key", "_session_working", "_suspended_after", "_interrupt_marks", "_last_machine_cut",
+                          "_interrupt_marks_atoms", "_machine_cut_cause", "_intr_blocked", "_record_interrupt_block",
+                          "_interrupt_focus_top", "_intr_block_stands", "_lift_interrupt_block"),
+                         "the road's exact members: the key builder, the verdict's readers and the arms' store readers (round two)")
+        self.assertEqual(km._INTERRUPT_BLOCK_UNREAD, (5, 7), "the constant positions: the episode log and the postal log; the clears log is real")
+        km._tick_job_done("interrupt-block", r, None)
+        self.assertNotIn(("interrupt-block", me + "-never"), km._TICK_SEEN, "a None key records nothing")
 
     def test_jobs_keep_separate_memos(self):
         d = tempfile.mkdtemp()
@@ -400,7 +423,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
                       _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
                       _auto_nudge_pause=lambda why: None, _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {},
-                      _intr_blocked=lambda sid=None: None)
+                      _intr_blocked=lambda sid=None, data=None: None)
         with km._TICK_SEEN_LOCK:
             km._TICK_SEEN[("interrupt-block", SID_OLD)] = (1.0, 2, 3.0, 4, 5.0, 6)      # the previous era's three-file key
         try:
@@ -454,7 +477,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
                       _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
-                      _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {}, _intr_blocked=lambda sid=None: "g1")
+                      _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {}, _intr_blocked=lambda sid=None, data=None: "g1")
         with mock.patch.multiple(km, **common), \
              mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now: {"turns": stopped}), \
              mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: (None, OSError("transient"))):
@@ -475,7 +498,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
                       _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
-                      _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {}, _intr_blocked=lambda sid=None: None,
+                      _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {}, _intr_blocked=lambda sid=None, data=None: None,
                       _record_interrupt_block=lambda sid, ev: "g1")
         for refused, marked in ((False, False), (True, True)):
             km._TICK_SEEN.clear()

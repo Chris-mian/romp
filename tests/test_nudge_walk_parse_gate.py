@@ -488,13 +488,15 @@ class NudgeWalkParseGate(unittest.TestCase):
             #                                         gate derived from the postal log's maps (keyed) before the look; no input of its own
             "_NUDGE_WALK_STATS",                    # the walk's counters (no input)
             "_NUDGE_ASKER_ROWS_MAX",                # a constant
+            "_views_dirty", "_pusher_wake",         # the writers' dirty mark and the pusher's wake (_mark_views_dirty): outputs of a
+            #                                         block filed or lifted, never inputs to the verdict
         }
         DISPLAY_ONLY = {"_name_of": "the asker's display name for the reminder's TEXT (the names snapshot): never a verdict input"}
         ROAD_FORBIDDEN = {                          # a road whose KEY writes constants at some positions must never read those files (T401 (3)):
-            "interrupt-block": {"names": {"_postal_wait_maps", "_nudge_asks_by_target", "_cleared_ids", "_view_cleared", "_postal_index_memo"},
-                                "jd": {"MESSAGES", "EPIDIR", "episode_floor", "_view_cleared"},
-                                "text": ("messages.jsonl", "cleared.jsonl", "episodes")},   # the postal log, the clears log, the episode log
-        }
+            "interrupt-block": {"names": {"_postal_wait_maps", "_nudge_asks_by_target", "_postal_index_memo"},
+                                "jd": {"MESSAGES", "EPIDIR", "episode_floor"},
+                                "text": ("messages.jsonl", "episodes")},   # the postal log and the episode log; the clears log stays a REAL
+        }                                                             #  position (the store readers' override replay reads it)
         CONST_MODULES = {"sb"}                      # the SDK backend module: a marked road may read only a CONSTANT of it (a cause
         #                                             name, a marker string) or one of the pure text helpers below, never a live table
         SB_PURE = {"echo_text_key", "strip_echo_markers", "_strip_marker_tail"}   # pure functions of their text argument (an atom's
@@ -509,7 +511,13 @@ class NudgeWalkParseGate(unittest.TestCase):
                                             "and another session's does not (T401 (3)); its internals are that cache and the fault latches"}
         JD_ALLOW = {"parsed_session", "_parse_entry", "_segs", "plan_units", "_placed_key", "_unit_key", "_closed_turns", "EPIDIR", "STATE",
                     "GOALDIR", "CLOSER_ON", "load_goals_shared_or_fault", "_seg_key", "_segment_id", "episode_floor", "_view_cleared",
-                    "GOALARCHDIR", "_overrides_dir"}   # the two keyed-file paths _session_files_stat itself names (the interrupt tick's key)
+                    "GOALARCHDIR", "_overrides_dir",   # the two keyed-file paths _session_files_stat itself names (the interrupt tick's key)
+                    "load_goals_or_fault", "record_verdict", "append_block", "rollup_status", "save_goals", "INTERRUPT_BLOCK_WHY",
+                    "_intr_paused_only"}   # the interrupt arms' store readers and writers (T401 (3) round two): they load and write
+        #                                    the goal store through its own API, the store, its journal and its archive being keyed
+        #                                    files 3 to 5, and the override replay inside load_goals reads the clears log (keyed file 7,
+        #                                    which is why the interrupt key keeps that position real); _intr_paused_only is a pure
+        #                                    reader of the loaded store; INTERRUPT_BLOCK_WHY a constant
         EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record"}   # pure readers of a record or an atom
         stat_src = inspect.getsource(km._session_files_stat)
         def module_name(n, g):

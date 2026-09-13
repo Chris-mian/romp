@@ -646,13 +646,14 @@ class MidTickFaultThenHeal(_InterruptTickRig):
         return [e.get("src") for e in self._store()["nodes"][GID].get("log") or [] if e.get("kind") == "block"]
 
     def _fault_on_the_marker_write(self):
-        """Reads 1 (the tag check) and 2 (the marker lookup) prove; the block is filed; read 3, the marker
-        write's own, finds the file moved on and unreadable. Leaves the file healed."""
+        """Read 1 (the tick's ONE ledger read per session: the key, the arm's tag check and the marker lookup all read that
+        snapshot since T401 (3) round two; before it the tag check and the marker lookup were two reads) proves; the block is
+        filed; read 2, the marker write's own, finds the file moved on and unreadable. Leaves the file healed."""
         real, calls, ledger, test = km._auto_nudge_data, [0], self.p, self
 
         def flaky():
             calls[0] += 1
-            if calls[0] == 3:
+            if calls[0] == 2:
                 ledger.write_text(json.dumps(DEFAULT, indent=1))
                 test._fail_read()
             return real()

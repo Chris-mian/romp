@@ -2008,13 +2008,17 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   noTranscript plus clockParse is the checks. The interrupt block's key
   keeps that shape but moves only with the files its road reads: the
   transcript, the state log, the downtime log, the goal store with its
-  journal and archive, and the ledger position carries this session's own
-  `intrBlocked` row (a checksum and its length) rather than the ledger's
-  stat, while the episode, cleared and messages positions hold the constant
-  pair `-1.0, -1`, which no stat can produce; so a postal message, a clear
-  or a walk write to another session's row no longer re-evaluates every
-  session's interrupt block (the quiet boot read of 2026-09-13 found those
-  three files behind 125 of its misses). `statesOverlay` is the
+  journal and archive, and the clears log (the store readers' override
+  replay gates a journalled move on the clears log, so a clear or an undo
+  row busts the key by design); the ledger position carries this session's
+  own `intrBlocked` row (a checksum and its length) rather than the ledger's
+  stat, while the episode and messages positions hold the constant pair
+  `-1.0, -1`, which no stat can produce; so a postal message or a walk
+  write to another session's row no longer re-evaluates every session's
+  interrupt block (the quiet boot read of 2026-09-13 counted 125 interrupt
+  block misses: messages 50, the ledger 50, cleared 25, and no episode
+  row; the two constant positions and the ledger row answer 100 of them).
+  `statesOverlay` is the
   awaiting overlay's read of the
   states log through the shared append-incremental reader, one carried answer
   per states file (`hit`: the records were the cached ones and no row was
