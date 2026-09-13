@@ -217,10 +217,6 @@ test("routeOutbound: needFull's optional `why` passes through untouched — only
   assert.deepEqual(bare, [{ host: "", msg: { type: "needFull", id: "B" } }], "no `why` → no `why` minted");
 });
 
-test("routeOutbound: a re-attach's resident keys go to the owning kernel by the id's host, the id bared, the keys intact (T323 follow-up)", () => {
-  const keys = ["k1", "k2#2"];
-});
-
 test("the manager's outbound puts needFull(+why) on the owning kernel's wire — local send or remote socket", () => {
   withManager((fm, _e, localSent) => {
     const ws = attach(fm, "gpu1");

@@ -12149,7 +12149,7 @@ function sizeSpacers(v: View): void {
   if (v.pxPerTurn == null) {   // px per TURN (a gap counts turns, not display units): total rendered height over the rendered turns (a user row starts each)
     let h = 0, turns = 0;
     for (const c of Array.from(v.el.children) as HTMLElement[]) {
-      if (c.classList.contains("tx-spacer") || c.classList.contains("tx-gap")) continue;
+      if (c.classList.contains("tx-spacer") || c.classList.contains("tx-gap") || !c.classList.contains("turn")) continue;   // only turn rows: cards and dividers are not turn content (round five)
       h += c.offsetHeight;
       if (c.classList.contains("turn-user")) turns++;
     }
@@ -13869,6 +13869,7 @@ function preJumpIntoGap(sid: string, t: number | null | undefined): void {
 }
 // the served labs read the session's regions on demand (a gap inside a spacer has no element to read): kind, span, and a run's event count
 if (typeof window !== "undefined") (window as any).__rompRegions = (sid?: string): unknown => { const s = sessions.get(sid || activeId || ""); return s?.regions ? s.regions.map((r) => r.kind === "gap" ? { kind: "gap", lo: r.lo, hi: r.hi } : { kind: "run", lo: r.lo, hi: r.hi, n: r.events.length, first: keyOf(r.events[0] as { uuid?: string; key?: string }) ?? null, last: keyOf(r.events[r.events.length - 1] as { uuid?: string; key?: string }) ?? null }) : null; };
+if (typeof window !== "undefined") (window as any).__rompTurnUnderTop = (): number | null => { const sid = activeId || ""; const s = sessions.get(sid), v = views.get(sid), c = document.getElementById("content"); if (!s || !v || !c) return null; return turnUnderTop(v, s, displayItems(s), turnOfEvents(s), c, c.scrollTop); };   // the lab reads the point under the viewport top as a turn (round five)
 (window as any).__rompAskState = (sid?: string): unknown => { const id = sid || activeId || ""; const s = sessions.get(id); return { loadingOlder: loadingOlder.has(id), gapLoading: gapLoading.size, landingGaps: landingGaps.size, hasGap: !!(s && s.regions && s.regions.some((r) => r.kind === "gap")), olderOnServer: !!(s && olderOnServer(s)) }; };
 // the served geometry lab shows the notice on demand: its real showings last the span of a fetch, too brief to measure against the strip
 if (typeof window !== "undefined") (window as any).__rompLoadingPill = (on: boolean): void => { if (on) showLandingNotice(activeId || "", null); else hideLandingNotice(); };
@@ -17444,22 +17445,80 @@ function chatTurns(msg: any): void {
  *  chosen around the row the reader was looking at and that row is written back to its offset, ONE attributed write (gap-fill),
  *  with the scrollTop read before the rebuild as the write's origin (the browser's own anchoring, kept on for #content, may have
  *  moved it already; the row still names the move as the pane's). */
+/** The turn of every event: a run's events in order, a user row starting each turn from the run's lo; rows before the run's first user
+ *  row (head cards) sit on lo. The regions' own numbering, so a point in the thread can be named as a turn and a fraction (T386). */
+function turnOfEvents(s: Session): number[] {
+  const out: number[] = new Array(s.events.length).fill(0);
+  if (!s.regions) return out;
+  let i = 0;
+  for (const r of runsOf(s.regions)) {
+    let t = r.lo - 1;
+    for (let k = 0; k < r.events.length && i < s.events.length; k++, i++) {
+      const e = s.events[i] as { kind?: string };
+      if (e && e.kind === "user") t++;
+      out[i] = Math.max(r.lo, t);
+    }
+  }
+  return out;
+}
+/** The point under the viewport top as a TURN (fractional) before a rebuild: a rendered gap element under the top gives lo plus the
+ *  fraction into it; a rendered row gives its turn; a point in the top spacer walks the hidden units by their own heights (a gap's
+ *  estimate, else the average) to the unit it falls in. Null when nothing can be named. */
+function turnUnderTop(v: View, s: Session, items: DisplayItem[], turns: number[], content: HTMLElement, top: number): number | null {
+  const cTop = content.getBoundingClientRect().top, st = content.scrollTop;
+  for (const c of Array.from(v.el.children) as HTMLElement[]) {
+    if (c.classList.contains("tx-spacer")) continue;
+    const y0 = c.getBoundingClientRect().top - cTop + st, h = c.offsetHeight, y1 = y0 + h;
+    if (!(top >= y0 && top < y1) || h <= 0) continue;
+    if (c.classList.contains("tx-gap")) { const lo = Number(c.dataset.lo), hi = Number(c.dataset.hi); return lo + (hi - lo) * ((top - y0) / h); }
+    const uuid = c.dataset.uuid; const idx = uuid ? s.events.findIndex((e) => e.uuid === uuid) : -1;
+    if (idx >= 0) return turns[idx] + (top - y0) / h;
+  }
+  const spacer = v.el.querySelector(".tx-spacer-top") as HTMLElement | null;
+  const topH = spacer ? spacer.offsetHeight : 0;
+  if (top < topH) {
+    const avg = v.avgTurnH ?? 60; let y = 0;
+    for (let u = 0; u < (v.winStart ?? 0) && u < items.length; u++) {
+      const it = items[u]; const h = it.kind === "gap" ? (v.gapUnits?.get(u) ?? gapHeight(it, v.pxPerTurn)) : avg;
+      if (top < y + h) { if (it.kind === "gap") return it.lo + (it.hi - it.lo) * ((top - y) / h); const f = itemFirstEvent(it); return f >= 0 && f < turns.length ? turns[f] : null; }
+      y += h;
+    }
+  }
+  return null;
+}
+/** The scroll position that puts turn `t` (fractional) under the viewport top after a rebuild: a rendered gap holding it gives its top
+ *  plus the fraction; a rendered row of that turn gives its top; a hidden unit walks the spacer estimates. Null when the turn is nowhere. */
+function yOfTurn(v: View, s: Session, items: DisplayItem[], turns: number[], content: HTMLElement, t: number): number | null {
+  const cTop = content.getBoundingClientRect().top, st = content.scrollTop, whole = Math.floor(t);
+  for (const c of Array.from(v.el.children) as HTMLElement[]) {
+    if (c.classList.contains("tx-gap")) { const lo = Number(c.dataset.lo), hi = Number(c.dataset.hi); if (t >= lo && t < hi) return c.getBoundingClientRect().top - cTop + st + c.offsetHeight * ((t - lo) / (hi - lo)); }
+  }
+  for (const c of Array.from(v.el.children) as HTMLElement[]) {
+    const uuid = c.dataset.uuid; if (!uuid) continue;
+    const idx = s.events.findIndex((e) => e.uuid === uuid);
+    if (idx >= 0 && turns[idx] === whole) return c.getBoundingClientRect().top - cTop + st + c.offsetHeight * Math.min(1, Math.max(0, t - whole));
+  }
+  const avg = v.avgTurnH ?? 60; let y = 0;
+  for (let u = 0; u < (v.winStart ?? 0) && u < items.length; u++) {
+    const it = items[u]; const h = it.kind === "gap" ? (v.gapUnits?.get(u) ?? gapHeight(it, v.pxPerTurn)) : avg;
+    if (it.kind === "gap" && t >= it.lo && t < it.hi) return y + h * ((t - it.lo) / (it.hi - it.lo));
+    if (it.kind !== "gap") { const f = itemFirstEvent(it); if (f >= 0 && f < turns.length && turns[f] === whole) return y; }
+    y += h;
+  }
+  return null;
+}
 function fillInPlace(sid: string, v: View | undefined): void {
   const content = document.getElementById("content"), s = sessions.get(sid);
   if (!content || !v || !s || sid !== activeId) { showActive(); return; }
   const topBefore = content.scrollTop;
   const keep = captureScrollAnchor(content, v);
-  // a row is the anchor only when it is actually ON SCREEN (T386 stage 2, medium 3): captureScrollAnchor returns the first row whose
-  // bottom clears the viewport top, which for a reader standing INSIDE a gap (a jump to the head, a cancelled head-gap landing) is a
-  // rendered row far BELOW them; writing that row back to its offset moved the view by the whole fill. keep.y is the row's top from the
-  // viewport top, so it is on screen only when 0 <= keep.y < the viewport height.
-  const keepVisible = !!keep && keep.y < content.clientHeight - 1;   // a row anchors when it INTERSECTS the viewport, whatever the sign of its top (round four, medium 1: a partially visible top row, the normal state after any wheel, is an anchor too)
-  // with no row on screen (medium 4): the re-window replaces rendered content above the reader with spacer estimates (or the reverse), so
-  // holding scrollTop alone carries them by that difference; measure the content above the viewport top before and after, in the view's
-  // own coordinates, and shift by exactly the change. At the head both are zero.
-  const heightAbove = (): number => { let h = 0; for (const c of Array.from(v.el.children) as HTMLElement[]) { if (c.offsetTop + c.offsetHeight <= topBefore) h += c.offsetHeight; else if (c.offsetTop < topBefore) h += topBefore - c.offsetTop; } return h; };
-  const aboveBefore = keepVisible ? 0 : heightAbove();
+  // a row anchors the fill when it INTERSECTS the viewport, whatever the sign of its top (round four, medium 1: a partially visible
+  // top row, the normal state after any wheel, is an anchor too); a reader with no row on screen (a jump to the head, a cancelled
+  // head-gap landing, a place inside a gap) is anchored on the POINT under the viewport top as a turn and a fraction into its gap
+  // (round five, medium B: the plan's own rule, the content change, not the view's own coordinates, which read as a tautology)
+  const keepVisible = !!keep && keep.y < content.clientHeight - 1;
   const items = displayItems(s);
+  const pointBefore = turnUnderTop(v, s, items, turnOfEvents(s), content, topBefore);
   let u = -1;
   if (keepVisible && keep) {
     const idx = s.events.findIndex((e) => e.uuid === keep.uuid);
@@ -17471,10 +17530,16 @@ function fillInPlace(sid: string, v: View | undefined): void {
   v.stick = false;   // a fill never follows the tail: the reader is where they are
   if (u >= 0) renderWindowItems(v, s, items, Math.max(0, u - WINDOW_RADIUS), Math.min(items.length, u + WINDOW_RADIUS), s.status.state === "working" || s.status.state === "compacting");
   else syncView(sid);
-  // a visible row goes back to its exact offset; with no row on screen the reader keeps their scrollTop (at the document head, 0 stays 0
-  // and the filled turns appear at the top; deeper in a gap they keep their place, the fill inserting around them), never a jump by the growth
+  // a visible row that survived the rebuild goes back to its exact offset; otherwise (no row on screen, or the anchor row gone: a turn
+  // anchored on a resultUuid or a word key no event carries, round five medium A) the point under the viewport top is put back by its
+  // turn; with no way to name the point, the reader keeps their scrollTop (the head stays at zero)
   const row = keepVisible && keep ? (v.el.querySelector(`.turn[data-uuid="${cssEscape(keep.uuid)}"]`) as HTMLElement | null) : null;
-  const y = row && keep ? row.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop - keep.y : topBefore + (heightAbove() - aboveBefore);
+  let y: number;
+  if (row && keep) y = row.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop - keep.y;
+  else {
+    const mapped = pointBefore != null ? yOfTurn(v, s, items, turnOfEvents(s), content, pointBefore) : null;
+    y = mapped != null ? mapped : topBefore;
+  }
   writeScroll(content, y, "gap-fill", false, topBefore);
   if (activeId) applyCommentMarks(activeId);
   scheduleRailSticky();
@@ -17620,7 +17685,7 @@ function chatWindow(msg: any) {
     // a missing says the anchor is gone; neither is silent (the notice's cancel is the only silence).
     if (msg.id === activeId && (pendingAnchor === anchorUuid || cancelled || wasLanding)) {
       pendingAnchor = null; anchorPendingOlder = false;
-      const nospan = !msg.missing && !Array.isArray(msg.span);   // a real missing (a /clear, a fork, a rewind, an anchor past the floor) carries no span key either: test missing FIRST (round four, medium 3)
+      const nospan = !msg.missing && Array.isArray(msg.events) && msg.events.length > 0 && !Array.isArray(msg.span);   // an older host sends EVENTS with no span; an empty span-less window from a current host is a missing (round five, low 3)   // a real missing (a /clear, a fork, a rewind, an anchor past the floor) carries no span key either: test missing FIRST (round four, medium 3)
       const from = preJumpOrigin;
       const cRestore = document.getElementById("content");
       if (from != null && cRestore) writeScroll(cRestore, from, "land-cancel", false, cRestore.scrollTop);   // the pre-jump moved the reader; put them back where they were (low 2)

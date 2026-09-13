@@ -147,7 +147,7 @@ test("round two/three code fixes each carry a pin (T386 stage 2, low 1)", () => 
   assert.match(RENDER, /window\.addEventListener\("romp:wsdown", \(\) => \{[\s\S]*?gapLoading\.clear\(\); landingGaps\.clear\(\); loadingOlder\.clear\(\);[\s\S]*?hideLandingNotice\(\);/, "wsdown clears the landing's gap, the older-ask set and the notice");
   // sizeSpacers does not average the gap element (medium 3, round one)
   const pxBlock = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
-  assert.match(pxBlock, /if \(c\.classList\.contains\("tx-spacer"\) \|\| c\.classList\.contains\("tx-gap"\)\) continue;/, "the px-per-turn measure skips the gap element (pinned inside its own block, round four low 3)");
+  assert.match(pxBlock, /if \(c\.classList\.contains\("tx-spacer"\) \|\| c\.classList\.contains\("tx-gap"\) \|\| !c\.classList\.contains\("turn"\)\) continue;/, "the px-per-turn measure skips the gap element and every non-turn child (pinned inside its own block; round four low 3, round five)");
   const unitBlock = RENDER.slice(RENDER.indexOf("if (v.avgTurnH == null) {"), RENDER.indexOf("if (h > 0 && n > 0) v.avgTurnH = h / n;"));
   assert.match(unitBlock, /c\.classList\.contains\("tx-gap"\)\) continue;/, "…and so does the per-unit measure");
   // the region-fill view resets (chatTurns, chatWindow) keep the measured averages across fills (low 1); chatHead's prepend reset may still clear them
@@ -160,6 +160,23 @@ test("round two/three code fixes each carry a pin (T386 stage 2, low 1)", () => 
   assert.ok(win.indexOf("const cancelled = cancelledLandings.delete(msg.id);") >= 0 && win.indexOf("const cancelled = cancelledLandings.delete(msg.id);") < win.indexOf("!Array.isArray(msg.span)"), "the cancelled mark is read before the missing/span-less return");
   // a mid-transcript gap keeps headTotal null (low 7)
   assert.match(RENDER, /s\.regions && s\.regions\.some\(\(r\) => r\.kind === "gap"\)\)\) s\.headTotal/, "chatTail keeps no head total while a gap holds older history");
+});
+
+test("round four and five fixes each carry a pin (T386 stage 2, round five low 1)", () => {
+  const fill = RENDER.slice(RENDER.indexOf("function fillInPlace(sid: string, v: View | undefined): void {"), RENDER.indexOf("\nfunction ", RENDER.indexOf("function fillInPlace(sid: string, v: View | undefined): void {") + 1));
+  assert.match(fill, /const keepVisible = !!keep && keep\.y < content\.clientHeight - 1;/, "a row anchors the fill when it intersects the viewport, whatever the sign of its top (medium 1)");
+  assert.doesNotMatch(fill, /keep\.y >= -1/, "…no lower bound on the row's top");
+  assert.match(fill, /const pointBefore = turnUnderTop\(v, s, items, turnOfEvents\(s\), content, topBefore\);/, "the point under the viewport top is named as a turn before the rebuild (medium B)");
+  assert.match(fill, /const mapped = pointBefore != null \? yOfTurn\(v, s, items, turnOfEvents\(s\), content, pointBefore\) : null;\s*\n\s*y = mapped != null \? mapped : topBefore;/, "…and put back by its turn after it, scrollTop kept only when the point cannot be named (medium A: the anchor row gone falls to the turn, never a doubled write)");
+  assert.doesNotMatch(fill, /heightAbove/, "the view-coordinate tautology is gone");
+  assert.match(RENDER, /function turnUnderTop\(v: View, s: Session, items: DisplayItem\[\], turns: number\[\], content: HTMLElement, top: number\): number \| null \{/, "the turn-under-top helper");
+  assert.match(RENDER, /function yOfTurn\(v: View, s: Session, items: DisplayItem\[\], turns: number\[\], content: HTMLElement, t: number\): number \| null \{/, "the turn-to-scroll helper");
+  assert.match(RENDER, /gapLoading\.clear\(\); landingGaps\.clear\(\); loadingOlder\.clear\(\); cancelledLandings\.clear\(\);/, "the socket death clears the cancelled mark too (medium 2)");
+  assert.match(RENDER, /const liveLanding = !!landingNoticeSid \|\| Array\.from\(landingGaps\.keys\(\)\)\.some\(\(sid\) => !cancelledLandings\.has\(sid\)\);/, "the wsdown toast fires only for a landing the reader had not cancelled (low 1)");
+  assert.match(RENDER, /const nospan = !msg\.missing && Array\.isArray\(msg\.events\) && msg\.events\.length > 0 && !Array\.isArray\(msg\.span\);/, "missing is tested first; only a reply with events and no span is an older host (medium 3; round five low 3)");
+  assert.match(RENDER, /const preJumpOrigin = preJumpFrom\.get\(msg\.id\); preJumpFrom\.delete\(msg\.id\);/, "the pre-jump origin is consumed by every window reply (low 2)");
+  const px = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
+  assert.match(px, /\|\| !c\.classList\.contains\("turn"\)\) continue;/, "px-per-turn counts turn rows only, never cards or dividers (round five)");
 });
 
 test("the spacer is invisible, non-interactive vertical space", () => {

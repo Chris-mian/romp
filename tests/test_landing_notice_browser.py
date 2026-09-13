@@ -138,7 +138,26 @@ await page.waitForFunction((n) => (window.__sent.filter((m) => m.type === "loadA
 const reask5 = (await asks5()) - asksBefore5;
 const reNotice5 = (await state()).notice;
 const resident5 = resBefore5;
-process.stdout.write("RESULT:" + JSON.stringify({ head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, redialAsk5, redialed5, gapLo5: gapLo5Out, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
+// ROAD 6 (round five, medium B): the point under the viewport top holds through a fill the reader stands ABOVE of? no: INSIDE the head gap,
+// far from the filled page. Reset to the boot tail; the head page [0,16) asked at the top edge and HELD; the reader then scrolls deep into
+// the gap (no row on screen); the reply released: the fill lands above them and the point under the viewport top, named as a turn, must
+// move by less than a turn (the old view-coordinate compensation carried them ~2.6 turns, 81c0dca5 ~2.8).
+await page.evaluate(() => { if (window.__bootSession) window.postMessage(window.__bootSession, "*"); });
+await painted();
+await page.evaluate(() => { window.__hold.add("loadTurns"); });
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, await sentOf("loadTurns") - 1, { timeout: 8000 }).catch(() => {});
+const heldAsk6 = await page.evaluate(() => (window.__heldRaw || []).length);
+await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.round(gTop + Math.min(8000, (g ? g.offsetHeight : 9000) * 0.6)); });   // deep into the head gap, no row on screen
+await painted();
+const inGap6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); const rows = Array.from(c.querySelectorAll(".turn[data-uuid]")).filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; }).length; return { top: c.scrollTop, rowsOnScreen: rows }; });
+const point6Before = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
+await page.evaluate(() => { window.__hold.delete("loadTurns"); window.__release(); });
+await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
+await painted();
+const point6After = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
+const fillWrites6 = await page.evaluate(() => window.__sent.filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill").slice(-1).map((m) => ({ b: m.data.before, a: m.data.after })));
+process.stdout.write("RESULT:" + JSON.stringify({ inGap6, heldAsk6, point6Before, point6After, fillWrites6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, reask5, reNotice5, askState5, resident5, redialAsk5, redialed5, gapLo5: gapLo5Out, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 130, bootTop: boot.top }) + "\n");
@@ -177,6 +196,15 @@ class ServedLandingNotice(WindowLab):
         kinds = [x["kind"] for x in l["regions"]]
         self.assertIn(kinds, (["run", "gap", "run"], ["gap", "run", "gap", "run"]), "the window is a run among the regions, a gap between it and the tail (a head gap too when it did not reach the head): %r" % l["regions"])
         self.assertTrue(any(row["ok"] for row in r["rows1"]), "the landing filed its row: %r" % r["rows1"])
+
+    def test_a_fill_above_a_reader_deep_inside_the_gap_moves_the_point_under_the_viewport_top_by_less_than_a_turn(self):
+        # round five, medium B: the head page fills while the reader stands deep in the head gap with no row on screen
+        r = self._result()
+        self.assertEqual(r["inGap6"]["rowsOnScreen"], 0, "the reader stood inside the gap with no row on screen: %r" % r["inGap6"])
+        self.assertGreaterEqual(r["heldAsk6"], 1, "the head page's ask was on the wire (held) when they scrolled in")
+        self.assertIsNotNone(r["point6Before"], "the point under the viewport top was named as a turn before the fill")
+        self.assertIsNotNone(r["point6After"], "…and after it")
+        self.assertLess(abs(r["point6After"] - r["point6Before"]), 1.0, "the point under the viewport top moved by less than a turn across the fill: %r -> %r (write %r)" % (r["point6Before"], r["point6After"], r["fillWrites6"]))
 
     def test_a_fill_at_the_transcript_head_keeps_the_reader_and_lands_the_head_at_the_top(self):
         # MEDIUM 3: a reader inside a gap (scrollTop 0, no row on screen) is not jumped by the fill

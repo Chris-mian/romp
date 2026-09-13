@@ -2027,9 +2027,10 @@ announces `chatProto2` in its `caps`:
   TURN count times the rendered run's measured pixels per turn (a turn is a
   user row plus its reply and any tool rows; a per-display-unit average drew
   gaps half true); a fill anchors on the first row that intersects the
-  viewport, whatever the sign of its top, and with no row on screen shifts the
-  view by exactly the change in height above the viewport top, so the point
-  under it stays put (the head stays at zero);
+  viewport, whatever the sign of its top; with no row on screen (or that row
+  gone from the rebuild) it names the point under the viewport top as a TURN
+  and a fraction into its gap and puts that turn back after the rebuild, so
+  the point moves by less than a turn (the head stays at zero);
 - the kernel's per-client base is TAIL-ONLY: a reply moves the base's first edge
   only when its span reaches the tail run, so the tail's deltas keep flowing to a
   reader in older history; a reconnect's `ready` starts a fresh base. A run whose
