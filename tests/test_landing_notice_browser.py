@@ -5,7 +5,7 @@ the gap where the target will be, the loading glyph in the empty space; the land
 ONLY cancel: the target and the notice go, the reply still inserts its run in place, and the view does not move. Served, on the
 window lab's hermetic kernel (a synthetic transcript longer than the wire tail: the deep target is in the head gap at boot).
 
-Roads, five fresh pages (the socket death first, then the notice roads, then the answered-question anchor, then the cancel-then-click road, then the fault road): the deep link landing with the notice (the words, the pre-jump write, the window ask, the landing, the notice
+Roads, eight fresh pages (the socket death first, then the notice roads, then the answered-question anchor, the cancel-then-click road, the fault road, and three roads on the per-ask records: two cancels, a cancelled origin, a lost cancelled frame): the deep link landing with the notice (the words, the pre-jump write, the window ask, the landing, the notice
 gone); then a second deep link with its ask HELD at the socket, the notice clicked (a locateDiag row filed as cancelled, the notice
 gone, the view still), the ask released (the run inserts, the view still where the reader was).
 
@@ -24,6 +24,7 @@ DRIVER = DRIVER_HEAD + r"""
 const installShim = () => page.evaluate(() => { const orig = WebSocket.prototype.send; window.__hold = new Set(); window.__heldRaw = [];
   WebSocket.prototype.send = function (d) { window.__ws = this; try { const m = JSON.parse(d); if (m && m.type && window.__hold.has(m.type)) { window.__heldRaw.push(d); return; } } catch (e) {} return orig.call(this, d); };
   window.__release = () => { const ws = window.__ws; const held = window.__heldRaw; window.__heldRaw = []; for (const d of held) orig.call(ws, d); return held.length; };
+  window.__releaseOne = () => { const d = window.__heldRaw.shift(); if (d) orig.call(window.__ws, d); return d ? 1 : 0; };
   window.__recv = []; window.__bootSession = null; window.addEventListener("message", (e) => { const m = e.data; if (m && m.type) { window.__recv.push(m.type + (m.span ? ":" + m.span.join("-") : "") + (m.anchor ? ":anchor" : "")); if (m.type === "session" && Array.isArray(m.events) && !window.__bootSession) window.__bootSession = m; } }); });
 await installShim();
 // a FRESH page (round six, medium 3): the roads that need the head gap whole (the socket death, the answered-question anchor) each start
@@ -271,7 +272,77 @@ const rows9 = (await locateRows()).slice(rowsBefore9);
 const writes9 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data).map((m) => [m.data.writer, m.data.before, m.data.after]), sentAt9);
 const pxPerTurn9 = await page.evaluate(() => { const c = document.getElementById("content"); const rows = Array.from(c.querySelectorAll(".turn")); const users = rows.filter((r) => r.classList.contains("turn-user")).length; const h = rows.reduce((a, r) => a + r.offsetHeight, 0); return users ? h / users : null; });
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
-process.stdout.write("RESULT:" + JSON.stringify({ inGap6, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
+// ROAD 10 (round eight, medium 1; a fresh page): two landings cancelled on one session, their asks held; released ONE at a time, oldest
+// first: neither reply moves the reader (each fills in place under its own record), and both runs are resident after.
+await reboot();
+const deepA10 = "11111111-2222-3333-4444-" + pad(2 * 60), deepB10 = "11111111-2222-3333-4444-" + pad(2 * 170);
+const clickCancel = async (anchor, t) => {   // a deep link whose ask is HELD, its notice clicked away
+  const before = await heldN();
+  await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor, anchorT: t });
+  await page.waitForFunction((n) => (window.__heldRaw || []).length > n, before, { timeout: 8000 }).catch(() => {});
+  await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
+  await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });
+  await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
+  return (await heldN()) - before;
+};
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const askedA10 = await clickCancel(deepA10, cfg.base + 2 * 60);
+const askedB10 = await clickCancel(deepB10, cfg.base + 2 * 170);
+const asks10 = await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid);
+await painted();
+const pointNow = () => page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));   // the point under the viewport top as a TURN: the reader stands inside the head gap, so no row is on screen
+const before10 = { top: await page.evaluate(() => document.getElementById("content").scrollTop), row: await rowAtTop(), point: await pointNow() };
+const runN10a = await runN7();
+await page.evaluate(() => { window.__hold.delete("loadAround"); });
+const relA10 = await page.evaluate(() => window.__releaseOne());   // A's reply alone
+await page.waitForFunction((n0) => ((typeof window.__rompRegions === "function" && window.__rompRegions()) || []).filter((r) => r.kind === "run").reduce((a, r) => a + r.n, 0) > n0, runN10a, { timeout: 15000 }).catch(() => {});
+await painted();
+const afterA10 = { top: await page.evaluate(() => document.getElementById("content").scrollTop), row: await rowAtTop(), point: await pointNow(), targetA: await onScreen(deepA10), notice: (await state()).notice };
+const runN10b = await runN7();
+const relB10 = await page.evaluate(() => window.__releaseOne());   // then B's
+await page.waitForFunction((n0) => ((typeof window.__rompRegions === "function" && window.__rompRegions()) || []).filter((r) => r.kind === "run").reduce((a, r) => a + r.n, 0) > n0, runN10b, { timeout: 15000 }).catch(() => {});
+await painted();
+const afterB10 = { top: await page.evaluate(() => document.getElementById("content").scrollTop), row: await rowAtTop(), point: await pointNow(), targetB: await onScreen(deepB10), notice: (await state()).notice };
+const runN10c = await runN7();
+const writes10 = await page.evaluate(() => window.__sent.filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && (m.data.writer === "land-on" || m.data.writer === "land-cancel")).map((m) => [m.data.writer, m.data.before, m.data.after]));
+// ROAD 11 (round eight, medium 2; a fresh page): a cancelled landing's pre-jump origin must die with the cancel. A deep link A (held) is
+// cancelled, leaving the reader where the pre-jump put them; a deep link B with NO time (no pre-jump) then dead-ends on a missing reply:
+// the reader stays where B found them, never restored to A's origin.
+await reboot();
+const deepA11 = "11111111-2222-3333-4444-" + pad(2 * 60), deepB11 = "11111111-2222-3333-4444-" + pad(2 * 170);
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const originA11 = await page.evaluate(() => document.getElementById("content").scrollTop);   // A's origin: the tail
+const askedA11 = await clickCancel(deepA11, cfg.base + 2 * 60);
+await painted();
+const foundB11 = await page.evaluate(() => document.getElementById("content").scrollTop);   // where B finds the reader: inside the gap, where A's pre-jump left them
+const heldBefore11 = await heldN();
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deepB11 });   // no anchorT: no pre-jump
+await page.waitForFunction((n) => (window.__heldRaw || []).length > n, heldBefore11, { timeout: 8000 }).catch(() => {});
+const askedB11 = (await heldN()) - heldBefore11;
+const noticeB11 = (await state()).notice;
+const atAsk11 = await page.evaluate(() => document.getElementById("content").scrollTop);
+await page.evaluate(([sid, anchor]) => window.postMessage({ type: "chatWindow", id: sid, anchor, missing: true }, "*"), [cfg.sid, deepB11]);   // B's honest end
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
+await painted();
+const afterMissing11 = { top: await page.evaluate(() => document.getElementById("content").scrollTop), toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }), notice: (await state()).notice };
+const writes11 = await page.evaluate(() => window.__sent.filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "land-cancel").map((m) => [m.data.writer, m.data.before, m.data.after]));
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
+// ROAD 12 (round eight, medium 3; a fresh page): a cancelled ask whose frame is LOST with the socket alive must not eat the next landing on
+// the same anchor: click A (held), cancel, drop the parked frame, click A again: it asks and lands.
+await reboot();
+const deepA12 = "11111111-2222-3333-4444-" + pad(2 * 60);
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const askedA12 = await clickCancel(deepA12, cfg.base + 2 * 60);
+await page.evaluate(() => { window.__heldRaw = []; window.__hold.delete("loadAround"); });   // the frame is lost; the socket lives
+const sentAt12 = await page.evaluate(() => window.__sent.length);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deepA12, anchorT: cfg.base + 2 * 60 });
+await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deepA12, { timeout: 15000 }).catch(() => {});
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
+await painted();
+const reask12 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "loadAround").length, sentAt12);
+const target12 = await onScreen(deepA12);
+const trail12 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "locateDiag").map((m) => ({ ok: m.ok, trail: (m.trail || []).slice(-4) })), sentAt12);
+process.stdout.write("RESULT:" + JSON.stringify({ inGap6, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 190, bootTop: boot.top }) + "\n");
@@ -407,9 +478,51 @@ class ServedLandingNotice(WindowLab):
         # the restore is exact here; CI's page lands about 87 px short twice over (its writes are in the payload for the read): the bound is a
         # turn's height, so a restore that missed by a row would still pass here and the payload says by how much
         turn_px = r["pxPerTurn9"] or 120
-        self.assertTrue(abs(f["top"] - r["top9Before"]) <= turn_px or f["atBottom"], "the pre-jump was undone: the reader is back where they were within a turn: %r -> %r (before %r, at the bottom %r, a turn %r px; the writes %r)" % (r["asked9"]["top"], f["top"], r["top9Before"], f["atBottom"], turn_px, r["writes9"]))
+        self.assertLessEqual(abs(f["top"] - r["top9Before"]), turn_px, "the pre-jump was undone: the reader is back at the origin within a turn (CI's page lands tens of pixels short of it after the pre-jump's re-window; round eight, low 4: the delta against the origin alone): %r -> %r (before %r, a turn %r px; the writes %r)" % (r["asked9"]["top"], f["top"], r["top9Before"], turn_px, r["writes9"]))
         self.assertEqual((f["ask"]["landingGaps"], f["ask"]["gapLoading"], f["ask"]["loadingOlder"]), (0, 0, False), "the landing's state cleared: %r" % f["ask"])
         self.assertFalse(f["seekNote"], "the seek ended (no seek note stands)")
+
+    def test_two_cancelled_landings_on_one_session_each_fill_in_place_and_neither_moves_the_reader(self):
+        # round eight, medium 1: click A, cancel, click B, cancel; release A alone, then B alone. The behaviour first (the pre-fix red is the
+        # landing write), the records after; the reader stands inside the head gap with no row on screen, so "nothing moved" is the point
+        # under the viewport top as a turn, as roads six and seven judge a fill
+        r = self._result()
+        self.assertEqual((r["askedA10"], r["askedB10"]), (1, 1), "both deep links asked (held): %r" % ((r["askedA10"], r["askedB10"]),))
+        self.assertEqual((r["relA10"], r["relB10"]), (1, 1), "the two parked asks were released one at a time")
+        self.assertEqual([w for w in r["writes10"] if w[0] == "land-on"], [], "no landing write dragged the reader to a target they cancelled: %r" % r["writes10"])
+        self.assertIsNotNone(r["before10"]["point"], "the point under the viewport top was named before the releases")
+        self.assertIsNotNone(r["afterA10"]["point"]); self.assertIsNotNone(r["afterB10"]["point"])
+        self.assertLess(abs(r["afterA10"]["point"] - r["before10"]["point"]), 1.0, "A's reply moved the reader by less than a turn: %r -> %r (scrollTop %r -> %r)" % (r["before10"]["point"], r["afterA10"]["point"], r["before10"]["top"], r["afterA10"]["top"]))
+        self.assertLess(abs(r["afterB10"]["point"] - r["before10"]["point"]), 1.0, "B's reply too: %r -> %r (scrollTop %r -> %r)" % (r["before10"]["point"], r["afterB10"]["point"], r["before10"]["top"], r["afterB10"]["top"]))
+        self.assertFalse(r["afterA10"]["targetA"] and r["afterA10"]["targetA"]["visible"], "A's target is not what the reader sees (they cancelled it): %r" % r["afterA10"]["targetA"])
+        self.assertFalse(r["afterB10"]["targetB"] and r["afterB10"]["targetB"]["visible"], "nor B's: %r" % r["afterB10"]["targetB"])
+        self.assertGreater(r["runN10b"], r["runN10a"], "A's reply inserted its run: %r -> %r" % (r["runN10a"], r["runN10b"]))
+        self.assertGreater(r["runN10c"], r["runN10b"], "B's reply inserted its run: %r -> %r" % (r["runN10b"], r["runN10c"]))
+        self.assertFalse(r["afterA10"]["notice"] or r["afterB10"]["notice"], "no notice returns with either reply")
+        asks = r["asks10"].get("asks")
+        self.assertIsNotNone(asks, "the ask-state hook lists the per-ask records: %r" % r["asks10"])
+        self.assertEqual([a["cancelled"] for a in asks], [True, True], "two records, both cancelled, neither overwritten: %r" % asks)
+
+    def test_a_cancelled_landings_origin_dies_with_the_cancel_so_a_later_dead_end_leaves_the_reader_where_it_found_them(self):
+        # round eight, medium 2: click A (pre-jump into the gap), cancel; click B with no time (no pre-jump); B missing
+        r = self._result()
+        self.assertEqual(r["askedA11"], 1, "A asked (held)")
+        self.assertNotEqual(r["foundB11"], r["originA11"], "A's pre-jump moved the reader off A's origin before the cancel: %r vs origin %r" % (r["foundB11"], r["originA11"]))
+        self.assertEqual(r["askedB11"], 1, "B asked (held): the cancelled A is not busy")
+        self.assertTrue(r["noticeB11"], "B's notice showed")
+        self.assertLessEqual(abs(r["atAsk11"] - r["foundB11"]), 2, "B had no time, so no pre-jump moved the reader: %r -> %r" % (r["foundB11"], r["atAsk11"]))
+        a = r["afterMissing11"]
+        self.assertFalse(a["notice"], "B's missing reply brought its notice down")
+        self.assertIsNotNone(a["toast"]); self.assertIn("couldn't locate", a["toast"], "…with the honest word: %r" % a["toast"])
+        self.assertLessEqual(abs(a["top"] - r["foundB11"]), 2, "the reader stays where B found them, never restored to A's cancelled origin: %r (B found them at %r; A's origin %r; land-cancel writes %r)" % (a["top"], r["foundB11"], r["originA11"], r["writes11"]))
+        self.assertEqual(r["writes11"], [], "no restore write ran for a dead end with no pre-jump of its own: %r" % r["writes11"])
+
+    def test_a_cancelled_ask_whose_frame_is_lost_does_not_eat_the_next_landing_on_its_anchor(self):
+        # round eight, medium 3: click A (held), cancel, drop the frame (the socket alive), click A again: it asks and lands
+        r = self._result()
+        self.assertEqual(r["askedA12"], 1, "A asked (held), then its frame was dropped")
+        self.assertGreaterEqual(r["reask12"], 1, "the second click on the same card asked again (a fresh ask supersedes the cancelled twin): %r" % r["reask12"])
+        self.assertIsNotNone(r["target12"]); self.assertTrue(r["target12"]["visible"], "…and landed on screen: %r (rows %r)" % (r["target12"], r["trail12"]))
 
     def test_a_span_less_window_from_an_older_host_tells_the_reader_and_is_not_dropped_silently(self):
         # T386 stage 2, medium 2: a chatWindow with events but no span is an older host's pre-regions reply
