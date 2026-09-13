@@ -109,7 +109,9 @@ const layout = () => page.evaluate(() => {
                  on: !!(lockRow && lockRow.checked === "true") };
   const chips = bar.querySelector(".tab-tagbox .tab-tagchips");
   const tagCtl = tagBtn ? { pressed: tagBtn.getAttribute("aria-pressed"), chipsInDom: !!chips, chipCount: chips ? chips.children.length : 0 } : null;
-  return { bar: { left: b.left, top: b.top, right: b.right }, tabs, order: tabs.map((t) => t.id), gear, lock, tagBtn: tb, tagCtl, accent, cardBorder, store: { tabsLocked: "tabsLocked" in s ? s.tabsLocked : "absent" } };
+  const ms = document.getElementById("mtag-slot");   // the phone header's tag mount: on the desktop its chips host takes no chip per paint (the T405 read)
+  return { bar: { left: b.left, top: b.top, right: b.right }, tabs, order: tabs.map((t) => t.id), gear, lock, tagBtn: tb, tagCtl, accent, cardBorder,
+           mountChips: ms && ms.children[1] ? ms.children[1].childElementCount : null, mountPresent: !!ms, store: { tabsLocked: "tabsLocked" in s ? s.tabsLocked : "absent" } };
 });
 // drag the tab at index `from` and release over the left part of the tab at index `to` (the reorder lab's gesture)
 async function drag(label) {
@@ -227,7 +229,9 @@ await phone.waitForFunction(() => document.querySelectorAll("#tabs .tab[data-id]
 await phone.waitForTimeout(600);
 out.phone = await phone.evaluate(() => { const tabs = document.getElementById("tabs"); const gear = document.querySelector("#tabs .tab-widgets-gear");
   const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).display !== "none" && getComputedStyle(el).visibility !== "hidden";
-  return { phoneLayout: window.matchMedia("(pointer:coarse) and (max-width:1024px)").matches, stripVisible: vis(tabs), gearVisible: vis(gear), mslot: !!document.getElementById("mtag-slot") }; });
+  const ms = document.getElementById("mtag-slot");
+  return { phoneLayout: window.matchMedia("(pointer:coarse) and (max-width:1024px)").matches, stripVisible: vis(tabs), gearVisible: vis(gear), mslot: !!ms,
+           mslotChips: ms && ms.children[1] ? ms.children[1].childElementCount : null }; });
 await phoneCtx.close();
 out.pressedAgain = await press();
 out.unlocked = await layout();
@@ -372,6 +376,12 @@ class ServedTabLock(unittest.TestCase):
             self.assertEqual(t["restBorder"], t["restCardBorder"], theme + ": the gear's rest border is the card-border token, one source (the lens is narrowed here, so the tag button itself wears the accent; read with the pointer off the gear)" + table)
         self.assertNotEqual(r["themes"]["dark"]["restCardBorder"], r["themes"]["light"]["restCardBorder"], "the token differs between the themes, so the two checks are two" + table)
         self.assertFalse(s["lock"]["present"], "no lock button or box in the strip" + table)
+        # the T405 read: the phone header's mount builds its chips only in the phone layout, so on the desktop no chip is built per paint
+        # anywhere; read at the first paint and after every repaint the lab drives (the lock toggles, the theme flips)
+        if s["mountPresent"]:
+            self.assertEqual(s["mountChips"], 0, "desktop: the mount's host holds no chip" + table)
+            for theme in ("dark", "light"):
+                self.assertEqual(r["themes"][theme]["mountChips"], 0, theme + ": still none after the repaints" + table)
         for theme in ("dark", "light"):
             t = r["themes"][theme]; tb = "\n  " + theme + "=" + json.dumps(t["gear"])
             self.assertTrue(t["gear"]["last"] and t["gear"]["rightGap"] <= 2.0, theme + ": the gear at the strip's farthest right" + tb)
@@ -402,6 +412,8 @@ class ServedTabLock(unittest.TestCase):
     def test_the_phone_layout_hides_the_strip_and_the_gear_with_it(self):
         p = self._run()["phone"]
         self.assertTrue(p["phoneLayout"], json.dumps(p))
+        if p["mslot"]:
+            self.assertGreaterEqual(p["mslotChips"], 1, "phone: the mount builds its chips (the lens is narrowed to none, one chip says so): " + json.dumps(p))
         self.assertFalse(p["stripVisible"], "the phone page hides the whole strip (T161)" + json.dumps(p))
         self.assertFalse(p["gearVisible"], "so there is no gear to place" + json.dumps(p))
 

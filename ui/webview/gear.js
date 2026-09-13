@@ -1523,19 +1523,30 @@ function initGear(post, opts) {
   // past the card's visible bottom, with room above the row, the row wears rs-up and the popover opens above it (gear.css).
   // Measured per hover, since the card scrolls and the rows move; dropped when the pointer leaves, so the next hover measures afresh.
   var pcard = document.querySelector('#rsettings .rs-card');
-  function rowOf(t) { return t && t.closest ? t.closest('#rsettings .rs-row, #rsettings .rs-widget') : null; }
-  function placeSub(row) {
-    var sub = row.querySelector('.rs-sub');
+  // the HOST a hover belongs to: the closest of a Fast mode box, a row or a widget row, so a hover on the box is the box's, not
+  // its judge row's (round two, the medium: the rule climbed to the row, read the row's popover, which the sheet hides while the
+  // box is hovered, and returned on its zero height; no Fast mode popover ever went up)
+  var HOSTS = '#rsettings .rs-fastin, #rsettings .rs-row, #rsettings .rs-widget';
+  function hostOf(t) { return t && t.closest ? t.closest(HOSTS) : null; }
+  function ownSub(host) {   // the popover the host OWNS: a row's own, never the Fast mode box's nested inside it; the box's own for the box
+    var subs = host.querySelectorAll('.rs-sub');
+    for (var i = 0; i < subs.length; i++) { if (subs[i].closest(HOSTS) === host) return subs[i]; }
+    return null;
+  }
+  function placeSub(host) {
+    var sub = ownSub(host);
     if (!sub || !pcard) return;
-    row.classList.remove('rs-up');
+    host.classList.remove('rs-up');
     var sr = sub.getBoundingClientRect(), cr = pcard.getBoundingClientRect();
     if (!sr.height) return;   // no popover shown (a picker open, the mixed mark hovered): nothing to place
-    var rr = row.getBoundingClientRect();
-    if (sr.bottom > cr.bottom && rr.top - sr.height - 2 >= cr.top) row.classList.add('rs-up');
+    if (sr.bottom <= cr.bottom) return;   // it fits below: the default stands
+    var rr = host.getBoundingClientRect(), above = rr.top - cr.top, below = cr.bottom - rr.bottom;
+    // above when it fits there; when it fits on neither side (a very short window), the side with more room (round two, low 5)
+    if (above >= sr.height + 2 || above > below) host.classList.add('rs-up');
   }
   if (pcard) {
-    pcard.addEventListener('mouseover', function (e) { var row = rowOf(e.target); if (row) placeSub(row); });
-    pcard.addEventListener('mouseout', function (e) { var row = rowOf(e.target); if (row && !(e.relatedTarget && row.contains(e.relatedTarget))) row.classList.remove('rs-up'); });
+    pcard.addEventListener('mouseover', function (e) { var host = hostOf(e.target); if (host) placeSub(host); });
+    pcard.addEventListener('mouseout', function (e) { var host = hostOf(e.target); if (host && !(e.relatedTarget && host.contains(e.relatedTarget))) host.classList.remove('rs-up'); });
   }
   function closeSettings() { clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
   function openSettings(tab, section) {

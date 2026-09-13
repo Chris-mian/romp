@@ -154,7 +154,45 @@ const out = {};
       for (const [tab, id] of [["feed", "rs-feedcollapsed"], ["sessions", "rs-backend"], ["tasks", "rs-indexeffort"], ["tasks", "rs-judgeconc"]]) out.hoverRows[theme].push(await hoverRow(tab, id));
     }
     for (const f of [page, setF]) await f.evaluate(() => document.body.classList.remove("theme-light"));
-    for (const f of [page, setF]) await f.evaluate(() => document.body.classList.remove("theme-light"));
+    // the Fast mode boxes (round two, the medium): their popover is the box's own, nested in the judge row; at a short window it ran
+    // past the card's bottom because the rule read the row's hidden popover and returned early; the box carries rs-up itself now
+    await page.setViewportSize({ width: 1200, height: 380 }); await page.waitForTimeout(200);
+    await setF.click('#rsettings .rs-tab[data-tab="tasks"]'); await setF.waitForTimeout(150);
+    out.fastBoxes = [];
+    for (const id of ["rs-judgefast-wrap", "rs-distillfast-wrap", "rs-indexfast-wrap"]) {
+      await page.mouse.move(4, 4); await setF.waitForTimeout(60);
+      await setF.evaluate(() => { document.querySelector("#rsettings .rs-card").scrollTop = 0; }); await setF.waitForTimeout(80);   // the pane's natural scroll, where the read measured (centring a box gives it room below)
+      const rest = await setF.evaluate(() => document.querySelector("#rsettings .rs-card").scrollHeight);
+      await setF.hover("#" + id); await setF.waitForTimeout(160);
+      const r = await setF.evaluate((i) => { const box = document.getElementById(i), sub = box.querySelector(".rs-sub"), card = document.querySelector("#rsettings .rs-card");
+        const sr = sub.getBoundingClientRect(), cr = card.getBoundingClientRect(), br = box.getBoundingClientRect();
+        return { id: i, shown: sr.height > 0, subTop: sr.top, subBottom: sr.bottom, cardTop: cr.top, cardBottom: cr.bottom, inside: sr.height > 0 && sr.top >= cr.top - 1 && sr.bottom <= cr.bottom + 1,
+                 up: box.classList.contains("rs-up"), roomAbove: br.top - cr.top, roomBelow: cr.bottom - br.bottom, scrollHeight: card.scrollHeight, viewport: window.innerHeight }; }, id);
+      r.scrollHeightRest = rest; out.fastBoxes.push(r);
+    }
+    // no room on either side (round two, low 5): a 210 px window and the Thinking summaries popover; the roomier side is taken
+    await page.mouse.move(4, 4);
+    await page.setViewportSize({ width: 1200, height: 210 }); await page.waitForTimeout(200);
+    await setF.click('#rsettings .rs-tab[data-tab="chat"]'); await setF.waitForTimeout(150);
+    await setF.evaluate(() => document.getElementById("rs-thinksum").closest("label").scrollIntoView({ block: "center" })); await setF.waitForTimeout(80);
+    await setF.hover("label:has(#rs-thinksum)"); await setF.waitForTimeout(160);
+    out.noRoom = await setF.evaluate(() => { const row = document.getElementById("rs-thinksum").closest("label"), sub = row.querySelector(".rs-sub"), card = document.querySelector("#rsettings .rs-card");
+      const sr = sub.getBoundingClientRect(), cr = card.getBoundingClientRect(), rr = row.getBoundingClientRect();
+      return { subHeight: sr.height, roomAbove: rr.top - cr.top, roomBelow: cr.bottom - rr.bottom, up: row.classList.contains("rs-up"), subTop: sr.top, subBottom: sr.bottom, cardTop: cr.top, cardBottom: cr.bottom, viewport: window.innerHeight }; });
+    await page.mouse.move(4, 4);
+    await page.setViewportSize({ width: 1200, height: 800 }); await page.waitForTimeout(200);
+    // the off-dashboard hide's outcome (round two, low 4): the selector the hide uses takes the four Panes rows and their head; hidden,
+    // each reads display none and height 0; shown again, display flex (its trigger is the VS Code host, ownPage false, not this page)
+    out.panesHide = await setF.evaluate(() => {
+      const els = Array.from(document.querySelectorAll("#rs-panes-sec,.rs-panes-row"));
+      const rows = ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => document.getElementById(id).closest("label"));
+      const covered = rows.every((r) => els.includes(r));
+      els.forEach((el) => { el.hidden = true; });
+      const hidden = rows.map((r) => ({ display: getComputedStyle(r).display, height: r.getBoundingClientRect().height }));
+      els.forEach((el) => { el.hidden = false; });
+      const shown = rows.map((r) => getComputedStyle(r).display);
+      return { count: els.length, covered, hidden, shown };
+    });
     await setF.click('#rsettings .rs-tab[data-tab="debug"]'); await setF.waitForTimeout(150);
     out.debug = await readPanel(setF);
     await setF.click('#rsettings .rs-tab[data-tab="tasks"]'); await setF.waitForTimeout(150);
@@ -318,11 +356,35 @@ class ServedSettingsTabs(unittest.TestCase):
         r = self._run(); table = "\n  " + json.dumps(r.get("panesLabels"))
         self.assertEqual(r.get("panesLabels"), ["Sessions", "Outline", "Feed", "Files"], table)
 
-    def test_the_files_row_is_a_panes_row_like_the_three_above_it(self):
-        r = self._run(); table = "\n  " + json.dumps(r.get("panesRowClasses"))
-        for cls in r.get("panesRowClasses") or [None] * 4:
-            self.assertIsNotNone(cls, table)
-            self.assertIn("rs-panes-row", cls.split(), "every Panes row carries the class the off-dashboard hide reads (T404's tidy)" + table)
+    def test_the_off_dashboard_hide_takes_all_four_panes_rows(self):
+        # round two, low 4: the outcome, not the class: hidden by the selector the hide uses, every row reads display none and height 0
+        r = self._run(); h = r["panesHide"]; table = "\n  " + json.dumps(h) + " classes: " + json.dumps(r.get("panesRowClasses"))
+        self.assertTrue(h["covered"], "the hide's selector reaches all four Panes rows (the Files row too since this tidy)" + table)
+        self.assertEqual(h["count"], 5, "the head and the four rows, nothing else" + table)
+        for x in h["hidden"]:
+            self.assertEqual((x["display"], x["height"]), ("none", 0), "hidden: display none, height 0" + table)
+        self.assertEqual(h["shown"], ["flex"] * 4, "shown again: display flex" + table)
+
+    def test_the_fast_mode_boxes_popovers_stay_inside_the_card_at_a_short_window(self):
+        # round two, the medium: the box's own popover, nested in the judge row, ran 15 px past the card at 380 px (48 at 300)
+        fb = self._run()["fastBoxes"]; table = "\n  " + json.dumps(fb)
+        self.assertEqual([x["id"] for x in fb], ["rs-judgefast-wrap", "rs-distillfast-wrap", "rs-indexfast-wrap"], table)
+        for x in fb:
+            self.assertLess(x["viewport"], 400, "a short window" + table)
+            self.assertTrue(x["shown"], x["id"] + ": the box's own popover shows" + table)
+            self.assertTrue(x["inside"], x["id"] + ": inside the card (%.1f to %.1f in %.1f to %.1f)" % (x["subTop"], x["subBottom"], x["cardTop"], x["cardBottom"]) + table)
+            self.assertEqual(x["scrollHeight"], x["scrollHeightRest"], x["id"] + ": no scroll growth under the hover" + table)
+        self.assertTrue(any(x["up"] for x in fb), "at least one opened above its box" + table)
+
+    def test_with_no_room_on_either_side_the_popover_takes_the_roomier_side(self):
+        # round two, low 5: a 210 px window and the 143 px Thinking summaries popover fit neither side
+        n = self._run()["noRoom"]; table = "\n  " + json.dumps(n)
+        self.assertLess(n["viewport"], 260, table)
+        fits_above = n["roomAbove"] >= n["subHeight"] + 2; fits_below = n["roomBelow"] >= n["subHeight"]
+        if not fits_above and not fits_below:
+            self.assertEqual(n["up"], n["roomAbove"] > n["roomBelow"], "neither side fits: the side with more room" + table)
+        else:
+            self.assertTrue(n["subTop"] >= n["cardTop"] - 1 and n["subBottom"] <= n["cardBottom"] + 1, "a side fits: inside" + table)
 
     def test_a_row_near_its_panes_bottom_opens_its_popover_above_and_the_card_does_not_scroll(self):
         # the T408 read: Feed rs-feedcollapsed, Sessions rs-backend and Task tracking rs-indexeffort and rs-judgeconc sent their hover
