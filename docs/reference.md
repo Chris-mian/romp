@@ -1545,7 +1545,21 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   names), so the top stages sum to `s`; `splitFailed` counts a split the
   bookkeeping could not close. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
-  stage without the kernel alive, and `parse`, the assembly's road counters at
+  stage without the kernel alive; `firstCycleStacks`, the pusher's stack
+  sampled through the first cycle only, once a second for the first thirty
+  samples and every five seconds after, so the sixty-row cap covers three
+  minutes and a long cycle shows where it ended (each row the seconds into
+  the cycle, the stage mark and the eight innermost frames as "function
+  (file:line)", the /perf sample's shape, no session content), by a daemon
+  thread that ends with the cycle and whose start degrades to no samples
+  when a thread cannot be started; `firstCycleStacksFailed` counts walks
+  that raised, so a short list is not mistaken for a fast cycle. The cost
+  is one frame walk a sample (about 7 us) and about 330 bytes a sample on
+  the row (20 KB for sixty, 30 KB at worst) in a ledger with no rotation
+  that its readers slice from the tail, so the file grows by that once per
+  boot whose first cycle ran that long. The sampler exists because two live
+  reads of a slow boot missed the cycle (the watch's poll was slower than
+  it); and `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood
@@ -1665,7 +1679,7 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `judge-index`, `judge-triage` and the other tiers' pool workers, `pool`
   for an unprefixed pool worker, `thread` for a default name with no target,
   `pusher`, `producer`, `index`, `triage`, `parse-warm`, `boot-warm`,
-  `sdk-boot`, `main`; never a session's name, sid, host or path (the ident
+  `sdk-boot`, `first-cycle-sampler`, `main`; never a session's name, sid, host or path (the ident
   keeps two workers sharing a kind apart). Each row has `self` (the thread building the
   sample), `stage` (the thread's current stage mark: the pusher's
   `jobs.<job>` or `push`, a handler's `connect`, `null` outside one) and
@@ -1882,10 +1896,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   cannot ask). The honest measure of what remains unbounded is
   `memos.nudgeWalk.unbounded` over looks on the first boot after this lands,
   since the leg counts are notes, not looks. `unboundedBy` counts the
-  unbounded NOTES per leg at the look that recorded them (the stamped wait,
-  a standing deferral, an asker beyond the keyed rows, an unproven asker
-  row, a store fault, a queued send, a legacy record with no anchor, an
-  unmarked verdict when no named leg noted the look); the legs partition the NOTES,
+  unbounded NOTES per leg at the look that recorded them; the legs the
+  kernel emits are `askerOverflow`, `askerRowUnproved`, `debtUnproved`,
+  `debtUnlanded`, `deferralNew`, `pausedTiers`, `deferralStanding`,
+  `queuedSend`, `storeFault`, `allDelegated`, `awaitingPeer`,
+  `stampedWait`, `unjudgeable`, `refusedWrite`, `legacyNoAnchor`, and
+  `unmarked:<verdict>` when no named leg noted the look (the None-site
+  census in the gate's test pins that every site names its leg with a
+  literal); the legs partition the NOTES,
   not the looks (a look over two top goals can note two legs); the
   dead-asker notes (an ask in the postal wait maps whose asker is not alive
   now) were about four in five of the notes on the first boot with the
@@ -1894,7 +1912,28 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   wait maps would delete a wait the postal surfaces show and is the user's
   call, the open hygiene question here; while `unbounded` counts a LATER
   look's refused skip, so the two are not comparable;
-  `nudgeGate` is the auto-nudge walk's
+  `spendTree` is the spend guard's memo of each live
+  session's subagents tree (`entries`, `bytes`, `bound`, a sixty-fourth of
+  the machine's memory or `ROMP_SPEND_GUARD_TREE_MEMO_BYTES`, and the
+  reads since boot: `dirStats`, `fileStats`, `entryStats` (the per-entry
+  stats a listing performs), `listings`, `loaded`, `loadFailed`, `written`,
+  `swept`); the memo is persisted at `STATE/spend-tree/<sid>.json` when
+  dirty and at exit and loaded lazily when the session's guard first runs
+  after a boot. What the load saves is the listings (the scandir and its
+  per-entry stat for every directory): a boot stats each directory once and
+  lists only one whose mtime moved. One stat per file remains, because an
+  append while the kernel was down moves no directory's mtime, and it is
+  spread over the cycles after the load, hot files first, at most
+  `SPEND_GUARD_RESTAT_PER_CYCLE` (400, about 2 ms) a cycle, so the largest
+  tree is whole again within seven cycles and no cycle carries a whole
+  tree. A corrupt or misshapen file, or one that does not name the
+  session's own root, is a failed load and relisted, never raised; a path
+  outside the root is dropped; the directory is swept once per kernel life
+  of memos whose leaf is gone; the guard's job itself skips
+  the boot's first cycle, since its first pass lists every alive session's
+  tree (4.2 s on one boot, 60 trees of 16,752 agent transcripts in 1,542
+  directories, the largest 2,581 files) and a runaway spend is minutes,
+  not the first cycle (T401 follow-up); `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue
