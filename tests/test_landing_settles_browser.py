@@ -78,6 +78,7 @@ const rowsAtLand = (await rows()).slice(rowsBefore1);
 // a LIVE turn lands in the tail while the reader is on the landed message: the transcript grows, the event the pusher
 // wakes on, exactly as a live session's does under a reader deep in its history
 const now = new Date();
+const tailBefore = await page.evaluate(() => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; return rs && rs.length ? rs[rs.length - 1].n : -1; });   // the tail run's size before the live turn (T386 stage 2)
 fs.appendFileSync(cfg.transcript,
   // chained to the transcript's last assistant record: a user record with no parent is a NEW ROOT, and the kernel's chat is the leaf's
   // ancestry, so the conversation would become these two events alone (at the merge-base a detached client never saw that frame; with the
@@ -88,7 +89,7 @@ fs.appendFileSync(cfg.transcript,
                    message: { role: "assistant", model: "claude-fable-5-1", stop_reason: "end_turn", content: [{ type: "text", text: "Live answer: the handler reads the note by id and returns it." }] } }) + "\n");
 // the live turn reaches the page only if the kernel sends this client a tail; either way the reader's view is measured
 let liveArrived = true;
-try { await page.waitForFunction((u) => !!document.querySelector('#content .turn[data-uuid="' + u + '"]'), cfg.liveA, { timeout: 8000 }); }
+try { await page.waitForFunction(([u, n0]) => { const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; if (rs && rs.length && n0 >= 0 && rs[rs.length - 1].n >= n0 + 2) return true; return !!document.querySelector('#content .turn[data-uuid="' + u + '"]'); }, [cfg.liveA, tailBefore], { timeout: 8000 }); }   // the live turn lands at the TAIL, far below the landed reader: the tail run grows by its two events (T386 stage 2; the run's last key is the api-error card), the DOM row when rendered
 catch (e) { liveArrived = false; }
 await page.waitForTimeout(500);
 const oLive = await offset();
