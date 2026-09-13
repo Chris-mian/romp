@@ -5,7 +5,7 @@ the gap where the target will be, the loading glyph in the empty space; the land
 ONLY cancel: the target and the notice go, the reply still inserts its run in place, and the view does not move. Served, on the
 window lab's hermetic kernel (a synthetic transcript longer than the wire tail: the deep target is in the head gap at boot).
 
-Roads, three fresh pages (the socket death first, then the notice roads, then the answered-question anchor): the deep link landing with the notice (the words, the pre-jump write, the window ask, the landing, the notice
+Roads, five fresh pages (the socket death first, then the notice roads, then the answered-question anchor, then the cancel-then-click road, then the fault road): the deep link landing with the notice (the words, the pre-jump write, the window ask, the landing, the notice
 gone); then a second deep link with its ask HELD at the socket, the notice clicked (a locateDiag row filed as cancelled, the notice
 gone, the view still), the ask released (the run inserts, the view still where the reader was).
 
@@ -42,7 +42,7 @@ const reboot = async () => {
 };
 const trace = () => page.evaluate(() => ({ sent: window.__sent.slice(-14).map((m) => m.type + (m.what ? ":" + m.what + (m.data && m.data.writer ? ":" + m.data.writer : "") + (m.data && m.data.why ? ":" + m.data.why : "") : "") + (m.cancelled ? ":cancelled" : "")), recv: window.__recv.slice(-10), regions: (typeof window.__rompRegions === "function" ? window.__rompRegions() : null) }));
 const writes = (writer) => page.evaluate((w) => window.__sent.filter((m) => m.what === "scrollwrite" && m.data && m.data.writer === w).map((m) => [m.data.before, m.data.after]), writer);
-const locateRows = () => page.evaluate(() => window.__sent.filter((m) => m.type === "locateDiag").map((m) => ({ ok: m.ok, cancelled: m.cancelled === true, anchor: m.anchor, trail: m.trail })));
+const locateRows = () => page.evaluate(() => window.__sent.filter((m) => m.type === "locateDiag").map((m) => ({ ok: m.ok, cancelled: m.cancelled === true, anchor: m.anchor, trail: m.trail, kind: m.kind === undefined ? null : m.kind, error: m.error === undefined ? null : m.error })));
 const painted = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const rowAtTop = () => page.evaluate(() => {
   const c = document.getElementById("content"); const cTop = c.getBoundingClientRect().top;
@@ -133,6 +133,7 @@ const aroundBefore1 = await sentOf("loadAround");
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: ("11111111-2222-3333-4444-" + pad(2 * 125)), anchorT: (cfg.base + 2 * 125) });
 await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore1, { timeout: 10000 }).catch(() => {});
 const asked1 = await state();   // sampled while the ask is on the wire: the notice up, the view inside the gap
+const heldAsk1 = await page.evaluate(() => (window.__heldRaw || []).length);   // the ask parked at the socket (a held frame never reaches the send log); sampled HERE: the fresh pages after this road reset that log
 const trace1 = await trace();
 const guess1 = await writes("land-guess");
 await page.evaluate(() => { window.__hold.delete("loadAround"); });
@@ -210,7 +211,57 @@ const top7After = await rowAtTop();
 const point7After = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
 const fillWrites7 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill").map((m) => ({ b: m.data.before, a: m.data.after })), sentAt7);
 const runNAfter7 = await runN7();
-process.stdout.write("RESULT:" + JSON.stringify({ inGap6, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: await sentOf("loadAround") }, trace1, released1, guess1, trace2,
+// ROAD 8 (round seven, medium 3; a fresh page): the notice's click cancels a landing whose ask is still on the wire; the reader's NEXT
+// card click must ask, not be refused as "still going to the earlier message" (a cancelled landing is not busy). Two deep links into two
+// gaps, both held: A's notice clicked away, then B asked; both released: A's window fills in place under the cancelled mark, B lands.
+await reboot();
+const deepA8 = "11111111-2222-3333-4444-" + pad(2 * 60), deepB8 = "11111111-2222-3333-4444-" + pad(2 * 170);
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const heldN = () => page.evaluate(() => (window.__heldRaw || []).length);   // a HELD ask is parked before the send hook __sent reads, so held asks are counted here
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deepA8, anchorT: cfg.base + 2 * 60 });
+await page.waitForFunction(() => (window.__heldRaw || []).length >= 1, null, { timeout: 8000 }).catch(() => {});
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
+const askedA8 = await heldN();
+await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
+const afterCancel8 = { notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid), glyphs: await page.evaluate(() => document.querySelectorAll("#content .tx-gap-loading").length) };
+const trailAt8 = await page.evaluate(() => window.__sent.length);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deepB8, anchorT: cfg.base + 2 * 170 });
+await page.waitForFunction((n) => (window.__heldRaw || []).length > n, askedA8, { timeout: 5000 }).catch(() => {});
+const askedB8 = (await heldN()) - askedA8;
+const busy8 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "locateDiag").flatMap((m) => m.trail || []).filter((w) => w === "pointer-fetch-busy").length, trailAt8);
+const toast8 = await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; });
+const noticeB8 = (await state()).notice;
+const runN8Before = await runN7();
+await page.evaluate(() => { window.__hold.delete("loadAround"); });
+const released8 = await page.evaluate(() => window.__release());
+await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deepB8, { timeout: 15000 }).catch(() => {});
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
+await painted();
+const targetB8 = await onScreen(deepB8);
+const residentA8 = await page.evaluate((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`) || (((typeof window.__rompRegions === "function" && window.__rompRegions()) || []).some((r) => r.kind === "run" && r.lo <= 60 && (r.hi == null || 60 < r.hi))), deepA8);
+const runN8After = await runN7();
+// ROAD 9 (round seven, medium 1; a fresh page): the kernel's FAULT reply to a landing, in the wrapper's exact shape (missing true, fault
+// true, the anchor echoed, an error): no verdict on the anchor, so the reader is not told the message is gone; the landing stands down
+// with its own word, its row files as a fault, the pre-jump is undone and the state clears.
+await reboot();   // a fresh page: road 8's two windows merge with the tail and leave no gap
+const deep9 = "11111111-2222-3333-4444-" + pad(2 * 40);   // turn 40: in the head gap
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const top9Before = await page.evaluate(() => document.getElementById("content").scrollTop);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep9, anchorT: cfg.base + 2 * 40 });
+await page.waitForFunction(() => (window.__heldRaw || []).length >= 1, null, { timeout: 8000 }).catch(() => {});
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
+const asked9 = { notice: (await state()).notice, top: await page.evaluate(() => document.getElementById("content").scrollTop) };
+const rowsBefore9 = (await locateRows()).length;
+await page.evaluate(([sid, anchor]) => window.postMessage({ type: "chatWindow", id: sid, anchor, missing: true, fault: true, error: "RuntimeError: the page renderer raised (synthetic)" }, "*"), [cfg.sid, deep9]);
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
+await painted();
+const fault9 = { notice: (await state()).notice, toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }),
+  top: await page.evaluate(() => document.getElementById("content").scrollTop), ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid),
+  seekNote: await page.evaluate(() => !!document.getElementById("seek-note")) };
+const rows9 = (await locateRows()).slice(rowsBefore9);
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
+process.stdout.write("RESULT:" + JSON.stringify({ inGap6, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 190, bootTop: boot.top }) + "\n");
@@ -308,6 +359,40 @@ class ServedLandingNotice(WindowLab):
         self.assertIsNotNone(r["point7Before"], "the point under the viewport top was named as a turn with the answered question at the top")
         self.assertIsNotNone(r["point7After"], "…and after the fill")
         self.assertLess(abs(r["point7After"] - r["point7Before"]), 1.0, "the point moved by less than a turn: %r -> %r" % (r["point7Before"], r["point7After"]))
+
+    def test_a_cancelled_landing_is_not_busy_the_next_card_click_asks_and_both_replies_land_in_place(self):
+        # round seven, medium 3: click, cancel, click
+        r = self._result()
+        self.assertEqual(r["askedA8"], 1, "the first deep link asked its window (held)")
+        a = r["afterCancel8"]
+        self.assertFalse(a["notice"], "the notice's click hid the notice: %r" % a)
+        self.assertEqual((a["ask"]["loadingOlder"], a["ask"]["landingGaps"]), (False, 0), "a cancelled landing is not busy: the older-ask mark and the held gap are cleared at the cancel, not at the reply: %r" % a["ask"])
+        self.assertEqual(a["glyphs"], 0, "…and the cancelled landing's gap wears no glyph: %r" % a)
+        self.assertEqual(r["askedB8"], 1, "the reader's NEXT card click asked its own window while the cancelled reply was still on the wire: %r" % r["askedB8"])
+        self.assertEqual(r["busy8"], 0, "…and was not refused as busy: %r" % r["busy8"])
+        self.assertNotEqual(r["toast8"], "still going to the earlier message", "no untrue 'still going' toast: %r" % r["toast8"])
+        self.assertTrue(r["noticeB8"], "the second landing shows its notice while its ask is on the wire")
+        self.assertEqual(r["released8"], 2, "both asks were parked at the socket and released together: %r" % r["released8"])
+        self.assertIsNotNone(r["targetB8"]); self.assertTrue(r["targetB8"]["visible"], "the second deep link landed on screen: %r" % r["targetB8"])
+        self.assertTrue(r["residentA8"], "the cancelled reply's run still inserted in place (nothing is thrown away)")
+        self.assertGreater(r["runN8After"], r["runN8Before"], "the runs grew by both windows: %r -> %r" % (r["runN8Before"], r["runN8After"]))
+
+    def test_a_kernel_fault_on_a_landing_has_its_own_word_files_as_a_fault_and_never_says_the_message_is_gone(self):
+        # round seven, medium 1: the wrapper's exact fault shape (missing true, fault true, the anchor, an error) injected to a held landing
+        r = self._result()
+        self.assertTrue(r["asked9"]["notice"], "the deep link showed its notice while the ask was held: %r" % r["asked9"])
+        self.assertNotEqual(r["asked9"]["top"], r["top9Before"], "the pre-jump moved the reader into the gap")
+        f = r["fault9"]
+        self.assertFalse(f["notice"], "the fault brought the notice down: %r" % f)
+        self.assertIsNotNone(f["toast"], "the reader was told: %r" % f)
+        self.assertIn("could not be loaded just now", f["toast"], "…with the fault's own word, not a verdict on the anchor: %r" % f["toast"])
+        self.assertNotIn("couldn't locate", f["toast"], "a fault never says the message is not in the transcript (it is): %r" % f["toast"])
+        self.assertEqual(len(r["rows9"]), 1, "the landing filed one row: %r" % r["rows9"])
+        self.assertEqual(r["rows9"][0]["kind"], "fault", "…as a fault, not missing: %r" % r["rows9"])
+        self.assertIn("window-fault", r["rows9"][0]["trail"], "…with the fault's trail word: %r" % r["rows9"][0]["trail"])
+        self.assertLessEqual(abs(f["top"] - r["top9Before"]), 2, "the pre-jump was undone: the reader is back where they were: %r -> %r (before %r)" % (r["asked9"]["top"], f["top"], r["top9Before"]))
+        self.assertEqual((f["ask"]["landingGaps"], f["ask"]["gapLoading"], f["ask"]["loadingOlder"]), (0, 0, False), "the landing's state cleared: %r" % f["ask"])
+        self.assertFalse(f["seekNote"], "the seek ended (no seek note stands)")
 
     def test_a_span_less_window_from_an_older_host_tells_the_reader_and_is_not_dropped_silently(self):
         # T386 stage 2, medium 2: a chatWindow with events but no span is an older host's pre-regions reply
