@@ -1,7 +1,6 @@
 // Where a click on a FILE or a FOLDER opens: one ladder, two callers (render.ts openPath for a file link,
 // openBrowse for a folder), pure and DOM-free so the table runs for real in tests (file-route.test.ts,
 // browse-route.test.ts). The caller reads every input at CLICK time:
-//              a foreign stored value reads as the default.
 //   framed     window.parent !== window: a shell exists to relay to. Standalone /chat has no shell and no
 //              other pane, so everything opens in place there.
 //   filesOpen  the shell's Files-pane bit (render.ts panesOn.files, cached from the shell's own broadcast):

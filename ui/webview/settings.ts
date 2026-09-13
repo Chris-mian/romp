@@ -54,8 +54,6 @@ export function theme(v: unknown): Theme {
 export function chatScheme(v: unknown): ChatScheme {
   return v === "high-contrast" || v === "solarized-dark" ? v : "default";
 }
-// Where a chat file-link click opens on the web while the Files pane is closed. tabCtxMode's normalization
-// idiom: only the literal "pane" is the opt-in; anything else a store might hold reads as the default, so
 // When the tab strip's context gauge shows. "over50" is the default (the user 2026-08-08): a gauge
 // on every tab is clutter while nothing is filling up — it should appear only when it has news.
 export type TabCtxMode = "always" | "over50" | "never";

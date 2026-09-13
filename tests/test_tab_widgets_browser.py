@@ -100,7 +100,7 @@ if (out.strip0.gear) {   // T405: the gear opens its menu; the "Tab widgets…" 
   await chatF.click("#tabs .tab-gearbox .tab-widgets-gear");
   await chatF.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 });
   out.menuRoles = await chatF.evaluate(() => Array.from(document.querySelectorAll('[data-rows-menu="1"] > div')).map((r) => [r.getAttribute("role"), r.hasAttribute("aria-checked")]));
-  await chatF.click('[data-rows-menu="1"] [role="menuitem"]:nth-child(2)', { timeout: 5000 }).catch(() => {});   // the Tab widgets row is an ACTION (role menuitem, no checked state; round two, low 2); a strip without such a row is this run's red, not a crash
+  await chatF.click('[data-rows-menu="1"] [role="menuitem"]:nth-child(2)');   // the Tab widgets row is an ACTION (role menuitem, no checked state); a role drift fails here, on the selector that did not match
 }
 await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
 out.shellOpen = await settingsOpen();

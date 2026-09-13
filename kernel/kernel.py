@@ -54124,8 +54124,8 @@ if(m.romp==='filesViewerClosed'){var back=window.__rompFilesTabFrom;window.__rom
   if(back&&window.__rompMobileOn&&window.__rompMobileOn()){try{window.__rompMobileTab&&window.__rompMobileTab(back);}catch(e){}}}
 // A folder clicked in the chat (the folder under the transcript, the system context card's Directory row, a
 // tab menu's Browse files, a chat-hosted viewer's directory link; render.ts openBrowse) walks the file link's
-// ladder (ui/webview/file-route.ts browseRoute) and, routed to the FILES pane (the pane is on screen, or the
-// the open pane is the route since T404), posts browseFiles up with pane:'pane'. The shell brings that pane
+// ladder (ui/webview/file-route.ts browseRoute) and, routed to the FILES pane (the pane is on screen: the
+// open pane is the route since T404), posts browseFiles up with pane:'pane'. The shell brings that pane
 // forward, the click being the one gesture that moves it, and forwards the ask with the session's identity
 // the chat resolved (files.ts caches it, so a file picked from the listing names its session in the chip).
 // The pane STAYS up, so none of the feed route's was-off flag or browseClosed restore below applies; on a
