@@ -93,6 +93,9 @@ await page.evaluate(() => {
   });
   mo.observe(content, { childList: true, subtree: true });
 });
+// the measurement waits on the EVENT it means, not a fixed frame (the manager, 2026-09-13): the push handled, then the page's
+// paint and the scroll steps that follow it (two animation frames), then one task for the rows those steps file
+const painted = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const measure = () => page.evaluate(() => {
   const content = document.getElementById("content");
   const g = document.querySelector(".turn-queued:not(.turn-queued-hidden)");
@@ -113,7 +116,7 @@ await page.fill("#composer-input", cfg.text);
 await page.press("#composer-input", "Enter");
 await page.waitForSelector(".turn-queued", { timeout: 10000 });
 await page.evaluate(() => { const g = document.querySelector(".turn-queued:not(.turn-queued-hidden)"); if (g) g.dataset.h262 = "1"; });
-await page.waitForTimeout(300);
+await painted();
 const pressed = await measure();
 // pushes every 0.5 s: one transcript step each, alternating a tool call and its result
 const pushes = [];
@@ -130,33 +133,34 @@ while (Date.now() - t1 < cfg.seconds * 1000) {
   fs.appendFileSync(cfg.transcript, JSON.stringify(step(n)) + "\n");
   n++;
   try { await page.waitForFunction((b) => window.__frames > b, before, { timeout: 5000 }); } catch (e) { pushes.push({ i: n, timeout: true }); }
-  await page.waitForTimeout(500);
+  await painted();
   pushes.push({ i: n, ...(await measure()) });
+  await page.waitForTimeout(500);   // the stream's cadence (one step per half second), not a settle: the measure above waited on the paint
 }
 const one = { pressed, pushes, n };
 // two sends and a ✕ on the first
 await page.fill("#composer-input", cfg.text2);
 await page.press("#composer-input", "Enter");
 await page.waitForFunction((t2) => Array.from(document.querySelectorAll(".turn-queued")).some((g) => (g.textContent || "").includes(t2)), cfg.text2, { timeout: 10000 });
-await page.waitForTimeout(300);
+await painted();
 const two = await measure();
 const twoPushes = [];
 for (let k = 0; k < 6; k++) {
   const before = await page.evaluate(() => window.__frames);
   fs.appendFileSync(cfg.transcript, JSON.stringify(step(n)) + "\n"); n++;
   try { await page.waitForFunction((b) => window.__frames > b, before, { timeout: 5000 }); } catch (e) {}
-  await page.waitForTimeout(500);
+  await painted();
   twoPushes.push(await measure());
 }
 // the ✕ on the FIRST bubble
 await page.evaluate(() => { const xs = Array.from(document.querySelectorAll(".turn-queued:not(.turn-queued-hidden) .queued-edit")); if (xs[0]) xs[0].click(); });
-await page.waitForTimeout(400);
+await painted();
 const afterX = await measure();
 for (let k = 0; k < 4; k++) {
   const before = await page.evaluate(() => window.__frames);
   fs.appendFileSync(cfg.transcript, JSON.stringify(step(n)) + "\n"); n++;
   try { await page.waitForFunction((b) => window.__frames > b, before, { timeout: 5000 }); } catch (e) {}
-  await page.waitForTimeout(500);
+  await painted();
   twoPushes.push(await measure());
 }
 const rows = await page.evaluate(() => window.__rows);

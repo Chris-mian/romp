@@ -29,7 +29,7 @@ test("render.ts appendActive measures before the rebuild and pins only when foll
   const body = m![1];
   assert.match(body, /const heightBefore = content\.scrollHeight;\n\s*const distBefore = heightBefore - before - content\.clientHeight;/);
   assert.ok(body.indexOf("const distBefore") < body.indexOf("syncView(activeId, stick);"), "measured BEFORE the rebuild");
-  assert.match(body, /if \(stick && followTail\(distBefore, heightBefore, content\.scrollHeight\)\) writeScroll\(content, content\.scrollHeight, "append-stick", true\);/);
+  assert.match(body, /if \(stick && followTail\(distBefore, heightBefore, content\.scrollHeight\)\) writeScroll\(content, content\.scrollHeight, "append-stick", true, before\);/);
   assert.match(body, /else if \(stick\) \{ \/\* near the bottom, nothing new: the reader stays where they are \*\/ \}/);
   // the scrolled-up path is untouched: anchor restore, raw fallback
   assert.match(body, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor\)\)\) writeScroll\(content, before, "append-raw"\);/);

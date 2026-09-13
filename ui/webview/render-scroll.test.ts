@@ -67,7 +67,7 @@ test("appendActive snaps only when the user is already near the bottom of OVERFL
   // the slack rule (the user 2026-08-25): while nothing overflows, atBottom is trivially true —
   // ungated, the very append crossing the overflow boundary yanked the view; now streaming into
   // slack writes in place and grows the scrollbar, and the stick engages only once overflowing
-  assert.match(RENDER, /const stick = content\.scrollHeight > content\.clientHeight \+ 2 && atBottom\(content\);[\s\S]*?if \(stick && followTail\(distBefore, heightBefore, content\.scrollHeight\)\) writeScroll\(content, content\.scrollHeight, "append-stick", true\)/,   // …and only when there is new content to follow (T262 followTail)
+  assert.match(RENDER, /const stick = content\.scrollHeight > content\.clientHeight \+ 2 && atBottom\(content\);[\s\S]*?if \(stick && followTail\(distBefore, heightBefore, content\.scrollHeight\)\) writeScroll\(content, content\.scrollHeight, "append-stick", true, before\)/,   // …and only when there is new content to follow (T262 followTail)
     "tail-append follows the live edge only if content overflows AND the reader was at the bottom");
   // the popover's thread list speaks the same rule
   assert.match(RENDER, /const overflowed = list\.scrollHeight > list\.clientHeight \+ 2;/);

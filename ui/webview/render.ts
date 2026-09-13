@@ -4994,9 +4994,10 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
   // move is the pane's own (journaled), never a clamp the follow-mode latch never saw (T262h)
   const contentX = document.getElementById("content");
   const wasAtBottom = !!contentX && contentX.scrollHeight > contentX.clientHeight + 2 && atBottom(contentX);
+  const beforeX = contentX ? contentX.scrollTop : 0;   // read BEFORE the removal: the browser clamps a bottom reader at the forced layout, and the write claims that move (see writeScroll)
   bub?.remove();
   if (grp) reflowQueuedGroup(grp);
-  if (contentX && wasAtBottom) writeScroll(contentX, contentX.scrollHeight, "queued-x", true);
+  if (contentX && wasAtBottom) writeScroll(contentX, contentX.scrollHeight, "queued-x", true, beforeX);
 }
 
 // The composer state around each ✕-click's optimistic restore, keyed `sid + " " + md`, so a FAILED
@@ -11108,8 +11109,14 @@ function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "s
     ? { type: "clientDiag", surface: "chat", what: kind + "-capped", data: { sid: activeId || "", perMinute: scrollDiagCap } }
     : { type: "clientDiag", surface: "chat", what: kind, data });
 }
-function writeScroll(content: HTMLElement, top: number, writer: string, stick = false): void {
-  const before = content.scrollTop;
+// `from`: the scrollTop the caller read BEFORE its own DOM change (the append path). A tail that re-renders SHORTER under a
+// bottom reader (a lone tool turn folding into a group when the next call lands, a queued card replaced by a shorter landed
+// atom) is clamped by the browser at the forced layout, before this write runs: without `from` the write finds the reader
+// already at the new bottom, moves nothing, files no row and owes no echo, and the clamp's own scroll event, still pending,
+// files as a gesture, an unwritten move for a move the pane's re-render caused (the T262h and T262i labs red on the devbox
+// from the one-shot marker on). With `from`, the move is the pane's: the row names it and the pending event is its echo.
+function writeScroll(content: HTMLElement, top: number, writer: string, stick = false, from?: number): void {
+  const before = from ?? content.scrollTop;
   content.scrollTop = top;
   const after = content.scrollTop;
   if (after !== before) lastScrollWriteAfter = after;   // a write that moved the view owes exactly one scroll event, its echo; one that did not move owes none, and must not eat a later gesture landing near its target (verifier low, round two)
@@ -13204,7 +13211,9 @@ function appendActive() {
   // Follow-mode pins the bottom only when there is something new to follow (T262, the user 2026-09-08): a
   // status-only tail changes no content, and pinning on it snapped a reader wheeling up from the tail of a
   // busy session back down within the first 80 px, frame after frame. Decision in scroll-keep.ts followTail.
-  if (stick && followTail(distBefore, heightBefore, content.scrollHeight)) writeScroll(content, content.scrollHeight, "append-stick", true);
+  // …passing the scrollTop read BEFORE the re-render: a tail that came back SHORTER was clamped by the browser at the forced
+  // layout, and the write must claim that move as its own (see writeScroll), else the clamp's pending scroll event files as a gesture
+  if (stick && followTail(distBefore, heightBefore, content.scrollHeight)) writeScroll(content, content.scrollHeight, "append-stick", true, before);
   else if (stick) { /* near the bottom, nothing new: the reader stays where they are */ }
   else if (!(v && restoreScrollAnchor(content, v, anchor))) writeScroll(content, before, "append-raw");
   scheduleRailSticky();

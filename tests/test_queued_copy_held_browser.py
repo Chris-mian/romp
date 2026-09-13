@@ -91,6 +91,9 @@ await page.waitForTimeout(600);
 await page.waitForFunction(() => window.__frames.some((m) => m.type === "session" && Array.isArray(m.events) && m.events.length > 3), null, { timeout: 20000 });
 const base = await page.evaluate(() => { const fr = window.__frames.filter((m) => m.type === "session" && Array.isArray(m.events)); return fr[fr.length - 1]; });
 base.events = base.events.filter((e) => !(e.uuid || "").startsWith("optimistic:"));
+// the measurement waits on the EVENT it means, not a fixed frame (the manager, 2026-09-13): the push handled, then the page's
+// paint and the scroll steps that follow it (two animation frames), then one task for the rows those steps file
+const painted = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const measure = () => page.evaluate(() => {
   const content = document.getElementById("content");
   const chip = document.getElementById("jump-bottom");
@@ -112,15 +115,15 @@ const without = (b) => ({ ...b, type: "update", events: b.events.filter((e) => e
 const landed = (b, qid, uuid) => ({ ...b, type: "update", events: [...b.events.filter((e) => e.kind !== "queued"), { kind: "user", md: cfg.mail, uuid, ts: new Date().toISOString(), romp: true, absorbed: true, sentAt: Math.floor(Date.now() / 1000) - 5, ...(qid ? { qid } : {}) }] });
 const run = async (label, qid, uuid) => {
   const out = { label };
-  await inject(withCard(base, qid)); await page.waitForTimeout(400); out.card = await measure();
-  await inject(without(base)); await page.waitForTimeout(400); out.taken = await measure();
-  await inject(without(base)); await page.waitForTimeout(400); out.taken2 = await measure();   // another push carrying the (empty) queue
-  await inject(landed(base, qid, uuid)); await page.waitForTimeout(400); out.landed = await measure();
+  await inject(withCard(base, qid)); await painted(); out.card = await measure();
+  await inject(without(base)); await painted(); out.taken = await measure();
+  await inject(without(base)); await painted(); out.taken2 = await measure();   // another push carrying the (empty) queue
+  await inject(landed(base, qid, uuid)); await painted(); out.landed = await measure();
   return out;
 };
 // a bottom reader; from here on only the synthetic frames reach the page
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight; window.__rows = []; window.__quiet = true; });
-await page.waitForTimeout(300);
+await painted();
 const start = await measure();
 const idPath = await run("id", "echo:m1", "am1");
 // the landed atom stays in the base for the next rounds
@@ -131,7 +134,7 @@ const textPath = await run("text", null, "am2");
 base.events = [...base.events, { kind: "user", md: cfg.mail, uuid: "am2", ts: new Date().toISOString(), romp: true, absorbed: true }];
 // an off-bottom reader: nothing may move
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = Math.max(0, c.scrollHeight - c.clientHeight - 300); });
-await page.waitForTimeout(300);
+await painted();
 const offStart = await measure();
 const off = await run("off", "echo:m3", "am3");
 const rows = await page.evaluate(() => window.__rows);
@@ -337,6 +340,8 @@ await page.waitForSelector(".turn.turn-user", { timeout: 20000 });
 await page.waitForFunction(() => window.__frames.some((m) => m.type === "session" && Array.isArray(m.events) && m.events.length > 3), null, { timeout: 20000 });
 const base = await page.evaluate(() => { const fr = window.__frames.filter((m) => m.type === "session" && Array.isArray(m.events)); return fr[fr.length - 1]; });
 base.events = base.events.filter((e) => !(e.uuid || "").startsWith("optimistic:"));
+// the measurement waits on the EVENT it means, not a fixed frame: the frame handled, then the paint and the scroll steps, then one task
+const painted = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const measure = () => page.evaluate((text) => {
   const vis = (n) => !!n && n.style.display !== "none" && !n.classList.contains("turn-echo-hidden") && !n.classList.contains("turn-queued-hidden");
   const bubbles = Array.from(document.querySelectorAll(".turn-queued .queued-bubble")).filter((b) => vis(b.closest(".turn-queued")) && (b.textContent || "").includes(text));
@@ -350,25 +355,25 @@ await page.evaluate(() => { window.__quiet = true; });
 await page.fill("#composer-input", cfg.text);
 await page.press("#composer-input", "Enter");
 await page.waitForSelector(".turn-queued", { timeout: 10000 });
-await page.waitForTimeout(300);
+await painted();
 const pressed = await measure();
 // the id the send posted, and the id our bubble's ✕ carries: one id, minted at the press
 const posted = await page.evaluate(() => window.__posted);
 const bubbleQid = await page.evaluate(() => { const x = document.querySelector(".turn-queued .queued-edit"); return x ? x.dataset.qid : null; });
 // a kernel that minted its own id for the copy (it took none from the press): our copy hidden for ours, by text
 await inject({ ...base, type: "update", events: [...base.events, { kind: "queued", texts: [{ md: cfg.text, qid: "echo:m9", qts: Date.now(), cancelable: true, idx: 0 }] }] });
-await page.waitForTimeout(400);
+await painted();
 const queued = await measure();
 // the fed gap: the copy left the queue (held by the pane), the kernel's echo shows
 await inject({ ...base, type: "update", events: [...base.events, { kind: "user", md: cfg.text, uuid: "echo:m9", ts: new Date().toISOString() }] });
-await page.waitForTimeout(400);
+await painted();
 const fed = await measure();
 await inject({ ...base, type: "update", events: [...base.events, { kind: "user", md: cfg.text, uuid: "echo:m9", ts: new Date().toISOString() }] });
-await page.waitForTimeout(400);
+await painted();
 const fed2 = await measure();
 // the landing takes the slot
 await inject({ ...base, type: "update", events: [...base.events, { kind: "user", md: cfg.text, uuid: "am9", ts: new Date().toISOString(), qid: "echo:m9", human: true }] });
-await page.waitForTimeout(400);
+await painted();
 const landed = await measure();
 fs.writeSync(1, "RESULT:" + JSON.stringify({ pressed, posted, bubbleQid, queued, fed, fed2, landed, dropped: await page.evaluate(() => window.__dropped) }) + "\n");
 await browser.close();
