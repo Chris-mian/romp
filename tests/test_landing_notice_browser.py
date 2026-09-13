@@ -48,31 +48,28 @@ await page.evaluate(([sid, anchor]) => window.postMessage({ type: "chatWindow", 
 await page.waitForFunction(() => { const tt = document.querySelector(".locate-toast"); return !!tt && /older version/.test(tt.textContent || ""); }, null, { timeout: 5000 }).catch(() => {});
 const nospan3 = { notice: (await state()).notice, toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }) };
 await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = []; });
-// ROAD 6 (round five, medium B; runs right after the span-less road, while the head gap is still whole, and returns the reader to the tail after): the point under the viewport top holds through a fill while the reader stands INSIDE the head gap,
-// far from the filled page: the head page [0,16) asked at the gap's top edge and HELD; the reader then scrolls deep into
-// the gap (no row on screen); the reply released: the fill lands above them and the point under the viewport top, named as a turn, must
-// move by less than a turn (the old view-coordinate compensation carried them ~2.6 turns, 81c0dca5 ~2.8).
+// ROAD 6 (round five, medium B; runs right after the span-less road, while the head gap is whole, and returns the reader to the tail after):
+// the point under the viewport top holds through a fill that lands ABOVE a reader standing INSIDE the head gap. The fill is the cancel road's
+// (deterministic, the same fillInPlace a page fill takes): a deep link into turn 8 asks its window (HELD), the notice is clicked away so
+// nobody is going to that window, the reader scrolls deep into the gap (no row on screen), the window is released and fills in place above
+// them; the point under the viewport top, named as a turn, must move by less than a turn (the old view-coordinate compensation carried it
+// about 2.6 turns; 81c0dca5 about 2.8).
 const sentAt6 = await page.evaluate(() => window.__sent.length);
-await page.evaluate(() => { window.__hold.add("loadTurns"); });
-const turnsAt6 = await sentOf("loadTurns");
-// meet the head gap the way a reader does (the regions lab's road): jump to the top spacer's end, then step up a viewport at a time until
-// the gap element renders and its page is asked (HELD); a bare scrollTop 0 shows only the spacer, which the observer cannot see
-await page.evaluate(() => { const c = document.getElementById("content"); const sp = document.querySelector("#content .tx-spacer-top"); c.scrollTop = sp ? sp.offsetHeight + 1 : 0; });
-await painted();
-for (let i = 0; i < 60; i++) {
-  if ((await sentOf("loadTurns")) > turnsAt6) break;
-  const seen = await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); if (!g) return false; const r = g.getBoundingClientRect(), cr = c.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; });
-  if (seen) { await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, turnsAt6, { timeout: 5000 }).catch(() => {}); break; }
-  await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = Math.max(0, c.scrollTop - c.clientHeight); });
-  await painted();
-}
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const around6 = await sentOf("loadAround");
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: "11111111-2222-3333-4444-" + pad(2 * 8), anchorT: cfg.base + 2 * 8 });
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, around6, { timeout: 8000 }).catch(() => {});
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
 const heldAsk6 = await page.evaluate(() => (window.__heldRaw || []).length);
+await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });   // the notice clicked away: the reply will fill in place
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
 await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.round(gTop + Math.min(8000, (g ? g.offsetHeight : 9000) * 0.6)); });   // deep into the head gap, no row on screen
 await painted();
-const inGap6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); const rows = Array.from(c.querySelectorAll(".turn[data-uuid]")).filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; }).length; const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; const g = rs && rs.find((r) => r.kind === "gap"); return { top: c.scrollTop, rowsOnScreen: rows, gap: g ? { lo: g.lo, hi: g.hi } : null, regions: rs, heldTypes: (window.__heldRaw || []).map((d) => { try { return JSON.parse(d).type; } catch (e) { return "?"; } }) }; });
+const inGap6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); const rows = Array.from(c.querySelectorAll(".turn[data-uuid]")).filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; }).length; const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; const g = rs && rs.find((r) => r.kind === "gap"); return { top: c.scrollTop, rowsOnScreen: rows, gap: g ? { lo: g.lo, hi: g.hi } : null }; });
 const point6Before = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
-await page.evaluate(() => { window.__hold.delete("loadTurns"); window.__release(); });
-await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
+const regionsBefore6 = await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null));
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__release(); });
+await page.waitForFunction((n0) => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.filter((r) => r.kind === "run").length > n0; }, (regionsBefore6 || []).filter((r) => r.kind === "run").length, { timeout: 10000 }).catch(() => {});
 await painted();
 const point6After = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
 const fillWrites6 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill").map((m) => ({ b: m.data.before, a: m.data.after })), sentAt6);
@@ -215,9 +212,10 @@ class ServedLandingNotice(WindowLab):
         self.assertIsNotNone(g, "a head gap stood before the fill: %r" % r["inGap6"])
         self.assertIsNotNone(r["point6Before"], "the point under the viewport top was named as a turn before the fill")
         self.assertTrue(g["lo"] <= r["point6Before"] < g["hi"], "the point under the viewport top lay INSIDE the head gap (rows of runs below may be on screen): %r in %r" % (r["point6Before"], g))
-        self.assertGreaterEqual(r["heldAsk6"], 1, "the head page's ask was on the wire (held) when they scrolled in")
+        self.assertGreaterEqual(r["heldAsk6"], 1, "the window ask was on the wire (held) when they scrolled in")
         self.assertIsNotNone(r["point6Before"], "the point under the viewport top was named as a turn before the fill")
         self.assertIsNotNone(r["point6After"], "…and after it")
+        self.assertGreaterEqual(len(r["fillWrites6"]), 1, "the released window filled in place (a gap-fill write): %r" % r["fillWrites6"])
         self.assertLess(abs(r["point6After"] - r["point6Before"]), 1.0, "the point under the viewport top moved by less than a turn across the fill: %r -> %r (write %r)" % (r["point6Before"], r["point6After"], r["fillWrites6"]))
 
     def test_a_fill_at_the_transcript_head_keeps_the_reader_and_lands_the_head_at_the_top(self):
