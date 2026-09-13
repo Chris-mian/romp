@@ -340,9 +340,13 @@ class RowTallyEqualsAtomTally(TA.Harness):
         def maker():
             for _ in range(200):                                                   # bounded: 200 constructions, then done
                 keep.append(em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "w.jsonl"))
-        th = threading.Thread(target=maker); th.start()
-        sums = [em.asm_index_stats()["userFacts"] for _ in range(200)]              # bounded: 200 reports beside the maker
-        th.join(10)
+        prev = sys.getswitchinterval(); sys.setswitchinterval(1e-6)                    # the race made likely (1603 low 2): at the
+        try:                                                                           #  default interval the base never failed here
+            th = threading.Thread(target=maker); th.start()
+            sums = [em.asm_index_stats()["userFacts"] for _ in range(200)]          # bounded: 200 reports beside the maker
+            th.join(10)
+        finally:
+            sys.setswitchinterval(prev)
         self.assertEqual(len(keep), 200); self.assertTrue(all(isinstance(x, int) for x in sums), "no report raised")
 
     def test_the_user_facts_gauge_counts_the_live_indexes_and_falls_when_one_is_dropped(self):

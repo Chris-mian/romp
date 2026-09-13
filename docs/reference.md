@@ -1740,7 +1740,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   does the same for the hydration rows.
 - `asmCheckpoint`: the assembly documents since boot: `written`, `restored`,
   `fallbacks` per reason (`version`, `rows` (a version-6 document whose atom
-  row is not a JSON string: refused whole, never read by a second road),
+  row is not a JSON string, or whose first row does not decode to a JSON
+  object: refused whole, never read by a second road),
   `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
@@ -1758,12 +1759,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   same-size same-mtime rewrite),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
   a cut), `hydratedBy` (those bytes per calling function), `restoreMs`, the
-  restore's four parts since boot in whole milliseconds, each added on the
+  restore's parts since boot in tenths of a millisecond, each added on the
   return it names (`load`: the document read, decompressed, decoded and its
   file checks; `verify`: the turns section's identity and coverage, or the
   atoms-only form's rows built and its identity proven; `index`: the lazy
   index over the rows and the pre-cut turns; `seed`: the adapter's pre-cut
-  graph facts), so a boot read names the mover; since document version 6 the
+  graph facts; `total`: the whole restore, entry to return, so the unnamed
+  remainder, the tail's parse through the seeded adapter, is `total` minus
+  the four), so a boot read names the mover; since document version 6 the
   atom rows are stored as pre-serialized JSON strings, so the decode builds
   strings, not dicts, and the index takes each row's bytes with no re-encode
   (the deploy boot of that version refuses every standing document as

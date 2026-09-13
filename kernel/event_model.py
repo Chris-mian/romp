@@ -4747,17 +4747,18 @@ def _asm_fold(entry, delta, leaf_recs, leaf_key, leaf_stem, rompuuid, postal_ind
 # whole parse; a compaction landing after the document demotes the tail fold to a whole parse exactly as before, and
 # the next settle writes a new document with the new cut.
 _ASM_CKPT_V = 6                       # 2: atom rows carry [offset, len], nt for every atom; 3: the carry holds skill_loads (T333);
-#                                       6: the atom rows are stored as pre-serialized JSON STRINGS (T401 (4)): the whole-document
-#                                          loads builds strs instead of dicts and the lazy index takes each row's bytes with one
-#                                          encode and no dumps (on the largest live document: loads 182 to 136 ms, the index's
-#                                          re-encode 98 to 2 ms, the JSON 6.5 percent larger, the gzip 0.7 percent); a row that
-#                                          is not a string in a version-6 document is refused (`rows`), never read by a second road
 #                                       4: a `turns` section over the pre-cut rows (T323 stage 4c: the lazy index)
 #                                       5: lazy markers carry pc (assistant prose chars) and mid (postal message ids); a turn row
 #                                          carries pcs and hT, a segment row w, mids and hp (T358: the per-cycle walkers read scalars).
 #                                          The stored w and hp are atom_has_work's and seg_prompt_atom's verdicts at write time: a
 #                                          change to either rule, or to what pc, mid, pcs or hT mean, is a bump of this constant
 #                                          (tests/test_asm_index.py pins the rules' source beside it).
+#                                       6: the atom rows are stored as pre-serialized JSON STRINGS (T401 (4)): the whole-document
+#                                          loads builds strs instead of dicts and the lazy index takes each row's bytes with one
+#                                          encode and no dumps (on the largest live document: loads 182 to 136 ms, the index's
+#                                          re-encode 98 to 2 ms, the JSON 6.5 percent larger, the gzip 0.7 percent); a row that
+#                                          is not a string in a version-6 document is refused (`rows`), never read by a second road;
+#                                          the first row is decoded at load and must be a JSON object
 # Materialized pre-cut atoms resident across every session (the lazy index's LRU): MemTotal / 32 KiB, never under 500,000
 # (3.9 million on a 118 GiB machine); ROMP_ASM_INDEX_CAP sets it outright. At 20,000 (2026-09-11, the day the index
 # shipped) 50 sessions' 4,080 restored turns materialized 1.2 million atoms and evicted 1.19 million of them in 150 s,
@@ -5159,7 +5160,9 @@ def asm_index_stats():
 #                                                                                       live indexes (a dropped index takes its cache with it)
 _ASM_CKPT_CAP = 16 * 1024 * 1024   # a document past this is not written (counted): that session parses whole as today
 _ASM_CKPT_STATS = {"written": 0, "restored": 0, "fallbacks": {}, "skipped": {}, "hydratedBytes": 0, "hydratedAtoms": 0,
-                   "restoreMs": {"load": 0.0, "verify": 0.0, "index": 0.0, "seed": 0.0},   # the restore's four parts since boot, ms
+                   "restoreMs": {"load": 0.0, "verify": 0.0, "index": 0.0, "seed": 0.0, "total": 0.0},   # the restore's parts since boot, ms
+                   #                     (`total` is the whole of _asm_restore, entry to return, so the unnamed remainder, the tail's
+                   #                     parse through the seeded adapter, is total minus the four named parts)
                    #                     (T401 (4)): the document's read and checks, the section's identity and coverage (or the
                    #                     atoms-only form's build and identity), the lazy index, the adapter seed; each bumped on
                    #                     the return it names so a boot read names the mover; whole ms on /perf, floats inside
@@ -5448,7 +5451,8 @@ def _restore_ms(part, t0):
 def asm_checkpoint_stats():
     with _ASM_CKPT_LOCK:
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
-        out["restoreMs"] = {k: int(round(v)) for k, v in (out.get("restoreMs") or {}).items()}   # whole ms; the sums stay floats
+        out["restoreMs"] = {k: round(v, 1) for k, v in (out.get("restoreMs") or {}).items()}   # tenths of a ms (a fast restore is
+        #                                                                                       not all zeros); the sums stay floats
         out["hydratedBy"] = dict(out["hydratedBy"]); out["removed"] = dict(out.get("removed") or {})
         out["hydratedByStage"] = dict(out.get("hydratedByStage") or {})   # T401: bytes per (stage, calling function)
         cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
@@ -5905,14 +5909,15 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 del pre_atoms[n0:]                        # …whose rows are the emit's alone, the identity's count (M1)
         doc = {"av": _ASM_CKPT_V, "path": os.path.realpath(str(leaf_path)), "rompuuid": str(rompuuid), "sdkHuman": bool(sdk_human),
                "cands": list(entry["cands"]), "links": dict(entry["links"]), "files": files, "fsids": fsids, "cutSeq": cut_seq,
-               "records": rows, "atoms": [json.dumps(r_, separators=(",", ":")) for r_ in pre_atoms],   # v6: string rows
-               "spine": spine, "seqTs": seq_ts, "lastTs": last_ts,
+               "records": rows, "atoms": None,             # v6: string rows, built inside the guard below (an unencodable row
+               "spine": spine, "seqTs": seq_ts, "lastTs": last_ts,   #  is the counted `unencodable` skip, never a raise)
                "turns": turns_doc, "treeIdentity": _tree_identity_of_doc(turns_doc, identity) if turns_doc else None,
                "gates": {"prompt_ids": sorted(ad.prompt_ids), "boundary_pids": sorted(ad.boundary_pids),
                          "skill_use_ids": sorted(ad.skill_use_ids), "src_tool_links": sorted(ad.src_tool_links),
                          "dangling": sorted(ad.dangling)},
                "carry": _carry_encode(st), "identity": identity, "t": time.time(), "tipChildless": bool(tip_childless)}
         try:
+            doc["atoms"] = [json.dumps(r_, separators=(",", ":")) for r_ in pre_atoms]   # the rows first: the same guard
             text = json.dumps(doc, separators=(",", ":"))
         except TypeError:
             return skip("unencodable")
@@ -6157,6 +6162,13 @@ def _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links, quiet
         _asm_ckpt_note(leaf_path, "version"); return None
     if not isinstance(doc.get("atoms"), list) or not all(isinstance(r_, str) for r_ in doc["atoms"]):
         _asm_ckpt_note(leaf_path, "rows"); return None     # v6 rows are strings; anything else is not this version's document
+    if doc["atoms"]:
+        try:
+            first_ = json.loads(doc["atoms"][0])           # one row decoded here, cheaply: a string that is not a JSON object would
+        except ValueError:                                 #  otherwise take the restore road and raise at its first build, uncounted
+            first_ = None
+        if not isinstance(first_, dict):
+            _asm_ckpt_note(leaf_path, "rows"); return None
     if doc.get("path") != os.path.realpath(str(leaf_path)) or doc.get("rompuuid") != str(rompuuid) \
             or bool(doc.get("sdkHuman")) != bool(sdk_human):
         _asm_ckpt_note(leaf_path, "session"); return None
@@ -6332,6 +6344,15 @@ def _tail_chains_onto_the_document(leaf_path, doc, assume_childless=False):
 
 
 def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human):
+    """_asm_restore_inner timed whole: asmCheckpoint.restoreMs.total lands on every return (a served entry or a refusal)."""
+    _t0 = time.perf_counter()
+    try:
+        return _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
+    finally:
+        _restore_ms("total", _t0)
+
+
+def _asm_restore_inner(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human):
     """The entry restored from the leaf's assembly checkpoint, served; None when there is none or it does not verify.
     The pre-cut turns come from the document as lazy atoms; the tail is read from the cut and parsed through an
     adapter seeded with the pre-cut graph facts and the carried emit state; the prefix's identity is proven."""
@@ -6365,9 +6386,9 @@ def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index,
             _t0 = time.perf_counter()
             if _tree_identity_of_doc(doc["turns"], doc.get("identity")) != doc.get("treeIdentity"):
                 _restore_ms("verify", _t0); _asm_ckpt_note(leaf_path, "identity"); return None
-            if sorted(k_ for td in doc["turns"] for k_ in td["atoms"]) != list(range(len(doc["atoms"]))):
-                _restore_ms("verify", _t0); _asm_ckpt_note(leaf_path, "coverage"); return None   # the section does not cover the
-            _restore_ms("verify", _t0)                                                    #  rows: never a short history
+            if sorted(k_ for td in doc["turns"] for k_ in td["atoms"]) != list(range(len(doc["atoms"]))):   # the section does not
+                _restore_ms("verify", _t0); _asm_ckpt_note(leaf_path, "coverage"); return None              #  cover the rows: never
+            _restore_ms("verify", _t0)                                                                     #  a short history
             _t0 = time.perf_counter()
             index = LazyIndex(doc, rompuuid, leaf_path)
             pre_turns = _pre_turns_of(doc, index)

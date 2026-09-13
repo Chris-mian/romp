@@ -6,6 +6,7 @@ session whose transcript and state log are unchanged since their last look (the 
 /perf counts every cold parse so the effect is measurable. Hermetic: synthetic files under a temp root, the kernel and
 judge loaded against a temp state directory, threads joined explicitly."""
 import inspect
+import io
 import json
 import os
 import tempfile
@@ -154,6 +155,28 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         self.assertFalse(skip, "an appended record is the event: evaluate")
         km._tick_job_done("interrupt-block", r, st)
         self.assertTrue(km._tick_job_skips("interrupt-block", r))
+
+    def test_a_failed_persist_leaves_no_tmp_re_arms_the_dirty_flag_and_says_it_once(self):
+        """1603 low 1: the tick-seen persist took only the tmp NAME from the marks persist; on a failed replace it left the tmp
+        on disk, left the memo clean (never written again until something else dirtied it) and said nothing. The three
+        things the precedent does: unlink the tmp, re-arm dirty, say it once."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        skip, st = km._tick_job_check("interrupt-block", r); km._tick_job_done("interrupt-block", r, st)
+        p = km._tick_seen_path(); p.parent.mkdir(parents=True, exist_ok=True)
+        blocker = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident())); blocker.mkdir()   # write_text raises
+        err = io.StringIO()
+        try:
+            with mock.patch.object(km, "_TICK_SEEN_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err):
+                self.assertFalse(km._persist_tick_seen(), "the write failed")
+                with km._TICK_SEEN_LOCK:
+                    self.assertTrue(km._TICK_SEEN_DIRTY[0], "the memo is dirty again: the next persist retries")
+                self.assertFalse(km._persist_tick_seen(), "still failing (the blocker stands)")
+        finally:
+            blocker.rmdir()
+        self.assertEqual(err.getvalue().count("tick-seen memo: not written"), 1, "said once: %r" % err.getvalue())
+        self.assertEqual(list(p.parent.glob(p.name + ".tmp.*")), [], "no tmp left behind")
+        self.assertTrue(km._persist_tick_seen(), "the blocker gone: the retried persist writes")
 
     def test_the_memo_persists_and_the_next_kernel_starts_from_it(self):
         d = tempfile.mkdtemp()

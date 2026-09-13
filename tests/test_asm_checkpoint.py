@@ -14,6 +14,7 @@ import time
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from romp_load import load_source
 
@@ -210,18 +211,49 @@ class StringRowsAndRestoreSplit(Harness):
         got, modes, n_lazy = self.restored(path)
         self.assertEqual(modes, ["restore"])
 
-    def test_the_restore_split_lands_on_the_four_parts(self):
+    def test_the_restore_split_lands_on_the_four_parts_and_a_total_in_tenths(self):
+        """1606 low 3: whole milliseconds reported all zeros for a fast restore, and the four parts did not decompose the
+        restore (the tail's parse was unnamed): tenths, and a `total` on every return of _asm_restore."""
         with em._ASM_CKPT_LOCK:
-            em._ASM_CKPT_STATS["restoreMs"] = {"load": 0.0, "verify": 0.0, "index": 0.0, "seed": 0.0}
+            em._ASM_CKPT_STATS["restoreMs"] = {"load": 0.0, "verify": 0.0, "index": 0.0, "seed": 0.0, "total": 0.0}
         path = self._compacting()
         got, modes, n_lazy = self.restored(path)
         self.assertEqual(modes, ["restore"])
         ms = em.asm_checkpoint_stats()["restoreMs"]
-        self.assertEqual(set(ms), {"load", "verify", "index", "seed"})
-        self.assertTrue(all(isinstance(v, int) and v >= 0 for v in ms.values()), ms)
+        self.assertEqual(set(ms), {"load", "verify", "index", "seed", "total"})
+        self.assertTrue(all(isinstance(v, float) and v >= 0 for v in ms.values()), ms)
+        self.assertTrue(all(round(v, 1) == v for v in ms.values()), "tenths: %r" % ms)
         with em._ASM_CKPT_LOCK:
             raw = dict(em._ASM_CKPT_STATS["restoreMs"])
-        self.assertTrue(all(raw[k] > 0.0 for k in ("load", "verify", "index", "seed")), "every part ran and was timed: %r" % raw)
+        self.assertTrue(all(raw[k] > 0.0 for k in ("load", "verify", "index", "seed", "total")), "every part ran and was timed: %r" % raw)
+        self.assertGreaterEqual(raw["total"], max(raw[k] for k in ("load", "verify", "index", "seed")), "the total holds each part")
+        self.assertGreater(ms["total"], 0.0, "a fast restore is not all zeros")
+
+    def test_a_version_6_document_whose_first_row_is_not_an_object_is_refused_as_rows(self):
+        """1606 low 2: the rows guard checked the type only; a string row that decodes to a list took the restore road and
+        raised at its first build, uncounted. One row is decoded at load."""
+        path = self._compacting()
+        d = _doc(path)
+        d["atoms"][0] = "[1, 2]"                                   # a JSON string, not a JSON object
+        _write_doc(path, d)
+        em._ASM_CKPT_STATS["fallbacks"] = {}
+        self.fresh(); modes = []; tree = self.parse(path, modes)
+        self.assertEqual(modes, ["full"], "the whole parse serves")
+        self.assertEqual(em.asm_checkpoint_stats()["fallbacks"].get("rows"), 1, "counted once under `rows`")
+        self.assertEqual(_strip(tree), self.cold(path))
+
+    def test_an_unencodable_atom_row_is_the_counted_skip_not_a_raise(self):
+        """1606 low 1: the per-row json.dumps sat above the writer's guard, so an unencodable row raised out of
+        asm_checkpoint_write instead of the counted `unencodable` skip."""
+        records, sent = G.SINGLE_FILE["manual_compact_detached"]
+        path = self.write("unenc", records(), sent=sent)
+        self.fresh(); self.parse(path)
+        em._ASM_CKPT_STATS["skipped"] = {}
+        orig = em._atom_scalars
+        with mock.patch.object(em, "_atom_scalars", lambda a: dict(orig(a), weird={1, 2})):   # a set: not JSON-encodable
+            wrote = self.doc(path)
+        self.assertFalse(wrote, "not written")
+        self.assertEqual(em.asm_checkpoint_stats()["skipped"].get("unencodable"), 1, "counted: %s" % em.asm_checkpoint_stats()["skipped"])
 
 
 class RestoredEqualsWhole(Harness):

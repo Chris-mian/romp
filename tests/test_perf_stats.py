@@ -180,6 +180,12 @@ class Collector(unittest.TestCase):
         self.assertGreaterEqual(snap["uptime_s"], 0)
         json.dumps(snap)                                     # the whole thing serializes as-is
 
+    def test_the_asm_checkpoint_block_names_the_restore_parts(self):
+        """1606 low 4: nothing pinned restoreMs on /perf. The block's restoreMs sub-keys: the four named parts and the total."""
+        st = km.em.asm_checkpoint_stats()
+        self.assertEqual(set(st["restoreMs"]), {"load", "verify", "index", "seed", "total"})
+        self.assertTrue(all(isinstance(v, float) for v in st["restoreMs"].values()), st["restoreMs"])
+
     def test_the_asm_index_block_carries_the_documented_keys(self):
         """The lazy index's block (asmIndex): its keys pinned, the light-facts gauge among them (T401 (3) target 3, round three:
         the gauge was documented on /perf but never exposed)."""

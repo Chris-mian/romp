@@ -10307,6 +10307,9 @@ def _load_tick_seen():
     return n
 
 
+_TICK_SEEN_WRITE_SAID = [False]        # the persist's failure said once per process (1603 low 1)
+
+
 def _persist_tick_seen(force=False):
     """Write the memo when a completed evaluation moved it since the last write (or `force`); atomic, best-effort."""
     with _TICK_SEEN_LOCK:
@@ -10314,14 +10317,24 @@ def _persist_tick_seen(force=False):
             return False
         snap = {"%s|%s" % k: list(v) for k, v in _TICK_SEEN.items()}
         _TICK_SEEN_DIRTY[0] = False
-    try:
-        p = _tick_seen_path()
+    body = json.dumps(snap)                          # outside the try: an unserializable entry is a bug that raises (the pusher's
+    p = _tick_seen_path()                            #  guard counts it), never a write lost in silence (1603 low 1)
+    tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per WRITER: the exit's force write
+    try:                                                                                #  runs beside the pusher's persist
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per WRITER: the exit's force write
-        tmp.write_text(json.dumps(snap), encoding="utf-8")                                    #  runs beside the pusher's persist
+        tmp.write_text(body, encoding="utf-8")
         os.replace(tmp, p)
         return True
-    except Exception:
+    except Exception as e:                           # the three things the marks persist does: the tmp unlinked, the memo dirty
+        try:                                         #  again (retried by the next persist), the failure said once
+            tmp.unlink()
+        except OSError:
+            pass
+        with _TICK_SEEN_LOCK:
+            _TICK_SEEN_DIRTY[0] = True
+        if not _TICK_SEEN_WRITE_SAID[0]:
+            _TICK_SEEN_WRITE_SAID[0] = True
+            print("tick-seen memo: not written: %s: %s (said once; retried by the next persist)" % (type(e).__name__, str(e)[:120]), file=sys.stderr)
         return False
 
 
