@@ -14,6 +14,7 @@ Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 import collections
 import copy
 import math
+import zlib
 import contextlib, json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid, tempfile, stat, gzip, collections, functools, fcntl, inspect, secrets, importlib.util
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -9837,10 +9838,14 @@ def _record_interrupt_block(sid, ev):
     unblock/reopen/done/settle row: the judges ruled on a newer world than this evidence, and the
     fold would bury the row anyway. The tick retries every push, so a refused APPEND would grow the
     diary at push cadence; refusing without one keeps it clean until newer evidence (the next settled
-    turn) makes the block land."""
+    turn) makes the block land. Returns the gid blocked (or already holding our block), None for a stand-down decided
+    from the store (no focus top, the diary outranks, the verdict refused), False for a store that could not be read."""
     store, fault = jd.load_goals_or_fault(sid)
     if fault is not None:
-        return None                                  # its row is filed; no block is recorded on a store we cannot read
+        return False                                 # its row is filed; no block is recorded on a store we cannot read: FALSE, a
+    #                                                  fault the tick leaves to the next tick (None below is a stand-down decided
+    #                                                  from the files, which the tick records as evaluated; T401 (3): a stopped
+    #                                                  session with no focus goal was re-evaluated every cycle for good)
     gid = _interrupt_focus_top(store)
     if not gid:
         return None
@@ -10091,7 +10096,34 @@ def _persist_tick_seen(force=False):
         return False
 
 
-def _tick_job_check(job, s):
+_INTERRUPT_BLOCK_UNREAD = (5, 6, 7)   # the key positions the interrupt tick never reads: the episode log, the clears log and the postal log
+_TICK_KEY_UNREAD = (-1.0, -1)         # the constant written at a position a job's road does not read: no os.stat yields a negative mtime
+#                                       or size, so a reader of tick-seen.json tells it from a file that happened to be absent (0.0, 0)
+
+
+def _interrupt_block_key(s):
+    """The interrupt tick's key: the ten files' SHAPE (so memos.tickSeen.missBy decodes as for every job) with only the files
+    the road reads moving it. The quiet boot read of 2026-09-13 (memos.tickSeen at 116 s: interrupt-block misses 125, missBy
+    messages 50, ledger 50, cleared 25) named three box-wide files the tick reads none of: every postal message, every clear
+    and every walk write to the nudge ledger re-evaluated every alive session's interrupt block, and at boot the walk's
+    first pass wrote the ledger before the tick read it (T401 (3)). The census (_NUDGE_FILE_KEYED_ROADS['interrupt-block'])
+    traces the road to the transcript, the states log, the downtime log and the goal store with its journal and archive, plus
+    one row of the ledger, this session's intrBlocked marker: the episode, clears and postal positions are written as the
+    constant _TICK_KEY_UNREAD (a negative pair no stat can produce), and the ledger position carries a checksum of the row's
+    bytes and its length, taken BEFORE the tick reads the row. An UNPROVED ledger snapshot yields no key (None), so the tick evaluates and its block path stands down as before."""
+    st = list(_session_files_stat(s))
+    d = _auto_nudge_data()
+    if d.get(UNPROVED):
+        return None
+    for i in _INTERRUPT_BLOCK_UNREAD:
+        st[2 * i:2 * i + 2] = list(_TICK_KEY_UNREAD)
+    row = (d.get("intrBlocked") or {}).get(str(s.get("sid") or ""))
+    raw = json.dumps(row, sort_keys=True).encode("utf-8") if row is not None else b""
+    st[18:20] = [float(zlib.crc32(raw)), len(raw)]
+    return tuple(st)
+
+
+def _tick_job_check(job, s, st=None):
     """T323 stage 1: (skip, stat) for an event-keyed tick job, one whose answer is a pure function of the
     session's files (_session_files_stat: the transcript, the state log, the goal store with its override journal and
     archive, the episode, clears, postal and downtime logs and the nudge ledger, ten in all), never of the wall clock. `skip` is True when those files
@@ -10105,8 +10137,11 @@ def _tick_job_check(job, s):
     once its store work landed, so a fault mid-tick (an unproved ledger, an unreadable store, a refused marker
     write) leaves the session to the next tick exactly as before (the fault-boundary tests pin that). A job
     with a wall-clock leg must not use this alone: the nudge walk gates its parse through _nudge_look_check, the
-    same memo plus the earliest instant one of its clock legs could flip (T401 (2))."""
-    st = _session_files_stat(s)
+    same memo plus the earliest instant one of its clock legs could flip (T401 (2)). `st`, when the caller hands one, is
+    the job's own key in the ten files' shape (the interrupt tick's, _interrupt_block_key); None means no key can be taken
+    (an unproved ledger): evaluate, never skip."""
+    if st is None:
+        st = _session_files_stat(s)
     if not st[0]:
         _tick_seen_bump(job, "noTranscript")
         return False, st                      # no transcript to stat: nothing is known about it, so never a skip
@@ -10804,7 +10839,11 @@ def _interrupt_block_tick(now, live_map):
             continue                                     # awaiting you / compacting → a different needs-you path owns it
         if _api_error(s["path"]):                        # stopped on an API error → not a user stop
             continue
-        skip, files_st = _tick_job_check("interrupt-block", s)   # nothing appended since the last COMPLETED look (or
+        _key = _interrupt_block_key(s)                        # the ten files with this session's OWN ledger row in the ledger's
+        if _key is None:                                      #  place (T401 (3)); an unproved ledger: no key, evaluate
+            _key = _session_files_stat(s)
+            _key = tuple(_key[:18]) + (-1.0, -1)              #  and never a match for a recorded key
+        skip, files_st = _tick_job_check("interrupt-block", s, _key)   # nothing appended since the last COMPLETED look (or
         if skip:                                                 # since boot): the store already carries the verdict
             continue                                             # this tick would re-derive
         try:
@@ -10851,6 +10890,9 @@ def _interrupt_block_tick(now, live_map):
                 ev = max([stop_t] + [a.get("t") or 0 for turn in turns
                                      for a in (turn.get("atoms") or [])])
                 g = _record_interrupt_block(sid, ev)
+                if g is None:                                    # a stand-down decided from the files (no focus top, the diary
+                    _tick_job_done("interrupt-block", s, files_st)   # outranks): evaluated; the same files give the same answer.
+                #                                                  False (a store fault) records nothing: the next tick retries
                 if g:
                     # the block IS filed — a proved goal-store write that marked the views dirty, a needs-you
                     # flip the next cycle carries — whatever the marker write's fate: a fault landing between
@@ -13373,6 +13415,9 @@ _NUDGE_FILE_KEYED_ROADS = {       # the functions each marked verdict's road rea
     "planner-queue": ("_nudge_placement_gate",),
     "walk-completed": ("_debt_asks", "_asker_row_alive", "_nudge_asks_by_target"),   # the other skippable exit (r is False with the walk
     #                                    completed) rides the debt leg: its readers are traced too (round three, low 2)
+    "interrupt-block": ("_interrupt_block_key", "_session_working", "_suspended_after", "_interrupt_marks", "_last_machine_cut",
+                        "_interrupt_marks_atoms", "_machine_cut_cause"),   # the interrupt tick's skip road (T401 (3)): its key and the
+    #                                    verdict's readers, the ledger read by this session's row only
 }
 #   The roads whose verdict is a pure function of the files the memo keys on (_session_files_stat: the transcript, the state
 #   log, the store with its override journal and archive, the episode log, the clears log, the postal log, the kernel's

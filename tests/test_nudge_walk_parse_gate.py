@@ -477,7 +477,7 @@ class NudgeWalkParseGate(unittest.TestCase):
         CLASS_ALLOW = {"Path": "pathlib's path type: a pure value"}   # the exception types are builtins, short-circuited a line earlier; a
         #                                               class with mutable state (Sessions, the door to the live backend table) is LIVE state
         ALLOW = {                                   # module-level names a marked road may read, each traced to its source
-            "jd", "em", "os", "time", "json", "re", "sys", "math", "Path", "threading", "traceback",   # modules and stdlib (pure)
+            "jd", "em", "os", "time", "json", "re", "sys", "math", "Path", "threading", "traceback", "zlib", "contextlib",   # stdlib (pure)
             "_downtime",                            # the host-suspension list, refilled from STATE/kernel-downtime.jsonl (keyed)
             "_intr_marks_memo",                     # a memo keyed on the parse identity plus the state log's machineCut pair
             "_intr_marks_memo_stats", "_INTR_MARKS_STATS_LOCK",   # that memo's hit/miss counters and their lock (no input)
@@ -490,6 +490,11 @@ class NudgeWalkParseGate(unittest.TestCase):
             "_NUDGE_ASKER_ROWS_MAX",                # a constant
         }
         DISPLAY_ONLY = {"_name_of": "the asker's display name for the reminder's TEXT (the names snapshot): never a verdict input"}
+        ROAD_FORBIDDEN = {                          # a road whose KEY writes constants at some positions must never read those files (T401 (3)):
+            "interrupt-block": {"names": {"_postal_wait_maps", "_nudge_asks_by_target", "_cleared_ids", "_view_cleared", "_postal_index_memo"},
+                                "jd": {"MESSAGES", "EPIDIR", "episode_floor", "_view_cleared"},
+                                "text": ("messages.jsonl", "cleared.jsonl", "episodes")},   # the postal log, the clears log, the episode log
+        }
         CONST_MODULES = {"sb"}                      # the SDK backend module: a marked road may read only a CONSTANT of it (a cause
         #                                             name, a marker string) or one of the pure text helpers below, never a live table
         SB_PURE = {"echo_text_key", "strip_echo_markers", "_strip_marker_tail"}   # pure functions of their text argument (an atom's
@@ -498,9 +503,13 @@ class NudgeWalkParseGate(unittest.TestCase):
         LEAF_READERS = {"_fold_records": "the event model's fold cursor over the NAMED file (the state log here), keyed by that file's "
                                          "stat; its internals are the record cache and the checkpoint tables, which mirror the file",
                         "_postal_wait_maps": "the postal log's wait maps, cached on that file's (mtime_ns, size) and rebuilt from it alone "
-                                             "(the eighth keyed file); its internals are that cache and the alias history, which mirror the log"}
+                                             "(the eighth keyed file); its internals are that cache and the alias history, which mirror the log",
+                        "_auto_nudge_data": "the nudge ledger (the tenth keyed file), read through _ledger_read's cache on its (mtime_ns, size); "
+                                            "the interrupt tick's key carries this session's own row from it, so a row change busts the memo "
+                                            "and another session's does not (T401 (3)); its internals are that cache and the fault latches"}
         JD_ALLOW = {"parsed_session", "_parse_entry", "_segs", "plan_units", "_placed_key", "_unit_key", "_closed_turns", "EPIDIR", "STATE",
-                    "GOALDIR", "CLOSER_ON", "load_goals_shared_or_fault", "_seg_key", "_segment_id", "episode_floor", "_view_cleared"}
+                    "GOALDIR", "CLOSER_ON", "load_goals_shared_or_fault", "_seg_key", "_segment_id", "episode_floor", "_view_cleared",
+                    "GOALARCHDIR", "_overrides_dir"}   # the two keyed-file paths _session_files_stat itself names (the interrupt tick's key)
         EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record"}   # pure readers of a record or an atom
         stat_src = inspect.getsource(km._session_files_stat)
         def module_name(n, g):
@@ -521,7 +530,8 @@ class NudgeWalkParseGate(unittest.TestCase):
                     for a in n.names: names.add((a.asname or a.name).split(".")[0])
             return names
         problems = []; self.maxDiff = None
-        for verdict in sorted(set(km._NUDGE_FILE_KEYED_VERDICTS) | {"walk-completed"}):   # the debt leg's exit too (round three, low 2)
+        for verdict in sorted(set(km._NUDGE_FILE_KEYED_VERDICTS) | {"walk-completed", "interrupt-block"}):   # the debt leg's exit and
+            #                                                                                              the interrupt tick's road too
             todo = list(km._NUDGE_FILE_KEYED_ROADS[verdict]); seen = set()
             self.assertTrue(todo, "%s: its road functions are named" % verdict)
             while todo:
@@ -536,7 +546,19 @@ class NudgeWalkParseGate(unittest.TestCase):
                 except (OSError, SyntaxError) as e:
                     problems.append((verdict, fn_name, "unreadable source: %r" % e)); continue
                 fn_node = tree.body[0]; local = locals_of(fn_node); g = fn.__globals__   # the function's OWN globals (em's for em.fold_records)
+                forbid = ROAD_FORBIDDEN.get(verdict)
+                if fn_name in ("_session_files_stat", "_interrupt_block_key"):
+                    forbid = None                         # the KEY builders stat those files (they name them) and read none
+                if forbid:
+                    src_text = inspect.getsource(fn)
+                    for frag in forbid["text"]:
+                        if frag in src_text:
+                            problems.append((verdict, fn_name, "names %r, a file its key writes as a constant" % frag))
                 for n in ast.walk(fn_node):
+                    if forbid and isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in forbid["names"]:
+                        problems.append((verdict, fn_name, "reads %s, a reader of a file its key writes as a constant" % n.id))
+                    if forbid and isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "jd" and n.attr in forbid["jd"]:
+                        problems.append((verdict, fn_name, "reads jd.%s, a file its key writes as a constant" % n.attr))
                     if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in ("jd", "em"):
                         allow = JD_ALLOW if n.value.id == "jd" else EM_ALLOW
                         if n.attr not in allow:
