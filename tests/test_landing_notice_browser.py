@@ -95,7 +95,7 @@ const landed1 = await state(); const regionsLanded = await page.evaluate(() => (
 const target1 = await onScreen(("11111111-2222-3333-4444-" + pad(2 * 125)));
 const rows1 = await locateRows();
 // ROAD 2: a second deep link, the ask held; the notice clicked away; the reply released late
-const deep2 = "11111111-2222-3333-4444-" + pad(2 * 190);   // turn 130: inside the gap the first landing left (its window covered the head to about turn 70), clear of the tail
+const deep2 = "11111111-2222-3333-4444-" + pad(2 * 190);   // turn 190: inside the gap the first landing left (its window covered the head to about turn 70), clear of the tail
 await page.evaluate(() => { window.__hold.add("loadAround"); });
 const aroundBefore2 = await sentOf("loadAround"); const locBefore2 = rows1.length;
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep2, anchorT: cfg.base + 2 * 190 });
