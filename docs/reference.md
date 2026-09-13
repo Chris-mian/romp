@@ -2022,7 +2022,30 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   entry per (session, parse family) keyed on the parse object's identity and
   the machine-cut stamp (`hit`, `miss`, `evict` for entries released when a
   session leaves the alive set or the memo is cleared at its cap, and the
-  gauge `entries`). `tickSeen` is the event-keyed tick jobs' memo (the
+  gauge `entries`). `deadWait` is the dead-wait sweep's reads: `passes`,
+  `candidates` (corroborated-dead sessions walked), `sharedLoads` (reads
+  through the shared read-only store view, one per store per pass: the
+  candidate's own and every alive session's for the peer-death arm),
+  `loadFaults` (a view that could not be read or parsed, of any kind; the
+  candidate stands down re-armed and the next pass retries; an OSError
+  files a judge-errors row, `store-unreadable`, once per fault episode and
+  prints nothing, and any other exception is said on stderr once per
+  episode, an episode being the pair of the store and the fault's text; an
+  alive session's store the view cannot read re-arms the candidate too, so
+  that peer's conversion waits for the next pass rather than the next
+  death), `sharedFallback` (a view that degraded internally to a private
+  load: an absent store file, an unreadable journal, unparseable bytes, the
+  shared cache switched off; told by the object the view returned, a plain
+  store in place of the frozen one, never by a global load count another
+  thread could move; while it climbs the pass is back to the private-load
+  cost), `mutableLoads` (every private load the sweep's work makes: the two
+  block writers' own, counted inside them so they mean what the writer did
+  wherever it is called, the sweep's three sites and the wake goal's dormant
+  branch alike, and the heal's one load when a briefless procedural block
+  stands), `blocks` (counted inside the writers: each block written), and
+  `healed` (a briefless procedural block whose brief was settled from its
+  why, re-tested on the fresh node before the write). 
+  `tickSeen` is the event-keyed tick jobs' memo (the
   interrupt block, the working note, the nudge walk's looks), the ten-file
   key compared per session, with the gauge `entries` and `byJob`, one block
   per job: `hits` (the one return that skips), `misses`, `neverSeen` (no

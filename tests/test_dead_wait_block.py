@@ -37,7 +37,7 @@ def _fresh_sid():
     """A distinct sid per test: the goals-store cache is mtime-keyed, and same-second reseeds of one
     sid would hand a later test the previous test's mutated store object."""
     _N[0] += 1
-    return "11111111-2222-3333-4444-5555555555%02d" % _N[0]
+    return "%08d-aaaa-4bbb-8ccc-dddddddddddd" % _N[0]      # never the shared 11111111-2222-... placeholder, at any count
 
 
 SID = ""
@@ -125,7 +125,7 @@ class _HermeticDeadWait(unittest.TestCase):
 
     def tearDown(self):
         km._codex = self._saved_codex
-        for d in (jd.GOALDIR, jd.STATE / "states", jd.SDKDIR, jd.STATE / "gone", jd.NAMES):
+        for d in (jd.GOALDIR, jd.STATE / "states", jd.SDKDIR, jd.STATE / "gone", jd.NAMES, jd._overrides_dir()):   # the blocks journals too
             if d.is_dir():
                 for f in d.glob("*"):
                     f.unlink()
@@ -187,6 +187,29 @@ class DeadWaitBlock(_HermeticDeadWait):
         km._dead_wait_sweep({SID}, self.nudged, STAMP_T + 900)
         self.assertFalse(jd.load_goals(SID)["nodes"][GID].get("blocked"))
 
+    def test_the_sweep_reads_through_the_shared_view_and_loads_a_private_store_only_to_write(self):
+        """Boot follow-up (2026-09-13): the sweep loaded a private goal store per candidate (load_goals with its journal replay,
+        9 of the 13 autoNudge stack samples of the measurement boot), and the block writer loaded a second. The read path
+        takes the walk's shared read-only view; a mutable load happens only to heal or to block, and the reads are counted
+        under memos.deadWait."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        loads = []; shared = []
+        real_load, real_shared = jd.load_goals, jd.load_goals_shared_or_fault
+        jd.load_goals = lambda sid: (loads.append(sid), real_load(sid))[1]
+        jd.load_goals_shared_or_fault = lambda sid: (shared.append(sid), real_shared(sid))[1]
+        before = dict(km._DEAD_WAIT_STATS)
+        try:
+            km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals, jd.load_goals_shared_or_fault = real_load, real_shared
+        self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"), "the dead wait still converts")
+        self.assertEqual(shared.count(SID), 1, "one shared read-only view for the candidate: %r" % shared)
+        self.assertEqual(loads.count(SID), 1, "one private load, the block writer's own: %r" % loads)
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["candidates"], d["sharedLoads"], d["mutableLoads"], d["blocks"]), (1, 1, 1, 1), "the writer's load counts: %r" % d)
+
     def test_a_post_stamp_peer_ack_does_not_hide_the_wait_from_the_sweep(self):
         # the 100-hour survivors (2026-08-23): a worker's "starting now" mail seconds after the stamp
         # made the peer-answered supersede read the wait as met, so the sweep stood down forever while
@@ -241,6 +264,229 @@ class DeadWaitBlock(_HermeticDeadWait):
         nd = jd.load_goals(SID)["nodes"][GID]
         self.assertTrue((nd.get("blockSummary") or "").startswith(jd.DEAD_WAIT_WHY_PREFIX),
                         "the repair settles the stuck card's brief from its own why")
+
+    def _count_loads(self):
+        loads, shared = [], []
+        real_load, real_shared = jd.load_goals, jd.load_goals_shared_or_fault
+        jd.load_goals = lambda sid: (loads.append(sid), real_load(sid))[1]
+        jd.load_goals_shared_or_fault = lambda sid: (shared.append(sid), real_shared(sid))[1]
+        self.addCleanup(lambda: setattr(jd, "load_goals", real_load))
+        self.addCleanup(lambda: setattr(jd, "load_goals_shared_or_fault", real_shared))
+        return loads, shared
+
+    def test_the_alive_sessions_stores_are_read_through_the_shared_view_once_per_pass(self):
+        """Round two, medium 1: the pass's dominant read was untouched: for every candidate, every ALIVE session's store was
+        loaded privately (C times A loads, reported as zero). The peer-death arm reads only; it takes the shared view, one read
+        per store per pass, and every mutable load the pass makes counts."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        alive = set()
+        for i in range(3):                                                  # three alive sessions with stores of their own
+            a = _fresh_sid(); alive.add(a)
+            (jd.SDKDIR / (a + ".json")).write_text(json.dumps({"sid": a, "alive": True}))
+            jd.save_goals(a, jd.load_goals(a))
+        km._PREV_ALIVE = None
+        loads, shared = self._count_loads()
+        before = dict(km._DEAD_WAIT_STATS)
+        km._dead_wait_sweep(alive, self.nudged, STAMP_T + 900)
+        pass_loads, pass_shared = list(loads), list(shared)                 # the pass's own reads, before this test reads anything
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"))
+        self.assertEqual([x for x in pass_loads if x in alive], [], "no private load of an alive session's store: %r" % pass_loads)
+        self.assertEqual(sorted(x for x in pass_shared if x in alive), sorted(alive), "each alive store read once through the view")
+        self.assertEqual((d["sharedLoads"], d["mutableLoads"], d["blocks"]), (4, 1, 1), "1 candidate + 3 alive shared; the writer's load: %r" % d)
+        self.assertEqual(len(pass_loads), d["mutableLoads"], "every private load the pass made is counted: %r" % pass_loads)
+
+    def test_the_heal_stands_down_when_a_peer_settled_the_brief_between_the_two_reads(self):
+        """Round two, medium 2: to_heal was decided from the frozen view and the write landed on nodes from a later mutable load
+        with no re-check, so a peer writer that settled the brief in between (a judge tier thread's save_goals) was clobbered.
+        The heal re-tests the fresh node: still blocked, still briefless, still a procedural block."""
+        _seed_store()
+        st = jd.load_goals(SID); nd = st["nodes"][GID]
+        jd.record_verdict(st, nd, "nudge", "block", STAMP_T + 100, why=jd.dead_wait_block_why("the full test suite it kicked off"))
+        jd.rollup_status(st, False); jd.save_goals(SID, st)
+        self.assertIsNone(jd.load_goals(SID)["nodes"][GID].get("blockSummary"))
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        real_load = jd.load_goals
+        def peer_settles_then_load(sid):                                    # the peer's write lands between the view and the heal's load
+            if sid == SID:
+                st2 = real_load(sid); st2["nodes"][GID]["blockSummary"] = "the peer's genuine brief"; st2["nodes"][GID]["briefParts"] = ["p"]
+                jd.save_goals(sid, st2)
+            return real_load(sid)
+        jd.load_goals = peer_settles_then_load
+        before = dict(km._DEAD_WAIT_STATS)
+        try:
+            km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals = real_load
+        self.assertEqual(jd.load_goals(SID)["nodes"][GID].get("blockSummary"), "the peer's genuine brief", "the peer's brief survives")
+        self.assertEqual(km._DEAD_WAIT_STATS["healed"] - before["healed"], 0, "nothing healed, nothing saved over the peer")
+
+    def test_blocks_counts_a_block_written_not_a_writer_called(self):
+        """Round two, low 1: `blocks` counted writer calls at one site; a dormant candidate whose last state is working (the
+        writer stands down for the resume machinery) counted one with nothing blocked."""
+        _seed_store()
+        _write_state("working", STAMP_T + 50)                              # a cut mid-turn: the writer stands down
+        km._PREV_ALIVE = None
+        before = dict(km._DEAD_WAIT_STATS)
+        km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        self.assertFalse(jd.load_goals(SID)["nodes"][GID].get("blocked"))
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["blocks"], d["mutableLoads"]), (0, 0), "the writer stood down before its load; no block written: %r" % d)
+
+    def test_a_view_the_sweep_cannot_read_stands_the_candidate_down_re_armed_and_the_next_pass_places_the_block(self):
+        """Round two, lows 2 and 3: the fault road. _or_fault catches OSError alone, so a malformed journal row (a ValueError)
+        escaped to the per-candidate except and spent the death transition silently; any failure of the view is a fault:
+        counted, the candidate re-armed, and the next pass with the store readable places the block."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        real_shared = jd.load_goals_shared_or_fault
+        before = dict(km._DEAD_WAIT_STATS)
+        for fault in (ValueError("malformed journal row"), None):
+            jd.load_goals_shared_or_fault = (lambda sid, f=fault: (_ for _ in ()).throw(f)) if isinstance(fault, ValueError) else real_shared
+            try:
+                km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+            finally:
+                jd.load_goals_shared_or_fault = real_shared
+            if fault is not None:
+                self.assertFalse(jd.load_goals(SID)["nodes"][GID].get("blocked"), "nothing filed on a fault")
+                self.assertIn(SID, km._PREV_ALIVE, "re-armed: the transition is not spent")
+                self.assertEqual(km._DEAD_WAIT_STATS["loadFaults"] - before["loadFaults"], 1)
+        self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"), "the next pass placed the block")
+        jd.load_goals_shared_or_fault = lambda sid: (None, OSError("EIO"))
+        _seed_store(); _write_state("idle", STAMP_T + 50); km._PREV_ALIVE = None
+        try:
+            km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals_shared_or_fault = real_shared
+        self.assertEqual(km._DEAD_WAIT_STATS["loadFaults"] - before["loadFaults"], 2, "an OSError fault counts the same")
+
+    def test_blocks_and_loads_are_counted_inside_the_writers_wherever_called(self):
+        """Round three, medium 1: the wake goal's dormant-owner branch is a fourth _dead_wait_block caller; its load bumped
+        mutableLoads while its block went uncounted, since blocks was bumped at the sweep's three sites only. Both counters
+        live inside the writers, so they mean what the writer did wherever it is called."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        before = dict(km._DEAD_WAIT_STATS)
+        self.assertTrue(km._dead_wait_block(SID, GID, STAMP_T, "both workers' report-backs", self.nudged, STAMP_T + 900),
+                        "the writer called directly (the wake goal's dormant branch) writes the block")
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["mutableLoads"], d["blocks"], d["passes"]), (1, 1, 0), "its load and its block, no pass: %r" % d)
+        src = inspect.getsource(km._dead_wait_sweep)
+        self.assertNotIn('_DEAD_WAIT_STATS["blocks"]', src, "the sweep bumps no block count of its own")
+
+    def test_a_non_oserror_view_fault_is_said_once_per_episode_and_an_alive_view_fault_re_arms_the_candidate(self):
+        """Round three, medium 2: a ValueError out of the view (a malformed journal row) was swallowed with no stderr where the base
+        printed a traceback, and on an alive session's store it lost that peer's conversion for the transition. It is named on
+        stderr once per episode through the pass's collapse, and an alive store the view cannot read re-arms the candidate."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        alive = _fresh_sid(); (jd.SDKDIR / (alive + ".json")).write_text(json.dumps({"sid": alive, "alive": True}))
+        jd.save_goals(alive, jd.load_goals(alive))
+        real_shared = jd.load_goals_shared_or_fault
+        def faulty(sid, target):
+            def f(x):
+                if x == target:
+                    raise ValueError("journal row: t is not a number")
+                return real_shared(x)
+            return f
+        err = io.StringIO()
+        km._PREV_ALIVE = None
+        jd.load_goals_shared_or_fault = faulty(SID, SID)                     # the candidate's own view raises
+        try:
+            with redirect_stderr(err):
+                km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 900)
+                km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 901)    # the same episode: not said again
+        finally:
+            jd.load_goals_shared_or_fault = real_shared
+        self.assertEqual(err.getvalue().count("the goal-store view raised"), 1, "said once per episode: %r" % err.getvalue())
+        self.assertIn("ValueError", err.getvalue())
+        self.assertIn(SID, km._PREV_ALIVE, "re-armed")
+        self.assertFalse(jd.load_goals(SID)["nodes"][GID].get("blocked"))
+        km._PREV_ALIVE = None
+        jd.load_goals_shared_or_fault = faulty(SID, alive)                   # the ALIVE session's view raises
+        try:
+            with redirect_stderr(io.StringIO()):
+                km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 902)
+        finally:
+            jd.load_goals_shared_or_fault = real_shared
+        self.assertIn(SID, km._PREV_ALIVE, "an alive store the view cannot read re-arms the candidate: the peer conversion waits for the next pass")
+        with redirect_stderr(io.StringIO()):
+            km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 903)        # healed: the next pass converts
+        self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"))
+
+    def test_a_view_that_degrades_to_a_private_load_is_counted_as_a_fallback_and_another_threads_load_is_not(self):
+        """Round three, low 2, and round four's medium: the shared view falls back to load_goals internally (an absent store file,
+        an unreadable journal, unparseable bytes, the cache off); those loads counted under sharedLoads only, so /perf could
+        claim the saving with the cache off. sharedFallback counts them by the OBJECT the view returned (a plain store where
+        the frozen one is due), never by a delta over the process-global load count, which another thread's private load
+        moved: 200 warm views under a burst of load_goals on another thread counted 166 degrades where none happened."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        alive = _fresh_sid(); (jd.SDKDIR / (alive + ".json")).write_text(json.dumps({"sid": alive, "alive": True}))   # no store FILE
+        km._PREV_ALIVE = None
+        before = dict(km._DEAD_WAIT_STATS)
+        km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 900)
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual(d["sharedFallback"], 1, "the alive store without a file fell back to a private load: %r" % d)
+        other = _fresh_sid(); jd.save_goals(other, jd.load_goals(other))    # a readable, cached store for the warm views
+        import threading
+        def burst():                                                      # another thread's private loads, the WS handler's shape: a
+            for _ in range(6000):                                         #  FIXED count (the shared box's rule: no spin, no stop flag,
+                jd.load_goals(SID)                                        #  no timed join that could leave a daemon hammering loads)
+        th = threading.Thread(target=burst); th.start()
+        try:
+            before = dict(km._DEAD_WAIT_STATS)
+            for _ in range(200):
+                store, fault = km._dead_wait_shared_view(other)
+                self.assertIsNone(fault); self.assertIsInstance(store, jd.FrozenStore)
+        finally:
+            th.join()
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["sharedLoads"], d["sharedFallback"]), (200, 0), "200 warm views, no degrade, whatever another thread loaded: %r" % d)
+
+    def test_a_fault_whose_text_changes_on_the_same_store_is_a_new_episode(self):
+        """Round four, low 2: the episode compared the SET of sids, so a different ValueError on the same store was never re-said,
+        where the OSError episode table treats a different text as a new episode; the pairs (sid, text) are compared."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        real_shared = jd.load_goals_shared_or_fault
+        err = io.StringIO()
+        km._PREV_ALIVE = None
+        try:
+            for text in ("journal row: t is not a number", "journal row: t is not a number", "journal row: gid missing"):
+                jd.load_goals_shared_or_fault = (lambda sid, tx=text: (_ for _ in ()).throw(ValueError(tx)))
+                with redirect_stderr(err):
+                    km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals_shared_or_fault = real_shared
+        self.assertEqual(err.getvalue().count("the goal-store view raised"), 2, "said for the first text and again for the new text, not for the repeat: %r" % err.getvalue())
+
+    def test_the_heal_takes_one_mutable_load_and_counts(self):
+        """The brief repair is a write: it takes a private load only when a briefless procedural block stands, and counts it."""
+        _seed_store()
+        st = jd.load_goals(SID)
+        nd = st["nodes"][GID]
+        jd.record_verdict(st, nd, "nudge", "block", STAMP_T + 100, why=jd.dead_wait_block_why("the full test suite it kicked off"))
+        jd.rollup_status(st, False)
+        jd.save_goals(SID, st)
+        self.assertIsNone(jd.load_goals(SID)["nodes"][GID].get("blockSummary"))
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        loads = []
+        real_load = jd.load_goals
+        jd.load_goals = lambda sid: (loads.append(sid), real_load(sid))[1]
+        before = dict(km._DEAD_WAIT_STATS)
+        try:
+            km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals = real_load
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["healed"], d["mutableLoads"]), (1, 1), "the heal's one private load: %r" % d)
+        self.assertEqual(loads.count(SID), 1, "one private load for the heal (the status scan read the shared view): %r" % loads)
+        self.assertTrue((jd.load_goals(SID)["nodes"][GID].get("blockSummary") or "").startswith(jd.DEAD_WAIT_WHY_PREFIX))
 
     def test_a_genuine_block_why_is_never_repaired_over(self):
         # The repair takes PROCEDURAL whys only: a genuine decision brief stays the briefer's job.

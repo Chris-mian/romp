@@ -125,7 +125,7 @@ class Collector(unittest.TestCase):
         self.assertEqual(set(snap["goals"]), {"loads", "saves", "writes"}, "read through jd.goal_io_stats")
         # the three identity memos' readers land here (review find, 2026-09-08: they had no consumer)
         self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "nudgeWalk", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip",
-                                              "bgTops", "liftGate", "intrMarks", "tickSeen", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
+                                              "bgTops", "liftGate", "intrMarks", "deadWait", "tickSeen", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
                                               "chatMergeSets", "chatPostal", "chatLedger", "chatFoldTasks"})   # the chat build's fixed-cost memos (2026-09-09)
         self.assertEqual(set(snap["memos"]["spendTree"]), {"entries", "bytes", "bound", "dirStats", "fileStats", "entryStats", "listings", "loaded", "loadFailed", "written", "swept", "dropped", "dumpSkipped", "evicted", "writeFailed"}, "the spend guard's tree memos against their bound")
         self.assertEqual(snap["memos"]["spendTree"]["bound"], km.SPEND_GUARD_TREE_MEMO_BYTES)
@@ -475,7 +475,7 @@ class GoalIoCounters(unittest.TestCase):
         # with this PR, so the doc names the memos section and sends the reader there (review find, 2026-09-08)
         doc = Path(HERE).parent.joinpath("docs", "reference.md").read_text()
         self.assertIn("- `memos`:", doc)
-        for k in ("`pass`", "`shared`", "`chain`", "`intrMarks`", "`statesOverlay`"):
+        for k in ("`pass`", "`shared`", "`chain`", "`intrMarks`", "`statesOverlay`", "`deadWait`"):
             self.assertIn(k, doc)
         self.assertIn("`memos.shared`", doc)
 
