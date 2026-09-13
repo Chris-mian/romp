@@ -33,3 +33,16 @@ test("the landed command row's ✦ and blue chip are the landed row's alone", ()
   // the landed row itself is unchanged: no bubble, no border, dim ink
   assert.match(CSS, /\.user-bubble\.cmd-row \{ max-width: none; background: none; border: none; border-radius: 0;\s*\n\s*padding: 2px 0; color: var\(--dim\); \}/);
 });
+
+test("round two: the args rule is the landed row's alone, the undelivered command row is named at three classes, the provisional chip wears the bubble's tokens", () => {
+  // MEDIUM: unscoped, the landed row's args rule won the echo's argument span (dim ink beside the queued bubble's faded ink)
+  assert.match(CSS, /\.user-bubble\.cmd-row:not\(\.echo-bubble\) \.slash-cmd-args \{ color: var\(--dim\); \}/);
+  assert.doesNotMatch(CSS, /\.user-bubble\.cmd-row \.slash-cmd-args \{/, "the unscoped args rule is gone");
+  // LOW 2: the comment counts the selector's classes for the cascade, and there are five
+  assert.match(CSS, /by this selector \(five classes: it outranks/);
+  assert.equal((".turn.echo .user-bubble.cmd-row.echo-bubble".match(/\./g) || []).length, 5);
+  // LOW 3: the undelivered command row's border no longer rides source order against the cmd-row reset (both two classes)
+  assert.match(CSS, /\.user-bubble\.cmd-row\.undelivered-bubble, \.user-bubble\.undelivered-bubble, \.romp-bubble\.undelivered-bubble \{\s*\n\s*border: 1px dashed color-mix\(in srgb, var\(--err\) 65%, transparent\); opacity: 0\.85;/);
+  // LOW 1: the chip inside a provisional bubble (queued, or the echo of a command) wears the bubble's own tokens, one rule for both
+  assert.match(CSS, /\.queued-bubble \.slash-cmd-chip, \.turn\.echo \.user-bubble\.cmd-row\.echo-bubble \.slash-cmd-chip \{\s*\n\s*background: color-mix\(in srgb, var\(--you\) 16%, transparent\); color: var\(--prov-ink\); border-color: color-mix\(in srgb, var\(--you\) 55%, transparent\);/);
+});

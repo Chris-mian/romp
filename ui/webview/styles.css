@@ -2052,7 +2052,8 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
    as "yours" without the said-thing bubble. */
 .user-bubble.cmd-row:not(.echo-bubble) .slash-cmd-chip { background: var(--bg); color: var(--you);
   border-color: var(--you); }   /* the landed row's chip; the provisional command's chip is the queued bubble's default (T403) */
-.user-bubble.cmd-row .slash-cmd-args { color: var(--dim); }
+.user-bubble.cmd-row:not(.echo-bubble) .slash-cmd-args { color: var(--dim); }   /* the landed row's args; a provisional command's args inherit
+   the queued bubble's --prov-ink (T403 round two: unscoped, this rule won the echo's args) */
 .user-bubble.cmd-row .nudge-gist, .user-bubble.cmd-row .nudge-caret { color: var(--dim); }
 .user-bubble.cmd-row .nudge-gist { margin-left: 8px; }
 .user-bubble.cmd-row .nudge-full { color: var(--dim); margin-top: 4px; max-width: 640px; }
@@ -2128,7 +2129,7 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
    And the kernel's ECHO of a slash COMMAND (T403, the user 2026-09-13): the landed command row sheds its bubble with
    `border: none`, which leaves the border WIDTH at the initial `medium` (3px) with no style, and the echo dress below set
    the style alone to dashed, so a provisional /compact wore a thick blue dashed ring nothing else on the page wears, over
-   the queued /model row's thin one. The echo of a command is this bubble, by this selector (four classes: it outranks
+   the queued /model row's thin one. The echo of a command is this bubble, by this selector (five classes: it outranks
    the landed row's reset and the echo dress), the chip inside as a queued /compact draws it, no ✦ (the mark is the
    landed row's). */
   max-width: 72%; overflow-wrap: anywhere; display: flow-root;
@@ -2148,6 +2149,12 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .turn.echo .echo-bubble { border-width: 1px; border-style: dashed; border-color: color-mix(in srgb, var(--you) 65%, transparent); opacity: 0.85; }   /* the width
    named too (T403): `border-style` alone inherits whatever width the bubble's own rules left, `medium` after a `border: none` */
 .turn.echo .user-bubble.cmd-row.echo-bubble { opacity: 1; }   /* the queued bubble's fade is in its colours (T337), not an opacity */
+/* the CHIP inside a provisional bubble (a queued /compact, the echo of one) wears the bubble's own tokens (T403 round two): the
+   default chip's white text on a 24% black pill composited to 2.3:1 over the light provisional wash, the landed row's blue-on-ground
+   chip to 4.3:1 there; --prov-ink on a 16% --you tint reads above 4.5:1 on both themes' washes, the dashed edge in the bubble's token */
+.queued-bubble .slash-cmd-chip, .turn.echo .user-bubble.cmd-row.echo-bubble .slash-cmd-chip {
+  background: color-mix(in srgb, var(--you) 16%, transparent); color: var(--prov-ink); border-color: color-mix(in srgb, var(--you) 55%, transparent);
+}
 .echo-note { font-size: 0.82em; color: var(--dim); letter-spacing: 0.02em; text-align: right; }
 .notice.queued-bubble, .notice.notice-slim.queued-bubble { max-width: none; display: block; }   /* the notice keeps its row
    width and flex head at either density; only the dress is the bubble's (the shared rule's specificities, later in the
@@ -2203,7 +2210,9 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
    visible — a loss notice is not a hover secret. Button sizes wear .msg-edit's clothes (one size). */
 /* the bubble KEEPS its solid --you fill (2026-09-08: the old 10% wash put white text on a tint — unreadable on
    cream); the loss reads in the dashed --err edge, the label, and the actions (.notice-act, the one button dress) */
-.user-bubble.undelivered-bubble, .romp-bubble.undelivered-bubble {
+/* the undelivered COMMAND row is named first at three classes (T403 round two): `.user-bubble.cmd-row` resets the border at
+   the same two-class weight as the plain selector below, so the loss row's 1px held by source order alone */
+.user-bubble.cmd-row.undelivered-bubble, .user-bubble.undelivered-bubble, .romp-bubble.undelivered-bubble {
   border: 1px dashed color-mix(in srgb, var(--err) 65%, transparent); opacity: 0.85;
 }
 .undelivered-note { display: flex; align-items: center; gap: 4px; align-self: flex-end; margin-top: 3px; }

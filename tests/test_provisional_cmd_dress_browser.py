@@ -52,8 +52,8 @@ const base = await page.evaluate(() => { const fr = window.__frames.filter((m) =
 base.events = base.events.filter((e) => !(e.uuid || "").startsWith("optimistic:") && e.kind !== "queued" && e.kind !== "todo");
 const now = new Date().toISOString();
 const landedCmd = { kind: "user", md: "/compact", uuid: "la-cmd-1", ts: now, human: true };                       // a LANDED slash command: the ✦ row
-const echoCmd = { kind: "user", md: "/compact", uuid: "echo:" + "e".repeat(32), ts: now, human: true };           // the kernel's echo of a send not yet read: provisional
-const queuedModel = { kind: "queued", uuid: "queued", texts: [{ md: "/model", qid: "echo:" + "f".repeat(32), qts: Date.now(), cancelable: true, idx: 0 }] };   // the standard provisional dress
+const echoCmd = { kind: "user", md: "/model fable", uuid: "echo:" + "e".repeat(32), ts: now, human: true };       // the kernel's echo of a send not yet read: provisional (with an argument, round two)
+const queuedModel = { kind: "queued", uuid: "queued", texts: [{ md: "/model haiku", qid: "echo:" + "f".repeat(32), qts: Date.now(), cancelable: true, idx: 0 }] };   // the standard provisional dress (with an argument)
 await page.evaluate(() => { window.__quiet = true; });
 await page.evaluate((f) => { window.postMessage(f, "*"); }, { ...base, type: "update", events: [...base.events, landedCmd, echoCmd, queuedModel] });
 await page.waitForSelector("#content .turn.echo .user-bubble.cmd-row.echo-bubble", { timeout: 10000 });
@@ -63,15 +63,28 @@ const read = () => page.evaluate(() => {
   const BORDER = ["borderTopWidth", "borderTopStyle", "borderTopColor", "borderRadius", "paddingTop", "paddingLeft", "backgroundColor", "outlineWidth", "outlineStyle", "opacity", "color"];
   const CHIP = ["backgroundColor", "color", "borderTopColor", "borderTopStyle", "borderTopWidth"];
   const echo = document.querySelector("#content .turn.echo .user-bubble.cmd-row.echo-bubble");
-  const queued = Array.from(document.querySelectorAll("#content .turn-queued .queued-bubble")).find((b) => (b.textContent || "").includes("/model"));
+  const queued = Array.from(document.querySelectorAll("#content .turn-queued .queued-bubble")).find((b) => { const c = b.querySelector(".slash-cmd-chip"); return !!c && c.textContent === "/model"; });   // the chip and the argument are adjacent spans: textContent reads /modelhaiku
   const landed = Array.from(document.querySelectorAll("#content .turn.turn-user:not(.echo) .user-bubble.cmd-row")).find((b) => (b.textContent || "").includes("/compact"));
   // the token the queued bubble's border names, resolved by the page itself
   const probe = document.createElement("div"); probe.style.cssText = "position:absolute;visibility:hidden;border:1px dashed color-mix(in srgb, var(--you) 55%, transparent)"; document.body.appendChild(probe);
   const token = getComputedStyle(probe).borderTopColor; probe.remove();
+  // a computed colour ("rgb(r, g, b)", "rgba(r, g, b, a)" or "color(srgb r g b / a)") as [r, g, b, a] in 0..1
+  const rgba = (c) => { let m = /^color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)(?: \/ ([\d.]+))?\)$/.exec(c); if (m) return [+m[1], +m[2], +m[3], m[4] === undefined ? 1 : +m[4]];
+    m = /^rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)$/.exec(c); if (m) return [+m[1] / 255, +m[2] / 255, +m[3] / 255, m[4] === undefined ? 1 : +m[4]]; return null; };
+  const over = (top, under) => { const a = top[3]; return [top[0] * a + under[0] * (1 - a), top[1] * a + under[1] * (1 - a), top[2] * a + under[2] * (1 - a), 1]; };
+  const lum = (c) => { const f = (v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)); return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); };
+  const ratio = (a, b) => { const la = lum(a), lb = lum(b); return Math.round(((Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)) * 100) / 100; };
+  // the chip's TEXT against its composited ground: the chip's background over the bubble's over the page's body (WCAG, T403 round two)
+  const chipContrast = (b, chip) => { const body = rgba(getComputedStyle(document.body).backgroundColor) || [0, 0, 0, 1];
+    const ground = over(rgba(getComputedStyle(chip).backgroundColor) || [0, 0, 0, 0], over(rgba(getComputedStyle(b).backgroundColor) || [0, 0, 0, 0], body));
+    const ink = over(rgba(getComputedStyle(chip).color) || [1, 1, 1, 1], ground); return ratio(ink, ground); };
   const row = (b) => b ? Object.assign(cs(b, BORDER), { before: getComputedStyle(b, "::before").content, chip: b.querySelector(".slash-cmd-chip") ? cs(b.querySelector(".slash-cmd-chip"), CHIP) : null,
+    chipContrast: b.querySelector(".slash-cmd-chip") ? chipContrast(b, b.querySelector(".slash-cmd-chip")) : null,
+    args: b.querySelector(".slash-cmd-args") ? getComputedStyle(b.querySelector(".slash-cmd-args")).color : null,
     rect: (() => { const r = b.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })() }) : null;
   const note = echo ? echo.parentElement.querySelector(".echo-note") : null;
-  return { theme: document.body.classList.contains("theme-light") ? "light" : "dark", token, echo: row(echo), queued: row(queued), landed: row(landed),
+  const probe2 = document.createElement("div"); probe2.style.cssText = "position:absolute;visibility:hidden;color:var(--dim)"; document.body.appendChild(probe2); const dim = getComputedStyle(probe2).color; probe2.remove();
+  return { theme: document.body.classList.contains("theme-light") ? "light" : "dark", token, dim, echo: row(echo), queued: row(queued), landed: row(landed),
            note: note ? note.textContent : null, noteColor: note ? getComputedStyle(note).color : null, queuedHead: (document.querySelector("#content .turn-queued .queued-head") || {}).textContent || null };
 });
 const shot = async (theme) => { if (!cfg.shots) return; const tail = await page.$("#content"); const box = await tail.boundingBox(); const h = Math.min(box.height, 420);
@@ -141,6 +154,29 @@ class ServedProvisionalCmdDress(QueuedLab):
             table = "\n  %s: echo chip=%s before=%s\n  queued chip=%s" % (theme, json.dumps(e["chip"]), e["before"], json.dumps(q["chip"]))
             self.assertEqual(e["chip"], q["chip"], theme + ": the chip inside the echo is the queued bubble's chip" + table)
             self.assertIn(e["before"], ("none", '""'), theme + ": no ✦ on a provisional command" + table)
+
+    def test_the_provisional_commands_arguments_wear_the_queued_bubbles_ink(self):
+        # round two, MEDIUM: the landed row's args rule was unscoped, so the echo of /model fable showed its argument in --dim while the
+        # queued bubble under it inherited --prov-ink; scoped to the landed row now, the echo's args inherit the bubble's ink
+        r = self._result()
+        for theme in ("dark", "light"):
+            m = r[theme]; e, q, l = m["echo"], m["queued"], m["landed"]
+            table = "\n  %s: echo args=%s queued args=%s landed args=%s dim=%s" % (theme, e["args"], q["args"], l["args"], m["dim"])
+            self.assertIsNotNone(e["args"], theme + ": the echo carries an argument span" + table)
+            self.assertEqual(e["args"], q["args"], theme + ": the echo's argument wears the queued bubble's ink" + table)
+            self.assertNotEqual(e["args"], m["dim"], theme + ": not the landed row's --dim" + table)
+            self.assertIsNone(l["args"], theme + ": the landed /compact has no argument (its own rule is pinned by the node test)" + table)
+
+    def test_the_chip_inside_a_provisional_bubble_clears_the_contrast_floor_on_both_themes(self):
+        # round two, LOW 1: the default chip's white text on a 24 percent black pill composited to 2.31:1 over the light provisional
+        # wash (the landed row's blue-on-ground chip drew 4.30:1 there); the chip inside a provisional bubble wears the bubble's own
+        # tokens now, measured as the text against the chip's ground composited over the bubble and the page
+        r = self._result()
+        for theme in ("dark", "light"):
+            m = r[theme]; e, q = m["echo"], m["queued"]
+            table = "\n  %s: echo chip contrast=%s queued chip contrast=%s chip=%s" % (theme, e["chipContrast"], q["chipContrast"], json.dumps(q["chip"]))
+            self.assertGreaterEqual(q["chipContrast"], 4.5, theme + ": the queued bubble's chip clears 4.5:1" + table)
+            self.assertGreaterEqual(e["chipContrast"], 4.5, theme + ": the echo's chip clears 4.5:1" + table)
 
     def test_the_landed_command_row_is_unchanged(self):
         # the ratchet: the ✦ row, no bubble, no border, the blue chip on the page's ground
