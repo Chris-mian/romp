@@ -367,7 +367,7 @@ class WiringPins(unittest.TestCase):
     def test_backend_constructed_eagerly_with_reconcile(self):
         self.assertIn("reconcile=True", self.src,
                       "the kernel opts into the boot reconcile (tests construct without it)")
-        self.assertIn("threading.Thread(target=_sdk, daemon=True).start()", self.src,
+        self.assertIn('threading.Thread(target=_sdk, daemon=True, name="sdk-boot").start()', self.src,   # named for the stack sample (T401)
                       "main() constructs the backend at boot so the reconcile isn't lazy")
 
     def test_graceful_term_never_constructs_the_backend(self):

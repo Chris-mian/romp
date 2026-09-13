@@ -32,6 +32,7 @@ setup() {
     export SNAP_B="$TEST_DIR/b.json"
     export SNAP_C="$TEST_DIR/c.json"
     export SNAP_S="$TEST_DIR/s.json"
+    export SNAP_OLD="$TEST_DIR/old.json"
     # A and B: the same kernel process ten seconds apart. Over the window: 20 cycles, 60 wakes, 6 s of
     # cycle time (4 s of it in push, 3 s of that in the chat block), 300 ms of pusher CPU and 50 ms of
     # judge CPU inside 500 ms of process CPU, 2 chat rebuilds (one of the watched tab, one of a background
@@ -83,6 +84,12 @@ JSON
   "12 producer": {"self": false, "stage": null, "frames": ["_producer (kernel.py:600)", "wait (threading.py:700)"]},
   "13 handler": {"self": true, "stage": null, "frames": ["do_GET (kernel.py:800)", "_thread_stacks (kernel.py:900)"]}}}
 JSON
+    # OLD: the switch's shape before the sample (T358): ident and name to a list of format_stack lines; well-formed JSON, so
+    # the dict guard alone does not refuse it and the per-row frames check must
+    cat > "$SNAP_OLD" <<'JSON'
+{"now": 1000.0, "process": {"pid": 4242},
+ "stacks": {"11 pusher": ["  File \"kernel.py\", line 100, in _pusher\n    _pusher_cycle()", "  File \"kernel.py\", line 200, in _pusher_cycle"]}}
+JSON
     cat > "$MOCK/curl" <<'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$CURL_LOG"
@@ -95,7 +102,7 @@ if [[ "$*" == *"-X POST"* ]]; then
 fi
 if [[ "$*" == *"stacks=1"* ]]; then
     if [ -n "${CURL_OLD_KERNEL:-}" ]; then cat "$SNAP_A"
-    elif [ -n "${CURL_OLD_SHAPE:-}" ]; then printf '{"now": 1000.0, "process": {"pid": 4242}, "stacks": {"11 pusher": ["  File \"kernel.py\", line 100, in _pusher"]}}'
+    elif [ -n "${CURL_OLD_SHAPE:-}" ]; then cat "$SNAP_OLD"
     else cat "$SNAP_S"; fi
     printf '\n200'; exit 0
 fi

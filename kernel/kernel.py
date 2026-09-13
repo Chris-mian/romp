@@ -753,7 +753,9 @@ def _set_stage(name):
 _THREAD_NAME_SEP = ":"            # the one naming convention for every worker the kernel or a backend names with an identity
 #                                   in it: "<kind>:<payload>" (sdk:<session name>, sdk-intr:<session name>, codex:<session
 #                                   name>, end-host:<sid8>, peer:<host>); the kind rule below keeps the kind and drops the
-#                                   payload, so no session name, sid, host or path reaches the stack sample (T401 round two)
+#                                   payload, so no session name, sid, host or path reaches the stack sample (T401 round two).
+#                                   The writers (sdk_backend, codex_backend, postal) spell the colon themselves, since they do
+#                                   not import the kernel: the census test over every construction site is the guard
 
 
 def _thread_kind(name):
@@ -784,8 +786,9 @@ def _thread_kind(name):
 
 def _thread_stacks(limit=40):
     """Every live thread's stack, for GET /perf?stacks=1 and the ROMP_PERF_STACKS switch: keyed "<ident> <kind>" (the ident
-    keeps two workers sharing a kind two entries, T358's duplicate-worker case; the kind is the thread's name up to a colon,
-    _thread_kind, never a session's name), each a row with `self` (the thread building this sample), `stage` (its current
+    keeps two workers sharing a kind two entries, T358's duplicate-worker case; the kind is _thread_kind's: the name before
+    the convention's separator, a default name's target function, a pool worker's prefix, never a session's name), each a
+    row with `self` (the thread building this sample), `stage` (its current
     stage mark) and `frames`, "function (file:line)" strings innermost last, at most `limit`, walked frame by frame and
     never through linecache (extract_stack would read and cache every source file on every stack, 4 MB of kernel for
     line text the sample does not print). No locals, no arguments, no session content: the shape a slow-boot read needs to

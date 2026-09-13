@@ -984,40 +984,76 @@ class PerfRoutes(unittest.TestCase):
         self.assertIn("%d wait" % th.ident, rows, sorted(rows))
 
     def test_every_named_thread_site_maps_to_a_kind_without_an_identity(self):
-        """Round two, medium 1: a census of every `threading.Thread(... name=...)` site in the kernel, the backends the kernel
-        loads in-process and the postal service. A constant name is a kind already; a name with a dynamic part (a session
-        name, a sid, a host) must carry it after the convention's separator so _thread_kind drops it; a name built any other
-        way fails the census. The judge pools carry a thread_name_prefix per tier."""
-        import re
+        """Round two, medium 1, and round three's medium 1: a census of every thread and pool construction site in the kernel,
+        the backends the kernel loads in-process and the postal service, walked with the ast module (a regex could not cross a
+        newline and missed five named sites, the Codex worker's among them). A constant name is a kind already; a name with a
+        dynamic part (a session name, a sid, a host) must carry it after the convention's separator so _thread_kind drops it; a
+        name built any other way fails. The site count is checked against an independent grep count over the same files."""
+        import ast, re
         root = os.path.dirname(BIN)
         files = [os.path.join(root, "kernel", f) for f in ("kernel.py", "sdk_backend.py", "codex_backend.py", "session_host.py")] + \
                 [os.path.join(root, "postal", "postal_service.py")]
-        seen, bad = [], []
+        CTORS = {"Thread", "Timer", "ThreadPoolExecutor", "_TimedPool"}
+        def ctor_of(call):
+            f = call.func
+            n = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
+            return n if n in CTORS else None
+        def static_prefix(v):
+            """(the constant text before any dynamic part, whether the name has a dynamic part), or None for an unreadable expression."""
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                return v.value, False
+            if isinstance(v, ast.JoinedStr):
+                first = v.values[0] if v.values else None
+                return (first.value if isinstance(first, ast.Constant) else ""), any(isinstance(p, ast.FormattedValue) for p in v.values)
+            if isinstance(v, ast.BinOp) and isinstance(v.op, (ast.Mod, ast.Add)) and isinstance(v.left, ast.Constant) and isinstance(v.left.value, str):
+                return v.left.value.split("%")[0], True
+            if isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr == "format" and isinstance(v.func.value, ast.Constant):
+                return v.func.value.value.split("{")[0], True
+            return None, None
+        sites, named, bad, grep_thread, ast_thread = 0, [], [], 0, 0
         for f in files:
             src = open(f, encoding="utf-8").read()
-            for m in re.finditer(r"threading\.Thread\(([^\n]*?name=([^,)\n]+))", src):
-                expr = m.group(2).strip()
-                seen.append((os.path.basename(f), expr))
-                lit = re.match(r"f?([\"'])(.*?)\1", expr)
-                if lit is None:
-                    bad.append((os.path.basename(f), expr, "not a literal")); continue
-                text = lit.group(2)
-                dynamic = (expr.startswith("f") and "{" in text) or ("%" in expr[lit.end():]) or ("+" in expr[lit.end():])
+            grep_thread += len(re.findall(r"threading\.Thread\(", src))
+            for node in ast.walk(ast.parse(src)):
+                if not isinstance(node, ast.Call) or ctor_of(node) is None:
+                    continue
+                sites += 1
+                if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id == "threading" and node.func.attr == "Thread":
+                    ast_thread += 1
+                kw = next((k for k in node.keywords if k.arg in ("name", "thread_name_prefix")), None)
+                if kw is None:
+                    continue                                     # a default name: the rule keeps the target function
+                label = "%s:%d" % (os.path.basename(f), node.lineno)
+                static, dynamic = static_prefix(kw.value)
+                named.append(label)
+                if static is None:
+                    bad.append((label, "a name built from an expression the census cannot read", ast.dump(kw.value)[:80])); continue
                 if dynamic:
-                    static = re.split(r"\{|%", text)[0]
                     if not static.endswith(km._THREAD_NAME_SEP):
-                        bad.append((os.path.basename(f), expr, "a dynamic part without the kind:payload separator")); continue
+                        bad.append((label, "a dynamic part without the kind:payload separator", static)); continue
                     kind = km._thread_kind(static + "notes-api-web")
                     if kind != static[:-1] or "notes" in kind:
-                        bad.append((os.path.basename(f), expr, "the payload survives: %r" % kind))
+                        bad.append((label, "the payload survives", kind))
                 else:
-                    kind = km._thread_kind(text)
-                    if kind != text or re.search(r"[/\\]|[0-9a-f]{8}-", text):
-                        bad.append((os.path.basename(f), expr, "a constant name that is not a plain kind: %r" % kind))
-        self.assertGreaterEqual(len(seen), 12, "the census found the naming sites: %r" % seen)
+                    kind = km._thread_kind(static)
+                    if kind != static or re.search(r"[/\\]|[0-9a-f]{8}-", static):
+                        bad.append((label, "a constant name that is not a plain kind", kind))
+        self.assertEqual(ast_thread, grep_thread, "the ast walk sees every threading.Thread( the grep sees")
+        self.assertGreaterEqual(len(named), 23, "the census found every named site, the multi-line ones included: %r" % named)
+        self.assertTrue(any(l.startswith("codex_backend.py:") for l in named), "the Codex worker's site is walked: %r" % named)
         self.assertEqual(bad, [], "every named thread maps to a kind with no identity in it")
-        self.assertIn("thread_name_prefix", open(os.path.join(root, "kernel", "judge.py"), encoding="utf-8").read(),
-                      "the judge pools carry a prefix per tier")
+
+    def test_the_judge_pools_workers_carry_their_tier(self):
+        """Round three, low 2: the pin on the pool prefix was a substring check on the source; the behaviour is pinned instead:
+        a _TimedPool built on a thread named like a tier gives its workers names whose kind is judge-<tier>."""
+        jd = km.jd
+        out = []
+        def tier():
+            with jd._TimedPool(max_workers=1) as ex:
+                out.append(ex.submit(lambda: threading.current_thread().name).result(5))
+        th = threading.Thread(target=tier, name="index"); th.start(); th.join(10)
+        self.assertEqual(len(out), 1, out)
+        self.assertEqual(km._thread_kind(out[0]), "judge-index", out[0])
 
     def test_the_sample_never_reads_source_through_linecache(self):
         """Round one, low 1: extract_stack read and cached every source file in every stack (4 MB of kernel) for line text
@@ -1125,8 +1161,8 @@ class PerfRoutes(unittest.TestCase):
 
 
 class StacksField(unittest.TestCase):
-    """The perf route's `stacks` (T358, a debugging aid behind ROMP_PERF_STACKS): every thread's last frames, keyed by the
-    thread's ident WITH its name, so two workers sharing a name stay two entries (the duplicate-worker case the aid is for);
+    """The perf route's `stacks` (T358, a debugging aid behind ROMP_PERF_STACKS; T401's sample): every thread's frames, keyed by
+    the thread's ident WITH its kind, so two workers sharing a kind stay two entries (the duplicate-worker case the aid is for);
     None without the switch."""
     def test_two_threads_sharing_a_name_are_two_entries(self):
         import threading

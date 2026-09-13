@@ -1619,7 +1619,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   target function for a thread the code left unnamed (`_ask_poll`,
   `_parent_watch`, `_update_check_loop`, `_tunnel_supervisor`,
   `serve_forever`, ...), `handler` for the HTTP server's request threads,
-  `judge-index`, `judge-triage` and the other tiers' pool workers,
+  `judge-index`, `judge-triage` and the other tiers' pool workers, `pool`
+  for an unprefixed pool worker, `thread` for a default name with no target,
   `pusher`, `producer`, `index`, `triage`, `parse-warm`, `boot-warm`,
   `sdk-boot`, `main`; never a session's name, sid, host or path (the ident
   keeps two workers sharing a kind apart). Each row has `self` (the thread building the
