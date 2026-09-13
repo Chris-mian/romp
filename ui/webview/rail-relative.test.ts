@@ -15,12 +15,18 @@ const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "
 test("one writer paints a marker for the render and for the tick, against the previous row the render stored", () => {
   assert.match(RENDER, /m\.dataset\.prev = prevEpoch == null \? "" : String\(prevEpoch\);/, "the chain's reference rides the marker");
   assert.match(RENDER, /function timeMarker\(epoch: number, prevEpoch: number \| null\): HTMLElement \{[\s\S]*?paintMarker\(m, epoch, prevEpoch, Date\.now\(\)\);\n  return m;\n\}/);
-  assert.match(RENDER, /function paintMarker\(m: HTMLElement, epoch: number, prevEpoch: number \| null, now: number\): void \{\n  const \{ text, day, hm \} = markerLabel\(epoch, prevEpoch, now\);\n  m\.dataset\.hm = hm;\n  const rel = relativeLabel\(epoch, now\);/);
+  assert.match(RENDER, /function paintMarker\(m: HTMLElement, epoch: number, prevEpoch: number \| null, now: number\): void \{\n  const \{ text, day, hm \} = markerLabel\(epoch, prevEpoch, now\);\n  const rel = relativeLabel\(epoch, now\);/);
   // shown where the label CHANGES from the previous timed row's (the same-minute rule at the label's grain); the tooltip is the exact HH:MM, only on a shown stamp
-  assert.match(RENDER, /const shown = rel !== \(prevEpoch == null \? "" : relativeLabel\(prevEpoch, now\)\);/);
-  assert.match(RENDER, /m\.classList\.add\("rel"\);\n\s*m\.textContent = shown \? relativeLines\(rel\) : "";\n\s*if \(shown\) m\.title = hm; else m\.removeAttribute\("title"\);/);
-  // any other day: exactly the old rail, class and tooltip off (a today marker handed back after midnight loses both)
-  assert.match(RENDER, /m\.classList\.remove\("rel"\); m\.removeAttribute\("title"\);\n\s*m\.textContent = text \? \(day \? hm : text\) : "";/);
+  assert.match(RENDER, /const shown = isRel && rel !== \(prevEpoch == null \? "" : relativeLabel\(prevEpoch, now\)\);/);
+  assert.match(RENDER, /const want = isRel \? \(shown \? relativeLines\(rel\) : ""\) : \(text \? \(day \? hm : text\) : ""\);/, "a today row reads the label where shown; any other day exactly the old rail");
+  assert.match(RENDER, /const title = shown \? hm : null;/);
+  // every write guarded by a read (round two): an unchanged label across a tick touches nothing, so no mutation records
+  // and a selection laid across the stamp survives (tests/test_rail_relative_served.py proves it on the page)
+  assert.match(RENDER, /if \(m\.dataset\.hm !== hm\) m\.dataset\.hm = hm;/);
+  assert.match(RENDER, /if \(m\.classList\.contains\("rel"\) !== isRel\) m\.classList\.toggle\("rel", isRel\);/);
+  assert.match(RENDER, /if \(m\.textContent !== want\) m\.textContent = want;/);
+  assert.match(RENDER, /if \(\(m\.getAttribute\("title"\) \?\? null\) !== title\) \{ if \(title == null\) m\.removeAttribute\("title"\); else m\.title = title; \}/);
+  assert.doesNotMatch(RENDER.slice(RENDER.indexOf("function paintMarker("), RENDER.indexOf("\n}\n", RENDER.indexOf("function paintMarker("))), /\n  m\.(textContent|title|dataset\.hm) = /, "no unguarded write in the painter");
   // the tick repaints today's markers only, from the stored moment and reference, then the sticky's usual repaint
   assert.match(RENDER, /for \(const m of Array\.from\(root\.querySelectorAll<HTMLElement>\("\.time-marker\.rel"\)\)\)\n\s*paintMarker\(m, Number\(m\.dataset\.epoch\), m\.dataset\.prev \? Number\(m\.dataset\.prev\) : null, now\);\n\s*scheduleRailSticky\(\);/);
 });

@@ -3125,19 +3125,20 @@ function timeMarker(epoch: number, prevEpoch: number | null): HTMLElement {
 // labels part (119 and 120 minutes ago read differently) and can hand it back to the clock time once its day is over
 // (the divider for that day comes with the next render). Any other day: the HH:MM exactly as before, empty when the
 // minute repeats.
+// Every write is guarded by a read (round two of the review): the tick repaints every today marker each minute and most
+// labels do not change, and an unguarded textContent assignment replaces the text node even when the text is the same,
+// four mutation records a minute per marker and the death of any selection the user has laid across a stamp.
 function paintMarker(m: HTMLElement, epoch: number, prevEpoch: number | null, now: number): void {
   const { text, day, hm } = markerLabel(epoch, prevEpoch, now);
-  m.dataset.hm = hm;
   const rel = relativeLabel(epoch, now);
-  if (rel) {
-    const shown = rel !== (prevEpoch == null ? "" : relativeLabel(prevEpoch, now));
-    m.classList.add("rel");
-    m.textContent = shown ? relativeLines(rel) : "";
-    if (shown) m.title = hm; else m.removeAttribute("title");
-    return;
-  }
-  m.classList.remove("rel"); m.removeAttribute("title");
-  m.textContent = text ? (day ? hm : text) : "";
+  const isRel = !!rel;
+  const shown = isRel && rel !== (prevEpoch == null ? "" : relativeLabel(prevEpoch, now));
+  const want = isRel ? (shown ? relativeLines(rel) : "") : (text ? (day ? hm : text) : "");
+  const title = shown ? hm : null;
+  if (m.dataset.hm !== hm) m.dataset.hm = hm;
+  if (m.classList.contains("rel") !== isRel) m.classList.toggle("rel", isRel);
+  if (m.textContent !== want) m.textContent = want;
+  if ((m.getAttribute("title") ?? null) !== title) { if (title == null) m.removeAttribute("title"); else m.title = title; }
 }
 
 // The day boundary itself: a hairline rule across the prose column with the date on it

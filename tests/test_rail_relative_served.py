@@ -11,7 +11,9 @@ the plural-hours form with "ago" on a line of its own, stamped only where the la
 class and no title; no label overflows the 56px slot (the marker's scrollWidth is its clientWidth) or reaches the dot;
 two-line stamps never overlap the next stamp; and the vocabulary's widest forms are measured in the marker's own font per
 theme at the default 13px chat font and at 14px, for the record the user asked for (the one-line forms fit the slot at
-13px; at 14px the two-digit minute forms run into the 3px gap before the dot, never onto it). Then the page's clock is
+13px; at 14px the two-digit minute forms are wider than the slot and pre-line wraps them at their space, so nothing ever
+overhangs toward the dot). Across the tick a marker whose label did not change is not touched at all (no mutation
+records; a selection spanning its stamp survives): the painter writes only what differs. Then the page's clock is
 paused and jumped past the next clock-minute boundary: the rail's ONE minute timer fires, the labels move by a minute (the
 row "now" reads "1 min ago"; the row at 59 minutes reads "1 hour ago", the same as the row before it, so its stamp goes
 quiet), the yesterday markers do
@@ -145,6 +147,7 @@ const theme = async (light) => {
 const measure = () => page.evaluate(() => {
   const turn0 = Array.from(document.querySelectorAll("#content .turn")).find((t) => t.offsetParent !== null);
   const kids = Array.from(turn0.parentElement.children);
+  const threadTop = turn0.parentElement.getBoundingClientRect().top;   // boxes are read against the thread, so a pane that scrolled between two readings is not a layout shift
   const rows = kids.map((n) => {
     const m = n.querySelector(":scope > .time-marker");
     const r = n.getBoundingClientRect(), mr = m ? m.getBoundingClientRect() : null;
@@ -152,7 +155,7 @@ const measure = () => page.evaluate(() => {
              label: n.classList.contains("day-divider") ? n.querySelector(".day-divider-label").textContent : null,
              marker: m ? m.textContent : null, title: m ? m.getAttribute("title") : null, rel: m ? m.classList.contains("rel") : null,
              epoch: m ? m.dataset.epoch : null, hm: m ? m.dataset.hm : null,
-             box: [r.top, r.height, r.left, r.width],
+             box: [r.top - threadTop, r.height, r.left, r.width],
              mBox: mr ? { top: mr.top, bottom: mr.bottom, right: mr.right, width: mr.width, height: mr.height } : null,
              overflow: m ? m.scrollWidth - m.clientWidth : null,
              dotLeft: n.querySelector(":scope > .dot") ? n.querySelector(":scope > .dot").getBoundingClientRect().left : null };
@@ -163,7 +166,7 @@ const measure = () => page.evaluate(() => {
   probe.style.cssText = "position:static;display:inline-block;width:auto;white-space:nowrap;visibility:hidden";
   turn0.appendChild(probe);
   const widths = {}, widths14 = {};
-  const FORMS = ["now", "1 min ago", "9 min ago", "59 min ago", "1 hour ago", "2 hours ago", "23 hours ago", "2 hours", "23 hours"];
+  const FORMS = ["now", "1 min ago", "9 min ago", "59 min ago", "1 hour ago", "2 hours ago", "23 hours ago", "59 min", "2 hours", "23 hours"];
   for (const l of FORMS) { probe.textContent = l; widths[l] = Math.round(probe.getBoundingClientRect().width * 10) / 10; }
   probe.style.fontSize = "10.08px";   // what a 14px chat font gives the marker (0.72em); the page's own --fs is not touched
   for (const l of FORMS) { probe.textContent = l; widths14[l] = Math.round(probe.getBoundingClientRect().width * 10) / 10; }
@@ -172,7 +175,7 @@ const measure = () => page.evaluate(() => {
     + (document.fonts.check('9px "Space Grotesk"') ? " (Space Grotesk loaded)" : " (Space Grotesk not loaded)") + (document.fonts.check('9px "Inter"') ? " (Inter loaded)" : " (Inter not loaded)");
   probe.remove();
   const s = document.querySelector(".rail-sticky"); const sr = s ? s.getBoundingClientRect() : null;
-  return { now: Date.now(), rows, widths, widths14, font, slot: getComputedStyle(kids.find((n) => n.querySelector(":scope > .time-marker")).querySelector(":scope > .time-marker")).width,
+  return { now: Date.now(), scrollTop: document.getElementById("content").scrollTop, rows, widths, widths14, font, slot: getComputedStyle(kids.find((n) => n.querySelector(":scope > .time-marker")).querySelector(":scope > .time-marker")).width,
            theme: document.body.classList.contains("theme-light") ? "light" : "dark",
            sticky: s && getComputedStyle(s).display !== "none" ? { text: s.textContent, rel: s.classList.contains("rel"), height: sr.height, width: sr.width } : null };
 });
@@ -187,12 +190,54 @@ await theme(false); out.api.dark = await measure(); await shot("t406-yesterday-d
 // the clock's minute turns: pause the page's clock, jump past the next boundary (the tick is armed 50ms past it), let a frame run
 await show(cfg.web, 8);
 const cur = await page.evaluate(() => Date.now());
+// a marker whose label does not change across the boundary must not be touched at all (round two): a replaced text
+// node is four mutation records a minute per marker and destroys a selection that spans the stamp. Observe the
+// two-hour and one-hour rows (their labels survive the minute) and select across the two-hour turn before the tick.
+await page.evaluate(() => {
+  const rel = Array.from(document.querySelectorAll("#content .turn")).filter((t) => t.offsetParent !== null && t.querySelector(":scope > .time-marker.rel"));
+  const w = window;
+  w.__t406 = { records: {} };
+  for (const i of [0, 1]) {
+    const m = rel[i].querySelector(":scope > .time-marker");
+    const recs = []; w.__t406.records[String(i)] = recs;
+    new MutationObserver((rs) => { for (const r of rs) recs.push(r.type + (r.attributeName ? ":" + r.attributeName : "")); })
+      .observe(m, { childList: true, characterData: true, attributes: true, subtree: true });
+  }
+  const t = rel[0], m = t.querySelector(":scope > .time-marker");
+  const c = document.getElementById("content");
+  const scroll0 = c.scrollTop;
+  const range = document.createRange(); range.setStart(m.firstChild, 0); range.setEndAfter(t.lastChild);
+  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  w.__t406.selBefore = sel.toString();
+  w.__t406.scroll = [scroll0, c.scrollTop];   // the pane must not move for a programmatic selection
+  t.dataset.probe = "1";
+  w.__t406.steps = [];
+  w.__t406.step = (name) => { const s2 = window.getSelection(); const c2 = document.getElementById("content");
+    w.__t406.steps.push([name, s2.toString().length, s2.rangeCount, document.activeElement ? document.activeElement.tagName + "#" + document.activeElement.id : null,
+                         !!document.querySelector("[data-probe]"), c2.scrollTop, c2.scrollHeight]); };
+  w.__t406.step("selected");
+});
 await page.clock.pauseAt(cur + 100);
+await page.evaluate(() => window.__t406.step("paused"));
 const jump = 60000 - ((cur + 100) % 60000) + 300;
 await page.clock.fastForward(jump);
+// the painter's own work is done inside the jump (the tick's timer paints synchronously), so the probes read HERE. A
+// frame later this fixture's transcript is rebuilt by a path outside the rail: the page's own retry scheduler (the
+// one-second interval, apiRetryTick) fires during the jump for the lab's blocked session, whose API-error card is
+// "retrying soon", and the answer rebuilds the view (the selected turn is detached, the pane re-lands at the bottom),
+// which would hide what the painter did or did not do
+await page.evaluate(() => { window.__t406.step("jumped"); const w = window; const sel = window.getSelection();
+  w.__t406.atJump = { sel: sel.toString(), ranges: sel.rangeCount, records: JSON.parse(JSON.stringify(w.__t406.records)) }; });
 await page.clock.runFor(200);
+await page.evaluate(() => window.__t406.step("frame"));
 out.web.ticked = await measure();
 out.tick = { cur, jump };
+out.web.quiet = await page.evaluate(() => {
+  const w = window, sel = window.getSelection();
+  w.__t406.step("measured");
+  return { records: w.__t406.records, selBefore: w.__t406.selBefore, atJump: w.__t406.atJump, selAfterFrame: sel.toString(),
+           scroll: w.__t406.scroll.concat([document.getElementById("content").scrollTop]), steps: w.__t406.steps };
+});
 // the sticky over a today turn: a short pane, the second today turn scrolled 20px past the top line, so its own stamp has crossed above and the sticky leads with its label
 await page.setViewportSize({ width: 1100, height: 330 });
 await page.evaluate(() => {
@@ -355,7 +400,11 @@ class ServedRailRelative(unittest.TestCase):
                 self.assertLessEqual(w14[first], 56, "%s, the wrapped form's first line, fits even at a 14px chat font in %s: %r" % (first, theme, w14))
             for one_line in ("now", "1 min ago", "9 min ago", "1 hour ago"):
                 self.assertLessEqual(w14[one_line], 56, "%s still fits the slot at a 14px chat font in %s: %r" % (one_line, theme, w14))
-            self.assertLessEqual(w14["59 min ago"], 59, "the two-digit minute form at 14px stays inside the 3px gap before the dot in %s: %r" % (theme, w14))
+            # at 14px (the VS Code webview's --fs road; the served page pins the body at 13px) the two-digit minute forms are
+            # wider than the slot, and white-space: pre-line WRAPS such a line at its space (59 min over ago), the way the
+            # plural-hours form is set on purpose: nothing overhangs toward the dot at any chat font
+            self.assertGreater(w14["59 min ago"], 56, "the two-digit minute form is wider than the slot at 14px in %s, so it wraps at the space: %r" % (theme, w14))
+            self.assertLessEqual(w14["59 min"], 56, "...and its first line fits: %r" % w14)
             # the yesterday run: the clock time exactly as before, no class, no title, its divider once
             a = r["api"][theme]
             self.assertEqual(a["theme"], theme)
@@ -372,7 +421,15 @@ class ServedRailRelative(unittest.TestCase):
                              "a minute later: the row at 59 minutes reads '1 hour ago' like the row before it and its stamp goes quiet; 'now' is '1 min ago'")
         self.assertEqual([x["marker"] for x in before["rows"] if x["marker"] is not None and not x["rel"]],
                          [x["marker"] for x in after["rows"] if x["marker"] is not None and not x["rel"]], "the other-day markers did not change")
-        self.assertEqual([x["box"] for x in before["rows"]], [x["box"] for x in after["rows"]], "no turn moved: every box (top, height, left, width) is where it was")
+        self.assertEqual([x["box"] for x in before["rows"]], [x["box"] for x in after["rows"]], "no turn moved: every box (top within the thread, height, left, width) is where it was")
+        # a marker whose label did not change across the boundary is not touched: no mutation records on the two-hour and
+        # one-hour rows, and the selection laid across the two-hour turn before the tick reads the same after it
+        q = r["web"]["quiet"]
+        self.assertTrue(q["selBefore"].startswith("2 hours"), "the selection began on the two-hour stamp: %r" % q)
+        self.assertEqual(q["scroll"][0], q["scroll"][1], "a programmatic selection does not scroll the pane: %r" % q["scroll"])
+        self.assertEqual(q["atJump"]["records"], {"0": [], "1": []}, "an unchanged label is not rewritten by the tick (text node, class, title, data-hm): %r" % q)
+        self.assertEqual((q["atJump"]["ranges"], q["atJump"]["sel"]), (1, q["selBefore"]), "a selection spanning an untouched stamp survives the tick: %r" % q)
+        self.assertEqual(q["records"], {"0": [], "1": []}, "...and nothing touched those markers in the frame after either: %r" % q)
         # the sticky over a today turn scrolled past the top line wears the same two-line label as the stamp it stands in for
         st = r["web"]["stickyRun"]
         self.assertTrue(st["tracked"]["hidden"], "the tracked turn's own stamp crossed above the line and hid: %r" % st)

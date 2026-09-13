@@ -109,7 +109,10 @@ export function dayContext(epoch: number, nowMs: number): string {
  *  row against the clock's minute now, whatever the seconds), the grain of the HH:MM it replaces: every label on the
  *  page turns over together the moment the clock's minute does (the rail's minute tick in render.ts fires just past
  *  each boundary) and two rows of one minute always read alike, so the rail's same-minute rule holds at the label's
- *  grain. A row stamped ahead of the clock (skew) reads "now". */
+ *  grain. The grain has a face worth knowing: a row that landed a second before the clock's minute turned reads "1 min
+ *  ago" at the tick, and a row 61 seconds old can read "2 min ago", exactly as a 14:03:59 row is stamped 14:03 at
+ *  14:04:00; every label on the page turns together, which is why it stands (the user can overturn it). A row stamped
+ *  ahead of the clock (skew) reads "now". */
 export function relativeLabel(epoch: number, nowMs: number): string {
   const d = new Date(epoch * 1000), now = new Date(nowMs);
   if (d.getFullYear() !== now.getFullYear() || d.getMonth() !== now.getMonth() || d.getDate() !== now.getDate()) return "";
@@ -124,9 +127,11 @@ export function relativeLabel(epoch: number, nowMs: number): string {
  *  renders in Inter in both themes, at the default 13px chat font every minutes form and "1 hour ago" fit one line
  *  ("59 min ago", the widest, 55.9px; "1 hour ago" 51.9px; "now" 19.6px) and no plural-hours form does ("2 hours ago"
  *  58.1px, "23 hours ago" 64.3px), so "N hours ago" alone takes "ago" on a line of its own ("23 hours" 43.5px). At a
- *  14px chat font the two-digit minute forms run up to 2px past the slot ("59 min ago" 58.0px) into the 3px gap before
- *  the dot, never onto it; "1 hour ago" 55.0px still fits. The marker is absolutely positioned, so the second line costs
- *  the transcript nothing (styles.css .time-marker.rel). */
+ *  14px chat font (the VS Code webview's --fs road; the served page pins the body at 13px) the two-digit minute forms
+ *  are wider than the slot ("59 min ago" 58.0px) and white-space: pre-line wraps such a line at its space ("59 min" over
+ *  "ago"), as it would any label the slot cannot hold at a larger font: nothing overhangs toward the dot at any size;
+ *  "1 hour ago" 55.0px still fits one line. The marker is absolutely positioned, so a second line costs the transcript
+ *  nothing (styles.css .time-marker.rel). */
 export function relativeLines(label: string): string {
   return /^\d+ hours ago$/.test(label) ? label.replace(/ ago$/, "\nago") : label;
 }

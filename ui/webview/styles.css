@@ -1813,8 +1813,10 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 /* TODAY's marker (T406, the user 2026-09-13): how long ago, in the user's words; the plural-hours form alone takes
    "ago" on a line of its own (time-marker.ts relativeLines): at the default chat font "59 min ago" (55.9px) and
    "1 hour ago" (51.9px) fit the 56px slot, "2 hours ago" (58.1px) does not (the rail renders in Inter in both themes).
-   The marker is absolute, so a second line moves nothing in the transcript; the same-label rule keeps such stamps
-   sparse. The sticky stamp wears the class too while it shows a today label. */
+   pre-line also wraps, at its space, any label the slot cannot hold at a larger chat font ("59 min ago" at 14px), so
+   nothing overhangs toward the dot at any size. The marker is absolute, so a second line moves nothing in the
+   transcript; the same-label rule keeps such stamps sparse. The sticky stamp wears the class too while it shows a
+   today label. */
 .time-marker.rel { white-space: pre-line; }
 /* Sticky rail stamp: a fixed overlay pinned to the top of the gutter while you scroll THROUGH a turn
    taller than the viewport, so the rail always shows a time even when the turn's own marker has scrolled
