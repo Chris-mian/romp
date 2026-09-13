@@ -200,7 +200,7 @@ sections: **Group by tag** in its Filter menu (off until you turn it on, per bro
 lanes out one section per tag in the same order, each session under every tag it carries and
 the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row
 of its own; a section folded in either place is folded in both, and while grouped the lanes
-follow the tag order (dragging a lane pans, it does not reorder). Every group starts on its own row; turning off
+follow the tag order (dragging a lane pans, it does not reorder). A session reached from a card or the chat while its section is folded unfolds that section, in the strip too, and the arrow keys walk the rows on screen. Every group starts on its own row; turning off
 the gear's **One tag group per row in the tab strip** lets the groups follow one another across the
 strip and wrap as they need, with the untagged sessions behind a thin divider, so a strip with many
 tags stays short.

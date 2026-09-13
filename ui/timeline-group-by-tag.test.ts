@@ -198,14 +198,83 @@ test("the arrow walk steps the rows the pane shows: section order, copies includ
   assert.deepEqual(flat, panel._vis.map((s: any) => s.id));
 });
 
+// the round-two fixture: the frontend section lists docs BEFORE web, so web's two copies are rows 2 and 5 with docs between
+const VIS2 = [S(API, "api"), S(DOCS, "docs"), S(WEB, "web"), S(TESTS, "tests"), S(OLD, "old-notes")];
+function grouped(panel: any) {
+  panel._vis = VIS2; panel._grouped = true; panel._rows = V.tlRows(VIS2, unions, st(), true);   // head, api(1), web(2), head, docs(4), web(5), head, trail, tests(8)
+  panel._rowOf = Object.create(null); panel._rows.forEach((r: any, i: number) => { if (r.kind === "lane" && !(r.s.id in panel._rowOf)) panel._rowOf[r.s.id] = i; });
+  panel.draw = () => {};
+}
+
+test("a click hands its row to the selection, a click on the selected session's other copy too, and the walk resumes from that row", () => {
+  // the round-two MEDIUM: a click carried no row, so the walk resumed from the session's FIRST copy: a click on web's frontend
+  // copy (row 5) then ArrowDown landed on docs (row 4), one row ABOVE the row just clicked
+  const panel = new V.TimelinePanel(makeNode("div"));
+  grouped(panel);
+  panel._select(WEB, 5);
+  assert.equal(panel._selRow, 5, "the clicked row is the cursor");
+  panel.moveSelection(1);
+  assert.deepEqual([panel.selectedSid, panel._selRow], [TESTS, 8], "down from the clicked copy: the next row below it, tests");
+  panel._select(WEB, 2);
+  panel._select(WEB, 5);                                   // the selected session again, its other copy: the row moves all the same
+  assert.equal(panel._selRow, 5, "a click on a copy of the already-selected session resets the row");
+  panel.moveSelection(-1);
+  assert.deepEqual([panel.selectedSid, panel._selRow], [DOCS, 4], "up from the clicked copy: docs above it");
+  panel._select(API);                                        // a selection carrying no row (the chat's active tab): the first lane
+  assert.equal(panel._selRow, null);
+  panel.moveSelection(1);
+  assert.equal(panel.selectedSid, WEB);
+});
+
+test("the selection band paints the cursor's row only when the selected session has copies; one lane, or ungrouped, as before", () => {
+  // the round-two LOW 1: every copy wore the band, so the row cursor was invisible between two copies
+  const rows = V.tlRows(VIS2, unions, st(), true);
+  assert.deepEqual(V.selBandRows(rows, WEB, 5, true), [5], "the cursor on the frontend copy");
+  assert.deepEqual(V.selBandRows(rows, WEB, 2, true), [2]);
+  assert.deepEqual(V.selBandRows(rows, WEB, null, true), [2], "no row known (the chat's active tab): the first lane");
+  assert.deepEqual(V.selBandRows(rows, WEB, 4, true), [2], "a stale row that is not this session's lane: the first lane");
+  assert.deepEqual(V.selBandRows(rows, DOCS, null, true), [4], "one lane: its row");
+  assert.deepEqual(V.selBandRows(rows, OLD, null, true), [], "folded away: no band anywhere");
+  const flat = V.tlRows(VIS2, [], st(), false);
+  assert.deepEqual(V.selBandRows(flat, WEB, null, false), [2], "ungrouped: the one lane, as before");
+});
+
+test("a focus on a session folded away unfolds its first lane's section through the shared key; Enter and the debounced open never act on a hidden session", async () => {
+  // the round-two LOW 2, the ruling: the user asked for THAT session, so its section opens (the strip follows through the
+  // shared blob) and the pan and pulse land on the lane; the walk, Enter and the open resolve from the drawn rows, not _vis
+  store.clear();
+  store.set("romp:tabgroups", JSON.stringify({ on: true, collapsed: [], expanded: [], pinned: [], timeline: true }));
+  const panel = new V.TimelinePanel(makeNode("div"));
+  grouped(panel);
+  panel._curViews = () => ({ active: "all", tagOrder: ["backend", "frontend", "archived"], tags: unions.map((u, k) => ({ id: "t" + k, name: u.name, color: u.color, members: u.members })) });
+  assert.equal(panel._unfoldFor(WEB), null, "a visible session unfolds nothing");
+  assert.equal(panel._unfoldFor(OLD), "archived", "old-notes' first lane sits under archived, folded by default: it opens");
+  assert.deepEqual(JSON.parse(store.get("romp:tabgroups")!).expanded, ["archived"], "written to the shared key, so the strip follows");
+  const opened: string[] = [];
+  panel.openChat = (tid: string) => { opened.push(tid); };
+  panel.selectedSid = OLD;                                   // hidden (the rows above still have archived folded)
+  panel.openSelected(true); panel.composeSelected();
+  assert.deepEqual(opened, [], "no open, no compose, for a session with no drawn lane");
+  panel.selectedSid = WEB;
+  panel.openSelected(true);
+  assert.deepEqual(opened, [WEB]);
+});
+
 test("source pins: the draw pass lays rows out through tlRows, the focus pulse and the drag read the row model", () => {
   const src = fs.readFileSync(viewPath, "utf8");
   assert.match(src, /const rows = tlRows\(vis, grouped \? viewTagUnion\(this\._curViews\(\)\) : \[\], tabGroupsState\(\), grouped\);/);
   assert.match(src, /this\._rows = rows; this\._rowOf = vidx; this\._grouped = grouped;/);
   assert.match(src, /const i = \(sid in rowOf\) \? rowOf\[sid\] : \(this\._grouped \? -1 : \(this\._vis \|\| \[\]\)\.findIndex\(\(s\) => s\.id === sid\)\);/, "the pulse lands on the first lane row, nowhere for a folded-away session");
-  assert.match(src, /const walk = \(this\._grouped && this\._rows\) \? this\._rows\.filter\(\(r\) => r\.kind === 'lane'\)\.map\(\(r\) => r\.s\) : \(this\._vis \|\| \[\]\);/, "the arrow walk steps the rows shown");
+  assert.match(src, /if \(this\._grouped && this\._rows\) this\._rows\.forEach\(\(r, i\) => \{ if \(r\.kind === 'lane'\) walk\.push\(\{ s: r\.s, i \}\); \}\);/, "the arrow walk steps the rows shown, its position a row index");
   assert.match(src, /this\._mc\.font = '400 ' \+ fs \+ 'px ' \+ this\._fontFace\(\);/, "the chip's name is measured at the drawn weight");
   assert.match(src, /if \(d\.mode === 'row' && d\.noReorder\) \{ this\._drag = null; return; \}/, "grouped lanes follow the tag order: a vertical drag is a click");
   assert.equal((src.match(/    vis\.forEach\(\(s, i\) => \{\n/g) || []).length, 0, "no lane pass indexes the visible list by position any more");
+  assert.equal((src.match(/this\._select\(s\.id\)/g) || []).length, 0, "every click hands the selection its row (round two)");
+  assert.ok((src.match(/this\._select\(s\.id, i\)/g) || []).length >= 9, "the lane passes pass the row index");
+  assert.match(src, /if \(this\.selectedSid === s\.id && selBand\.has\(i\)\) \{/, "the band paints the cursor's row only");
+  assert.match(src, /if \(sid\) this\._unfoldFor\(sid\);\s+\/\/ T399[^\n]*\n\s+this\._panToTime\(t\);/, "focusEvent unfolds before it pans");
+  assert.match(src, /if \(lane\) this\._unfoldFor\(lane\);[^\n]*\n\s+this\._panToTime\(tt\);/, "revealEvent unfolds before it pans");
+  assert.match(src, /openSelected\(preserveFocus\) \{\s*\n\s*const s = this\._selectedLane\(\);/, "the debounced open reads the drawn rows");
+  assert.match(src, /composeSelected\(\) \{\s*\n\s*const s = this\._selectedLane\(\);/, "Enter reads the drawn rows");
   assert.match(src, /window\.addEventListener\('storage', \(e\) => \{ if \(e && e\.key === TABGROUPS_KEY\) this\.draw\(\); \}\);/, "a fold or the switch in another window repaints (its own listener: the tab lock's pins on the settings listener stand)");
 });
