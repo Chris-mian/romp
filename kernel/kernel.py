@@ -750,21 +750,40 @@ def _set_stage(name):
         _STAGE_BY_TID[tid] = name
 
 
+def _thread_kind(name):
+    """A thread's KIND from its name, never a session's name: an SDK session thread is named "sdk:<session name>" and its
+    interrupt thread "sdk-intr:<session name>", so the part before the colon is the kind; Python's default "Thread-N
+    (target)" names are the HTTP handlers' ("handler"); the rest (pusher, producer, index, triage, parse-warm, ...) are
+    kinds already. The stack sample keys its rows by ident and kind (T401 round one, medium 1: a key carried a live
+    session name where the reference promised no session content)."""
+    n = (name or "?").split(":", 1)[0]
+    if n.startswith("Thread-"):
+        return "handler"
+    if n == "MainThread":
+        return "main"
+    return n or "?"
+
+
 def _thread_stacks(limit=40):
-    """Every live thread's stack, for GET /perf?stacks=1 and the ROMP_PERF_STACKS switch: keyed "<ident> <name>" (the ident
-    keeps two workers sharing a name two entries, T358's duplicate-worker case), each a row with `self` (the thread building
-    this sample), `stage` (its current stage mark) and `frames`, "function (file:line)" strings innermost last, at most
-    `limit`. No locals, no arguments, no session content: the shape a slow-boot read needs to NAME the lock a thread waits
-    on (the pusher in a judge's parse, say) instead of inferring it from counters, where py-spy is not available (T401;
-    the T358 convoy read: stacks first). Token-gated like every /perf read."""
+    """Every live thread's stack, for GET /perf?stacks=1 and the ROMP_PERF_STACKS switch: keyed "<ident> <kind>" (the ident
+    keeps two workers sharing a kind two entries, T358's duplicate-worker case; the kind is the thread's name up to a colon,
+    _thread_kind, never a session's name), each a row with `self` (the thread building this sample), `stage` (its current
+    stage mark) and `frames`, "function (file:line)" strings innermost last, at most `limit`, walked frame by frame and
+    never through linecache (extract_stack would read and cache every source file on every stack, 4 MB of kernel for
+    line text the sample does not print). No locals, no arguments, no session content: the shape a slow-boot read needs to
+    NAME the lock a thread waits on (the pusher in a judge's parse, say) instead of inferring it from counters, where
+    py-spy is not available (T401; the T358 convoy read: stacks first). Token-gated like every /perf read."""
     names = {t.ident: t.name for t in threading.enumerate()}
     me = threading.get_ident()
     out = {}
     for tid, frame in sys._current_frames().items():
-        rows = traceback.extract_stack(frame)[-limit:]
-        out["%s %s" % (tid, names.get(tid, "?"))] = {
-            "self": tid == me, "stage": _STAGE_BY_TID.get(tid),
-            "frames": ["%s (%s:%d)" % (r.name, os.path.basename(r.filename), r.lineno) for r in rows]}
+        rows = []
+        f = frame
+        while f is not None and len(rows) < limit:
+            rows.append("%s (%s:%d)" % (f.f_code.co_name, os.path.basename(f.f_code.co_filename), f.f_lineno))
+            f = f.f_back
+        rows.reverse()                                    # innermost last
+        out["%s %s" % (tid, _thread_kind(names.get(tid)))] = {"self": tid == me, "stage": _STAGE_BY_TID.get(tid), "frames": rows}
     return out
 
 

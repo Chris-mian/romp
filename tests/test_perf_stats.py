@@ -951,9 +951,33 @@ class PerfRoutes(unittest.TestCase):
         self.assertEqual(mine["frames"][-1].split(" ")[0], "wait", "innermost last")
         self.assertEqual(sum(1 for r in rows.values() if r["self"]), 1, "the answering handler thread is marked once")
         self.assertTrue(all(len(r["frames"]) <= 40 for r in rows.values()))
+        self.assertTrue(any(k.endswith(" handler") and rows[k]["self"] for k in rows), "the answering thread's kind is handler: %s" % sorted(rows))
         self.assertNotIn(th.ident, km._STAGE_BY_TID, "the registry row is gone once the job returns")
         st, plain = self._req("GET", "/perf")
         self.assertIsNone(plain["stacks"], "the plain snapshot carries the slot empty, as before")
+
+    def test_the_sample_keys_threads_by_kind_never_by_a_session_name(self):
+        """Round one, medium 1: an SDK session thread is named "sdk:<session name>", and the sample's key carried it where
+        the reference promised no session content. Keys are "<ident> <kind>", the kind the name up to its colon."""
+        gate = threading.Event()
+        th = threading.Thread(target=gate.wait, name="sdk:notes-api-web", daemon=True); th.start()
+        try:
+            rows = km._thread_stacks()
+        finally:
+            gate.set(); th.join(5)
+        self.assertIn("%d sdk" % th.ident, rows, sorted(rows))
+        self.assertNotIn("notes-api-web", json.dumps(rows), "no session name anywhere in the sample")
+        self.assertEqual((km._thread_kind("sdk-intr:web"), km._thread_kind("Thread-12 (process_request_thread)"), km._thread_kind("pusher"),
+                          km._thread_kind("MainThread"), km._thread_kind(None)), ("sdk-intr", "handler", "pusher", "main", "?"))
+
+    def test_the_sample_never_reads_source_through_linecache(self):
+        """Round one, low 1: extract_stack read and cached every source file in every stack (4 MB of kernel) for line text
+        the sample never prints; the frame walk touches no file."""
+        import linecache
+        linecache.clearcache()
+        km._thread_stacks()
+        self.assertEqual([k for k in linecache.cache if k.endswith(("romp-kernel", "kernel.py", "threading.py"))], [],
+                         "the sample loaded source it does not print")
 
     def test_the_stage_registry_follows_the_marks(self):
         """`_set_stage` writes the thread-local the readers consult and the by-ident row the sample reads, and clears the row at
@@ -1069,6 +1093,12 @@ class StacksField(unittest.TestCase):
             self.assertEqual(len(keys), 2, "one entry per thread, the name carried: %s" % sorted(snap.get("stacks") or {}))
             self.assertEqual(len(set(keys)), 2, "keyed by ident: distinct")
             self.assertTrue(all(str(t.ident) in k for t, k in zip(sorted(ths, key=lambda t: t.ident), sorted(keys, key=lambda k: int(k.split()[0])))))
+            for k in keys:                                                   # the value shape (T401): the row the served
+                row = snap["stacks"][k]                                      #  boot diagnostic and romp perf stacks read
+                self.assertEqual(set(row), {"self", "stage", "frames"}, row)
+                self.assertIs(row["self"], False); self.assertIsNone(row["stage"])
+                self.assertTrue(row["frames"] and all(" (" in f and f.endswith(")") for f in row["frames"]), row["frames"])
+                self.assertTrue(row["frames"][-1].startswith("wait ("), "innermost last: the worker waits on its gate")
         finally:
             gate.set()
             for t in ths:

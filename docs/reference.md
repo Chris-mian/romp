@@ -1612,9 +1612,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   rise with no growth is a surprise) and the
   walks whose memo could not be read or stored (`fallback`: a document state
   of the wrong shape, or no reader entry after the walk).
-- `stacks`: every live thread's stack, keyed `"<ident> <name>"` (the name:
-  `pusher`, `producer`, the HTTP handlers' default names; the ident keeps two
-  workers sharing a name apart), each with `self` (the thread building the
+- `stacks`: every live thread's stack, keyed `"<ident> <kind>"` (the kind is
+  the thread's name up to its first colon: `pusher`, `producer`, `sdk` for a
+  session's thread, `handler` for the HTTP handlers, `index` and `triage` for
+  the judge tiers; never a session's name; the ident keeps two workers
+  sharing a kind apart), each with `self` (the thread building the
   sample), `stage` (the thread's current stage mark: the pusher's
   `jobs.<job>` or `push`, a handler's `connect`, `null` outside one) and
   `frames`, "function (file:line)" strings innermost last, at most 40; no

@@ -81,7 +81,7 @@ JSON
   "11 pusher": {"self": false, "stage": "jobs.autoNudge",
    "frames": ["_pusher (kernel.py:100)", "_job_stage (kernel.py:200)", "_auto_nudge_session (kernel.py:300)", "parse_session (event_model.py:400)", "__enter__ (threading.py:500)"]},
   "12 producer": {"self": false, "stage": null, "frames": ["_producer (kernel.py:600)", "wait (threading.py:700)"]},
-  "13 Thread-7": {"self": true, "stage": null, "frames": ["do_GET (kernel.py:800)", "_thread_stacks (kernel.py:900)"]}}}
+  "13 handler": {"self": true, "stage": null, "frames": ["do_GET (kernel.py:800)", "_thread_stacks (kernel.py:900)"]}}}
 JSON
     cat > "$MOCK/curl" <<'MOCK'
 #!/usr/bin/env bash
@@ -93,7 +93,7 @@ if [[ "$*" == *"-X POST"* ]]; then
     printf '{"ok": true, "log": %s}\n200' "$([[ "$*" == *'"log": true'* ]] && echo true || echo false)"
     exit 0
 fi
-if [[ "$*" == *"stacks=1"* ]]; then cat "$SNAP_S"; printf '\n200'; exit 0; fi
+if [[ "$*" == *"stacks=1"* ]]; then if [ -n "${CURL_OLD_KERNEL:-}" ]; then cat "$SNAP_A"; else cat "$SNAP_S"; fi; printf '\n200'; exit 0; fi
 n=0; [ -f "$CURL_CALLS" ] && n="$(cat "$CURL_CALLS")"
 echo $((n + 1)) > "$CURL_CALLS"
 if [ "$n" -eq 0 ]; then cat "$SNAP_A"; elif [ -n "${CURL_RESTART:-}" ]; then cat "$SNAP_C"; else cat "$SNAP_B"; fi
@@ -182,7 +182,7 @@ teardown() { rm -rf "$TEST_DIR"; }
     echo "$output" | grep -q "^3 threads at 1000.000 (pid 4242)"
     echo "$output" | grep -q "^pusher (ident 11)  stage jobs.autoNudge$"
     echo "$output" | grep -q "^producer (ident 12)$"
-    echo "$output" | grep -q "^Thread-7 (ident 13) \[answering this request\]$"
+    echo "$output" | grep -q "^handler (ident 13) \[answering this request\]$"
     # the pusher's frames in order, innermost last
     echo "$output" | python3 -c '
 import sys
@@ -195,7 +195,15 @@ assert lines[i + 1:i + 6] == ["    _pusher (kernel.py:100)", "    _job_stage (ke
 @test "romp perf stacks --json: prints the raw stacks list" {
     run "$ROMP_SCRIPT" perf stacks --json
     [ "$status" -eq 0 ]
-    echo "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert sorted(d) == ["11 pusher", "12 producer", "13 Thread-7"], sorted(d); assert d["11 pusher"]["stage"] == "jobs.autoNudge"'
+    echo "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert sorted(d) == ["11 pusher", "12 producer", "13 handler"], sorted(d); assert d["11 pusher"]["stage"] == "jobs.autoNudge"'
+}
+
+@test "romp perf stacks: a kernel from before the sample is named as such and the exit is 1, never 0 threads" {
+    CURL_OLD_KERNEL=1 run "$ROMP_SCRIPT" perf stacks
+    [ "$status" -eq 1 ]
+    echo "$output" | grep -q "does not answer stacks"
+    run bash -c "CURL_OLD_KERNEL=1 '$ROMP_SCRIPT' perf stacks 2>/dev/null | grep -c threads"
+    [ "$output" = "0" ]
 }
 
 @test "romp perf stacks: an unknown flag is refused with the usage" {
