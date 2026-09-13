@@ -12217,7 +12217,10 @@ function toggleToolGroup(key: string): void {
   // the expand/collapse changes the DOM without changing the event set, so mark the view stale to force
   // the compact rebuild past the cache guard (a plain tab switch leaves stale false → reuses the cache).
   if (activeId) { const v = views.get(activeId); if (v) v.stale = true; syncView(activeId); }
-  if (content) writeScroll(content, top, "toolgroup-toggle");
+  // `top` is also the write's origin: a collapse makes the transcript shorter, the browser clamps a bottom reader at the forced
+  // layout before this write runs, and a write that read the clamped value would move nothing, file no row and set no marker,
+  // leaving the clamp's own scroll event to file as a gesture (see writeScroll)
+  if (content) writeScroll(content, top, "toolgroup-toggle", false, top);
   refillOpenCommentPop();   // the popover renders the same units — its copy of this run must flip too
   scheduleRailSticky();
 }
@@ -13215,7 +13218,7 @@ function appendActive() {
   // layout, and the write must claim that move as its own (see writeScroll), else the clamp's pending scroll event files as a gesture
   if (stick && followTail(distBefore, heightBefore, content.scrollHeight)) writeScroll(content, content.scrollHeight, "append-stick", true, before);
   else if (stick) { /* near the bottom, nothing new: the reader stays where they are */ }
-  else if (!(v && restoreScrollAnchor(content, v, anchor))) writeScroll(content, before, "append-raw");
+  else if (!(v && restoreScrollAnchor(content, v, anchor))) writeScroll(content, before, "append-raw", false, before);   // the same origin as the stick write: a shorter tail is claimed, not a gesture
   scheduleRailSticky();
   updateJumpBtn();   // appends can cross the overflow boundary either way — re-read the chip's truth
 }
@@ -14564,6 +14567,7 @@ function renderLiveAsk() {
   const ask = liveAsks.get(activeId) ?? null;
   setComposerAskMode();   // picker with a free-text path → the composer becomes "add your own answer…"
   if (!ask) { host.style.display = "none"; setComposerAskMode(); return; }   // no typed ask (the kernel clears instead): nothing to draw
+  const topBefore = content ? content.scrollTop : 0;   // read BEFORE the card renders: a card re-rendered SHORTER under a bottom reader is clamped at the forced layout, and the reveal's write claims that move (see writeScroll)
   if (ask.kind === "multi") renderMultiCard(ask);
   else if (ask.kind === "submit") renderSubmitCard(ask);
   else renderSingleCard(ask);
@@ -14571,7 +14575,7 @@ function renderLiveAsk() {
   // Reveal the picker if the user is parked at the bottom — it's part of the scroll flow now, so new/taller
   // pickers would otherwise land below the fold. Never yank a user who has scrolled UP to read context.
   const v = activeId ? views.get(activeId) : undefined;
-  if (content && (!v || v.stick)) writeScroll(content, content.scrollHeight, "liveask-reveal", true);
+  if (content && (!v || v.stick)) writeScroll(content, content.scrollHeight, "liveask-reveal", true, topBefore);
 }
 
 // The focused option's side-by-side preview box, reproduced VERBATIM in a monospace block (the user

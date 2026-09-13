@@ -119,7 +119,7 @@ test("a new message while scrolled UP keeps the viewport put (no backwards jump)
   // the view "backwards" when messages arrived (the user 2026-06-25).
   assert.match(RENDER, /const before = content\.scrollTop;/);
   assert.match(RENDER, /syncView\(activeId, stick\);/);
-  assert.match(RENDER, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor\)\)\) writeScroll\(content, before, "append-raw"\);/);
+  assert.match(RENDER, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor\)\)\) writeScroll\(content, before, "append-raw", false, before\);/);
   // the compact branch keeps winStart on a scrolled-up append
   assert.match(RENDER, /const keepTop = wasAtTail && atBottom === false;/);
   assert.match(RENDER, /const ws = keepTop \? \(v\.winStart \?\? 0\)/);

@@ -164,7 +164,20 @@ for (let k = 0; k < 4; k++) {
   twoPushes.push(await measure());
 }
 const rows = await page.evaluate(() => window.__rows);
-fs.writeSync(1, "RESULT:" + JSON.stringify({ one, two, twoPushes, afterX, rows: rows.slice(-40) }) + "\n");
+// the tool group's toggle under a bottom reader (round two, medium; LAST, since the reader's own move to the bottom is a gesture the phases before must not count): expand the tail's tool run, go to the bottom, collapse it. The
+// collapse makes the transcript shorter and the browser clamps the reader before the toggle's write runs; the write must claim that
+// move (one toolgroup-toggle row, before above after) and the clamp's own event must not file as a gesture
+const tgSel = '#content .turn-toolgroup [data-act="noticetoggle"][data-gkey]';
+const tgBefore = await page.evaluate((sel) => !!document.querySelector(sel), tgSel);
+await page.evaluate((sel) => { const b = document.querySelector(sel); if (b) b.click(); }, tgSel);   // expand
+await painted();
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = c.scrollHeight; });   // the reader's own move to the bottom
+await painted();
+const tgOpen = await page.evaluate(() => ({ groups: document.querySelectorAll("#content .turn-toolgroup").length, children: document.querySelectorAll("#content .tg-child").length, gestures: window.__rows.filter((r) => r.what === "scrollgesture").length, rows: window.__rows.length, sh: document.getElementById("content").scrollHeight, top: document.getElementById("content").scrollTop }));
+await page.evaluate((sel) => { const b = document.querySelector(sel); if (b) b.click(); }, tgSel);   // collapse under a bottom reader
+await painted();
+const tgClosed = await page.evaluate((n) => { const c = document.getElementById("content"); return { children: document.querySelectorAll("#content .tg-child").length, gestures: window.__rows.filter((r) => r.what === "scrollgesture").length, sh: c.scrollHeight, top: c.scrollTop, dist: c.scrollHeight - c.scrollTop - c.clientHeight, newRows: window.__rows.slice(n) }; }, tgOpen.rows);
+fs.writeSync(1, "RESULT:" + JSON.stringify({ one, two, twoPushes, afterX, tgBefore, tgOpen, tgClosed, rows: rows.slice(-40) }) + "\n");
 await browser.close();
 process.exit(0);
 """
@@ -297,6 +310,19 @@ class ServedPendingBubbleStable(unittest.TestCase):
         self.assertEqual(ax["texts"], 1, "the ✕ removed one bubble: %r" % ax)
         self.assertEqual(ax["dist"], 0, "the ✕ leaves the reader at the bottom: %r" % ax)
         self.assertEqual(tp[-1]["gestures"], 0, "no unwritten move across the second send and the ✕: %r" % r["rows"][-12:])
+        # the tool group's toggle under a bottom reader (round two, the scroll clamp fix): the collapse makes the transcript shorter,
+        # the browser clamps the reader at the forced layout, and the toggle's write claims that move: one toolgroup-toggle row from
+        # the pre-toggle top to the clamped one, no gesture row for the clamp, the reader still at the bottom
+        self.assertTrue(r["tgBefore"], "the tail's tool run has a toggle")
+        o, c = r["tgOpen"], r["tgClosed"]
+        self.assertGreater(o["children"], 0, "the run expanded: %r" % o)
+        self.assertEqual(c["children"], 0, "…and collapsed: %r" % c)
+        self.assertLess(c["sh"], o["sh"], "the collapse made the transcript shorter: %r → %r" % (o, c))
+        self.assertEqual(c["gestures"], o["gestures"], "no unwritten move on the collapse (the reader's own move to the bottom before it is the one gesture): %r" % c["newRows"])
+        toggles = [x for x in c["newRows"] if x["what"] == "scrollwrite" and x["writer"] == "toolgroup-toggle"]
+        self.assertEqual(len(toggles), 1, "one toggle row names the move: %r" % c["newRows"])
+        self.assertGreater(toggles[0]["before"], toggles[0]["after"], "…from the pre-toggle top to the clamped one: %r" % toggles[0])
+        self.assertLessEqual(c["dist"], 2, "the reader is still at the bottom: %r" % c)
 
 
 if __name__ == "__main__":

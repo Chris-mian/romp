@@ -83,7 +83,7 @@ test("a scrolled-up append restores by turn ANCHOR (data-uuid), raw scrollTop on
   const fn = RENDER.slice(RENDER.indexOf("function appendActive"), RENDER.indexOf("window.addEventListener(\"resize\", scheduleRestamp)"));
   assert.match(fn, /const anchor = !stick && v \? captureScrollAnchor\(content, v\) : null;/,
     "the anchor is captured BEFORE the rebuild, only when scrolled up");
-  assert.match(fn, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor\)\)\) writeScroll\(content, before, "append-raw"\);/,
+  assert.match(fn, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor\)\)\) writeScroll\(content, before, "append-raw", false, before\);/,
     "anchor-relative restore first; the raw pixel offset only when the anchor was evicted");
   assert.match(RENDER, /function captureScrollAnchor\(content: HTMLElement, v: View\)/);
   assert.match(RENDER, /r\.bottom > cTop \+ 1/, "the anchor is the first turn still visible at the viewport top");
