@@ -322,7 +322,7 @@ The Files pane holds the file viewer in a column of its own, beside the chat
 and the feed, so an open file covers neither. While the pane is open, a file
 link clicked in the chat opens in it. When it is closed, a link opens over the
 pane you clicked; there is no setting to decide otherwise, the open pane is the
-rule. The Files control (Settings, General, Panes) shows or hides the pane's
+rule. The Files row (Settings, General, Panes) shows or hides the pane's
 toggle; it is off by default. On a phone, closing the file takes you back to the
 tab you came from. The folder
 shown under the chat (the session's working directory), the **Directory** row
@@ -333,9 +333,9 @@ listing and it opens where the listing is. Selecting a passage in the viewer
 puts the quote in the chat's composer, as it does from the viewer over the
 chat. When no file is open, the pane lists the files most recently opened in
 it; click one to open it again. The pane and its control are both off by
-default: the gear's **Files control in the dashboard bar** setting adds a
-Files toggle to the bottom bar (on a phone, a Files tab like the others), and
-that toggle turns the pane on.
+default: the gear's **Files** row (Settings, General, Panes) adds a Files
+toggle to the bottom bar (on a phone, a Files tab like the others), and that
+toggle turns the pane on.
 
 ## Automatic nudges
 

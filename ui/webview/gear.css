@@ -66,6 +66,9 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
    never a popover (as an rs-sub it doubled the Account row's tooltip, 2026-09-02) */
 #rsettings .rs-note { color: var(--text-muted, #9aa0a6); font-size: 0.92em; }
 #rsettings .rs-note:empty { display: none; }
+/* a row's permanent one-sentence line under its label (T408, the Automation rows): the note's dress on its own line, in
+   the flow (never a popover, so it cannot run past the card and scroll it the way a hover rs-sub does on a short pane) */
+#rsettings .rs-line { display: block; color: var(--text-muted, #9aa0a6); font-size: 0.92em; line-height: 1.35; margin-top: 1px; }
 /* ONE tooltip at a time: while a picker dropdown is open, or the pointer is on the tri-state
    'mixed' mark (whose own title names the differing hosts), the row's description stands down —
    otherwise the native tooltip and the description popover stack (2026-09-02) */
