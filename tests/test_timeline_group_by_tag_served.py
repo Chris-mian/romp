@@ -115,7 +115,7 @@ for (const pass of [{ name: "dark", theme: "dark", on: true }, { name: "light", 
     return on ? heads >= 3 && lanes >= 6 && connector : lanes >= 6 && connector;
   };
   try {
-    await page.waitForFunction(drawn, { names: NAMES, on: pass.on, web: cfg.web }, { timeout: 120000 });
+    await page.waitForFunction(drawn, { names: NAMES, on: pass.on, web: cfg.web }, { timeout: 90000 });   // the python side's cap covers three of these and three fold waits
   } catch (e) {
     const st = await page.evaluate(() => ({ heads: document.querySelectorAll(".tl-group-head").length, texts: Array.from(document.querySelectorAll("svg text")).map((t) => t.textContent).slice(0, 40) }));
     console.error("lanes missing (" + pass.name + "): " + JSON.stringify(st)); process.exit(1);
@@ -128,13 +128,13 @@ for (const pass of [{ name: "dark", theme: "dark", on: true }, { name: "light", 
       // each click waits on the redraw it causes: the head's fold state in the DOM, never a fixed pause
       const foldedIs = ({ name, folded }) => { const g = document.querySelector('.tl-group-head[data-group="' + name + '"]'); return !!g && g.dataset.folded === (folded ? "1" : "0"); };
       await page.click('.tl-group-head[data-group="backend"] rect');
-      await page.waitForFunction(foldedIs, { name: "backend", folded: true }, { timeout: 30000 });
+      await page.waitForFunction(foldedIs, { name: "backend", folded: true }, { timeout: 20000 });
       r.folded = await page.evaluate(measure, { names: NAMES, web: cfg.web });
       await page.click('.tl-group-head[data-group="backend"] rect');
-      await page.waitForFunction(foldedIs, { name: "backend", folded: false }, { timeout: 30000 });
+      await page.waitForFunction(foldedIs, { name: "backend", folded: false }, { timeout: 20000 });
       r.reopened = await page.evaluate(measure, { names: NAMES, web: cfg.web });
       await page.click('.tl-group-head[data-group="archived"] rect');
-      await page.waitForFunction(foldedIs, { name: "archived", folded: false }, { timeout: 30000 });
+      await page.waitForFunction(foldedIs, { name: "archived", folded: false }, { timeout: 20000 });
       r.archivedOpen = await page.evaluate(measure, { names: NAMES, web: cfg.web });
     }
   }
@@ -230,7 +230,9 @@ class ServedGroupByTag(unittest.TestCase):
                        "pw": os.path.join(EXT, "node_modules", "playwright"), "shots": os.environ.get("T399_SHOTS", "")}, f)
         driver = os.path.join(self.lab, "driver.mjs")
         Path(driver).write_text(DRIVER)
-        p = subprocess.run(["node", driver, cfg], capture_output=True, text=True, timeout=240)
+        # the cap covers the driver's own bounds (three first-read waits of 90 s and three fold waits of 20 s, 330 s) with room, so
+        # on a loaded runner the driver dies by ITS bound and prints its lanes-missing diagnostic, never by this one in silence
+        p = subprocess.run(["node", driver, cfg], capture_output=True, text=True, timeout=420)
         klog = Path(self.klog).read_text()[-3000:] if os.path.exists(self.klog) else ""
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + "\n" + p.stderr[-3000:] + "\nkernel:\n" + klog)
         line = [ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")][-1]

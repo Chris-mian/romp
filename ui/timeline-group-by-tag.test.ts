@@ -300,6 +300,70 @@ test("source pins: a click on a message stub aimed at a folded-away recipient un
                "the message handler unfolds the recipient's section, redraws, and selects the row the redraw gave it");
 });
 
+// a panel whose draw() is a stand-in: it recomputes the visible set, the rows and the row index from the store's fold state,
+// the way the real draw does after the lens and the active filter; `windowHas` says which sessions the pane's window holds
+function drawingPanel(windowHas: () => string[]) {
+  const panel = new V.TimelinePanel(makeNode("div"));
+  panel._curViews = () => ({ active: "all", tagOrder: ["backend", "frontend", "archived"], tags: unions.map((u, k) => ({ id: "t" + k, name: u.name, color: u.color, members: u.members })) });
+  panel.svg = makeNode("svg");
+  panel._geom = { top: 8, ml: 130, plotW: 800, winSec: 3600, cT0: 0, compress: null };
+  panel._grouped = true;
+  panel.draws = 0;
+  panel.draw = () => {
+    panel.draws++;
+    panel._vis = VIS2.filter((s) => windowHas().indexOf(s.id) >= 0);
+    panel._rows = V.tlRows(panel._vis, unions, V.tabGroupsState(), true);
+    panel._rowOf = Object.create(null); panel._rows.forEach((r: any, i: number) => { if (r.kind === "lane" && !(r.s.id in panel._rowOf)) panel._rowOf[r.s.id] = i; });
+  };
+  panel.draw();
+  return panel;
+}
+
+test("a reveal at a session whose work sits outside the window pans FIRST, then unfolds against the set the panned draw shows (the round-four medium)", () => {
+  // with the active-sessions filter on, the window at thirty minutes and an archived session's work hours back, the unfold
+  // used to test the PRE-pan visible set (the session absent), refuse, and only then pan: at the redraw the session was
+  // visible but its section stayed folded, no lane, no band, no pulse, the chat opened against a collapsed head
+  store.clear();
+  store.set("romp:tabgroups", JSON.stringify({ on: true, collapsed: [], expanded: [], pinned: [], timeline: true }));
+  let panned = false;
+  const panel = drawingPanel(() => panned ? [API, DOCS, WEB, TESTS, OLD] : [API, DOCS, WEB, TESTS]);   // old-notes enters the window only after the pan
+  panel.data = { sessions: VIS2 };
+  panel._panToTime = () => { panned = true; return true; };
+  panel._laneForFocusSid = (sid: string) => sid;
+  panel.revealEvent(OLD, 600, null);
+  assert.deepEqual(JSON.parse(store.get("romp:tabgroups")!).expanded, ["archived"], "archived unfolded, through the shared blob");
+  assert.ok(OLD in panel._rowOf, "old-notes has its lane after the redraw");
+  const ring = panel.svg.children.find((c: any) => c.tag === "circle");
+  assert.ok(ring, "and the pulse landed");
+  assert.equal(+ring.getAttribute("cy"), 8 + panel._rowOf[OLD] * 26 + 13, "on its row");
+  assert.ok(panel.draws >= 3, "the panned draw, then the draw after the unfold");
+  // a session the lens would still exclude after the pan keeps refusing
+  store.set("romp:tabgroups", JSON.stringify({ on: true, collapsed: [], expanded: [], pinned: [], timeline: true }));
+  panned = false;
+  const panel2 = drawingPanel(() => [API, DOCS, WEB, TESTS]);   // old-notes never in the visible set (the lens removed it)
+  panel2.data = { sessions: VIS2 }; panel2._panToTime = () => { panned = true; return true; }; panel2._laneForFocusSid = (sid: string) => sid;
+  panel2.revealEvent(OLD, 600, null);
+  assert.deepEqual(JSON.parse(store.get("romp:tabgroups")!).expanded, [], "nothing unfolds for a session the pane will not draw");
+  assert.equal(panel2.svg.children.length, 0, "and nothing pulses");
+});
+
+test("a message stub's click on a folded-away recipient: the unfold, the redraw, the row select, driven against the store (the round-four low)", () => {
+  store.clear();
+  store.set("romp:tabgroups", JSON.stringify({ on: true, collapsed: [], expanded: [], pinned: [], timeline: true }));
+  const panel = drawingPanel(() => [API, DOCS, WEB, TESTS, OLD]);
+  assert.equal(OLD in panel._rowOf, false, "old-notes is folded away under archived");
+  // the handler's three steps, as msgNav runs them
+  const opened = panel._unfoldFor(OLD);
+  assert.equal(opened, "archived");
+  if (opened != null) panel.draw();
+  assert.ok(OLD in panel._rowOf, "the redraw gave it a lane");
+  panel._select(OLD, panel._rowOf[OLD]);
+  assert.deepEqual([panel.selectedSid, panel._selRow], [OLD, panel._rowOf[OLD]], "the selection sits on the redrawn row");
+  assert.deepEqual(V.selBandRows(panel._rows, OLD, panel._selRow, true), [panel._rowOf[OLD]], "the band on that row");
+  // a visible recipient: no unfold, the select as before
+  assert.equal(panel._unfoldFor(WEB), null);
+});
+
 test("source pins: the draw pass lays rows out through tlRows, the focus pulse and the drag read the row model", () => {
   const src = fs.readFileSync(viewPath, "utf8");
   assert.match(src, /const rows = tlRows\(vis, grouped \? viewTagUnion\(this\._curViews\(\)\) : \[\], tabGroupsState\(\), grouped\);/);
@@ -312,8 +376,8 @@ test("source pins: the draw pass lays rows out through tlRows, the focus pulse a
   assert.equal((src.match(/this\._select\(s\.id\)/g) || []).length, 0, "every click hands the selection its row (round two)");
   assert.ok((src.match(/this\._select\(s\.id, i\)/g) || []).length >= 9, "the lane passes pass the row index");
   assert.match(src, /if \(this\.selectedSid === s\.id && selBand\.has\(i\)\) \{/, "the band paints the cursor's row only");
-  assert.match(src, /if \(sid\) this\._unfoldFor\(sid\);\s+\/\/ T399[^\n]*\n\s+this\._panToTime\(t\);/, "focusEvent unfolds before it pans");
-  assert.match(src, /if \(lane\) this\._unfoldFor\(lane\);[^\n]*\n\s+this\._panToTime\(tt\);/, "revealEvent unfolds before it pans");
+  assert.match(src, /this\._panToTime\(t\);[^\n]*\n\s+if \(sid\) this\.selectedSid = sid;\n\s+this\.draw\(\);[^\n]*\n(\s+\/\/[^\n]*\n)*\s+if \(sid && this\._unfoldFor\(sid\) != null\) this\.draw\(\);\n\s+this\._pulseFocus\(sid, t,/, "focusEvent pans and draws, then unfolds against that draw's visible set and draws again, before the pulse");
+  assert.match(src, /this\._panToTime\(tt\);\n\s+if \(lane\) this\.selectedSid = lane;\n\s+this\.draw\(\);[^\n]*\n\s+if \(lane && this\._unfoldFor\(lane\) != null\) this\.draw\(\);/, "revealEvent the same");
   assert.match(src, /openSelected\(preserveFocus\) \{\s*\n\s*const s = this\._selectedLane\(\);/, "the debounced open reads the drawn rows");
   assert.match(src, /composeSelected\(\) \{\s*\n\s*const s = this\._selectedLane\(\);/, "Enter reads the drawn rows");
   assert.match(src, /window\.addEventListener\('storage', \(e\) => \{ if \(e && e\.key === TABGROUPS_KEY\) this\.draw\(\); \}\);/, "a fold or the switch in another window repaints (its own listener: the tab lock's pins on the settings listener stand)");

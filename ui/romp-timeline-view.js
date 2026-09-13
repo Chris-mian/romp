@@ -2845,10 +2845,13 @@ class TimelinePanel {
     const onWork = !!byId && (f.anchor === 'work' ? true : (f.anchor === 'prompt' ? false : kindWork));
     const sid = byId ? byId.sid : this._laneForFocusSid(f.sid);  // else fall back to sid (fork-aware)
     const t = byId ? byId.t : f.t;                               // else the written time (turn START)
-    if (sid) this._unfoldFor(sid);                               // T399: a session folded away is unfolded first (its section, shared)
     this._panToTime(t);                                          // pan so the target sits ~mid-window if off-screen
     if (sid) this.selectedSid = sid;
     this.draw();                                     // redraw with the new pan + selection (refreshes _geom/_vis)
+    // T399: a session folded away is unfolded AFTER the pan and its draw, against the visible set that draw computed (the
+    // round-four medium: decided before the pan, an out-of-window target under the active filter was absent and stayed
+    // folded); a session the lens or the filter still excludes keeps refusing. An opened section needs one more draw
+    if (sid && this._unfoldFor(sid) != null) this.draw();
     this._pulseFocus(sid, t, onWork ? byId : null);  // reply event → flash the BAR; prompt → ring on the dot
     // Land the chat half too. A reply event opens its READABLE reply line (replyUuid = last assistant
     // line with text, NOT the first which is usually a thinking block → workUuid/uuid fallbacks); a typed
@@ -2876,10 +2879,10 @@ class TimelinePanel {
     const lane = tb ? tb.sid : this._laneForFocusSid(sid);
     const tt = tb ? tb.t : t;
     if (tt == null) return;
-    if (lane) this._unfoldFor(lane);                // T399: a session folded away is unfolded first (its section, shared)
     this._panToTime(tt);
     if (lane) this.selectedSid = lane;
     this.draw();                                    // refreshes _geom/_vis, which _pulseFocus reads
+    if (lane && this._unfoldFor(lane) != null) this.draw();   // T399: unfolded after the pan, against the panned draw's visible set
     const onWork = !!(tb && tb.src && tb.src !== 'typed' && tb.src !== 'queued');
     this._pulseFocus(lane, tt, onWork ? tb : null);
   }
