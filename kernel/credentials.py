@@ -202,13 +202,43 @@ def settings_files(cwd=None, operator_only=False) -> list:
     return files
 
 
+# _read_settings's memo: path -> ((inode, mtime ns, ctime ns, size), the parsed dict). The helper readers run
+# per push from the kernel's pusher thread (helper_source through _auth_both and _auth_avail) and per auth
+# check from the SDK backend; before the memo each call opened and parsed the user and the managed file
+# (measured on a live box: ~57 opens a second of each). One stat per call now, a read only when it changed.
+_SETTINGS_CACHE = {}
+
+
 def _read_settings(path):
     """One settings file as a dict; None when absent. Unreadable or unparsable is loud: the CLI would refuse
-    it too, and a silently skipped file would misreport the box as helper-less."""
+    it too, and a silently skipped file would misreport the box as helper-less.
+
+    Memoized per path on the file's stat identity (inode, mtime in ns, ctime in ns, size): one stat per call,
+    a read and a parse only when that changed, so the hot reload api_key_helper promises holds (a helper the
+    user just added counts at the next call) while the per-push callers cost a stat rather than an open. A
+    rewrite in place within one timestamp tick that keeps the byte length is the accepted blind spot, and so is
+    a chmod within the tick of the last write (kernels before multigrain timestamps, Linux 6.13, stamp ctime
+    with the coarse tick); past that tick a rename into place is a new inode and a chmod is a new ctime, so
+    both are seen (the chmod matters: a file made unreadable takes the loud path below at the next call
+    instead of serving its old parse). Nothing loud is memoized: an unreadable or unparsable file raises on
+    every call. An absent file drops its entry. Callers read the returned dict and never mutate it: it is the
+    memoized object."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        _SETTINGS_CACHE.pop(path, None)
+        return None
+    except OSError:
+        raise CredentialError("Claude Code settings file cannot be read: %s" % path)
+    ident = (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+    hit = _SETTINGS_CACHE.get(path)
+    if hit is not None and hit[0] == ident:
+        return hit[1]
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()
     except FileNotFoundError:
+        _SETTINGS_CACHE.pop(path, None)      # removed between the stat and the open: absent, as the stat would say
         return None
     except OSError:
         raise CredentialError("Claude Code settings file cannot be read: %s" % path)
@@ -216,16 +246,19 @@ def _read_settings(path):
         d = json.loads(text)
     except ValueError:
         raise CredentialError("Claude Code settings file is not valid JSON: %s" % path)
-    return d if isinstance(d, dict) else {}
+    d = d if isinstance(d, dict) else {}
+    _SETTINGS_CACHE[path] = (ident, d)     # the stat from BEFORE the read: a write in between re-reads next time
+    return d
 
 
 def api_key_helper(cwd=None, operator_only=False):
     """The `apiKeyHelper` command Claude Code would run for a process in `cwd`: the value in the
     highest-precedence settings file that DEFINES it as a string. "" when that file sets it to "" (the
     value that disables the helper; a login launch's per-session layer uses it), None when no file defines
-    it (a null falls through to the next file, as it does in the CLI). Read fresh on every call, never
-    cached: Claude Code hot-reloads its settings files, and a helper the user just added must count at
-    once; the cost is four stats. `operator_only`: see settings_files."""
+    it (a null falls through to the next file, as it does in the CLI). Resolved fresh on every call: Claude
+    Code hot-reloads its settings files, and a helper the user just added must count at once; the cost is
+    four stats (_read_settings re-reads a file only when its stat changed). `operator_only`: see
+    settings_files."""
     for p in settings_files(cwd, operator_only):
         d = _read_settings(p)
         if d is None or HELPER_KEY not in d:
