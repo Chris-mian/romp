@@ -920,6 +920,51 @@ class PerfRoutes(unittest.TestCase):
         st, body = self._req("GET", "/perf", token=False)
         self.assertEqual(st, 403)
         self.assertNotIn("cycles", str(body))
+        st, body = self._req("GET", "/perf?stacks=1", token=False)
+        self.assertEqual(st, 403, "the stack sample is token-gated like the snapshot")
+        self.assertNotIn("frames", str(body))
+
+    def test_get_perf_stacks_carries_one_frame_list_per_thread_with_its_stage_mark(self):
+        """T401 (2)'s proof instrument: `?stacks=1` adds one row per live thread (name, ident, self, stage, frames innermost
+        last); a thread inside a tick job shows `jobs.<job>` and the frame it waits in; the plain snapshot carries no `stacks`;
+        the registry row is gone once the job returns."""
+        ev = threading.Event(); inside = threading.Event()
+        def probe():
+            inside.set(); ev.wait(10)
+        th = threading.Thread(target=lambda: km._job_stage("probe", probe), name="probe-thread", daemon=True)
+        th.start(); self.assertTrue(inside.wait(5))
+        try:
+            st, snap = self._req("GET", "/perf?stacks=1")
+        finally:
+            ev.set(); th.join(5)
+        self.assertEqual(st, 200)
+        rows = snap["stacks"]
+        self.assertIsInstance(rows, dict, "?stacks=1 fills the slot the plain snapshot leaves null")
+        self.assertTrue(rows and all(set(r) == {"self", "stage", "frames"} for r in rows.values()), list(rows.items())[:1])
+        key = "%d probe-thread" % th.ident
+        self.assertIn(key, rows, sorted(rows))                              # keyed "<ident> <name>" (T358's duplicate-worker case)
+        mine = rows[key]
+        self.assertEqual(mine["stage"], "jobs.probe", mine)
+        self.assertTrue(any(f.startswith("wait (threading.py:") for f in mine["frames"]), mine["frames"])
+        self.assertTrue(any(f.startswith("_job_stage (") for f in mine["frames"]), mine["frames"])   # the kernel's file name is
+        #                                                                                                the launcher's here
+        self.assertEqual(mine["frames"][-1].split(" ")[0], "wait", "innermost last")
+        self.assertEqual(sum(1 for r in rows.values() if r["self"]), 1, "the answering handler thread is marked once")
+        self.assertTrue(all(len(r["frames"]) <= 40 for r in rows.values()))
+        self.assertNotIn(th.ident, km._STAGE_BY_TID, "the registry row is gone once the job returns")
+        st, plain = self._req("GET", "/perf")
+        self.assertIsNone(plain["stacks"], "the plain snapshot carries the slot empty, as before")
+
+    def test_the_stage_registry_follows_the_marks(self):
+        """`_set_stage` writes the thread-local the readers consult and the by-ident row the sample reads, and clears the row at
+        None; the push decorator and the job thunk both go through it."""
+        tid = threading.get_ident()
+        km._set_stage(None)
+        self.assertNotIn(tid, km._STAGE_BY_TID)
+        km._job_stage("probe", lambda: self.assertEqual((km._current_read_stage(), km._STAGE_BY_TID.get(tid)), ("jobs.probe", "jobs.probe")))
+        self.assertEqual((km._current_read_stage(), km._STAGE_BY_TID.get(tid)), (None, None))
+        km._stage_marked("marked")(lambda: self.assertEqual(km._STAGE_BY_TID.get(tid), "marked"))()
+        self.assertNotIn(tid, km._STAGE_BY_TID)
 
     def test_post_perf_requires_the_token(self):
         st, body = self._req("POST", "/perf", {"log": True}, token=False)

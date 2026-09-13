@@ -1533,7 +1533,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   served); `GET /perf?ring=all` carries the whole ring, which holds
   `stageRingMax` cycles: `ROMP_PERF_STAGE_RING` when set, else one per 256 MiB
   of the machine's memory floored at 16, resolved once, never a literal
-  count, and an override above the fraction is clamped to it. Under `jobs`
+  count, and an override above the fraction is clamped to it.
+  `GET /perf?stacks=1` (`romp perf stacks`) fills `stacks` on demand (its
+  shape below), the read a slow boot needs to name the lock a thread waits
+  on (the nudge walk queued behind a judge's parse) instead of inferring it
+  from the byte rows (T401); token-gated like every `/perf` read. Under `jobs`
   every tick job is a sub-stage (`jobs.<job>`), and the bytes read between
   them go to `jobs.other`, which carries bytes only, never `ms` (the same for
   `push.other`); `prelude` is the cycle's opening (the liveness snapshot, the
@@ -1582,8 +1586,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   validated read that the two boot restore paths, a write's carry and a
   retirement's consult share; at boot the restore paths dominate it, one per
   checkpointed file), `docMemo` (the documents that read keeps for the write
-  that follows: `entries`, `bytes` as their sizes on disk, and `capBytes`, a
-  ceiling of MemTotal / 512 floored at 64 MiB, `ROMP_DOC_MEMO_CAP_MB`).
+  that follows: `entries`, `bytes` as their RESIDENT weight, each file's size
+  on disk times `parseMultiple`, the measured 4.5 a parsed document weighs
+  against its bytes on disk, and `capBytes`, a ceiling on that resident
+  weight of MemTotal / 512 floored at 64 MiB, `ROMP_DOC_MEMO_CAP_MB`; the
+  ceiling is what the memo may hold in memory, not a sum of file sizes).
   `rewoundMemo`: the judges' incident scan used to read every dead episode
   file of a lineage whole at every boot (`_per_file_rewound`, 542 MB on one
   devbox boot); its verdict set per frozen file is now the fold `rewoundUuids`
@@ -1605,9 +1612,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   rise with no growth is a surprise) and the
   walks whose memo could not be read or stored (`fallback`: a document state
   of the wrong shape, or no reader entry after the walk).
-- `stacks`: every thread's last six frames, keyed by the thread's ident and
-  name, when the kernel runs with `ROMP_PERF_STACKS` set (a debugging aid for a
-  served test on a runner nobody can log into); `null` otherwise.
+- `stacks`: every live thread's stack, keyed `"<ident> <name>"` (the name:
+  `pusher`, `producer`, the HTTP handlers' default names; the ident keeps two
+  workers sharing a name apart), each with `self` (the thread building the
+  sample), `stage` (the thread's current stage mark: the pusher's
+  `jobs.<job>` or `push`, a handler's `connect`, `null` outside one) and
+  `frames`, "function (file:line)" strings innermost last, at most 40; no
+  locals, arguments or session content. Filled when the kernel runs with
+  `ROMP_PERF_STACKS` set (a debugging aid for a served test on a runner
+  nobody can log into) or when the request says `?stacks=1` (`romp perf
+  stacks`, T401); `null` otherwise.
 - `recordCache`: the reader's record cache (the JSONL records held in memory):
   `entries`, `bytes`, `budgetBytes`, `countCap`, `inserts`, `evictions`,
   `evictedBytes`, `budgetEvictions`, `dropped` and `droppedBytes` (the

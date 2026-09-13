@@ -1598,7 +1598,8 @@ def checkpoint_stats():
         out["coldWrites"] = dict(_CKPT_STATS["coldWrites"]); out["converge"] = dict(_CKPT_STATS["converge"])
         out["refolds"] = {k: dict(v) for k, v in _CKPT_STATS["refolds"].items()}
         out["rewoundMemo"] = dict(_REWOUND_STATS)
-        out["docMemo"] = {"entries": len(_DOC_MEMO), "bytes": _DOC_MEMO_BYTES[0], "capBytes": _DOC_MEMO_CAP}
+        out["docMemo"] = {"entries": len(_DOC_MEMO), "bytes": _DOC_MEMO_BYTES[0], "capBytes": _DOC_MEMO_CAP,
+                          "parseMultiple": _DOC_MEMO_PARSE_MULTIPLE}
     d = _ckpt_dir()
     with _READ_BYTES_LOCK:
         out["documentBytes"] = sum(n for p_, n in _READ_BYTES.items() if d is not None and p_.startswith(str(d) + os.sep))
@@ -5142,18 +5143,26 @@ def _retire_fold(path, name):
 
 _DOC_MEMO = {}                     # path -> (document file's (mtime_ns, size), the loaded document): one read shared between the
 #                                   retirement's consult and the write's carry (T391 follow-up, low C), dropped when the file moves
-_DOC_MEMO_BYTES = [0]              # the documents' sizes on disk (a plain JSON file; the parsed dict weighs a few times that), summed
+_DOC_MEMO_PARSE_MULTIPLE = 4.5     # what a parsed fold document weighs resident against its bytes on disk (measured on the devbox's
+#                                    documents, 2026-09-12): the memo's weights and its cap are RESIDENT bytes, so the ceiling means
+#                                    what it says
+_DOC_MEMO_BYTES = [0]              # the memoized documents' resident weight: size on disk times the multiple, summed
 _DOC_MEMO_CAP = _env_or("ROMP_DOC_MEMO_CAP_MB", max(64 * 1024 ** 2, _machine_memory_bytes() // 512), 1024 * 1024)
-#                                    the memo's byte cap: MemTotal / 512, never under 64 MiB (236 MiB on a 118 GiB machine; a count
+#                                    the memo's resident cap: MemTotal / 512, never under 64 MiB (236 MiB on a 118 GiB machine; a count
 #                                    cap said nothing about bytes and held whole documents for files no writer touched again), reported
 #                                    under checkpoints.docMemo
+
+
+def _doc_memo_weight(sig):
+    """A memoized document's resident weight from its file stat: the size on disk times the parse multiple."""
+    return int(sig[1] * _DOC_MEMO_PARSE_MULTIPLE)
 
 
 def _doc_memo_drop(key):
     """Forget `key`'s memoized document (under _CKPT_LOCK), its bytes let go with it."""
     old = _DOC_MEMO.pop(key, None)
     if old is not None:
-        _DOC_MEMO_BYTES[0] -= old[0][1]
+        _DOC_MEMO_BYTES[0] -= _doc_memo_weight(old[0])
 
 
 def _ckpt_doc_shared(key):
@@ -5176,7 +5185,7 @@ def _ckpt_doc_shared(key):
         _CKPT_STATS["docConsults"] += 1                   #  version's document, re-read a corrupt one forever)
         _doc_memo_drop(key)
         if doc is not None:
-            _DOC_MEMO[key] = (sig, doc); _DOC_MEMO_BYTES[0] += sig[1]
+            _DOC_MEMO[key] = (sig, doc); _DOC_MEMO_BYTES[0] += _doc_memo_weight(sig)
             while _DOC_MEMO_BYTES[0] > _DOC_MEMO_CAP and len(_DOC_MEMO) > 1:   # bounded in bytes (the caches rule): the oldest
                 _doc_memo_drop(next(iter(_DOC_MEMO)))                          #  documents go; the newest stays for the write it shares
     return doc

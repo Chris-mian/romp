@@ -699,13 +699,10 @@ class _PerfStats:
         memos["nudgeGate"] = dict(_NUDGE_GATE_STATS)   # the nudge walk's placement gate: served vs re-derived (2026-09-09)
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
         now = time.time()
-        stacks = None
-        if os.environ.get("ROMP_PERF_STACKS"):     # a debugging aid (T358): every thread's last frames, named, for a served test that
-            import traceback                        #  has to say where a kernel sits while a client waits on a runner nobody can log into
-            names = {t.ident: t.name for t in threading.enumerate()}
-            stacks = {"%s %s" % (tid, names.get(tid, "?")): [l.strip() for l in traceback.format_stack(f)[-6:]]
-                      for tid, f in sys._current_frames().items()}   # keyed by ident WITH the name: two workers sharing a name
-            #                                                          stay two entries, the duplicate-worker case the aid is for
+        stacks = _thread_stacks() if os.environ.get("ROMP_PERF_STACKS") else None   # every thread's frames, named and staged: under
+        #                                                                              the switch here (T358's aid for a served test
+        #                                                                              on a runner nobody can log into), on demand
+        #                                                                              through GET /perf?stacks=1 (T401)
         return {"now": now, "since": since, "uptime_s": now - _STARTED, "log": _PERF, "stacks": stacks,
                 "process": _process_stats(), "pusher": pusher, "stages_ms": stages,
                 "builds": builds, "sends": sends, "goals": goals, "memos": memos, "judge": judge, "skillLoadIndex": skill_idx, "http": http,
@@ -739,6 +736,38 @@ def _current_read_stage():
     return getattr(_STAGE_TL, "name", None)
 
 
+_STAGE_BY_TID = {}                # thread ident -> that thread's current stage mark: what the stack sample (GET /perf?stacks=1)
+#                                   prints beside a thread's frames, since another thread's local is unreadable (T401)
+
+
+def _set_stage(name):
+    """The calling thread's stage mark: the thread-local the readers consult and the by-ident row the stack sample reads."""
+    _STAGE_TL.name = name
+    tid = threading.get_ident()
+    if name is None:
+        _STAGE_BY_TID.pop(tid, None)
+    else:
+        _STAGE_BY_TID[tid] = name
+
+
+def _thread_stacks(limit=40):
+    """Every live thread's stack, for GET /perf?stacks=1 and the ROMP_PERF_STACKS switch: keyed "<ident> <name>" (the ident
+    keeps two workers sharing a name two entries, T358's duplicate-worker case), each a row with `self` (the thread building
+    this sample), `stage` (its current stage mark) and `frames`, "function (file:line)" strings innermost last, at most
+    `limit`. No locals, no arguments, no session content: the shape a slow-boot read needs to NAME the lock a thread waits
+    on (the pusher in a judge's parse, say) instead of inferring it from counters, where py-spy is not available (T401;
+    the T358 convoy read: stacks first). Token-gated like every /perf read."""
+    names = {t.ident: t.name for t in threading.enumerate()}
+    me = threading.get_ident()
+    out = {}
+    for tid, frame in sys._current_frames().items():
+        rows = traceback.extract_stack(frame)[-limit:]
+        out["%s %s" % (tid, names.get(tid, "?"))] = {
+            "self": tid == me, "stage": _STAGE_BY_TID.get(tid),
+            "frames": ["%s (%s:%d)" % (r.name, os.path.basename(r.filename), r.lineno) for r in rows]}
+    return out
+
+
 def _stage_marked(name):
     """Decorator: the calling thread's stage mark is `name` for the function's duration and restored on EVERY exit, a raise or an
     early return included (T401 round one: _push set the mark inline and restored it at its end, so a caught build failure
@@ -747,11 +776,11 @@ def _stage_marked(name):
         @functools.wraps(fn)
         def marked(*args, **kwargs):
             prev = getattr(_STAGE_TL, "name", None)
-            _STAGE_TL.name = name(*args, **kwargs) if callable(name) else name   # a callable names the stage from the call
+            _set_stage(name(*args, **kwargs) if callable(name) else name)   # a callable names the stage from the call
             try:
                 return fn(*args, **kwargs)
             finally:
-                _STAGE_TL.name = prev
+                _set_stage(prev)
         return marked
     return deco
 
@@ -49749,11 +49778,11 @@ def _job_stage(name, thunk):
     The thread's stage mark is `jobs.<name>` for the job's duration (T401: the reads inside it count under it)."""
     _t = time.monotonic()
     prev = getattr(_STAGE_TL, "name", None)
-    _STAGE_TL.name = "jobs." + name
+    _set_stage("jobs." + name)
     try:
         return thunk()
     finally:
-        _STAGE_TL.name = prev
+        _set_stage(prev)
         _PERF_STATS.stage("jobs." + name, time.monotonic() - _t)
 
 
@@ -56587,8 +56616,10 @@ class Handler(BaseHTTPRequestHandler):
                     rows = rows + _thread_rows()               # bus (the user 2026-08-22); every existing
                 return self._send(200, json.dumps(rows), "application/json", cache="no-cache")   # consumer unchanged
             if p == "/perf":                                  # the kernel's performance counters (`romp perf`); shape: _PerfStats
-                return self._send(200, json.dumps(_PERF_STATS.snapshot(ring_all=(q.get("ring") or [""])[0] == "all")),
-                                  "application/json", cache="no-cache")   # ?ring=all: the whole stage ring (T397)
+                snap = _PERF_STATS.snapshot(ring_all=(q.get("ring") or [""])[0] == "all")   # ?ring=all: the whole stage ring (T397)
+                if (q.get("stacks") or [""])[0] == "1":
+                    snap["stacks"] = _thread_stacks()      # ?stacks=1: one frame list per thread with its stage mark (T401)
+                return self._send(200, json.dumps(snap), "application/json", cache="no-cache")
             if p == "/commands":                              # slash-command list for the composer's "/" autocomplete (SDK get_server_info, per-cwd cached)
                 sid = (q.get("sid") or [""])[0]
                 cmds, warming = _commands_for_cwd(_cwd_of(sid) if sid else "")
@@ -60455,8 +60486,8 @@ def main():
     #                                                           builds the backend itself if it wins the race)
     threading.Thread(target=_rewind_migration_bg, daemon=True).start()   # one-time dead-branch cleanup
     #                                                           of pre-fix residue, marker-gated
-    threading.Thread(target=_producer, daemon=True).start()
-    threading.Thread(target=_pusher, daemon=True).start()
+    threading.Thread(target=_producer, daemon=True, name="producer").start()   # named: the stack sample says whose frames
+    threading.Thread(target=_pusher, daemon=True, name="pusher").start()
     threading.Thread(target=_heartbeat, daemon=True).start()  # WS keepalive on its own thread (see _heartbeat)
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()

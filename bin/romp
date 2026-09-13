@@ -71,6 +71,7 @@ EOF
     _romp_cmd "romp url"                   -            "Print ONLY the tokened dashboard URL (for scripts; humans just run \`romp\`)"
     _romp_cmd "romp sessions [--json]"     -            "List the fleet with each session's state, colours and backend"
     _romp_cmd "romp perf [--interval <s>|--json|log on|off]" - "Kernel performance counters as rates over two snapshots (pusher cycles, stage times, build cache hits, bytes sent, goal loads, judge passes, rss, cpu); --json one raw snapshot; log on|off flips the romp-perf stderr log without a restart"
+    _romp_cmd "romp perf stacks [--json]" - "One stack per kernel thread right now (GET /perf?stacks=1): the thread's name, its stage mark and its frames innermost last, so a slow boot names the lock a thread waits on; --json the raw list"
     _romp_cmd "romp perf client [--minutes <n>|--json]" - "Browser-side performance of the open dashboards (client-diag.jsonl, surface perf): handler ms/min by frame type with window p50/p90/p99 and max, main-thread-free p90, long animation frames and their attributed callbacks, the worst minute, heap and DOM, the slowest frames — per dashboard and pane over the last <n> minutes (default 10)"
     _romp_cmd "romp api-health"            -            "The API-health signal across your sessions (GET /api-health as JSON: per-key/family retry rates and a thrash state)"
     _romp_cmd "romp fork <parent> <name>"  -            "Branch a session into a new parallel one (parent untouched; --at <uuid> picks the cut)"
@@ -337,7 +338,7 @@ fi
 if [[ "${1:-}" == "perf" ]]; then
     shift
     _kport="${ROMP_KERNEL_PORT:-29855}"
-    _usage="usage: romp perf [--interval <s>] [--json] | romp perf log on|off | romp perf client [--minutes <n>] [--json]"
+    _usage="usage: romp perf [--interval <s>] [--json] | romp perf log on|off | romp perf stacks [--json] | romp perf client [--minutes <n>] [--json]"
     # One kernel round trip: the body on stdout and 0 when the kernel answered 2xx. curl's -f folds a
     # refused token (403) into the same exit as a dead kernel, and on a diagnostic verb that sends the
     # user off to restart a kernel that is up and answering — so the status rides -w and is read here.
@@ -352,6 +353,42 @@ if [[ "${1:-}" == "perf" ]]; then
             *)       echo "romp perf: the kernel on :$_kport answered HTTP $_code: ${_out%$'\n'*}" >&2; return 1 ;;
         esac
     }
+    if [[ "${1:-}" == "stacks" ]]; then
+        # `romp perf stacks [--json]`: one GET /perf?stacks=1, the kernel's threads as they stand at the read (T401): a
+        # thread's name, its stage mark (the pusher's tick job or push, a handler's connect push) and its frames innermost
+        # last; the read a slow boot needs to NAME the lock a thread waits on where py-spy is not available.
+        shift
+        _json=0
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --json) _json=1; shift ;;
+                *) echo "$_usage" >&2; exit 2 ;;
+            esac
+        done
+        _resp="$(_perf_curl "http://127.0.0.1:$_kport/perf?stacks=1")" || exit 1
+        if [[ "$_json" -eq 1 ]]; then
+            printf '%s\n' "$_resp" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("stacks") or {}, indent=1))'
+            exit 0
+        fi
+        printf '%s\n' "$_resp" | python3 -c '
+import json, sys
+snap = json.load(sys.stdin)
+rows = snap.get("stacks") or {}
+print("%d threads at %.3f (pid %s)" % (len(rows), snap.get("now", 0.0), (snap.get("process") or {}).get("pid")))
+def order(item):
+    key, r = item
+    ident, _, name = key.partition(" ")
+    return (bool(r.get("self")), name, int(ident) if ident.isdigit() else 0)
+for key, r in sorted(rows.items(), key=order):
+    ident, _, name = key.partition(" ")
+    tag = " [answering this request]" if r.get("self") else ""
+    stage = ("  stage " + r["stage"]) if r.get("stage") else ""
+    print("\n%s (ident %s)%s%s" % (name, ident, stage, tag))
+    for f in r.get("frames") or []:
+        print("    " + f)
+'
+        exit 0
+    fi
     if [[ "${1:-}" == "log" ]]; then
         case "${2:-}" in
             on)  _v=true ;;

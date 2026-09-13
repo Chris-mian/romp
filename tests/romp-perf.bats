@@ -31,6 +31,7 @@ setup() {
     export SNAP_A="$TEST_DIR/a.json"
     export SNAP_B="$TEST_DIR/b.json"
     export SNAP_C="$TEST_DIR/c.json"
+    export SNAP_S="$TEST_DIR/s.json"
     # A and B: the same kernel process ten seconds apart. Over the window: 20 cycles, 60 wakes, 6 s of
     # cycle time (4 s of it in push, 3 s of that in the chat block), 300 ms of pusher CPU and 50 ms of
     # judge CPU inside 500 ms of process CPU, 2 chat rebuilds (one of the watched tab, one of a background
@@ -71,6 +72,17 @@ JSON
     # Stub curl: records argv AND stdin (the auth header rides stdin as a curl config) and emits the
     # body followed by the -w status trailer the script asks for. A POST answers the toggle's ack; a
     # GET serves snapshot A first, then B (or C under CURL_RESTART), so two reads see counters move.
+    # S: a snapshot with the thread-stack sample (GET /perf?stacks=1): the pusher inside the nudge job waiting on a
+    # lock, a handler thread answering, a producer idle; frames innermost last
+    cat > "$SNAP_S" <<'JSON'
+{"now": 1000.0, "since": 900.0, "uptime_s": 100.0, "log": false,
+ "process": {"rss_kb": 409600, "threads": 3, "cpu_s": 60.0, "pid": 4242},
+ "stacks": {
+  "11 pusher": {"self": false, "stage": "jobs.autoNudge",
+   "frames": ["_pusher (kernel.py:100)", "_job_stage (kernel.py:200)", "_auto_nudge_session (kernel.py:300)", "parse_session (event_model.py:400)", "__enter__ (threading.py:500)"]},
+  "12 producer": {"self": false, "stage": null, "frames": ["_producer (kernel.py:600)", "wait (threading.py:700)"]},
+  "13 Thread-7": {"self": true, "stage": null, "frames": ["do_GET (kernel.py:800)", "_thread_stacks (kernel.py:900)"]}}}
+JSON
     cat > "$MOCK/curl" <<'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$CURL_LOG"
@@ -81,6 +93,7 @@ if [[ "$*" == *"-X POST"* ]]; then
     printf '{"ok": true, "log": %s}\n200' "$([[ "$*" == *'"log": true'* ]] && echo true || echo false)"
     exit 0
 fi
+if [[ "$*" == *"stacks=1"* ]]; then cat "$SNAP_S"; printf '\n200'; exit 0; fi
 n=0; [ -f "$CURL_CALLS" ] && n="$(cat "$CURL_CALLS")"
 echo $((n + 1)) > "$CURL_CALLS"
 if [ "$n" -eq 0 ]; then cat "$SNAP_A"; elif [ -n "${CURL_RESTART:-}" ]; then cat "$SNAP_C"; else cat "$SNAP_B"; fi
@@ -159,6 +172,36 @@ teardown() { rm -rf "$TEST_DIR"; }
     [ "$status" -eq 0 ]
     echo "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["pusher"]["cycles"] == 100; assert d["process"]["pid"] == 4242'
     [ "$(cat "$CURL_CALLS")" -eq 1 ]
+}
+
+@test "romp perf stacks: reads GET /perf?stacks=1 once and prints one block per thread, its stage and its frames innermost last" {
+    run "$ROMP_SCRIPT" perf stacks
+    [ "$status" -eq 0 ]
+    [ "$(grep -c "127.0.0.1:29855/perf?stacks=1" "$CURL_LOG")" -eq 1 ]
+    grep -q "X-Romp-Token: TESTTOKEN123" "$CURL_STDIN"
+    echo "$output" | grep -q "^3 threads at 1000.000 (pid 4242)"
+    echo "$output" | grep -q "^pusher (ident 11)  stage jobs.autoNudge$"
+    echo "$output" | grep -q "^producer (ident 12)$"
+    echo "$output" | grep -q "^Thread-7 (ident 13) \[answering this request\]$"
+    # the pusher's frames in order, innermost last
+    echo "$output" | python3 -c '
+import sys
+lines = [l for l in sys.stdin.read().splitlines()]
+i = lines.index("pusher (ident 11)  stage jobs.autoNudge")
+assert lines[i + 1:i + 6] == ["    _pusher (kernel.py:100)", "    _job_stage (kernel.py:200)", "    _auto_nudge_session (kernel.py:300)",
+                              "    parse_session (event_model.py:400)", "    __enter__ (threading.py:500)"], lines[i:i + 6]'
+}
+
+@test "romp perf stacks --json: prints the raw stacks list" {
+    run "$ROMP_SCRIPT" perf stacks --json
+    [ "$status" -eq 0 ]
+    echo "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert sorted(d) == ["11 pusher", "12 producer", "13 Thread-7"], sorted(d); assert d["11 pusher"]["stage"] == "jobs.autoNudge"'
+}
+
+@test "romp perf stacks: an unknown flag is refused with the usage" {
+    run "$ROMP_SCRIPT" perf stacks --bogus
+    [ "$status" -eq 2 ]
+    echo "$output" | grep -q "usage: romp perf"
 }
 
 @test "romp perf: reads GET /perf on the kernel, authorizing on stdin, twice" {
