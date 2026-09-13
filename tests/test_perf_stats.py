@@ -990,8 +990,10 @@ class PerfRoutes(unittest.TestCase):
         walked with the ast module (a regex could not cross a newline and missed five named sites, the Codex worker's among
         them). A constant name is a kind already; a name with a dynamic part (a session name, a sid, a host) must carry it after
         the convention's separator so _thread_kind drops it; a name built any other way fails, and so does a name the census
-        cannot see: a positional name (the constructor's third positional argument) or keywords passed through **kwargs. Every
-        kind the census derives must appear in the reference's kind list, so a new kind cannot ship undocumented."""
+        cannot see: a Thread's positional name (its third positional argument), a Timer with a positional beyond its interval
+        and function, keywords passed through **kwargs, or an aliased constructor (an assignment whose value is one of the
+        constructors; ctor_of resolves Name and Attribute spellings only, so an alias would hide every site built through it).
+        Every kind family the census derives must appear in the reference's kind list, so a new kind cannot ship undocumented."""
         import ast, re
         root = os.path.dirname(BIN)
         files = [os.path.join(root, "kernel", f) for f in ("kernel.py", "sdk_backend.py", "codex_backend.py", "session_host.py",
@@ -1014,16 +1016,23 @@ class PerfRoutes(unittest.TestCase):
             if isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr == "format" and isinstance(v.func.value, ast.Constant):
                 return v.func.value.value.split("{")[0], True
             return None, None
-        sites, named, bad, dyn_kinds = 0, [], [], set()
+        sites, named, bad, dyn_kinds, per_file = 0, [], [], set(), {}
         for f in files:
             src = open(f, encoding="utf-8").read()
-            for node in ast.walk(ast.parse(src)):
+            tree = ast.parse(src)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)) and ctor_of(ast.Call(func=node.value, args=[], keywords=[])) \
+                        and not all(isinstance(tg, ast.Name) and tg.id in CTORS for tg in node.targets):   # judge.py rebinds ThreadPoolExecutor
+                    bad.append(("%s:%d" % (os.path.basename(f), node.lineno), "a constructor aliased into a name the census cannot follow", ast.dump(node.value)[:60]))   # to its timed subclass: both names are constructors, so every site stays visible
+            for node in ast.walk(tree):
                 if not isinstance(node, ast.Call) or ctor_of(node) is None:
                     continue
-                sites += 1
+                sites += 1; per_file[os.path.basename(f)] = per_file.get(os.path.basename(f), 0) + 1
                 label = "%s:%d" % (os.path.basename(f), node.lineno)
-                if ctor_of(node) in ("Thread", "Timer") and len(node.args) >= 3:
+                if ctor_of(node) == "Thread" and len(node.args) >= 3:
                     bad.append((label, "a positional name the census cannot read: pass name= as a keyword", "")); continue
+                if ctor_of(node) == "Timer" and len(node.args) > 2:
+                    bad.append((label, "a Timer with a positional beyond its interval and function: spell args, kwargs and any name as keywords", "")); continue
                 if any(k.arg is None for k in node.keywords):
                     bad.append((label, "keywords through **kwargs may carry a name the census cannot read: spell them", "")); continue
                 kw = next((k for k in node.keywords if k.arg in ("name", "thread_name_prefix")), None)
@@ -1047,8 +1056,8 @@ class PerfRoutes(unittest.TestCase):
         self.assertGreaterEqual(sites, 60, "the census walked the construction sites: %d" % sites)
         self.assertGreaterEqual(len(named), 23, "the census found every named site, the multi-line ones included: %r" % named)
         self.assertTrue(any(l.startswith("codex_backend.py:") for l in named), "the Codex worker's site is walked: %r" % named)
-        self.assertTrue(any(l.startswith("credentials.py:") for l in named) or any("credentials.py" in f for f in files),
-                        "the credentials helper's timer is walked")
+        self.assertGreaterEqual(per_file.get("credentials.py", 0), 1, "the credentials helper's Timer is a construction site the census walked: %r" % per_file)
+        self.assertGreaterEqual(per_file.get("judge.py", 0), 7, "the judge tiers' pools are construction sites the census walked: %r" % per_file)
         self.assertEqual(bad, [], "every named thread maps to a kind with no identity in it")
         ref = open(os.path.join(root, "docs", "reference.md"), encoding="utf-8").read()
         para = ref[ref.index("- `stacks`: every live thread's stack"):]
