@@ -1991,7 +1991,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   entry per (session, parse family) keyed on the parse object's identity and
   the machine-cut stamp (`hit`, `miss`, `evict` for entries released when a
   session leaves the alive set or the memo is cleared at its cap, and the
-  gauge `entries`). `statesOverlay` is the awaiting overlay's read of the
+  gauge `entries`). `deadWait` is the dead-wait sweep's reads: `passes`,
+  `candidates` (corroborated-dead sessions walked), `sharedLoads` (reads
+  through the shared read-only store view, one per store per pass: the
+  candidate's own and every alive session's for the peer-death arm),
+  `loadFaults` (a view that could not be read or parsed, of any kind; the
+  candidate stands down re-armed and the next pass places the block),
+  `mutableLoads` (every private load the pass makes: a heal of a briefless
+  procedural block, re-tested on the fresh node before it writes, and each
+  block writer's own load), `healed` and `blocks` (blocks a writer actually
+  wrote, at all three block sites).   gauge `entries`). `statesOverlay` is the awaiting overlay's read of the
   states log through the shared append-incremental reader, one carried answer
   per states file (`hit`: the records were the cached ones and no row was
   stepped; `append`: only the appended rows were stepped; `refold`: every row

@@ -12272,8 +12272,25 @@ def _dead_wait_corroborated(sid, stats=None, now=None):
 
 _DEAD_WAIT_STATS = {"passes": 0, "candidates": 0, "sharedLoads": 0, "loadFaults": 0, "mutableLoads": 0, "healed": 0, "blocks": 0}
 #   the sweep's reads for GET /perf (memos.deadWait): before the shared view every candidate paid a private load_goals with its
-#   journal replay (9 of the 13 autoNudge stack samples of the 2026-09-13 measurement boot sat in that load), and the block writer
-#   paid a second; the read path now takes the walk's shared read-only view and a mutable load happens only to heal or to block
+#   journal replay, and for each candidate every ALIVE session's store was loaded privately too (the pass's dominant read, C times
+#   A loads; 9 of the 13 autoNudge stack samples of the 2026-09-13 measurement boot sat in those loads); the read path now takes
+#   the walk's shared read-only view (one read per store per pass), and a mutable load happens only to heal or to write a block;
+#   every mutable load the pass makes counts under mutableLoads, and `blocks` counts a writer's True (a block written)
+
+
+def _dead_wait_shared_view(sid):
+    """(store, fault) from the walk's shared read-only view, every failure a fault: _or_fault catches OSError alone, so a
+    malformed journal row (a ValueError the view raises) escaped to the per-candidate except, spending the death transition
+    silently (round two, low 2). Counted under memos.deadWait (sharedLoads, loadFaults)."""
+    _DEAD_WAIT_STATS["sharedLoads"] += 1
+    try:
+        store, fault = jd.load_goals_shared_or_fault(sid)
+    except Exception as e:
+        store, fault = None, e
+    if fault is not None or store is None:
+        _DEAD_WAIT_STATS["loadFaults"] += 1
+        return None, fault if fault is not None else RuntimeError("no store")
+    return store, None
 
 
 def _dead_wait_sweep(alive_ids, nudged, now):
@@ -12298,41 +12315,44 @@ def _dead_wait_sweep(alive_ids, nudged, now):
         cands = prev - set(alive_ids)
     stats = {}                                   # loud stand-down tallies → ONE line per reason per pass
     _DEAD_WAIT_STATS["passes"] += 1
+    alive_views = {}                             # alive sid -> (store, fault): each alive store's view once per PASS, not per candidate
     for sid in cands:
         try:
             if _dead_wait_corroborated(sid, stats=stats, now=now) is not True:
                 _PREV_ALIVE.add(sid)             # not corroborated dead: nothing files, and the death
                 continue                         # transition stays armed for the next tick's re-ask
             _DEAD_WAIT_STATS["candidates"] += 1
-            store, fault = jd.load_goals_shared_or_fault(sid)   # the READ-ONLY shared view (the walk's precedent): the status
-            _DEAD_WAIT_STATS["sharedLoads"] += 1                 #  scan and the stamp read need no private copy; the journal is
-            if fault is not None:                                #  replayed per session inside the view, so the per-session
-                _DEAD_WAIT_STATS["loadFaults"] += 1              #  overrides stay correct; a read fault stands the candidate
-                _PREV_ALIVE.add(sid)                             #  down for this tick and keeps the transition armed
-                continue
-            nodes = store.get("nodes", {})
+            store, fault = _dead_wait_shared_view(sid)           # the READ-ONLY shared view (the walk's precedent): the status
+            if fault is not None:                                #  scan and the stamp read need no private copy; the journal is
+                _PREV_ALIVE.add(sid)                             #  replayed per session inside the view, so the per-session
+                continue                                         #  overrides stay correct; a fault of any kind (a read fault, a
+            nodes = store.get("nodes", {})                       #  malformed journal row) stands the candidate down for this
+            #                                                      tick and keeps the transition armed (round two, low 2)
             # BRIEF REPAIR (the user 2026-08-23, cards "stuck on Distilling" in Blocked): procedural
             # blocks written before the writers settled briefs inline left blockSummary None on stores
             # no distill pass will ever visit (dead / transcript-less sessions are outside discover's
             # 48h window) — the card asked for a brief forever. The why IS the brief for a procedural
             # block; settle it in place. Runs BEFORE the block calls below, which reload and save
             # their own store copy — a later save of this snapshot would clobber their writes.
-            to_heal = [nid for nid, nd in nodes.items()
-                       if nd.get("blocked") and nd.get("blockSummary") is None and jd.procedural_block_why(nd.get("blockWhy"))]
+            def _briefless(nd):
+                return bool(nd and nd.get("blocked") and nd.get("blockSummary") is None and jd.procedural_block_why(nd.get("blockWhy")))
+            to_heal = [nid for nid, nd in nodes.items() if _briefless(nd)]
             if to_heal:                                          # the heal is a WRITE: it takes its own mutable load, only when
                 mstore = jd.load_goals(sid)                      #  there is something to heal (the shared view is frozen)
                 _DEAD_WAIT_STATS["mutableLoads"] += 1
                 mnodes = mstore.get("nodes", {})
+                healed = False
                 for nid in to_heal:
                     nd = mnodes.get(nid)
-                    if nd is None:
-                        continue
+                    if not _briefless(nd):                       # re-tested on the FRESH node (round two, medium 2): a peer writer
+                        continue                                 #  that settled the brief between the two reads is not clobbered
                     nd["blockSummary"] = nd.get("blockWhy") or ""
                     nd["briefParts"] = None
                     nd["briefedMt"] = jd._distill_due_t(mstore, nid, True)
-                    _DEAD_WAIT_STATS["healed"] += 1
-                jd.save_goals(sid, mstore)
-                _mark_views_dirty()
+                    _DEAD_WAIT_STATS["healed"] += 1; healed = True
+                if healed:                                       # nothing healed: no save, no dirty views (round two, low 5)
+                    jd.save_goals(sid, mstore)
+                    _mark_views_dirty()
             kids = {}
             for nid, nd in nodes.items():
                 if nd.get("parentId"):
@@ -12347,9 +12367,9 @@ def _dead_wait_sweep(alive_ids, nudged, now):
                 # owner the distinction is moot either way: an answer that landed in a dead session's
                 # mailbox moved nothing, so a recorded wait on a still-Working card converts regardless.
                 stamp = _goal_awaiting_stamp_full(nodes, gid, kids)
-                if stamp:
-                    _DEAD_WAIT_STATS["blocks"] += 1
-                    _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)   # the writer's own mutable load and save
+                if stamp:                                                  # the writer counts its own load; `blocks` counts its
+                    if _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now):   #  True, a block written (round two, low 1)
+                        _DEAD_WAIT_STATS["blocks"] += 1
             # PEER-DEATH CONVERSION (the user 2026-08-24, W1a): this corroborated death is ALSO the
             # ending event for every LIVE session's kind=peer wait ON this sid — the asked session
             # can never answer now. Convert each to a procedural block naming the death (liftable by
@@ -12360,7 +12380,11 @@ def _dead_wait_sweep(alive_ids, nudged, now):
             _dead_name = _name_of(sid) or sid[:8]
             for _lsid in alive_ids:
                 try:
-                    _ls = jd.load_goals(_lsid)
+                    if _lsid not in alive_views:                   # the pass's DOMINANT read (round two, medium 1): C candidates times
+                        alive_views[_lsid] = _dead_wait_shared_view(_lsid)   # A alive sessions, each a private load with its journal
+                    _ls, _lf = alive_views[_lsid]                  #  replay before; the loop only reads, so the shared view serves it
+                    if _lf is not None:                            #  once per store per PASS, and the writer below loads its own copy
+                        continue
                     _ln = _ls.get("nodes", {})
                     if not any(sid in (nd.get("awaitingPeers") or ()) for nd in _ln.values()):
                         continue
@@ -12378,8 +12402,9 @@ def _dead_wait_sweep(alive_ids, nudged, now):
                                     if n.get("awaitingWhy") and n.get("awaitingAt") == _sf[0]), None)
                         if not _sn or sid not in (_sn.get("awaitingPeers") or ()):
                             continue
-                        _dead_wait_block(_lsid, _gid, _sf[0], _sf[1], nudged, now,
-                                         blk_why=jd.dead_peer_block_why(_dead_name, _sf[1]))
+                        if _dead_wait_block(_lsid, _gid, _sf[0], _sf[1], nudged, now,
+                                            blk_why=jd.dead_peer_block_why(_dead_name, _sf[1])):
+                            _DEAD_WAIT_STATS["blocks"] += 1
                 except Exception:
                     sys.stderr.write("peer-death conversion (%s->%s): %s\n"
                                      % (sid[:8], _lsid[:8], traceback.format_exc()))
@@ -12390,7 +12415,8 @@ def _dead_wait_sweep(alive_ids, nudged, now):
             for nid, nd in nodes.items():
                 h = nd.get("handoff") if isinstance(nd, dict) else None
                 if isinstance(h, dict) and not nd.get("nodeComplete") and not nd.get("blocked"):
-                    _dead_handoff_block(sid, nid, h, nd, nudged, now)
+                    if _dead_handoff_block(sid, nid, h, nd, nudged, now):
+                        _DEAD_WAIT_STATS["blocks"] += 1
         except Exception:
             sys.stderr.write("dead-wait sweep (%s): %s\n" % (sid, traceback.format_exc()))
     # The pass's loud stand-downs, collapsed to one line per reason (_death_sweep_tick's idiom):
@@ -12427,7 +12453,7 @@ def _dead_handoff_block(sid, nid, h, nd, nudged, now):
     if last in _PROGRESSING_STATES:
         return False
     try:
-        store = jd.load_goals(sid)
+        store = jd.load_goals(sid); _DEAD_WAIT_STATS["mutableLoads"] += 1   # the writer's own private load (memos.deadWait)
         cur = store.get("nodes", {}).get(nid)
         if not cur or cur.get("nodeComplete") or cur.get("blocked"):
             return False
@@ -12475,7 +12501,7 @@ def _dead_wait_block(sid, gid, at, why, nudged, now, blk_why=None):
     if last in _PROGRESSING_STATES:
         return False                                  # a cut mid-turn, not a settled death — resume owns it
     try:
-        store = jd.load_goals(sid)
+        store = jd.load_goals(sid); _DEAD_WAIT_STATS["mutableLoads"] += 1   # the writer's own private load (memos.deadWait)
         nd = store.get("nodes", {}).get(gid)
         if (not nd or store.get("status", {}).get(gid, "working") != "working"
                 or not _goal_awaiting_stamp(store.get("nodes", {}), gid)):   # raw: see the sweep's note

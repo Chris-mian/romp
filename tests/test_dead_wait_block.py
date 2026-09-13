@@ -208,7 +208,7 @@ class DeadWaitBlock(_HermeticDeadWait):
         self.assertEqual(shared.count(SID), 1, "one shared read-only view for the candidate: %r" % shared)
         self.assertEqual(loads.count(SID), 1, "one private load, the block writer's own: %r" % loads)
         d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
-        self.assertEqual((d["candidates"], d["sharedLoads"], d["mutableLoads"], d["blocks"]), (1, 1, 0, 1), d)
+        self.assertEqual((d["candidates"], d["sharedLoads"], d["mutableLoads"], d["blocks"]), (1, 1, 1, 1), "the writer's load counts: %r" % d)
 
     def test_a_post_stamp_peer_ack_does_not_hide_the_wait_from_the_sweep(self):
         # the 100-hour survivors (2026-08-23): a worker's "starting now" mail seconds after the stamp
@@ -264,6 +264,104 @@ class DeadWaitBlock(_HermeticDeadWait):
         nd = jd.load_goals(SID)["nodes"][GID]
         self.assertTrue((nd.get("blockSummary") or "").startswith(jd.DEAD_WAIT_WHY_PREFIX),
                         "the repair settles the stuck card's brief from its own why")
+
+    def _count_loads(self):
+        loads, shared = [], []
+        real_load, real_shared = jd.load_goals, jd.load_goals_shared_or_fault
+        jd.load_goals = lambda sid: (loads.append(sid), real_load(sid))[1]
+        jd.load_goals_shared_or_fault = lambda sid: (shared.append(sid), real_shared(sid))[1]
+        self.addCleanup(lambda: setattr(jd, "load_goals", real_load))
+        self.addCleanup(lambda: setattr(jd, "load_goals_shared_or_fault", real_shared))
+        return loads, shared
+
+    def test_the_alive_sessions_stores_are_read_through_the_shared_view_once_per_pass(self):
+        """Round two, medium 1: the pass's dominant read was untouched: for every candidate, every ALIVE session's store was
+        loaded privately (C times A loads, reported as zero). The peer-death arm reads only; it takes the shared view, one read
+        per store per pass, and every mutable load the pass makes counts."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        alive = set()
+        for i in range(3):                                                  # three alive sessions with stores of their own
+            a = _fresh_sid(); alive.add(a)
+            (jd.SDKDIR / (a + ".json")).write_text(json.dumps({"sid": a, "alive": True}))
+            jd.save_goals(a, jd.load_goals(a))
+        km._PREV_ALIVE = None
+        loads, shared = self._count_loads()
+        before = dict(km._DEAD_WAIT_STATS)
+        km._dead_wait_sweep(alive, self.nudged, STAMP_T + 900)
+        pass_loads, pass_shared = list(loads), list(shared)                 # the pass's own reads, before this test reads anything
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"))
+        self.assertEqual([x for x in pass_loads if x in alive], [], "no private load of an alive session's store: %r" % pass_loads)
+        self.assertEqual(sorted(x for x in pass_shared if x in alive), sorted(alive), "each alive store read once through the view")
+        self.assertEqual((d["sharedLoads"], d["mutableLoads"], d["blocks"]), (4, 1, 1), "1 candidate + 3 alive shared; the writer's load: %r" % d)
+        self.assertEqual(len(pass_loads), d["mutableLoads"], "every private load the pass made is counted: %r" % pass_loads)
+
+    def test_the_heal_stands_down_when_a_peer_settled_the_brief_between_the_two_reads(self):
+        """Round two, medium 2: to_heal was decided from the frozen view and the write landed on nodes from a later mutable load
+        with no re-check, so a peer writer that settled the brief in between (a judge tier thread's save_goals) was clobbered.
+        The heal re-tests the fresh node: still blocked, still briefless, still a procedural block."""
+        _seed_store()
+        st = jd.load_goals(SID); nd = st["nodes"][GID]
+        jd.record_verdict(st, nd, "nudge", "block", STAMP_T + 100, why=jd.dead_wait_block_why("the full test suite it kicked off"))
+        jd.rollup_status(st, False); jd.save_goals(SID, st)
+        self.assertIsNone(jd.load_goals(SID)["nodes"][GID].get("blockSummary"))
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        real_load = jd.load_goals
+        def peer_settles_then_load(sid):                                    # the peer's write lands between the view and the heal's load
+            if sid == SID:
+                st2 = real_load(sid); st2["nodes"][GID]["blockSummary"] = "the peer's genuine brief"; st2["nodes"][GID]["briefParts"] = ["p"]
+                jd.save_goals(sid, st2)
+            return real_load(sid)
+        jd.load_goals = peer_settles_then_load
+        before = dict(km._DEAD_WAIT_STATS)
+        try:
+            km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals = real_load
+        self.assertEqual(jd.load_goals(SID)["nodes"][GID].get("blockSummary"), "the peer's genuine brief", "the peer's brief survives")
+        self.assertEqual(km._DEAD_WAIT_STATS["healed"] - before["healed"], 0, "nothing healed, nothing saved over the peer")
+
+    def test_blocks_counts_a_block_written_not_a_writer_called(self):
+        """Round two, low 1: `blocks` counted writer calls at one site; a dormant candidate whose last state is working (the
+        writer stands down for the resume machinery) counted one with nothing blocked."""
+        _seed_store()
+        _write_state("working", STAMP_T + 50)                              # a cut mid-turn: the writer stands down
+        km._PREV_ALIVE = None
+        before = dict(km._DEAD_WAIT_STATS)
+        km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        self.assertFalse(jd.load_goals(SID)["nodes"][GID].get("blocked"))
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["blocks"], d["mutableLoads"]), (0, 0), "the writer stood down before its load; no block written: %r" % d)
+
+    def test_a_view_the_sweep_cannot_read_stands_the_candidate_down_re_armed_and_the_next_pass_places_the_block(self):
+        """Round two, lows 2 and 3: the fault road. _or_fault catches OSError alone, so a malformed journal row (a ValueError)
+        escaped to the per-candidate except and spent the death transition silently; any failure of the view is a fault:
+        counted, the candidate re-armed, and the next pass with the store readable places the block."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        real_shared = jd.load_goals_shared_or_fault
+        before = dict(km._DEAD_WAIT_STATS)
+        for fault in (ValueError("malformed journal row"), None):
+            jd.load_goals_shared_or_fault = (lambda sid, f=fault: (_ for _ in ()).throw(f)) if isinstance(fault, ValueError) else real_shared
+            try:
+                km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+            finally:
+                jd.load_goals_shared_or_fault = real_shared
+            if fault is not None:
+                self.assertFalse(jd.load_goals(SID)["nodes"][GID].get("blocked"), "nothing filed on a fault")
+                self.assertIn(SID, km._PREV_ALIVE, "re-armed: the transition is not spent")
+                self.assertEqual(km._DEAD_WAIT_STATS["loadFaults"] - before["loadFaults"], 1)
+        self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"), "the next pass placed the block")
+        jd.load_goals_shared_or_fault = lambda sid: (None, OSError("EIO"))
+        _seed_store(); _write_state("idle", STAMP_T + 50); km._PREV_ALIVE = None
+        try:
+            km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals_shared_or_fault = real_shared
+        self.assertEqual(km._DEAD_WAIT_STATS["loadFaults"] - before["loadFaults"], 2, "an OSError fault counts the same")
 
     def test_the_heal_takes_one_mutable_load_and_counts(self):
         """The brief repair is a write: it takes a private load only when a briefless procedural block stands, and counts it."""
