@@ -1230,6 +1230,9 @@ def _load_intr_marks():
     return n
 
 
+_INTR_MARKS_WRITE_SAID = [False]       # the marks persist's failure said once per fault episode: re-armed by a clean write
+
+
 def _persist_intr_marks(force=False):
     """Write the marks memo when a row changed since the last write (or `force`, the exit): atomic, under a per-writer tmp
     name (pid and thread id: the exit's force write and the persist job may run at once), the tmp unlinked when the
@@ -1245,14 +1248,18 @@ def _persist_intr_marks(force=False):
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(snap), encoding="utf-8")
         os.replace(tmp, p)
+        _INTR_MARKS_WRITE_SAID[0] = False                 # a clean write re-arms the say-once latch
         return True
-    except Exception:
+    except Exception as e:
         try:
             tmp.unlink()
         except OSError:
             pass
         with _INTR_MARKS_DISK_LOCK:
             _INTR_MARKS_DISK_DIRTY[0] = True              # retried by the next persist
+        if not _INTR_MARKS_WRITE_SAID[0]:                 # said once per fault episode (1610 round two, low 4: the tick-seen persist
+            _INTR_MARKS_WRITE_SAID[0] = True              #  credited this persist with a line it did not have)
+            print("interrupt-marks memo: not written: %s: %s (said once per episode; retried by the next persist)" % (type(e).__name__, str(e)[:120]), file=sys.stderr)
         return False
 
 
@@ -10307,22 +10314,45 @@ def _load_tick_seen():
     return n
 
 
+_TICK_SEEN_WRITE_SAID = [False]        # the persist's failure said once per fault EPISODE: re-armed by a clean write (1603 low 1)
+
+
 def _persist_tick_seen(force=False):
     """Write the memo when a completed evaluation moved it since the last write (or `force`); atomic, best-effort."""
     with _TICK_SEEN_LOCK:
         if not (_TICK_SEEN_DIRTY[0] or force):
             return False
         snap = {"%s|%s" % k: list(v) for k, v in _TICK_SEEN.items()}
+        try:
+            body = json.dumps(snap)                  # serialized BEFORE the flag clears, under the lock the writers take: an
+        except (TypeError, ValueError) as e:         #  unserializable entry is a bug that raises to the pusher's guard (counted)
+            _tick_seen_say("not serialized: %s: %s" % (type(e).__name__, str(e)[:120]))   # with the flag still dirty, so the
+            raise                                    #  next persist retries once the entry is gone (1610 round two, medium 3)
         _TICK_SEEN_DIRTY[0] = False
-    try:
-        p = _tick_seen_path()
+    p = _tick_seen_path()
+    tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per WRITER: the exit's force write
+    try:                                                                                #  runs beside the pusher's persist
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per WRITER: the exit's force write
-        tmp.write_text(json.dumps(snap), encoding="utf-8")                                    #  runs beside the pusher's persist
+        tmp.write_text(body, encoding="utf-8")
         os.replace(tmp, p)
+        _TICK_SEEN_WRITE_SAID[0] = False             # a clean write re-arms the say-once latch: the next fault episode is said too
         return True
-    except Exception:
+    except Exception as e:                           # the tmp unlinked, the memo dirty again (retried by the next persist), the
+        try:                                         #  failure said once per episode (the marks persist does the same three)
+            tmp.unlink()
+        except OSError:
+            pass
+        with _TICK_SEEN_LOCK:
+            _TICK_SEEN_DIRTY[0] = True
+        _tick_seen_say("not written: %s: %s" % (type(e).__name__, str(e)[:120]))
         return False
+
+
+def _tick_seen_say(text):
+    """The tick-seen persist's failure on stderr, once per fault episode (the latch re-arms on a clean write)."""
+    if not _TICK_SEEN_WRITE_SAID[0]:
+        _TICK_SEEN_WRITE_SAID[0] = True
+        print("tick-seen memo: %s (said once per episode; retried by the next persist)" % text, file=sys.stderr)
 
 
 _INTERRUPT_BLOCK_UNREAD = (5, 7)      # the key positions the interrupt tick never reads: the episode log and the postal log. The CLEARS log
@@ -51096,10 +51126,16 @@ def _jobs_pass(now, live_map):
         sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
     try:                                  # the tick jobs' evaluation memo, persisted when a completed evaluation
         _job_stage('persistTickSeen', lambda: _persist_tick_seen())          # moved it (T323 stage 1): the next kernel's first look starts from here
-        _job_stage('persistIntrMarks', lambda: _persist_intr_marks())    # the interrupt-marks memo, when a row changed (T401 (3) target 3)
-        _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
     except Exception:
         sys.stderr.write("tick-seen: %s\n" % traceback.format_exc())
+    try:                                  # each persist on its own: one memo's raise never skips the other two (1610 round three)
+        _job_stage('persistIntrMarks', lambda: _persist_intr_marks())    # the interrupt-marks memo, when a row changed (T401 (3) target 3)
+    except Exception:
+        sys.stderr.write("interrupt-marks: %s\n" % traceback.format_exc())
+    try:
+        _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
+    except Exception:
+        sys.stderr.write("spend-tree: %s\n" % traceback.format_exc())
     try:                                  # hitting a usage limit auto-engages the retry-pause (before the resume check)
         _job_stage('autoPauseOnLimit', lambda: _auto_pause_on_limit())
     except Exception:
@@ -61748,12 +61784,20 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
     reason_err = ""
     be = _sdk_backend or None
     _exit_log("romp-kernel: %s, draining SDK sessions\n" % what)
+    # the three memos the next kernel starts from, each persisted on its own: one memo's raise never costs the other two
+    # (1610 round two, medium 3), and a failure is logged by name
     try:
         _persist_tick_seen(force=True)    # the tick jobs' memo for the next kernel's first look (T323 stage 1)
-        _persist_intr_marks(force=True)   # and the interrupt-marks memo (T401 (3) target 3)
+    except Exception as _e:
+        _exit_log("romp-kernel: the tick-seen memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
+    try:
+        _persist_intr_marks(force=True)   # the interrupt-marks memo (T401 (3) target 3)
+    except Exception as _e:
+        _exit_log("romp-kernel: the interrupt-marks memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
+    try:
         _persist_spend_trees(force=True)  # the spend guard's tree memos: the next kernel stats directories, lists nothing
-    except Exception:
-        pass
+    except Exception as _e:
+        _exit_log("romp-kernel: the spend-tree memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
     try:
         _drain_sessions = [_s for _s in _sessions(time.time()) if _s.get("sid") and _s.get("path")]
     except Exception:
