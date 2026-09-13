@@ -1991,7 +1991,22 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   entry per (session, parse family) keyed on the parse object's identity and
   the machine-cut stamp (`hit`, `miss`, `evict` for entries released when a
   session leaves the alive set or the memo is cleared at its cap, and the
-  gauge `entries`). `statesOverlay` is the awaiting overlay's read of the
+  gauge `entries`). `tickSeen` is the event-keyed tick jobs' memo (the
+  interrupt block, the working note, the nudge walk's looks), the ten-file
+  key compared per session, with the gauge `entries` and `byJob`, one block
+  per job: `hits` (the one return that skips), `misses`, `neverSeen` (no
+  kernel on record had looked), `noTranscript`, `clockParse` (the walk's
+  parse on a matched key that a clock leg refused to serve: a flip due, a
+  None flip, the closer toggle off), and `missBy[file]`, which counts, per
+  miss, each key position that differed from the recorded one so a boot read
+  can name what moved; the positions in order are `transcript`, `states`
+  (the state log), `store` (the goal store), `overrides` (its journal),
+  `archive`, `episode`, `cleared`, `messages` (the postal log), `downtime`,
+  `ledger` (the nudge ledger, one file for the box), then `askerRow` for the
+  walk's asker registry rows and `shape` for a key of another length or an
+  unreadable entry; per job, hits plus misses plus neverSeen plus
+  noTranscript plus clockParse is the checks. `statesOverlay` is the
+  awaiting overlay's read of the
   states log through the shared append-incremental reader, one carried answer
   per states file (`hit`: the records were the cached ones and no row was
   stepped; `append`: only the appended rows were stepped; `refold`: every row
