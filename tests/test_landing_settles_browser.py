@@ -195,12 +195,18 @@ await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", 
 try { await page.waitForFunction((u) => { const t = document.querySelector('#content .turn[data-uuid="' + u + '"]'); if (!t) return false; const c = document.getElementById("content"); return Math.abs(t.getBoundingClientRect().top - c.getBoundingClientRect().top) < 40; }, q(42), { timeout: 20000 }); }
 catch (e) { const st = await state(); console.error("the link road's landing never arrived: " + JSON.stringify(st)); process.exit(1); }
 const planted12 = await page.evaluate(([from, to]) => { const src = document.querySelector('#content .turn[data-uuid="' + from + '"] .md'); const dst = document.querySelector('#content .turn[data-uuid="' + to + '"] .md');
-  if (!src || !dst) return null; dst.id = "lab-frag"; const a = document.createElement("a"); a.href = "#lab-frag"; a.className = "lab-frag"; a.textContent = "further down"; src.appendChild(a);
+  if (!src || !dst) return null; dst.id = "lab-frag"; const a = document.createElement("a"); a.href = "#lab-frag"; a.className = "lab-frag"; a.textContent = "further down"; src.insertBefore(a, src.firstChild);   // first in the landed message: its top is the viewport's top, so the link is in view without a scroll
   return { landed: document.getElementById("content").scrollTop, srcOk: true }; }, [q(42), q(44)]);
 if (!planted12) { console.error("the link road found no message bodies to plant in"); process.exit(1); }
 // the click as a DOM event on the link itself: the mouse's own click would first scroll the link into view (Playwright's actionability),
 // a scroll the settle then re-lands, and the two fight past the click's timeout when the link sits below the viewport
-await page.evaluate(() => { const a = document.querySelector(".lab-frag"); if (a) a.click(); });
+// a REAL mouse click at the link's own box (page.mouse.click), not page.click: Playwright's click first scrolls its target into
+// view, a scroll the settle re-lands, and the two fought past the click's timeout on the head (2026-09-13); the link sits inside the
+// landed message, so its box is in the viewport and the click needs no scroll
+const linkBox12 = await page.locator(".lab-frag").boundingBox();
+const vp12 = page.viewportSize() || { width: 0, height: 0 };
+const linkInView12 = !!linkBox12 && linkBox12.y >= 0 && linkBox12.y + linkBox12.height <= vp12.height && linkBox12.x >= 0 && linkBox12.x + linkBox12.width <= vp12.width;
+if (linkBox12) await page.mouse.click(linkBox12.x + linkBox12.width / 2, linkBox12.y + linkBox12.height / 2);
 await page.waitForTimeout(1400);
 const after12 = await page.evaluate(() => document.getElementById("content").scrollTop);
 const link12 = (await ledger()).slice(ledgerBefore12).filter((wr) => wr.writer === "section-link").length;
@@ -266,6 +272,12 @@ await page.waitForTimeout(1400);
 const after13 = await page.evaluate(() => { const c = document.getElementById("content"); return { top: c.scrollTop, max: c.scrollHeight - c.clientHeight }; });
 const live13 = (await ledger()).slice(ledgerBefore13).filter((wr) => wr.writer === "focus-live").length;
 const units13 = await page.evaluate(() => document.querySelectorAll("#content .turn").length);
+// the tail run's own end: the last rendered turn is the transcript's last record (what only the tail run has; a history window's
+// bottom is some other turn), read from the transcript file as it stands now
+// the last rendered TRANSCRIPT turn: the overlay cards after the transcript (the API-error card, the queued group, the to-do box) are
+// .turn elements with word ids, so the last turn with a record's uuid is the one
+const tailEnd13 = { rendered: await page.evaluate(() => { const t = Array.from(document.querySelectorAll("#content .turn")).map((x) => x.getAttribute("data-uuid") || "").filter((u) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(u)); return t.length ? t[t.length - 1] : null; }),
+                    transcript: (() => { const lines = fs.readFileSync(cfg.transcript, "utf8").trim().split("\n"); for (let i = lines.length - 1; i >= 0; i--) { try { const r = JSON.parse(lines[i]); if (r && r.uuid) return r.uuid; } catch (e) { /* not a record */ } } return null; })() };
 const strip13 = await page.evaluate(() => { const s = document.getElementById("live-paused"); return !!s && s.style.display !== "none" && getComputedStyle(s).display !== "none"; });
 const writes13 = (await ledger()).slice(ledgerBefore13).filter((wr) => wr.writer === "land-realign");
 const rows13 = (await rows()).slice(rowsBefore13);
@@ -284,7 +296,7 @@ const st = await state();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-settled.png" });
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify({ o0, o300, o700, oLive, oLate, liveArrived, rowsAtLand, rowsAll, writes, quoted, anchorBox, rows2, dom2,
-  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, grab9, landed10, after10, writes10, keyWrites10, rows10, landed11, after11, nav11, navTo11, writes11, rows11, planted12, after12, link12, writes12, rows12, landed13, after13, live13, units13, strip13, writes13, rows13, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
+  words3, anchor3, anchor3cls, rows3, rowsBeforeWheel, rowAfterWheelMs, moved4, after4, writes4, rows4, rows5, landed9, moved9, moved9b, after9, writes9, rows9, grab9, landed10, after10, writes10, keyWrites10, rows10, landed11, after11, nav11, navTo11, writes11, rows11, planted12, after12, link12, linkInView12, writes12, rows12, landed13, after13, live13, units13, strip13, tailEnd13, writes13, rows13, tail6, rows6, scroll6, rows8, shift8, box8, after: st }) + "\n", () => process.exit(0));
 """
 
 
@@ -435,9 +447,13 @@ class ServedLandingSettles(WindowLab):
         self.assertTrue(taken[0].get("gesture"), "the row says the reader took the landing over: %r" % taken[0])
 
     def test_a_click_on_a_fragment_link_inside_a_message_during_the_settle_is_the_readers_takeover(self):
+        """The click is a REAL mouse click at the link's own box (page.mouse.click), never page.click: Playwright's click scrolls its
+        target into view first, a scroll the settle re-lands, and the two fought past the click's timeout on the head (2026-09-13). The
+        link sits inside the landed message, so its box is in the viewport and no scroll is needed; the road asserts that."""
         # round five, medium: a real click on a link planted in the landed body, pointing at a later turn's body (section-link)
         r = self._result()
         self.assertIsNotNone(r["planted12"], "the link and its target were planted in two message bodies")
+        self.assertTrue(r["linkInView12"], "the link's box was in the viewport for the real click: %r" % r.get("linkInView12"))
         self.assertGreaterEqual(r["link12"], 1, "the click wrote the pane (section-link): %s writes" % r["link12"])
         self.assertGreater(r["after12"] - r["planted12"]["landed"], 100, "the view ends at the link's target, below the landing: %s from %s" % (r["after12"], r["planted12"]["landed"]))
         self.assertEqual(r["writes12"], [], "no land-realign wrote the reader's link step back: %r" % r["writes12"])
@@ -446,6 +462,9 @@ class ServedLandingSettles(WindowLab):
         self.assertTrue(taken[0].get("gesture"), "the row says the reader took the landing over: %r" % taken[0])
 
     def test_the_live_tail_chip_during_the_settle_is_the_readers_takeover(self):
+        """The chip is driven as the kernel's own frame: one synthetic focus frame with live true (the shape the feed's go-to-live chip
+        makes the kernel send), posted through the page's frame door, not a click on a feed chip. The road covers the page's answer to
+        that frame (the focus-live write, the reader's own), not the chip."""
         # round six, low 3: a focus frame with live true writes the pane to its bottom (focus-live); the reader's, so the view stays there
         r = self._result()
         self.assertGreaterEqual(r["live13"], 1, "the chip wrote the pane (focus-live): %s writes" % r["live13"])
@@ -453,6 +472,10 @@ class ServedLandingSettles(WindowLab):
         # so the new view shares no pixel with the landing: the claims are the rendered tail, the view at its end, no paused strip
         self.assertGreaterEqual(r["units13"], 1, "the live tail's turns are rendered: %s" % r["units13"])
         self.assertFalse(r["strip13"], "the paused strip is gone at the live tail")
+        # what only the TAIL run has (round seven, low 1): the window's end is the transcript's end, the last rendered turn being the
+        # transcript's last record; a history window's bottom is some other turn
+        self.assertIsNotNone(r["tailEnd13"]["transcript"], "the transcript's last record: %r" % r["tailEnd13"])
+        self.assertEqual(r["tailEnd13"]["rendered"], r["tailEnd13"]["transcript"], "the last rendered turn is the transcript's last record: %r" % r["tailEnd13"])
         self.assertGreaterEqual(r["after13"]["top"], r["after13"]["max"] - 2, "the view ends at the live tail, not the landing: %r" % r["after13"])
         self.assertEqual(r["writes13"], [], "no land-realign wrote the jump back: %r" % r["writes13"])
         taken = [x for x in r["rows13"] if x["ok"] and x["trail"] and x["trail"][-1] == "pointer-exact"]

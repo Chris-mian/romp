@@ -61,56 +61,14 @@ export const WRITER_CLASS: Readonly<Record<string, "reader" | "page">> = {
   "reload-restore": "page", "append-stick": "page", "append-raw": "page", "tail-shrink": "page", "rewindow": "page", "box-resize": "page",
   "box-below": "page", "tabbar-drag": "page", "toolgroup-toggle": "page", "liveask-reveal": "page", "optimistic-send": "page", "queued-x": "page",
 };
-/** The write helper and its wrappers, with the position of the WRITER argument in each call (round six, low 1): the census pin
- *  reads every call to one of these out of render.ts and takes the string at that position, whatever the other arguments are
- *  (a stick flag passed as a variable, a name with a digit, any shape); a wrapper must be listed here to pass a writer through,
- *  and landing-settle.test.ts holds this table to render.ts's own functions that take a `writer: string`. */
+/** The write helper (the root) and its wrappers, with the position of the WRITER argument in each call (round six, low 1; round
+ *  seven, mediums 1 and 2). The census pin (landing-settle.test.ts, through writer-census.ts on the TypeScript compiler's parser)
+ *  reads every call to one of these out of render.ts: the argument at that position is a plain string literal, counted, or a
+ *  parameter of the enclosing function, which is then a wrapper and must be listed here at that parameter's position; anything
+ *  else there (a template literal, a concatenation, a constant, a variable) fails the pin naming the call, and a function that
+ *  passes its own parameter through, however written and whatever the parameter is called, fails it until listed. */
 export const WRITER_WRAPPERS: Readonly<Record<string, number>> = { writeScroll: 2, scrollContentBy: 2, scrollElInto: 3, land: 0, settleLand: 1 };
 
-/** Every writer LITERAL a source passes to the write helper or a wrapper: the calls are found by name, their arguments split at
- *  top-level commas (strings, parentheses, brackets and braces respected), and the argument at the writer's position is taken
- *  when it is a plain string; a variable there is a wrapper passing its own parameter through and names nothing. Pure, so the
- *  test executes it on the three shapes the census once missed (round six, low 1). */
-export function writerLiterals(src: string, wrappers: Readonly<Record<string, number>> = WRITER_WRAPPERS): string[] {
-  const out = new Set<string>();
-  const names = Object.keys(wrappers).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const call = new RegExp("\\b(" + names + ")\\(", "g");
-  for (let m = call.exec(src); m; m = call.exec(src)) {
-    // the argument list: walk to the matching close paren
-    let depth = 1, i = m.index + m[0].length, quote: string | null = null;
-    const start = i;
-    for (; i < src.length && depth > 0; i++) {
-      const ch = src[i];
-      if (quote) { if (ch === "\\") i++; else if (ch === quote) quote = null; continue; }
-      if (ch === '"' || ch === "'" || ch === "`") quote = ch;
-      else if (ch === "(" || ch === "[" || ch === "{") depth++;
-      else if (ch === ")" || ch === "]" || ch === "}") depth--;
-    }
-    if (depth !== 0) continue;
-    const args = splitArgs(src.slice(start, i - 1));
-    const at = args[wrappers[m[1]]];
-    const lit = at ? /^\s*"([a-z][a-z0-9-]*)"\s*$/.exec(at) : null;
-    if (lit) out.add(lit[1]);
-  }
-  return [...out].sort();
-}
-
-function splitArgs(list: string): string[] {
-  const out: string[] = []; let depth = 0, quote: string | null = null, cur = "";
-  for (let i = 0; i < list.length; i++) {
-    const ch = list[i];
-    if (quote) { cur += ch; if (ch === "\\") { cur += list[++i] ?? ""; } else if (ch === quote) quote = null; continue; }
-    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; cur += ch; continue; }
-    if (ch === "(" || ch === "[" || ch === "{") depth++;
-    else if (ch === ")" || ch === "]" || ch === "}") depth--;
-    if (ch === "," && depth === 0) { out.push(cur); cur = ""; continue; }
-    cur += ch;
-  }
-  if (cur.trim()) out.push(cur);
-  return out;
-}
-
-/** The reader's own writers, derived from the census. */
 export const READER_WRITERS: ReadonlySet<string> = new Set(Object.keys(WRITER_CLASS).filter((w) => WRITER_CLASS[w] === "reader"));
 export function writerIsReader(writer: string): boolean {
   return WRITER_CLASS[writer] === "reader";

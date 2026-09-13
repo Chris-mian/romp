@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { SETTLE_MS, settleStep, settleRowFields, withinRow } from "./landing-settle";
+import { writerCensus } from "./writer-census";
 import * as LS from "./landing-settle";   // the round-one exports, read by name: the file still builds against the head before them, and
                                           // the pins on them alone go red there (a named import of a missing export fails the whole build)
 
@@ -60,40 +61,19 @@ test("a gesture needs the reader's input behind it (round two, medium): an input
   assert.equal(LS.writerIsReader("never-named"), false, "an unlisted writer is no takeover");
 });
 
-test("the census names every writer render.ts gives writeScroll, and nothing else: a new writer cannot land unclassified (round five; round six: any call shape)", () => {
-  // every writer literal, read out of render.ts by the executed extractor: every call to the write helper or a wrapper, the string at
-  // the writer's position whatever the other arguments are
-  const literals = LS.writerLiterals(RENDER);
-  assert.ok(literals.length >= 20, "the writer literals found in render.ts: " + literals.join(", "));
-  for (const w of literals) assert.ok(w in LS.WRITER_CLASS, "unclassified writer in render.ts: " + w);
-  for (const w of Object.keys(LS.WRITER_CLASS)) assert.ok(literals.includes(w), "a census entry render.ts no longer writes: " + w);
-  assert.deepEqual(literals, Object.keys(LS.WRITER_CLASS).sort(), "the census IS the set of writers");
-  // the wrapper table is held to the source: every function of render.ts that takes a `writer: string` and writes through the
-  // family is a wrapper the extractor must know, at the writer's position
-  const fns = [...RENDER.matchAll(/(?:^function (\w+)\(([^)]*)\)|const (\w+) = \(([^)]*)\) =>)/gm)]
-    .map((m) => ({ name: m[1] || m[3], params: (m[2] || m[4] || "").split(",").map((x) => x.trim().split(":")[0].trim()) }))
-    .filter((f) => f.params.includes("writer"));
-  // each function's DEFINITION (a call site may precede it): the helper itself, or a body that writes through the family with its writer
-  const defOf = (name: string) => { const i = RENDER.indexOf("function " + name + "("); return i >= 0 ? i : RENDER.indexOf("const " + name + " = ("); };
-  const family = new RegExp("\\b(?:" + Object.keys(LS.WRITER_WRAPPERS).join("|") + ")\\([^;]*\\bwriter\\b");
-  const wrappers = fns.filter((f) => f.name === "writeScroll" || family.test(RENDER.slice(defOf(f.name), RENDER.indexOf("\n}\n", defOf(f.name)) + 1)));
-  assert.deepEqual(wrappers.map((f) => f.name).sort(), Object.keys(LS.WRITER_WRAPPERS).sort(), "every writer-taking function of render.ts is in the wrapper table (round six, low 1)");
-  for (const f of wrappers) assert.equal(f.params.indexOf("writer"), LS.WRITER_WRAPPERS[f.name], f.name + ": the writer's position");
-});
-
-test("the extractor reads every call shape: a stick flag as a variable, a name with a digit, a new wrapper (round six, low 1)", () => {
-  const src = `
-    writeScroll(c, top, "plain-one");
-    writeScroll(content, content.scrollHeight, "stick-var", stick);
-    writeScroll(c, y, "step-2", true);
-    scrollElInto(c, el, "start", "aligned-one");
-    scrollElInto(document.getElementById("content"), at, "start", writer);
-    land("land-on");
-    settleLand(s, "land-realign");
-    myWrapper(c, "through-a-wrapper", { stick: true });
-  `;
-  assert.deepEqual(LS.writerLiterals(src), ["aligned-one", "land-on", "land-realign", "plain-one", "step-2", "stick-var"], "a variable at the writer's position names nothing; the alignment word is never taken");
-  assert.deepEqual(LS.writerLiterals(src, { ...LS.WRITER_WRAPPERS, myWrapper: 1 }), ["aligned-one", "land-on", "land-realign", "plain-one", "step-2", "stick-var", "through-a-wrapper"], "a wrapper registered with its writer position is read");
+test("the census names every writer render.ts gives the write family, and nothing else; every writer is a plain string literal or a registered wrapper's own parameter (round five; round six; round seven, by the compiler's parser)", () => {
+  // every family call in render.ts, read by the TypeScript compiler's parser (writer-census.ts): the writer argument is a plain string
+  // literal, counted, or the enclosing function's own parameter, which makes that function a wrapper that must sit in WRITER_WRAPPERS at
+  // that parameter's position; a template literal, a concatenation, a constant, a variable, a spread, an anonymous forwarder, an
+  // unregistered or mis-positioned wrapper and a stale table entry each fail here naming the call (round seven, mediums 1 and 2)
+  const c = writerCensus(RENDER, LS.WRITER_WRAPPERS);
+  assert.deepEqual(c.failures, [], "every family call's writer is a plain literal or a registered wrapper's parameter:\n" + c.failures.map((f) => "render.ts:" + f.line + " " + f.call + ": " + f.why).join("\n"));
+  assert.deepEqual({ writeScroll: LS.WRITER_WRAPPERS.writeScroll, ...c.wrappers }, LS.WRITER_WRAPPERS, "the wrapper table is exactly the functions that pass their own parameter through, each at its position");
+  const classified = Object.keys(LS.WRITER_CLASS).sort();
+  for (const w of c.literals) assert.ok(w in LS.WRITER_CLASS, "unclassified writer in render.ts: " + w);
+  for (const w of classified) assert.ok(c.literals.includes(w), "a census entry render.ts no longer writes: " + w);
+  assert.deepEqual(c.literals, classified, "the census IS the set of writers");
+  assert.equal(classified.length, 24, "the census: 24 writers (round five)");
   assert.deepEqual(LS.WRITER_WRAPPERS, { writeScroll: 2, scrollContentBy: 2, scrollElInto: 3, land: 0, settleLand: 1 });
 });
 
