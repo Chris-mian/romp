@@ -150,7 +150,7 @@ await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTu
 const heldAsk6 = await page.evaluate(() => (window.__heldRaw || []).length);
 await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.round(gTop + Math.min(8000, (g ? g.offsetHeight : 9000) * 0.6)); });   // deep into the head gap, no row on screen
 await painted();
-const inGap6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); const rows = Array.from(c.querySelectorAll(".turn[data-uuid]")).filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; }).length; return { top: c.scrollTop, rowsOnScreen: rows }; });
+const inGap6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); const rows = Array.from(c.querySelectorAll(".turn[data-uuid]")).filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; }).length; const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; const g = rs && rs.find((r) => r.kind === "gap"); return { top: c.scrollTop, rowsOnScreen: rows, gap: g ? { lo: g.lo, hi: g.hi } : null }; });
 const point6Before = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
 await page.evaluate(() => { window.__hold.delete("loadTurns"); window.__release(); });
 await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
@@ -200,7 +200,10 @@ class ServedLandingNotice(WindowLab):
     def test_a_fill_above_a_reader_deep_inside_the_gap_moves_the_point_under_the_viewport_top_by_less_than_a_turn(self):
         # round five, medium B: the head page fills while the reader stands deep in the head gap with no row on screen
         r = self._result()
-        self.assertEqual(r["inGap6"]["rowsOnScreen"], 0, "the reader stood inside the gap with no row on screen: %r" % r["inGap6"])
+        g = r["inGap6"]["gap"]
+        self.assertIsNotNone(g, "a head gap stood before the fill: %r" % r["inGap6"])
+        self.assertIsNotNone(r["point6Before"], "the point under the viewport top was named as a turn before the fill")
+        self.assertTrue(g["lo"] <= r["point6Before"] < g["hi"], "the point under the viewport top lay INSIDE the head gap (rows of runs below may be on screen): %r in %r" % (r["point6Before"], g))
         self.assertGreaterEqual(r["heldAsk6"], 1, "the head page's ask was on the wire (held) when they scrolled in")
         self.assertIsNotNone(r["point6Before"], "the point under the viewport top was named as a turn before the fill")
         self.assertIsNotNone(r["point6After"], "…and after it")
