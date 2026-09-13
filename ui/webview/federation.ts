@@ -119,7 +119,6 @@ export const BOOKKEEPING: ReadonlyMap<string, (m: any) => string | null> = new M
   ["loadAround",     (m) => "loadAround" + K + m.id],              // render.ts: a window around a deep-link anchor past the resident list (proto 2)
   ["loadTurns",      (m) => "loadTurns" + K + m.id + K + m.lo + K + m.hi],   // render.ts requestTurns: a gap's page by turn span (T386 stage 2); flushed on the open like loadOlder, one per span
   ["loadNewer",      (m) => "loadNewer" + K + m.id],               // render.ts: the page after a detached window's newest event (proto 2)
-  ["reattachKeys",   (m) => "reattachKeys" + K + m.id],            // render.ts: the run's newest keys ahead of a re-attach ask (proto 2)
   ["loadEpisode",    (m) => "loadEpisode" + K + m.id],             // render.ts noticeOpened: a clear notice's conversation on first expand
   ["imgRequest",     (m) => "imgRequest" + K + m.id + K + m.path], // render.ts: an inline image's bytes, asked on render
   ["commentSeen",    (m) => "commentSeen" + K + m.id + K + m.tid], // render.ts: a thread's read watermark as its popover opens or a reply lands in it

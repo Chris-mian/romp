@@ -146,7 +146,10 @@ test("round two/three code fixes each carry a pin (T386 stage 2, low 1)", () => 
   // the socket death clears every in-flight ask's state, not the glyph alone (medium 1)
   assert.match(RENDER, /window\.addEventListener\("romp:wsdown", \(\) => \{[\s\S]*?gapLoading\.clear\(\); landingGaps\.clear\(\); loadingOlder\.clear\(\);[\s\S]*?hideLandingNotice\(\);/, "wsdown clears the landing's gap, the older-ask set and the notice");
   // sizeSpacers does not average the gap element (medium 3, round one)
-  assert.match(RENDER, /if \(c\.classList\.contains\("tx-spacer"\) \|\| c\.classList\.contains\("tx-gap"\)\) continue;/, "sizeSpacers skips the gap element in the average");
+  const pxBlock = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
+  assert.match(pxBlock, /if \(c\.classList\.contains\("tx-spacer"\) \|\| c\.classList\.contains\("tx-gap"\)\) continue;/, "the px-per-turn measure skips the gap element (pinned inside its own block, round four low 3)");
+  const unitBlock = RENDER.slice(RENDER.indexOf("if (v.avgTurnH == null) {"), RENDER.indexOf("if (h > 0 && n > 0) v.avgTurnH = h / n;"));
+  assert.match(unitBlock, /c\.classList\.contains\("tx-gap"\)\) continue;/, "…and so does the per-unit measure");
   // the region-fill view resets (chatTurns, chatWindow) keep the measured averages across fills (low 1); chatHead's prepend reset may still clear them
   assert.ok(cTurns.includes("v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.spacerCount = undefined;"), "chatTurns resets the window");
   assert.doesNotMatch(cTurns, /v\.winEnd = 0; v\.avgTurnH = undefined;/, "…without clearing the measured average (the fill keeps it, low 1)");

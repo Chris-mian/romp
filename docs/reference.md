@@ -2020,6 +2020,16 @@ announces `chatProto2` in its `caps`:
   caller left, and its detached client snaps to the tail on the retired reply,
   dropping the pages it had walked — acceptable, since an old bundle holds no
   regions to keep them in;
+- three rules the page keeps for its regions: a socket death clears every
+  in-flight history ask (the page asks, the landing's held gap, the notice, the
+  cancelled mark), tells the reader once that a jump in flight was lost, and
+  lets a gap met again on the healed socket ask anew; a gap is sized by its
+  TURN count times the rendered run's measured pixels per turn (a turn is a
+  user row plus its reply and any tool rows; a per-display-unit average drew
+  gaps half true); a fill anchors on the first row that intersects the
+  viewport, whatever the sign of its top, and with no row on screen shifts the
+  view by exactly the change in height above the viewport top, so the point
+  under it stays put (the head stays at zero);
 - the kernel's per-client base is TAIL-ONLY: a reply moves the base's first edge
   only when its span reaches the tail run, so the tail's deltas keep flowing to a
   reader in older history; a reconnect's `ready` starts a fresh base. A run whose
