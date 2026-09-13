@@ -167,40 +167,43 @@ test("DayWalk.pass returns the mark after the row: a stale echo sits under the w
   assert.strictEqual(new DayWalk().pass(null), null, "nothing passed yet: no mark");
 });
 
-// TODAY's label (T406, the user 2026-09-13): how long ago, in their words, in place of the clock; any other day "".
-// Calendar minutes: the clock's minute of the row against the clock's minute now, so the seconds never matter.
+// TODAY's label (T406, the user 2026-09-13, the wording theirs: digits, "min", hour and hours spelled out): how long
+// ago in place of the clock; any other day "". Calendar minutes: the clock's minute of the row against the clock's
+// minute now, so the seconds never matter.
 test("relativeLabel: the vocabulary, in calendar minutes, today only", () => {
   const now = new Date(2026, 5, 12, 14, 30, 20).getTime();   // 14:30:20 today
   const rows: Array<[number, string]> = [
-    [at(2026, 5, 12, 14, 30, 5), "just now"],          // the same clock minute, 15s ago
-    [at(2026, 5, 12, 14, 29, 59), "one minute ago"],   // 21s ago, but the minute before: the clock's grain
-    [at(2026, 5, 12, 14, 28, 0), "2 minutes ago"],
-    [at(2026, 5, 12, 13, 31, 0), "59 minutes ago"],
-    [at(2026, 5, 12, 13, 30, 0), "one hour ago"],
-    [at(2026, 5, 12, 12, 31, 0), "one hour ago"],      // 119 minutes: still one hour, no minutes remainder
+    [at(2026, 5, 12, 14, 30, 5), "now"],               // the same clock minute, 15s ago
+    [at(2026, 5, 12, 14, 29, 59), "1 min ago"],        // 21s ago, but the minute before: the clock's grain
+    [at(2026, 5, 12, 14, 28, 0), "2 min ago"],
+    [at(2026, 5, 12, 13, 31, 0), "59 min ago"],
+    [at(2026, 5, 12, 13, 30, 0), "1 hour ago"],
+    [at(2026, 5, 12, 12, 31, 0), "1 hour ago"],        // 119 minutes: still one hour, no minutes remainder
     [at(2026, 5, 12, 12, 30, 0), "2 hours ago"],
     [at(2026, 5, 12, 0, 1, 0), "14 hours ago"],
     [at(2026, 5, 12, 0, 0, 0), "14 hours ago"],        // the first minute of the local day is still today
     [at(2026, 5, 11, 23, 59, 59), ""],                 // yesterday, one second earlier: the divider names it, HH:MM stays
     [at(2026, 5, 11, 14, 30, 0), ""],
-    [at(2026, 5, 12, 14, 31, 0), "just now"],          // stamped ahead of the clock (skew): never negative
+    [at(2026, 5, 12, 14, 31, 0), "now"],               // stamped ahead of the clock (skew): never negative
   ];
   for (const [epoch, want] of rows) assert.equal(relativeLabel(epoch, now), want, new Date(epoch * 1000).toString());
 });
 
 test("relativeLabel: a row of today turns over exactly at the clock's minute, and hands back to HH:MM after midnight", () => {
   const row = at(2026, 5, 12, 23, 58, 30);
-  assert.equal(relativeLabel(row, new Date(2026, 5, 12, 23, 58, 59).getTime()), "just now");
-  assert.equal(relativeLabel(row, new Date(2026, 5, 12, 23, 59, 0).getTime()), "one minute ago");   // the boundary, not sixty seconds
-  assert.equal(relativeLabel(row, new Date(2026, 5, 12, 23, 59, 59).getTime()), "one minute ago");
+  assert.equal(relativeLabel(row, new Date(2026, 5, 12, 23, 58, 59).getTime()), "now");
+  assert.equal(relativeLabel(row, new Date(2026, 5, 12, 23, 59, 0).getTime()), "1 min ago");   // the boundary, not sixty seconds
+  assert.equal(relativeLabel(row, new Date(2026, 5, 12, 23, 59, 59).getTime()), "1 min ago");
   assert.equal(relativeLabel(row, new Date(2026, 5, 13, 0, 0, 0).getTime()), "", "a new local day: the clock time again, the divider comes with the next render");
   assert.equal(markerLabel(row, null, new Date(2026, 5, 13, 0, 0, 0).getTime()).hm, "23:58", "and the HH:MM it hands back to");
 });
 
-test("relativeLines: 'ago' takes a line of its own; 'just now' stays whole", () => {
-  assert.equal(relativeLines("one hour ago"), "one hour\nago");
-  assert.equal(relativeLines("59 minutes ago"), "59 minutes\nago");
+test("relativeLines: only the plural-hours form takes 'ago' on a line of its own (the one form that does not fit the slot)", () => {
   assert.equal(relativeLines("2 hours ago"), "2 hours\nago");
-  assert.equal(relativeLines("just now"), "just now");
+  assert.equal(relativeLines("23 hours ago"), "23 hours\nago");
+  assert.equal(relativeLines("1 hour ago"), "1 hour ago");
+  assert.equal(relativeLines("59 min ago"), "59 min ago");
+  assert.equal(relativeLines("1 min ago"), "1 min ago");
+  assert.equal(relativeLines("now"), "now");
   assert.equal(relativeLines(""), "");
 });

@@ -101,32 +101,32 @@ export function dayContext(epoch: number, nowMs: number): string {
   return d.getFullYear() === now.getFullYear() ? md : md + " " + d.getFullYear();
 }
 
-/** TODAY's rail label (T406, the user 2026-09-13): how long ago the row was, in the user's own words, in place of the
- *  clock time: "just now" under a minute, "one minute ago", "N minutes ago" up to 59, "one hour ago" from 60 to 119
- *  minutes, "N hours ago" after. "" for a row of any other day: its day divider names the day at the top, so its marker
- *  keeps the HH:MM exactly as before. The day is the viewer's LOCAL day, the one dayContext keys on. The distance is in
- *  CALENDAR minutes (the clock's minute of the row against the clock's minute now, whatever the seconds), the grain of
- *  the HH:MM it replaces: every label on the page turns over together the moment the clock's minute does (the rail's
- *  minute tick in render.ts fires just past each boundary) and two rows of one minute always read alike, so the rail's
- *  same-minute rule holds at the label's grain. A row stamped ahead of the clock (skew) reads "just now". Digits from
- *  two up, as dayContext writes "3 days ago"; never an abbreviation. */
+/** TODAY's rail label (T406, the user 2026-09-13, the wording theirs): how long ago the row was, in place of the clock
+ *  time: "now" under a minute, "1 min ago", "N min ago" up to 59, "1 hour ago" from 60 to 119 minutes, "N hours ago"
+ *  after. Digits throughout; "min" is the user's own abbreviation and stands; hour and hours spelled out. "" for a row
+ *  of any other day: its day divider names the day at the top, so its marker keeps the HH:MM exactly as before. The day
+ *  is the viewer's LOCAL day, the one dayContext keys on. The distance is in CALENDAR minutes (the clock's minute of the
+ *  row against the clock's minute now, whatever the seconds), the grain of the HH:MM it replaces: every label on the
+ *  page turns over together the moment the clock's minute does (the rail's minute tick in render.ts fires just past
+ *  each boundary) and two rows of one minute always read alike, so the rail's same-minute rule holds at the label's
+ *  grain. A row stamped ahead of the clock (skew) reads "now". */
 export function relativeLabel(epoch: number, nowMs: number): string {
   const d = new Date(epoch * 1000), now = new Date(nowMs);
   if (d.getFullYear() !== now.getFullYear() || d.getMonth() !== now.getMonth() || d.getDate() !== now.getDate()) return "";
   const mins = Math.max(0, Math.floor(nowMs / 60000) - Math.floor(epoch / 60));
-  if (mins < 1) return "just now";
-  if (mins === 1) return "one minute ago";
-  if (mins < 60) return mins + " minutes ago";
+  if (mins < 1) return "now";
+  if (mins < 60) return mins + " min ago";
   const h = Math.floor(mins / 60);
-  return h === 1 ? "one hour ago" : h + " hours ago";
+  return h === 1 ? "1 hour ago" : h + " hours ago";
 }
 
-/** The label as the rail sets it: "ago" on a line of its own. The marker's slot is the gutter's 56px, and no "... ago"
- *  fits it on one line at the default 13px chat font: measured on the served page, where the rail renders in Inter in
- *  both themes, "one hour ago" is 62.3px and "59 minutes ago" 76.6px (in the light theme's Space Grotesk, were it to
- *  reach the rail, 63.3px and 72.6px), while every first line fits ("59 minutes", the widest, 55.9px; "one minute"
- *  52.9px; "one hour" 41.5px). "just now" stays one line. The marker is absolutely positioned, so the second line
- *  costs the transcript nothing (styles.css .time-marker.rel). */
+/** The label as the rail sets it. The marker's slot is the gutter's 56px; measured on the served page, where the rail
+ *  renders in Inter in both themes, at the default 13px chat font every minutes form and "1 hour ago" fit one line
+ *  ("59 min ago", the widest, 55.9px; "1 hour ago" 51.9px; "now" 19.6px) and no plural-hours form does ("2 hours ago"
+ *  58.1px, "23 hours ago" 64.3px), so "N hours ago" alone takes "ago" on a line of its own ("23 hours" 43.5px). At a
+ *  14px chat font the two-digit minute forms run up to 2px past the slot ("59 min ago" 58.0px) into the 3px gap before
+ *  the dot, never onto it; "1 hour ago" 55.0px still fits. The marker is absolutely positioned, so the second line costs
+ *  the transcript nothing (styles.css .time-marker.rel). */
 export function relativeLines(label: string): string {
-  return label.replace(/ ago$/, "\nago");
+  return /^\d+ hours ago$/.test(label) ? label.replace(/ ago$/, "\nago") : label;
 }

@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""T406 (the user 2026-09-13): the chat rail's time markers for TODAY read how long ago, in the user's words ("just now",
-"one minute ago", "N minutes ago", "one hour ago", "N hours ago"), the exact HH:MM riding each stamp's tooltip; any other
+"""T406 (the user 2026-09-13): the chat rail's time markers for TODAY read how long ago, in the user's words ("now",
+"1 min ago", "N min ago", "1 hour ago", "N hours ago"), the exact HH:MM riding each stamp's tooltip; any other
 day keeps the clock time exactly as before, its day divider naming the day. Proven on the real /chat page of a hermetic
 kernel with the browser's clock INSTALLED (Playwright's fake clock, started at the epoch the fixture was stamped from and
 flowing), two synthetic sessions: `web`, two rows yesterday then six today, spaced so every word of the vocabulary shows
-(two hours, one hour, 59 minutes, 5 minutes, one minute, just now); `api`, four rows all yesterday. Asserted in both
+("2 hours ago", "1 hour ago", "59 min ago", "5 min ago", "1 min ago", "now"); `api`, four rows all yesterday. Asserted in both
 themes: every today stamp reads the label the vocabulary gives for its calendar-minute distance from the page's own clock,
-with "ago" on a line of its own, stamped only where the label CHANGES from the previous timed row's (the rail's
-same-minute rule at the label's grain), its title the row's HH:MM; every other-day marker is the HH:MM with no class and no
-title; no label overflows the 56px slot (the marker's scrollWidth is its clientWidth) or reaches the dot; two-line stamps
-never overlap the next stamp; and the widest first lines ("59 minutes", "one minute") are measured in the marker's own
-font per theme, for the record the user asked for. Then the page's clock is paused and jumped past the next clock-minute
-boundary: the rail's ONE minute timer fires, the labels move by a minute (the row "just now" reads "one minute ago"; the
-row at 59 minutes reads "one hour ago", the same as the row before it, so its stamp goes quiet), the yesterday markers do
+the plural-hours form with "ago" on a line of its own, stamped only where the label CHANGES from the previous timed row's
+(the rail's same-minute rule at the label's grain), its title the row's HH:MM; every other-day marker is the HH:MM with no
+class and no title; no label overflows the 56px slot (the marker's scrollWidth is its clientWidth) or reaches the dot;
+two-line stamps never overlap the next stamp; and the vocabulary's widest forms are measured in the marker's own font per
+theme at the default 13px chat font and at 14px, for the record the user asked for (the one-line forms fit the slot at
+13px; at 14px the two-digit minute forms run into the 3px gap before the dot, never onto it). Then the page's clock is
+paused and jumped past the next clock-minute boundary: the rail's ONE minute timer fires, the labels move by a minute (the
+row "now" reads "1 min ago"; the row at 59 minutes reads "1 hour ago", the same as the row before it, so its stamp goes
+quiet), the yesterday markers do
 not change, and every turn's box (top, height, left, width) is exactly where it was: the transcript did not move. The
 sticky stamp over a today turn scrolled past the top line wears the same two-line label. With RT_SHOTS=<dir> the driver
 writes screenshots: the today run (`web`) and the yesterday run (`api`), dark and light. Skips LOUDLY without the extension
@@ -76,17 +78,16 @@ def relative_label(epoch, now_ms):
         return ""
     mins = max(0, now_ms // 60000 - epoch // 60)
     if mins < 1:
-        return "just now"
-    if mins == 1:
-        return "one minute ago"
+        return "now"
     if mins < 60:
-        return "%d minutes ago" % mins
+        return "%d min ago" % mins
     h = mins // 60
-    return "one hour ago" if h == 1 else "%d hours ago" % h
+    return "1 hour ago" if h == 1 else "%d hours ago" % h
 
 
 def relative_lines(label):
-    return re.sub(r" ago$", "\nago", label)
+    """The twin of relativeLines: the plural-hours form alone takes "ago" on a line of its own."""
+    return re.sub(r" ago$", "\nago", label) if re.match(r"^\d+ hours ago$", label) else label
 
 
 def _records(sid, now, shift):
@@ -156,19 +157,22 @@ const measure = () => page.evaluate(() => {
              overflow: m ? m.scrollWidth - m.clientWidth : null,
              dotLeft: n.querySelector(":scope > .dot") ? n.querySelector(":scope > .dot").getBoundingClientRect().left : null };
   });
-  // the candidate labels in the marker's OWN font, per theme (the fit the user asked to have measured)
+  // the vocabulary's widest forms in the marker's OWN font, per theme, at the default chat font and at 14px (the fit
+  // the user asked to have measured); the second reading gives the probe the size a 14px chat font gives a marker
   const probe = document.createElement("span"); probe.className = "time-marker";
   probe.style.cssText = "position:static;display:inline-block;width:auto;white-space:nowrap;visibility:hidden";
   turn0.appendChild(probe);
-  const widths = {};
-  for (const l of ["just now", "one minute", "59 minutes", "one hour", "23 hours", "one minute ago", "59 minutes ago", "one hour ago", "23 hours ago"]) {
-    probe.textContent = l; widths[l] = Math.round(probe.getBoundingClientRect().width * 10) / 10;
-  }
+  const widths = {}, widths14 = {};
+  const FORMS = ["now", "1 min ago", "9 min ago", "59 min ago", "1 hour ago", "2 hours ago", "23 hours ago", "2 hours", "23 hours"];
+  for (const l of FORMS) { probe.textContent = l; widths[l] = Math.round(probe.getBoundingClientRect().width * 10) / 10; }
+  probe.style.fontSize = "10.08px";   // what a 14px chat font gives the marker (0.72em); the page's own --fs is not touched
+  for (const l of FORMS) { probe.textContent = l; widths14[l] = Math.round(probe.getBoundingClientRect().width * 10) / 10; }
+  probe.style.fontSize = "";
   const cs = getComputedStyle(probe); const font = cs.fontFamily.split(",")[0].replace(/"/g, "") + " " + cs.fontSize
     + (document.fonts.check('9px "Space Grotesk"') ? " (Space Grotesk loaded)" : " (Space Grotesk not loaded)") + (document.fonts.check('9px "Inter"') ? " (Inter loaded)" : " (Inter not loaded)");
   probe.remove();
   const s = document.querySelector(".rail-sticky"); const sr = s ? s.getBoundingClientRect() : null;
-  return { now: Date.now(), rows, widths, font, slot: getComputedStyle(kids.find((n) => n.querySelector(":scope > .time-marker")).querySelector(":scope > .time-marker")).width,
+  return { now: Date.now(), rows, widths, widths14, font, slot: getComputedStyle(kids.find((n) => n.querySelector(":scope > .time-marker")).querySelector(":scope > .time-marker")).width,
            theme: document.body.classList.contains("theme-light") ? "light" : "dark",
            sticky: s && getComputedStyle(s).display !== "none" ? { text: s.textContent, rel: s.classList.contains("rel"), height: sr.height, width: sr.width } : null };
 });
@@ -212,7 +216,8 @@ out.web.stickyRun = await page.evaluate(() => {
            sticky: getComputedStyle(s).display !== "none" ? { text: s.textContent, rel: s.classList.contains("rel"), height: sr.height, width: sr.width } : null,
            now: Date.now() };
 });
-if (cfg.shots) fs.writeFileSync(cfg.shots + "/t406-measure.json", JSON.stringify({ font: { dark: out.web.dark.font, light: out.web.light.font }, widths: { dark: out.web.dark.widths, light: out.web.light.widths }, slot: out.web.dark.slot }, null, 1));   // the fit the user asked to have measured, beside the screenshots
+if (cfg.shots) fs.writeFileSync(cfg.shots + "/t406-measure.json", JSON.stringify({ font: { dark: out.web.dark.font, light: out.web.light.font }, slot: out.web.dark.slot, dotGap: 3,
+  widthsAt13px: { dark: out.web.dark.widths, light: out.web.light.widths }, widthsAt14px: { dark: out.web.dark.widths14, light: out.web.light.widths14 } }, null, 1));   // the fit the user asked to have measured, beside the screenshots
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
 process.exit(0);
@@ -249,7 +254,7 @@ class ServedRailRelative(unittest.TestCase):
         for d in ("names", "sdk", "states"):
             os.makedirs(os.path.join(state, d), exist_ok=True)
         # ONE epoch for the fixture and the page's clock, 25s past a clock-minute boundary: the driver's measurements
-        # (a few seconds of flowing fake time) stay inside that minute, so "just now" is still just now when read
+        # (a few seconds of flowing fake time) stay inside that minute, so "now" is still now when read
         cls.now = int(time.time()) // 60 * 60 + 25
         for sid, name, shift, colour in ((SID_A, "web", 0, ("#9cd2ff", "#0c1a2e")), (SID_B, "api", 1, ("#ffd29c", "#2e1a0c"))):
             cwd = os.path.join(cls.lab, "proj-" + name)
@@ -338,14 +343,19 @@ class ServedRailRelative(unittest.TestCase):
             self.assertEqual(m["slot"], "56px", "the slot is the whole gutter in %s" % theme)
             shown = self._expect_rail(m, "web " + theme)
             if all_today:
-                self.assertEqual(shown, ["2 hours ago", "one hour ago", "59 minutes ago", "5 minutes ago", "one minute ago", "just now"],
+                self.assertEqual(shown, ["2 hours ago", "1 hour ago", "59 min ago", "5 min ago", "1 min ago", "now"],
                                  "one stamp of each kind, in the user's words, in %s" % theme)
             self.assertEqual([x["label"] for x in m["rows"] if x["isDiv"]], ["Yesterday"], "the day divider names the other day, once, in %s" % theme)
-            w = m["widths"]
-            for first in ("just now", "one minute", "59 minutes", "one hour", "23 hours"):
-                self.assertLessEqual(w[first], 56, "%s fits the 56px slot on one line in %s (%s): %r" % (first, theme, m["font"], w))
-            for whole in ("one minute ago", "59 minutes ago", "one hour ago", "23 hours ago"):
-                self.assertGreater(w[whole], 56, "%s does not fit on one line in %s, which is why 'ago' takes a line of its own: %r" % (whole, theme, w))
+            w, w14 = m["widths"], m["widths14"]
+            for one_line in ("now", "1 min ago", "9 min ago", "59 min ago", "1 hour ago"):
+                self.assertLessEqual(w[one_line], 56, "%s fits the 56px slot on one line at the default chat font in %s (%s): %r" % (one_line, theme, m["font"], w))
+            for wrapped in ("2 hours ago", "23 hours ago"):
+                self.assertGreater(w[wrapped], 56, "%s does not fit on one line in %s, which is why the plural-hours form takes 'ago' on a line of its own: %r" % (wrapped, theme, w))
+            for first in ("2 hours", "23 hours"):
+                self.assertLessEqual(w14[first], 56, "%s, the wrapped form's first line, fits even at a 14px chat font in %s: %r" % (first, theme, w14))
+            for one_line in ("now", "1 min ago", "9 min ago", "1 hour ago"):
+                self.assertLessEqual(w14[one_line], 56, "%s still fits the slot at a 14px chat font in %s: %r" % (one_line, theme, w14))
+            self.assertLessEqual(w14["59 min ago"], 59, "the two-digit minute form at 14px stays inside the 3px gap before the dot in %s: %r" % (theme, w14))
             # the yesterday run: the clock time exactly as before, no class, no title, its divider once
             a = r["api"][theme]
             self.assertEqual(a["theme"], theme)
@@ -358,8 +368,8 @@ class ServedRailRelative(unittest.TestCase):
         self.assertGreater(after["now"] // 60000, before["now"] // 60000, "the page's clock crossed a minute boundary: %r -> %r (%r)" % (before["now"], after["now"], r["tick"]))
         shown2 = self._expect_rail(after, "web after the tick")
         if all_today and relative_label(today_rows[0], after["now"]):
-            self.assertEqual(shown2, ["2 hours ago", "one hour ago", "6 minutes ago", "2 minutes ago", "one minute ago"],
-                             "a minute later: the row at 59 minutes reads 'one hour ago' like the row before it and its stamp goes quiet; 'just now' is 'one minute ago'")
+            self.assertEqual(shown2, ["2 hours ago", "1 hour ago", "6 min ago", "2 min ago", "1 min ago"],
+                             "a minute later: the row at 59 minutes reads '1 hour ago' like the row before it and its stamp goes quiet; 'now' is '1 min ago'")
         self.assertEqual([x["marker"] for x in before["rows"] if x["marker"] is not None and not x["rel"]],
                          [x["marker"] for x in after["rows"] if x["marker"] is not None and not x["rel"]], "the other-day markers did not change")
         self.assertEqual([x["box"] for x in before["rows"]], [x["box"] for x in after["rows"]], "no turn moved: every box (top, height, left, width) is where it was")
@@ -369,7 +379,8 @@ class ServedRailRelative(unittest.TestCase):
         self.assertIsNotNone(st["sticky"], "...so the sticky leads: %r" % st)
         want = relative_label(int(st["tracked"]["epoch"]), st["now"])
         self.assertEqual((st["sticky"]["text"], st["sticky"]["rel"]), (relative_lines(want), True), "the sticky reads the turn's own label: %r" % st)
-        self.assertGreater(st["sticky"]["height"], 15, "two lines tall: %r" % st["sticky"])
+        self.assertEqual(want, "1 hour ago", "the second today turn is the one-hour row: %r" % st)
+        self.assertLess(st["sticky"]["height"], 15, "one line tall, as '1 hour ago' fits the slot: %r" % st["sticky"])
 
 
 if __name__ == "__main__":
