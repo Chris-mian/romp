@@ -37,7 +37,7 @@ def _fresh_sid():
     """A distinct sid per test: the goals-store cache is mtime-keyed, and same-second reseeds of one
     sid would hand a later test the previous test's mutated store object."""
     _N[0] += 1
-    return "11111111-2222-3333-4444-5555555555%02d" % _N[0]
+    return "%08d-aaaa-4bbb-8ccc-dddddddddddd" % _N[0]      # never the shared 11111111-2222-... placeholder, at any count
 
 
 SID = ""
@@ -125,7 +125,7 @@ class _HermeticDeadWait(unittest.TestCase):
 
     def tearDown(self):
         km._codex = self._saved_codex
-        for d in (jd.GOALDIR, jd.STATE / "states", jd.SDKDIR, jd.STATE / "gone", jd.NAMES):
+        for d in (jd.GOALDIR, jd.STATE / "states", jd.SDKDIR, jd.STATE / "gone", jd.NAMES, jd._overrides_dir()):   # the blocks journals too
             if d.is_dir():
                 for f in d.glob("*"):
                     f.unlink()
@@ -362,6 +362,73 @@ class DeadWaitBlock(_HermeticDeadWait):
         finally:
             jd.load_goals_shared_or_fault = real_shared
         self.assertEqual(km._DEAD_WAIT_STATS["loadFaults"] - before["loadFaults"], 2, "an OSError fault counts the same")
+
+    def test_blocks_and_loads_are_counted_inside_the_writers_wherever_called(self):
+        """Round three, medium 1: the wake goal's dormant-owner branch is a fourth _dead_wait_block caller; its load bumped
+        mutableLoads while its block went uncounted, since blocks was bumped at the sweep's three sites only. Both counters
+        live inside the writers, so they mean what the writer did wherever it is called."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        before = dict(km._DEAD_WAIT_STATS)
+        self.assertTrue(km._dead_wait_block(SID, GID, STAMP_T, "both workers' report-backs", self.nudged, STAMP_T + 900),
+                        "the writer called directly (the wake goal's dormant branch) writes the block")
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["mutableLoads"], d["blocks"], d["passes"]), (1, 1, 0), "its load and its block, no pass: %r" % d)
+        src = inspect.getsource(km._dead_wait_sweep)
+        self.assertNotIn('_DEAD_WAIT_STATS["blocks"]', src, "the sweep bumps no block count of its own")
+
+    def test_a_non_oserror_view_fault_is_said_once_per_episode_and_an_alive_view_fault_re_arms_the_candidate(self):
+        """Round three, medium 2: a ValueError out of the view (a malformed journal row) was swallowed with no stderr where the base
+        printed a traceback, and on an alive session's store it lost that peer's conversion for the transition. It is named on
+        stderr once per episode through the pass's collapse, and an alive store the view cannot read re-arms the candidate."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        alive = _fresh_sid(); (jd.SDKDIR / (alive + ".json")).write_text(json.dumps({"sid": alive, "alive": True}))
+        jd.save_goals(alive, jd.load_goals(alive))
+        real_shared = jd.load_goals_shared_or_fault
+        def faulty(sid, target):
+            def f(x):
+                if x == target:
+                    raise ValueError("journal row: t is not a number")
+                return real_shared(x)
+            return f
+        err = io.StringIO()
+        km._PREV_ALIVE = None
+        jd.load_goals_shared_or_fault = faulty(SID, SID)                     # the candidate's own view raises
+        try:
+            with redirect_stderr(err):
+                km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 900)
+                km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 901)    # the same episode: not said again
+        finally:
+            jd.load_goals_shared_or_fault = real_shared
+        self.assertEqual(err.getvalue().count("the goal-store view raised"), 1, "said once per episode: %r" % err.getvalue())
+        self.assertIn("ValueError", err.getvalue())
+        self.assertIn(SID, km._PREV_ALIVE, "re-armed")
+        self.assertFalse(jd.load_goals(SID)["nodes"][GID].get("blocked"))
+        km._PREV_ALIVE = None
+        jd.load_goals_shared_or_fault = faulty(SID, alive)                   # the ALIVE session's view raises
+        try:
+            with redirect_stderr(io.StringIO()):
+                km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 902)
+        finally:
+            jd.load_goals_shared_or_fault = real_shared
+        self.assertIn(SID, km._PREV_ALIVE, "an alive store the view cannot read re-arms the candidate: the peer conversion waits for the next pass")
+        with redirect_stderr(io.StringIO()):
+            km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 903)        # healed: the next pass converts
+        self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"))
+
+    def test_a_view_that_degrades_to_a_private_load_is_counted_as_a_fallback(self):
+        """Round three, low 2: the shared view falls back to load_goals internally (an absent store file, an unreadable journal,
+        unparseable bytes, the cache off); those loads counted under sharedLoads only, so /perf could claim the saving with
+        the cache off. sharedFallback counts them off the writer-side loader's count."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        alive = _fresh_sid(); (jd.SDKDIR / (alive + ".json")).write_text(json.dumps({"sid": alive, "alive": True}))   # no store FILE
+        km._PREV_ALIVE = None
+        before = dict(km._DEAD_WAIT_STATS)
+        km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 900)
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertGreaterEqual(d["sharedFallback"], 1, "the alive store without a file fell back to a private load: %r" % d)
 
     def test_the_heal_takes_one_mutable_load_and_counts(self):
         """The brief repair is a write: it takes a private load only when a briefless procedural block stands, and counts it."""

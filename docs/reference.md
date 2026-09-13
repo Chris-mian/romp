@@ -1996,11 +1996,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   through the shared read-only store view, one per store per pass: the
   candidate's own and every alive session's for the peer-death arm),
   `loadFaults` (a view that could not be read or parsed, of any kind; the
-  candidate stands down re-armed and the next pass places the block),
-  `mutableLoads` (every private load the pass makes: a heal of a briefless
-  procedural block, re-tested on the fresh node before it writes, and each
-  block writer's own load), `healed` and `blocks` (blocks a writer actually
-  wrote, at all three block sites).   gauge `entries`). `statesOverlay` is the awaiting overlay's read of the
+  candidate stands down re-armed and the next pass retries; a fault of any
+  other kind is said on stderr once per episode; an alive session's store
+  the view cannot read re-arms the candidate too, so that peer's conversion
+  waits for the next pass rather than the next death), `sharedFallback`
+  (a view that degraded internally to a private load: an absent store file,
+  an unreadable journal, unparseable bytes, the shared cache switched off;
+  while it climbs the pass is back to the private-load cost), `mutableLoads`
+  and `blocks` (counted inside the two block writers, so they mean what the
+  writer did wherever it is called, the sweep's three sites and the wake
+  goal's dormant branch alike: each private load, each block written),
+  and `healed` (a briefless procedural block whose brief was settled from
+  its why, re-tested on the fresh node before the write). `statesOverlay` is the awaiting overlay's read of the
   states log through the shared append-incremental reader, one carried answer
   per states file (`hit`: the records were the cached ones and no row was
   stepped; `append`: only the appended rows were stepped; `refold`: every row
