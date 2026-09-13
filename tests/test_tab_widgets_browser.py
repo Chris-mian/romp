@@ -394,10 +394,10 @@ class ServedTabWidgets(unittest.TestCase):
         p = r["panel0"]
         table = "\n  " + json.dumps(p)[:1500]
         self.assertTrue(p["open"], table)
-        self.assertEqual([x["tab"] for x in p["pills"]], ["chat", "feed", "sessions", "automatic", "appearance", "system"], "six pills: no Tabs tab (the user's amendment)" + table)
-        self.assertEqual([x["text"] for x in p["pills"]], ["Chat", "Feed", "Sessions", "Automatic", "Appearance", "System"], table)
-        self.assertEqual([x["on"] for x in p["pills"]], [True, False, False, False, False, False], "the Chat pill is on" + table)
-        self.assertEqual([x["selected"] for x in p["pills"]], ["true", "false", "false", "false", "false", "false"], table)
+        self.assertEqual([x["tab"] for x in p["pills"]], ["general", "chat", "feed", "sessions", "tasks", "appearance", "debug"], "seven pills in the user's order (T400)" + table)
+        self.assertEqual([x["text"] for x in p["pills"]], ["General", "Chat", "Feed", "Sessions", "Task tracking", "Appearance", "Debug"], table)
+        self.assertEqual([x["on"] for x in p["pills"]], [False, True, False, False, False, False, False], "the Chat pill is on" + table)
+        self.assertEqual([x["selected"] for x in p["pills"]], ["false", "true", "false", "false", "false", "false", "false"], table)
         shown = [x for x in p["panes"] if x["display"] != "none"]
         self.assertEqual([x["pane"] for x in shown], ["chat"], "one pane painted" + table)
         self.assertTrue(all(x["rows"] > 0 for x in p["panes"]), "every pane holds rows" + table)

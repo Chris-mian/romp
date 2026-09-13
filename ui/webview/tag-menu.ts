@@ -163,7 +163,7 @@ export function tagMenuButton(title: string, open: (btn: HTMLElement) => void): 
   const btn = document.createElement("button");
   btn.type = "button";
   btn.title = title;
-  btn.setAttribute("style", "background:transparent;border:1px solid " + TAG_BTN_BORDER + ";"
+  btn.setAttribute("style", "background:transparent;border:1px solid " + TAG_BTN_BORDER_CSS + ";"
     + "border-radius:6px;padding:4px 6px;cursor:pointer;color:#9aa0a6;display:inline-flex;align-items:center;");
   btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none">'
     + '<path d="M2 7.5 L7.5 2.5 H14 V9 L8.5 14 Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>'
@@ -180,7 +180,12 @@ export function tagMenuButton(title: string, open: (btn: HTMLElement) => void): 
 // its class mechanics (mode: "class" — its .on/.--dim values are pinned equal to these literals).
 export const TAG_BTN_GRAY = "#9aa0a6";
 export const TAG_BTN_ACCENT = "#9cd2ff";   // the romp accent (--accent) — pinned equal in feed.css/styles.css
-export const TAG_BTN_BORDER = "rgba(255,255,255,0.10)";   // the feed's --card-border, stated by value
+export const TAG_BTN_BORDER = "rgba(255,255,255,0.10)";   // the feed's --card-border, stated by value (the dark theme's)
+// THE BORDER BOTH BOXES READ (the tab lock's review, 2026-09-13): the themed token every sheet defines per theme (--card-border,
+// styles.css and feed.css, dark and light), with the dark literal as the fallback a sheet-less host resolves to. Stated once here:
+// the tag button paints it inline, the chat strip's padlock reads it through its own property, so the two boxes match in every theme
+// (on the cream theme the bare literal fell to a 3 of 255 edge on both).
+export const TAG_BTN_BORDER_CSS = "var(--card-border, " + TAG_BTN_BORDER + ")";
 export const TAG_BTN_WASH = "rgba(156,210,255,0.12)";     // the feed .on's faint accent wash, ditto
 
 /** THE TAG CHIP (one vocabulary, T251 — the user 2026-09-07: a group header must show its tag the way
@@ -226,7 +231,7 @@ export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement,
   else {
     // inline mode mirrors the feed's .on by VALUE: accent glyph + accent border + the faint wash
     btn.style.color = narrowed ? TAG_BTN_ACCENT : TAG_BTN_GRAY;
-    btn.style.borderColor = narrowed ? TAG_BTN_ACCENT : TAG_BTN_BORDER;
+    btn.style.borderColor = narrowed ? TAG_BTN_ACCENT : TAG_BTN_BORDER_CSS;
     btn.style.background = narrowed ? TAG_BTN_WASH : "transparent";
   }
   btn.setAttribute("aria-pressed", narrowed ? "true" : "false");

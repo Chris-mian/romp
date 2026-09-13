@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
+import { ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -27,13 +27,13 @@ import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./sub
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton, syncTagFilter, tagChip } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext, DayWalk } from "./time-marker";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
 import { senderKind, SenderKind } from "./sender-identity";
-import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
+import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { backendLabel, effectiveDefaultBackend } from "./backend-names";
 import { delegate } from "./actions";
 import { flash } from "./actions";   // its own line: the import above is pinned verbatim by click-safe.test.ts (the file-view precedent)
@@ -110,6 +110,7 @@ import { dragSlotIndex } from "./dragslot";
 import { acceptDragEnter } from "./drag-accept";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, senderPrRepo, postalSenderHost } from "./pr-links";
+import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, writerIsReader, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
 import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey } from "./frame-listener";
 import { highlightHtml } from "./highlight-cache";
 import { wrapCodeLines, addCopyBtn } from "./code-block";   // a fence's per-line rows and Copy button, shared with the file viewer
@@ -5816,7 +5817,7 @@ function flipTabs(mutate: () => void): void {
   });
 }
 function reorderTo(dragId: string, targetId: string, after: boolean): boolean {   // whether it reordered: a drop that it refused is not a committed drag
-  if (fedMissing) return false;   // no manager: the strip shows the kernel's seed, not an arrangement — a reorder here would be a lie to keep
+  if (fedMissing || settings.tabsLocked) return false;   // no manager: the strip shows the kernel's seed, not an arrangement — a reorder here would be a lie to keep; or the tabs were locked mid-drag by another window (T395 round one)
   const di = order.indexOf(dragId);
   if (di < 0) return false;
   order.splice(di, 1);
@@ -5978,6 +5979,15 @@ let renderPendingWhilePressed = false;
 // before the rebuild. Reset ("") wherever the strip's DOM is changed outside renderTabs — a tab drag's live
 // reorder — so the next render rebuilds whatever the inputs say.
 let tabStripSig = "";
+// THE TAB LOCK (T395, the user 2026-09-12): one press freezes every way a tab moves (the drag reorder, a drag into another
+// column or the split's edge, the tab menu's Move to rows) until the next press. A per-browser setting like the gear's,
+// written through the same store and fanned out the same way: the same-document signal every consumer listens to (the
+// strip repaints through its signature), and the host relay VS Code's separate panes need.
+function setTabsLocked(on: boolean): void {
+  settings = saveSettings({ tabsLocked: on });
+  try { window.dispatchEvent(new Event("romp:settings")); } catch { /* no window event: nothing listens */ }
+  vscodeApi?.postMessage({ type: "settingsSync", settings });
+}
 // Release the press-hold and flush any deferred rebuild. Hoisted so the DRAG handlers can call it
 // too: a native drag swallows the pointerup, so without this a finished drag would leave the strip
 // frozen against pushes until the next unrelated press (see the dragend handler).
@@ -6106,8 +6116,9 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
     }
   }
   head.setAttribute("aria-label", spoken);
-  head.draggable = true;
+  head.draggable = !settings.tabsLocked;   // the tab lock (T395) holds the groups too
   head.addEventListener("dragstart", (e) => {
+    if (settings.tabsLocked) { e.preventDefault(); return; }
     draggedGroup = name;
     if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setDragImage(dragImageBlank(), 0, 0); }
     head.classList.add("dragging");
@@ -6234,7 +6245,7 @@ function wireTabDrag(tab: HTMLElement, id: string): void {
   // visual, browser-style. dragImageBlank must be a rendered DOM node at dragstart (Chromium
   // snapshots it), hence the fixed off-viewport 1px div installed once below.
   tab.addEventListener("dragstart", (e) => {
-    if (fedMissing) { e.preventDefault(); return; }   // no manager: the strip is the kernel's seed, not an arrangement — nothing to reorder (see fedMissing)
+    if (fedMissing || settings.tabsLocked) { e.preventDefault(); return; }   // the tab lock (T395) holds it; no manager: the strip is the kernel's seed, not an arrangement — nothing to reorder (see fedMissing)
     draggedId = id; draggedEl = tab; tabDragCommitted = false;
     tabStripSig = "";   // the drag live-reorders the strip's DOM: whatever the order ends up, the next render rebuilds
     if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setDragImage(dragImageBlank(), 0, 0); }
@@ -6282,7 +6293,7 @@ function makeSkeletonTab(id: string): HTMLElement {
   tab.dataset.id = id;
   tab.dataset.act = "select";   // click → setActive via the stable #tabs delegate (./actions), click-safe as every tab
   tab.addEventListener("keydown", onTabKey);
-  tab.draggable = !fedMissing;
+  tab.draggable = !fedMissing && !settings.tabsLocked;
   wireTabDrag(tab, id);
   if (color) {
     tab.style.setProperty("--chip-bg", color.bg);
@@ -6552,7 +6563,7 @@ function renderTabs() {
   // input missing here is a repaint that never happens.
   const stripSig = JSON.stringify([
     activeId, peekId, ids, visibleIds, activeId ? tabInView(activeId) : null, plan.items,
-    settings.tabCtx, settings.stripGroupRows, settings.theme, settings.colormap, settings.tabWidgets, titleWithKey("Open a session", "session.new"),   // tabWidgets: which widgets a tab carries, their order and options (T379)
+    settings.tabCtx, settings.stripGroupRows, settings.tabsLocked, settings.theme, settings.colormap, settings.tabWidgets, titleWithKey("Open a session", "session.new"),   // tabWidgets: which widgets a tab carries, their order and options (T379); tabsLocked: the tab lock (T395)
     surfaceLens(effViews(), "chat"), unions,
     snapView,   // the section whose view the pane shows (makeGroupHead: the header's mark and its way-back act)
     visibleIds.map((id) => {
@@ -6591,6 +6602,7 @@ function renderTabs() {
   // the active tab. Captured before the tab rule below, which keeps its pinned two-line shape.
   const focusedEl = document.activeElement as HTMLElement | null;
   const focusedGroup = (focusedEl?.closest(".tab-group-head") as HTMLElement | null)?.dataset.group;
+  const focusedLock = !!focusedEl?.closest(".tab-lock");   // a keyboard press on the lock rebuilt the strip: the lock keeps the focus (T395 round one)
   const refocusTab = bar.contains(document.activeElement);
   bar.replaceChildren();
   // A session under several tags has a COPY in each group (T264b, the user 2026-09-08: tags are
@@ -6633,7 +6645,7 @@ function renderTabs() {
     tab.addEventListener("keydown", onTabKey);
     // drag-to-reorder (synced with the timeline via the shared session-order file). A subagent viewer
     // stays put: it is client-only, and a reorder would post its id into the kernel's order.
-    tab.draggable = !s.sub && !fedMissing && !isProvisionalId(id);   // …and a page without its manager offers no drag at all (fedMissing); a create in flight has no session to move yet (the chat split: a zone's drop would open a column on an id the kernel does not know)
+    tab.draggable = !s.sub && !fedMissing && !isProvisionalId(id) && !settings.tabsLocked;   // the tab lock (T395) holds every tab; …and a page without its manager offers no drag at all (fedMissing); a create in flight has no session to move yet (the chat split: a zone's drop would open a column on an id the kernel does not know)
     wireTabDrag(tab, id);   // the dragstart/dragend pair, shared with the skeleton tab (2026-09-07)
     if (s.color) {
       tab.style.setProperty("--chip-bg", s.color.bg);
@@ -6699,6 +6711,23 @@ function renderTabs() {
   add.title = titleWithKey("Open a session", "session.new");
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
+  // THE TAB LOCK (T395, the user 2026-09-12): right after the + tab and before the tags box, in a little rounded box like
+  // the tags box (the user says the position may move later): the padlock the Sessions pane shows at its bottom (icons.ts,
+  // one drawing). A press freezes every tab move until the next press (setTabsLocked); locked, the box wears the menu
+  // vocabulary's current dress, the accent on the glyph and its outline, never a fill. The state is in the strip's
+  // signature, so the toggle repaints through it; the click is the node's own, click-safe because the strip is rebuilt
+  // only when its signature changes.
+  const lockBox = el("span", "tab-lockbox");
+  const lock = el("button", "tab-lock" + (settings.tabsLocked ? " on" : "")) as HTMLButtonElement;
+  lock.type = "button";
+  lock.innerHTML = settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN;
+  lock.title = settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again";
+  lock.setAttribute("aria-label", "Lock tabs");
+  lock.style.setProperty("--tab-lock-border", TAG_BTN_BORDER_CSS);   // the tag button's border, from its one source (tag-menu.ts): the themed token, so the two boxes match in every theme
+  lock.setAttribute("aria-pressed", settings.tabsLocked ? "true" : "false");
+  lock.addEventListener("click", (e) => { e.stopPropagation(); setTabsLocked(!settings.tabsLocked); });
+  lockBox.appendChild(lock);
+  bar.appendChild(lockBox);
   // the shared TAG-ICON filter (the user 2026-08-25): identical across surfaces, opening the one
   // multi-select lens menu — this instance governs the TAB STRIP (actives.chat)
   const tagBtn = tagMenuButton("filter these tabs by tag", (btn) => {
@@ -6789,7 +6818,8 @@ function renderTabs() {
     const h = Array.from(bar.querySelectorAll<HTMLElement>(".tab-group-head")).find((x) => x.dataset.group === focusedGroup);
     // the group gone, or now holding the active tab (no stop): the old rule
     if (h && h.tabIndex >= 0) h.focus(); else focusActiveTab();
-  } else if (refocusTab) focusActiveTab();
+  } else if (focusedLock) (bar.querySelector(".tab-lock") as HTMLElement | null)?.focus();   // not the active tab: Enter again would drop the caret into the composer
+  else if (refocusTab) focusActiveTab();
   stripAftermath(visibleIds, ids);
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
   // the rotated toggles in the chat pane's vertical strip — see _LANDING_FLEET_JS — so the pill was redundant.)
@@ -7209,11 +7239,15 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
           if (home) {
             lb.append("Move to ", named()); bodyE.appendChild(lb);
             row.appendChild(bodyE);
+            // the tab lock (T395): a move row is a tab move, so it reads held (the label dims, the row answers nothing); the + beside
+            // it still tags (adding is not a move), so it keeps its strength and says so itself (round one, LOW 1)
+            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock in the tab strip"; }
             const plus = el("button", "ctx-tag-x ctx-tag-plus") as HTMLButtonElement;
-            plus.type = "button"; plus.textContent = "+"; plus.title = "add this tag too — the session keeps its other tags";
+            plus.type = "button"; plus.textContent = "+";
+            plus.title = "add this tag too (the session keeps its other tags)" + (settings.tabsLocked ? ": adding is not a move, so the lock does not hold it" : "");
             plus.addEventListener("click", (e2) => { e2.stopPropagation(); editUnion(g, { add: [id] }); build(); sb.textContent = subText(); });
             row.appendChild(plus);
-            row.addEventListener("click", (e2) => { e2.stopPropagation(); moveUnion(home, g); build(); sb.textContent = subText(); });
+            row.addEventListener("click", (e2) => { e2.stopPropagation(); if (settings.tabsLocked) return; moveUnion(home, g); build(); sb.textContent = subText(); });
           } else {
             lb.append("+ ", named()); bodyE.appendChild(lb);
             row.appendChild(bodyE);
@@ -7581,7 +7615,7 @@ function startTabRename(id: string, copy?: string) {   // `copy`: which copy of 
     input.remove();
     fixed?.remove();
     label.style.display = "";
-    tab.draggable = !fedMissing;
+    tab.draggable = !fedMissing && !settings.tabsLocked;
     renameActive = false;
     if (renderPendingAfterRename) { renderPendingAfterRename = false; renderTabs(); }
     // The bare name, never the display string: the host prefix is this viewer's, and the kernel that
@@ -7904,7 +7938,10 @@ const PROVISIONAL_WAIT_MS = 90_000;
 // viewer are this page's own, never the store's, though both carry data-id on the strip), and whether this column has
 // a create in flight, or a failed one still holding its text, that would die with the document. Shape checks and a flag
 // read: any column's page answers for any id.
-(window as any).__rompMovableSession = (sid: unknown): boolean => typeof sid === "string" && !!sid && !isProvisionalId(sid) && !isSubId(sid);
+(window as any).__rompMovableSession = (sid: unknown): boolean => typeof sid === "string" && !!sid && !isProvisionalId(sid) && !isSubId(sid) && !settings.tabsLocked;   // …and nothing moves while the tabs are locked (T395)
+// the REASON behind the answer above (T395 round one): the shell's refusal toast names the padlock for a lock, and says
+// "only an open session" for the rest, instead of one line for both
+(window as any).__rompMoveRefusal = (sid: unknown): string => typeof sid !== "string" || !sid || isProvisionalId(sid) || isSubId(sid) ? "not-open" : settings.tabsLocked ? "locked" : "";
 (window as any).__rompColumnBusy = (): boolean => !!provisionalId || failedProvisionals.size > 0;
 
 function openProvisional(req: CreateReq): void {
@@ -11078,6 +11115,10 @@ function writeScroll(content: HTMLElement, top: number, writer: string, stick = 
   if (after !== before) lastScrollWriteAfter = after;   // a write that moved the view owes exactly one scroll event, its echo; one that did not move owes none, and must not eat a later gesture landing near its target (verifier low, round two)
   lastKnownSh = content.scrollHeight;
   if (after !== before) scrollDiagRow("scrollwrite", scrollWriteRow(activeId || "", writer, before, after, stick, content.scrollHeight, content.clientHeight));
+  // a write of #content while a landing settles: the READER's own writers (the arrow keys, the wheel over a notch, the jump chip)
+  // are their takeover (round four: their writes read as another mover's and land-realign undid three arrow steps), every other
+  // writer's move is a sample for the settle rule, which re-lands (T386)
+  if (after !== before && landSettling && !landSettling.done && writer !== "land-on" && writer !== "land-realign") { if (writerIsReader(writer)) settleGesture(); else settleSample(); }
 }
 // EVERY mover of #content goes through writeScroll (T262j, the user 2026-09-08: an unwritten move the journal could
 // not name). scrollBy and scrollIntoView are scrollTop writes expressed differently, so they are expressed as such:
@@ -11220,9 +11261,37 @@ function scrollToAnchor(uuid: string): boolean {
     return true;
   }
   landTrail.push("pointer-exact");
-  landOn(target, uuid);
-  if (pendingAnchorQuote) { highlightCiteSpan(target, pendingAnchorQuote); pendingAnchorQuote = null; }
+  // T386 (the user 2026-09-12): a card's anchor is the FIRST atom of its transcript turn, often a tool call inside a collapsed
+  // group, while the text the card quotes sits atoms later; a landing on the anchor's own top put the reader on the group
+  // with the words far below. The landing aligns on the quoted span when the frame carries one and it is found in the
+  // turn's atoms (the anchor's element and the atoms after it up to the next user turn), else on the turn's first text
+  // atom below a tool or thinking atom, else on the anchor's element as before. The anchor's element is what flashes.
+  const quote = pendingAnchorQuote; pendingAnchorQuote = null;
+  const quoteEl = quote ? highlightCiteSpan(target, quote) : null;
+  landOn(target, uuid, quoteEl ?? firstTextAtomBelow(target), quote);
   return true;
+}
+/** The atoms of the transcript turn the anchor's element opens: itself and the following event elements up to (not
+ *  including) the next user turn. */
+function turnAtomsOf(target: HTMLElement): HTMLElement[] {
+  const out = [target];
+  for (let n = target.nextElementSibling; n; n = n.nextElementSibling) {
+    if (!(n instanceof HTMLElement) || !n.classList.contains("turn") || n.classList.contains("turn-user")) break;
+    out.push(n);
+  }
+  return out;
+}
+/** The first text atom below a tool, tool-group or thinking anchor within its turn (the element the words live in), else
+ *  null. A grouped run of tool calls renders as ONE .turn-toolgroup head carrying the first tool's uuid (renderToolGroup),
+ *  which is the shape a card's anchor takes on a long turn (round one, medium 5): the head counts as a tool atom. */
+function firstTextAtomBelow(target: HTMLElement): HTMLElement | null {
+  if (!isToolOrThinkingAtom(target)) return null;
+  for (const n of turnAtomsOf(target).slice(1)) { const md = n.querySelector(".assistant.md"); if (md) return md as HTMLElement; }
+  return null;
+}
+/** A tool atom, a grouped run of them, or a thinking atom: the shapes a turn opens with before its words. */
+function isToolOrThinkingAtom(n: Element): boolean {
+  return n.classList.contains("turn-tool") || n.classList.contains("turn-toolgroup") || n.classList.contains("turn-thinking");
 }
 
 /** The time-only landing (see landActive): the event whose epoch sits nearest `t` among the
@@ -11265,9 +11334,10 @@ function landNearestMoment(t: number): boolean {
 // one-shot: when a jump also switches tabs, the tab bar re-renders (possibly
 // wrapping to a SECOND row) and the ledger box for the new session appears — both
 // AFTER the scroll ran. #content shrinks by that growth and the landed turn drifts
-// off its mark. So: re-align whenever the bar/ledger actually resizes, plus two
-// timed retries for late layout (images, markdown), for ~1.2s — canceled the
-// moment the user wheel-scrolls so we never fight a real gesture.
+// off its mark. So the landing SETTLES (landing-settle.ts, the block below): for ~1.2 s every event that can move the
+// target is a sample (the target's or a spacer's box, the boxes above the transcript, any other writer, the first paint
+// and the window's end), a sample off the row re-lands, and the landing yields only to the reader's own gesture, a
+// scroll with their input behind it; the row is filed when the settle ends, with the measured distance.
 // The supporting SPAN (T218): the distiller quoted the sentence its takeaway rests on, the kernel
 // located it in the cited atom, and the landing highlights it INSIDE the (often long, multi-topic)
 // message — the study's most common partial was the right message with the claim buried deep. The
@@ -11275,19 +11345,29 @@ function landNearestMoment(t: number): boolean {
 // never mutated (the click-safety family); a browser without it, or an unfindable quote, keeps
 // today's whole-message landing exactly (the honest-fallback rule).
 let pendingAnchorQuote: string | null = null;
-function highlightCiteSpan(target: HTMLElement, quote: string): void {
+/** Highlight the quoted sentence within the anchor's TURN (its element and the atoms after it, turnAtomsOf: a card's anchor is
+ *  the turn's first atom, the words it quotes may be a later one, T386) and return the element the sentence starts in, for
+ *  the landing to align on; null when the quote is not in the rendered text (no highlight, no guess) or the browser has no
+ *  highlight API. The landing itself is landOn's (one write, settled), no longer a second write from here. */
+function highlightCiteSpan(target: HTMLElement, quote: string): HTMLElement | null {
   try {
     const H = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
-    if (!H || typeof Highlight === "undefined") return;
-    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+    if (!H || typeof Highlight === "undefined") return null;
+    // the words are looked for in the turn's TEXT atoms first, then in its tool and thinking atoms (round one, low 3): a
+    // sentence written through a Write tool and then said in prose must land on the prose, where the card quoted it
+    const atoms = turnAtomsOf(target);
+    const ordered = [...atoms.filter((a) => !isToolOrThinkingAtom(a)), ...atoms.filter((a) => isToolOrThinkingAtom(a))];
     const nodes: Text[] = []; let full = "";
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) { nodes.push(n as Text); full += (n as Text).data; }
+    for (const atom of ordered) {
+      const walker = document.createTreeWalker(atom, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) { nodes.push(n as Text); full += (n as Text).data; }
+    }
     let at = full.indexOf(quote);
     let len = quote.length;
     if (at < 0) {
       const pat = new RegExp(quote.trim().split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "i");
       const m = pat.exec(full);
-      if (!m) return;                                    // unfindable in the rendered text → no highlight, no guess
+      if (!m) return null;                               // unfindable in the rendered text → no highlight, no guess
       at = m.index; len = m[0].length;
     }
     const range = document.createRange();
@@ -11298,36 +11378,172 @@ function highlightCiteSpan(target: HTMLElement, quote: string): void {
       if (started && at + len <= end) { range.setEnd(tn, at + len - pos); break; }
       pos = end;
     }
-    if (!started) return;
+    if (!started) return null;
     H.set("cite-span", new (Highlight as unknown as { new(...r: Range[]): unknown })(range));
     window.setTimeout(() => { try { H.delete("cite-span"); } catch { /* gone with a nav */ } }, 6000);
-    const el0 = range.startContainer.parentElement;
-    const content0 = document.getElementById("content");
-    if (el0 && content0) scrollElInto(content0, el0, "center", "land-on");   // land ON the sentence, not the message top (attributed, T262j)
-  } catch { /* highlight is chrome, never load-bearing */ }
+    return range.startContainer.parentElement;
+  } catch { return null; /* highlight is chrome, never load-bearing */ }
 }
 
-function landOn(target: HTMLElement, flashKey?: string) {
+// ── a landing SETTLES before it is called good (T386 stage 1, the user 2026-09-12) ──────────────────────────────────
+// The landing audit had filed a card click's landing as exact while the reader saw the view elsewhere: the landing write
+// put the target at the viewport top, and a write of the page's own then moved it. The served lab named the writer
+// (tests/test_landing_settles_browser.py): the run's REPLACE by the window shrank the transcript, and the follow-mode
+// snap (tail-shrink) wrote the reader back to the bottom, because the landing had left `stick` on; the 250 ms re-align
+// rescued the lab, and the reader's first wheel cancels that re-align. Two things follow. A landing ENDS follow mode
+// unless it put the reader at the bottom (below). And the landing keeps the target aligned until the transcript stops
+// moving under it (landing-settle.ts, the rule): every event that can move the target is a sample (the target's or a
+// spacer's box resizing, the boxes above the transcript resizing, ANY other writer moving #content, two bounded
+// timers); a sample off the row re-lands ("land-realign"); the landing row is filed when the settle ends, with the
+// measured distance and whether it settled, so `ok` alone is never again the whole verdict. One settle in flight: a
+// newer landing supersedes the older's. The walk-forward of a detached window that fits the viewport waits for it.
+let landSettling: { turn: HTMLElement; at: HTMLElement; uuid: string | null; quote: string | null; rowH: number; samples: SettleSample[]; start: number;
+                    gesture: boolean; row: Record<string, unknown> | null; ro: ResizeObserver | null; timers: number[]; done: boolean; clamp: number } | null = null;
+const afterSettle: (() => void)[] = [];   // what waits for the landing to settle (the window's edge check)
+/** When the reader last put a hand on the scroller (ms): a pointer down or a drag on it or its scrollbar, a touch, a wheel, or a
+ *  key outside an editable field. The scroll listener reads it: a gesture-classified scroll within SETTLE_INPUT_MS of it is the
+ *  reader's takeover; one without is the browser's anchoring or another mover, a sample (round two, medium). */
+let settleLastInput = 0;
+/** The pointer HELD on the scroller itself (round three): a scrollbar thumb drag is one pointerdown on the scroller and then
+ *  scrolls with NO pointer moves until the release, so the timed evidence alone undid a grab-then-move drag (the pause past
+ *  SETTLE_INPUT_MS made every scroll a sample, and land-realign wrote the reader back). While the hold stands every scroll is
+ *  the reader's, whatever the clock says; the timed window stays for wheels, keys, touches and drags inside the content. */
+let settleScrollerHeld = false;
+function settleInput(e: Event): void {
+  const c = document.getElementById("content");
+  if (e.type === "pointerup" || e.type === "pointercancel") { settleScrollerHeld = false; return; }
+  if (e.type === "keydown") {
+    const a = document.activeElement;
+    if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" || (a as HTMLElement).isContentEditable)) return;   // typing scrolls the field, not #content
+  } else {
+    if (e.type === "pointermove" && !(e as PointerEvent).buttons) return;   // a hover is not a hand on the scroller; a drag inside the content is
+    if (!c || !(e.target instanceof Node) || !c.contains(e.target)) return;   // the scroller and its scrollbar (its own box), nothing else
+    if (e.type === "pointerdown") {
+      const pe = e as PointerEvent, cr = c.getBoundingClientRect();
+      if (scrollerGrab(e.target === c, pe.clientX - cr.left, pe.clientY - cr.top, c.clientWidth, c.clientHeight)) settleScrollerHeld = true;
+    }
+  }
+  settleLastInput = Date.now();
+}
+for (const ev of ["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchmove", "wheel", "keydown"]) window.addEventListener(ev, settleInput, { capture: true, passive: true });
+// a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round four, low 1): the hold ends
+// with the page's focus or visibility as well
+window.addEventListener("blur", () => { settleScrollerHeld = false; });
+document.addEventListener("visibilitychange", () => { settleScrollerHeld = false; });
+function settleEnd(s: NonNullable<typeof landSettling>): void {
+  s.done = true; s.ro?.disconnect(); s.ro = null;
+  for (const t of s.timers) clearTimeout(t);
+  if (landSettling === s) landSettling = null;
+}
+/** A newer landing takes over before this one settled: its deferred row is FILED, not dropped (round one, medium 2: the
+ *  user's own double click lost its first row in the very machinery built to diagnose it), as it stood, with the mark. */
+function settleSupersede(s: NonNullable<typeof landSettling>): void {
+  settleEnd(s);
+  if (s.row) vscodeApi?.postMessage({ ...s.row, ...settleRowFields("gave-up", s.samples, s.rowH), gesture: undefined, settled: false, superseded: true, ...(s.clamp ? { clamp: s.clamp } : {}) });   // superseded, not the reader's takeover
+}
+/** The reader took over: a scroll the classifier calls a gesture (never a write's echo) WITH the reader's input behind it (a
+ *  wheel, a scrollbar drag, a touch swipe, a key; settleInput, round two): the landing yields (round one, medium 1: only a
+ *  wheel or a key ended it before, so a scrollbar drag during the settle was undone by the re-land). */
+function settleGesture(): void { const s = landSettling; if (s && !s.done) { s.gesture = true; settleTick(); } }
+/** The anchor's element by uuid in the active view: the selectors scrollToAnchor lands by. */
+function findTurnEl(uuid: string): HTMLElement | null {
+  const v = activeId ? views.get(activeId) : null; if (!v) return null;
+  const u = cssEscape(uuid);
+  return (v.el.querySelector(`.turn[data-uuid="${u}"]`) || v.el.querySelector(`.turn[data-orphan-of="${u}"]`) || v.el.querySelector(`.turn[data-mid="${u}"]`)
+          || v.el.querySelector(`.turn[data-mids~="${u}"]`) || v.el.querySelector(`.turn[data-uuids~="${u}"]`)) as HTMLElement | null;
+}
+/** The element a settling landing aligns on, re-resolved by uuid when a rebuild replaced the DOM under it (the virtualiser's
+ *  rewindow after a far landing detaches the old nodes; a detached box measures as zeros, which read as a constant miss and
+ *  walked the view up one tab bar's height per re-land in the lab). null when the anchor's turn is gone from the view. */
+function settleResolve(s: NonNullable<typeof landSettling>): HTMLElement | null {
+  // a connected element with a box: measurable. A detached one (the rewindow replaced the DOM) or one with no box (the view
+  // hidden by a tab switch mid-settle: display none measures as zeros, round one low 4) is re-found by uuid, and a turn that
+  // still has no box is treated as gone
+  if (s.at.isConnected && s.at.getClientRects().length) return s.at;
+  const turn = s.uuid ? findTurnEl(s.uuid) : null;
+  if (!turn || !turn.getClientRects().length) return null;
+  s.turn = turn;
+  s.at = (s.quote ? highlightCiteSpan(turn, s.quote) : null) ?? firstTextAtomBelow(turn) ?? turn;
+  s.rowH = settleRowHeight(s.at);   // the swapped element's own row (round one, low 1)
+  s.ro?.observe(s.at); if (s.at !== turn) s.ro?.observe(turn);
+  return s.at;
+}
+/** The row the landing must sit within: the aligned element's own height, capped at a fraction of the viewport (round one,
+ *  low 1: a 600 px miss on a 900 px message read settled), never under a few pixels (withinRow's floor). */
+function settleRowHeight(at: HTMLElement): number {
+  const c = document.getElementById("content");
+  return Math.max(8, Math.min(at.getBoundingClientRect().height, (c ? c.clientHeight : 600) * SETTLE_ROW_VIEWPORT_CAP));
+}
+function settleLand(s: NonNullable<typeof landSettling>, writer: string): void {
+  const c = document.getElementById("content"); const at = settleResolve(s);
+  if (c && at) scrollElInto(c, at, "start", writer);
+}
+function settleFinish(s: NonNullable<typeof landSettling>, fields: { dist: number | null; settled: boolean }): void {
+  settleEnd(s);
+  if (s.row) vscodeApi?.postMessage({ ...s.row, ...fields, ...(s.clamp ? { clamp: s.clamp } : {}) });
+  const q = afterSettle.splice(0);
+  for (const f of q) f();
+}
+/** One measurement of the target against the spot it CAN reach, then the rule's step. Near the tail the scroll clamp stops
+ *  the target short of the viewport top (round one, medium 3: a correct landing within a viewport of the tail read dist 93,
+ *  settled false, and re-landed no-op writes for the whole window); the reachable offset is subtracted, and the row carries
+ *  it as `clamp` so the reader of the audit knows why the target sits where it does. */
+function settleSample(): void {
+  const s = landSettling; if (!s || s.done) return;
+  const c = document.getElementById("content"); if (!c) return;
+  const at = settleResolve(s);
+  if (!at) { settleFinish(s, { dist: null, settled: false }); return; }   // the turn left the view: nothing to align, the row says so
+  const cr = c.getBoundingClientRect(), r = at.getBoundingClientRect();
+  const floor = reachableOffset(r.top - cr.top + c.scrollTop, c.scrollHeight, c.clientHeight);
+  s.clamp = floor;
+  s.samples.push({ at: Date.now() - s.start, dist: (r.top - cr.top) - floor });
+  settleTick();
+}
+function settleTick(): void {
+  const s = landSettling; if (!s || s.done) return;
+  const step = settleStep(s.samples, s.rowH, s.gesture, Date.now() - s.start);
+  if (step === "wait") return;
+  if (step === "realign") { settleLand(s, "land-realign"); return; }
+  settleFinish(s, settleRowFields(step, s.samples, s.rowH));
+}
+function landOn(target: HTMLElement, flashKey?: string, alignOn?: HTMLElement | null, quote?: string | null) {
   // the land and its re-alignments are writes of #content like any other, attributed (T262j): "land-on" for the
-  // landing itself, "land-realign" for each re-land while the boxes above size in
-  const land = (writer: string) => { const c = document.getElementById("content"); if (c) scrollElInto(c, target, "start", writer); };
-  const realign = () => land("land-realign");
+  // landing itself, "land-realign" for each re-land while the transcript settles under it. `alignOn` (T386): the element
+  // whose top goes to the viewport top when it is not the turn's own (the quoted span, or a turn's text below a tool
+  // group); `quote` re-finds that span after a rebuild; the turn is still what flashes
+  const at = alignOn ?? target;
+  settleLastInput = 0; settleScrollerHeld = false;   // the input that caused this landing (a click on a link in the scroller) is not evidence for taking it over (round three, low 4); a hold whose release never reached the page (a press held across an alt-tab) does not outlive the landing (round four, low 1)
+  const land = (writer: string) => { const c = document.getElementById("content"); if (c) scrollElInto(c, at, "start", writer); };
   land("land-on");
+  // a landing is the reader's intent to be AT this message: follow mode ends unless the landing put them at the bottom
+  // (the follow-mode snap otherwise writes them back to the bottom on the next shrink, the T386 double click)
+  { const c = document.getElementById("content"); const v = activeId ? views.get(activeId) : null; if (c && v) v.stick = atBottom(c); }
   if (flashKey == null || flashKey !== flashedAnchor) {   // one flash per navigation (see flashedAnchor)
     if (flashKey != null) flashedAnchor = flashKey;
-    target.classList.add("anchor-flash");
-    setTimeout(() => target.classList.remove("anchor-flash"), 1700);
+    at.classList.add("anchor-flash");                     // the ALIGNED element flashes: the turn may sit above the viewport when the words are aligned (round one, low 2)
+    setTimeout(() => at.classList.remove("anchor-flash"), 1700);
   }
-  const until = Date.now() + 1200;
-  let ro: ResizeObserver | null = null;
-  const stop = () => { ro?.disconnect(); ro = null; window.removeEventListener("wheel", stop); };
+  if (landSettling) settleSupersede(landSettling);   // a newer landing supersedes the older's settle: its row is filed as it stood, marked
+  const landSettle = { turn: target, at, uuid: flashKey ?? null, quote: quote ?? null, rowH: settleRowHeight(at), samples: [] as SettleSample[],
+                       start: Date.now(), gesture: false, row: null as Record<string, unknown> | null, ro: null as ResizeObserver | null, timers: [] as number[], done: false, clamp: 0 };
+  landSettling = landSettle;
   if (typeof ResizeObserver === "function") {
-    ro = new ResizeObserver(() => { if (Date.now() < until) realign(); else stop(); });
+    const ro = new ResizeObserver(() => settleSample());
+    ro.observe(at); if (at !== target) ro.observe(target);
     for (const id of ["tabbar", "ledger"]) { const c = document.getElementById(id); if (c) ro.observe(c); }
+    const v = activeId ? views.get(activeId) : null;
+    if (v) for (const sp of Array.from(v.el.querySelectorAll(".tx-spacer"))) ro.observe(sp);
+    landSettle.ro = ro;
   }
-  window.addEventListener("wheel", stop, { passive: true });
-  setTimeout(() => { if (ro && Date.now() < until + 100) realign(); }, 250);
-  setTimeout(() => { if (ro) realign(); stop(); }, 1200);
+  // the reader's takeover reaches settleGesture through the scroll listener: the classifier's gesture verdict with the reader's
+  // input behind it (settleInput: pointer, touch, wheel or key; round two)
+  // two bounded backstops beside the event samples (round one, low 5): the first paint after the landing's own render, and the
+  // window's end, where the landing is filed as it stands (settled on its row, else unsettled; nothing settles early, round two
+  // low 1). Every other sample is an event: a box resizing, another writer's move, a scroll with no input behind it
+  landSettle.timers.push(window.setTimeout(settleSample, SETTLE_FIRST_PAINT_MS), window.setTimeout(settleSample, SETTLE_MS + 20));
+  // the landing's own first sample, at the write (round two), is taken by the caller once the row is attached (landActive): taken
+  // here, an unmeasurable target finished the settle inside landOn with no row to file, and the caller then posted a row with no
+  // dist or settled key, the shape the audit reserves for an older bundle (round three, low 1)
 }
 
 
@@ -12786,11 +13002,15 @@ function landActive(content: HTMLElement | null, v: View): void {
   // Diagnostics: log every landing attempt; a deep-link that couldn't resolve announces itself loudly
   // instead of impersonating a successful jump.
   if (att.anchor || att.t != null) {
-    vscodeApi?.postMessage({
+    const row: Record<string, unknown> = {
       type: "locateDiag", id: activeId, ok: scrolled, trail: landTrail.slice(),
       anchor: att.anchor ?? undefined, anchorT: att.t ?? undefined, kind: att.kind ?? undefined,
       keep: att.keep || undefined,
-    });
+    };
+    // an exact landing's row waits for the landing to SETTLE and goes out with the measured distance (T386); every
+    // other outcome (a miss, a fetch in flight, a keep-offset restore) files at once, as before
+    if (scrolled && landSettling && !landSettling.done && landTrail[landTrail.length - 1] === "pointer-exact") { landSettling.row = row; settleSample(); }   // the row attached, then the write-time sample: a takeover in the first frames files the landing as it stood, an unmeasurable one files settled false (rounds two and three)
+    else vscodeApi?.postMessage(row);
     // A keep-offset restore is NOT a user navigation — nobody asked to locate anything, so a failed one must
     // not raise "couldn't locate this in the transcript" at a reader who only scrolled. It still gets its
     // audit row above (trail + keep), which is where a lost position is diagnosed from.
@@ -13194,6 +13414,10 @@ function updateReplyChips(): void {
     const cls = classifyScroll(c.scrollTop, lastScrollWriteAfter);
     const gv = activeId ? views.get(activeId) : null;
     if (gv) gv.gestureScroll = cls === "gesture";   // read once by the edge check this event runs next (T366): a write's echo is no gesture
+    if (cls === "gesture") { if (gestureEvidence(settleLastInput, Date.now(), settleScrollerHeld)) settleGesture(); else settleSample(); }          // the reader took over, by any input (a scrollbar drag, a touch swipe, a wheel): a settling landing yields (T386 round one, medium 1)
+    // …a gesture with a reader's input behind it (round two, medium): the browser's own scroll anchoring (a node inserted or a spacer
+    // re-estimated above the viewport) moves scrollTop with no write and no input, and the classifier calls that a gesture too; for
+    // the settle it is a sample, or the landing that was and stayed exact filed settled false
     lastScrollWriteAfter = null;   // one-shot: the first event after a write consumes its marker, echo or not (a gesture that lands within a pixel of an older write's target is a gesture)
     if (cls !== "write-echo") scrollDiagRow("scrollgesture", { sid: activeId || "", top: c.scrollTop, gesture: true, sh: c.scrollHeight, ch: c.clientHeight });
     lastKnownSh = c.scrollHeight;   // sh/ch: a clamp reads top == sh - ch after sh dropped (T262e)
@@ -13684,7 +13908,7 @@ const BG_RANK: Record<string, number> = { failed: 3, running: 2, completed: 1 };
 // T394 (the user 2026-09-12, from a screenshot of the fold with a section for tasks merely also running): a tracked task the kernel's rows do
 // not name is still a command or an agent, and what set it apart was a JUDGE'S VERDICT (the closer audited its launch without a
 // wait), not a kind. So it lists in its kind's section, dimmed, with the verdict as a muted suffix on the row (kept running, not
-// waited on), and the header counts it apart from the awaited breakdown; the section of its own, whose title said nothing of
+// waited on), and the header counts it with every listed row by kind, naming how many wear the verdict; the section of its own, whose title said nothing of
 // that, is gone. One hue per kind for the dot and the caption word (the sheet: bg-kind-*), status overriding for failed and
 // completed rows.
 const BG_KEPT_WORD = "· kept running, not waited on";
@@ -13945,7 +14169,7 @@ function renderBgTasks() {
   } else {
     // WORKING (or idle with nothing awaited — a service the session keeps around): the same rows, worded
     // as what they are, no idle note. The header counts every row the list shows (T394): the in-flight rows by
-    // kind, then the tracked tasks the kernel names no row for, apart, as the kept-running rows they are.
+    // kind, then the tracked tasks the kernel names no row for, counted with them by kind, the rows wearing the verdict named after.
     lab.textContent = "In the background · " + listBreakdown(counted, keptN);
   }
   head.appendChild(lab);
@@ -17040,13 +17264,13 @@ function olderOnServer(s: Session): boolean {
 // CLICK of the reader's (a card, a lane, a deep link, a notch, a reply chip, a comment tick: any anchor landing with no keep
 // offset), which the strip names as the message they opened, with its time when the frame carried one; the reload restore
 // of their own saved place arms a keep offset and keeps the plain sentence (verifier low, round two)
-const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null }>();
+const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null; kind: string | null }>();
 function requestAround(sid: string, uuid: string): boolean {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || loadingOlder.has(sid)) return false;
   const nav = !relandAsk;
   const kind = pendingAnchorKind ?? pendingAnchorIntent ?? null;
-  pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null });
+  pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null, kind: nav ? kind : null });   // t and kind ride to the adoption (T386)
   // every window ask leaves a diagnostic row (T366: the rows of the report had the reply's landing but nothing said
   // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked;
   // under the same per-minute budget as the other scroll rows (verifier low 5)
@@ -17117,7 +17341,9 @@ function chatWindow(msg: any) {
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) return;
   const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
-  if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
+  // the same landing re-armed, so the click's time and kind ride through (T386: the adoption used to reset them, and the
+  // landing row lost the datum that ties it to the click); a window with no navigation behind it carries none
+  if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = ask?.t ?? null; pendingAnchorKind = ask?.kind ?? null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
   showActive();
   updateLivePaused();
   window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));
@@ -17127,6 +17353,7 @@ function chatWindow(msg: any) {
 // (it returns on "everything rendered", or asks for older first), so its next page is asked for directly (round 2, item 7;
 // round 3: chatMore too, so a short page appended to a short run keeps walking).
 function edgeCheckAfterWindow(sid: string): void {
+  if (landSettling && !landSettling.done) { afterSettle.push(() => edgeCheckAfterWindow(sid)); return; }   // a fresh landing settles first (T386): the walk never moves the reader off it
   const c = document.getElementById("content");
   const cur = sessions.get(sid);
   if (cur && cur.detached && c && c.scrollHeight <= c.clientHeight + 1) { requestNewer(sid); return; }

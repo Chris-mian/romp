@@ -731,6 +731,35 @@ class _PerfStats:
 _PERF_STATS = _PerfStats()
 
 
+_STAGE_TL = threading.local()     # the calling thread's current stage name (T401): set by _job_stage and the push, read by the
+#                                   event model's per-stage read and hydration rows through set_read_stage_provider
+
+
+def _current_read_stage():
+    return getattr(_STAGE_TL, "name", None)
+
+
+def _stage_marked(name):
+    """Decorator: the calling thread's stage mark is `name` for the function's duration and restored on EVERY exit, a raise or an
+    early return included (T401 round one: _push set the mark inline and restored it at its end, so a caught build failure
+    returned before the restore and the pusher thread stayed marked `push` for the process's life)."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def marked(*args, **kwargs):
+            prev = getattr(_STAGE_TL, "name", None)
+            _STAGE_TL.name = name
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _STAGE_TL.name = prev
+        return marked
+    return deco
+
+
+em.set_read_stage_provider(_current_read_stage)   # T401: the thread's stage mark, so reads and hydrations count per (stage, caller)
+
+
+
 class _CountedEvent(threading.Event):
     """A threading.Event whose set() also counts in _PERF_STATS: the pusher's wake. Counting at the
     event keeps every existing call site as it is, including the bound-method callbacks
@@ -46747,6 +46776,7 @@ def _feed_first(now, live_map, targets, connect):
     return True
 
 
+@_stage_marked("push")             # T401: the push's reads count under "push", the mark restored whatever exit the body takes
 def _push(targets, connect=False, live_map=None):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
@@ -49713,11 +49743,15 @@ def _pusher_cycle():
 def _job_stage(name, thunk):
     """One tick job as a sub-stage of `jobs` in the cycle's split (T398): the boot's first split said jobs 25 s with 224 MB read
     and nothing finer, so each job here closes its own `jobs.<name>` stage and the row names the job that read. The job is a
-    thunk (`lambda: _x_tick(now, live_map)`), so the call reads as before on its line and the tests that pin those lines hold."""
+    thunk (`lambda: _x_tick(now, live_map)`), so the call reads as before on its line and the tests that pin those lines hold.
+    The thread's stage mark is `jobs.<name>` for the job's duration (T401: the reads inside it count under it)."""
     _t = time.monotonic()
+    prev = getattr(_STAGE_TL, "name", None)
+    _STAGE_TL.name = "jobs." + name
     try:
         return thunk()
     finally:
+        _STAGE_TL.name = prev
         _PERF_STATS.stage("jobs." + name, time.monotonic() - _t)
 
 
@@ -54234,9 +54268,12 @@ function adopt(f,sid,state){if(!f||!state)return;try{f.contentWindow.postMessage
 // would die with the document if its last listed member left and the column closed under it. Shape checks and a flag
 // on the page, so any column's page answers for any id; an older page without them answers movable, not busy.
 function movable(f,sid){try{var m=f&&f.contentWindow&&f.contentWindow.__rompMovableSession;return typeof m==='function'?!!m(sid):true;}catch(e){return true;}}
+// the page's REASON behind movable (T395 round one): 'locked' means the tab lock, and the toast names the padlock; '' is movable
+function refusal(f,sid){try{var w=f&&f.contentWindow&&f.contentWindow.__rompMoveRefusal;return typeof w==='function'?String(w(sid)||''):'';}catch(e){return '';}}
 function busy(f){try{var b=f&&f.contentWindow&&f.contentWindow.__rompColumnBusy;return typeof b==='function'&&!!b();}catch(e){return false;}}
 function loaded(f){try{return !!(f&&f.contentWindow&&typeof f.contentWindow.__rompTakeSessionState==='function');}catch(e){return false;}}   // the page's bundle has evaluated, so a posted message is heard
 var BUSY='A session is still being created in this column.';
+var LOCKED='The tabs are locked: unlock them with the padlock in the tab strip to move this session.';
 function make(n,sid,state){var have=document.getElementById(frameId(n));if(have)return have;
 var g=document.createElement('div');g.className='gv gv-chat';g.id='gv-chat-'+n;
 var p=document.createElement('div');p.className='pane chat-col';p.id=paneId(n);p.setAttribute('data-col',String(n));
@@ -54267,7 +54304,7 @@ function unlist(sid){for(var i=0;i<cols.length;i++){var c=cols[i],j=c.ids.indexO
 // of the origin and the origin would close, so that is refused with a line rather than done for nothing.
 function moveTab(sid,to){if(typeof sid!=='string'||!sid)return null;
 var from=ownerOf(sid),src=frameOfCol(from);
-if(!movable(src,sid))return notify('Only an open session can be moved between columns.');
+var why=refusal(src,sid);if(why==='locked')return notify(LOCKED);if(why||!movable(src,sid))return notify('Only an open session can be moved between columns.');
 if(to==='new'){var se=entry(from);if(se&&se.ids.length===1)return notify('This session is already alone in its column.');
 if(!canSplit())return refuse();
 try{if(!document.body.classList.contains('po-chat')&&window.__rompPaneToggle)window.__rompPaneToggle('chat',true);}catch(e){}   // a hidden chat group comes forward first
@@ -59136,6 +59173,18 @@ class Handler(BaseHTTPRequestHandler):
                        # 2026-08-02, diagnosing exactly such a pair of rows a second apart).
                        "keep": bool(msg.get("keep")),
                        "trail": msg.get("trail") if isinstance(msg.get("trail"), list) else []}
+                # the landing's SETTLE verdict (T386 stage 1): where the target sat once the transcript stopped moving (dist, px,
+                # from the viewport top or the nearest spot the scroll clamp allows), whether that is within a row (settled), and
+                # whether a newer landing superseded this one before it settled. Absent on rows an older bundle posts, and on a
+                # miss (nothing to settle): the key is written only when the page said so, so `ok true, settled false` is the
+                # shape to search for and the fields are never invented
+                # …typed like the fields beside them (round two, low 2): the distances are numbers (a bool is not one), the marks bools
+                for _k in ("dist", "clamp"):
+                    if isinstance(msg.get(_k), (int, float)) and not isinstance(msg.get(_k), bool):
+                        rec[_k] = msg[_k]
+                for _k in ("settled", "superseded", "gesture"):   # gesture: the reader took the landing over (round three, low 3)
+                    if isinstance(msg.get(_k), bool):
+                        rec[_k] = msg[_k]
                 with open(jd.STATE / "locate-audit.jsonl", "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec) + "\n")
             except OSError:
