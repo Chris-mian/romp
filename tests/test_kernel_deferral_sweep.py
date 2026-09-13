@@ -193,7 +193,7 @@ class HardRuleAndRoutingPins(unittest.TestCase):
         self.assertIn('bool((sess_judging or _stall_inflight) and column == "working")', src)
 
     def test_the_sweep_runs_every_tick_independent_of_the_toggle(self):
-        src = inspect.getsource(km._pusher_cycle_jobs)
+        src = inspect.getsource(km._jobs_pass)                          # the jobs thread's list (the housekeeping split, 2026-09-13)
         self.assertIn("_job_stage('deferralSweep', lambda: _deferral_sweep_tick(now))", src)   # a tick job, its own stage (T398)
         sweep_pos = src.index("_deferral_sweep_tick")
         nudge_pos = src.index("_auto_nudge_tick")

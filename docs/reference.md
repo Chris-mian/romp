@@ -1509,6 +1509,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `process`: `rss_kb` (resident set size in KB: the current size on Linux,
   read from `/proc`; the peak, `ru_maxrss`, on macOS, which has no `/proc`),
   `threads`, `cpu_s`, `pid`.
+- `jobs`: the jobs thread, which runs the housekeeping (the sweeps, the
+  reminder walk, the interrupt tick, the persists, the pause and retry
+  family) off the pusher since 2026-09-13, so no browser frame waits on a
+  cold read: `passes`, `pass_ms_sum`, `pass_ms_max`, `pass_ms_last`,
+  `pass_cpu_ms_sum`, `pass_ms_p50`, `pass_ms_p90`, `pass_ms_ring_max`,
+  `ring_n`, `passFailed` (a pass that raised out of the loop and was
+  skipped), `splitFailed`, `firstPass` (the boot's first pass's stage split,
+  the shape of `pusher.firstCycle`) and `stageRing`. The pass's container
+  stage is `jobsPass`, its opening `jobs.prelude`; each job is still its
+  `jobs.<job>` stage, so a stage name says which thread ran it by the list
+  in `_pusher_cycle_jobs` (the pusher's: the checkpoint cycle, pending ops,
+  turn notify, the checkpoint persist and converge, the boot row backstop,
+  the kernel sample, the API health frame) against `_jobs_pass`.
 - `pusher`: `cycles`, `wakes` (every wake call; a burst of wakes runs one
   cycle), `wakes_event` and `wakes_backstop` (how the loop's wait ended),
   `cycle_ms_sum`, `cycle_ms_max` (since start), `cycle_ms_last`,
@@ -1551,7 +1564,15 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   until a clean cycle, so a cycle that woke the pusher itself before raising
   cannot spin the loop. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
-  stage without the kernel alive, and `parse`, the assembly's road counters at
+  stage without the kernel alive. Since the housekeeping moved to the jobs
+  thread the row carries two firsts: `firstCycleS` and `slow` are the
+  pusher's first cycle, the browser's own wait, the meaning every earlier
+  row had; `jobsFirstPassS` and `jobsSlow` are the jobs thread's first pass,
+  where the boot's cold reads now sit. The row is written by whichever loop
+  finishes its first LAST, so `stages` carries both splits (a key both own,
+  `jobs.other`, is summed); a jobs pass still open ten minutes after the
+  pusher's first cycle closed has the row written without it, marked
+  `jobsFirstPassPending`. The row also carries `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood
@@ -1608,7 +1629,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   boot's nudge walk `skipped` on its memo, those it `parsed` (at most forty
   each), and how many it `deferred` to a later pass.
   `firstCycleStacks` is the pusher's stack sampled through the first cycle
-  only, once a second for the first thirty samples and every five seconds
+  only (and `firstPassStacks` the jobs thread's through its first pass, the
+  same shape, with `firstPassStacksFailed`), once a second for the first thirty samples and every five seconds
   after, so the sixty-row cap covers three minutes and a long cycle shows
   where it ended (each row the seconds into the cycle, the stage mark and
   the eight innermost frames as "function (file:line)", the /perf sample's
@@ -1693,7 +1715,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `judge-index`, `judge-triage` and the other tiers' pool workers, `pool`
   for an unprefixed pool worker, `thread` for a default name with no target,
   `pusher`, `producer`, `index`, `triage`, `parse-warm`, `boot-warm`,
-  `sdk-boot`, `first-cycle-sampler`, `main`; never a session's name, sid, host or path (the ident
+  `sdk-boot`, `first-cycle-sampler`, `jobs` (the housekeeping loop split off the pusher), `main`; never a
+  session's name, sid, host or path (the ident
   keeps two workers sharing a kind apart). Each row has `self` (the thread building the
   sample), `stage` (the thread's current stage mark: the pusher's
   `jobs.<job>` or `push`, a handler's `connect`, `null` outside one) and

@@ -419,9 +419,9 @@ class DriveTick(unittest.TestCase):
         # (now, live_map) — the cycle's ONE liveness snapshot, not a per-job fresh read (2026-08-10 CPU fix).
         # Scoped to the CYCLE's body: the whole-file pin also matched the tick's own def line, so
         # deleting the wiring kept every test green (2026-08-18 review, mutation-verified).
-        src = inspect.getsource(km._pusher_cycle_jobs)
+        src = inspect.getsource(km._jobs_pass)                          # the jobs thread's list (the housekeeping split, 2026-09-13)
         self.assertIn("_idle_queue_drive_tick(now, live_map)", src,
-                      "the pusher cycle drives queued wake signals server-side — unattended, no client needed")
+                      "the jobs pass drives queued wake signals server-side — unattended, no client needed")
 
 
 class FakeLive:

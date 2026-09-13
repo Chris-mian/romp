@@ -9,6 +9,7 @@ hot first, at most SPEND_GUARD_RESTAT_PER_CYCLE a cycle; a memo naming another r
 directory is swept of memos whose leaf is gone; the exit's write retries a dump under the pusher's mutation. Synthetic trees only."""
 import json
 import os
+import threading
 import sys
 import tempfile
 import threading
@@ -396,20 +397,18 @@ class FirstCycleGate(unittest.TestCase):
     """The guard's job and the boot's first cycle, driven through whole pusher cycles (no tree fixture: this class must
     collect and run at a base that has no tree memo at all, so its red is the gate's absence and nothing else)."""
 
-    def test_the_boots_first_cycle_carries_no_guard_listing(self):
-        """Two whole pusher cycles with the cycle counter floored at zero: the guard ran zero times after cycle one and once
-        after cycle two (round two, low 4: behavioural, not a source pin)."""
+    def test_the_boots_first_pass_carries_no_guard_listing(self):
+        """Two whole passes of the jobs thread (the guard's home since the housekeeping split, 2026-09-13) with the pass
+        counter floored at zero: the guard ran zero times after pass one and once after pass two (round two, low 4:
+        behavioural, not a source pin)."""
         calls = []
-        saved_push = km._push_all
-        km._push_all = lambda live_map=None: None
-        self.addCleanup(setattr, km, "_push_all", saved_push)
         with mock.patch.object(km, "_spend_guard_tick", side_effect=lambda now, live_map: calls.append(now)), \
-             mock.patch.dict(km._PERF_STATS.pusher, {"cycles": 0}):
-            km._pusher_cycle()
-            self.assertEqual(len(calls), 0, "the boot's first cycle runs no guard")
-            self.assertEqual(km._PERF_STATS.pusher.get("cycles"), 1, "the cycle counted itself")
-            km._pusher_cycle()
-            self.assertEqual(len(calls), 1, "the second cycle runs it")
+             mock.patch.dict(km._PERF_STATS.jobs, {"passes": 0}):
+            km._jobs_cycle()
+            self.assertEqual(len(calls), 0, "the boot's first pass runs no guard")
+            self.assertEqual(km._PERF_STATS.jobs.get("passes"), 1, "the pass counted itself")
+            km._jobs_cycle()
+            self.assertEqual(len(calls), 1, "the second pass runs it")
         import inspect
         self.assertIn("_persist_spend_trees(force=True)", inspect.getsource(km._drain_and_exit), "the memo is written at exit too")
 

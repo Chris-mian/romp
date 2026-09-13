@@ -333,8 +333,13 @@ class _PerfStats:
             "autoNudge", "interruptBlock", "persistTickSeen", "persistIntrMarks", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
             "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
-    STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst") \
+    STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst",
+              "jobsPass", "jobs.prelude") \
         + tuple("jobs." + j for j in JOBS)   # every stage a fresh snapshot lists at zero: the cycle's prelude, the containers, the sub-stages
+    #                                          (`jobsPass` and `jobs.prelude` are the jobs thread's: its pass and its own opening)
+    OWNERS = ("pusher", "jobs")              # the two threads whose per-cycle splits the stats keep (the jobs thread since the split
+    #                                          of the housekeeping off the pusher, 2026-09-13; see _jobs_loop)
+    CONTAINERS = {"push": "push.", "jobs": "jobs.", "jobsPass": "jobs."}   # a container stage -> the prefix of its sub-stages
     BUILDS = ("chat", "feed", "timeline", "feedJson", "thread")
     # builds.chat's bg_miss labels: _chat_build_sig's components, a tab with no cached build, and a tab whose
     # signature could not be taken
@@ -359,11 +364,17 @@ class _PerfStats:
             # the process (firstCycleS alone could not name the stage a 59 s boot spent its time in, 2026-09-12) and
             # appends every cycle's split to `stage_ring`, a deque sized as a fraction of memory (_stage_ring_len), made
             # at the first cycle since the memory reader is defined below this class.
-            self.cycle_stages = {}
             self.first_cycle = None
             self.stage_ring = None
-            self._stage_mark = None
-            self._pusher_ident = None                 # the thread whose stages the split records: the pusher's, set at cycle_begin
+            # The jobs thread's pass (2026-09-13): the housekeeping jobs run on their own thread, so their splits and their pass
+            # durations are kept apart from the pusher's cycles; `jobs` mirrors `pusher` for that loop.
+            self.jobs = {"passes": 0, "pass_ms_sum": 0.0, "pass_ms_max": 0.0, "pass_ms_last": 0.0, "pass_cpu_ms_sum": 0.0,
+                         "passFailed": 0, "splitFailed": 0}
+            self.jobs_ring = collections.deque(maxlen=self.RING)
+            self.first_pass = None
+            self.pass_ring = None
+            self._owners = {}                         # owner kind -> the thread ident whose stages that owner's split records
+            self._cycle_state = {k: {"stages": {}, "mark": None} for k in self.OWNERS}   # per owner: the open split, the byte mark
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0,
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
@@ -448,10 +459,9 @@ class _PerfStats:
             if ms > p["cycle_ms_max"]:
                 p["cycle_ms_max"] = ms
             self.ring.append(ms)
+            st = self._cycle_state["pusher"]
             try:                                          # the split's bookkeeping never ends the pusher thread (it runs in
-                split = {"s": round(dt, 3), "t": time.time(),   #  the cycle's finally, caught nowhere): a failure is counted
-                         "stages": {k: {"ms": round(v["ms"], 1), "bytes": v["bytes"], "hydrated": v["hydrated"]}
-                                    for k, v in self.cycle_stages.items()}}
+                split = self._split(dt, st)               #  the cycle's finally, caught nowhere): a failure is counted
                 if self.first_cycle is None:
                     self.first_cycle = split
                 if self.stage_ring is None:
@@ -459,8 +469,46 @@ class _PerfStats:
                 self.stage_ring.append(split)
             except Exception:
                 p["splitFailed"] = p.get("splitFailed", 0) + 1
-            self.cycle_stages = {}
-            self._stage_mark = None
+            st["stages"] = {}
+            st["mark"] = None
+
+    @staticmethod
+    def _split(dt, st):
+        return {"s": round(dt, 3), "t": time.time(),
+                "stages": {k: {"ms": round(v["ms"], 1), "bytes": v["bytes"], "hydrated": v["hydrated"]}
+                           for k, v in st["stages"].items()}}
+
+    def jobs_pass(self, dt, cpu_dt=0.0):
+        """One pass of the jobs thread (the housekeeping loop split off the pusher, 2026-09-13): its wall and its own CPU
+        seconds, the boot's FIRST pass's split kept for the process (the boot arc reads it beside the pusher's first cycle),
+        and every pass's split on a ring of the same length as the pusher's."""
+        ms = dt * 1000.0
+        with self.lock:
+            j = self.jobs
+            j["passes"] += 1
+            j["pass_ms_sum"] += ms
+            j["pass_ms_last"] = ms
+            j["pass_cpu_ms_sum"] += cpu_dt * 1000.0
+            if ms > j["pass_ms_max"]:
+                j["pass_ms_max"] = ms
+            self.jobs_ring.append(ms)
+            st = self._cycle_state["jobs"]
+            try:
+                split = self._split(dt, st)
+                if self.first_pass is None:
+                    self.first_pass = split
+                if self.pass_ring is None:
+                    self.pass_ring = collections.deque(maxlen=_stage_ring_len())
+                self.pass_ring.append(split)
+            except Exception:
+                j["splitFailed"] = j.get("splitFailed", 0) + 1
+            st["stages"] = {}
+            st["mark"] = None
+
+    def pass_failed(self):
+        """A jobs pass that raised out of its loop and was skipped (the loop's guard), the jobs thread's cycleFailed."""
+        with self.lock:
+            self.jobs["passFailed"] = self.jobs.get("passFailed", 0) + 1
 
     @staticmethod
     def _byte_marks():
@@ -476,56 +524,75 @@ class _PerfStats:
         """Whether the calling thread is the one whose cycle the split records (the pusher's, set at cycle_begin): a
         dashboard's connect push runs _push on the HTTP handler thread through the same stage calls, and its whole build
         landed in the pusher cycle's split, in firstCycle and in the boot-health row, the boot being exactly when pages
-        redial (round one, medium). The cumulative totals take every thread's stages as before."""
-        return self._pusher_ident is not None and threading.get_ident() == self._pusher_ident
+        redial (round one, medium). The cumulative totals take every thread's stages as before. Returns the OWNER KIND
+        ("pusher" or "jobs", the two threads that open cycles: see OWNERS) or None for any other thread."""
+        tid = threading.get_ident()
+        for kind, ident in self._owners.items():
+            if ident == tid:
+                return kind
+        return None
 
     def stage_boundary(self):
         """A stage boundary that closes no stage: the bytes read since the last boundary belong to the stage that closes
         next (the pusher's jobs before the push: `_push` marks its own start so its first sub-stage does not carry them)."""
         marks = self._byte_marks()
         with self.lock:
-            if not self._mine():
+            kind = self._mine()
+            if not kind:
                 return
-            prev = self._stage_mark
-            self._stage_mark = marks
+            st = self._cycle_state[kind]
+            prev = st["mark"]
+            st["mark"] = marks
             if prev is not None:                            # bytes between the jobs' own stages: the glue, a sub-stage of jobs
-                cs = self.cycle_stages.setdefault("jobs.other", {"ms": 0.0, "bytes": 0, "hydrated": 0})
+                cs = st["stages"].setdefault("jobs.other", {"ms": 0.0, "bytes": 0, "hydrated": 0})
                 cs["bytes"] += max(0, marks[0] - prev[0]); cs["hydrated"] += max(0, marks[1] - prev[1])
 
     def stage(self, name, dt):
         marks = self._byte_marks()
         with self.lock:
             self.stages[name] = self.stages.get(name, 0.0) + dt * 1000.0
-            if not self._mine():
+            kind = self._mine()
+            if not kind:
                 return                                      # another thread's push: the totals alone
-            cs = self.cycle_stages.setdefault(name, {"ms": 0.0, "bytes": 0, "hydrated": 0})
+            st = self._cycle_state[kind]
+            stages = st["stages"]
+            cs = stages.setdefault(name, {"ms": 0.0, "bytes": 0, "hydrated": 0})
             cs["ms"] += dt * 1000.0
-            if name in ("push", "jobs"):                    # a container: its bytes are its sub-stages' (already attributed),
-                prev = self._stage_mark                     #  the glue since the last sub-stage closed going to `<name>.other`
+            pfx = self.CONTAINERS.get(name)
+            if pfx:                                         # a container: its bytes are its sub-stages' (already attributed),
+                prev = st["mark"]                           #  the glue since the last sub-stage closed going to `<prefix>other`
                 if prev is not None and (marks[0] > prev[0] or marks[1] > prev[1]):
-                    g = self.cycle_stages.setdefault(name + ".other", {"ms": 0.0, "bytes": 0, "hydrated": 0})
+                    g = stages.setdefault(pfx + "other", {"ms": 0.0, "bytes": 0, "hydrated": 0})
                     g["bytes"] += max(0, marks[0] - prev[0]); g["hydrated"] += max(0, marks[1] - prev[1])
-                self._stage_mark = marks
-                cs["bytes"] = sum(v["bytes"] for k, v in self.cycle_stages.items() if k.startswith(name + "."))
-                cs["hydrated"] = sum(v["hydrated"] for k, v in self.cycle_stages.items() if k.startswith(name + "."))
+                st["mark"] = marks
+                cs["bytes"] = sum(v["bytes"] for k, v in stages.items() if k.startswith(pfx))
+                cs["hydrated"] = sum(v["hydrated"] for k, v in stages.items() if k.startswith(pfx))
             else:
-                prev = self._stage_mark
+                prev = st["mark"]
                 if prev is not None:
                     cs["bytes"] += max(0, marks[0] - prev[0]); cs["hydrated"] += max(0, marks[1] - prev[1])
-                self._stage_mark = marks
+                st["mark"] = marks
 
-    def cycle_begin(self):
-        """The cycle's opening, on the pusher's thread: the thread the split records, the split emptied (a push in the gap
-        between cycles, on any thread, lands in no cycle), and the first byte mark the stages are measured from."""
+    def cycle_begin(self, kind="pusher"):
+        """The cycle's opening, on the owner's thread (the pusher's by default; the jobs thread passes "jobs"): the thread
+        that owner's split records, the split emptied (a push in the gap between cycles, on any thread, lands in no cycle),
+        and the first byte mark the stages are measured from."""
         marks = self._byte_marks()
+        tid = threading.get_ident()
         with self.lock:
-            self._pusher_ident = threading.get_ident()
-            self.cycle_stages = {}
-            self._stage_mark = marks
+            for k in [k for k, ident in self._owners.items() if ident == tid and k != kind]:
+                del self._owners[k]                    # a thread owns one cycle kind at a time (a test drives both loops on one)
+            self._owners[kind] = tid
+            self._cycle_state[kind] = {"stages": {}, "mark": marks}
 
     def first_cycle_split(self):
         with self.lock:
             return dict(self.first_cycle) if self.first_cycle is not None else None
+
+    def first_pass_split(self):
+        """The jobs thread's first pass's split (see jobs_pass), None before it closed."""
+        with self.lock:
+            return dict(self.first_pass) if self.first_pass is not None else None
 
     def parse_hit(self):
         """The kernel's _parse served from the shared store (T323 stage 2)."""
@@ -644,6 +711,12 @@ class _PerfStats:
             pusher["stageRing"] = sr if ring_all else sr[-self.STAGE_RING_SERVED:]   # the newest few by default: the whole ring
             pusher["stageRingLen"] = len(sr)                                          #  is up to a few MB of JSON (round one, low 3)
             pusher["stageRingMax"] = self.stage_ring.maxlen if self.stage_ring is not None else _stage_ring_len()
+            jring = sorted(self.jobs_ring)
+            jobs = dict(self.jobs)                          # the jobs thread's pass counters, the same shape as the pusher's
+            jobs["firstPass"] = dict(self.first_pass) if self.first_pass is not None else None
+            pr = list(self.pass_ring) if self.pass_ring is not None else []
+            jobs["stageRing"] = pr if ring_all else pr[-self.STAGE_RING_SERVED:]
+            jobs["stageRingLen"] = len(pr)
             stages = dict(self.stages)
             builds = {k: dict(v) for k, v in self.builds.items()}
             builds["chat"]["bg_miss"] = dict(self.builds["chat"]["bg_miss"])   # the nested map: a copy too
@@ -664,6 +737,10 @@ class _PerfStats:
         pusher["cycle_ms_p50"] = self._pct(ring, 0.5)
         pusher["cycle_ms_p90"] = self._pct(ring, 0.9)
         pusher["cycle_ms_ring_max"] = ring[-1] if ring else 0.0
+        jobs["ring_n"] = len(jring)
+        jobs["pass_ms_p50"] = self._pct(jring, 0.5)
+        jobs["pass_ms_p90"] = self._pct(jring, 0.9)
+        jobs["pass_ms_ring_max"] = jring[-1] if jring else 0.0
         judge["ms_mean"] = (judge["ms_sum"] / judge["passes"]) if judge["passes"] else 0.0
         try:
             workers = float(jd.judge_worker_cpu_ms())
@@ -715,7 +792,7 @@ class _PerfStats:
         #                                                                              on a runner nobody can log into), on demand
         #                                                                              through GET /perf?stacks=1 (T401)
         return {"now": now, "since": since, "uptime_s": now - _STARTED, "log": _PERF, "stacks": stacks,
-                "process": _process_stats(), "pusher": pusher, "stages_ms": stages,
+                "process": _process_stats(), "pusher": pusher, "jobs": jobs, "stages_ms": stages,
                 "builds": builds, "sends": sends, "goals": goals, "memos": memos, "judge": judge, "skillLoadIndex": skill_idx, "http": http,
                 "fileSlice": file_slice,                   # T351: the preview popover's slice cache (hit / miss / bytes / warm)
                 "glossary": glossary_stats,                # T351 stage 2: files parsed, frames / terms / bytes BUILT per cycle, entries cut, files refused
@@ -24147,12 +24224,17 @@ def _boot_row_due_locked():
 
 BOOT_FIRST_CYCLE_BOUND_S = float(os.environ.get("ROMP_BOOT_FIRST_CYCLE_BOUND_S", "10"))
 _BOOT_HEALTH_DONE = [False]
+_BOOT_FIRST = {"pusher": None, "jobs": None}   # each loop's first wall seconds once it closed, cleared when the row is written
+_JOBS_THREAD_STARTED = [False]               # main() started the jobs thread: the boot row then waits for its first pass too
+BOOT_JOBS_PASS_ROW_BACKSTOP_S = float(os.environ.get("ROMP_BOOT_JOBS_PASS_ROW_BACKSTOP_S", "600"))   # the row is written
+#                                              without the jobs pass after this long (a pass that never ends still leaves a row)
 FIRST_CYCLE_SAMPLE_S = 1.0             # the pusher's stack is sampled this often during the boot's FIRST cycle only ...
 FIRST_CYCLE_SAMPLE_DENSE = 30          # ... for this many samples; after them every FIRST_CYCLE_SAMPLE_WIDE_S, so the cap below
 FIRST_CYCLE_SAMPLE_WIDE_S = 5.0        #  covers three minutes (30 s dense, 150 s wide) and an 84 s cycle shows where it ended
 FIRST_CYCLE_SAMPLES_MAX = 60           # at most this many samples ride the boot-health row
 FIRST_CYCLE_SAMPLE_FRAMES = 8          # innermost frames kept per sample: enough to name the lock or the read, not the whole stack
-_FIRST_CYCLE_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None, "failed": 0}
+_FIRST_CYCLE_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None, "failed": 0}   # the pusher's
+_FIRST_PASS_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None, "failed": 0}    # the jobs thread's
 
 
 def _first_cycle_sample(tid, t0):
@@ -24168,21 +24250,22 @@ def _first_cycle_sample(tid, t0):
     return {"t": round(time.monotonic() - t0, 1), "stage": _STAGE_BY_TID.get(tid), "frames": rows}
 
 
-def _first_cycle_sampler_run(tid, t0):
-    ev = _FIRST_CYCLE_SAMPLER["stop"]
+def _first_cycle_sampler_run(tid, t0, sampler=None):
+    sampler = _FIRST_CYCLE_SAMPLER if sampler is None else sampler
+    ev = sampler["stop"]
     while True:                                           # loop-ok: bounded by the first cycle's end and the sample cap
-        n = len(_FIRST_CYCLE_SAMPLER["rows"]) + _FIRST_CYCLE_SAMPLER["failed"]
+        n = len(sampler["rows"]) + sampler["failed"]
         if ev.wait(FIRST_CYCLE_SAMPLE_S if n < FIRST_CYCLE_SAMPLE_DENSE else FIRST_CYCLE_SAMPLE_WIDE_S):
             return
         if n >= FIRST_CYCLE_SAMPLES_MAX:                  # rows AND failed walks fill the cap, so an all-failing sampler retires
             return                                        #  with the cap rather than waking for the whole cycle (1588 low 4)
         try:
-            _FIRST_CYCLE_SAMPLER["rows"].append(_first_cycle_sample(tid, t0))
+            sampler["rows"].append(_first_cycle_sample(tid, t0))
         except Exception:
-            _FIRST_CYCLE_SAMPLER["failed"] += 1           # one failed walk is counted, not the end of sampling (round two, low 4)
+            sampler["failed"] += 1                        # one failed walk is counted, not the end of sampling (round two, low 4)
 
 
-def _first_cycle_sampler_start(t0):
+def _first_cycle_sampler_start(t0, sampler=None):
     """The boot's first pusher cycle is where a slow boot spends its time, and two live reads of it were missed because the
     /perf stack sample could not be taken in time (the watch's poll latency was longer than the cycle). A daemon thread
     samples the PUSHER's stack once a second for the first cycle only, at most FIRST_CYCLE_SAMPLES_MAX rows, and the rows
@@ -24190,14 +24273,18 @@ def _first_cycle_sampler_start(t0):
     the kernel alive. Cost: one sys._current_frames() and one walk of one thread's frames a second (about 7 us, 25 with two
     hundred threads live) for the length of the first cycle, then the thread ends; nothing after the first cycle. The row
     grows by about 330 bytes a sample (20 KB for 60, 30 KB worst case), on a ledger with no rotation that its readers
-    slice from the tail: it grows by that once per boot whose first cycle ran the samples' length."""
-    if _FIRST_CYCLE_SAMPLER["started"]:
+    slice from the tail: it grows by that once per boot whose first cycle ran the samples' length.
+
+    `sampler` is the slot: the pusher's (_FIRST_CYCLE_SAMPLER, the default) or the jobs thread's (_FIRST_PASS_SAMPLER), since
+    the housekeeping's first pass runs on its own thread (2026-09-13) and is sampled the same way for the same row."""
+    sampler = _FIRST_CYCLE_SAMPLER if sampler is None else sampler
+    if sampler["started"]:
         return
-    _FIRST_CYCLE_SAMPLER["started"] = True
+    sampler["started"] = True
     try:
-        th = threading.Thread(target=_first_cycle_sampler_run, args=(threading.get_ident(), t0), name="first-cycle-sampler", daemon=True)
+        th = threading.Thread(target=_first_cycle_sampler_run, args=(threading.get_ident(), t0, sampler), name="first-cycle-sampler", daemon=True)
         th.start()
-        _FIRST_CYCLE_SAMPLER["thread"] = th                 # stored only once started: the stop joins nothing unstarted
+        sampler["thread"] = th                              # stored only once started: the stop joins nothing unstarted
     except Exception as e:                                  # a start that raises (no thread slot at boot) degrades to no samples,
         try:                                                #  never ends the pusher (round two, medium: the sibling starts' discipline)
             sys.stderr.write("first-cycle sampler: not started (%s); the boot-health row carries no stack samples\n" % e)
@@ -24205,9 +24292,10 @@ def _first_cycle_sampler_start(t0):
             pass
 
 
-def _first_cycle_sampler_stop():
-    _FIRST_CYCLE_SAMPLER["stop"].set()
-    th = _FIRST_CYCLE_SAMPLER.get("thread")
+def _first_cycle_sampler_stop(sampler=None):
+    sampler = _FIRST_CYCLE_SAMPLER if sampler is None else sampler
+    sampler["stop"].set()
+    th = sampler.get("thread")
     if th is not None and th.ident is not None:
         try:
             th.join(timeout=2.0)
@@ -24215,19 +24303,50 @@ def _first_cycle_sampler_stop():
             pass
 
 
-def _boot_health_first_cycle(dt):
+def _boot_health_first_cycle(dt, kind="pusher"):
     """The pusher's first cycle after a boot is what gates sessions and cards appearing (the user, 2026-09-11: 84 s
     cycles read as romp unusable and nothing said so). One row in the restart ledger per boot with the cycle's wall
-    seconds and whether it crossed the bound, and a loud stderr line when it did, naming where to look. Returns the
-    row the first time, None after."""
+    seconds and whether it crossed the bound, and a loud stderr line when it did, naming where to look.
+
+    Since the housekeeping split off the pusher (2026-09-13; the user asked why the reminder walk had to finish before
+    the UI showed at all), the row carries TWO firsts: `firstCycleS`, the pusher's first cycle (the browser's own wait,
+    the meaning every earlier row had), and `jobsFirstPassS`, the jobs thread's first pass (where the cold reads now sit,
+    the number the boot arc's targets are measured on). Each loop reports its first here with its `kind`; the row is
+    written by whichever reports LAST, so it carries both splits, both stack samples and the walk's parse facts. With
+    no jobs thread started (a test driving one cycle) the pusher's report writes the row at once. Returns the row when
+    it wrote one, None otherwise."""
+    if _BOOT_HEALTH_DONE[0]:
+        return None
+    _BOOT_FIRST[kind] = dt
+    if _JOBS_THREAD_STARTED[0] and (_BOOT_FIRST["pusher"] is None or _BOOT_FIRST["jobs"] is None):
+        return None                                        # the other loop's first is still open: it writes the row
+    return _boot_health_row()
+
+
+def _boot_health_row(pending=False):
     if _BOOT_HEALTH_DONE[0]:
         return None
     _BOOT_HEALTH_DONE[0] = True
-    row = {"t": int(time.time()), "pid": os.getpid(), "bootHealth": True, "firstCycleS": round(dt, 2),
-           "boundS": BOOT_FIRST_CYCLE_BOUND_S, "slow": dt > BOOT_FIRST_CYCLE_BOUND_S}
-    split = _PERF_STATS.first_cycle_split()                # T397: the cycle's stage split rides the row (the ledger reader
-    if split is not None:                                  #  sees which stage a slow boot spent its time in without the kernel)
-        row["stages"] = split.get("stages")
+    cyc, pas = _BOOT_FIRST["pusher"], _BOOT_FIRST["jobs"]
+    _BOOT_FIRST["pusher"] = _BOOT_FIRST["jobs"] = None
+    row = {"t": int(time.time()), "pid": os.getpid(), "bootHealth": True, "boundS": BOOT_FIRST_CYCLE_BOUND_S}
+    if cyc is not None:
+        row["firstCycleS"] = round(cyc, 2)
+        row["slow"] = cyc > BOOT_FIRST_CYCLE_BOUND_S
+    if pas is not None:
+        row["jobsFirstPassS"] = round(pas, 2)
+        row["jobsSlow"] = pas > BOOT_FIRST_CYCLE_BOUND_S
+    if pending:
+        row["jobsFirstPassPending"] = True                 # the backstop wrote the row: the jobs pass had not ended
+    stages = {}
+    for split in (_PERF_STATS.first_cycle_split(), _PERF_STATS.first_pass_split()):   # T397: both splits ride the row (the
+        for k, v in ((split or {}).get("stages") or {}).items():                       #  ledger reader sees which stage a slow
+            if k in stages:                                                            #  boot spent its time in without the
+                stages[k] = {f: stages[k][f] + v[f] for f in ("ms", "bytes", "hydrated")}   # kernel); a key both threads own
+            else:                                                                      #  (jobs.other, the glue) is summed
+                stages[k] = dict(v)
+    if stages:
+        row["stages"] = stages
     try:
         row["parse"] = em.asm_checkpoint_stats().get("parse")   # T398: the parse's roads at the first cycle's end (serve, fold,
     except Exception:                                           #  restore, full with its reason, bypass, the g:<reason> demotions)
@@ -24238,18 +24357,40 @@ def _boot_health_first_cycle(dt):
     row["firstCycleStacks"] = list(_FIRST_CYCLE_SAMPLER["rows"])   # the pusher's stack once a second through the cycle (T401 (3))
     if _FIRST_CYCLE_SAMPLER["failed"]:
         row["firstCycleStacksFailed"] = _FIRST_CYCLE_SAMPLER["failed"]   # walks that raised: a short list is then not a fast cycle
-    if row["slow"]:
-        try:
+    if _JOBS_THREAD_STARTED[0] or _FIRST_PASS_SAMPLER["started"]:
+        row["firstPassStacks"] = list(_FIRST_PASS_SAMPLER["rows"])     # the jobs thread's, through its first pass
+        if _FIRST_PASS_SAMPLER["failed"]:
+            row["firstPassStacksFailed"] = _FIRST_PASS_SAMPLER["failed"]
+    try:
+        if row.get("slow"):
             sys.stderr.write("boot health: the first pusher cycle took %.1f s (bound %.0f s): sessions and cards waited behind it; "
                              "read /perf builds, checkpoints.coldFolds, asmIndex.evictions and recordCache.budgetEvictions\n"
-                             % (dt, BOOT_FIRST_CYCLE_BOUND_S))
-        except Exception:
-            pass
+                             % (cyc, BOOT_FIRST_CYCLE_BOUND_S))
+        if row.get("jobsSlow"):
+            sys.stderr.write("boot health: the first housekeeping pass took %.1f s (bound %.0f s) on the jobs thread; the browser "
+                             "did not wait on it; read the row's jobs.* stages and firstPassStacks\n" % (pas, BOOT_FIRST_CYCLE_BOUND_S))
+    except Exception:
+        pass
     try:
         _append_restart_cut(row)
     except Exception:
         pass
     return row
+
+
+def _boot_health_row_backstop(now_mono):
+    """The pusher's later cycles: the jobs thread's first pass still open BOOT_JOBS_PASS_ROW_BACKSTOP_S after the pusher's
+    first cycle closed writes the row without it (jobsFirstPassPending), so a pass that never ends still leaves a boot row.
+    `now_mono` is time.monotonic(); the pusher's first close is remembered on the same clock."""
+    t0 = _BOOT_FIRST_CLOSED_MONO[0]
+    if _BOOT_HEALTH_DONE[0] or t0 is None or _BOOT_FIRST["pusher"] is None or _BOOT_FIRST["jobs"] is not None:
+        return None
+    if now_mono - t0 < BOOT_JOBS_PASS_ROW_BACKSTOP_S:
+        return None
+    return _boot_health_row(pending=True)
+
+
+_BOOT_FIRST_CLOSED_MONO = [None]             # time.monotonic() when the pusher's first cycle closed, for the backstop above
 
 
 def _boot_row_backstop(now=None):
@@ -50787,7 +50928,8 @@ def _pusher_cycle():
     few-hundred-ms staleness by construction — they always saw a snapshot aged by however many jobs
     ran before them."""
     _t_cycle = time.monotonic()
-    if not _BOOT_HEALTH_DONE[0]:
+    first = not _BOOT_HEALTH_DONE[0] and _BOOT_FIRST["pusher"] is None
+    if first:
         _first_cycle_sampler_start(_t_cycle)   # the boot's first cycle: the pusher's stack sampled once a second (T401 (3)); the
         #                                        start never raises (it degrades to no samples), so it stands outside the try
     _PERF_STATS.cycle_begin()               # T397 round two, low 3: the split opens with the cycle, so the prelude below (the
@@ -50827,9 +50969,12 @@ def _pusher_cycle():
         _live_scope.msgsum = None
         _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
                           idle=(_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle)
-        if not _BOOT_HEALTH_DONE[0]:
+        if first:
             _first_cycle_sampler_stop()                         # the samples are complete before the row reads them
-        _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
+            _BOOT_FIRST_CLOSED_MONO[0] = time.monotonic()
+            _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
+        elif not _BOOT_HEALTH_DONE[0]:
+            _boot_health_row_backstop(time.monotonic())         # the jobs pass still open long after: the row without it
 
 
 def _job_stage(name, thunk):
@@ -50848,6 +50993,11 @@ def _job_stage(name, thunk):
 
 
 def _pusher_cycle_jobs(now, live_map, any_client):
+    """The pusher cycle's own jobs, around the push: what feeds a frame or shares the cycle's checkpoint byte budget. Everything
+    else (the sweeps, the reminder walk, the interrupt tick, the persists, the pause and retry family) runs on the JOBS thread
+    (_jobs_pass, 2026-09-13): the housekeeping's cold reads at boot held the browser's first frames behind a 30 to 60 s first
+    cycle (the user asked why the reminder walk had to finish before the UI showed at all), and their writers already end in
+    _mark_views_dirty, which wakes this loop, so nothing they decide waits for anything here."""
     _t_jobs = time.monotonic()            # /perf: this function minus the _push_all below is the `jobs` stage
     if not _PERF_STATS._mine():
         _PERF_STATS.cycle_begin()         # a caller that did not open the cycle (a test driving the jobs alone) opens it here
@@ -50878,6 +51028,39 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("turn-notify: %s\n" % traceback.format_exc())
     # (the WS keepalive lives on its own _heartbeat thread — NOT here — so a slow push can't starve it)
+    try:                                  # the folds' checkpoints, written for a session at its settle or a states-log
+        _job_stage('persistCheckpoints', lambda: _persist_checkpoints(now))         # move (T323 stage 3): the next kernel folds the tails, not the files
+        _job_stage('convergeCheckpoints', lambda: _converge_checkpoints(now))        # ...and the documents a boot's whole reads left dirty, bounded per cycle (T360)
+    except Exception:
+        sys.stderr.write("checkpoints: %s\n" % traceback.format_exc())
+    try:                                  # the boot row's backstop: written without attachDone once the bound has passed
+        _job_stage('bootRowBackstop', lambda: _boot_row_backstop(now))
+    except Exception:
+        pass
+    try:                                  # the kernel's own size at 5, 30 and 60 minutes and every hour (kernel-samples.jsonl)
+        _job_stage('kernelSample', lambda: _kernel_sample_tick(now))
+    except Exception:
+        pass
+    try:                                  # the bottom bar's API health cell: built AFTER this cycle's pause
+        _job_stage('apiHealth', lambda: _api_health_push(_api_health_frame(now, live_map)))   # decisions, every cycle (a connecting shell gets a
+    except Exception:                     # current frame), sent only when it changed
+        sys.stderr.write("api-health-frame: %s\n" % traceback.format_exc())
+    _PERF_STATS.stage("jobs", (time.monotonic() - _t_jobs) - _t_push)
+
+
+
+
+def _jobs_pass(now, live_map):
+    """One pass of the housekeeping jobs, in the order they always ran (the lift before the walk, the walk before the interrupt
+    tick, the deferral sweep before the walk: each comment below names its reason), on the jobs thread, with the pass's own
+    liveness snapshot. Split off _pusher_cycle_jobs on 2026-09-13 so the pusher's cycle, and with it every browser frame, never
+    waits on these: at boot the walk and the interrupt tick read every session's transcript cold (24 s and 6 s on the 11:55 AM
+    boot that decided it, 30 to 60 s first cycles all day), and the push sat behind them on one thread. Their writers end in
+    _mark_views_dirty (a dirty mark plus the pusher's wake), so a card move a job decides rides the pusher's next cycle exactly
+    as it did when the job ran on that thread. The stage container is `jobsPass`; each job is still its `jobs.<name>` stage."""
+    _t_pass = time.monotonic()
+    if not _PERF_STATS._mine():
+        _PERF_STATS.cycle_begin("jobs")   # a caller that did not open the pass (a test driving the jobs alone) opens it here
     try:                                  # EXACT retraction first: dispatches returned → the stamp is spent,
         _job_stage('liftSpentAwaiting', lambda: _lift_spent_awaiting(now, live_map))   # so the nudge tick below never wakes a wait that already ended
     except Exception:
@@ -50909,19 +51092,6 @@ def _pusher_cycle_jobs(now, live_map, any_client):
         _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
     except Exception:
         sys.stderr.write("tick-seen: %s\n" % traceback.format_exc())
-    try:                                  # the folds' checkpoints, written for a session at its settle or a states-log
-        _job_stage('persistCheckpoints', lambda: _persist_checkpoints(now))         # move (T323 stage 3): the next kernel folds the tails, not the files
-        _job_stage('convergeCheckpoints', lambda: _converge_checkpoints(now))        # ...and the documents a boot's whole reads left dirty, bounded per cycle (T360)
-    except Exception:
-        sys.stderr.write("checkpoints: %s\n" % traceback.format_exc())
-    try:                                  # the boot row's backstop: written without attachDone once the bound has passed
-        _job_stage('bootRowBackstop', lambda: _boot_row_backstop(now))
-    except Exception:
-        pass
-    try:                                  # the kernel's own size at 5, 30 and 60 minutes and every hour (kernel-samples.jsonl)
-        _job_stage('kernelSample', lambda: _kernel_sample_tick(now))
-    except Exception:
-        pass
     try:                                  # hitting a usage limit auto-engages the retry-pause (before the resume check)
         _job_stage('autoPauseOnLimit', lambda: _auto_pause_on_limit())
     except Exception:
@@ -50936,7 +51106,7 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("auto-pause-on-spend-limit: %s\n" % traceback.format_exc())
     try:                                  # the spend guard (T350): a session over the hourly ceiling is stopped and told,
-        if _PERF_STATS.pusher.get("cycles", 0) >= 1:   # never the boot's FIRST cycle: the guard's first pass lists every alive session's
+        if _PERF_STATS.jobs.get("passes", 0) >= 1:     # never the boot's FIRST pass: the guard's first pass lists every alive session's
             _job_stage('spendGuard', lambda: _spend_guard_tick(now, live_map))   # subagents tree (4.2 s on one boot), and a runaway
             #                                             spend is minutes, not the first cycle (T401 follow-up); every dashboard
             #                                             warned, a session-events row filed, once per crossing
@@ -50946,10 +51116,6 @@ def _pusher_cycle_jobs(now, live_map, any_client):
         _job_stage('autoResumeRetry', lambda: _auto_resume_retry(now, live_map))
     except Exception:
         sys.stderr.write("auto-resume-retry: %s\n" % traceback.format_exc())
-    try:                                  # the bottom bar's API health cell: built AFTER this cycle's pause
-        _job_stage('apiHealth', lambda: _api_health_push(_api_health_frame(now, live_map)))   # decisions, every cycle (a connecting shell gets a
-    except Exception:                     # current frame), sent only when it changed
-        sys.stderr.write("api-health-frame: %s\n" % traceback.format_exc())
     try:                                  # a per-session interrupt-suppressed retry re-arms once that thread lands a clean turn
         _job_stage('autoResumeSession', lambda: _auto_resume_session_retry(now, live_map))
     except Exception:
@@ -50966,7 +51132,74 @@ def _pusher_cycle_jobs(now, live_map, any_client):
         _job_stage('clearDoneNotes', lambda: _clear_done_working_notes(now, live_map))
     except Exception:
         sys.stderr.write("clear-working-notes: %s\n" % traceback.format_exc())
-    _PERF_STATS.stage("jobs", (time.monotonic() - _t_jobs) - _t_push)
+    _PERF_STATS.stage("jobsPass", time.monotonic() - _t_pass)
+
+
+JOBS_PASS_S = 0.5                                  # the jobs thread's pace between passes: the pusher's backstop, so a job that read
+#                                                    the world within half a second of an event before still does
+
+
+def _jobs_cycle():
+    """ONE pass of the jobs thread: the pass's liveness snapshot and scopes opened exactly as _pusher_cycle opens the pusher's
+    (thread-confined, so the two loops never share a snapshot), _jobs_pass inside them, the scopes closed in the finally, the
+    pass counted under /perf `jobs`, and the boot's first pass sampled and reported to the boot row like the pusher's first
+    cycle."""
+    _t = time.monotonic()
+    first = not _BOOT_HEALTH_DONE[0] and _BOOT_FIRST["jobs"] is None
+    if first:
+        _first_cycle_sampler_start(_t, _FIRST_PASS_SAMPLER)
+    _PERF_STATS.cycle_begin("jobs")
+    _c = time.thread_time()
+    now = int(time.time())
+    live_map = _live_map()
+    _live_scope.snapshot = live_map
+    try:
+        _live_scope.paths = {}
+        _live_scope.sessions = {}
+        _live_scope.auth = {}
+        _live_scope.msgsum = [_MSGSUM_UNSET]
+        _live_scope.names = _names_snapshot()
+        _PERF_STATS.stage("jobs.prelude", time.monotonic() - _t)
+        _jobs_pass(now, live_map)
+    finally:
+        _chat_push_scopes_close()
+        _live_scope.snapshot = None
+        _live_scope.names = None
+        _live_scope.paths = None
+        _live_scope.sessions = None
+        _live_scope.auth = None
+        _live_scope.msgsum = None
+        _PERF_STATS.jobs_pass(time.monotonic() - _t, time.thread_time() - _c)
+        if first:
+            _first_cycle_sampler_stop(_FIRST_PASS_SAMPLER)
+            _boot_health_first_cycle(time.monotonic() - _t, "jobs")
+
+
+_JOBS_FAILED_SAID = {}                             # exception type name -> said once per kernel life (the jobs loop's)
+
+
+def _jobs_loop():
+    """The jobs thread: _jobs_cycle at JOBS_PASS_S, the same guard as _pusher's (a pass that raises is counted under /perf
+    jobs.passFailed, said once per kind, and retried at the pusher's failure pace), stopped by _LOOPS_STOP with the other loops."""
+    streak = 0
+    while not _LOOPS_STOP.is_set():
+        try:
+            _jobs_cycle()
+            streak = 0
+        except Exception as e:                        # Exception, never BaseException: a deliberate loop stop passes
+            _PERF_STATS.pass_failed()
+            kind = type(e).__name__
+            if kind not in _JOBS_FAILED_SAID:
+                _JOBS_FAILED_SAID[kind] = True
+                try:
+                    sys.stderr.write("jobs: a pass raised %s and was skipped (counted under /perf jobs.passFailed; said "
+                                     "once per kind): %s\n" % (kind, traceback.format_exc().rstrip().splitlines()[-1]))
+                except Exception:
+                    pass
+            streak += 1
+            _LOOPS_STOP.wait(PUSHER_FAIL_BACKOFF_S[min(streak, len(PUSHER_FAIL_BACKOFF_S)) - 1])
+            continue
+        _LOOPS_STOP.wait(JOBS_PASS_S)
 
 
 _PUSHER_FAILED_SAID = {}                           # exception type name -> said once per kernel life
@@ -61632,6 +61865,8 @@ def main():
     #                                                           of pre-fix residue, marker-gated
     threading.Thread(target=_producer, daemon=True, name="producer").start()   # named: the stack sample says whose frames
     threading.Thread(target=_pusher, daemon=True, name="pusher").start()
+    _JOBS_THREAD_STARTED[0] = True                            # the boot row waits for this thread's first pass too
+    threading.Thread(target=_jobs_loop, daemon=True, name="jobs").start()   # the housekeeping, off the pusher (see _jobs_pass)
     threading.Thread(target=_heartbeat, daemon=True).start()  # WS keepalive on its own thread (see _heartbeat)
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()
