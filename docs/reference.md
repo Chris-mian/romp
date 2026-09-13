@@ -1840,7 +1840,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   and the nudge ledger; the pass takes every session's stat before it reads
   any pass-level snapshot, so no input a look reads is older than the key
   its memo is recorded under;
-  `nudgeGate` is the auto-nudge walk's
+  `spendTree` is the spend guard's memo of each live
+  session's subagents tree (`entries`, `bytes`, `bound`, a sixty-fourth of
+  the machine's memory or `ROMP_SPEND_GUARD_TREE_MEMO_BYTES`, and the
+  reads since boot: `dirStats`, `fileStats`, `listings`, `loaded`,
+  `loadFailed`, `written`); the memo is persisted at
+  `STATE/spend-tree/<sid>.json` when dirty and at exit and loaded lazily
+  when the session's guard first runs after a boot, so a boot stats each
+  directory once and lists only one whose mtime moved, and a corrupt or
+  misshapen file is relisted, never raised; the guard's job itself skips
+  the boot's first cycle, since its first pass lists every alive session's
+  tree (4.2 s on one boot, 60 trees of 16,752 agent transcripts in 1,542
+  directories, the largest 2,581 files) and a runaway spend is minutes,
+  not the first cycle (T401 follow-up); `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue

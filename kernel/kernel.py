@@ -329,7 +329,7 @@ class _PerfStats:
     HTTP_PATHS = 256
     SLOTS = 32
     JOBS = ("beginCheckpointCycle", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
-            "autoNudge", "interruptBlock", "persistTickSeen", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
+            "autoNudge", "interruptBlock", "persistTickSeen", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
             "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
     STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst") \
@@ -38822,6 +38822,12 @@ SPEND_GUARD_ROWS_CACHE_MAX = 4000   # window-row memo entries kept; over it the 
 #                                     thousands of finished agent files, each a window row list nobody asks for again)
 SPEND_GUARD_TREE_RESCAN_S = 30      # a COLD agent file (idle since before the window's floor) is statted again this often,
 #                                     not every cycle; a hot one every cycle
+_SPEND_TREE_STATS = {"dirStats": 0, "fileStats": 0, "listings": 0, "loaded": 0, "loadFailed": 0, "written": 0}   # the guard's tree
+#                                     reads, cumulative (GET /perf memos.spendTree; `romp perf` reads two snapshots as rates), so a
+#                                     boot read shows one stat per directory and no listing when the persisted memo stood
+_SPEND_TREE_DIR = "spend-tree"      # STATE/spend-tree/<sid>.json: a session's tree memo persisted (written when dirty by the pusher's
+#                                     persistSpendTrees job and at exit), loaded LAZILY when that session's guard first runs after a
+#                                     boot, never all at boot; a corrupt or stale file is tolerated (relisted, never raised)
 _SPEND_TREE_CACHE = {}              # leaf -> {"dirs": {dir: mtime}, "files": {path: mtime}, "full": epoch of the last full
 #                                     stat pass, "seen": epoch}: the session's subagents tree, watched by directory mtimes
 
@@ -38887,6 +38893,53 @@ def _spend_ceiling():
     return v
 
 
+def _spend_tree_path(leaf):
+    return jd.STATE / _SPEND_TREE_DIR / (os.path.splitext(os.path.basename(str(leaf)))[0] + ".json")
+
+
+def _spend_tree_load(leaf):
+    """The session's persisted tree memo, or None: {"dirs", "files"} of str -> float and the two epochs, read lazily when the
+    guard first runs for the session after a boot. A missing, corrupt or misshapen file is None (the tree is listed whole,
+    as a first call always was), counted under loadFailed when a file was there."""
+    p = _spend_tree_path(leaf)
+    try:
+        raw = p.read_bytes()
+    except OSError:
+        return None
+    try:
+        d = json.loads(raw.decode("utf-8"))
+        dirs, files = d["dirs"], d["files"]
+        if not (isinstance(dirs, dict) and isinstance(files, dict)
+                and all(isinstance(k, str) and isinstance(v, (int, float)) for k, v in dirs.items())
+                and all(isinstance(k, str) and isinstance(v, (int, float)) for k, v in files.items())):
+            raise ValueError("shape")
+        _SPEND_TREE_STATS["loaded"] += 1
+        return {"dirs": dict(dirs), "files": dict(files), "full": float(d.get("full") or 0.0), "seen": time.time()}
+    except (ValueError, KeyError, TypeError):
+        _SPEND_TREE_STATS["loadFailed"] += 1
+        return None
+
+
+def _persist_spend_trees(force=False):
+    """Write every DIRTY tree memo (one listed or relisted this process) to STATE/spend-tree/<sid>.json, atomically; the pusher's
+    job each cycle and the exit's `force`. Best-effort: a write that fails leaves the memo dirty for the next cycle."""
+    n = 0
+    for leaf, m in list(_SPEND_TREE_CACHE.items()):
+        if not (m.get("dirty") or force):
+            continue
+        p = _spend_tree_path(leaf)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
+            tmp.write_text(json.dumps({"dirs": m["dirs"], "files": m["files"], "full": m["full"]}), encoding="utf-8")
+            os.replace(tmp, p)
+            m["dirty"] = False; n += 1
+        except OSError:
+            continue
+    _SPEND_TREE_STATS["written"] += n
+    return n
+
+
 def _spend_tree_list_dir(d, m, known):
     """One directory of a session's subagents tree listed (os.scandir): its .jsonl files into the memo with their mtimes,
     its subdirectories with theirs, recursing only into a subdirectory not yet known (a new workflow directory), so
@@ -38897,6 +38950,7 @@ def _spend_tree_list_dir(d, m, known):
             entries = list(it)
     except OSError:
         return
+    _SPEND_TREE_STATS["listings"] += 1; m["dirty"] = True
     for e in entries:
         try:
             if e.is_symlink():
@@ -38930,26 +38984,32 @@ def _spend_window_files(leaf, since, now=None):
     base, ext = os.path.splitext(key)
     root = os.path.join(base, "subagents")
     m = _SPEND_TREE_CACHE.get(key)
+    fresh = False
     if m is None:
         if ext != ".jsonl" or os.path.islink(root) or not os.path.isdir(root):
             return [key]
-        m = {"dirs": {}, "files": {}, "full": now, "seen": now}
-        try:
-            m["dirs"][root] = os.stat(root).st_mtime
-        except OSError:
-            return [key]
-        _spend_tree_list_dir(root, m, set(m["dirs"]))
+        m = _spend_tree_load(key)                            # the persisted memo, lazily: a boot then stats the DIRECTORIES only,
+        if m is not None and root in m["dirs"]:              #  relisting one whose mtime moved, instead of listing the tree whole
+            m["dirty"] = False
+        else:
+            m = {"dirs": {}, "files": {}, "full": now, "seen": now, "dirty": True}
+            try:
+                m["dirs"][root] = os.stat(root).st_mtime; _SPEND_TREE_STATS["dirStats"] += 1
+            except OSError:
+                return [key]
+            _spend_tree_list_dir(root, m, set(m["dirs"]))
+            fresh = True
         _SPEND_TREE_CACHE[key] = m
         if len(_SPEND_TREE_CACHE) > SPEND_GUARD_LATCH_MAX:
             for k in sorted(_SPEND_TREE_CACHE, key=lambda k: _SPEND_TREE_CACHE[k]["seen"])[:len(_SPEND_TREE_CACHE) - SPEND_GUARD_LATCH_MAX]:
                 _SPEND_TREE_CACHE.pop(k, None)
-    else:
-        m["seen"] = now
+    m["seen"] = now
+    if not fresh:
         for d, mt in list(m["dirs"].items()):
             try:
-                cur = os.stat(d).st_mtime
+                cur = os.stat(d).st_mtime; _SPEND_TREE_STATS["dirStats"] += 1
             except OSError:
-                m["dirs"].pop(d, None)                       # a directory gone, its files with it
+                m["dirs"].pop(d, None); m["dirty"] = True        # a directory gone, its files with it
                 for p in [p for p in m["files"] if p.startswith(d + os.sep)]:
                     m["files"].pop(p, None)
                 continue
@@ -38964,9 +39024,9 @@ def _spend_window_files(leaf, since, now=None):
         for p, mt in list(m["files"].items()):
             if full or mt >= floor:
                 try:
-                    m["files"][p] = os.stat(p).st_mtime
+                    m["files"][p] = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
                 except OSError:
-                    m["files"].pop(p, None)
+                    m["files"].pop(p, None); m["dirty"] = True
         if full:
             m["full"] = now
     return [key] + [p for p, mt in m["files"].items() if mt >= since]
@@ -39278,7 +39338,7 @@ def _spend_tree_memo_report():
             break
         except RuntimeError:
             size = -1
-    return {"entries": len(_SPEND_TREE_CACHE), "bytes": size, "bound": SPEND_GUARD_TREE_MEMO_BYTES}
+    return {"entries": len(_SPEND_TREE_CACHE), "bytes": size, "bound": SPEND_GUARD_TREE_MEMO_BYTES, **_SPEND_TREE_STATS}
 
 
 def _spend_series(keyed_only=False, now=None):
@@ -50100,7 +50160,8 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
     try:                                  # the tick jobs' evaluation memo, persisted when a completed evaluation
-        _job_stage('persistTickSeen', lambda: _persist_tick_seen())              # moved it (T323 stage 1): the next kernel's first look starts from here
+        _job_stage('persistTickSeen', lambda: _persist_tick_seen())
+        _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)              # moved it (T323 stage 1): the next kernel's first look starts from here
     except Exception:
         sys.stderr.write("tick-seen: %s\n" % traceback.format_exc())
     try:                                  # the folds' checkpoints, written for a session at its settle or a states-log
@@ -50130,7 +50191,10 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("auto-pause-on-spend-limit: %s\n" % traceback.format_exc())
     try:                                  # the spend guard (T350): a session over the hourly ceiling is stopped and told,
-        _job_stage('spendGuard', lambda: _spend_guard_tick(now, live_map))      # every dashboard warned, a session-events row filed, once per crossing
+        if _PERF_STATS.pusher.get("cycles", 0) >= 1:   # never the boot's FIRST cycle: the guard's first pass lists every alive session's
+            _job_stage('spendGuard', lambda: _spend_guard_tick(now, live_map))   # subagents tree (4.2 s on one boot), and a runaway
+        #                                                                             spend is minutes, not the first cycle (T401 follow-up)
+        #                                                                             every dashboard warned, a session-events row filed, once per crossing
     except Exception:
         sys.stderr.write("spend-guard: %s\n" % traceback.format_exc())
     try:                                  # a paused retry auto-clears once any session serves a request again
@@ -60624,6 +60688,7 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
     _exit_log("romp-kernel: %s, draining SDK sessions\n" % what)
     try:
         _persist_tick_seen(force=True)    # the tick jobs' memo for the next kernel's first look (T323 stage 1)
+        _persist_spend_trees(force=True)  # the spend guard's tree memos: the next kernel stats directories, lists nothing
     except Exception:
         pass
     try:
