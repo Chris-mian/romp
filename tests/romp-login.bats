@@ -71,7 +71,7 @@ teardown() { rm -rf "$TEST_DIR"; }
     run "$ROMP_SCRIPT" login add Work --op 'op://Vault/item/credential'
     [ "$status" -eq 2 ]
     [[ "$output" == *"usage: romp login add <label> --cmd"* ]]
-    ! grep -q 'opRef' "$MOCK_LOG"
+    [ "$(cat "$MOCK_LOG" 2>/dev/null | grep -c opRef)" -eq 0 ]   # a count over the log (absent when the call is refused before any request), never a bare negation before another command (the bats ratchet)
     run "$ROMP_SCRIPT" login add Work
     [ "$status" -eq 2 ]
     [[ "$output" == *"--cmd '<shell line that prints the token>' is required"* ]]
