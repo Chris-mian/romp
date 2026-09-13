@@ -1546,7 +1546,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   bookkeeping could not close; `cycleFailed` counts a cycle that raised out
   of the pusher's loop and was skipped (the loop goes on; before, one raise
   from the prologue or the finally ended the pusher for the process's life),
-  said once per exception kind on stderr. The restart ledger's boot-health row carries
+  said once per exception kind on stderr; the failing path clears the wake
+  flag and paces its retry at the backstop, then doubling to five seconds
+  until a clean cycle, so a cycle that woke the pusher itself before raising
+  cannot spin the loop. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
   stage without the kernel alive, and `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
@@ -1616,7 +1619,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   so an all-failing sampler retires with the cap. The cost is one frame
   walk a sample (about 7 us) and about 330 bytes a sample on the row (20 KB
   for sixty, 30 KB at worst) in a ledger with no rotation: the boot-settled
-  writer parses every line of it at each boot and two other readers read the
+  writer (`_append_boot_settled`) parses every line of it at each boot, and
+  two other readers (`_last_deploy_restart_t`, `_consumed_audit_t`) read the
   whole file before slicing its tail, so a 20 KB row is read whole by each
   of them from then on, and the file grows by that once per boot whose
   first cycle ran that long. The sampler exists because two live reads of a
@@ -1893,7 +1897,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the machine's memory or `ROMP_SPEND_GUARD_TREE_MEMO_BYTES`, and the
   reads since boot: `dirStats`, `fileStats`, `entryStats` (the per-entry
   stats a listing performs), `listings`, `loaded`, `loadFailed`, `dropped`
-  (paths outside the root a load discarded), `written`, `dumpSkipped` (a
+  (paths outside the root a load discarded), `written`, `writeFailed` (a
+  memo write that raised, a read-only directory or a full disk, said once a
+  life; the memo stays dirty and is retried each cycle), `dumpSkipped` (a
   write skipped after three dumps lost the race with the pusher, said once
   a life), `evicted` (memos the byte bound shed), `swept`); the memo is
   persisted at `STATE/spend-tree/<sid>.json` when
@@ -1908,11 +1914,15 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   tree. A corrupt or misshapen file, or one that does not name the
   session's own root, is a failed load and relisted, never raised; a path
   outside the root is dropped and counted; a memo the byte bound evicts is
-  written first with its remaining re-stat list, and its rescan clock stays
-  in memory for the kernel's life, so the reload drains on and runs its
-  full pass instead of restarting both; the directory is swept once per
-  kernel life at the guard's first tick (never the boot's first cycle, since
-  the sweep parses every memo) of memos whose leaf is gone, that name no
+  written first when it is dirty (a drain step marks it so; a memo whose
+  file already holds its state is not rewritten, since on a binding bound
+  the eviction fires every cycle), with its remaining re-stat list, and its
+  rescan clock stays in memory for the kernel's life (dropped when its file
+  is swept or fails to load), so the reload drains on and runs its full pass
+  instead of restarting both; the directory is swept once per kernel life at
+  the guard's first tick, before the disabled ceiling's early return, so a
+  kernel with the guard off sweeps too (never the boot's first cycle, since
+  the sweep parses every memo), of memos whose leaf is gone, that name no
   leaf or that do not parse, and of tmp files a kill left; the guard's job itself skips
   the boot's first cycle, since its first pass lists every alive session's
   tree (4.2 s on one boot, 60 trees of 16,752 agent transcripts in 1,542

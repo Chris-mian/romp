@@ -330,6 +330,35 @@ class LabBootFirstCycle(unittest.TestCase):
         self.assertEqual(err.getvalue().count("pusher: a cycle raised RuntimeError"), 1, "said once per kind: %r" % err.getvalue())
         self.assertIn("cycleFailed", km._PERF_STATS.snapshot()["pusher"])
 
+    def test_a_failing_cycle_that_woke_the_pusher_itself_retries_at_a_pace(self):
+        """Round two, medium 2: the failure path fell through to the same wake wait as success, and that wait returns at once
+        while the wake flag stands; tick jobs set it on the pusher's own thread during the cycle, so a cycle that set the
+        flag then raised retried half a million times a second (a whole core). The guard clears the wake and paces the retry
+        at the backstop, doubling to five seconds until a clean cycle; the counter goes through _PERF_STATS' locked method."""
+        km = self.km
+        n = [0]
+        def cycle():
+            n[0] += 1
+            km._pusher_wake.set()                                          # a tick job's writer woke the pusher...
+            raise RuntimeError("broken stderr")                            # ...and then the cycle raised
+        saved_stop = km._LOOPS_STOP.is_set(); km._LOOPS_STOP.clear()
+        timer = threading.Timer(1.0, km._LOOPS_STOP.set); timer.start()
+        t0 = time.thread_time()
+        try:
+            with mock.patch.object(km, "_pusher_cycle", cycle), mock.patch.object(km, "_PUSHER_FAILED_SAID", {}), \
+                 mock.patch.object(km.sys, "stderr", __import__("io").StringIO()), mock.patch.dict(km._PERF_STATS.pusher, {"cycleFailed": 0}):
+                km._pusher()
+                cpu = time.thread_time() - t0
+                self.assertLess(n[0], 10, "the retries are paced, not spun: %d cycles in a second" % n[0])
+                self.assertLess(cpu, 0.2, "and cost no core: %.3f s of thread CPU" % cpu)
+                self.assertEqual(km._PERF_STATS.pusher["cycleFailed"], n[0])
+        finally:
+            timer.cancel()
+            if saved_stop: km._LOOPS_STOP.set()
+            else: km._LOOPS_STOP.clear()
+        self.assertTrue(callable(getattr(km._PERF_STATS, "cycle_failed", None)), "the counter has a locked method like wake and cycle")
+        self.assertEqual(km.PUSHER_FAIL_BACKOFF_S[-1], 5.0)
+
     def test_the_interval_widens_after_the_dense_samples(self):
         """Round two, low 3: sixty one-second samples kept the first minute and dropped the rest, so an 84 s cycle never showed
         where it ended; after FIRST_CYCLE_SAMPLE_DENSE samples the interval is FIRST_CYCLE_SAMPLE_WIDE_S, and the cap covers

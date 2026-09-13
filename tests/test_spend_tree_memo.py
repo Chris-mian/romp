@@ -161,6 +161,56 @@ class SpendTreeMemo(unittest.TestCase):
             self.assertEqual(_stats()["fileStats"], 8, "four and four: %s" % _stats())
             self.assertEqual(km._SPEND_TREE_EVICTED_FULL, {}, "the clock is taken once")
 
+    def test_the_sweep_runs_with_the_ceiling_off_and_the_clock_map_follows_the_file(self):
+        """Round two, lows 1 and 2: with the ceiling disabled the guard returned before the sweep, so STATE/spend-tree was never
+        swept for that kernel's life; and _SPEND_TREE_EVICTED_FULL had no reaper, so a leaf whose memo file was gone kept its
+        clock entry for the life."""
+        d = jd.STATE / km._SPEND_TREE_DIR; d.mkdir(parents=True, exist_ok=True)
+        gone = os.path.join(self.proj, "22222222-2222-3333-4444-00000000b402.jsonl")
+        (d / "22222222-2222-3333-4444-00000000b402.json").write_text(json.dumps({"leaf": gone, "dirs": {}, "files": {}}))
+        km._SPEND_TREE_EVICTED_FULL[gone] = 123.0
+        with mock.patch.object(km, "_SPEND_TREE_SWEPT", [False]), mock.patch.object(km, "_spend_ceiling", lambda: 0.0):
+            km._spend_guard_tick(time.time(), {}, sessions=[], prices={})
+        self.assertEqual(_stats()["swept"], 1, "swept with the guard off: %s" % _stats())
+        self.assertNotIn(gone, km._SPEND_TREE_EVICTED_FULL, "the clock went with the file")
+        km._SPEND_TREE_EVICTED_FULL[self.leaf] = 456.0
+        self.assertIsNone(km._spend_tree_load(self.leaf), "no memo file yet")
+        self.assertNotIn(self.leaf, km._SPEND_TREE_EVICTED_FULL, "a load that finds nothing drops the clock too")
+
+    def test_a_write_that_raises_is_counted_and_said_once(self):
+        """Round two, low 4: except OSError: continue on the memo write was counted nowhere and said nothing."""
+        import io
+        self._window(time.time() + 10 ** 6)
+        p = km._spend_tree_path(self.leaf); p.parent.mkdir(parents=True, exist_ok=True)
+        blocker = p.with_name(p.name + ".tmp.%d" % os.getpid()); blocker.mkdir()      # the tmp path is a directory: write_text raises
+        err = io.StringIO()
+        try:
+            with mock.patch.object(km, "_SPEND_TREE_WRITE_SAID", [False]), mock.patch.object(km.sys, "stderr", err):
+                self.assertEqual(km._persist_spend_trees(force=True), 0)
+                self.assertEqual(km._persist_spend_trees(force=True), 0)
+        finally:
+            blocker.rmdir()
+        self.assertEqual(_stats()["writeFailed"], 2, _stats())
+        self.assertEqual(err.getvalue().count("could not be written"), 1, "said once a life: %r" % err.getvalue())
+        self.assertTrue(km._SPEND_TREE_CACHE[self.leaf].get("dirty"), "the memo stays dirty for the next cycle")
+
+    def test_an_eviction_writes_only_a_dirty_memo(self):
+        """Round two, low 5: the eviction wrote the whole memo every time, and on a binding bound it fires every cycle; a drain
+        step marks the memo dirty, and an eviction of a memo whose file already holds its state writes nothing."""
+        self._second_boot()
+        with mock.patch.object(km, "SPEND_GUARD_RESTAT_PER_CYCLE", 100):
+            self._window(time.time() + 10 ** 6)                            # the whole drain in one cycle: dirty (the list moved)
+            self.assertTrue(km._SPEND_TREE_CACHE[self.leaf].get("dirty"))
+            with mock.patch.object(km, "SPEND_GUARD_TREE_MEMO_BYTES", 1):
+                km._spend_tree_memo_prune({self.leaf})
+            w1 = _stats()["written"]; self.assertEqual(w1, 1, "the dirty memo was written on eviction: %s" % _stats())
+            self._window(time.time() + 10 ** 6)                            # the reload: nothing to drain, nothing moved
+            self.assertFalse(km._SPEND_TREE_CACHE[self.leaf].get("dirty"))
+            with mock.patch.object(km, "SPEND_GUARD_TREE_MEMO_BYTES", 1):
+                km._spend_tree_memo_prune({self.leaf})
+            self.assertEqual(_stats()["written"], w1, "a clean memo is evicted without a write")
+            self.assertEqual(_stats()["evicted"], 2)
+
     def test_a_partly_foreign_memo_counts_the_paths_it_dropped(self):
         """Follow-up, low 6: paths dropped by the root filter went uncounted, so a partly foreign memo read as a healthy load."""
         far = time.time() + 10 ** 6
@@ -257,7 +307,7 @@ class SpendTreeMemo(unittest.TestCase):
     def test_the_perf_memos_carry_the_reads(self):
         rep = km._spend_tree_memo_report()
         self.assertEqual(set(rep), {"entries", "bytes", "bound", "dirStats", "fileStats", "entryStats", "listings", "loaded", "loadFailed",
-                                    "written", "swept", "dropped", "dumpSkipped", "evicted"})
+                                    "written", "swept", "dropped", "dumpSkipped", "evicted", "writeFailed"})
 
 
 class FirstCycleGate(unittest.TestCase):
