@@ -207,27 +207,86 @@ class NudgeWalkParseGate(unittest.TestCase):
             self._look(r, now + 60, calls, **quiet)                          # the healed look (the store reads again)
             self.assertEqual(len(calls), n_before + 1, "the look after the fault parsed again: nothing was skipped")
 
-    def test_an_ask_from_a_dead_peer_keeps_the_debtor_unskippable(self):
-        """Round three, medium: the debt reminder's ask set filters the postal wait maps by the ASKER's liveness, neither a
-        session file; a peer that asked and died before the next pass left the debtor recording a skippable memo, and the
-        peer's revival owed a reminder nobody would look for. An ask from a peer not alive now notes an unbounded release, and
-        the postal log joins the files the memo keys on."""
-        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); now = time.time(); calls = []
-        asker = SID_NEW
-        maps = ({}, {(asker, SID_OLD): (now - 100, "question", "are we done?")}, {})
+    def _dead_asker_world(self, askers, now):
+        """A debtor (SID_OLD) with one open ask from each of `askers`, none alive; the debt reminder runs its real ask set
+        (the leg under test) and records what it would send; the registry directory is a fresh state root."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); calls = []; sent = []
+        maps = ({}, {(a, SID_OLD): (now - 100 - i, "question", "are we done?") for i, a in enumerate(askers)}, {})
+        def fire(sid, now_, alive_ids):
+            asks = km._debt_asks(sid, alive_ids); sent.append([a[0] for a in asks]); return False
         quiet = dict(_session_working=lambda turns: False, _interrupt_suppresses_nudge=lambda turns, sid="", **k: False, _pending_ops={},
                      _backend_queued=lambda sid: False, _backend_rewind_pending=lambda sid: False, _last_state=lambda sid: ("", 0),
                      _session_awaiting=lambda *a, **k: False, _closer_settled=lambda *a: True, _nudge_placement_gate=lambda *a: False,
-                     _postal_wait_maps=lambda: maps, _debt_reminder_outcomes=lambda sid, lt, now: None)
+                     _postal_wait_maps=lambda: maps, _debt_reminder_outcomes=lambda sid, lt, now: None, _fire_debt_reminder=fire)
         km._TICK_SEEN.clear()
+        return r, calls, sent, quiet
+
+    def _dead_asker_look(self, r, now, calls, quiet):
         with mock.patch.multiple(km, **quiet), \
              mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
              mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now: (calls.append(sid), {"turns": STOPPED})[1]), \
              mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
-            r1 = km._auto_nudge_session(r, now, {}, {}, {}, alive_ids={SID_OLD})          # the asker is not alive: no ask owed
-        self.assertIs(r1, False)
-        self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "a dead peer's ask: the debtor's memo is unbounded")
-        self.assertEqual(len(km._session_files_stat(r)), 20, "ten files: the postal log, the downtime log and the nudge ledger joined the memo's inputs")
+            return km._auto_nudge_session(r, now, {}, {}, {}, alive_ids={SID_OLD})          # the asker is not alive: no ask owed
+
+    def test_an_ask_from_a_dead_peer_keys_the_askers_registry_row(self):
+        """Round three, medium (T401 (2)): the debt reminder's ask set filters the postal wait maps by the ASKER's liveness,
+        neither a session file, so a peer that asked and died left the debtor's memo unbounded (the deadAsker leg: about four in five of
+        the unbounded notes on one boot, asks of long-gone peers, every debtor parsed every look). The dead asker's
+        revival writes its registry row (STATE/sdk/<asker>.json), so that row joins the debtor's memo key (absent: a stable
+        absent marker) and the leg notes nothing: the debtor skips at the second look."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self.assertIs(self._dead_asker_look(r, now, calls, quiet), False)
+            self.assertEqual(sent, [[]], "a dead asker's ask is owed to nobody now")
+            memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
+            self.assertIsNotNone(memo[-2], "the asker's row is keyed: the debtor's memo is bounded, not None")
+            self.assertEqual(len(memo) - 2, 22, "ten files plus the asker's (mtime, size), zeros for an absent row: %r" % (memo,))
+            self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"].get("deadAsker", 0), before.get("deadAsker", 0), "the leg notes nothing for a keyed asker")
+            self._dead_asker_look(r, now + 1, calls, quiet)                    # a skipped look answers from its memo
+            self.assertEqual(calls, [SID_OLD], "the second look skipped: nothing of the debtor's or the asker's moved")
+            self.assertEqual(len(km._session_files_stat(r)), 20, "the ten session files stand as they were")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_a_dead_askers_revival_busts_the_debtors_memo_and_the_reminder_fires(self):
+        """The revival writes the asker's registry row: the debtor's key moves, the next look parses, and the ask is owed."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            self._dead_asker_look(r, now, calls, quiet); self._dead_asker_look(r, now + 1, calls, quiet)
+            self.assertEqual(calls, [SID_OLD])
+            (km.jd.STATE / "sdk").mkdir(parents=True, exist_ok=True)
+            (km.jd.STATE / "sdk" / (SID_NEW + ".json")).write_text(json.dumps({"sid": SID_NEW, "pid": 1}))   # the asker is back
+            quiet_alive = dict(quiet); real_fire = quiet["_fire_debt_reminder"]
+            def fire_alive(sid, now_, alive_ids):
+                return real_fire(sid, now_, {SID_OLD, SID_NEW})
+            quiet_alive["_fire_debt_reminder"] = fire_alive
+            self._dead_asker_look(r, now + 2, calls, quiet_alive)
+            self.assertEqual(calls, [SID_OLD, SID_OLD], "the registry row moved the key: the look parsed again")
+            self.assertEqual(sent[-1], [SID_NEW], "and the reminder found the ask owed to the revived peer")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_askers_beyond_the_eight_keyed_rows_note_an_unbounded_release_under_their_own_leg(self):
+        """The key carries at most _NUDGE_ASKER_ROWS_MAX asker rows (oldest asks first); a debtor with more notes None for
+        the rest under deadAskerOverflow, so a session flooded with asks never grows a key without bound."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            askers = ["%08d-2222-3333-4444-0000000000%02d" % (i, i) for i in range(km._NUDGE_ASKER_ROWS_MAX + 1)]
+            r, calls, sent, quiet = self._dead_asker_world(askers, now)
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self._dead_asker_look(r, now, calls, quiet)
+            memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
+            self.assertIsNone(memo[-2], "the ninth asker is not keyed: the memo is unbounded")
+            by = km._NUDGE_WALK_STATS["unboundedBy"]
+            self.assertEqual(by.get("deadAskerOverflow", 0), before.get("deadAskerOverflow", 0) + 1, "one note, under its own leg")
+            self.assertEqual(by.get("deadAsker", 0), before.get("deadAsker", 0), "and none under deadAsker")
+            keyed, over = km._NUDGE_LOOK_ASKERS[SID_OLD]
+            self.assertEqual((len(keyed), over), (km._NUDGE_ASKER_ROWS_MAX, [askers[0]]), "the NEWEST ask overflows: oldest first are keyed")
+        finally:
+            km.jd._rebind_state(saved_state)
 
     def test_a_host_suspension_ends_the_skip_of_a_working_verdict(self):
         """Round four, HIGH: `working` was marked file-keyed, but _session_working ends in _suspended_after, which reads the
@@ -471,19 +530,29 @@ class NudgeWalkParseGate(unittest.TestCase):
 
     def test_every_unbounded_note_site_names_its_leg(self):
         """Round three, low 5: `leg or "unnamed"` absorbed a future None site with no name and nothing failed. A nameless None
-        note raises, and a source census over every `_nudge_clock(None` call in the kernel requires a second, literal argument."""
+        note raises, and a source census over every `_nudge_clock(...)` call in the kernel whose first argument MAY be None
+        requires a second, literal argument. The census accepted only a Constant None or an IfExp (the five-lows read, low 4),
+        so `_nudge_clock(flip)` with a None flip on one branch stayed green and raised inside the look at run time, where the
+        tick's per-session guard drops that session's nudge for the pass; it now takes any first argument that is not a call
+        or an arithmetic expression (a name, an attribute, a subscript, a conditional) as one that may be None."""
         import ast, inspect
-        src = open(os.path.join(os.path.dirname(HERE), "bin", "romp-kernel"), encoding="utf-8").read()
-        sites, bad = 0, []
-        for node in ast.walk(ast.parse(src)):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_nudge_clock":
-                first = node.args[0] if node.args else None
-                may_be_none = (isinstance(first, ast.Constant) and first.value is None) or isinstance(first, ast.IfExp)
-                if not may_be_none:
-                    continue
-                sites += 1
-                if len(node.args) < 2 or not (isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)):
-                    bad.append(node.lineno)
+        def census(src):
+            sites, bad = 0, []
+            for node in ast.walk(ast.parse(src)):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_nudge_clock":
+                    first = node.args[0] if node.args else None
+                    if first is None or (isinstance(first, ast.Constant) and first.value is not None):
+                        continue                                 # a literal instant
+                    if isinstance(first, (ast.Call, ast.BinOp, ast.UnaryOp)):
+                        continue                                 # an instant computed from one: `anchor + DEADMAN`, `float(x)`
+                    sites += 1
+                    if len(node.args) < 2 or not (isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)):
+                        bad.append(node.lineno)
+            return sites, bad
+        self.assertEqual(census("_nudge_clock(flip)\n_nudge_clock(rec.at)\n_nudge_clock(x if y else None, 'leg')"), (3, [1, 2]),
+                         "a name or an attribute may be None and needs a leg; a conditional with one is fine")
+        self.assertEqual(census("_nudge_clock(anchor + DEADMAN)\n_nudge_clock(float(t))\n_nudge_clock(5.0)"), (0, []), "instants")
+        sites, bad = census(open(os.path.join(os.path.dirname(HERE), "bin", "romp-kernel"), encoding="utf-8").read())
         self.assertGreaterEqual(sites, 14, "the census found the None note sites: %d" % sites)
         self.assertEqual(bad, [], "every None note names its leg with a literal")
         km._NUDGE_HORIZON.notes = []

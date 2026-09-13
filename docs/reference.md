@@ -1852,18 +1852,25 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   session's key and the next pass re-evaluates each alive session once);
   the pass takes every session's stat before it reads any pass-level
   snapshot, so no input a look reads is older than the key its memo is
-  recorded under; `unboundedBy` counts the unbounded NOTES per leg at the
-  look that recorded them (the stamped wait, a standing deferral, a dead
-  asker, a store fault, a queued send, a legacy record with no anchor, an
-  unmarked verdict when no named leg noted the look); the legs partition
-  the NOTES, not the looks (a look over two top goals can note two legs); the
+  recorded under; a debtor's key also carries the registry row
+  (`STATE/sdk/<asker>.json`, an absent row as a stable absent marker) of
+  each peer with an open ask on it, oldest asks first and at most eight,
+  because a dead asker's ask becomes owed again only when the asker revives
+  and a revival writes that row, so the debt leg notes nothing for a keyed
+  asker and the debtor skips like any quiet session; a ninth asker notes
+  None under `deadAskerOverflow`; `unboundedBy` counts the unbounded NOTES
+  per leg at the look that recorded them (the stamped wait, a standing
+  deferral, a dead asker beyond the keyed rows or at a look outside a pass,
+  a store fault, a queued send, a legacy record with no anchor, an unmarked
+  verdict when no named leg noted the look); the legs partition the NOTES,
+  not the looks (a look over two top goals can note two legs); the
   `deadAsker` leg (an ask in the postal wait maps whose asker is not alive
-  now) carried 33,579 of 43,173 notes on the first boot with the counts,
-  since an ask a dead peer left in the log stays there for good; ageing such
-  an ask out of the wait maps would delete a wait the postal surfaces show
-  and is the user's call, the open hygiene question here; while
-  `unbounded` counts a LATER look's refused skip, so the two are not
-  comparable;
+  now) carried about four in five of the notes on the first boot with the
+  counts, since an ask a dead peer left in the log stays there for good,
+  which the keyed rows answer for the memo; ageing such an ask out of the
+  wait maps would delete a wait the postal surfaces show and is the user's
+  call, the open hygiene question here; while `unbounded` counts a LATER
+  look's refused skip, so the two are not comparable;
   `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
