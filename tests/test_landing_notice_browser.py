@@ -17,7 +17,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-from tests.test_live_paused_window_browser import DRIVER_HEAD, WindowLab  # noqa: E402
+from tests.test_live_paused_window_browser import DRIVER_HEAD, SID, WindowLab  # noqa: E402
 
 DRIVER = DRIVER_HEAD + r"""
 // the socket hold: a frame whose type is in __hold is parked, not sent (the ask stays on the page's books); __release sends the parked frames
@@ -226,7 +226,9 @@ await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
 await page.waitForFunction(() => document.querySelectorAll("#content .tx-gap-loading").length === 0, null, { timeout: 3000 }).catch(() => {});   // a re-window the pre-jump's write scheduled may still be painting; the glyph count is read once it settles (a glyph that stays is the finding)
 const afterCancel8 = { notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid), glyphs: await page.evaluate(() => document.querySelectorAll("#content .tx-gap-loading").length),
-  glyphGaps: await page.evaluate(() => Array.from(document.querySelectorAll("#content .tx-gap-loading")).map((g) => [g.dataset.lo, g.dataset.hi, g.dataset.sid ? g.dataset.sid.slice(0, 8) : null, g.offsetHeight])),
+  // the glyphs and the live asks in ONE evaluation: the reader now stands inside the gap, which asks for its own page when on screen and wears
+  // the glyph for THAT ask; a glyph must belong to a live ask, never to the cancelled landing (two reads a moment apart disagreed)
+  atomic: await page.evaluate((sid) => ({ glyphGaps: Array.from(document.querySelectorAll("#content .tx-gap-loading")).map((g) => [Number(g.dataset.lo), Number(g.dataset.hi)]), ask: (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null) }), cfg.sid),
   regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)),
   trail: (await state()).sent.slice(-16) };
 const trailAt8 = await page.evaluate(() => window.__sent.length);
@@ -375,7 +377,11 @@ class ServedLandingNotice(WindowLab):
         a = r["afterCancel8"]
         self.assertFalse(a["notice"], "the notice's click hid the notice: %r" % a)
         self.assertEqual((a["ask"]["loadingOlder"], a["ask"]["landingGaps"]), (False, 0), "a cancelled landing is not busy: the older-ask mark and the held gap are cleared at the cancel, not at the reply: %r" % a["ask"])
-        self.assertEqual(a["glyphs"], 0, "…and the cancelled landing's gap wears no glyph: %r" % a)
+        at = a["atomic"]
+        self.assertEqual(at["ask"]["landingGaps"], 0, "no landing holds a gap at the same instant the glyphs were read: %r" % at)
+        for lo, hi in at["glyphGaps"]:
+            self.assertTrue(any(k.split(":")[0] == SID and lo <= int(k.split(":")[1]) and int(k.split(":")[2]) <= hi for k in at["ask"]["gapKeys"]),
+                            "a glyph after the cancel belongs to a page ask the gap made for itself (the reader stands in it), never to the cancelled landing: gap %r, live asks %r" % ((lo, hi), at["ask"]["gapKeys"]))
         self.assertEqual(r["askedB8"], 1, "the reader's NEXT card click asked its own window while the cancelled reply was still on the wire: %r" % r["askedB8"])
         self.assertEqual(r["busy8"], 0, "…and was not refused as busy: %r" % r["busy8"])
         self.assertNotEqual(r["toast8"], "still going to the earlier message", "no untrue 'still going' toast: %r" % r["toast8"])
