@@ -114,8 +114,8 @@ if (!feed) { console.error("no settings frame"); process.exit(1); }
 await feed.waitForSelector("#rsettings:not([hidden])", { timeout: 15000 });
 const btn = await feed.evaluate(() => { const b = document.getElementById("rs-log-open"); return { present: !!b, hidden: b ? b.hidden : null }; });
 // the gear is in TABS since T379 (Open log sits on the System tab, hidden until that tab is picked): select it as a user would, by its pill
-await feed.click("#rsettings .rs-tab[data-tab=system]");
-await feed.waitForFunction(() => { const pn = document.querySelector("#rsettings .rs-pane[data-pane=system]"); return !!pn && !pn.hidden; }, null, { timeout: 5000 });
+await feed.click("#rsettings .rs-tab[data-tab=debug]");   // Open log lives on the Debug tab since T400 (System dissolved into it)
+await feed.waitForFunction(() => { const pn = document.querySelector("#rsettings .rs-pane[data-pane=debug]"); return !!pn && !pn.hidden; }, null, { timeout: 5000 });
 await feed.click("#rs-log-open");
 await page.waitForFunction(() => !document.getElementById("rerr-back").hidden, null, { timeout: 8000 });
 const after = await page.evaluate(() => ({ logHidden: document.getElementById("rerr-back").hidden, settingsOpen: document.body.classList.contains("settings-open") }));

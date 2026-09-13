@@ -45,7 +45,7 @@ test("the gear has a Thinking summaries checkbox among the kernel-side toggles, 
   assert.ok(GEAR.includes("id=rs-thinksum"), "the checkbox exists in the gear markup");
   const at = GEAR.indexOf("id=rs-thinksum");
   assert.ok(GEAR.indexOf("id=rs-conserve") < at, "…after Conserve memory, with the other kernel-side toggles");
-  assert.ok(GEAR.indexOf("data-pane=automatic") < at && at < GEAR.indexOf("data-pane=appearance"), "…in the Automatic tab (T379; File editing sits in the Sessions tab now)");
+  assert.ok(GEAR.indexOf("data-pane=tasks") < at && at < GEAR.indexOf("data-pane=appearance"), "…in the Task tracking tab (T379; File editing sits in the Sessions tab now; Automatic renamed by T400)");
   const row = GEAR.slice(at, at + 1200);
   assert.match(row, /<b>Thinking summaries<\/b>/);
   assert.ok(/new Claude Code session/.test(row) && /running session picks the change up at its next reconnect/.test(row),   // the backend's name since T288

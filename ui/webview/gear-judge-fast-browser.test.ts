@@ -79,7 +79,7 @@ async function withGear(t: any, body: (page: any, errors: string[]) => Promise<v
     });
     await page.goto("http://romp.test/gear");
     await page.waitForFunction(() => Array.isArray((window as any).__posts) && !!document.getElementById("rs-judgemodel"), null, { timeout: 10000 });
-    await page.evaluate(() => { window.postMessage({ romp: "openSettings", tab: "automatic" }, "*"); });   // the panel is in tabs (T379): the judge rows live on Automatic, hidden until that tab is picked
+    await page.evaluate(() => { window.postMessage({ romp: "openSettings", tab: "tasks" }, "*"); });   // the panel is in tabs (T379): the judge rows live on Task tracking (T400), hidden until that tab is picked
     // the fill has run once a box holds the kernel's flag: only fill() writes it, and the gate runs in the same
     // callback right after (the triage select's value is no signal: a painted select reads its first option,
     // "opus" here, before /version has answered)
