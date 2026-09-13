@@ -1777,7 +1777,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   record because the toggle is not a file, so that configuration keeps the
   boot's cold parses); the files the memo keys on are the transcript, the
   state log, the goal store with its override journal and archive, the
-  episode log, the clears log and the postal log; `nudgeGate` is the auto-nudge walk's
+  episode log, the clears log, the postal log and the kernel's downtime log
+  (the working verdict's suspension check reads a list that log refills);
+  `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue

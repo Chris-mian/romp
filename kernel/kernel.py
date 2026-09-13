@@ -9883,9 +9883,10 @@ def _warm_wanted(s, tm):
 
 def _session_files_stat(s):
     """(mtime, size) of the transcript, the state log, the session's goal store, its override journal and archive, its
-    episode log, the clears log and the postal log, zeros for a missing file: the inputs every event-keyed tick job reads
-    (the store's shared view is identified by its three files, bin/romp-judge's ident; the nudge's placement gate reads the
-    two logs; the debt reminder's ask set comes from the postal log). A change in any of them is the only event that can change the
+    episode log, the clears log, the postal log and the kernel's downtime log, zeros for a missing file: the inputs every
+    event-keyed tick job reads (the store's shared view is identified by its three files, bin/romp-judge's ident; the nudge's
+    placement gate reads the two logs; the debt reminder's ask set comes from the postal log; _session_working's suspension
+    check reads the _downtime list, which the downtime log refills). A change in any of them is the only event that can change the
     job's answer; the store is in the tuple because a judge can clear or complete the goal a marker points at with
     no transcript change at all, and the interrupt tick must re-block on exactly that (its docstring's stale-marker
     rule; tests/test_kernel_interrupt_machine_cut.py pins it)."""
@@ -9894,8 +9895,12 @@ def _session_files_stat(s):
     for p in (s.get("path") or "", str(jd.STATE / "states" / (sid + ".jsonl")), str(jd.GOALDIR / (sid + ".json")),
               str(jd._overrides_dir() / (sid + ".jsonl")), str(jd.GOALARCHDIR / (sid + ".json")),   # the shared store's identity is
               str(jd.EPIDIR / (sid + ".jsonl")), str(jd.STATE / "cleared.jsonl"),                 # three files; the placement gate
-              str(jd.STATE / "timeline" / "messages.jsonl")):                                      # reads the episode and clears logs;
-        #                                                                                           the debt reminder reads the postal log
+              str(jd.STATE / "timeline" / "messages.jsonl"),                                       # reads the episode and clears logs;
+              str(jd.STATE / "kernel-downtime.jsonl")):                                            # the debt reminder reads the postal
+        #                                                                                           log; the working verdict reads the
+        #                                                                                           host-suspension list, refilled from
+        #                                                                                           the downtime log (module state refilled
+        #                                                                                           from a file IS that file)
         try:
             st = os.stat(p)
             out += [st.st_mtime, st.st_size]
@@ -13086,12 +13091,19 @@ def _nudge_placement_gate(sid, turns, store):
 
 
 _NUDGE_FILE_KEYED_VERDICTS = frozenset({
-    "working",              # _session_working(turns): the transcript
-    "user-interrupt",       # _interrupt_suppresses_nudge: the transcript's marks and the store's interrupt marker
+    "working",              # _session_working(turns): the transcript, and _suspended_after's _downtime list (the downtime log)
+    "user-interrupt",       # _interrupt_suppresses_nudge: the transcript's marks and the state log's machineCut row (_last_machine_cut)
     "progressing",          # _last_state: the state log, against the transcript's last turn
     "closer-unsettled",     # _closer_settled: the store's closedTurns against the transcript
     "planner-queue",        # _nudge_placement_gate: the store's placements, the episode and clears logs, the transcript
 })
+_NUDGE_FILE_KEYED_ROADS = {       # the functions each marked verdict's road reads, traced to the nine keyed files by the census test
+    "working": ("_session_working", "_suspended_after"),
+    "user-interrupt": ("_interrupt_suppresses_nudge", "_interrupt_marks", "_last_machine_cut"),
+    "progressing": ("_last_state",),
+    "closer-unsettled": ("_closer_settled",),
+    "planner-queue": ("_nudge_placement_gate",),
+}
 #   The roads whose verdict is a pure function of the files the memo keys on (_session_files_stat: the transcript, the state
 #   log, the store with its override journal and archive, the episode log, the clears log, the postal log), marked so that a
 #   look ending in one may record a skippable memo. Every OTHER exit of the look, marked or not, records an unbounded memo
@@ -13103,8 +13115,8 @@ _NUDGE_FILE_KEYED_VERDICTS = frozenset({
 def _nudge_look_gated(fn):
     """The nudge walk's parse gate around one session's look (T401 (2)): the parse is skipped while the session's files are
     unchanged since its last completed look and no clock leg that look declined on has come due (_nudge_look_check); a
-    skipped look repeats the recorded verdict and still runs the parse-free debt reminder (an ask on the bus needs no
-    transcript change). A look that parses collects its clock legs' flips and records them with the files' stat when it
+    skipped look repeats the recorded verdict and does nothing else (every send sits behind the full road's gates). A look
+    that parses collects its clock legs' flips and records them with the files' stat when it
     completes; an exception records nothing (the next tick evaluates, the fault-boundary rule); a wake-only look (nudges
     off) neither skips nor records, since the toggle is not a file of the session. A decorator, so the look's own source
     stays what the pinning tests read."""

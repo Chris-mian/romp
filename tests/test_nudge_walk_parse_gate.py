@@ -114,7 +114,7 @@ class NudgeWalkParseGate(unittest.TestCase):
         saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
         try:
             st0 = km._session_files_stat(r)
-            self.assertEqual(len(st0), 16, "eight files, (mtime, size) each")
+            self.assertEqual(len(st0), 18, "nine files, (mtime, size) each")
             jp = km.jd._overrides_dir() / (SID_OLD + ".jsonl"); jp.parent.mkdir(parents=True, exist_ok=True); jp.write_text("{}\n")
             self.assertNotEqual(km._session_files_stat(r), st0, "the override journal moves the stat")
             st1 = km._session_files_stat(r)
@@ -224,7 +224,48 @@ class NudgeWalkParseGate(unittest.TestCase):
             r1 = km._auto_nudge_session(r, now, {}, {}, {}, alive_ids={SID_OLD})          # the asker is not alive: no ask owed
         self.assertIs(r1, False)
         self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "a dead peer's ask: the debtor's memo is unbounded")
-        self.assertEqual(len(km._session_files_stat(r)), 16, "eight files: the postal log joined the memo's inputs")
+        self.assertEqual(len(km._session_files_stat(r)), 18, "nine files: the postal log and the downtime log joined the memo's inputs")
+
+    def test_a_host_suspension_ends_the_skip_of_a_working_verdict(self):
+        """Round four, HIGH: `working` was marked file-keyed, but _session_working ends in _suspended_after, which reads the
+        module-level _downtime list that _record_suspend appends to and STATE/kernel-downtime.jsonl refills; that file was not
+        keyed, so a session whose open turn had no live working record kept its working verdict across a lid close and never
+        fired what the full road fires after a suspension. The downtime log is the ninth keyed file: a suspension row ends the skip."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); now = time.time(); calls = []
+        saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            self.assertEqual(self._look(r, now, calls), "working")
+            self.assertEqual(self._look(r, now + 1, calls), "working"); self.assertEqual(calls, [SID_OLD], "skipped while nothing moved")
+            km._record_suspend((now - 30, now))                            # the lid closed and reopened: the downtime log gains a row
+            self.assertEqual(self._look(r, now + 2, calls), "working")
+            self.assertEqual(calls, [SID_OLD, SID_OLD], "the suspension row ends the skip: the look parsed again")
+        finally:
+            km.jd._rebind_state(saved_state)
+            with km._TICK_SEEN_LOCK:
+                pass
+
+    def test_every_marked_road_reads_only_the_keyed_files(self):
+        """Round four: the annotation table traced. For each verdict in the file-keyed set, the functions its road reads
+        (_NUDGE_FILE_KEYED_ROADS) are walked with the ast module; none may reference a name whose source is not one of the nine
+        keyed files (the postal wait maps, the debt asks, the SDK overlay, the backend queue, the liveness map, the flag file,
+        the ledger), and module-level state refilled from a file is traced to that file (the _downtime list to the downtime log,
+        which _session_files_stat stats)."""
+        import ast, inspect
+        NOT_KEYED = {"_postal_wait_maps", "_debt_asks", "_session_awaiting", "_backend_queued", "_backend_rewind_pending", "_pending_ops",
+                     "_auto_nudge_data", "_session_flag", "_wait_for_graph", "live_map", "_alive_sessions", "Sessions", "_compacting_now"}
+        REFILLED = {"_downtime": "kernel-downtime.jsonl"}
+        stat_src = inspect.getsource(km._session_files_stat)
+        for verdict in sorted(km._NUDGE_FILE_KEYED_VERDICTS):
+            roads = km._NUDGE_FILE_KEYED_ROADS[verdict]
+            self.assertTrue(roads, "%s: its road functions are named" % verdict)
+            for fn_name in roads:
+                fn = getattr(km, fn_name)
+                names = {n.id for n in ast.walk(ast.parse(inspect.getsource(fn).lstrip())) if isinstance(n, ast.Name)}
+                self.assertEqual(sorted(names & NOT_KEYED), [], "%s: %s reads a source outside the keyed files" % (verdict, fn_name))
+                for state, filename in REFILLED.items():
+                    if state in names:
+                        self.assertIn(filename, stat_src, "%s: %s reads %s, refilled from %s, which the memo must key on" % (verdict, fn_name, state, filename))
+        self.assertIn("kernel-downtime.jsonl", stat_src)
 
     def test_the_perf_memos_and_the_boot_row_carry_the_walk(self):
         self.assertIn("nudgeWalk", km._PERF_STATS.snapshot()["memos"])
@@ -281,6 +322,10 @@ class RedundancySkipKeepsItsDeadMan(unittest.TestCase):
         import test_nudge_memo_deadlock as M
         self.M = M; self.K = M.km
         self.h = M.MemoDeadlock("test_a_parked_goal_sleeps_silently"); self.h.setUp()
+        # the full walk reaches the debt legs, which the borrowed harness neither patches nor restores (round four, low 3)
+        self._debt_saved = {n: getattr(self.K, n) for n in ("_debt_reminder_outcomes", "_fire_debt_reminder", "_debt_asks", "_postal_wait_maps")}
+        self.K._debt_reminder_outcomes = lambda sid, lt, now: None
+        self.K._fire_debt_reminder = lambda sid, now, alive_ids: False
         self.K._TICK_SEEN.clear()
         for k in self.K._NUDGE_WALK_STATS:
             self.K._NUDGE_WALK_STATS[k] = 0
@@ -288,6 +333,8 @@ class RedundancySkipKeepsItsDeadMan(unittest.TestCase):
         Path(self.path).write_text("{}\n")
 
     def tearDown(self):
+        for n, v in self._debt_saved.items():
+            setattr(self.K, n, v)
         self.h.tearDown()
 
     def _tick(self, now):
