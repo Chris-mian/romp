@@ -20371,6 +20371,25 @@ def _reap_stray_tunnels(host):
                 pass
 
 
+PORT_UP_WATCH_S = 12.0            # how long a dial's port watch waits for ssh's local forward to accept (ConnectTimeout is 10)
+
+
+def _wake_when_port_up(port, proc, deadline_s=PORT_UP_WATCH_S, step_s=0.1):
+    """Wake the supervisor the moment a dialed ssh's local forward accepts a connection, instead of at the next pass
+    (the user 2026-09-13: while we know we should reconnect, the round trip is the floor, not a timer). A local connect
+    every 100 ms (no remote load), until the port opens, the ssh dies, or the deadline passes. Returns whether the
+    port came up. Runs on a short daemon thread from _spawn_tunnel."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < deadline_s:      # loop-ok: bounded by the deadline, local connects only
+        if proc is not None and proc.poll() is not None:
+            return False
+        if port and _port_open(port):
+            _tunnel_wake.set()
+            return True
+        time.sleep(step_s)
+    return False
+
+
 def _spawn_tunnel(r):
     """(Re)spawn the ssh tunnel proc for one remote. Caller holds _remotes_lock.
 
@@ -20391,6 +20410,11 @@ def _spawn_tunnel(r):
         r["status"], r["detail"] = "starting", ""
         r["_death_logged"] = False
         _tunnel_log(r["host"], "dial", pid=r["proc"].pid, fails=r.get("fails", 0), argv=argv)
+        try:                              # the port-up wake: the row reads up as soon as ssh connects, not a pass later
+            threading.Thread(target=_wake_when_port_up, args=(r.get("local_port"), r["proc"]),
+                             name="port-up:" + str(r["host"]), daemon=True).start()   # kind "port-up"; the host after the colon is the payload the kind rule drops
+        except Exception:
+            pass
     except Exception as e:
         r["proc"], r["status"], r["detail"] = None, "error", str(e)
         _tunnel_log(r["host"], "spawn-failed", error=str(e), argv=argv)
@@ -24560,7 +24584,45 @@ def _tunnel_supervisor():
             _remotes_save_if_changed()
         except Exception:
             sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
-        _tunnel_wake.wait(15)
+        _tunnel_wake.wait(_supervisor_wait_s(time.time()))
+
+
+SUPERVISOR_PASS_S = 15.0          # the steady pass: every attached tunnel polled end to end this often
+SUPERVISOR_FAST_PASS_S = 0.25     # the GAP between passes while a row is in transition (dialing, starting, restarting, no kernel
+#                                   answering): a pass is one synchronous probe round trip per row, so the pace coalesces on the
+#                                   round trip itself (the user 2026-09-13) and nothing here needs to know how long it takes
+SUPERVISOR_FAST_WINDOW_S = 60.0   # how long one transition keeps the fast pass before the steady pass resumes
+_TRANSITIONAL = frozenset(("starting", "connecting", "restarting", "no-kernel"))
+_fast_since = {}                  # host -> when its current transition began (dropped when the row reads up or down)
+
+
+def _supervisor_wait_s(now, rows=None):
+    """How long the supervisor sleeps before its next pass: the steady 15 s, or a quarter-second gap while any tunnel
+    row is in transition, for at most 60 s per transition (the user 2026-09-13: while we know we should reconnect, probe
+    back to back; the pass is one probe round trip per row, so the pace is the round trip's own and no timer guesses it). The laptop's dial ledger (the user, 2026-09-13): every dial had
+    its ssh up within a second and the row read "up" 16 to 18 s later, and a devbox kernel restart read as a 16 s
+    gap, because nothing polled sooner than the next steady pass. A transition is the event; the bound keeps a
+    host that never comes back from being polled every second for good (the backoff ladder still spaces its dials)."""
+    if rows is None:
+        with _remotes_lock:
+            rows = [dict(r) for r in _remotes.values()]
+    fast = False
+    live = set()
+    for r in rows:
+        host = r.get("host")
+        if not host:
+            continue
+        transitional = bool(r.get("_dialing")) or (r.get("status") or "") in _TRANSITIONAL
+        if not transitional:
+            _fast_since.pop(host, None)
+            continue
+        live.add(host)
+        since = _fast_since.setdefault(host, now)
+        if now - since < SUPERVISOR_FAST_WINDOW_S:
+            fast = True
+    for host in [h for h in _fast_since if h not in live]:
+        _fast_since.pop(host, None)
+    return SUPERVISOR_FAST_PASS_S if fast else SUPERVISOR_PASS_S
 
 
 def _session_rows():
