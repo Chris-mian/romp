@@ -8,7 +8,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { lensChips } from "./tag-lens";
-import { TAG_BTN_GRAY, TAG_BTN_ACCENT, TAG_BTN_BORDER, TAG_BTN_WASH } from "./tag-menu";
+import { TAG_BTN_GRAY, TAG_BTN_ACCENT, TAG_BTN_BORDER, TAG_BTN_BORDER_CSS, TAG_BTN_WASH } from "./tag-menu";
 
 const ui = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), "..", "ui", ...p), "utf8");
 const RENDER = ui("webview", "render.ts");
@@ -67,6 +67,9 @@ test("THE BUTTON OUTLINE (the user 2026-08-25, round two): every mount wears the
   // equal, never share the class.
   const flat = FEEDCSS.replace(/\s+/g, "");
   assert.equal(TAG_BTN_BORDER, "rgba(255,255,255,0.10)");
+  // the themed token both boxes read, the literal its fallback (the tab lock's review, 2026-09-13); both sheets define it per theme
+  assert.equal(TAG_BTN_BORDER_CSS, "var(--card-border, rgba(255,255,255,0.10))");
+  for (const sheet of ["styles.css", "feed.css"]) { const css = ui("webview", sheet); assert.equal((css.match(/--card-border: rgba\(255, 255, 255, 0\.10\);/g) || []).length, 1, sheet + " dark"); assert.equal((css.match(/--card-border: rgba\(0, 0, 0, 0\.10\);/g) || []).length, 1, sheet + " light"); }
   assert.equal(TAG_BTN_WASH, "rgba(156,210,255,0.12)");
   assert.ok(flat.includes("--card-border:rgba(255,255,255,0.10)"), "the feed's hairline is the shared border literal");
   // the feed's .on rules resolve through var(--accent-wash) since 2026-08-26 — its :root literal
@@ -79,9 +82,9 @@ test("THE BUTTON OUTLINE (the user 2026-08-25, round two): every mount wears the
   // the GLYPH button keeps the outline dress (border/radius/colors) but wears an ICON box —
   // 4px 6px, taller and narrower than the word-buttons' 1px 9px, which read wide-and-short
   // around the 14px glyph next to inputs and tabs (the user 2026-08-26)
-  assert.match(TAGMENU, /border:1px solid " \+ TAG_BTN_BORDER \+ ";"\s*\n\s*\+ "border-radius:6px;padding:4px 6px;/,
+  assert.match(TAGMENU, /border:1px solid " \+ TAG_BTN_BORDER_CSS \+ ";"\s*\n\s*\+ "border-radius:6px;padding:4px 6px;/,
     "tagMenuButton wears the outline dress with the icon box");
-  assert.match(TAGMENU, /btn\.style\.borderColor = narrowed \? TAG_BTN_ACCENT : TAG_BTN_BORDER;/,
+  assert.match(TAGMENU, /btn\.style\.borderColor = narrowed \? TAG_BTN_ACCENT : TAG_BTN_BORDER_CSS;/,
     "narrowed = accent border, at rest the hairline");
   assert.match(TAGMENU, /btn\.style\.background = narrowed \? TAG_BTN_WASH : "transparent";/,
     "narrowed = the .on wash");

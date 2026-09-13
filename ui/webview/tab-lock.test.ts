@@ -58,8 +58,8 @@ test("the dress: the tags box's floor, gray at rest, the accent on glyph and out
   assert.match(box, /display: inline-flex;/); assert.match(box, /align-items: center;/); assert.match(box, /min-height: 31px;/, "the + tab's rendered height, as the tags box");
   const btn = CSS.match(/\n\.tab-lock \{[^}]*\}/)![0];
   assert.match(btn, /background: transparent;/); assert.match(btn, /border: 1px solid var\(--tab-lock-border, var\(--box-border\)\);/); assert.match(btn, /border-radius: 6px;/);
-  assert.match(RENDER, /lock\.style\.setProperty\("--tab-lock-border", TAG_BTN_BORDER\);/, "the border is the tag button's own constant, one source for both boxes (round two, LOW 1)");
-  assert.match(RENDER, /^import \{ openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER \} from "\.\/tag-menu";/m);
+  assert.match(RENDER, /lock\.style\.setProperty\("--tab-lock-border", TAG_BTN_BORDER_CSS\);/, "the border is the tag button's own themed token, one source for both boxes in every theme");
+  assert.match(RENDER, /^import \{ openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS \} from "\.\/tag-menu";/m);
   assert.match(btn, /color: var\(--dim\);/, "gray at rest");
   const on = CSS.match(/\n\.tab-lock\.on \{[^}]*\}/)![0];
   assert.match(on, /color: var\(--accent\);/); assert.match(on, /border-color: var\(--accent\);/);
