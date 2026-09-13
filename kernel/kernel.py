@@ -3124,13 +3124,11 @@ def _debt_asks(sid, alive_ids):
     for (f, t_), rec in last_ask.items():
         if t_ != str(sid):
             continue
-        if f not in (alive_ids or ()):
-            if f in (getattr(_NUDGE_HORIZON, "keyed_askers", None) or ()):
-                continue                               # the asker's registry row is in the debtor's key: its revival moves the stat
-            if f in (getattr(_NUDGE_HORIZON, "over_askers", None) or ()):
-                _nudge_clock(None, "deadAskerOverflow")   # beyond the eight keyed rows: unbounded, under its own leg
-            else:
-                _nudge_clock(None, "deadAsker")        # a caller with no key (a look outside a pass with no asker rows): as before
+        if f in (getattr(_NUDGE_HORIZON, "keyed_askers", None) or ()):
+            if not _asker_row_alive(f):                # the asker's registry row is in the debtor's key, so its content decides
+                continue                               #  (round two, medium: the pass's alive set is older than the key; a
+        elif f not in (alive_ids or ()):               #  revival landing between the two would record a memo that owes nothing)
+            _nudge_clock(None, "deadAskerOverflow")    # beyond the eight keyed rows (or outside a look, where the note is a no-op)
             continue
         ts = rec[0]
         if last_any.get((t_, f), 0) >= ts:
@@ -10104,26 +10102,51 @@ _NUDGE_LOOK_ASKERS = {}               # sid -> (the asker sids whose registry ro
 _NUDGE_ASKER_ROWS_MAX = 8             # the debtor's key carries at most this many askers' registry rows (oldest open asks first)
 
 
-def _nudge_asker_rows(sid):
-    """The peers with an OPEN ask on this session (the postal wait maps: an inbound reply-expecting ask with nothing sent back
-    since), oldest ask first. A dead asker's ask becomes answerable only when the asker REVIVES, and a revival writes the
-    asker's registry row (STATE/sdk/<asker>.json), so that row is the file the debtor's verdict depends on: the first
-    _NUDGE_ASKER_ROWS_MAX rows join the debtor's memo key (an absent row stats as a stable absent marker, so a peer gone for
-    good keeps the memo standing), and the debt leg notes nothing for them (T401 (2) follow-up: the deadAsker leg carried
-    about four in five of the unbounded notes on one boot, asks of long-gone peers)."""
+def _nudge_asks_by_target():
+    """{debtor sid: [asker sids, oldest ask first]} for every OPEN ask in the postal wait maps (an inbound reply-expecting ask
+    with nothing sent back since), built once per pass (round two, low 3: a scan and a sort per alive session would have
+    charged the quiet sessions the gate exists to make free); the maps themselves are memoised on the postal log's stat."""
     try:
         last_any, last_ask, _aw = _postal_wait_maps()
     except Exception:
-        return []
-    asks = sorted((rec[0], f) for (f, t_), rec in last_ask.items() if t_ == str(sid) and last_any.get((t_, f), 0) < rec[0])
-    return [f for _ts, f in asks]
+        return {}
+    by = {}
+    for (f, t_), rec in sorted(last_ask.items(), key=lambda kv: kv[1][0]):
+        if last_any.get((t_, f), 0) < rec[0]:
+            by.setdefault(t_, []).append(f)
+    return by
 
 
-def _nudge_look_stat(s):
+def _nudge_asker_rows(sid, index=None):
+    """The peers with an OPEN ask on this session, oldest ask first. A dead asker's ask becomes answerable only when the asker
+    REVIVES, and a revival writes the asker's registry row (STATE/sdk/<asker>.json, the SDK backend's liveness record: alive
+    true or false), so that row is the file the debtor's verdict depends on: the first _NUDGE_ASKER_ROWS_MAX rows join the
+    debtor's memo key (an absent row stats as a stable absent marker, so a peer gone for good keeps the memo standing), and
+    the debt leg reads the keyed asker's aliveness from that same row, so the verdict and the key come from one file and
+    cannot disagree (T401 (2) follow-up: the dead-asker notes were about four in five of the unbounded notes on one boot,
+    asks of long-gone peers). The limit: the invariant holds for the SDK backend only; a Codex session's liveness is
+    in-memory with its registry at STATE/codex/registry.json, so a Codex asker's revival would move nothing in a debtor's
+    key (not reachable today: a Codex session cannot identify itself to the bus and so cannot ask)."""
+    if index is None:
+        index = _nudge_asks_by_target()
+    return list(index.get(str(sid), ()))
+
+
+def _asker_row_alive(asker):
+    """The asker's aliveness as its registry row says it (the row the debtor's key stats): alive true and not a comment thread,
+    the SDK backend's own live_sessions rule; a missing or unreadable row is dead."""
+    try:
+        reg = json.loads((jd.STATE / "sdk" / (str(asker) + ".json")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return bool(isinstance(reg, dict) and reg.get("alive") and not reg.get("threadOf"))
+
+
+def _nudge_look_stat(s, index=None):
     """(the debtor's memo key, the askers keyed, the askers beyond the bound): the ten files' stats plus one (mtime, size) per
-    keyed asker's registry row, zeros for an absent row."""
+    keyed asker's registry row, zeros for an absent row, so the persisted memo row is 22 to 38 elements."""
     sid = str(s.get("sid") or "")
-    askers = _nudge_asker_rows(sid)
+    askers = _nudge_asker_rows(sid, index)
     keyed, over = askers[:_NUDGE_ASKER_ROWS_MAX], askers[_NUDGE_ASKER_ROWS_MAX:]
     out = list(_session_files_stat(s))
     for f in keyed:
@@ -11382,9 +11405,10 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     ledger snapshot (a read fault) stands the whole pass down — see _auto_nudge_pause."""
     alive = list(_alive_sessions(now, live_map))
     _NUDGE_LOOK_STATS.clear(); _NUDGE_LOOK_ASKERS.clear()
+    asks_by_target = _nudge_asks_by_target()              # once per pass: the open asks by debtor
     for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
-        _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s)   # key (the ten files and its open asks' asker rows) is taken
-        _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  here, before the ledger, the peer graph and the clear set
+        _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s, asks_by_target)   # key (the ten files and its open asks'
+        _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  asker rows) is taken here, before the ledger, the peer graph and the clear set
     #                                                       are read, so no snapshot handed to a look is older than the key its memo
     #                                                       is recorded under (an undo between a pass-top snapshot and a look moved the
     #                                                       clears log and the store under a memo that then silenced the un-cleared goal)

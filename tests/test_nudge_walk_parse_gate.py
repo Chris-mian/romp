@@ -243,7 +243,7 @@ class NudgeWalkParseGate(unittest.TestCase):
             memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
             self.assertIsNotNone(memo[-2], "the asker's row is keyed: the debtor's memo is bounded, not None")
             self.assertEqual(len(memo) - 2, 22, "ten files plus the asker's (mtime, size), zeros for an absent row: %r" % (memo,))
-            self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"].get("deadAsker", 0), before.get("deadAsker", 0), "the leg notes nothing for a keyed asker")
+            self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"], before, "no leg notes anything for a keyed asker")
             self._dead_asker_look(r, now + 1, calls, quiet)                    # a skipped look answers from its memo
             self.assertEqual(calls, [SID_OLD], "the second look skipped: nothing of the debtor's or the asker's moved")
             self.assertEqual(len(km._session_files_stat(r)), 20, "the ten session files stand as they were")
@@ -258,14 +258,52 @@ class NudgeWalkParseGate(unittest.TestCase):
             self._dead_asker_look(r, now, calls, quiet); self._dead_asker_look(r, now + 1, calls, quiet)
             self.assertEqual(calls, [SID_OLD])
             (km.jd.STATE / "sdk").mkdir(parents=True, exist_ok=True)
-            (km.jd.STATE / "sdk" / (SID_NEW + ".json")).write_text(json.dumps({"sid": SID_NEW, "pid": 1}))   # the asker is back
-            quiet_alive = dict(quiet); real_fire = quiet["_fire_debt_reminder"]
-            def fire_alive(sid, now_, alive_ids):
-                return real_fire(sid, now_, {SID_OLD, SID_NEW})
-            quiet_alive["_fire_debt_reminder"] = fire_alive
-            self._dead_asker_look(r, now + 2, calls, quiet_alive)
+            (km.jd.STATE / "sdk" / (SID_NEW + ".json")).write_text(json.dumps({"sid": SID_NEW, "pid": 1, "alive": True}))   # back
+            self._dead_asker_look(r, now + 2, calls, quiet)                    # the alive set still names the debtor alone
             self.assertEqual(calls, [SID_OLD, SID_OLD], "the registry row moved the key: the look parsed again")
-            self.assertEqual(sent[-1], [SID_NEW], "and the reminder found the ask owed to the revived peer")
+            self.assertEqual(sent[-1], [SID_NEW], "and the reminder found the ask owed to the revived peer: the row says alive")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_a_revival_landing_between_the_passs_alive_read_and_its_key_loop_still_owes_the_ask(self):
+        """Round two, medium (the round-six rule): the pass read LIVENESS before the key. The alive set is taken over the
+        cycle-top snapshot, then the key loop stats each session's files and asker rows; an asker that revived in that gap
+        had its NEW row in the debtor's key while _debt_asks ran against the stale alive set, found it among the keyed
+        askers and noted nothing, so the debtor recorded a skippable memo asserting it owed nothing. The keyed asker's
+        aliveness is read from the SAME row the key stats, so the verdict and the key come from one file."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            reg = km.jd.STATE / "sdk" / (SID_NEW + ".json")
+            revived = []
+            def alive_then_revival(now_, live_map):                   # the pass's alive read, with the revival landing right after it
+                out = [r]                                             #  (once: the second pass reads the alive set and nothing lands)
+                if not revived:
+                    revived.append(1); reg.parent.mkdir(parents=True, exist_ok=True)
+                    reg.write_text(json.dumps({"sid": SID_NEW, "pid": 1, "alive": True}))
+                return out
+            passq = dict(quiet, _alive_sessions=alive_then_revival, _auto_nudge_data=lambda: {}, _auto_nudge_resume=lambda: None,
+                         _wait_for_graph=lambda now_, ids: {}, _cleared_ids=lambda: set(), _auto_nudge_on=lambda: True,
+                         _compact_suggest_tick=lambda sid, live, now_: False, _relay_tick=lambda now_, ids: None,
+                         _debt_backstop_tick=lambda now_: None, _dead_wait_sweep=lambda ids, nudged, now_: None,
+                         _awaiting_wake_outcomes=lambda now_, ids: False, _push_soon=lambda: None, _pop_walk_gate=lambda k: None)
+            with mock.patch.multiple(km, **passq), \
+                 mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
+                 mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now_: (calls.append(sid), {"turns": STOPPED})[1]), \
+                 mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
+                km._auto_nudge_pass(now, {}, True)
+            self.assertEqual(calls, [SID_OLD], "the debtor was looked at once")
+            self.assertEqual(sent, [[SID_NEW]], "the ask is owed: the asker's row, the file the key stats, says alive")
+            memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
+            self.assertIsNotNone(memo[-2], "and the memo is bounded by that row")
+            reg.write_text(json.dumps({"sid": SID_NEW, "pid": 1, "alive": False}))   # the asker ends: the same row moves
+            with mock.patch.multiple(km, **passq), \
+                 mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
+                 mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now_: (calls.append(sid), {"turns": STOPPED})[1]), \
+                 mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
+                km._auto_nudge_pass(now + 1, {}, True)
+            self.assertEqual(calls, [SID_OLD, SID_OLD], "the row moved: the look parsed again")
+            self.assertEqual(sent[-1], [], "and owes nothing to a peer whose row says it ended, whatever the alive set said")
         finally:
             km.jd._rebind_state(saved_state)
 
@@ -282,7 +320,7 @@ class NudgeWalkParseGate(unittest.TestCase):
             self.assertIsNone(memo[-2], "the ninth asker is not keyed: the memo is unbounded")
             by = km._NUDGE_WALK_STATS["unboundedBy"]
             self.assertEqual(by.get("deadAskerOverflow", 0), before.get("deadAskerOverflow", 0) + 1, "one note, under its own leg")
-            self.assertEqual(by.get("deadAsker", 0), before.get("deadAsker", 0), "and none under deadAsker")
+            self.assertNotIn("deadAsker", by, "no such leg: every dead asker is keyed or beyond the keyed rows")
             keyed, over = km._NUDGE_LOOK_ASKERS[SID_OLD]
             self.assertEqual((len(keyed), over), (km._NUDGE_ASKER_ROWS_MAX, [askers[0]]), "the NEWEST ask overflows: oldest first are keyed")
         finally:
