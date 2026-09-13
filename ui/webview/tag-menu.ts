@@ -161,6 +161,8 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
  *  action). Keyboard: the rows take focus (the first on open, so Enter on the anchor then Enter on the row is the whole
  *  path), Enter and Space press, Escape closes and hands the focus back to the anchor. */
 export interface RowsMenuRow { label: string; current?: boolean; title?: string; dim?: boolean; glyph?: string; press: () => boolean | void }
+// `current` given (true or false) makes the row a SWITCH (role menuitemcheckbox, aria-checked); absent, an ACTION (role menuitem,
+// no checked state), so an action row is never announced as an unchecked checkbox (T405 round two, low 2)
 export function openRowsMenu(anchor: HTMLElement, rows: () => RowsMenuRow[]): void {
   const reopen = !!openMenu && openMenu.dataset.rowsMenu === "1" && openMenu.dataset.anchor === (anchor.id || anchor.className);
   closeTagMenu();
@@ -189,8 +191,9 @@ export function openRowsMenu(anchor: HTMLElement, rows: () => RowsMenuRow[]): vo
       const r = document.createElement("div");
       r.setAttribute("style", "padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;display:flex;align-items:center;gap:6px;outline:none;"
         + (spec.dim ? "opacity:0.85;" : ""));
-      r.setAttribute("role", "menuitemcheckbox");
-      r.setAttribute("aria-checked", spec.current ? "true" : "false");
+      const isSwitch = spec.current !== undefined;
+      r.setAttribute("role", isSwitch ? "menuitemcheckbox" : "menuitem");
+      if (isSwitch) r.setAttribute("aria-checked", spec.current ? "true" : "false");
       r.tabIndex = 0;
       if (spec.title) r.title = spec.title;
       if (spec.glyph) { const g = document.createElement("span"); g.innerHTML = spec.glyph; g.setAttribute("style", "display:inline-flex;align-items:center;"); g.setAttribute("aria-hidden", "true"); r.appendChild(g); }
@@ -293,7 +296,7 @@ export function tagChip(label: string, color?: string | null, opts?: { inheritSi
   return chip;
 }
 
-export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement,
+export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement | null,
                               lens: TagLens, unions: { name: string; color?: string | null; members: string[]; }[],
                               onApply: (l: TagLens) => void,
                               mode: "inline" | "class" = "inline"): void {
@@ -306,6 +309,7 @@ export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement,
     btn.style.background = narrowed ? TAG_BTN_WASH : "transparent";
   }
   btn.setAttribute("aria-pressed", narrowed ? "true" : "false");
+  if (!chipsHost) return;   // the button's state alone (the chat strip since T405, which displays no chips): nothing built, nothing to drop
   chipsHost.textContent = "";
   for (const c of lensChips(lens, unions as never)) {
     const chip = tagChip(c.label, c.color);

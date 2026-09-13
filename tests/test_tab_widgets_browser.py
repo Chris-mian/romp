@@ -99,7 +99,8 @@ const settingsOpen = () => page.evaluate(() => document.body.classList.contains(
 if (out.strip0.gear) {   // T405: the gear opens its menu; the "Tab widgets…" row is the T379 ask
   await chatF.click("#tabs .tab-gearbox .tab-widgets-gear");
   await chatF.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 });
-  await chatF.click('[data-rows-menu="1"] [role="menuitemcheckbox"]:nth-child(2)');
+  out.menuRoles = await chatF.evaluate(() => Array.from(document.querySelectorAll('[data-rows-menu="1"] > div')).map((r) => [r.getAttribute("role"), r.hasAttribute("aria-checked")]));
+  await chatF.click('[data-rows-menu="1"] [role="menuitem"]:nth-child(2)', { timeout: 5000 }).catch(() => {});   // the Tab widgets row is an ACTION (role menuitem, no checked state; round two, low 2); a strip without such a row is this run's red, not a crash
 }
 await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
 out.shellOpen = await settingsOpen();
@@ -518,6 +519,7 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertIsNotNone(s["gear"], "the glyph is in the strip (the chat sits in the shell, so a gear can be reached)" + table)
         self.assertEqual((s["gear"]["title"], s["gear"]["aria"], s["gear"]["svg"], s["gear"]["inBox"]), ("Tab strip: lock, widgets…", "Tab strip settings", False, True), "T405: the shell's glyph, a character, in the gear box" + table)
         self.assertLessEqual(s["gear"]["rect"]["h"], s["gear"]["boxH"] + 0.5, "it takes no extra height beyond its box (the tags box's floor)" + table)
+        self.assertEqual(self._run().get("menuRoles"), [["menuitemcheckbox", True], ["menuitem", False]], "the lock row a switch, the widgets row an action (round two, low 2)" + table)
 
     def _assert_scrolled_to_the_section(self, p, table):
         # the section head sits inside the card's visible box, under its padding, unless the card ran out of scroll first

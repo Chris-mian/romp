@@ -6603,7 +6603,7 @@ function renderTabs() {
   // the active tab. Captured before the tab rule below, which keeps its pinned two-line shape.
   const focusedEl = document.activeElement as HTMLElement | null;
   const focusedGroup = (focusedEl?.closest(".tab-group-head") as HTMLElement | null)?.dataset.group;
-  const focusedGear = !!focusedEl?.closest(".tab-widgets-gear");   // a keyboard press on the gear rebuilt the strip (its menu toggled the lock): the gear keeps the focus (T395 round one, moved by T405)
+  const focusedGear = !!focusedEl?.closest(".tab-widgets-gear");   // the gear held the keyboard when a push rebuilt the strip (a lock toggle's rebuild finds the focus on the menu's row, and the menu's own Escape refocuses the live gear): the gear keeps the focus, not the active tab (T395 round one, moved by T405; round two, low 6)
   const refocusTab = bar.contains(document.activeElement);
   bar.replaceChildren();
   // A session under several tags has a COPY in each group (T264b, the user 2026-09-08: tags are
@@ -6742,9 +6742,8 @@ function renderTabs() {
   // everything selected when narrowed — the shared renderer, identical on every mount
   // T405 (the user 2026-09-13): the strip's control no longer DISPLAYS what it filters to, no "(no tags)" and no tag chips
   // beside the button: with Group tabs by tag on the tags show in the strip's sections anyway, and otherwise whoever is
-  // interested clicks the button, which still wears the accent while narrowed. The filter itself is unchanged; the chips
-  // host stays for the shared sync's signature and is never appended
-  const tagChipsHost = el("span", "tab-tagchips");
+  // interested clicks the button, which still wears the accent while narrowed. The filter itself is unchanged; the shared
+  // sync runs with no chips host, so it builds no chip (round two, low 3: two chips were built and dropped per paint)
   bar.appendChild(tagBox);
   // THE STRIP'S GEAR (T379, the user 2026-09-12; T405, the user 2026-09-13): ONE glyph, the shell's own settings gear
   // (icons.ts GEAR_GLYPH, the character the rail wears at the bottom right of every romp page, read by the kernel from the
@@ -6761,7 +6760,7 @@ function renderTabs() {
     const gearBox = el("span", "tab-gearbox");
     const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
     gear.type = "button";
-    gear.title = "Tab strip: lock, widgets…";
+    gear.title = settingsReachable ? "Tab strip: lock, widgets…" : "Tab strip: lock";   // no widgets row where no settings gear can be reached, and the title says so (round two, low 1)
     gear.setAttribute("aria-label", "Tab strip settings");
     gear.setAttribute("aria-haspopup", "menu");
     gear.textContent = GEAR_GLYPH;
@@ -6779,7 +6778,7 @@ function renderTabs() {
   }
   {
     const v = effViews();
-    syncTagFilter(tagBtn, tagChipsHost, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
+    syncTagFilter(tagBtn, null, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
       postLens({ actives: Object.assign({}, (v || {}).actives, { chat: l }) });
     });
   }

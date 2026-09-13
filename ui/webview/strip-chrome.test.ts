@@ -55,9 +55,11 @@ test("the tab lock is a row in the gear's menu with the button's two titles, tog
 });
 
 test("the strip's tag control displays no chips: the host is built for the shared sync and never appended", () => {
-  assert.match(RENDER, /const tagChipsHost = el\("span", "tab-tagchips"\);\n\s+const tagBox = el\("span", "tab-tagbox"\);|const tagChipsHost = el\("span", "tab-tagchips"\);\n/, "the host exists");
-  assert.doesNotMatch(RENDER, /tagBox\.appendChild\(tagChipsHost\);/, "and is never appended to the strip's tag box");
-  assert.match(RENDER, /syncTagFilter\(tagBtn, tagChipsHost, surfaceLens\(v, "chat"\)/, "the shared sync still runs, so the button's accent says it filters");
+  assert.doesNotMatch(RENDER, /const tagChipsHost = el\("span", "tab-tagchips"\);/, "no detached chips host: nothing is built to be dropped (round two, low 3)");
+  assert.doesNotMatch(RENDER, /tagBox\.appendChild\(tagChipsHost\);/, "and nothing is appended to the strip's tag box");
+  assert.match(RENDER, /syncTagFilter\(tagBtn, null, surfaceLens\(v, "chat"\)/, "the shared sync still runs with no host, so the button's accent says it filters and no chip is built");
+  assert.match(TAGMENU, /export function syncTagFilter\(btn: HTMLElement, chipsHost: HTMLElement \| null,/);
+  assert.match(TAGMENU, /btn\.setAttribute\("aria-pressed", narrowed \? "true" : "false"\);\s*\n\s*if \(!chipsHost\) return;/, "the sync skips the chip loop with no host");
   // the phone header's mount is untouched: its chips still ride the slot (T161)
   assert.match(RENDER, /mslot\.append\(mBtn, mChips\);/);
 });
@@ -71,6 +73,7 @@ test("the gear sits in a box of its own appended last, pushed to the strip's far
   assert.match(box, /margin-left: auto;/, "the auto margin pushes it to the right edge of its flex line");
   assert.match(box, /min-height: 31px;/, "the + tab's rendered height, as the tags box");
   assert.match(CSS, /\nbody\.dense-chrome \.tab-gearbox \{ min-height: 25px; \}/, "dense follows");
+  assert.match(CSS, /\nbody\.dense-chrome \.tab-widgets-gear \{ line-height: 18px; \}/, "the dense button: 18 + 4 + 2 = 24px inside the 25px row (round two, the medium); dense-chrome-layout.test.ts measures it");
   assert.doesNotMatch(CSS, /\.tab-lockbox|\n\.tab-lock \{|\n\.tab-lock\.on \{/, "the lock button's rules are gone");
   const gear = CSS.match(/\n\.tab-widgets-gear \{[^}]*\}/)![0];
   assert.match(gear, /font-size: 16px;/); assert.match(gear, /line-height: 20px;/);
@@ -133,6 +136,9 @@ test("executed: the rows menu renders its rows with the ✓ and titles, a switch
     assert.equal(rows[0].attrs["aria-checked"], "true", "and repaints it with the ✓"); assert.equal(rows[0].title, "Tabs are locked in place: click to allow moving them again");
     assert.ok(rows[0].kids.some((k) => k.tag === "span" && label(k) === "✓"));
     assert.equal(h.focused(), rows[0], "the focus stays on the row across the repaint");
+    assert.equal(rows[0].attrs.role, "menuitemcheckbox", "a row with a current value is a switch");
+    assert.equal(rows[1].attrs.role, "menuitem", "a row without one is an action (round two, low 2)…");
+    assert.equal(rows[1].attrs["aria-checked"], undefined, "…and carries no checked state");
     rows[1].handlers.click();
     assert.deepEqual(acted, ["widgets"]); assert.equal(menu.removed, true, "an action closes the menu");
     // Escape hands the focus back to the anchor
@@ -157,4 +163,9 @@ test("the shared rows menu is the tag menu's card and ✓-row grammar, stated on
   assert.match(TAGMENU, /closeTagMenu\(\); liveAnchor\(\)\?\.focus\(\); \}/);
   assert.match(TAGMENU, /menu\.dataset\.rowsMenu = "1"; menu\.dataset\.tagMenu = "1";/);
   assert.equal((TAGMENU.match(/background:var\(--check-bg, #1EA1EB\);color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;/g) || []).length, 2, "the ✓ badge, the tag menu's and the rows menu's, one text");
+});
+
+test("the gear's title names the widgets row only where a settings gear can be reached (round two, low 1)", () => {
+  assert.match(RENDER, /gear\.title = settingsReachable \? "Tab strip: lock, widgets…" : "Tab strip: lock";/);
+  assert.doesNotMatch(RENDER, /gear\.title = "Tab strip: lock, widgets…";/);
 });

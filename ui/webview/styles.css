@@ -4422,6 +4422,10 @@ body.dense-chrome .tab-add { padding: 3px 8px; font-size: 1.1em; }              
    without this the row holding the + and the tag control would stay 31px beside 25px rows */
 body.dense-chrome .tab-tagbox { min-height: 25px; }                                     /* 31px */
 body.dense-chrome .tab-gearbox { min-height: 25px; }                                    /* 31px; the gear box follows the tags box (T405) */
+/* the gear button itself under compact tabs (T405 round two): its 20px line, 2 x 2px padding and the border made 26px, taller
+   than the 25px row, and #tabs stretches every item on a row to the tallest, so every dense tab grew to 26px and the transcript's
+   top moved a pixel; an 18px line makes the button 24px (the old lock's height), inside the 25px box */
+body.dense-chrome .tab-widgets-gear { line-height: 18px; }                              /* 20px */
 body.dense-chrome .tab-group-head { gap: 4px; padding: 3px 5px; }                       /* 5px; 6px 7px — the dense tab's own padding, so the row keeps a tab's box here too (T322) */
 /* the untagged trail's divider (the inline layout, stripGroupRows off): its 1px line is the content area under fixed
    gutters, so the 8px gutters sized for the 32px row would leave a 9px line in the 25px row; 6px keeps the default's

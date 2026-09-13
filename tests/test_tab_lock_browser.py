@@ -198,9 +198,21 @@ out.tlLocked = await laneDrag("locked: the 3rd lane to the top");
 out.themes = {};
 for (const theme of ["dark", "light"]) {
   await page.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
-  await page.waitForTimeout(200);
+  await page.mouse.move(4, 4); await page.waitForTimeout(200);   // the pointer off the gear: its REST border, not the hover's accent
+  const restLay = await layout();
   await openGear(); await page.waitForTimeout(150);
   out.themes[theme] = await layout();
+  out.themes[theme].restBorder = restLay.gear.border; out.themes[theme].restCardBorder = restLay.cardBorder;
+  // compact tabs (round two, the medium): the dense row is 25px, and the gear must stand inside it, not stretch it
+  await page.evaluate(() => document.body.classList.add("dense-chrome")); await page.waitForTimeout(150);
+  out.themes[theme].dense = await page.evaluate(() => { const h = (el) => el ? el.getBoundingClientRect().height : null;
+    return { tab: h(document.querySelector("#tabs .tab[data-id]")), gear: h(document.querySelector("#tabs .tab-widgets-gear")), gearbox: h(document.querySelector("#tabs .tab-gearbox")),
+             tagbox: h(document.querySelector("#tabs .tab-tagbox")), contentTop: document.getElementById("content") ? document.getElementById("content").getBoundingClientRect().top : null }; });
+  if (cfg.shots) {
+    const dbar = await page.evaluate(() => { const b = document.getElementById("tabbar").getBoundingClientRect(); return { x: 0, y: Math.max(0, b.top - 4), width: window.innerWidth, height: Math.min(window.innerHeight - b.top, b.height + 120) }; });
+    await page.screenshot({ path: cfg.shots + "-dense-strip-" + theme + ".png", clip: dbar });
+  }
+  await page.evaluate(() => document.body.classList.remove("dense-chrome")); await page.waitForTimeout(100);
   if (cfg.shots) {
     const bar = await page.evaluate(() => { const b = document.getElementById("tabbar").getBoundingClientRect(); return { x: 0, y: Math.max(0, b.top - 4), width: window.innerWidth, height: Math.min(window.innerHeight - b.top, b.height + 120) }; });
     await page.screenshot({ path: cfg.shots + "-strip-" + theme + ".png", clip: bar });
@@ -354,12 +366,21 @@ class ServedTabLock(unittest.TestCase):
         self.assertEqual((g["text"], g["svg"]), ("\u26ed", False), "the shell's own glyph, a character, no drawing" + table)
         self.assertEqual(g["text"], r["railGlyph"], "the rail's gear at the bottom right of the shell page wears the same character (one source)" + table)
         self.assertEqual((g["label"], g["haspopup"], g["radius"]), ("Tab strip settings", "menu", "6px"), table)
-        self.assertEqual(g["border"], s["cardBorder"], "the tag button's rest border token (the lens is narrowed here, so the button itself wears the accent), one source" + table)
+        self.assertEqual(g["title"], "Tab strip: lock", "standalone: no widgets row, and the title says so (round two, low 1)" + table)
+        for theme in ("dark", "light"):   # the gear's rest border is the card-border token in BOTH themes, and the token differs between them (round two, low 7)
+            t = r["themes"][theme]
+            self.assertEqual(t["restBorder"], t["restCardBorder"], theme + ": the gear's rest border is the card-border token, one source (the lens is narrowed here, so the tag button itself wears the accent; read with the pointer off the gear)" + table)
+        self.assertNotEqual(r["themes"]["dark"]["restCardBorder"], r["themes"]["light"]["restCardBorder"], "the token differs between the themes, so the two checks are two" + table)
         self.assertFalse(s["lock"]["present"], "no lock button or box in the strip" + table)
         for theme in ("dark", "light"):
             t = r["themes"][theme]; tb = "\n  " + theme + "=" + json.dumps(t["gear"])
             self.assertTrue(t["gear"]["last"] and t["gear"]["rightGap"] <= 2.0, theme + ": the gear at the strip's farthest right" + tb)
             self.assertTrue(t["lock"]["menuOpen"], theme + ": the menu opened" + tb)
+            d = t["dense"]; td = "\n  " + theme + " dense=" + json.dumps(d)
+            self.assertLessEqual(abs(d["tab"] - 25), 0.6, theme + ": compact tabs are 25px" + td)
+            self.assertLessEqual(d["gear"], d["tab"] + 0.01, theme + ": the gear button stands inside the dense row (round two, the medium: it was 26px and stretched the row)" + td)
+            self.assertLessEqual(abs(d["gearbox"] - d["tab"]), 0.6, theme + ": the gear box is the row's height" + td)
+            self.assertLessEqual(abs(d["tagbox"] - d["tab"]), 0.6, theme + ": the tags box too" + td)
         self.assertEqual(s["store"]["tabsLocked"], "absent", "nothing written until pressed" + table)
 
     def test_the_gears_menu_offers_the_lock_row_with_the_buttons_two_titles_and_the_tab_widgets_row(self):
