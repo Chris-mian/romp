@@ -1,9 +1,9 @@
 // The uuid-anchored chat wire's list operations (T323 stage 4b, proto 2), pure over a resident list of events so
 // the node tests execute them for real (render.ts wires them to the frames). A proto-2 client holds a contiguous
 // run of the transcript's events, not necessarily its tail: `first`/`last` are the run's oldest and newest kernel
-// uuids, `headKnown` says the head has been reached (until then no count exists and the page shows none), and a
-// window whose newer side has more (a loadAround deep into history) leaves the client DETACHED: the kernel sends it
-// no delta until it walks forward to the tail (loadNewer, more false) or asks for a full frame.
+// uuids and `headKnown` says the head has been reached (until then no count exists and the page shows none). Since
+// T386 stage 2 the client's history is REGIONS (chat-regions.ts): a window becomes a run among them and the tail run is
+// always resident, so no client is ever detached and no walk forward to the tail exists.
 export interface Ev { uuid?: string; key?: string; [k: string]: unknown; }
 
 /** An event's wire KEY: its uuid, or `key` (uuid#n) when it is the second event built from one record (a text and a

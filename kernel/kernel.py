@@ -45019,7 +45019,10 @@ def _chat_history_reply(sid, msg, now, base=None):
             return {"type": "chatTurns", "id": sid, "span": [lo, hi0], "events": [], "missing": True}
         out = pages(lo, min(hi, floor)) if lo < floor else []
         if hi > floor:
-            a = next((i for i, ti in enumerate(tix) if ti >= max(lo, floor)), len(evs))
+            # the head page at floor 0 starts at the list's first event: the head cards sit in the floor'd list itself there (turn
+            # index -1, above turn 0) and head_cards is empty, so a slice from the first turn-0 event dropped the system context
+            # and the /clear card while the reply said head (T386 stage 2, round seven, medium 2)
+            a = 0 if (lo == 0 and floor == 0) else next((i for i, ti in enumerate(tix) if ti >= max(lo, floor)), len(evs))
             b = next((i for i, ti in enumerate(tix) if ti >= hi), len(evs))
             out = out + evs[a:b]
         if lo == 0:

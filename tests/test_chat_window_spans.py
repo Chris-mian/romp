@@ -96,6 +96,27 @@ class WindowSpans(Harness):
         self.assertTrue(past["missing"], "a span past the transcript is missing")
         self.assertEqual(past["span"], [len(turns) + 5, len(turns) + 9], "…and echoes the ASKED span, not the clamp, so the page's gapLoading key clears (T386 stage 2, low 3)")
 
+    def test_load_turns_head_page_carries_the_head_cards_at_floor_zero(self):
+        # round seven, medium 2: with no render floor the head cards are IN the floor'd list (turn index -1, above turn 0) and the
+        # reply's head_cards field is empty, so the head page must start at the list's first event or the system context and the
+        # /clear card never reach a reader who scrolls to the top (the reply says head, so nothing asks again)
+        recs = transcript(NOW - 86400, turns=40)                           # no compaction: the whole build stands at floor 0
+        self.write(recs)
+        m0 = km.build_session(SID, NOW, {}, floor=0)                       # the floor-0 build itself, cards and all (the harness's whole() strips them)
+        whole = m0["events"]
+        self.assertEqual(int(m0.get("floor") or 0), 0, "the build stands at floor 0: %r" % m0.get("floor"))
+        turns = km._parse(self.leaf, SID, NOW)["turns"]
+        tix = km._turn_index_of_events(whole, turns)
+        self.assertEqual(tix[0], -1, "the fixture fact: a head card leads the floor-0 list: %r" % whole[0].get("kind"))
+        first_turn0 = next(i for i, ti in enumerate(tix) if ti >= 0)
+        self.assertGreater(first_turn0, 0, "…at least one card above turn 0")
+        n = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": 0, "hi": 16}, NOW)
+        self.assertNotIn("missing", n); self.assertTrue(n["head"]); self.assertEqual(n["span"], [0, 16])
+        end = next((i for i, ti in enumerate(tix) if ti >= 16), len(whole))
+        self.assertEqual([e["uuid"] for e in n["events"]], [e["uuid"] for e in whole[:end]],
+                         "the head page at floor 0 starts at the list's first event, the head cards riding along, through turn 15")
+        self.assertEqual(n["events"][0]["uuid"], whole[0]["uuid"], "the first event served is the first card")
+
     def test_load_newer_is_retired(self):
         self._boot()
         r = km._chat_history_reply(SID, {"type": "loadNewer", "id": SID, "after": "11111111-2222-3333-4444-000000000001"}, NOW)

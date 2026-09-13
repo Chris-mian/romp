@@ -67,6 +67,7 @@ test("scroll re-windows around the viewport (steady scroll OR jump) when near a 
   assert.match(RENDER, /renderWindowItems\(v, s, items, Math\.max\(0, c - WINDOW_RADIUS\), Math\.min\(items\.length, c \+ WINDOW_RADIUS\), working\);/);
   // it re-anchors the focus unit so it doesn't jump, coalesced to one frame; a re-window of resident content shows no cue (T402, T386 stage 2)
   assert.match(RENDER, /writeScroll\(content, yNow - beforeY, "rewindow"\);/);   // (T262: every #content write rides writeScroll)
+  assert.doesNotMatch(RENDER, /showLoadingPill\(\)|hideLoadingPill\(\)/, "the per-fetch pill is retired: the ONE landing notice and the gaps' glyphs replace it (T386 stage 2)");
   assert.match(RENDER, /c\.addEventListener\("scroll", virtualizeToViewport, \{ passive: true \}\);/);
 });
 
@@ -207,6 +208,25 @@ test("round six fixes each carry a pin (T386 stage 2): rows name their turn, the
   const px = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
   assert.match(px, /h \+= c\.offsetHeight;/, "px-per-turn sums whole rows");
   assert.doesNotMatch(px, /msg-acts/, "…and subtracts no action strip");
+});
+
+test("round seven fixes each carry a pin (T386 stage 2): a fault has its own word, a cancelled landing is not busy, the dead evidence writers are gone", () => {
+  const winStart = RENDER.indexOf("function chatWindow(msg: any) {");
+  const win = RENDER.slice(winStart, RENDER.indexOf("\nfunction ", winStart + 1));
+  // medium 1: the kernel's fault (missing true, fault true) is no verdict on the anchor: its own trail word and toast, the seek ended, never "couldn't locate"
+  assert.ok(win.indexOf("if (msg.fault) {") >= 0 && win.indexOf("if (msg.fault) {") < win.indexOf("if (msg.missing || !(msg.events || []).length || !Array.isArray(msg.span)) {"), "chatWindow tests fault before missing (a fault carries missing too)");
+  assert.match(win, /if \(msg\.fault\) \{[\s\S]*?landTrail\.push\("window-fault"\);\s*\n\s*vscodeApi\?\.postMessage\(\{ type: "locateDiag", id: msg\.id, ok: false, trail: landTrail\.slice\(\), anchor: anchorUuid, kind: "fault"[^\n]*\n\s*landToast\("the history could not be loaded just now"\);\s*\n\s*clearSeek\(\);/, "a fault files kind fault, says the history could not be loaded just now, and ends the seek");
+  assert.match(win, /landToast\(nospan \? "this session's host is an older version; open it there to jump" : "couldn't locate this in the transcript"\);\s*\n\s*clearSeek\(\);/, "the honest end ends the seek too");
+  // medium 3: the notice's click clears the busy meaning at the cancel; the reply still fills in place under the cancelled mark
+  const cancel = RENDER.slice(RENDER.indexOf("function cancelLanding(): void {"), RENDER.indexOf("\n/**", RENDER.indexOf("function cancelLanding(): void {")));
+  assert.match(cancel, /if \(loadingOlder\.has\(sid\)\) cancelledLandings\.add\(sid\);[\s\S]*?const held = landingGaps\.get\(sid\);\s*\n\s*loadingOlder\.delete\(sid\); landingGaps\.delete\(sid\);/, "the cancelled mark is set from the older-ask state, then both busy marks go");
+  assert.match(cancel, /if \(g && !gapLoading\.has\(gapKey\(sid, held\.lo, held\.hi\)\)\) g\.classList\.remove\("tx-gap-loading"\);/, "…and the gap's glyph unless a page ask of its own is on the wire");
+  assert.match(RENDER, /if \(loadingOlder\.has\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\);/, "the busy gate still reads the older-ask mark (a live landing is busy)");
+  // low 7: the older edge's evidence writers lost their reader with the pill's latch and are off the scroll hot path
+  assert.doesNotMatch(RENDER, /olderEvidence|noteOlderEvidence|NAV_KEYS/, "no dead evidence writer on wheel, touch, key or drag");
+  // low 6: the notice has the hover cue the pill had; nothing styles the retired pill
+  assert.match(CSS, /\.tx-landing-notice:hover \{ border-color: var\(--accent\); \}/, "the notice shows an accent border on hover: it takes the only cancel click");
+  assert.doesNotMatch(CSS, /tx-loading-pill/, "no rule for the retired pill");
 });
 
 test("the spacer is invisible, non-interactive vertical space", () => {

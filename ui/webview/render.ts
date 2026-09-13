@@ -11129,7 +11129,6 @@ function writeScroll(content: HTMLElement, top: number, writer: string, stick = 
   // chord, a link or the chips, the wheel over a notch) is their takeover (round four: their writes read as another mover's and
   // land-realign undid them), every other writer's move is a sample for the settle rule, which re-lands (T386)
   if (after !== before && landSettling && !landSettling.done && writer !== "land-on" && writer !== "land-realign") { if (writerIsReader(writer)) settleGesture(); else settleSample(); }
-  if (after !== before && writerIsReader(writer)) noteOlderEvidence(activeId);   // the reader's own move by a writer of theirs clears a cancelled ask's latch too (round four, low 1)
 }
 // EVERY mover of #content goes through writeScroll (T262j, the user 2026-09-08: an unwritten move the journal could
 // not name). scrollBy and scrollIntoView are scrollTop writes expressed differently, so they are expressed as such:
@@ -11425,8 +11424,6 @@ let settleScrollerHeld = false;
  *  #content (a wheel, a touch, a key outside an editable field, a grab of the scrollbar) or a reader writer's own write (a trail or
  *  fragment-link jump, the live-tail chip). Per tab and per surface: a keystroke into the composer, or a gesture on another tab's
  *  transcript, is no evidence for this tab's older edge. A cancelled ask's latch (olderLatched) waits for it. */
-const olderEvidence = new Map<string, number>();
-function noteOlderEvidence(sid: string | null | undefined): void { if (sid) olderEvidence.set(sid, Date.now()); }
 function settleInput(e: Event): void {
   const c = document.getElementById("content");
   if (e.type === "pointerup" || e.type === "pointercancel") { settleScrollerHeld = false; return; }
@@ -11442,13 +11439,7 @@ function settleInput(e: Event): void {
     }
   }
   settleLastInput = Date.now();
-  // the evidence the older edge's latch waits for: the same inputs, once past the editable-field and the scroller's-own-box returns above, so a
-  // keystroke into the composer or a hover never counts; a pointer counts only as a grab of the scrollbar (a press on the pill never reaches here as one)
-  const navKey = e.type === "keydown" && NAV_KEYS.has((e as KeyboardEvent).key) && (!document.activeElement || document.activeElement === document.body || !!(c && c.contains(document.activeElement)));
-  const drag = e.type === "pointermove" && !!(e as PointerEvent).buttons;   // a selection or middle-click autoscroll inside the transcript is the reader's own move (round five, low 2)
-  if (e.type === "wheel" || navKey || e.type.startsWith("touch") || drag || (e.type === "pointerdown" && settleScrollerHeld)) noteOlderEvidence(activeId);
 }
-const NAV_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);   // the keys that scroll the transcript; any other key (an Escape on the body) moves nothing and is no evidence (round five, low 1)
 for (const ev of ["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchmove", "wheel", "keydown"]) window.addEventListener(ev, settleInput, { capture: true, passive: true });
 // a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round four, low 1): the hold ends
 // with the page's focus or visibility as well
@@ -13839,6 +13830,12 @@ function cancelLanding(): void {
   const target = pendingOlderAnchor.get(sid);
   hideLandingNotice();
   if (loadingOlder.has(sid)) cancelledLandings.add(sid);   // the reply still comes: it fills in place
+  // a cancelled landing is not busy (round seven, medium 3): the older-ask mark and the landing's held gap go now, not when the reply
+  // lands, or the reader's next card click is refused as "still going" and dropped; the glyph on that gap goes with them unless a page
+  // ask of its own is on the wire for it
+  const held = landingGaps.get(sid);
+  loadingOlder.delete(sid); landingGaps.delete(sid);
+  if (held) { const gv = views.get(sid); const g = gv ? gv.el.querySelector(`.tx-gap[data-lo="${held.lo}"][data-hi="${held.hi}"]`) as HTMLElement | null : null; if (g && !gapLoading.has(gapKey(sid, held.lo, held.hi))) g.classList.remove("tx-gap-loading"); }
   landTrail.push("cancelled");
   vscodeApi?.postMessage({ type: "locateDiag", id: sid, ok: false, trail: landTrail.slice(), anchor: target ?? pendingAnchor ?? undefined, anchorT: pendingAnchorT ?? undefined, kind: pendingAnchorKind ?? undefined, cancelled: true });
   pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; pendingAnchorKeepY = null; anchorPendingOlder = false;
@@ -17278,8 +17275,8 @@ function chatTail(msg: any) {
     const kernelEvents = s.events.filter((e) => !isOptimistic(e) && !isHeldGroup(e));
     const at = indexOfUuid(kernelEvents as { uuid?: string }[], msg.afterUuid);
     if (at < 0) {
-      // the anchor is not resident: a gap. An ATTACHED page asks a full frame (gap: the tail replaces the run it should have matched). A
-      // the page asks the full frame; upsert merges it into the held runs (the regions: no client is ever detached, T386 stage 2)
+      // the anchor is not resident: a gap between the held run and the kernel's tail. The page asks the full frame; upsert merges it into
+      // the held runs (the regions: no client is ever detached, T386 stage 2)
       requestFullSession(msg.id, "gap");
       return;
     }
@@ -17762,6 +17759,23 @@ function chatWindow(msg: any) {
   pendingWindowNav.delete(msg.id);
   const preJumpOrigin = preJumpFrom.get(msg.id); preJumpFrom.delete(msg.id);   // consumed by every reply, the landing's success included (round four, low 2): a later dead end never restores a stale origin
   const cancelled = cancelledLandings.delete(msg.id);   // read once, before any return (T386 stage 2, low 2): a missing or span-less reply must not leak the mark onto the next navigation
+  if (msg.fault) {
+    // the kernel could not answer THIS TIME (T402 round two, low 3; the merge into the regions dropped this branch and round seven restored
+    // it): a fault is no verdict on the anchor, so the reader is not told the message is gone; the landing stands down with its own word,
+    // the pre-jump is undone, the seek ends, and the next click asks again. A CANCELLED ask's fault is silent.
+    if (msg.id === activeId && (pendingAnchor === anchorUuid || cancelled || wasLanding)) {
+      pendingAnchor = null; anchorPendingOlder = false;
+      const cRestore = document.getElementById("content");
+      if (preJumpOrigin != null && cRestore) writeScroll(cRestore, preJumpOrigin, "land-cancel", false, cRestore.scrollTop);
+      if (!cancelled) {
+        landTrail.push("window-fault");
+        vscodeApi?.postMessage({ type: "locateDiag", id: msg.id, ok: false, trail: landTrail.slice(), anchor: anchorUuid, kind: "fault", error: typeof msg.error === "string" ? msg.error.slice(0, 200) : undefined });
+        landToast("the history could not be loaded just now");
+        clearSeek();
+      }
+    }
+    return;
+  }
   if (msg.missing || !(msg.events || []).length || !Array.isArray(msg.span)) {
     // T386 stage 2, medium 2: no span is an OLDER kernel's reply (it speaks the pre-regions window protocol); a missing is the honest
     // end of a deep link. Either way the pre-jump moved the reader, so the notice comes down; a span-less reply says the host is older,
@@ -17776,6 +17790,7 @@ function chatWindow(msg: any) {
         landTrail.push(nospan ? "window-nospan" : "window-missing");
         vscodeApi?.postMessage({ type: "locateDiag", id: msg.id, ok: false, trail: landTrail.slice(), anchor: anchorUuid, kind: nospan ? "nospan" : "missing" });   // the honest end files its row (low 2)
         landToast(nospan ? "this session's host is an older version; open it there to jump" : "couldn't locate this in the transcript");
+        clearSeek();   // the honest end ends the seek (main's branch did; the merge lost it, round seven)
       }
     }
     return;
