@@ -20412,7 +20412,7 @@ def _spawn_tunnel(r):
         _tunnel_log(r["host"], "dial", pid=r["proc"].pid, fails=r.get("fails", 0), argv=argv)
         try:                              # the port-up wake: the row reads up as soon as ssh connects, not a pass later
             threading.Thread(target=_wake_when_port_up, args=(r.get("local_port"), r["proc"]),
-                             name="romp-tunnel-port-up-" + str(r["host"])[:16], daemon=True).start()
+                             name="port-up:" + str(r["host"]), daemon=True).start()   # kind "port-up"; the host after the colon is the payload the kind rule drops
         except Exception:
             pass
     except Exception as e:
