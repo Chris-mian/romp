@@ -1,6 +1,6 @@
 """The served WINDOW LAB base (T366; T386 stage 2): a hermetic kernel over a synthetic transcript long enough that older history
 stays on the server and the page's run is a tail, driven by Playwright through the driver head below (DRIVER_HEAD: the pad, sentOf,
-state and frame hooks). The regions labs (test_history_regions_browser.py, test_landing_notice_browser.py) and the loading-pill labs
+state and frame hooks). The regions labs (test_history_regions_browser.py, test_landing_notice_browser.py)
 build on WindowLab; this module holds no tests of its own since stage 2 retired the paused strip and the detached client (the tail
 run is always resident and live, so no window ever pauses live updates: plans/chat-history-regions.md Part B).
 """

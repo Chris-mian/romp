@@ -1752,6 +1752,7 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
   padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: auto; cursor: pointer; white-space: nowrap;   /* the ONE cancel (T386 stage 2): the notice takes the click; its anchor stays inert */
   box-shadow: var(--shadow-toast); border: 1px solid var(--menu-border);
 }
+.tx-loading-pill:hover { border-color: var(--accent); }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
 .turn-tool, .turn-thinking, .turn-toolgroup { padding-top: 4px; padding-bottom: 4px; }
 /* (the compaction boundary is THE notice — compact severity, "COMPACTION · Context compacted · auto · 142k → 38k") */
@@ -2045,13 +2046,15 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
    where their messages sit — right-aligned, riding .turn-user's own flex-end). */
 .user-bubble.cmd-row { max-width: none; background: none; border: none; border-radius: 0;
   padding: 2px 0; color: var(--dim); }
-.user-bubble.cmd-row::before { content: "✦"; margin-right: 8px; color: var(--dim); }
+.user-bubble.cmd-row:not(.echo-bubble)::before { content: "✦"; margin-right: 8px; color: var(--dim); }   /* the mark is the LANDED row's;
+   a provisional command (the echo below) is a queued bubble with the chip inside, as a queued /compact draws it (T403) */
 /* The chip's ink is the OUTGOING-BUBBLE blue on the chat's own ground (the user 2026-08-14: the --code-bg
    terracotta tint read as a stray red here) — the same #2b6cef as .user-bubble, so the gesture still reads
    as "yours" without the said-thing bubble. */
-.user-bubble.cmd-row .slash-cmd-chip { background: var(--bg); color: var(--you);
-  border-color: var(--you); }
-.user-bubble.cmd-row .slash-cmd-args { color: var(--dim); }
+.user-bubble.cmd-row:not(.echo-bubble) .slash-cmd-chip { background: var(--bg); color: var(--you);
+  border-color: var(--you); }   /* the landed row's chip; the provisional command's chip is the queued bubble's default (T403) */
+.user-bubble.cmd-row:not(.echo-bubble) .slash-cmd-args { color: var(--dim); }   /* the landed row's args; a provisional command's args inherit
+   the queued bubble's --prov-ink (T403 round two: unscoped, this rule won the echo's args) */
 .user-bubble.cmd-row .nudge-gist, .user-bubble.cmd-row .nudge-caret { color: var(--dim); }
 .user-bubble.cmd-row .nudge-gist { margin-left: 8px; }
 .user-bubble.cmd-row .nudge-full { color: var(--dim); margin-top: 4px; max-width: 640px; }
@@ -2117,12 +2120,19 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .turn-queued { display: flex; flex-direction: column; align-items: flex-end; padding: 6px 0 10px; gap: 5px; }
 .queued-head { display: inline-flex; align-items: center; gap: 5px; font-size: 0.82em; color: var(--dim); letter-spacing: 0.02em; }
 .queued-head .queued-icon { color: var(--accent); display: flex; }   /* wireframe hourglass in the accent blue */
-.queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble {   /* …and a SENT postal card whose message has
+.queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble,
+.turn.echo .user-bubble.cmd-row.echo-bubble {   /* …and a SENT postal card whose message has
    not landed yet wears the same dress by the same class (T302): one provisional vocabulary. Named at BOTH densities:
    slim, and boxed by a fold (a first line past the head's clip, or a second line). On the boxed card `.notice` alone,
    later in the file at `.queued-bubble`'s specificity, took the border, background and radius back and left a solid
    box at the bubble's 72% width until the receipt landed; `.notice.queued-bubble` outranks it. The slim selector stays:
-   `.notice.notice-slim`, later in the file too, would otherwise beat `.notice.queued-bubble` on the slim card. */
+   `.notice.notice-slim`, later in the file too, would otherwise beat `.notice.queued-bubble` on the slim card.
+   And the kernel's ECHO of a slash COMMAND (T403, the user 2026-09-13): the landed command row sheds its bubble with
+   `border: none`, which leaves the border WIDTH at the initial `medium` (3px) with no style, and the echo dress below set
+   the style alone to dashed, so a provisional /compact wore a thick blue dashed ring nothing else on the page wears, over
+   the queued /model row's thin one. The echo of a command is this bubble, by this selector (five classes: it outranks
+   the landed row's reset and the echo dress), the chip inside as a queued /compact draws it, no ✦ (the mark is the
+   landed row's). */
   max-width: 72%; overflow-wrap: anywhere; display: flow-root;
   /* the FADE is in the dress's colours, not an opacity on the element (T337, the review of the kind colours): an element
      opacity dimmed every colour inside, the postal kind word included, which then read below 4.5:1 on the wash. The
@@ -2137,7 +2147,15 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 /* the kernel's echo of a send ANOTHER window made, not yet read by the model: the sender's tail-bubble dress on the
    user bubble it is drawn as — the same dashed border (its own 1px, so nothing shifts) and dim caption — so two views
    of one session agree on what is pending (2026-09-10) */
-.turn.echo .echo-bubble { border-style: dashed; border-color: color-mix(in srgb, var(--you) 65%, transparent); opacity: 0.85; }
+.turn.echo .echo-bubble { border-width: 1px; border-style: dashed; border-color: color-mix(in srgb, var(--you) 65%, transparent); opacity: 0.85; }   /* the width
+   named too (T403): `border-style` alone inherits whatever width the bubble's own rules left, `medium` after a `border: none` */
+.turn.echo .user-bubble.cmd-row.echo-bubble { opacity: 1; }   /* the queued bubble's fade is in its colours (T337), not an opacity */
+/* the CHIP inside a provisional bubble (a queued /compact, the echo of one) wears the bubble's own tokens (T403 round two): the
+   default chip's white text on a 24% black pill composited to 2.3:1 over the light provisional wash, the landed row's blue-on-ground
+   chip to 4.3:1 there; --prov-ink on a 16% --you tint reads above 4.5:1 on both themes' washes, the dashed edge in the bubble's token */
+.queued-bubble .slash-cmd-chip, .turn.echo .user-bubble.cmd-row.echo-bubble .slash-cmd-chip {
+  background: color-mix(in srgb, var(--you) 16%, transparent); color: var(--prov-ink); border-color: color-mix(in srgb, var(--you) 55%, transparent);
+}
 .echo-note { font-size: 0.82em; color: var(--dim); letter-spacing: 0.02em; text-align: right; }
 .notice.queued-bubble, .notice.notice-slim.queued-bubble { max-width: none; display: block; }   /* the notice keeps its row
    width and flex head at either density; only the dress is the bubble's (the shared rule's specificities, later in the
@@ -2193,7 +2211,9 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
    visible — a loss notice is not a hover secret. Button sizes wear .msg-edit's clothes (one size). */
 /* the bubble KEEPS its solid --you fill (2026-09-08: the old 10% wash put white text on a tint — unreadable on
    cream); the loss reads in the dashed --err edge, the label, and the actions (.notice-act, the one button dress) */
-.user-bubble.undelivered-bubble, .romp-bubble.undelivered-bubble {
+/* the undelivered COMMAND row is named first at three classes (T403 round two): `.user-bubble.cmd-row` resets the border at
+   the same two-class weight as the plain selector below, so the loss row's 1px held by source order alone */
+.user-bubble.cmd-row.undelivered-bubble, .user-bubble.undelivered-bubble, .romp-bubble.undelivered-bubble {
   border: 1px dashed color-mix(in srgb, var(--err) 65%, transparent); opacity: 0.85;
 }
 .undelivered-note { display: flex; align-items: center; gap: 4px; align-self: flex-end; margin-top: 3px; }

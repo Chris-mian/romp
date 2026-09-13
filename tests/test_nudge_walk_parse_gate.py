@@ -4,6 +4,7 @@ cycle on the first boot with per-stage rows). Its parse is gated now: skipped wh
 unchanged since the last completed look AND no clock leg that look declined on has come due; the skip repeats the recorded
 verdict and does nothing else; only a road marked file-keyed, or the full walk run to its end, records a skippable memo. The
 pass walks by recency and, with a client connected, yields after a look that paid a cold parse. Synthetic sessions only."""
+import inspect
 import json
 import os
 import sys
@@ -25,8 +26,9 @@ class NudgeWalkParseGate(unittest.TestCase):
     maxDiff = None
     def setUp(self):
         km._TICK_SEEN.clear()
-        for k in km._NUDGE_WALK_STATS:
-            km._NUDGE_WALK_STATS[k] = 0
+        for k, v in list(km._NUDGE_WALK_STATS.items()):
+            km._NUDGE_WALK_STATS[k] = {} if isinstance(v, dict) else 0
+        km._NUDGE_LOOK_STATS.clear()
         km._NUDGE_HORIZON.notes = None
 
     def _look(self, r, now, calls, **over):
@@ -72,7 +74,7 @@ class NudgeWalkParseGate(unittest.TestCase):
         km._NUDGE_HORIZON.notes = None
         km._nudge_clock(5.0)                                             # outside a look: a no-op
         km._NUDGE_HORIZON.notes = []
-        km._nudge_clock(7.0); km._nudge_clock(None)
+        km._nudge_clock(7.0); km._nudge_clock(None, "storeFault")
         self.assertEqual(km._NUDGE_HORIZON.notes, [7.0, None])
         km._NUDGE_HORIZON.notes = None
 
@@ -206,27 +208,242 @@ class NudgeWalkParseGate(unittest.TestCase):
             self._look(r, now + 60, calls, **quiet)                          # the healed look (the store reads again)
             self.assertEqual(len(calls), n_before + 1, "the look after the fault parsed again: nothing was skipped")
 
-    def test_an_ask_from_a_dead_peer_keeps_the_debtor_unskippable(self):
-        """Round three, medium: the debt reminder's ask set filters the postal wait maps by the ASKER's liveness, neither a
-        session file; a peer that asked and died before the next pass left the debtor recording a skippable memo, and the
-        peer's revival owed a reminder nobody would look for. An ask from a peer not alive now notes an unbounded release, and
-        the postal log joins the files the memo keys on."""
-        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); now = time.time(); calls = []
-        asker = SID_NEW
-        maps = ({}, {(asker, SID_OLD): (now - 100, "question", "are we done?")}, {})
+    def _dead_asker_world(self, askers, now):
+        """A debtor (SID_OLD) with one open ask from each of `askers`, none alive; the debt reminder runs its real ask set
+        (the leg under test) and records what it would send; the registry directory is a fresh state root."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); calls = []; sent = []
+        maps = ({}, {(a, SID_OLD): (now - 100 - i, "question", "are we done?") for i, a in enumerate(askers)}, {})
+        def fire(sid, now_, alive_ids):
+            asks = km._debt_asks(sid, alive_ids); sent.append([a[0] for a in asks]); return False
         quiet = dict(_session_working=lambda turns: False, _interrupt_suppresses_nudge=lambda turns, sid="", **k: False, _pending_ops={},
                      _backend_queued=lambda sid: False, _backend_rewind_pending=lambda sid: False, _last_state=lambda sid: ("", 0),
                      _session_awaiting=lambda *a, **k: False, _closer_settled=lambda *a: True, _nudge_placement_gate=lambda *a: False,
-                     _postal_wait_maps=lambda: maps, _debt_reminder_outcomes=lambda sid, lt, now: None)
+                     _postal_wait_maps=lambda: maps, _debt_reminder_outcomes=lambda sid, lt, now: None, _fire_debt_reminder=fire)
         km._TICK_SEEN.clear()
+        return r, calls, sent, quiet
+
+    def _dead_asker_look(self, r, now, calls, quiet, alive_ids=None):
         with mock.patch.multiple(km, **quiet), \
              mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
              mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now: (calls.append(sid), {"turns": STOPPED})[1]), \
              mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
-            r1 = km._auto_nudge_session(r, now, {}, {}, {}, alive_ids={SID_OLD})          # the asker is not alive: no ask owed
-        self.assertIs(r1, False)
-        self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "a dead peer's ask: the debtor's memo is unbounded")
-        self.assertEqual(len(km._session_files_stat(r)), 20, "ten files: the postal log, the downtime log and the nudge ledger joined the memo's inputs")
+            return km._auto_nudge_session(r, now, {}, {}, {}, alive_ids=alive_ids or {SID_OLD})   # the asker is not alive: no ask owed
+
+    def test_an_ask_from_a_dead_peer_keys_the_askers_registry_row(self):
+        """Round three, medium (T401 (2)): the debt reminder's ask set filters the postal wait maps by the ASKER's liveness,
+        neither a session file, so a peer that asked and died left the debtor's memo unbounded (the deadAsker leg: about four in five of
+        the unbounded notes on one boot, asks of long-gone peers, every debtor parsed every look). The dead asker's
+        revival writes its registry row (STATE/sdk/<asker>.json), so that row joins the debtor's memo key (absent: a stable
+        absent marker) and the leg notes nothing: the debtor skips at the second look."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self.assertIs(self._dead_asker_look(r, now, calls, quiet), False)
+            self.assertEqual(sent, [[]], "a dead asker's ask is owed to nobody now")
+            memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
+            self.assertIsNotNone(memo[-2], "the asker's row is keyed: the debtor's memo is bounded, not None")
+            self.assertEqual(len(memo) - 2, 22, "ten files plus the asker's (mtime, size), zeros for an absent row: %r" % (memo,))
+            self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"], before, "no leg notes anything for a keyed asker")
+            self._dead_asker_look(r, now + 1, calls, quiet)                    # a skipped look answers from its memo
+            self.assertEqual(calls, [SID_OLD], "the second look skipped: nothing of the debtor's or the asker's moved")
+            self.assertEqual(len(km._session_files_stat(r)), 20, "the ten session files stand as they were")
+            self.assertIsNone(km._NUDGE_HORIZON.keyed_askers, "the keyed set died with the look (round three, low 1)")
+            self.assertIsNone(km._NUDGE_HORIZON.over_askers)
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_a_dead_askers_revival_busts_the_debtors_memo_and_the_reminder_fires(self):
+        """The revival writes the asker's registry row: the debtor's key moves, the next look parses, and the ask is owed."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            self._dead_asker_look(r, now, calls, quiet); self._dead_asker_look(r, now + 1, calls, quiet)
+            self.assertEqual(calls, [SID_OLD])
+            (km.jd.STATE / "sdk").mkdir(parents=True, exist_ok=True)
+            (km.jd.STATE / "sdk" / (SID_NEW + ".json")).write_text(json.dumps({"sid": SID_NEW, "pid": 1, "alive": True}))   # back
+            self._dead_asker_look(r, now + 2, calls, quiet)                    # the alive set still names the debtor alone
+            self.assertEqual(calls, [SID_OLD, SID_OLD], "the registry row moved the key: the look parsed again")
+            self.assertEqual(sent[-1], [SID_NEW], "and the reminder found the ask owed to the revived peer: the row says alive")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_a_revival_landing_between_the_passs_alive_read_and_its_key_loop_still_owes_the_ask(self):
+        """Round two, medium (the round-six rule): the pass read LIVENESS before the key. The alive set is taken over the
+        cycle-top snapshot, then the key loop stats each session's files and asker rows; an asker that revived in that gap
+        had its NEW row in the debtor's key while _debt_asks ran against the stale alive set, found it among the keyed
+        askers and noted nothing, so the debtor recorded a skippable memo asserting it owed nothing. The keyed asker's
+        aliveness is read from the SAME row the key stats, so the verdict and the key come from one file."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            reg = km.jd.STATE / "sdk" / (SID_NEW + ".json")
+            revived = []
+            def alive_then_revival(now_, live_map):                   # the pass's alive read, with the revival landing right after it
+                out = [r]                                             #  (once: the second pass reads the alive set and nothing lands)
+                if not revived:
+                    revived.append(1); reg.parent.mkdir(parents=True, exist_ok=True)
+                    reg.write_text(json.dumps({"sid": SID_NEW, "pid": 1, "alive": True}))
+                return out
+            passq = dict(quiet, _alive_sessions=alive_then_revival, _auto_nudge_data=lambda: {}, _auto_nudge_resume=lambda: None,
+                         _wait_for_graph=lambda now_, ids: {}, _cleared_ids=lambda: set(), _auto_nudge_on=lambda: True,
+                         _compact_suggest_tick=lambda sid, live, now_: False, _relay_tick=lambda now_, ids: None,
+                         _debt_backstop_tick=lambda now_: None, _dead_wait_sweep=lambda ids, nudged, now_: None,
+                         _awaiting_wake_outcomes=lambda now_, ids: False, _push_soon=lambda: None, _pop_walk_gate=lambda k: None)
+            with mock.patch.multiple(km, **passq), \
+                 mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
+                 mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now_: (calls.append(sid), {"turns": STOPPED})[1]), \
+                 mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
+                km._auto_nudge_pass(now, {}, True)
+            self.assertEqual(calls, [SID_OLD], "the debtor was looked at once")
+            self.assertEqual(sent, [[SID_NEW]], "the ask is owed: the asker's row, the file the key stats, says alive")
+            memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
+            self.assertIsNotNone(memo[-2], "and the memo is bounded by that row")
+            reg.write_text(json.dumps({"sid": SID_NEW, "pid": 1, "alive": False}))   # the asker ends: the same row moves
+            with mock.patch.multiple(km, **passq), \
+                 mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
+                 mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now_: (calls.append(sid), {"turns": STOPPED})[1]), \
+                 mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
+                km._auto_nudge_pass(now + 1, {}, True)
+            self.assertEqual(calls, [SID_OLD, SID_OLD], "the row moved: the look parsed again")
+            self.assertEqual(sent[-1], [], "and owes nothing to a peer whose row says it ended, whatever the alive set said")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_an_unreadable_or_gutted_asker_row_is_unproven_and_the_alive_set_decides_the_ask(self):
+        """Round three, medium: an unreadable or gutted row read DEAD, while the backend's own reader serves the last good row
+        over a read fault; one transient fault latched a skippable memo under an unmoved key. Round four, medium 1: keeping
+        the ask UNCONDITIONALLY on an unproven row sent the debtor a reminder to answer a dead peer (a gutted reg whose driver
+        is not running is dead to the backend). A row that cannot be read, or parses without an alive bit, is UNPROVEN: the
+        look notes None under askerRowUnproved (the memo cannot skip on that evidence) and the ask is decided by the alive
+        set, the backend's own answer. A missing row stays dead (the key carries the absent marker)."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            reg = km.jd.STATE / "sdk" / (SID_NEW + ".json"); reg.parent.mkdir(parents=True, exist_ok=True)
+            reg.write_text(json.dumps({"sid": SID_NEW, "field": 1}))          # the gutted shape: no alive bit
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self._dead_asker_look(r, now, calls, quiet)                        # the asker is absent from the alive set
+            self.assertEqual(sent, [[]], "no reminder to answer a peer the backend calls dead")
+            memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
+            self.assertIsNone(memo[-2], "the memo is unbounded on that evidence")
+            by = km._NUDGE_WALK_STATS["unboundedBy"]
+            self.assertEqual(by.get("askerRowUnproved", 0), before.get("askerRowUnproved", 0) + 1, by)
+            self._dead_asker_look(r, now + 1, calls, quiet)
+            self.assertEqual(calls, [SID_OLD, SID_OLD], "the second look parsed again")
+            self.assertIsNone(km._asker_row_alive(SID_NEW), "gutted: unproven")
+            reg.write_text("{not json")
+            self.assertIsNone(km._asker_row_alive(SID_NEW), "unparseable: unproven")
+            if os.geteuid() != 0:                                              # root reads through the mode bits
+                reg.write_text(json.dumps({"sid": SID_NEW, "alive": True})); os.chmod(reg, 0)
+                try:
+                    self.assertIsNone(km._asker_row_alive(SID_NEW), "unreadable: unproven, never dead")
+                    self._dead_asker_look(r, now + 2, calls, quiet, alive_ids={SID_OLD, SID_NEW})   # the backend says alive
+                    self.assertEqual(sent[-1], [SID_NEW], "the ask is kept when the alive set has the asker (round two's case)")
+                finally:
+                    os.chmod(reg, 0o600)
+            reg.write_text(json.dumps({"sid": SID_NEW, "alive": False}))
+            self.assertIs(km._asker_row_alive(SID_NEW), False, "an explicit alive false is dead")
+            reg.unlink()
+            self.assertIs(km._asker_row_alive(SID_NEW), False, "a missing row is dead: the key carries the absent marker")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_an_undecodable_asker_row_does_not_abort_the_look(self):
+        """Round four, medium 2: a row that is not UTF-8 raised UnicodeDecodeError (a ValueError, not an OSError) out of
+        read_text, uncaught, through _debt_asks and the reminder, aborting the look: no memo ever recorded, a traceback per
+        pass. It is unproven like any unreadable row: the look completes, notes the leg and decides the ask by the alive set."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([SID_NEW], now)
+            reg = km.jd.STATE / "sdk" / (SID_NEW + ".json"); reg.parent.mkdir(parents=True, exist_ok=True)
+            reg.write_bytes(b"\xff\xfe{")
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self.assertIsNone(km._asker_row_alive(SID_NEW), "undecodable: unproven")
+            self._dead_asker_look(r, now, calls, quiet)                        # must not raise
+            self.assertEqual(calls, [SID_OLD], "the look completed over the undecodable row")
+            self.assertEqual(sent, [[]], "and decided the ask by the alive set (the asker absent)")
+            self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"].get("askerRowUnproved", 0), before.get("askerRowUnproved", 0) + 1)
+            self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "unbounded")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_an_alive_ninth_asker_notes_the_overflow_too(self):
+        """Round three, low 3: the overflow note fired only for an asker absent from the alive set, so with the ninth asker
+        alive nothing noted and the memo was skippable while that row sat outside the key; any overflow asker notes None
+        under askerOverflow (its earlier name, deadAskerOverflow, said what it no longer meant)."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            askers = ["%08d-2222-3333-4444-0000000000%02d" % (i, i) for i in range(km._NUDGE_ASKER_ROWS_MAX + 1)]
+            r, calls, sent, quiet = self._dead_asker_world(askers, now)
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self._dead_asker_look(r, now, calls, quiet, alive_ids={SID_OLD, askers[0]})   # the overflowing (newest) asker is alive
+            self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "unbounded: its row is outside the key")
+            self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"].get("askerOverflow", 0), before.get("askerOverflow", 0) + 1)
+            self.assertEqual(sent, [[askers[0]]], "and the alive asker's ask is owed")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_the_pass_stats_the_postal_log_before_it_builds_the_asker_index(self):
+        """Round three, low 5: the asker index was built from the postal wait maps before the key loop statted the log, so the
+        key could claim a newer log than the selection read. The pass takes the log's stat first and hands it to the key."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True)
+        st, keyed, over = km._nudge_look_stat(r, {}, (12.5, 77))
+        self.assertEqual(st[km._NUDGE_POSTAL_KEY_AT:km._NUDGE_POSTAL_KEY_AT + 2], (12.5, 77), "the pre-taken stat sits at the log's position")
+        self.assertEqual(len(st), 20)
+        src = inspect.getsource(km._auto_nudge_pass)
+        self.assertLess(src.index("messages.jsonl"), src.index("_nudge_asks_by_target()"), "the stat precedes the index")
+
+    def test_an_ask_landing_between_the_index_build_and_the_key_ends_the_skip(self):
+        """Round four, low 3 (the behavioural red for round three's low 5): an ask appended to the postal log AFTER the asker
+        index read it and BEFORE the key loop statted the log gave the key a log newer than the selection, so the next pass
+        skipped a debtor whose new asker's row was never keyed. The key carries the pre-index stat, so that pass parses."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            r, calls, sent, quiet = self._dead_asker_world([], now)
+            log = km.jd.STATE / "timeline" / "messages.jsonl"; log.parent.mkdir(parents=True, exist_ok=True); log.write_text("")
+            real_index = km._nudge_asks_by_target; landed = []
+            def index_then_ask():
+                out = real_index()
+                if not landed:                                                 # the window: an ask lands after the index read the log
+                    landed.append(1)
+                    with open(log, "a", encoding="utf-8") as f:
+                        f.write(json.dumps({"kind": "question", "from_id": SID_NEW, "to_sid": SID_OLD, "t": time.time()}) + "\n")
+                return out
+            passq = dict(quiet, _alive_sessions=lambda now_, live_map: [r], _auto_nudge_data=lambda: {}, _auto_nudge_resume=lambda: None,
+                         _wait_for_graph=lambda now_, ids: {}, _cleared_ids=lambda: set(), _auto_nudge_on=lambda: True,
+                         _compact_suggest_tick=lambda sid, live, now_: False, _relay_tick=lambda now_, ids: None,
+                         _debt_backstop_tick=lambda now_: None, _dead_wait_sweep=lambda ids, nudged, now_: None,
+                         _awaiting_wake_outcomes=lambda now_, ids: False, _push_soon=lambda: None, _pop_walk_gate=lambda k: None,
+                         _nudge_asks_by_target=index_then_ask)
+            for i in range(2):
+                with mock.patch.multiple(km, **passq), \
+                     mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: ({"nodes": {}, "status": {}, "placements": {}}, None)), \
+                     mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now_: (calls.append(sid), {"turns": STOPPED})[1]), \
+                     mock.patch.object(km.jd, "_parse_entry", side_effect=lambda sid, session=None, turns=None: None):
+                    km._auto_nudge_pass(now + i, {}, True)
+            self.assertEqual(calls, [SID_OLD, SID_OLD], "the log moved after the key's stat of it: the second pass parsed")
+        finally:
+            km.jd._rebind_state(saved_state)
+
+    def test_askers_beyond_the_eight_keyed_rows_note_an_unbounded_release_under_their_own_leg(self):
+        """The key carries at most _NUDGE_ASKER_ROWS_MAX asker rows (oldest asks first); a debtor with more notes None for
+        the rest under askerOverflow, so a session flooded with asks never grows a key without bound."""
+        now = time.time(); saved_state = km.jd.STATE; km.jd._rebind_state(Path(tempfile.mkdtemp()))
+        try:
+            askers = ["%08d-2222-3333-4444-0000000000%02d" % (i, i) for i in range(km._NUDGE_ASKER_ROWS_MAX + 1)]
+            r, calls, sent, quiet = self._dead_asker_world(askers, now)
+            before = dict(km._NUDGE_WALK_STATS.get("unboundedBy") or {})
+            self._dead_asker_look(r, now, calls, quiet)
+            memo = km._TICK_SEEN[("auto-nudge", SID_OLD)]
+            self.assertIsNone(memo[-2], "the ninth asker is not keyed: the memo is unbounded")
+            by = km._NUDGE_WALK_STATS["unboundedBy"]
+            self.assertEqual(by.get("askerOverflow", 0), before.get("askerOverflow", 0) + 1, "one note, under its own leg")
+            self.assertNotIn("deadAsker", by, "no such leg: every dead asker is keyed or beyond the keyed rows")
+            keyed, over = km._NUDGE_LOOK_ASKERS[SID_OLD]
+            self.assertEqual((len(keyed), over), (km._NUDGE_ASKER_ROWS_MAX, [askers[0]]), "the NEWEST ask overflows: oldest first are keyed")
+        finally:
+            km.jd._rebind_state(saved_state)
 
     def test_a_host_suspension_ends_the_skip_of_a_working_verdict(self):
         """Round four, HIGH: `working` was marked file-keyed, but _session_working ends in _suspended_after, which reads the
@@ -260,24 +477,47 @@ class NudgeWalkParseGate(unittest.TestCase):
         CLASS_ALLOW = {"Path": "pathlib's path type: a pure value"}   # the exception types are builtins, short-circuited a line earlier; a
         #                                               class with mutable state (Sessions, the door to the live backend table) is LIVE state
         ALLOW = {                                   # module-level names a marked road may read, each traced to its source
-            "jd", "em", "os", "time", "json", "re", "sys", "math", "Path", "threading", "traceback",   # modules and stdlib (pure)
+            "jd", "em", "os", "time", "json", "re", "sys", "math", "Path", "threading", "traceback", "zlib", "contextlib",   # stdlib (pure)
             "_downtime",                            # the host-suspension list, refilled from STATE/kernel-downtime.jsonl (keyed)
             "_intr_marks_memo",                     # a memo keyed on the parse identity plus the state log's machineCut pair
             "_intr_marks_memo_stats", "_INTR_MARKS_STATS_LOCK",   # that memo's hit/miss counters and their lock (no input)
             "_nudge_gate_memo", "_NUDGE_GATE_STATS",   # the placement gate's memo (the parse identity, the store view, the episode log's stat) and its counters
             "_last_state_cache", "_machine_cut_cache",   # _fold_records cursors over the state log (a keyed file), keyed by its path and stat
             "_stat_key",                            # a (mtime, size) reader
-            "_MACHINE_CUT_CAUSES", "_INTERRUPT_CAUSES",   # cause-name constants read by the interrupt road
+            "_NUDGE_HORIZON",                       # the look's thread-local horizon: its notes, and the keyed and overflow asker sets the
+            #                                         gate derived from the postal log's maps (keyed) before the look; no input of its own
+            "_NUDGE_WALK_STATS",                    # the walk's counters (no input)
+            "_NUDGE_ASKER_ROWS_MAX",                # a constant
+            "_views_dirty", "_pusher_wake",         # the writers' dirty mark and the pusher's wake (_mark_views_dirty): outputs of a
+            #                                         block filed or lifted, never inputs to the verdict
         }
+        DISPLAY_ONLY = {"_name_of": "the asker's display name for the reminder's TEXT (the names snapshot): never a verdict input"}
+        ROAD_FORBIDDEN = {                          # a road whose KEY writes constants at some positions must never read those files (T401 (3)):
+            "interrupt-block": {"names": {"_postal_wait_maps", "_nudge_asks_by_target", "_postal_index_memo"},
+                                "jd": {"MESSAGES", "EPIDIR", "episode_floor"},
+                                "text": ("messages.jsonl", "episodes")},   # the postal log and the episode log; the clears log stays a REAL
+        }                                                             #  position (the store readers' override replay reads it)
         CONST_MODULES = {"sb"}                      # the SDK backend module: a marked road may read only a CONSTANT of it (a cause
         #                                             name, a marker string) or one of the pure text helpers below, never a live table
         SB_PURE = {"echo_text_key", "strip_echo_markers", "_strip_marker_tail"}   # pure functions of their text argument (an atom's
         #                                             user text folded to the echo key the interrupt marks compare against)
         REFILLED = {"_downtime": "kernel-downtime.jsonl"}
         LEAF_READERS = {"_fold_records": "the event model's fold cursor over the NAMED file (the state log here), keyed by that file's "
-                                         "stat; its internals are the record cache and the checkpoint tables, which mirror the file"}
+                                         "stat; its internals are the record cache and the checkpoint tables, which mirror the file",
+                        "_postal_wait_maps": "the postal log's wait maps, cached on that file's (mtime_ns, size) and rebuilt from it alone "
+                                             "(the eighth keyed file); its internals are that cache and the alias history, which mirror the log",
+                        "_auto_nudge_data": "the nudge ledger (the tenth keyed file), read through _ledger_read's cache on its (mtime_ns, size); "
+                                            "the interrupt tick's key carries this session's own row from it, so a row change busts the memo "
+                                            "and another session's does not (T401 (3)); its internals are that cache and the fault latches"}
         JD_ALLOW = {"parsed_session", "_parse_entry", "_segs", "plan_units", "_placed_key", "_unit_key", "_closed_turns", "EPIDIR", "STATE",
-                    "GOALDIR", "CLOSER_ON", "load_goals_shared_or_fault", "_seg_key", "_segment_id", "episode_floor", "_view_cleared"}
+                    "GOALDIR", "CLOSER_ON", "load_goals_shared_or_fault", "_seg_key", "_segment_id", "episode_floor", "_view_cleared",
+                    "GOALARCHDIR", "_overrides_dir",   # the two keyed-file paths _session_files_stat itself names (the interrupt tick's key)
+                    "load_goals_or_fault", "record_verdict", "append_block", "rollup_status", "save_goals", "INTERRUPT_BLOCK_WHY",
+                    "_intr_paused_only"}   # the interrupt arms' store readers and writers (T401 (3) round two): they load and write
+        #                                    the goal store through its own API, the store, its journal and its archive being keyed
+        #                                    files 3 to 5, and the override replay inside load_goals reads the clears log (keyed file 7,
+        #                                    which is why the interrupt key keeps that position real); _intr_paused_only is a pure
+        #                                    reader of the loaded store; INTERRUPT_BLOCK_WHY a constant
         EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record"}   # pure readers of a record or an atom
         stat_src = inspect.getsource(km._session_files_stat)
         def module_name(n, g):
@@ -297,8 +537,9 @@ class NudgeWalkParseGate(unittest.TestCase):
                 if isinstance(n, ast.Import) or isinstance(n, ast.ImportFrom):
                     for a in n.names: names.add((a.asname or a.name).split(".")[0])
             return names
-        problems = []
-        for verdict in sorted(km._NUDGE_FILE_KEYED_VERDICTS):
+        problems = []; self.maxDiff = None
+        for verdict in sorted(set(km._NUDGE_FILE_KEYED_VERDICTS) | {"walk-completed", "interrupt-block"}):   # the debt leg's exit and
+            #                                                                                              the interrupt tick's road too
             todo = list(km._NUDGE_FILE_KEYED_ROADS[verdict]); seen = set()
             self.assertTrue(todo, "%s: its road functions are named" % verdict)
             while todo:
@@ -313,7 +554,19 @@ class NudgeWalkParseGate(unittest.TestCase):
                 except (OSError, SyntaxError) as e:
                     problems.append((verdict, fn_name, "unreadable source: %r" % e)); continue
                 fn_node = tree.body[0]; local = locals_of(fn_node); g = fn.__globals__   # the function's OWN globals (em's for em.fold_records)
+                forbid = ROAD_FORBIDDEN.get(verdict)
+                if fn_name in ("_session_files_stat", "_interrupt_block_key"):
+                    forbid = None                         # the KEY builders stat those files (they name them) and read none
+                if forbid:
+                    src_text = inspect.getsource(fn)
+                    for frag in forbid["text"]:
+                        if frag in src_text:
+                            problems.append((verdict, fn_name, "names %r, a file its key writes as a constant" % frag))
                 for n in ast.walk(fn_node):
+                    if forbid and isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id in forbid["names"]:
+                        problems.append((verdict, fn_name, "reads %s, a reader of a file its key writes as a constant" % n.id))
+                    if forbid and isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "jd" and n.attr in forbid["jd"]:
+                        problems.append((verdict, fn_name, "reads jd.%s, a file its key writes as a constant" % n.attr))
                     if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in ("jd", "em"):
                         allow = JD_ALLOW if n.value.id == "jd" else EM_ALLOW
                         if n.attr not in allow:
@@ -329,8 +582,9 @@ class NudgeWalkParseGate(unittest.TestCase):
                         problems.append((verdict, fn_name, "reads %s, bound nowhere the census can see" % name)); continue
                     val = g[name]
                     if isinstance(val, types.FunctionType):
-                        if name in LEAF_READERS:
-                            continue                                # a justified keyed-file reader: the trace stops at the file
+                        if name in LEAF_READERS or name in DISPLAY_ONLY:
+                            continue                                # a justified keyed-file reader (the trace stops at the file), or a
+                        #                                             name read for display text alone, never for a verdict
                         if g is km.__dict__ and val.__globals__ is km.__dict__:
                             todo.append(name); continue             # a kernel helper: walked in turn, in its own globals
                         problems.append((verdict, fn_name, "calls %s from %s, a function the trace does not walk" % (name, getattr(val, "__module__", "?"))))
@@ -451,6 +705,78 @@ class NudgeWalkParseGate(unittest.TestCase):
         self.assertEqual(self._look(r, now + 1, calls, _backend_rewind_pending=lambda sid: False), "working", "the cut dropped: the look evaluates")
         self.assertEqual(calls, [SID_OLD, SID_OLD])
 
+    def test_the_unbounded_notes_are_counted_per_leg(self):
+        """Follow-up: a third of looks refused the memo as unbounded at the first gated boot and the counters could not say which
+        road; every None note names its leg under memos.nudgeWalk.unboundedBy, the decorator's default under unmarked:<verdict>."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); now = time.time(); calls = []
+        km._NUDGE_WALK_STATS["unboundedBy"] = {}
+        quiet = dict(_session_working=lambda turns: False, _interrupt_suppresses_nudge=lambda turns, sid="", **k: False, _pending_ops={},
+                     _backend_queued=lambda sid: False, _backend_rewind_pending=lambda sid: False, _last_state=lambda sid: ("", 0),
+                     _session_awaiting=lambda *a, **k: False)
+        with mock.patch.object(km.jd, "load_goals_shared_or_fault", side_effect=lambda sid: (None, OSError("EMFILE"))):
+            self._look(r, now, calls, **quiet)
+        self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"], {"storeFault": 1}, "one unbounded look books exactly one leg (round two: the "
+                         "decorator's default fires only when no named leg noted the look)")
+        km._TICK_SEEN.clear()
+        self._look(r, now + 1, calls, _session_working=lambda turns: False, _interrupt_suppresses_nudge=lambda turns, sid="", **k: False,
+                   _pending_ops={SID_OLD: [1]})
+        self.assertEqual(km._NUDGE_WALK_STATS["unboundedBy"], {"storeFault": 1, "unmarked:queued-input": 1}, km._NUDGE_WALK_STATS["unboundedBy"])
+        self.assertIn("unboundedBy", km._PERF_STATS.snapshot()["memos"]["nudgeWalk"])
+
+    def test_every_unbounded_note_site_names_its_leg(self):
+        """Round three, low 5: `leg or "unnamed"` absorbed a future None site with no name and nothing failed. A nameless None
+        note raises, and a source census over every `_nudge_clock(...)` call in the kernel whose first argument MAY be None
+        requires a second, literal argument. The census accepted only a Constant None or an IfExp (the five-lows read, low 4),
+        so `_nudge_clock(flip)` with a None flip on one branch stayed green and raised inside the look at run time, where the
+        tick's per-session guard drops that session's nudge for the pass; it now takes any first argument that is not a call
+        or an arithmetic expression (a name, an attribute, a subscript, a conditional) as one that may be None."""
+        import ast, inspect
+        def census(src):
+            sites, bad = 0, []
+            for node in ast.walk(ast.parse(src)):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_nudge_clock":
+                    first = node.args[0] if node.args else None
+                    if first is None or (isinstance(first, ast.Constant) and first.value is not None):
+                        continue                                 # a literal instant
+                    if isinstance(first, (ast.Call, ast.BinOp, ast.UnaryOp)):
+                        continue                                 # an instant computed from one: `anchor + DEADMAN`, `float(x)`
+                    sites += 1
+                    if len(node.args) < 2 or not (isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)):
+                        bad.append(node.lineno)
+            return sites, bad
+        self.assertEqual(census("_nudge_clock(flip)\n_nudge_clock(rec.at)\n_nudge_clock(x if y else None, 'leg')"), (3, [1, 2]),
+                         "a name or an attribute may be None and needs a leg; a conditional with one is fine")
+        self.assertEqual(census("_nudge_clock(anchor + DEADMAN)\n_nudge_clock(float(t))\n_nudge_clock(5.0)"), (0, []), "instants")
+        sites, bad = census(open(os.path.join(os.path.dirname(HERE), "bin", "romp-kernel"), encoding="utf-8").read())
+        self.assertGreaterEqual(sites, 14, "the census found the None note sites: %d" % sites)
+        self.assertEqual(bad, [], "every None note names its leg with a literal")
+        km._NUDGE_HORIZON.notes = []
+        try:
+            with self.assertRaises(ValueError):
+                km._nudge_clock(None)
+        finally:
+            km._NUDGE_HORIZON.notes = None
+
+    def test_the_pass_keeps_its_stats_in_a_side_map_and_leaves_the_shared_rows_untouched(self):
+        """Follow-up, low 1: the pass wrote _look_stat into the session rows _sessions memoises per cycle and hands out read-only;
+        a later reader of a row would have read a stale key. The stats live in a side map keyed by sid, cleared per pass."""
+        d = tempfile.mkdtemp(); older, newer = _row(d, SID_OLD, old=True), _row(d, SID_NEW, old=False)
+        seen_map = {}
+        def look(s, *a, **k):
+            seen_map[s["sid"]] = dict(km._NUDGE_LOOK_STATS)                # what the look sees while the pass runs
+            return None
+        quiet = dict(_auto_nudge_data=lambda: {}, _auto_nudge_resume=lambda: None, _alive_sessions=lambda now, live_map: [older, newer],
+                     _wait_for_graph=lambda now, ids: {}, _cleared_ids=lambda: set(), _auto_nudge_on=lambda: True,
+                     _auto_nudge_session=look, _compact_suggest_tick=lambda sid, live, now: False,
+                     _relay_tick=lambda now, ids: None, _debt_backstop_tick=lambda now: None, _dead_wait_sweep=lambda ids, nudged, now: None,
+                     _awaiting_wake_outcomes=lambda now, ids: False, _push_soon=lambda: None, _pop_walk_gate=lambda k: None)
+        with mock.patch.multiple(km, **quiet):
+            km._auto_nudge_pass(time.time(), {}, True)
+        self.assertNotIn("_look_stat", older); self.assertNotIn("_look_stat", newer)
+        self.assertEqual(set(seen_map[SID_OLD]), {SID_OLD, SID_NEW}, "both sessions' stats in the side map during the pass")
+        self.assertEqual(seen_map[SID_OLD][SID_OLD], km._session_files_stat(older))
+        self.assertEqual(km._NUDGE_LOOK_STATS, {}, "the pass's stats are cleared when it ends: a look outside a pass stats for itself")
+
     def test_the_perf_memos_and_the_boot_row_carry_the_walk(self):
         self.assertIn("nudgeWalk", km._PERF_STATS.snapshot()["memos"])
         self.assertEqual(set(km._PERF_STATS.snapshot()["memos"]["nudgeWalk"]), set(km._NUDGE_WALK_STATS))
@@ -511,8 +837,9 @@ class RedundancySkipKeepsItsDeadMan(unittest.TestCase):
         self.K._debt_reminder_outcomes = lambda sid, lt, now: None
         self.K._fire_debt_reminder = lambda sid, now, alive_ids: False
         self.K._TICK_SEEN.clear()
-        for k in self.K._NUDGE_WALK_STATS:
-            self.K._NUDGE_WALK_STATS[k] = 0
+        for k, v in list(self.K._NUDGE_WALK_STATS.items()):
+            self.K._NUDGE_WALK_STATS[k] = {} if isinstance(v, dict) else 0
+        self.K._NUDGE_LOOK_STATS.clear()
         d = tempfile.mkdtemp(); self.path = os.path.join(d, M.SID + ".jsonl")
         Path(self.path).write_text("{}\n")
 
@@ -559,8 +886,9 @@ class PassSnapshotsAreNewerThanTheKey(unittest.TestCase):
         self.M = M; self.K = M.km
         self.h = M.MemoDeadlock("test_a_parked_goal_sleeps_silently"); self.h.setUp()
         self.K._TICK_SEEN.clear()
-        for k in self.K._NUDGE_WALK_STATS:
-            self.K._NUDGE_WALK_STATS[k] = 0
+        for k, v in list(self.K._NUDGE_WALK_STATS.items()):
+            self.K._NUDGE_WALK_STATS[k] = {} if isinstance(v, dict) else 0
+        self.K._NUDGE_LOOK_STATS.clear()
         d = tempfile.mkdtemp(); self.path = os.path.join(d, M.SID + ".jsonl")
         Path(self.path).write_text("{}\n")
         self._debt_saved = {n: getattr(self.K, n) for n in ("_debt_reminder_outcomes", "_fire_debt_reminder", "_debt_asks", "_postal_wait_maps")}

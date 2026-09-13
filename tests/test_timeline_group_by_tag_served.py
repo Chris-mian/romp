@@ -8,7 +8,9 @@ order, each head ONE chip (the tag's name in its colour, tagChip's mirror), the 
 backend and frontend, and the api-to-web connector landing on web's FIRST lane; archived folded by default to its head
 alone; the untagged trail behind a divider; a click on a head folds and opens its section and writes the fold into the
 strip's blob in the strip's shape. With the switch OFF the pane is as it was: no heads, no divider, the lanes in the
-pane's order at the pane's row pitch, the SVG the pane's own height. With T399_SHOTS=<dir> the driver writes
+pane's order at the pane's row pitch, the SVG the pane's own height. Every read waits on the pane's own draw (the
+lanes, heads and connector in the DOM; a click's fold state after it), never a fixed pause: a loaded CI runner drew the
+pane after a pause had run out (2026-09-13). With T399_SHOTS=<dir> the driver writes
 sessions-group-by-tag-dark.png and sessions-group-by-tag-light.png (a lab copies them to the drops folder under the
 task's name). Skips LOUDLY without the extension deps or a Playwright browser."""
 import json
@@ -103,30 +105,36 @@ for (const pass of [{ name: "dark", theme: "dark", on: true }, { name: "light", 
   const page = await ctx.newPage();
   page.on("pageerror", (e) => console.error("pageerror:", e.message));
   await page.goto(cfg.url);
+  // every read waits on the pane's OWN draw (a CI runner under load drew the pane after a fixed pause had run out: the
+  // driver read an empty SVG and the lab failed on another PR's run, 2026-09-13): the lanes and heads in the DOM, and on
+  // the grouped passes the api-to-web connector too, which rides the deferred bars payload; never a fixed pause
+  const drawn = ({ names, on, web }) => {
+    const lanes = Array.from(document.querySelectorAll("svg text")).filter((t) => names.indexOf(t.textContent) >= 0).length;
+    const heads = document.querySelectorAll(".tl-group-head").length;
+    const connector = !!document.querySelector('path[data-tl-to="' + web + '"]');
+    return on ? heads >= 3 && lanes >= 6 && connector : lanes >= 6 && connector;
+  };
   try {
-    await page.waitForFunction(({ names, on }) => {
-      const lanes = Array.from(document.querySelectorAll("svg text")).filter((t) => names.indexOf(t.textContent) >= 0).length;
-      const heads = document.querySelectorAll(".tl-group-head").length;
-      return on ? heads >= 3 && lanes >= 6 : lanes >= 6;
-    }, { names: NAMES, on: pass.on }, { timeout: 30000 });
+    await page.waitForFunction(drawn, { names: NAMES, on: pass.on, web: cfg.web }, { timeout: 90000 });   // the python side's cap covers three of these and three fold waits
   } catch (e) {
     const st = await page.evaluate(() => ({ heads: document.querySelectorAll(".tl-group-head").length, texts: Array.from(document.querySelectorAll("svg text")).map((t) => t.textContent).slice(0, 40) }));
     console.error("lanes missing (" + pass.name + "): " + JSON.stringify(st)); process.exit(1);
   }
-  await page.waitForTimeout(1200);                              // the deferred bars payload and the connector
   const r = { first: await page.evaluate(measure, { names: NAMES, web: cfg.web }) };
   if (pass.on) {
     if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/sessions-group-by-tag-" + pass.theme + ".png", fullPage: false }); }
     if (pass.name === "dark") {
       // fold backend by its head, read the blob, open it again, then open the default-folded archived
+      // each click waits on the redraw it causes: the head's fold state in the DOM, never a fixed pause
+      const foldedIs = ({ name, folded }) => { const g = document.querySelector('.tl-group-head[data-group="' + name + '"]'); return !!g && g.dataset.folded === (folded ? "1" : "0"); };
       await page.click('.tl-group-head[data-group="backend"] rect');
-      await page.waitForTimeout(300);
+      await page.waitForFunction(foldedIs, { name: "backend", folded: true }, { timeout: 20000 });
       r.folded = await page.evaluate(measure, { names: NAMES, web: cfg.web });
       await page.click('.tl-group-head[data-group="backend"] rect');
-      await page.waitForTimeout(300);
+      await page.waitForFunction(foldedIs, { name: "backend", folded: false }, { timeout: 20000 });
       r.reopened = await page.evaluate(measure, { names: NAMES, web: cfg.web });
       await page.click('.tl-group-head[data-group="archived"] rect');
-      await page.waitForTimeout(300);
+      await page.waitForFunction(foldedIs, { name: "archived", folded: false }, { timeout: 20000 });
       r.archivedOpen = await page.evaluate(measure, { names: NAMES, web: cfg.web });
     }
   }
@@ -222,7 +230,9 @@ class ServedGroupByTag(unittest.TestCase):
                        "pw": os.path.join(EXT, "node_modules", "playwright"), "shots": os.environ.get("T399_SHOTS", "")}, f)
         driver = os.path.join(self.lab, "driver.mjs")
         Path(driver).write_text(DRIVER)
-        p = subprocess.run(["node", driver, cfg], capture_output=True, text=True, timeout=240)
+        # the cap covers the driver's own bounds (three first-read waits of 90 s and three fold waits of 20 s, 330 s) with room, so
+        # on a loaded runner the driver dies by ITS bound and prints its lanes-missing diagnostic, never by this one in silence
+        p = subprocess.run(["node", driver, cfg], capture_output=True, text=True, timeout=420)
         klog = Path(self.klog).read_text()[-3000:] if os.path.exists(self.klog) else ""
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + "\n" + p.stderr[-3000:] + "\nkernel:\n" + klog)
         line = [ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")][-1]

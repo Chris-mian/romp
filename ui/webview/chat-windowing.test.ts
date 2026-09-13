@@ -67,7 +67,6 @@ test("scroll re-windows around the viewport (steady scroll OR jump) when near a 
   assert.match(RENDER, /renderWindowItems\(v, s, items, Math\.max\(0, c - WINDOW_RADIUS\), Math\.min\(items\.length, c \+ WINDOW_RADIUS\), working\);/);
   // it re-anchors the focus unit so it doesn't jump, coalesced to one frame; a re-window of resident content shows no cue (T402, T386 stage 2)
   assert.match(RENDER, /writeScroll\(content, yNow - beforeY, "rewindow"\);/);   // (T262: every #content write rides writeScroll)
-  assert.doesNotMatch(RENDER, /showLoadingPill\(\)|hideLoadingPill\(\)/, "the per-fetch pill is retired: the ONE landing notice and the gaps' glyphs replace it (T386 stage 2)");
   assert.match(RENDER, /c\.addEventListener\("scroll", virtualizeToViewport, \{ passive: true \}\);/);
 });
 

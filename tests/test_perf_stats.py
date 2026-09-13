@@ -125,9 +125,9 @@ class Collector(unittest.TestCase):
         self.assertEqual(set(snap["goals"]), {"loads", "saves", "writes"}, "read through jd.goal_io_stats")
         # the three identity memos' readers land here (review find, 2026-09-08: they had no consumer)
         self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "nudgeWalk", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip",
-                                              "bgTops", "liftGate", "intrMarks", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
+                                              "bgTops", "liftGate", "intrMarks", "deadWait", "tickSeen", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
                                               "chatMergeSets", "chatPostal", "chatLedger", "chatFoldTasks"})   # the chat build's fixed-cost memos (2026-09-09)
-        self.assertEqual(set(snap["memos"]["spendTree"]), {"entries", "bytes", "bound"}, "the spend guard's tree memos against their bound")
+        self.assertEqual(set(snap["memos"]["spendTree"]), {"entries", "bytes", "bound", "dirStats", "fileStats", "entryStats", "listings", "loaded", "loadFailed", "written", "swept", "dropped", "dumpSkipped", "evicted", "writeFailed"}, "the spend guard's tree memos against their bound")
         self.assertEqual(snap["memos"]["spendTree"]["bound"], km.SPEND_GUARD_TREE_MEMO_BYTES)
         self.assertEqual(set(snap["memos"]["summaryAnchor"]), {"entries", "bytes", "bound", "hit", "miss", "evict", "fault"},
                          "the brief line's text-atom landings (T388): occupancy and counters against their bound")
@@ -475,7 +475,7 @@ class GoalIoCounters(unittest.TestCase):
         # with this PR, so the doc names the memos section and sends the reader there (review find, 2026-09-08)
         doc = Path(HERE).parent.joinpath("docs", "reference.md").read_text()
         self.assertIn("- `memos`:", doc)
-        for k in ("`pass`", "`shared`", "`chain`", "`intrMarks`", "`statesOverlay`"):
+        for k in ("`pass`", "`shared`", "`chain`", "`intrMarks`", "`statesOverlay`", "`deadWait`"):
             self.assertIn(k, doc)
         self.assertIn("`memos.shared`", doc)
 
@@ -1021,6 +1021,10 @@ class PerfRoutes(unittest.TestCase):
             src = open(f, encoding="utf-8").read()
             tree = ast.parse(src)
             for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "threading" and any(a.name in CTORS and a.asname for a in node.names):
+                    bad.append(("%s:%d" % (os.path.basename(f), node.lineno), "a constructor imported under an alias the census cannot follow", ""))
+                if isinstance(node, ast.Import) and any(a.name == "threading" and a.asname for a in node.names):
+                    bad.append(("%s:%d" % (os.path.basename(f), node.lineno), "the threading module imported under an alias the census cannot follow", ""))
                 if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)) and ctor_of(ast.Call(func=node.value, args=[], keywords=[])) \
                         and not all(isinstance(tg, ast.Name) and tg.id in CTORS for tg in node.targets):   # judge.py rebinds ThreadPoolExecutor
                     bad.append(("%s:%d" % (os.path.basename(f), node.lineno), "a constructor aliased into a name the census cannot follow", ast.dump(node.value)[:60]))   # to its timed subclass: both names are constructors, so every site stays visible

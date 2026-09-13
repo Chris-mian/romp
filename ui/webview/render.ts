@@ -1596,7 +1596,7 @@ document.addEventListener("click", (e) => {
 //     first cut filled the feed pane, and reading a file cost the cards). The bytes come to the
 //     browser over /file, which is the fix for the original break (the user 2026-08-08): the kernel
 //     used to run an opener on ITS machine, the wrong screen entirely from another device.
-//   • Web dashboard, the Files pane on screen, or the gear's "File links open in" naming it → the
+//   • Web dashboard, the Files pane on screen (the one route to it since T404: no setting names a closed pane) → the
 //     open is handed to the SHELL, which brings that pane forward and forwards the click into it
 //     (kernel.py's landing shell; ui/webview/files.ts): the viewer as a column of its own, which stays
 //     up beside the chat and the feed instead of covering either.
@@ -1621,7 +1621,7 @@ function openPath(path: string, sid?: string | null, ev?: MouseEvent | null, fra
   if (!vscodeApi) return;
   if (location.protocol === "http:" || location.protocol === "https:") {
     const to = sid || activeId || null;
-    const route = fileLinkRoute(settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
+    const route = fileLinkRoute(window.parent !== window, panesOn.files === true, panesAvail.files !== false);
     // with its gesture, read first: a Cmd/Ctrl- or middle-click on a PDF takes the browser's own tab wherever
     // the plain click would have landed; a plain click routed to the Files pane is handed to the shell.
     // `frag`: a section to land on (the preview popover's "open" of a path#slug link, T351), through either route
@@ -1655,12 +1655,12 @@ function onMiddleClick(a: HTMLElement, fn: (e: MouseEvent) => void): void {
 // tells the person where Browse files will land, so the two cannot disagree.
 function browseRouteNow(): BrowseRoute {
   const web = location.protocol === "http:" || location.protocol === "https:";
-  return browseRoute(web, settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
+  return browseRoute(web, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
 }
 // Surface the FILE BROWSER at `path` for the session: the folder shown under the chat, the system context
 // card's Directory row, a tab menu's Browse files, a chat-hosted viewer's directory link. The listing goes
 // where a file link would (the ladder above):
-//   "pane"   the Files pane is on screen, or the gear's "File links open in" names it: the listing opens IN
+//   "pane"   the Files pane is on screen (no setting names a closed one since T404): the listing opens IN
 //            that pane (files.ts hosts the same browser as a column); a closed pane comes forward and stays.
 //            The message names its target and carries the session's IDENTITY (name and colour, looked up the
 //            way openPath's viewFile looks it up, null when neither list names the sid) for the pane, which
@@ -11129,6 +11129,7 @@ function writeScroll(content: HTMLElement, top: number, writer: string, stick = 
   // chord, a link or the chips, the wheel over a notch) is their takeover (round four: their writes read as another mover's and
   // land-realign undid them), every other writer's move is a sample for the settle rule, which re-lands (T386)
   if (after !== before && landSettling && !landSettling.done && writer !== "land-on" && writer !== "land-realign") { if (writerIsReader(writer)) settleGesture(); else settleSample(); }
+  if (after !== before && writerIsReader(writer)) noteOlderEvidence(activeId);   // the reader's own move by a writer of theirs clears a cancelled ask's latch too (round four, low 1)
 }
 // EVERY mover of #content goes through writeScroll (T262j, the user 2026-09-08: an unwritten move the journal could
 // not name). scrollBy and scrollIntoView are scrollTop writes expressed differently, so they are expressed as such:
@@ -11420,6 +11421,12 @@ let settleLastInput = 0;
  *  SETTLE_INPUT_MS made every scroll a sample, and land-realign wrote the reader back). While the hold stands every scroll is
  *  the reader's, whatever the clock says; the timed window stays for wheels, keys, touches and drags inside the content. */
 let settleScrollerHeld = false;
+/** sid → when the reader last gave SCROLL EVIDENCE on that tab (T402 round four, medium 1): an input the settle machinery accepts over
+ *  #content (a wheel, a touch, a key outside an editable field, a grab of the scrollbar) or a reader writer's own write (a trail or
+ *  fragment-link jump, the live-tail chip). Per tab and per surface: a keystroke into the composer, or a gesture on another tab's
+ *  transcript, is no evidence for this tab's older edge. A cancelled ask's latch (olderLatched) waits for it. */
+const olderEvidence = new Map<string, number>();
+function noteOlderEvidence(sid: string | null | undefined): void { if (sid) olderEvidence.set(sid, Date.now()); }
 function settleInput(e: Event): void {
   const c = document.getElementById("content");
   if (e.type === "pointerup" || e.type === "pointercancel") { settleScrollerHeld = false; return; }
@@ -11435,7 +11442,13 @@ function settleInput(e: Event): void {
     }
   }
   settleLastInput = Date.now();
+  // the evidence the older edge's latch waits for: the same inputs, once past the editable-field and the scroller's-own-box returns above, so a
+  // keystroke into the composer or a hover never counts; a pointer counts only as a grab of the scrollbar (a press on the pill never reaches here as one)
+  const navKey = e.type === "keydown" && NAV_KEYS.has((e as KeyboardEvent).key) && (!document.activeElement || document.activeElement === document.body || !!(c && c.contains(document.activeElement)));
+  const drag = e.type === "pointermove" && !!(e as PointerEvent).buttons;   // a selection or middle-click autoscroll inside the transcript is the reader's own move (round five, low 2)
+  if (e.type === "wheel" || navKey || e.type.startsWith("touch") || drag || (e.type === "pointerdown" && settleScrollerHeld)) noteOlderEvidence(activeId);
 }
+const NAV_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);   // the keys that scroll the transcript; any other key (an Escape on the body) moves nothing and is no evidence (round five, low 1)
 for (const ev of ["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchmove", "wheel", "keydown"]) window.addEventListener(ev, settleInput, { capture: true, passive: true });
 // a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round four, low 1): the hold ends
 // with the page's focus or visibility as well
@@ -17258,7 +17271,12 @@ function chatTail(msg: any) {
   if (typeof msg.afterUuid === "string") {
     const kernelEvents = s.events.filter((e) => !isOptimistic(e) && !isHeldGroup(e));
     const at = indexOfUuid(kernelEvents as { uuid?: string }[], msg.afterUuid);
-    if (at < 0) { requestFullSession(msg.id, "gap"); return; }   // the anchor is not resident: a gap, whatever opened it
+    if (at < 0) {
+      // the anchor is not resident: a gap. An ATTACHED page asks a full frame (gap: the tail replaces the run it should have matched). A
+      // the page asks the full frame; upsert merges it into the held runs (the regions: no client is ever detached, T386 stage 2)
+      requestFullSession(msg.id, "gap");
+      return;
+    }
     from = at + 1;
     const inc = (msg.events || []) as ChatEvent[];
     s.lastUuid = inc.length ? (keyOf(inc[inc.length - 1] as { uuid?: string; key?: string }) ?? s.lastUuid) : keyOf(kernelEvents[at] as { uuid?: string; key?: string }) ?? s.lastUuid;
@@ -17282,7 +17300,8 @@ function chatTail(msg: any) {
     // socket happened to drop and a fresh connect re-sent the whole session (the user 2026-07-28, whose tab
     // went stale twice in one afternoon: locate-audit.jsonl recorded six pointer-not-rendered misses, then
     // pointer-exact on the SAME anchor the moment a kernel restart forced a reconnect).
-    // So ASK for the full session — the one message that closes this desync class whatever opened it.
+    // So ASK for the full session — the one message that closes this desync class whatever opened it; upsert merges the frame into
+    // the held runs (the regions, T386 stage 2: the tail run always resident, the history runs above it kept).
     requestFullSession(msg.id, "gap");
     return;
   }
@@ -17561,12 +17580,20 @@ function chatHead(msg: any) {
   const forget = (sid: string) => { pendingOlderAnchor.delete(sid); pendingOlderKeepY.delete(sid); };
   const s = sessions.get(msg.id);
   if (!s) { forget(msg.id); return; }
+  if (msg.fault) {
+    // the kernel could not answer this time (T402 round two, low 3): the wait ends, nothing is re-based, the next scroll asks again; a
+    // deep link's fetch stands its landing down at once with the same word as a window's fault (round four, low 2), not at the backstop
+    const deepLink = pendingOlderAnchor.has(msg.id) && !pendingOlderKeepY.has(msg.id);   // a deep link's fetch (fetchOlderForAnchor), not a scroll-back's
+    forget(msg.id);
+    if (msg.id === activeId && deepLink && anchorPendingOlder) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push("head-fault"); landToast("the history could not be loaded just now"); clearSeek(); }
+    return;
+  }
   const before = msg.before | 0, from = msg.from | 0;
   const older = (msg.events || []) as ChatEvent[];
   if (typeof msg.beforeUuid === "string") {
     // proto 2 (T323 stage 4b): the reply names the resident oldest; a stale one (the oldest moved on) is ignored,
     // a missing anchor is the honest end of the search, and `more: false` is the head: the count exists from here
-    if (msg.missing) { forget(msg.id); requestFullSession(msg.id, "gap"); return; }   // the anchor is gone from the transcript (a /clear, a fork): re-base
+    if (msg.missing) { forget(msg.id); requestFullSession(msg.id, "gap"); return; }   // the anchor is gone from the transcript (a /clear, a fork): re-base (a FAULT never reaches here: it returned above)
     const next = prependHead(s.events as { uuid?: string }[], msg.beforeUuid, older as { uuid?: string }[]);
     if (!next) { forget(msg.id); return; }
     s.events = next as ChatEvent[];
@@ -17574,6 +17601,7 @@ function chatHead(msg: any) {
     if (msg.more === false) { s.headKnown = true; s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0); }
   } else {
     if (before !== (s.headFrom ?? 0)) { forget(msg.id); return; }   // stale / overlapping → ignore
+    if (msg.missing) { forget(msg.id); return; }                    // the index wire's fault reply (T402 round two, low 2): the head is not reached, the wait just ends
     if (older.length) s.events = older.concat(s.events);
     s.headFrom = from;
   }
@@ -17594,6 +17622,9 @@ function chatHead(msg: any) {
     pendingAnchorKeepY = keepY ?? null;
   }
   showActive();
+  // the prepend RESTORES the row itself (round ten, low 1): a landing that already filed its row does not re-land on the re-render, so a
+  // refreshed keep offset alone left the inserted rows pushing the opened message down (top 8 to 356); after the re-render the row under
+  // the viewport top goes back to its offset, the page's own move (anchor-restore, the append path's writer for the same job)
 }
 
 // Fetch the next older history chunk re-anchored on `uuid` (a deep-link target past the resident tail), so
@@ -17679,6 +17710,7 @@ function chatWindow(msg: any) {
   if (landingNoticeSid === msg.id) hideLandingNotice();
   const s = sessions.get(msg.id);
   const anchorUuid = pendingOlderAnchor.get(msg.id);
+  const keepY = pendingOlderKeepY.get(msg.id);   // present ⇒ the anchor is the READER's own row and the arrival preserves its offset (a cancelled ask, medium 2)
   pendingOlderAnchor.delete(msg.id); pendingOlderKeepY.delete(msg.id);
   if (!s) return;
   const ask = pendingWindowNav.get(msg.id) ?? null;

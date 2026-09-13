@@ -14,6 +14,7 @@ Run:  bin/romp-kernel   → opens http://127.0.0.1:29855
 import collections
 import copy
 import math
+import zlib
 import contextlib, json, os, queue, random, re, signal, socket, sys, time, threading, traceback, base64, bisect, errno, hashlib, hmac, struct, subprocess, shutil, shlex, http.client, uuid, tempfile, stat, gzip, collections, functools, fcntl, inspect, secrets, importlib.util
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -329,7 +330,7 @@ class _PerfStats:
     HTTP_PATHS = 256
     SLOTS = 32
     JOBS = ("beginCheckpointCycle", "applyPendingOps", "turnNotify", "liftSpentAwaiting", "deathSweep", "endOnIdle", "deferralSweep",
-            "autoNudge", "interruptBlock", "persistTickSeen", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
+            "autoNudge", "interruptBlock", "persistTickSeen", "persistSpendTrees", "persistCheckpoints", "convergeCheckpoints", "bootRowBackstop",
             "kernelSample", "autoPauseOnLimit", "usagePoll", "autoPauseOnSpend", "spendGuard", "autoResumeRetry", "apiHealth",
             "autoResumeSession", "autoRetry", "idleQueueDrive", "clearDoneNotes")   # the tick jobs, each a `jobs.<job>` stage (T398)
     STAGES = ("prelude", "jobs", "push", "push.chat", "push.feed", "push.timeline", "push.send", "push.warm", "push.feedFirst") \
@@ -350,7 +351,7 @@ class _PerfStats:
             self.pusher = {"cycles": 0, "wakes": 0, "wakes_event": 0, "wakes_backstop": 0,
                            "cycle_ms_sum": 0.0, "cycle_ms_max": 0.0, "cycle_ms_last": 0.0,
                            "cycle_cpu_ms_sum": 0.0, "sends": 0,
-                           "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0, "splitFailed": 0}
+                           "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0, "splitFailed": 0, "cycleFailed": 0}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
             # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes
@@ -414,6 +415,12 @@ class _PerfStats:
     def wake_kind(self, by_event):
         with self.lock:
             self.pusher["wakes_event" if by_event else "wakes_backstop"] += 1
+
+    def cycle_failed(self):
+        """A pusher cycle that raised out of the loop and was skipped (the loop's guard): counted under its lock like every
+        other pusher counter."""
+        with self.lock:
+            self.pusher["cycleFailed"] = self.pusher.get("cycleFailed", 0) + 1
 
     def marks(self):
         """(wakes, sends) so far: the cycle compares the pair before and after itself to tell an idle cycle."""
@@ -684,7 +691,9 @@ class _PerfStats:
                           ("backref", jd.backref_memo_stats), ("captions", jd.captions_memo_stats),
                           ("goalArchive", jd.goal_archive_memo_stats), ("plannerSkip", jd.planner_skip_stats),
                           ("liftGate", _lift_gate_report), ("bgTops", _bg_tops_report),
-                          ("intrMarks", _intr_marks_memo_report), ("statesOverlay", _states_overlay_report),
+                          ("intrMarks", _intr_marks_memo_report), ("deadWait", lambda: dict(_DEAD_WAIT_STATS)),
+                          ("tickSeen", _tick_seen_report),
+                          ("statesOverlay", _states_overlay_report),
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
                           ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
@@ -3124,9 +3133,19 @@ def _debt_asks(sid, alive_ids):
     for (f, t_), rec in last_ask.items():
         if t_ != str(sid):
             continue
-        if f not in (alive_ids or ()):
-            _nudge_clock(None)                         # an ask from a peer not alive now: its revival owes the reminder, and no
-            continue                                   #  file of this session says so (T401 (2) round three, medium)
+        if f in (getattr(_NUDGE_HORIZON, "over_askers", None) or ()):
+            _nudge_clock(None, "askerOverflow")        # beyond the eight keyed rows: its row is outside the key, so the look is
+        #                                                unbounded whatever the asker's liveness (round three, low 3)
+        if f in (getattr(_NUDGE_HORIZON, "keyed_askers", None) or ()):
+            row_alive = _asker_row_alive(f)            # the asker's registry row is in the debtor's key, so its content decides
+            if row_alive is False:                     #  (round two, medium: the pass's alive set is older than the key; a
+                continue                               #  revival landing between the two would record a memo that owes nothing)
+            if row_alive is None:                      # a row that cannot be read or carries no alive bit is UNPROVEN: the memo is
+                _nudge_clock(None, "askerRowUnproved")   #  never skippable on that evidence (round three), and the ASK is decided by
+                if f not in (alive_ids or ()):         #  the alive set, the backend's own row-or-last-good-row answer (round four:
+                    continue                           #  keeping it unconditionally sent a reminder to answer a dead peer)
+        elif f not in (alive_ids or ()):
+            continue                                   # not keyed: the alive set decides, as before the rows were keyed
         ts = rec[0]
         if last_any.get((t_, f), 0) >= ts:
             continue                                   # answered with ANYTHING back → no debt
@@ -3178,7 +3197,7 @@ def _fire_debt_reminder(sid, now, alive_ids):
         return False
     snap = _auto_nudge_data()
     if snap.get(UNPROVED):
-        _nudge_clock(None)                             # an owed ask stands unreminded: the next look must retry (T401 (2))
+        _nudge_clock(None, "debtUnproved")                             # an owed ask stands unreminded: the next look must retry (T401 (2))
         return False                                   # the record write would be refused → an unrecorded
         #                                                reminder re-fires every tick; the tick is paused anyway
     dn0 = snap.get("debtNudged") or {}
@@ -3197,7 +3216,7 @@ def _fire_debt_reminder(sid, now, alive_ids):
     except OSError:
         landed = False                                 # said once per fault episode by the writer
     if not landed:
-        _nudge_clock(None)                             # the same: retry next look (T401 (2))
+        _nudge_clock(None, "debtUnlanded")                             # the same: retry next look (T401 (2))
         return False                                   # nothing sent whose record could not land
     Sessions.backend_for(sid).send(sid, _debt_reminder_body([(n, t, k, h) for _a, n, t, k, h in due]))
     return True
@@ -9826,10 +9845,14 @@ def _record_interrupt_block(sid, ev):
     unblock/reopen/done/settle row: the judges ruled on a newer world than this evidence, and the
     fold would bury the row anyway. The tick retries every push, so a refused APPEND would grow the
     diary at push cadence; refusing without one keeps it clean until newer evidence (the next settled
-    turn) makes the block land."""
+    turn) makes the block land. Returns the gid blocked (or already holding our block), None for a stand-down decided
+    from the store (no focus top, the diary outranks, the verdict refused), False for a store that could not be read."""
     store, fault = jd.load_goals_or_fault(sid)
     if fault is not None:
-        return None                                  # its row is filed; no block is recorded on a store we cannot read
+        return False                                 # its row is filed; no block is recorded on a store we cannot read: FALSE, a
+    #                                                  fault the tick leaves to the next tick (None below is a stand-down decided
+    #                                                  from the files, which the tick records as evaluated; T401 (3): a stopped
+    #                                                  session with no focus goal was re-evaluated every cycle for good)
     gid = _interrupt_focus_top(store)
     if not gid:
         return None
@@ -9902,8 +9925,8 @@ def _lift_interrupt_block(sid, gid, ev):
     return True
 
 
-def _intr_blocked(sid=None):
-    m = _auto_nudge_data().get("intrBlocked") or {}
+def _intr_blocked(sid=None, data=None):
+    m = (_auto_nudge_data() if data is None else data).get("intrBlocked") or {}   # `data`: a snapshot the caller already read
     return m.get(str(sid)) if sid is not None else m
 
 
@@ -9968,7 +9991,11 @@ def _session_files_stat(s):
               str(jd.STATE / "timeline" / "messages.jsonl"),                                       # reads the episode and clears logs;
               str(jd.STATE / "kernel-downtime.jsonl"),                                             # the debt reminder reads the postal
               str(jd.STATE / "auto-nudge.json")):                                                  # log; the nudge ledger (a judge's moot
-        #                                                                                           ruling lands there with no other file)
+        #                                                                                           ruling lands there with no other file).
+        #   The ledger is ONE file for the box, so any ledger write (a walk gate, a nudge record, a deferral) moves the tenth
+        #   position of every alive session's key for all three tick jobs and the next pass re-evaluates every session once;
+        #   the cost is one warm evaluation per session per ledger write. If the boot reads show it eating the hit rate, the
+        #   ledger position becomes per session (its own row's stamp) or the ledger splits per sid (T401 follow-up, low 4).
         #                                                                                           log; the working verdict reads the
         #                                                                                           host-suspension list, refilled from
         #                                                                                           the downtime log (module state refilled
@@ -9996,6 +10023,46 @@ _TICK_SEEN_FILE = "tick-seen.json"   # the memo PERSISTED under the state dir (j
 #                                      last tick and this boot read as unchanged and was never blocked). A crash
 #                                      loses the newest writes: the affected sessions are evaluated once, the safe way.
 _TICK_SEEN_DIRTY = [False]
+_TICK_KEY_FILES = ("transcript", "states", "store", "overrides", "archive", "episode", "cleared", "messages", "downtime", "ledger")
+#   the ten keyed files in the order _session_files_stat lays them out, two elements (mtime, size) each; a key element past the
+#   twentieth is an asker's registry row (the nudge walk's key, T401 (2) follow-up)
+_TICK_SEEN_STATS = {}   # job -> {"hits", "misses", "neverSeen", "noTranscript", "clockParse", "missBy": {file: n}}: GET /perf
+#   memos.tickSeen.byJob, why each event-keyed job re-evaluated (the 2026-09-13 measurement boot re-parsed every session in
+#   jobs.interruptBlock, 38 s, and the key position that moved could not be named after the fact). Per job (round two), so the
+#   interrupt block's hits against its misses by file read exactly on their own; `clockParse` is the nudge walk's parse on a
+#   matched key that a clock leg refused to serve (a flip due, a None flip, the closer toggle): not a hit, not a miss
+
+
+def _tick_seen_bump(job, key, n=1):
+    with _TICK_SEEN_LOCK:
+        j = _TICK_SEEN_STATS.setdefault(job, {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "clockParse": 0, "missBy": {}})
+        j[key] += n
+
+
+def _tick_key_miss_by(job, st, prev):
+    """Count a miss with a previous entry: which of the key's positions differed (twenty comparisons, nothing else). A key of
+    another length than the recorded one counts once under `shape`, as does a previous entry that is not a sequence (an
+    observation counter is never the raising path); a differing element past the ten files is `askerRow`."""
+    with _TICK_SEEN_LOCK:
+        j = _TICK_SEEN_STATS.setdefault(job, {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "clockParse": 0, "missBy": {}})
+        j["misses"] += 1
+        by = j["missBy"]
+        if not isinstance(prev, (list, tuple)) or not isinstance(st, (list, tuple)):
+            by["shape"] = by.get("shape", 0) + 1
+            return
+        n = min(len(st), len(prev))
+        if len(st) != len(prev):
+            by["shape"] = by.get("shape", 0) + 1
+        for i in range(0, n - 1, 2):
+            if st[i] != prev[i] or st[i + 1] != prev[i + 1]:
+                name = _TICK_KEY_FILES[i // 2] if i // 2 < len(_TICK_KEY_FILES) else "askerRow"
+                by[name] = by.get(name, 0) + 1
+
+
+def _tick_seen_report():
+    with _TICK_SEEN_LOCK:
+        by_job = {job: {k: (dict(v) if k == "missBy" else v) for k, v in j.items()} for job, j in _TICK_SEEN_STATS.items()}
+    return {"entries": len(_TICK_SEEN), "byJob": by_job}
 
 
 def _tick_seen_path():
@@ -10036,10 +10103,42 @@ def _persist_tick_seen(force=False):
         return False
 
 
-def _tick_job_check(job, s):
+_INTERRUPT_BLOCK_UNREAD = (5, 7)      # the key positions the interrupt tick never reads: the episode log and the postal log. The CLEARS log
+#                                       stays real (round two, medium 2): the verdict's store readers load through jd.load_goals*, whose
+#                                       override replay gates a journalled move on may_apply, which reads the clears log; a cleared or
+#                                       undo row flips the focus top with the store file untouched, so it must move the key
+_TICK_KEY_UNREAD = (-1.0, -1)         # the constant written at a position a job's road does not read: no os.stat yields a negative mtime
+#                                       or size, so a reader of tick-seen.json tells it from a file that happened to be absent (0.0, 0)
+
+
+def _interrupt_block_key(s, data=None):
+    """The interrupt tick's key: the ten files' SHAPE (so memos.tickSeen.missBy decodes as for every job) with only the files
+    the road reads moving it. The quiet boot read of 2026-09-13 (memos.tickSeen at 116 s: interrupt-block misses 125, missBy
+    messages 50, ledger 50, cleared 25) named three box-wide files the tick reads none of: every postal message, every clear
+    and every walk write to the nudge ledger re-evaluated every alive session's interrupt block, and at boot the walk's
+    first pass wrote the ledger before the tick read it (T401 (3)). The census (_NUDGE_FILE_KEYED_ROADS['interrupt-block'])
+    traces the road to the transcript, the states log, the downtime log and the goal store with its journal and archive, plus
+    one row of the ledger, this session's intrBlocked marker: the episode, clears and postal positions are written as the
+    constant _TICK_KEY_UNREAD (a negative pair no stat can produce) at the episode and postal positions, the clears position stays a
+    real stat (the store readers' override replay reads the clears log), and the ledger position carries a checksum of the row's
+    bytes and its length, taken BEFORE the tick reads the row. An UNPROVED ledger snapshot yields no key (None), so the tick
+    evaluates, records nothing, and its block path stands down as before."""
+    st = list(_session_files_stat(s))
+    d = _auto_nudge_data() if data is None else data      # the tick reads the ledger ONCE per session and hands the snapshot here
+    if d.get(UNPROVED):                                   #  and to its block arm: one read, one truth (round two, medium 1)
+        return None
+    for i in _INTERRUPT_BLOCK_UNREAD:
+        st[2 * i:2 * i + 2] = list(_TICK_KEY_UNREAD)
+    row = (d.get("intrBlocked") or {}).get(str(s.get("sid") or ""))
+    raw = json.dumps(row, sort_keys=True).encode("utf-8") if row is not None else b""
+    st[18:20] = [float(zlib.crc32(raw)), len(raw)]
+    return tuple(st)
+
+
+def _tick_job_check(job, s, st=None):
     """T323 stage 1: (skip, stat) for an event-keyed tick job, one whose answer is a pure function of the
     session's files (_session_files_stat: the transcript, the state log, the goal store with its override journal and
-    archive, the episode, clears, postal and downtime logs), never of the wall clock. `skip` is True when those files
+    archive, the episode, clears, postal and downtime logs and the nudge ledger, ten in all), never of the wall clock. `skip` is True when those files
     are UNCHANGED since the job's last COMPLETED evaluation (_tick_job_done) on record, this kernel's or a
     previous one's (the memo persists, _TICK_SEEN_FILE); a session no kernel on record has looked at is
     evaluated once. Why: before this, every such job parsed every alive session on the first cycle after a
@@ -10050,21 +10149,32 @@ def _tick_job_check(job, s):
     once its store work landed, so a fault mid-tick (an unproved ledger, an unreadable store, a refused marker
     write) leaves the session to the next tick exactly as before (the fault-boundary tests pin that). A job
     with a wall-clock leg must not use this alone: the nudge walk gates its parse through _nudge_look_check, the
-    same memo plus the earliest instant one of its clock legs could flip (T401 (2))."""
-    st = _session_files_stat(s)
+    same memo plus the earliest instant one of its clock legs could flip (T401 (2)). `st`, when the caller hands one, is
+    the job's own key in the ten files' shape (the interrupt tick's, _interrupt_block_key); None means no key can be taken
+    (an unproved ledger): evaluate, never skip."""
+    if st is None:
+        st = _session_files_stat(s)
     if not st[0]:
+        _tick_seen_bump(job, "noTranscript")
         return False, st                      # no transcript to stat: nothing is known about it, so never a skip
     key = (job, str(s.get("sid") or ""))
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(key)
     if prev is None:
+        _tick_seen_bump(job, "neverSeen")
         return False, st                      # never evaluated by any kernel on record: evaluate once
-    return st == prev, st
+    if st == prev:
+        _tick_seen_bump(job, "hits")
+        return True, st
+    _tick_key_miss_by(job, st, prev)          # which position moved: the boot read decodes it (memos.tickSeen.missBy)
+    return False, st
 
 
 def _tick_job_done(job, s, st):
     """The job's evaluation of `s` completed with its store work landed: the files' stat tuple `st` (from
     _tick_job_check) becomes the baseline the next check compares against."""
+    if st is None:
+        return                                # no key could be taken (an unproved ledger): nothing is recorded (T401 (3) round two)
     key = (job, str(s.get("sid") or ""))
     with _TICK_SEEN_LOCK:
         _TICK_SEEN[key] = st
@@ -10088,7 +10198,90 @@ def _tick_job_skips(job, s):
 # 63 s first cycle in this walk, parsing every alive session cold before a single nudge could be due.
 _NUDGE_HORIZON = threading.local()    # the walking thread's collector: .notes (the flips a look's clock legs declined on)
 _NUDGE_WALK_STATS = {"looks": 0, "skippedParses": 0, "parses": 0, "coldParses": 0, "deferredSessions": 0, "unbounded": 0,
-                     "clockDue": 0, "wakeOnly": 0}
+                     "clockDue": 0, "wakeOnly": 0, "unboundedBy": {}}   # unboundedBy: the None notes per leg (T401 follow-up)
+_NUDGE_LOOK_STATS = {}                # sid -> the stat the pass took before its snapshots, for the look (a side map: the session
+#                                       rows are shared, read-only and memoised per cycle, never written into)
+_NUDGE_LOOK_ASKERS = {}               # sid -> (the asker sids whose registry rows the key carries, the ones beyond the bound)
+_NUDGE_ASKER_ROWS_MAX = 8             # the debtor's key carries at most this many askers' registry rows (oldest open asks first)
+
+
+def _nudge_asks_by_target():
+    """{debtor sid: [asker sids, oldest ask first]} for every OPEN ask in the postal wait maps (an inbound reply-expecting ask
+    with nothing sent back since), built once per pass (round two, low 3: a scan and a sort per alive session would have
+    charged the quiet sessions the gate exists to make free); the maps themselves are memoised on the postal log's stat."""
+    try:
+        last_any, last_ask, _aw = _postal_wait_maps()
+    except Exception:
+        return {}
+    by = {}
+    for (f, t_), rec in sorted(last_ask.items(), key=lambda kv: kv[1][0]):
+        if last_any.get((t_, f), 0) < rec[0]:
+            by.setdefault(t_, []).append(f)
+    return by
+
+
+def _nudge_asker_rows(sid, index=None):
+    """The peers with an OPEN ask on this session, oldest ask first. A dead asker's ask becomes answerable only when the asker
+    REVIVES, and a revival writes the asker's registry row (STATE/sdk/<asker>.json, the SDK backend's liveness record: alive
+    true or false), so that row is the file the debtor's verdict depends on: the first _NUDGE_ASKER_ROWS_MAX rows join the
+    debtor's memo key (an absent row stats as a stable absent marker, so a peer gone for good keeps the memo standing), and
+    the debt leg reads the keyed asker's aliveness from that same row, so the verdict and the key come from one file and
+    cannot disagree (T401 (2) follow-up: the dead-asker notes were about four in five of the unbounded notes on one boot,
+    asks of long-gone peers). The limit: the invariant holds for the SDK backend only; a Codex session's liveness is
+    in-memory with its registry at STATE/codex/registry.json, so a Codex asker's revival would move nothing in a debtor's
+    key (not reachable today: a Codex session cannot identify itself to the bus and so cannot ask)."""
+    if index is None:
+        index = _nudge_asks_by_target()
+    return list(index.get(str(sid), ()))
+
+
+def _asker_row_alive(asker):
+    """The asker's aliveness as its registry row says it (the row the debtor's key stats), three-valued: True for alive true
+    and not a comment thread (the SDK backend's live_sessions rule), False for a MISSING row (the key carries the absent
+    marker) or an explicit alive false, and None, UNPROVEN, for a row that cannot be read (EACCES, EIO, EMFILE: the class the
+    backend's own list_regs serves its last good row over) or parses without an alive bit (a gutted row _backend_rows keeps
+    alive while its driver runs). Unproven is neither dead nor alive: the caller notes the look unbounded (so one transient
+    read fault cannot latch a skippable memo under an unmoved key, round three) and decides the ask by the alive set, the
+    backend's own answer over the same row or its last good content (round four), so the send agrees with the backend in
+    both directions."""
+    p = jd.STATE / "sdk" / (str(asker) + ".json")
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):                       # a read fault, or bytes that are not UTF-8 (UnicodeDecodeError is a
+        return None                                     #  ValueError: uncaught it aborted the look, round four medium 2)
+    try:
+        reg = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(reg, dict) or "alive" not in reg:
+        return None
+    return bool(reg.get("alive") and not reg.get("threadOf"))
+
+
+_NUDGE_POSTAL_KEY_AT = 14              # the postal log's (mtime, size) sits at elements 14 and 15 of the ten-file key (the eighth file)
+
+
+def _nudge_look_stat(s, index=None, postal_stat=None):
+    """(the debtor's memo key, the askers keyed, the askers beyond the bound): the ten files' stats plus one (mtime, size) per
+    keyed asker's registry row, zeros for an absent row, so the persisted memo row is 22 to 38 elements. `postal_stat`, when
+    the pass hands it, is the postal log's (mtime, size) taken BEFORE the asker index was built from that log, and it
+    replaces the key's own stat of the log: the asker selection is an input to the key, so the key must not claim a newer
+    log than the selection read (round three, low 5)."""
+    sid = str(s.get("sid") or "")
+    askers = _nudge_asker_rows(sid, index)
+    keyed, over = askers[:_NUDGE_ASKER_ROWS_MAX], askers[_NUDGE_ASKER_ROWS_MAX:]
+    out = list(_session_files_stat(s))
+    if postal_stat is not None:
+        out[_NUDGE_POSTAL_KEY_AT:_NUDGE_POSTAL_KEY_AT + 2] = [float(postal_stat[0]), int(postal_stat[1])]
+    for f in keyed:
+        try:
+            st_ = os.stat(jd.STATE / "sdk" / (str(f) + ".json"))
+            out += [st_.st_mtime, st_.st_size]
+        except OSError:
+            out += [0.0, 0]
+    return tuple(out), keyed, over
 _NUDGE_WALK_FIRST = {"skipped": [], "parsed": [], "deferred": 0}   # the boot's first cycle, for its health row (T401 (2))
 _NUDGE_WALK_CURSOR = [None]           # the sid the yield deferred first: the next pass rotates the recency order to start there,
 #                                       so a session whose parse never warms cannot hold the rest of the walk behind it
@@ -10103,12 +10296,21 @@ def _nudge_memos_forget():
         _TICK_SEEN_DIRTY[0] = True
 
 
-def _nudge_clock(t):
+def _nudge_clock(t, leg=None):
     """A clock leg of the nudge walk declined now and could flip at `t` (None: its release is not a file of the session, so
-    the next look must evaluate). Noted only while a look is collecting (the walk's own thread); a no-op elsewhere."""
+    the next look must evaluate; `leg` names the site, counted under memos.nudgeWalk.unboundedBy so the share of unbounded
+    looks names its roads the way asmCheckpoint.parse names its own). Noted only while a look is collecting (the walk's own
+    thread); a no-op elsewhere."""
     notes = getattr(_NUDGE_HORIZON, "notes", None)
     if notes is not None:
         notes.append(t)
+        if t is None:
+            by = _NUDGE_WALK_STATS.get("unboundedBy")
+            if not isinstance(by, dict):
+                by = _NUDGE_WALK_STATS["unboundedBy"] = {}
+            if leg is None:                             # every None note names its leg (a source census pins it); a nameless one is
+                raise ValueError("_nudge_clock(None) without a leg")   # a bug, never an `unnamed` bucket that absorbs it (low 5)
+            by[leg] = by.get(leg, 0) + 1
 
 
 def _nudge_look_check(s, now):
@@ -10116,23 +10318,37 @@ def _nudge_look_check(s, now):
     (_session_files_stat) are unchanged since the last COMPLETED look (this kernel's or a previous one's, the persisted memo) and that look noted
     no clock leg that could have flipped by `now` (the earliest flip is in the memo; None there means a leg whose release is
     not one of these files, never skipped). `verdict` is the recorded look's result, repeated by the skip."""
-    st = tuple(s.get("_look_stat") or _session_files_stat(s))   # the pass hands the stat it took before its snapshots (round seven);
-    if not st[0]:                                                #  a caller handing snapshots of its own must hand that stat too
+    sid = str(s.get("sid") or "")
+    st = _NUDGE_LOOK_STATS.get(sid)                             # the pass's key, taken before its snapshots (round seven); a caller
+    if st is None:                                              #  outside a pass takes its own here
+        st, keyed, over = _nudge_look_stat(s)
+        _NUDGE_LOOK_ASKERS[sid] = (keyed, over)
+    st = tuple(st)
+    if not st[0]:                                                #  a caller handing snapshots of its own stats first
+        _tick_seen_bump("auto-nudge", "noTranscript")
         return False, st, None
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(("auto-nudge", str(s.get("sid") or "")))
-    if prev is None or len(prev) != len(st) + 2 or tuple(prev[:len(st)]) != tuple(st):
+    if prev is None:
+        _tick_seen_bump("auto-nudge", "neverSeen")
         return False, st, None
+    if not isinstance(prev, (list, tuple)) or len(prev) != len(st) + 2 or tuple(prev[:len(st)]) != tuple(st):
+        _tick_key_miss_by("auto-nudge", tuple(st), tuple(prev[:-2]) if isinstance(prev, (list, tuple)) else prev)   # the walk's key
+        return False, st, None                                                                   #  beside the tick jobs' (memos.tickSeen)
     flip, verdict = prev[len(st)], prev[len(st) + 1]
     if verdict == "closer-unsettled" and not jd.CLOSER_ON:
+        _tick_seen_bump("auto-nudge", "clockParse")   # a matched key the clock legs refuse to serve: a parse, not a hit (round two)
         return False, st, None                        # recorded under the closer toggle, read with it off (an import-time toggle,
     #                                                   not a file): evaluate (round five, low c)
     if flip is None:
         _NUDGE_WALK_STATS["unbounded"] += 1
+        _tick_seen_bump("auto-nudge", "clockParse")
         return False, st, None
     if flip >= 0 and now >= flip:
         _NUDGE_WALK_STATS["clockDue"] += 1
+        _tick_seen_bump("auto-nudge", "clockParse")
         return False, st, None
+    _tick_seen_bump("auto-nudge", "hits")             # counted on the one return that skips
     return True, st, verdict
 
 
@@ -10637,7 +10853,12 @@ def _interrupt_block_tick(now, live_map):
             continue                                     # awaiting you / compacting → a different needs-you path owns it
         if _api_error(s["path"]):                        # stopped on an API error → not a user stop
             continue
-        skip, files_st = _tick_job_check("interrupt-block", s)   # nothing appended since the last COMPLETED look (or
+        snap = _auto_nudge_data()                             # the ledger read ONCE for this session: the key and the block arm below
+        _key = _interrupt_block_key(s, snap)                  #  read this snapshot (round two, medium 1). The ten files with this
+        if _key is None:                                      #  session's OWN ledger row in the ledger's place (T401 (3)); an unproved
+            skip, files_st = False, None                      #  ledger: no key, evaluate, and record NOTHING (files_st None: the done
+        else:                                                 #  record is refused, so no fallback key is ever memoised)
+            skip, files_st = _tick_job_check("interrupt-block", s, _key)   # nothing appended since the last COMPLETED look (or
         if skip:                                                 # since boot): the store already carries the verdict
             continue                                             # this tick would re-derive
         try:
@@ -10649,8 +10870,7 @@ def _interrupt_block_tick(now, live_map):
         #                                                  stamped with (memo family: the judge parse)
         block_it = bool(turns) and not _session_working(turns) and stop_t > human_t
         if block_it:                                     # a GENUINE user stop → block the focus goal on them,
-            snap = _auto_nudge_data()
-            if snap.get(UNPROVED):
+            if snap.get(UNPROVED):                       # (the one ledger read above)
                 # the ledger cannot be read: file NO block now — its once-per-episode marker could not be
                 # minted (the writer refuses an unproved snapshot), and the lift on re-engagement is gated
                 # on that marker, so an unmarked block would stand until a judge happened to unblock it.
@@ -10659,7 +10879,7 @@ def _interrupt_block_tick(now, live_map):
                 _auto_nudge_pause(snap[UNPROVED])
                 continue
             _auto_nudge_resume()
-            ib = _intr_blocked(sid)                      # once per interrupt episode (the intrBlocked marker) —
+            ib = _intr_blocked(sid, snap)                # once per interrupt episode (the intrBlocked marker) —
             if ib:
                 # an UNREADABLE store keeps the marker (_intr_block_stands reads a fault as standing, by design)
                 # but is no evidence the block holds its card, so it is no completed evaluation either: the
@@ -10684,6 +10904,9 @@ def _interrupt_block_tick(now, live_map):
                 ev = max([stop_t] + [a.get("t") or 0 for turn in turns
                                      for a in (turn.get("atoms") or [])])
                 g = _record_interrupt_block(sid, ev)
+                if g is None:                                    # a stand-down decided from the files (no focus top, the diary
+                    _tick_job_done("interrupt-block", s, files_st)   # outranks): evaluated; the same files give the same answer.
+                #                                                  False (a store fault) records nothing: the next tick retries
                 if g:
                     # the block IS filed — a proved goal-store write that marked the views dirty, a needs-you
                     # flip the next cycle carries — whatever the marker write's fate: a fault landing between
@@ -10695,7 +10918,7 @@ def _interrupt_block_tick(now, live_map):
                     #                                                    Filed AND marked: evaluated (a refused record
                     #                                                    leaves the session to the next tick as well)
         else:                                            # working / re-engaged / machine cut → lift OUR block if any
-            ib = _intr_blocked(sid)
+            ib = _intr_blocked(sid, snap)
             if not ib:
                 _tick_job_done("interrupt-block", s, files_st)   # nothing to lift: evaluated
             if ib:
@@ -11323,8 +11546,15 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     off, the walk runs WAKE-ONLY — the awaiting dead-man still fires (see _auto_nudge_tick). An UNPROVED
     ledger snapshot (a read fault) stands the whole pass down — see _auto_nudge_pause."""
     alive = list(_alive_sessions(now, live_map))
+    _NUDGE_LOOK_STATS.clear(); _NUDGE_LOOK_ASKERS.clear()
+    try:
+        _pst = os.stat(str(jd.STATE / "timeline" / "messages.jsonl")); postal_stat = (_pst.st_mtime, _pst.st_size)
+    except OSError:
+        postal_stat = (0.0, 0)                            # the postal log's stat FIRST, then the asker index built from that log
+    asks_by_target = _nudge_asks_by_target()              # once per pass: the open asks by debtor
     for s in alive:                                       # the memo's KEY first, every input after it (T401 (2) round seven): each look's
-        s["_look_stat"] = _session_files_stat(s)          #  stat is taken here, before the ledger, the peer graph and the clear set below
+        _NUDGE_LOOK_STATS[s["sid"]], keyed, over = _nudge_look_stat(s, asks_by_target, postal_stat)   # key (the ten files and its open asks'
+        _NUDGE_LOOK_ASKERS[s["sid"]] = (keyed, over)      #  asker rows) is taken here, before the ledger, the peer graph and the clear set
     #                                                       are read, so no snapshot handed to a look is older than the key its memo
     #                                                       is recorded under (an undo between a pass-top snapshot and a look moved the
     #                                                       clears log and the store under a memo that then silenced the un-cleared goal)
@@ -11393,6 +11623,7 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
         except Exception:
             sys.stderr.write("auto-nudge (session %s): %s\n"
                              % (s.get("sid") or "?", traceback.format_exc()))
+    _NUDGE_LOOK_STATS.clear(); _NUDGE_LOOK_ASKERS.clear()   # the keys were this pass's: a look outside a pass keys for itself
     try:
         _relay_tick(now, alive_ids)                    # T334: a worker's block toward its delegating peer goes out as its
         #                                                question, once per block (mail, not an injected message: the toggle
@@ -12150,6 +12381,44 @@ def _dead_wait_corroborated(sid, stats=None, now=None):
     return True                                  # a names entry with no registry row anywhere: dead history
 
 
+_DEAD_WAIT_STATS = {"passes": 0, "candidates": 0, "sharedLoads": 0, "sharedFallback": 0, "loadFaults": 0, "mutableLoads": 0, "healed": 0,
+                    "blocks": 0}
+#   the sweep's reads for GET /perf (memos.deadWait): before the shared view every candidate paid a private load_goals with its
+#   journal replay, and for each candidate every ALIVE session's store was loaded privately too (the pass's dominant read, C times
+#   A loads; 9 of the 13 autoNudge stack samples of the 2026-09-13 measurement boot sat in those loads); the read path now takes
+#   the walk's shared read-only view (one read per store per pass), and a mutable load happens only to heal or to write a block;
+#   mutableLoads and blocks are counted INSIDE the two writers, so they mean what the writer did wherever it is called (the wake
+#   goal's dormant branch is a fourth caller); sharedFallback counts a view that degraded internally to a private load
+
+
+_DEAD_WAIT_VIEW_SAID = [set()]     # the (sid, fault text) pairs whose view raised a non-OSError fault last pass: said once per EPISODE
+
+
+def _dead_wait_shared_view(sid, stats=None):
+    """(store, fault) from the walk's shared read-only view, every failure a fault: _or_fault catches OSError alone (and files
+    its store-unreadable row), so a malformed journal row (a ValueError the view raises) escaped to the per-candidate except,
+    spending the death transition silently (round two, low 2); such a fault is counted, and named on stderr once per episode
+    through the pass's collapse (`stats`, round three: the base printed a traceback, silence is not an option). Counted under
+    memos.deadWait: sharedLoads, loadFaults, and sharedFallback for a view that degraded INTERNALLY to a private load (an
+    absent store file, an unreadable journal, unparseable bytes, the shared cache switched off), told by the RETURNED object
+    (the shared view hands back a FrozenStore; every fallback road hands back load_goals' plain private store), never by a
+    delta over a process-global counter, which another thread's private load would move (round four, medium); so /perf
+    cannot claim the saving while the cache is off."""
+    _DEAD_WAIT_STATS["sharedLoads"] += 1
+    try:
+        store, fault = jd.load_goals_shared_or_fault(sid)
+    except Exception as e:
+        store, fault = None, e
+        if stats is not None:
+            stats.setdefault("viewFault", {})[sid] = "%s: %s" % (type(e).__name__, str(e)[:120])
+    if store is not None and fault is None and not isinstance(store, jd.FrozenStore):
+        _DEAD_WAIT_STATS["sharedFallback"] += 1              # a private store came back: the view fell back for this call
+    if fault is not None or store is None:
+        _DEAD_WAIT_STATS["loadFaults"] += 1
+        return None, fault if fault is not None else RuntimeError("no store")
+    return store, None
+
+
 def _dead_wait_sweep(alive_ids, nudged, now):
     """Find DORMANT sessions whose Working cards still hold a judged awaiting stamp and convert each to
     a procedural block (_dead_wait_block). Event-triggered, never a per-tick poll of every store: the
@@ -12171,30 +12440,45 @@ def _dead_wait_sweep(alive_ids, nudged, now):
     else:
         cands = prev - set(alive_ids)
     stats = {}                                   # loud stand-down tallies → ONE line per reason per pass
+    _DEAD_WAIT_STATS["passes"] += 1
+    alive_views = {}                             # alive sid -> (store, fault): each alive store's view once per PASS, not per candidate
     for sid in cands:
         try:
             if _dead_wait_corroborated(sid, stats=stats, now=now) is not True:
                 _PREV_ALIVE.add(sid)             # not corroborated dead: nothing files, and the death
                 continue                         # transition stays armed for the next tick's re-ask
-            store = jd.load_goals(sid)
-            nodes = store.get("nodes", {})
+            _DEAD_WAIT_STATS["candidates"] += 1
+            store, fault = _dead_wait_shared_view(sid, stats)    # the READ-ONLY shared view (the walk's precedent): the status
+            if fault is not None:                                #  scan and the stamp read need no private copy; the journal is
+                _PREV_ALIVE.add(sid)                             #  replayed per session inside the view, so the per-session
+                continue                                         #  overrides stay correct; a fault of any kind (a read fault, a
+            nodes = store.get("nodes", {})                       #  malformed journal row) stands the candidate down for this
+            #                                                      tick and keeps the transition armed (round two, low 2)
             # BRIEF REPAIR (the user 2026-08-23, cards "stuck on Distilling" in Blocked): procedural
             # blocks written before the writers settled briefs inline left blockSummary None on stores
             # no distill pass will ever visit (dead / transcript-less sessions are outside discover's
             # 48h window) — the card asked for a brief forever. The why IS the brief for a procedural
             # block; settle it in place. Runs BEFORE the block calls below, which reload and save
             # their own store copy — a later save of this snapshot would clobber their writes.
-            healed = False
-            for nid, nd in nodes.items():
-                if (nd.get("blocked") and nd.get("blockSummary") is None
-                        and jd.procedural_block_why(nd.get("blockWhy"))):
+            def _briefless(nd):
+                return bool(nd and nd.get("blocked") and nd.get("blockSummary") is None and jd.procedural_block_why(nd.get("blockWhy")))
+            to_heal = [nid for nid, nd in nodes.items() if _briefless(nd)]
+            if to_heal:                                          # the heal is a WRITE: it takes its own mutable load, only when
+                mstore = jd.load_goals(sid)                      #  there is something to heal (the shared view is frozen)
+                _DEAD_WAIT_STATS["mutableLoads"] += 1
+                mnodes = mstore.get("nodes", {})
+                healed = False
+                for nid in to_heal:
+                    nd = mnodes.get(nid)
+                    if not _briefless(nd):                       # re-tested on the FRESH node (round two, medium 2): a peer writer
+                        continue                                 #  that settled the brief between the two reads is not clobbered
                     nd["blockSummary"] = nd.get("blockWhy") or ""
                     nd["briefParts"] = None
-                    nd["briefedMt"] = jd._distill_due_t(store, nid, True)
-                    healed = True
-            if healed:
-                jd.save_goals(sid, store)
-                _mark_views_dirty()
+                    nd["briefedMt"] = jd._distill_due_t(mstore, nid, True)
+                    _DEAD_WAIT_STATS["healed"] += 1; healed = True
+                if healed:                                       # nothing healed: no save, no dirty views (round two, low 5)
+                    jd.save_goals(sid, mstore)
+                    _mark_views_dirty()
             kids = {}
             for nid, nd in nodes.items():
                 if nd.get("parentId"):
@@ -12210,7 +12494,7 @@ def _dead_wait_sweep(alive_ids, nudged, now):
                 # mailbox moved nothing, so a recorded wait on a still-Working card converts regardless.
                 stamp = _goal_awaiting_stamp_full(nodes, gid, kids)
                 if stamp:
-                    _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)
+                    _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)   # the writer counts its own load and its block
             # PEER-DEATH CONVERSION (the user 2026-08-24, W1a): this corroborated death is ALSO the
             # ending event for every LIVE session's kind=peer wait ON this sid — the asked session
             # can never answer now. Convert each to a procedural block naming the death (liftable by
@@ -12221,7 +12505,12 @@ def _dead_wait_sweep(alive_ids, nudged, now):
             _dead_name = _name_of(sid) or sid[:8]
             for _lsid in alive_ids:
                 try:
-                    _ls = jd.load_goals(_lsid)
+                    if _lsid not in alive_views:                   # the pass's DOMINANT read (round two, medium 1): C candidates times
+                        alive_views[_lsid] = _dead_wait_shared_view(_lsid, stats)   # A alive sessions, each a private load with its
+                    _ls, _lf = alive_views[_lsid]                  #  journal replay before; the loop only reads, so the shared view
+                    if _lf is not None:                            #  serves it once per store per PASS, and the writer loads its own
+                        _PREV_ALIVE.add(sid)                       # an alive store the view could not read: this candidate's peer
+                        continue                                   #  conversion is not lost, the transition stays armed (round three)
                     _ln = _ls.get("nodes", {})
                     if not any(sid in (nd.get("awaitingPeers") or ()) for nd in _ln.values()):
                         continue
@@ -12266,6 +12555,13 @@ def _dead_wait_sweep(alive_ids, nudged, now):
         if life_sids:
             sys.stderr.write("dead-wait: %d candidate(s) hold no reg but show recent life; stood down "
                              "(a registry moved aside?)\n" % len(life_sids))
+    vf = stats.get("viewFault") or {}
+    if set(vf.items()) != _DEAD_WAIT_VIEW_SAID[0]:        # once per EPISODE (the life idiom): the pass runs every 0.5 s; a fault
+        _DEAD_WAIT_VIEW_SAID[0] = set(vf.items())         #  whose TEXT changes on the same store is a new episode (round four, low 2)
+        if vf:
+            first = next(iter(vf.items()))
+            sys.stderr.write("dead-wait: the goal-store view raised for %d store(s) (%s: %s); the candidates stand down re-armed "
+                             "and retry each pass\n" % (len(vf), first[0][:8], first[1]))
     if stats.get("codex"):
         sys.stderr.write("dead-wait: the Codex registry cannot be read; %d candidate(s) stood down this pass\n"
                          % stats["codex"])
@@ -12288,7 +12584,7 @@ def _dead_handoff_block(sid, nid, h, nd, nudged, now):
     if last in _PROGRESSING_STATES:
         return False
     try:
-        store = jd.load_goals(sid)
+        store = jd.load_goals(sid); _DEAD_WAIT_STATS["mutableLoads"] += 1   # the writer's own private load (memos.deadWait)
         cur = store.get("nodes", {}).get(nid)
         if not cur or cur.get("nodeComplete") or cur.get("blocked"):
             return False
@@ -12309,6 +12605,7 @@ def _dead_handoff_block(sid, nid, h, nd, nudged, now):
             _mark_views_dirty()
             nudged[nid] = {"deadWait": True, "anchor": anchor, "at": int(now)}
             _put_nudged(nid, nudged[nid])
+            _DEAD_WAIT_STATS["blocks"] += 1              # a block written, wherever this writer is called (memos.deadWait)
             return True
     except Exception:
         sys.stderr.write("dead-handoff block: %s\n" % traceback.format_exc())
@@ -12336,7 +12633,7 @@ def _dead_wait_block(sid, gid, at, why, nudged, now, blk_why=None):
     if last in _PROGRESSING_STATES:
         return False                                  # a cut mid-turn, not a settled death — resume owns it
     try:
-        store = jd.load_goals(sid)
+        store = jd.load_goals(sid); _DEAD_WAIT_STATS["mutableLoads"] += 1   # the writer's own private load (memos.deadWait)
         nd = store.get("nodes", {}).get(gid)
         if (not nd or store.get("status", {}).get(gid, "working") != "working"
                 or not _goal_awaiting_stamp(store.get("nodes", {}), gid)):   # raw: see the sweep's note
@@ -12358,6 +12655,7 @@ def _dead_wait_block(sid, gid, at, why, nudged, now, blk_why=None):
             _mark_views_dirty()
             nudged[gid] = {"deadWait": True, "anchor": at, "at": int(now)}
             _put_nudged(gid, nudged[gid])
+            _DEAD_WAIT_STATS["blocks"] += 1              # a block written, wherever this writer is called (memos.deadWait)
             return True
     except Exception:
         sys.stderr.write("dead-wait block: %s\n" % traceback.format_exc())
@@ -12858,7 +13156,7 @@ def _nudge_deferred_ok(gid, reason, now, sid=None, ev_t=None):
                        **({"evT": int(ev_t)} if ev_t else {})}
             d["deferred"] = dd
             _write_auto_nudge(d)
-            _nudge_clock(None)                           # a standing deferral: released by a judge pass, not this
+            _nudge_clock(None, "deferralNew")                           # a standing deferral: released by a judge pass, not this
             return False                                 #  session's files, so the next look evaluates (T401 (2))
         if _deferral_why(rec) != reason:                 # the wait moved to a DIFFERENT reviver: keep the clock
             dd[gid] = {"at": first, "why": reason, "sid": sid,
@@ -12876,14 +13174,14 @@ def _nudge_deferred_ok(gid, reason, now, sid=None, ev_t=None):
     # re-evaluates immediately). WHY_JUDGING keeps its own event (the call's finally-deregister, swept
     # by _deferral_sweep_tick); the pass bound is belt-and-braces behind it.
     if reason.startswith("the judge tiers are paused"):
-        _nudge_clock(None)                           # released by the unpause, not this session's files (T401 (2))
+        _nudge_clock(None, "pausedTiers")                           # released by the unpause, not this session's files (T401 (2))
         return False                                 # user's own hold: no owner, no clock — the unpause re-arms
     _sid = sid or (rec or {}).get("sid") if isinstance(rec, dict) else sid
     _wm = max(filter(None, (jd.pass_watermark("plan", _sid), jd.pass_watermark("close", _sid))),
               default=None) if _sid else None
     ok = bool(_wm and _wm > first)
     if not ok:
-        _nudge_clock(None)                           # standing: released by a judge pass watermark (T401 (2))
+        _nudge_clock(None, "deferralStanding")                           # standing: released by a judge pass watermark (T401 (2))
     return ok
 
 
@@ -13117,7 +13415,7 @@ def _nudge_response_ready(turns, store, rec, gid, now):
         if any((tn.get("end") or 0) > _fire_t for tn in turns) and not _queued:
             return True, None                          # the lost-send event: stamp on real information
         if _queued:
-            _nudge_clock(None)                         # the send sits in the backend's queue, a read no file backs: when it leaves
+            _nudge_clock(None, "queuedSend")                         # the send sits in the backend's queue, a read no file backs: when it leaves
         #                                                the queue without landing the failure is due at once, not at the dead-man
         #                                                (T401 (2) round five, low e)
         if (now - _fire_t) <= LOST_SEND_DEADMAN_SECS:
@@ -13190,18 +13488,25 @@ _NUDGE_FILE_KEYED_VERDICTS = frozenset({
     "closer-unsettled",     # _closer_settled: the store's closedTurns against the transcript
     "planner-queue",        # _nudge_placement_gate: the store's placements, the episode and clears logs, the transcript
 })
-_NUDGE_FILE_KEYED_ROADS = {       # the functions each marked verdict's road reads, traced to the nine keyed files by the census test
+_NUDGE_FILE_KEYED_ROADS = {       # the functions each marked verdict's road reads, traced to the ten keyed files by the census test
     "working": ("_session_working", "_suspended_after"),
     "user-interrupt": ("_interrupt_suppresses_nudge", "_interrupt_marks", "_last_machine_cut"),
     "progressing": ("_last_state",),
     "closer-unsettled": ("_closer_settled",),
     "planner-queue": ("_nudge_placement_gate",),
+    "walk-completed": ("_debt_asks", "_asker_row_alive", "_nudge_asks_by_target"),   # the other skippable exit (r is False with the walk
+    #                                    completed) rides the debt leg: its readers are traced too (round three, low 2)
+    "interrupt-block": ("_interrupt_block_key", "_session_working", "_suspended_after", "_interrupt_marks", "_last_machine_cut",
+                        "_interrupt_marks_atoms", "_machine_cut_cause", "_intr_blocked", "_record_interrupt_block",
+                        "_interrupt_focus_top", "_intr_block_stands", "_lift_interrupt_block"),   # the interrupt tick's skip road
+    #                                    (T401 (3)): its key, the verdict's readers and the arms' store readers (whose override replay
+    #                                    reads the clears log, so that position stays a real stat), the ledger read by this session's row
 }
 #   The roads whose verdict is a pure function of the files the memo keys on (_session_files_stat: the transcript, the state
 #   log, the store with its override journal and archive, the episode log, the clears log, the postal log, the kernel's
 #   downtime log, the nudge ledger, ten in all), marked so that a
 #   look ending in one may record a skippable memo. Every OTHER exit of the look, marked or not, records an unbounded memo
-#   (None) by default: the SDK overlay, the backend's queue, an armed rollback, a store fault, a dead asker's revival, a peer's
+#   (None) by default: the SDK overlay, the backend's queue, an armed rollback, a store fault, an asker beyond the keyed rows (alive or not), a peer's
 #   bounce (T401 (2) round three: the class, not the instances; an unmarked road can never silence a session). The full goal
 #   walk's own completion is marked at its return, after every declining leg has noted its clock or None.
 
@@ -13229,14 +13534,22 @@ def _nudge_look_gated(fn):
         else:                                         #  unqueued) precede every send, the debt reminder's included (round one, medium 1)
             _NUDGE_WALK_STATS["wakeOnly"] += 1        # nudges off: the toggle is not a file, so the look neither skips nor records
         _NUDGE_HORIZON.notes, _NUDGE_HORIZON.parsed, _NUDGE_HORIZON.walk_completed = [], False, False
-        try:
+        _keyed, _over = _NUDGE_LOOK_ASKERS.get(sid, ((), ()))
+        _NUDGE_HORIZON.keyed_askers, _NUDGE_HORIZON.over_askers = set(_keyed), set(_over)   # for the debt leg: the keyed askers'
+        try:                                                                                #  rows decide, the overflow ones note
             r = fn(s, now, live_map, nudged, waitfor, alive_ids, wake_only, cleared)
         finally:
             notes, parsed = getattr(_NUDGE_HORIZON, "notes", []) or [], getattr(_NUDGE_HORIZON, "parsed", False)
             _NUDGE_HORIZON.notes = None
+            _NUDGE_HORIZON.keyed_askers = _NUDGE_HORIZON.over_askers = None   # the sets die with the look (round three, low 1)
         if parsed and not wake_only and r is not True:    # a fire moved the files anyway; a look that never parsed has nothing to skip
             file_keyed = (r in _NUDGE_FILE_KEYED_VERDICTS) or (r is False and getattr(_NUDGE_HORIZON, "walk_completed", False))
             if not file_keyed:
+                if None not in notes:                    # the default fires only when no named leg noted this look, so unboundedBy
+                    by = _NUDGE_WALK_STATS.get("unboundedBy"); _leg = "unmarked:%s" % r   # partitions the unbounded looks (round two)
+                    if not isinstance(by, dict):
+                        by = _NUDGE_WALK_STATS["unboundedBy"] = {}
+                    by[_leg] = by.get(_leg, 0) + 1
                 notes = list(notes) + [None]             # the default: an exit no audited road claimed is unbounded
             _nudge_look_done(s, files_st, notes, r)
         return r
@@ -13350,7 +13663,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
     # and recorded rather than landing a write.
     store, fault = jd.load_goals_shared_or_fault(sid)
     if fault is not None:
-        _nudge_clock(None)                           # a fault heals without a file write (EMFILE, EACCES, EIO): unbounded (round three)
+        _nudge_clock(None, "storeFault")                           # a fault heals without a file write (EMFILE, EACCES, EIO): unbounded (round three)
         return None                                  # its row is filed; nothing fires or stamps on a store we cannot read
     # Don't nudge until the CLOSER has classified this turn AT ITS CURRENT SIZE (session-level gate). A turn
     # that ENDS by asking you a question is "working" only in the window before the closer marks its goal
@@ -13406,11 +13719,11 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
         if not _own_wait:
             if _all_outstanding_delegated(nodes, gid):
                 _put_walk_gate(gid, "all-delegated", now)   # a wake record here is walk-unreachable → the sweep owns it
-                _nudge_clock(None)                   # released by the peers' returns, not this session's files (T401 (2))
+                _nudge_clock(None, "allDelegated")                   # released by the peers' returns, not this session's files (T401 (2))
                 continue                             # all open work handed to peers → nothing for THIS session
             if sid in waitfor and nd.get("t", 0) <= waitfor[sid]["since"]:
                 _put_walk_gate(gid, "awaiting-peer", now)   # same: journaled so the sweep can evaluate its outcome
-                _nudge_clock(None)                   # released by the peer's reply on the bus, not this session's files
+                _nudge_clock(None, "awaitingPeer")                   # released by the peer's reply on the bus, not this session's files
                 continue                             # awaiting a live peer's reply to a question this goal predates
         _pop_walk_gate(gid)                          # the walk reaches this goal — any per-goal hold is over
         if _stamp:
@@ -13421,7 +13734,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
             # exemption from the ladder (the user 2026-08-11): past the backstop the goal takes a WAKE —
             # same records, same response gates, same escalation, its own copy (see _wake_goal).
             fired = _wake_goal(sid, gid, _stamp, nudged, turns, store, now, lt, live_map, wake_only) or fired
-            _nudge_clock(None)                       # a stamped wait ends on postal events too (a peer's bounced or recalled
+            _nudge_clock(None, "stampedWait")                       # a stamped wait ends on postal events too (a peer's bounced or recalled
             continue                                 #  send), none of them this session's files: the next look evaluates (T401 (2))
         if wake_only:
             continue                                 # auto-nudge OFF: the dead-man was the whole errand
@@ -13623,7 +13936,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
                         if report_ts and rec0.get("redundantEvT") == report_ts \
                                 and rec0.get("redundantSettleT") == settle_t:
                             _anch = max(rec0.get("answeredAt") or 0, rec0.get("at") or 0)
-                            _nudge_clock((_anch + AWAITING_DEADMAN_SECS) if _anch else None)   # the parked dead-man this ruling
+                            _nudge_clock((_anch + AWAITING_DEADMAN_SECS) if _anch else None, "legacyNoAnchor")   # the parked dead-man this
                             #                                                                     stands under (T401 (2), high; a legacy
                             #                                                                     record with no anchor: unbounded)
                             if _anch and now - _anch > AWAITING_DEADMAN_SECS:
@@ -13658,7 +13971,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
                             _log_nudge_event(sid, f[0], now, f[1], verdict=_v, ev_t=report_ts)
                             continue
                     except Exception:
-                        _nudge_clock(None)                       # an unjudgeable check: nothing bounds the next look (T401 (2))
+                        _nudge_clock(None, "unjudgeable")                       # an unjudgeable check: nothing bounds the next look (T401 (2))
                     if skips >= 2:
                         _verdicts[f[0]] = ("fired-at-cap", report_ts)
                     if skips:
@@ -13729,7 +14042,7 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
         except OSError:
             landed = False                           # said once per fault episode by the writer
         if not landed:
-            _nudge_clock(None)                       # a refused ledger write: the next tick retries whatever the files (T401 (2))
+            _nudge_clock(None, "refusedWrite")                       # a refused ledger write: the next tick retries whatever the files (T401 (2))
             return fired                             # nothing sent whose record could not land
     if len(to_fire) == 1:
         gid, count, stalled = to_fire[0]
@@ -20242,6 +20555,25 @@ def _reap_stray_tunnels(host):
                 pass
 
 
+PORT_UP_WATCH_S = 12.0            # how long a dial's port watch waits for ssh's local forward to accept (ConnectTimeout is 10)
+
+
+def _wake_when_port_up(port, proc, deadline_s=PORT_UP_WATCH_S, step_s=0.1):
+    """Wake the supervisor the moment a dialed ssh's local forward accepts a connection, instead of at the next pass
+    (the user 2026-09-13: while we know we should reconnect, the round trip is the floor, not a timer). A local connect
+    every 100 ms (no remote load), until the port opens, the ssh dies, or the deadline passes. Returns whether the
+    port came up. Runs on a short daemon thread from _spawn_tunnel."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < deadline_s:      # loop-ok: bounded by the deadline, local connects only
+        if proc is not None and proc.poll() is not None:
+            return False
+        if port and _port_open(port):
+            _tunnel_wake.set()
+            return True
+        time.sleep(step_s)
+    return False
+
+
 def _spawn_tunnel(r):
     """(Re)spawn the ssh tunnel proc for one remote. Caller holds _remotes_lock.
 
@@ -20262,6 +20594,11 @@ def _spawn_tunnel(r):
         r["status"], r["detail"] = "starting", ""
         r["_death_logged"] = False
         _tunnel_log(r["host"], "dial", pid=r["proc"].pid, fails=r.get("fails", 0), argv=argv)
+        try:                              # the port-up wake: the row reads up as soon as ssh connects, not a pass later
+            threading.Thread(target=_wake_when_port_up, args=(r.get("local_port"), r["proc"]),
+                             name="port-up:" + str(r["host"]), daemon=True).start()   # kind "port-up"; the host after the colon is the payload the kind rule drops
+        except Exception:
+            pass
     except Exception as e:
         r["proc"], r["status"], r["detail"] = None, "error", str(e)
         _tunnel_log(r["host"], "spawn-failed", error=str(e), argv=argv)
@@ -23670,6 +24007,72 @@ def _boot_row_due_locked():
 
 BOOT_FIRST_CYCLE_BOUND_S = float(os.environ.get("ROMP_BOOT_FIRST_CYCLE_BOUND_S", "10"))
 _BOOT_HEALTH_DONE = [False]
+FIRST_CYCLE_SAMPLE_S = 1.0             # the pusher's stack is sampled this often during the boot's FIRST cycle only ...
+FIRST_CYCLE_SAMPLE_DENSE = 30          # ... for this many samples; after them every FIRST_CYCLE_SAMPLE_WIDE_S, so the cap below
+FIRST_CYCLE_SAMPLE_WIDE_S = 5.0        #  covers three minutes (30 s dense, 150 s wide) and an 84 s cycle shows where it ended
+FIRST_CYCLE_SAMPLES_MAX = 60           # at most this many samples ride the boot-health row
+FIRST_CYCLE_SAMPLE_FRAMES = 8          # innermost frames kept per sample: enough to name the lock or the read, not the whole stack
+_FIRST_CYCLE_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None, "failed": 0}
+
+
+def _first_cycle_sample(tid, t0):
+    """One sample of the pusher thread's stack: seconds since the cycle opened, its stage mark and the innermost frames as
+    "function (file:line)" strings, the same shape as the /perf stack sample, no locals and no session content."""
+    frame = sys._current_frames().get(tid)
+    rows = []
+    f = frame
+    while f is not None and len(rows) < FIRST_CYCLE_SAMPLE_FRAMES:
+        rows.append("%s (%s:%d)" % (f.f_code.co_name, os.path.basename(f.f_code.co_filename), f.f_lineno))
+        f = f.f_back
+    rows.reverse()                                        # innermost last, as _thread_stacks
+    return {"t": round(time.monotonic() - t0, 1), "stage": _STAGE_BY_TID.get(tid), "frames": rows}
+
+
+def _first_cycle_sampler_run(tid, t0):
+    ev = _FIRST_CYCLE_SAMPLER["stop"]
+    while True:                                           # loop-ok: bounded by the first cycle's end and the sample cap
+        n = len(_FIRST_CYCLE_SAMPLER["rows"]) + _FIRST_CYCLE_SAMPLER["failed"]
+        if ev.wait(FIRST_CYCLE_SAMPLE_S if n < FIRST_CYCLE_SAMPLE_DENSE else FIRST_CYCLE_SAMPLE_WIDE_S):
+            return
+        if n >= FIRST_CYCLE_SAMPLES_MAX:                  # rows AND failed walks fill the cap, so an all-failing sampler retires
+            return                                        #  with the cap rather than waking for the whole cycle (1588 low 4)
+        try:
+            _FIRST_CYCLE_SAMPLER["rows"].append(_first_cycle_sample(tid, t0))
+        except Exception:
+            _FIRST_CYCLE_SAMPLER["failed"] += 1           # one failed walk is counted, not the end of sampling (round two, low 4)
+
+
+def _first_cycle_sampler_start(t0):
+    """The boot's first pusher cycle is where a slow boot spends its time, and two live reads of it were missed because the
+    /perf stack sample could not be taken in time (the watch's poll latency was longer than the cycle). A daemon thread
+    samples the PUSHER's stack once a second for the first cycle only, at most FIRST_CYCLE_SAMPLES_MAX rows, and the rows
+    ride the boot-health row as `firstCycleStacks`, so a boot read names the read or the lock the cycle waited in without
+    the kernel alive. Cost: one sys._current_frames() and one walk of one thread's frames a second (about 7 us, 25 with two
+    hundred threads live) for the length of the first cycle, then the thread ends; nothing after the first cycle. The row
+    grows by about 330 bytes a sample (20 KB for 60, 30 KB worst case), on a ledger with no rotation that its readers
+    slice from the tail: it grows by that once per boot whose first cycle ran the samples' length."""
+    if _FIRST_CYCLE_SAMPLER["started"]:
+        return
+    _FIRST_CYCLE_SAMPLER["started"] = True
+    try:
+        th = threading.Thread(target=_first_cycle_sampler_run, args=(threading.get_ident(), t0), name="first-cycle-sampler", daemon=True)
+        th.start()
+        _FIRST_CYCLE_SAMPLER["thread"] = th                 # stored only once started: the stop joins nothing unstarted
+    except Exception as e:                                  # a start that raises (no thread slot at boot) degrades to no samples,
+        try:                                                #  never ends the pusher (round two, medium: the sibling starts' discipline)
+            sys.stderr.write("first-cycle sampler: not started (%s); the boot-health row carries no stack samples\n" % e)
+        except Exception:
+            pass
+
+
+def _first_cycle_sampler_stop():
+    _FIRST_CYCLE_SAMPLER["stop"].set()
+    th = _FIRST_CYCLE_SAMPLER.get("thread")
+    if th is not None and th.ident is not None:
+        try:
+            th.join(timeout=2.0)
+        except Exception:
+            pass
 
 
 def _boot_health_first_cycle(dt):
@@ -23692,6 +24095,9 @@ def _boot_health_first_cycle(dt):
     _NUDGE_WALK_FIRST_OPEN[0] = False                           # T401 (2): which sessions' parses the boot's walk skipped, paid or
     row["nudgeWalk"] = {"skipped": list(_NUDGE_WALK_FIRST["skipped"]), "parsed": list(_NUDGE_WALK_FIRST["parsed"]),
                         "deferred": _NUDGE_WALK_FIRST["deferred"]}   #  deferred to a later pass
+    row["firstCycleStacks"] = list(_FIRST_CYCLE_SAMPLER["rows"])   # the pusher's stack once a second through the cycle (T401 (3))
+    if _FIRST_CYCLE_SAMPLER["failed"]:
+        row["firstCycleStacksFailed"] = _FIRST_CYCLE_SAMPLER["failed"]   # walks that raised: a short list is then not a fast cycle
     if row["slow"]:
         try:
             sys.stderr.write("boot health: the first pusher cycle took %.1f s (bound %.0f s): sessions and cards waited behind it; "
@@ -24362,7 +24768,45 @@ def _tunnel_supervisor():
             _remotes_save_if_changed()
         except Exception:
             sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
-        _tunnel_wake.wait(15)
+        _tunnel_wake.wait(_supervisor_wait_s(time.time()))
+
+
+SUPERVISOR_PASS_S = 15.0          # the steady pass: every attached tunnel polled end to end this often
+SUPERVISOR_FAST_PASS_S = 0.25     # the GAP between passes while a row is in transition (dialing, starting, restarting, no kernel
+#                                   answering): a pass is one synchronous probe round trip per row, so the pace coalesces on the
+#                                   round trip itself (the user 2026-09-13) and nothing here needs to know how long it takes
+SUPERVISOR_FAST_WINDOW_S = 60.0   # how long one transition keeps the fast pass before the steady pass resumes
+_TRANSITIONAL = frozenset(("starting", "connecting", "restarting", "no-kernel"))
+_fast_since = {}                  # host -> when its current transition began (dropped when the row reads up or down)
+
+
+def _supervisor_wait_s(now, rows=None):
+    """How long the supervisor sleeps before its next pass: the steady 15 s, or a quarter-second gap while any tunnel
+    row is in transition, for at most 60 s per transition (the user 2026-09-13: while we know we should reconnect, probe
+    back to back; the pass is one probe round trip per row, so the pace is the round trip's own and no timer guesses it). The laptop's dial ledger (the user, 2026-09-13): every dial had
+    its ssh up within a second and the row read "up" 16 to 18 s later, and a devbox kernel restart read as a 16 s
+    gap, because nothing polled sooner than the next steady pass. A transition is the event; the bound keeps a
+    host that never comes back from being polled every second for good (the backoff ladder still spaces its dials)."""
+    if rows is None:
+        with _remotes_lock:
+            rows = [dict(r) for r in _remotes.values()]
+    fast = False
+    live = set()
+    for r in rows:
+        host = r.get("host")
+        if not host:
+            continue
+        transitional = bool(r.get("_dialing")) or (r.get("status") or "") in _TRANSITIONAL
+        if not transitional:
+            _fast_since.pop(host, None)
+            continue
+        live.add(host)
+        since = _fast_since.setdefault(host, now)
+        if now - since < SUPERVISOR_FAST_WINDOW_S:
+            fast = True
+    for host in [h for h in _fast_since if h not in live]:
+        _fast_since.pop(host, None)
+    return SUPERVISOR_FAST_PASS_S if fast else SUPERVISOR_PASS_S
 
 
 def _session_rows():
@@ -38820,6 +39264,22 @@ SPEND_GUARD_ROWS_CACHE_MAX = 4000   # window-row memo entries kept; over it the 
 #                                     thousands of finished agent files, each a window row list nobody asks for again)
 SPEND_GUARD_TREE_RESCAN_S = 30      # a COLD agent file (idle since before the window's floor) is statted again this often,
 #                                     not every cycle; a hot one every cycle
+SPEND_GUARD_RESTAT_PER_CYCLE = 400  # after a memo LOAD every file is statted once again (an append while the kernel was down moves
+#                                     no directory's mtime, so only the file's stat finds it), spread at most this many per cycle: a
+#                                     warm stat is about 5 us (the largest tree's 2,581 files listed in 15 ms), so a cycle carries
+#                                     about 2 ms and that tree is whole again within seven cycles, well inside the 30 s rescan bound
+_SPEND_TREE_STATS = {"dirStats": 0, "fileStats": 0, "entryStats": 0, "listings": 0, "loaded": 0, "loadFailed": 0, "written": 0,
+                     "swept": 0, "dropped": 0, "dumpSkipped": 0, "evicted": 0, "writeFailed": 0}    # the guard's tree reads, cumulative (GET /perf memos.spendTree; `romp perf` reads two snapshots as
+#                                     rates): a boot read shows one stat per directory, the spread file re-stat and no listing when the
+#                                     persisted memo stood; entryStats are the per-entry stats a listing performs (one per DirEntry)
+_SPEND_TREE_SWEPT = [False]         # the directory was swept once this kernel life (the guard's first tick, cycle two or later)
+_SPEND_TREE_DUMP_SAID = [False]     # the exit write's dump failure was logged once this kernel life
+_SPEND_TREE_WRITE_SAID = [False]    # a memo write's OSError was logged once this kernel life
+_SPEND_TREE_EVICTED_FULL = {}       # leaf -> the full-rescan epoch of a memo the byte bound evicted THIS kernel life, so a reload
+#                                     within the life keeps its rescan clock (a boot starts every clock afresh; the map is empty)
+_SPEND_TREE_DIR = "spend-tree"      # STATE/spend-tree/<sid>.json: a session's tree memo persisted (written when dirty by the pusher's
+#                                     persistSpendTrees job and at exit), loaded LAZILY when that session's guard first runs after a
+#                                     boot, never all at boot; a corrupt or stale file is tolerated (relisted, never raised)
 _SPEND_TREE_CACHE = {}              # leaf -> {"dirs": {dir: mtime}, "files": {path: mtime}, "full": epoch of the last full
 #                                     stat pass, "seen": epoch}: the session's subagents tree, watched by directory mtimes
 
@@ -38885,6 +39345,158 @@ def _spend_ceiling():
     return v
 
 
+def _spend_tree_path(leaf):
+    return jd.STATE / _SPEND_TREE_DIR / (os.path.splitext(os.path.basename(str(leaf)))[0] + ".json")
+
+
+def _spend_tree_root(leaf):
+    return os.path.join(os.path.splitext(str(leaf))[0], "subagents")
+
+
+def _spend_tree_load(leaf, now=None):
+    """The session's persisted tree memo, or None: {"dirs", "files"} of str -> float and the epochs, read lazily when the
+    guard first runs for the session after a boot. A missing, corrupt or misshapen file is None (the tree is listed whole,
+    as a first call always was), counted under loadFailed when a file was there; so is a memo that does not name this
+    session's root (a stale layout, a moved state directory: the boot read then tells a healthy load from one that listed
+    whole), and a path outside the root is dropped (round two, low 6: a memo is trusted only for the tree it names, never
+    a foreign live file billed to this session). What the load saves is the LISTINGS (the scandir and its per-entry stat
+    for every directory); one stat per file remains, spread over the next cycles under SPEND_GUARD_RESTAT_PER_CYCLE,
+    hot files (by stored mtime) first, since an append while the kernel was down moves no directory's mtime. A memo the byte
+    bound evicted mid-drain persisted its remaining re-stat list and its rescan clock stays in _SPEND_TREE_EVICTED_FULL, so
+    the reload drains on and runs its full pass (the follow-up's low 1: before, both restarted per load and the largest
+    tree under a binding bound never finished either)."""
+    now = time.time() if now is None else now
+    p = _spend_tree_path(leaf)
+    try:
+        raw = p.read_bytes()
+    except OSError:
+        _SPEND_TREE_EVICTED_FULL.pop(str(leaf), None)     # no memo to reload: its clock has nothing to attach to (low 2)
+        return None
+    root = _spend_tree_root(leaf)
+    try:
+        d = json.loads(raw.decode("utf-8"))
+        dirs, files = d["dirs"], d["files"]
+        if not (isinstance(dirs, dict) and isinstance(files, dict)
+                and all(isinstance(k, str) and isinstance(v, (int, float)) for k, v in dirs.items())
+                and all(isinstance(k, str) and isinstance(v, (int, float)) for k, v in files.items())):
+            raise ValueError("shape")
+        if root not in dirs:
+            raise ValueError("root")
+        under = root + os.sep
+        n_all = len(dirs) + len(files)
+        dirs = {k: float(v) for k, v in dirs.items() if k == root or k.startswith(under)}
+        files = {k: float(v) for k, v in files.items() if k.startswith(under)}
+        _SPEND_TREE_STATS["dropped"] += n_all - len(dirs) - len(files)   # paths outside the root (a partly foreign memo is visible)
+        rest = d.get("restat")
+        same_life = str(leaf) in _SPEND_TREE_EVICTED_FULL          # this kernel evicted it: its persisted drain list is current
+        if same_life and isinstance(rest, list) and all(isinstance(x, str) for x in rest):
+            restat = [f for f in rest if f in files]       # the drain continues where it stopped (an empty list: it was done)
+        else:
+            restat = sorted(files, key=lambda f: -files[f])   # a boot (or an older memo): every file once, hot first, since an
+        _SPEND_TREE_STATS["loaded"] += 1                       #  append while the kernel was down moves no directory's mtime
+        m = {"dirs": dirs, "files": files, "full": _SPEND_TREE_EVICTED_FULL.pop(str(leaf), now), "seen": now}
+        if restat:
+            m["restat"] = restat
+        return m
+    except (ValueError, KeyError, TypeError):
+        _SPEND_TREE_STATS["loadFailed"] += 1
+        _SPEND_TREE_EVICTED_FULL.pop(str(leaf), None)
+        return None
+
+
+def _sweep_spend_trees():
+    """One pass over STATE/spend-tree at the guard's FIRST tick of a kernel life (cycle two or later, never the boot's first
+    cycle: the pass parses every memo, 58.7 ms for sixty largest-tree memos, low 4): a memo whose leaf transcript no longer
+    exists, or that does not parse, is removed (counted as swept), the checkpoint sweep's shape, so cleared and removed
+    sessions do not grow the directory forever (round two, low 3: 0.73 MB for the largest tree, kept for good before
+    this); a tmp file a kill left between write and replace goes too."""
+    d = jd.STATE / _SPEND_TREE_DIR
+    if not d.is_dir():
+        return 0
+    gone = 0
+    for p in list(d.glob("*.json.tmp.*")):                # a tmp a kill left between write and replace (low 3): never a memo
+        try:
+            p.unlink(); gone += 1
+        except OSError:
+            pass
+    for p in list(d.glob("*.json")):
+        keep = False
+        try:
+            m = json.loads(p.read_bytes().decode("utf-8"))
+            keep = isinstance(m, dict) and isinstance(m.get("leaf"), str) and os.path.exists(m["leaf"])
+        except (OSError, ValueError):
+            keep = False
+        if not keep:
+            try:
+                p.unlink(); gone += 1
+            except OSError:
+                pass
+            for leaf in [k for k in _SPEND_TREE_EVICTED_FULL if _spend_tree_path(k) == p]:
+                _SPEND_TREE_EVICTED_FULL.pop(leaf, None)   # the evicted memo's clock goes with its file (round two, low 2)
+    _SPEND_TREE_STATS["swept"] += gone
+    return gone
+
+
+def _spend_tree_memo_doc(leaf, m):
+    """The memo's on-disk shape: the leaf, the directories and files with their mtimes, and the re-stat list still to drain
+    (empty once the drain is done). No rescan epoch: a boot starts every clock afresh (the round-two medium), and a same-life
+    reload takes its clock from _SPEND_TREE_EVICTED_FULL and trusts the persisted drain list."""
+    doc = {"leaf": str(leaf), "dirs": m["dirs"], "files": m["files"], "restat": list(m.get("restat") or [])}
+    return doc                                         # the drain list always, empty once the drain is done: a same-life reload
+    #                                                    reads it as current, a boot ignores it (_spend_tree_load)
+
+
+def _persist_spend_trees(force=False, only=None):
+    """Write every DIRTY tree memo (one listed or relisted this process) to STATE/spend-tree/<sid>.json, atomically; the pusher's
+    job each cycle, the exit's `force`, and `only` for the one memo the byte bound is about to evict. Best-effort: a write
+    that fails leaves the memo dirty for the next cycle."""
+    n = 0
+    for leaf, m in list(_SPEND_TREE_CACHE.items()):
+        if only is not None and leaf != only:
+            continue
+        if not (m.get("dirty") or force):
+            continue                                         # `only` writes the one memo too, and only when dirty (low 5: an
+        #                                                      eviction on a binding bound fires every cycle)
+        p = _spend_tree_path(leaf)
+        tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
+        body = None
+        for _ in range(3):                                   # the exit's write runs beside the pusher, which may be
+            try:                                             #  mutating the dicts (round two, low 2): a resize under the
+                body = json.dumps(_spend_tree_memo_doc(leaf, m))
+                break                                        #  dump is retried, as the /perf report does, never raised
+            except RuntimeError:
+                body = None
+        if body is None:
+            _SPEND_TREE_STATS["dumpSkipped"] += 1            # three tries lost the race (low 2): counted, and said once a life
+            if not _SPEND_TREE_DUMP_SAID[0]:
+                _SPEND_TREE_DUMP_SAID[0] = True
+                try:
+                    sys.stderr.write("spend guard: a tree memo's write was skipped three times under the pusher's mutation\n")
+                except Exception:
+                    pass
+            continue
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(body, encoding="utf-8")
+            os.replace(tmp, p)
+            m["dirty"] = False; n += 1
+        except OSError as e:                             # a read-only directory, a full disk, a path replaced by a directory: the
+            _SPEND_TREE_STATS["writeFailed"] += 1        #  memo stays dirty and is retried each cycle; counted, said once a life
+            try:                                         #  (round two, low 4); a failed replace leaves no tmp behind for the retry
+                tmp.unlink()                             #  to pile on (round three, low 2)
+            except OSError:
+                pass
+            if not _SPEND_TREE_WRITE_SAID[0]:
+                _SPEND_TREE_WRITE_SAID[0] = True
+                try:
+                    sys.stderr.write("spend guard: a tree memo could not be written to %s (%s); retried each cycle\n" % (p.parent, e))
+                except Exception:
+                    pass
+            continue
+    _SPEND_TREE_STATS["written"] += n
+    return n
+
+
 def _spend_tree_list_dir(d, m, known):
     """One directory of a session's subagents tree listed (os.scandir): its .jsonl files into the memo with their mtimes,
     its subdirectories with theirs, recursing only into a subdirectory not yet known (a new workflow directory), so
@@ -38895,18 +39507,19 @@ def _spend_tree_list_dir(d, m, known):
             entries = list(it)
     except OSError:
         return
+    _SPEND_TREE_STATS["listings"] += 1; m["dirty"] = True
     for e in entries:
         try:
             if e.is_symlink():
                 continue
             if e.is_dir(follow_symlinks=False):
                 new = e.path not in known
-                m["dirs"][e.path] = e.stat(follow_symlinks=False).st_mtime
+                m["dirs"][e.path] = e.stat(follow_symlinks=False).st_mtime; _SPEND_TREE_STATS["entryStats"] += 1
                 if new:
                     known.add(e.path)
                     _spend_tree_list_dir(e.path, m, known)
             elif e.name.endswith(".jsonl") and e.is_file(follow_symlinks=False):
-                m["files"][e.path] = e.stat(follow_symlinks=False).st_mtime
+                m["files"][e.path] = e.stat(follow_symlinks=False).st_mtime; _SPEND_TREE_STATS["entryStats"] += 1
         except OSError:
             continue
 
@@ -38922,32 +39535,39 @@ def _spend_window_files(leaf, since, now=None):
     known), stats the HOT files every cycle (mtime at or after the window's floor, SPEND_GUARD_MEMO_SLACK_S before
     `since`: a file that may still be growing is never read stale), and the COLD ones once per SPEND_GUARD_TREE_RESCAN_S,
     so an agent that wakes after a long tool call is seen within that bound, a twentieth of the window. The first call
-    lists the tree whole. Steady state per cycle: one stat per directory plus one per hot file."""
+    lists the tree whole, or loads the persisted memo (_spend_tree_load: the listings saved, one stat per file spread
+    over the cycles that follow). Steady state per cycle: one stat per directory plus one per hot file."""
     now = time.time() if now is None else now
     key = str(leaf)
     base, ext = os.path.splitext(key)
     root = os.path.join(base, "subagents")
     m = _SPEND_TREE_CACHE.get(key)
+    fresh = False
     if m is None:
         if ext != ".jsonl" or os.path.islink(root) or not os.path.isdir(root):
             return [key]
-        m = {"dirs": {}, "files": {}, "full": now, "seen": now}
-        try:
-            m["dirs"][root] = os.stat(root).st_mtime
-        except OSError:
-            return [key]
-        _spend_tree_list_dir(root, m, set(m["dirs"]))
+        m = _spend_tree_load(key, now)                       # the persisted memo, lazily: a boot then stats the directories (relisting
+        if m is not None:                                    #  one whose mtime moved) and the files a few hundred a cycle, instead
+            m["dirty"] = False                               #  of listing the tree whole
+        else:
+            m = {"dirs": {}, "files": {}, "full": now, "seen": now, "dirty": True}
+            try:
+                m["dirs"][root] = os.stat(root).st_mtime; _SPEND_TREE_STATS["dirStats"] += 1
+            except OSError:
+                return [key]
+            _spend_tree_list_dir(root, m, set(m["dirs"]))
+            fresh = True
         _SPEND_TREE_CACHE[key] = m
         if len(_SPEND_TREE_CACHE) > SPEND_GUARD_LATCH_MAX:
             for k in sorted(_SPEND_TREE_CACHE, key=lambda k: _SPEND_TREE_CACHE[k]["seen"])[:len(_SPEND_TREE_CACHE) - SPEND_GUARD_LATCH_MAX]:
                 _SPEND_TREE_CACHE.pop(k, None)
-    else:
-        m["seen"] = now
+    m["seen"] = now
+    if not fresh:
         for d, mt in list(m["dirs"].items()):
             try:
-                cur = os.stat(d).st_mtime
+                cur = os.stat(d).st_mtime; _SPEND_TREE_STATS["dirStats"] += 1
             except OSError:
-                m["dirs"].pop(d, None)                       # a directory gone, its files with it
+                m["dirs"].pop(d, None); m["dirty"] = True        # a directory gone, its files with it
                 for p in [p for p in m["files"] if p.startswith(d + os.sep)]:
                     m["files"].pop(p, None)
                 continue
@@ -38957,15 +39577,37 @@ def _spend_window_files(leaf, since, now=None):
         if root not in m["dirs"]:
             _SPEND_TREE_CACHE.pop(key, None)                 # the tree is gone: listed afresh if it returns
             return [key]
+        done = set()
+        if m.get("restat"):                                  # the spread re-stat after a load, hot first, a bounded slice a cycle
+            for p in m["restat"][:SPEND_GUARD_RESTAT_PER_CYCLE]:
+                done.add(p)
+                if p not in m["files"]:
+                    continue
+                try:
+                    cur = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
+                except OSError:
+                    m["files"].pop(p, None); m["dirty"] = True
+                    continue
+                if cur != m["files"][p]:
+                    m["files"][p] = cur; m["dirty"] = True
+            del m["restat"][:SPEND_GUARD_RESTAT_PER_CYCLE]
+            m["dirty"] = True                                # the drain moved: the persisted list follows it (round two, low 5)
+            if not m["restat"]:
+                del m["restat"]
         full = now - m["full"] >= SPEND_GUARD_TREE_RESCAN_S
         floor = since - SPEND_GUARD_MEMO_SLACK_S
         for p, mt in list(m["files"].items()):
+            if p in done:
+                continue
             if full or mt >= floor:
                 try:
-                    m["files"][p] = os.stat(p).st_mtime
+                    cur = os.stat(p).st_mtime; _SPEND_TREE_STATS["fileStats"] += 1
                 except OSError:
-                    m["files"].pop(p, None)
-        if full:
+                    m["files"].pop(p, None); m["dirty"] = True
+                    continue
+                if cur != mt:                                    # a stat that CHANGES a stored mtime dirties the memo (round three,
+                    m["files"][p] = cur; m["dirty"] = True       #  medium): the eviction's dirty-only write must carry a grown file,
+        if full:                                                 #  or a same-life reload reads the old mtime and the window loses it
             m["full"] = now
     return [key] + [p for p, mt in m["files"].items() if mt >= since]
 
@@ -39199,6 +39841,12 @@ def _spend_guard_clear(s, rate, ceiling, now, be, clients):
 def _spend_guard_tick(now, live_map, sessions=None, be=None, clients=None, prices=None):
     """The pusher job: every live session's rate against the ceiling, the latch per session. `sessions`, `be`, `clients`
     and `prices` are seams for the tests; the pusher passes none of them."""
+    if not _SPEND_TREE_SWEPT[0]:                          # once per life, here rather than in the first cycle's persist job (the sweep
+        _SPEND_TREE_SWEPT[0] = True                      #  parses every memo; the guard never runs in cycle one), and BEFORE the
+        try:                                              #  disabled return below, so a kernel with the ceiling off still sweeps
+            _sweep_spend_trees()                          #  (round two, low 1)
+        except Exception:
+            pass
     ceiling = _spend_ceiling()
     if ceiling <= 0:
         _SPEND_GUARD.clear()                             # disabled: nothing latched survives the disable
@@ -39249,6 +39897,8 @@ def _spend_tree_memo_prune(live_paths):
     whose memo goes is listed again on its next tick, one first listing) and only the deficit shed."""
     for k in [k for k in _SPEND_TREE_CACHE if k not in live_paths]:
         _SPEND_TREE_CACHE.pop(k, None)
+    for k in [k for k in _SPEND_TREE_EVICTED_FULL if k not in live_paths]:
+        _SPEND_TREE_EVICTED_FULL.pop(k, None)                    # a departed session's rescan clock goes with its memo (round three, low 1)
     total = sum(_spend_tree_memo_size(m) for m in _SPEND_TREE_CACHE.values())
     if total <= SPEND_GUARD_TREE_MEMO_BYTES:
         return
@@ -39263,7 +39913,11 @@ def _spend_tree_memo_prune(live_paths):
         if total <= SPEND_GUARD_TREE_MEMO_BYTES:
             break
         total -= _spend_tree_memo_size(_SPEND_TREE_CACHE[k])
-        _SPEND_TREE_CACHE.pop(k, None)
+        m = _SPEND_TREE_CACHE.pop(k, None)
+        if m is not None:                                    # the evicted memo goes to disk whole (its drain list with it) and its
+            _SPEND_TREE_EVICTED_FULL[str(k)] = m.get("full", 0.0)   # rescan clock stays here, so the reload continues rather than
+            _SPEND_TREE_STATS["evicted"] += 1                #  restarting both (the follow-up's low 1)
+            _SPEND_TREE_CACHE[k] = m; _persist_spend_trees(only=k); _SPEND_TREE_CACHE.pop(k, None)
 
 
 def _spend_tree_memo_report():
@@ -39276,7 +39930,7 @@ def _spend_tree_memo_report():
             break
         except RuntimeError:
             size = -1
-    return {"entries": len(_SPEND_TREE_CACHE), "bytes": size, "bound": SPEND_GUARD_TREE_MEMO_BYTES}
+    return {"entries": len(_SPEND_TREE_CACHE), "bytes": size, "bound": SPEND_GUARD_TREE_MEMO_BYTES, **_SPEND_TREE_STATS}
 
 
 def _spend_series(keyed_only=False, now=None):
@@ -46974,7 +47628,11 @@ def _feed_first(now, live_map, targets, connect):
     global _feed_wire
     _t0 = time.monotonic()
     fsig = _fleet_view_sig(now, live_map)
-    feed_src = _cached_feed(now, live_map, fsig, connect)
+    # ALWAYS a build here, connect or not: the realistic boot has the browser reconnecting a moment after the kernel
+    # serves, so the first push with a feed pane is the CONNECT push on the socket's thread, and _cached_feed's connect arm
+    # serves only a warmed build, which a cold kernel has not got (the 7:39 AM Pacific boot, 2026-09-13: push.feedFirst 0.0
+    # with the dashboard open). The early frame is the whole point, so the cold kernel builds it for the connect too.
+    feed_src = _cached_feed(now, live_map, fsig, False)
     if feed_src is None:
         return False
     feed = dict(feed_src)                            # the copy the send stage would make; no ledgers yet (no session build ran)
@@ -49924,6 +50582,9 @@ def _pusher_cycle():
     few-hundred-ms staleness by construction — they always saw a snapshot aged by however many jobs
     ran before them."""
     _t_cycle = time.monotonic()
+    if not _BOOT_HEALTH_DONE[0]:
+        _first_cycle_sampler_start(_t_cycle)   # the boot's first cycle: the pusher's stack sampled once a second (T401 (3)); the
+        #                                        start never raises (it degrades to no samples), so it stands outside the try
     _PERF_STATS.cycle_begin()               # T397 round two, low 3: the split opens with the cycle, so the prelude below (the
     #                                         liveness snapshot, the names) is a stage of its own and the stages sum to the wall
     _c_cycle = time.thread_time()           # this thread's CPU: the wall above includes lock waits and any forked child
@@ -49961,6 +50622,8 @@ def _pusher_cycle():
         _live_scope.msgsum = None
         _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
                           idle=(_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle)
+        if not _BOOT_HEALTH_DONE[0]:
+            _first_cycle_sampler_stop()                         # the samples are complete before the row reads them
         _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
 
 
@@ -50036,7 +50699,8 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
     try:                                  # the tick jobs' evaluation memo, persisted when a completed evaluation
-        _job_stage('persistTickSeen', lambda: _persist_tick_seen())              # moved it (T323 stage 1): the next kernel's first look starts from here
+        _job_stage('persistTickSeen', lambda: _persist_tick_seen())          # moved it (T323 stage 1): the next kernel's first look starts from here
+        _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
     except Exception:
         sys.stderr.write("tick-seen: %s\n" % traceback.format_exc())
     try:                                  # the folds' checkpoints, written for a session at its settle or a states-log
@@ -50066,7 +50730,10 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("auto-pause-on-spend-limit: %s\n" % traceback.format_exc())
     try:                                  # the spend guard (T350): a session over the hourly ceiling is stopped and told,
-        _job_stage('spendGuard', lambda: _spend_guard_tick(now, live_map))      # every dashboard warned, a session-events row filed, once per crossing
+        if _PERF_STATS.pusher.get("cycles", 0) >= 1:   # never the boot's FIRST cycle: the guard's first pass lists every alive session's
+            _job_stage('spendGuard', lambda: _spend_guard_tick(now, live_map))   # subagents tree (4.2 s on one boot), and a runaway
+            #                                             spend is minutes, not the first cycle (T401 follow-up); every dashboard
+            #                                             warned, a session-events row filed, once per crossing
     except Exception:
         sys.stderr.write("spend-guard: %s\n" % traceback.format_exc())
     try:                                  # a paused retry auto-clears once any session serves a request again
@@ -50096,9 +50763,34 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     _PERF_STATS.stage("jobs", (time.monotonic() - _t_jobs) - _t_push)
 
 
+_PUSHER_FAILED_SAID = {}                           # exception type name -> said once per kernel life
+PUSHER_FAIL_BACKOFF_S = (0.5, 1.0, 2.0, 5.0)       # a failing cycle's retry pace: the backstop, then doubling to five seconds, reset by a
+#                                                   clean cycle (round two, medium 2: the failure path fell through to the same wake
+#                                                   wait as success, and a cycle that set the wake flag itself before raising retried
+#                                                   half a million times a second, a whole core for as long as the fault lasted)
+
+
 def _pusher():
+    streak = 0
     while not _LOOPS_STOP.is_set():
-        _pusher_cycle()
+        try:
+            _pusher_cycle()
+            streak = 0
+        except Exception as e:                        # (Exception, never BaseException: a deliberate loop stop passes.) The loop had
+            #                                           no watchdog: a raise from the cycle's prologue or its finally
+            _PERF_STATS.cycle_failed()                # (_live_map, the scopes' close, the boot row) ended the pusher for the
+            kind = type(e).__name__                   #  process's life, silently: no push, no tick job, until a restart. The cycle
+            if kind not in _PUSHER_FAILED_SAID:       #  is counted under /perf (pusher.cycleFailed), said once per exception kind,
+                _PUSHER_FAILED_SAID[kind] = True      #  and the loop goes on at its own pace
+                try:
+                    sys.stderr.write("pusher: a cycle raised %s and was skipped (counted under /perf pusher.cycleFailed; said "
+                                     "once per kind): %s\n" % (kind, traceback.format_exc().rstrip().splitlines()[-1]))
+                except Exception:
+                    pass
+            _pusher_wake.clear()                      # a wake the failing cycle set itself never re-arms the retry at once
+            streak += 1
+            _LOOPS_STOP.wait(PUSHER_FAIL_BACKOFF_S[min(streak, len(PUSHER_FAIL_BACKOFF_S)) - 1])   # the pace; a stop returns now
+            continue
         # Event-driven (woken by the SDK live-tail and by /tick on hook events) with a SHORT 0.5s backstop
         # poll, so a session with no per-message event for mid-turn streaming (the tmux backend's, until its
         # removal 2026-09-11) still refreshes responsively as the model generates, instead of waiting out a
@@ -52957,8 +53649,8 @@ if(m.romp==='picker'){
   if(m.on&&lf){lf.classList.add('lifted');if(lf.parentElement)lf.parentElement.classList.add('lifted');}
   document.body.classList.toggle('picker-open',!!m.on);}
 // A file link clicked in the chat and routed to the FILES pane (ui/webview/file-route.ts fileLinkRoute,
-// decided at the click in render.ts openPath: the pane is on screen, or the gear's "File links open in"
-// names it) posts viewFile up with pane:'pane'. The shell brings that pane forward, the click being the
+// decided at the click in render.ts openPath: the pane is on screen; no setting names a closed pane since
+// T404) posts viewFile up with pane:'pane'. The shell brings that pane forward, the click being the
 // one gesture that moves it, and forwards the click with the session's identity the chat resolved (name
 // and colour: the pane has no session list to name the file's session by; files.ts caches it for the
 // viewer's chip). The pane STAYS up, so nothing is owed back to the shell: no was-off flag, no ack, no
@@ -52986,7 +53678,7 @@ if(m.romp==='filesViewerClosed'){var back=window.__rompFilesTabFrom;window.__rom
 // A folder clicked in the chat (the folder under the transcript, the system context card's Directory row, a
 // tab menu's Browse files, a chat-hosted viewer's directory link; render.ts openBrowse) walks the file link's
 // ladder (ui/webview/file-route.ts browseRoute) and, routed to the FILES pane (the pane is on screen, or the
-// gear's "File links open in" names it), posts browseFiles up with pane:'pane'. The shell brings that pane
+// the open pane is the route since T404), posts browseFiles up with pane:'pane'. The shell brings that pane
 // forward, the click being the one gesture that moves it, and forwards the ask with the session's identity
 // the chat resolved (files.ts caches it, so a file picked from the listing names its session in the chip).
 // The pane STAYS up, so none of the feed route's was-off flag or browseClosed restore below applies; on a
@@ -54343,7 +55035,7 @@ _LANDING_COLLAPSE_JS = """
   // shell still hears the current set (the focus ring's "wire now + on every (re)load", _LANDING_FOCUS_JS),
   // and from _LANDING_MOBILE_JS on a tab switch or a layout flip (what is on screen changed with no toggle).
   // The chat routes a file-link click by it (ui/webview/file-route.ts fileLinkRoute: an OPEN Files pane takes
-  // the click whatever the "File links open in" setting says, since the pane being open IS the intent), and a
+  // the click, since the pane being open IS the intent; the setting that once named a closed pane is gone, T404), and a
   // folder click the same way (browseRoute, render.ts openBrowse).
   var KEYS=""" + json.dumps([k for k, _ in _PANE_ORDER]) + """;
   // on[k] is "this pane is on screen", not the po flag: in the mobile layout (one tab at a time, the po-*
@@ -58834,7 +59526,19 @@ class Handler(BaseHTTPRequestHandler):
                 sid = str(msg["id"])
                 with _client_lock(client):
                     _cur_base = (client.get("echat") or {}).get(sid)
-                reply = _chat_history_reply(sid, msg, int(time.time()), base=_cur_base if isinstance(_cur_base, dict) else None)
+                _reply_type = {"loadOlder": "chatHead", "loadAround": "chatWindow", "loadNewer": "chatMore"}[msg["type"]]
+                # a reply the kernel could not build is a FAULT, not a verdict on the anchor (T402 round two, low 3): it carries the
+                # ask's own key back under the name the page reads (beforeUuid, anchor, afterUuid), so the page can match it to its
+                # wait and end it without re-basing or saying "couldn't locate"
+                _keys = {"loadOlder": ("beforeUuid", "before"), "loadAround": ("anchor", "uuid"), "loadNewer": ("afterUuid", "after")}[msg["type"]]
+                _fault = lambda why: {"type": _reply_type, "id": sid, _keys[0]: msg.get(_keys[1]), "missing": True, "fault": True, "error": why}
+                try:
+                    reply = _chat_history_reply(sid, msg, int(time.time()), base=_cur_base if isinstance(_cur_base, dict) else None)
+                except Exception as e:                    # the ask is answered even so (T402): the page waits on the reply to end its
+                    sys.stderr.write("%s: %s\n" % (msg.get("type"), traceback.format_exc()))   # loading pill, and an unanswered ask left it on for good
+                    reply = _fault("%s: %s" % (type(e).__name__, e))
+                if reply is None:                         # no session or no build to answer from (T402): say so, never silence
+                    reply = _fault("no session to answer from")
                 if reply is not None:
                     with _client_lock(client):
                         base = reply.pop("_base", None)
@@ -58850,8 +59554,12 @@ class Handler(BaseHTTPRequestHandler):
             # Browser scrolled back to the top of the loaded tail and there's older history on disk → ship the
             # previous WIRE_CHUNK events so it can prepend them (the wire tail-windowing scroll-back, the user
             # 2026-06-25). build_session is cache-backed; we just slice + send the older range, no push cycle.
+            # …and this wire answers every ask too (T402 round two, low 2): a head already reached is an empty chunk from 0, a build that
+            # is empty or raises is a FAULT carrying the ask's `before`, so the page's wait ends whatever happened here
+            sid = str(msg.get("id")); before = 0
             try:
-                sid = str(msg["id"]); before = int(msg.get("before") or 0)
+                before = int(msg.get("before") or 0)
+                reply = None
                 if before > 0:
                     try:
                         m = build_session(sid, int(time.time()))
@@ -58861,10 +59569,18 @@ class Handler(BaseHTTPRequestHandler):
                     if evs:
                         before = min(before, len(evs)); frm = max(0, before - WIRE_CHUNK)
                         if frm < before:
-                            client["send"](json.dumps({"type": "chatHead", "id": sid, "from": frm,
-                                                       "before": before, "events": evs[frm:before]}))
-            except Exception:
+                            reply = {"type": "chatHead", "id": sid, "from": frm, "before": before, "events": evs[frm:before]}
+                    if reply is None:
+                        reply = {"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "no build to answer from"}
+                else:
+                    reply = {"type": "chatHead", "id": sid, "from": 0, "before": before, "events": []}   # nothing older: the head
+                client["send"](json.dumps(reply))
+            except Exception as e:
                 sys.stderr.write("loadOlder: %s\n" % traceback.format_exc())
+                try:
+                    client["send"](json.dumps({"type": "chatHead", "id": sid, "before": before, "missing": True, "fault": True, "error": "%s: %s" % (type(e).__name__, e)}))
+                except Exception:
+                    pass
             return
         if msg and msg.get("type") == "loadEpisode" and msg.get("id"):
             # The "Conversation cleared" card was expanded → ship the pre-clear episode's events (a one-shot
@@ -59384,7 +60100,7 @@ class Handler(BaseHTTPRequestHandler):
                 for _k in ("dist", "clamp"):
                     if isinstance(msg.get(_k), (int, float)) and not isinstance(msg.get(_k), bool):
                         rec[_k] = msg[_k]
-                for _k in ("settled", "superseded", "gesture"):   # gesture: the reader took the landing over (round three, low 3)
+                for _k in ("settled", "superseded", "gesture", "cancelled"):   # gesture: the reader took the landing over (round three, low 3); cancelled: they clicked the wait away (T402)
                     if isinstance(msg.get(_k), bool):
                         rec[_k] = msg[_k]
                 with open(jd.STATE / "locate-audit.jsonl", "a", encoding="utf-8") as f:
@@ -60536,6 +61252,7 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
     _exit_log("romp-kernel: %s, draining SDK sessions\n" % what)
     try:
         _persist_tick_seen(force=True)    # the tick jobs' memo for the next kernel's first look (T323 stage 1)
+        _persist_spend_trees(force=True)  # the spend guard's tree memos: the next kernel stats directories, lists nothing
     except Exception:
         pass
     try:

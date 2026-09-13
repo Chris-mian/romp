@@ -315,7 +315,9 @@ def restart_seam_records():
         recs.append(G.uline(t, "step %d, please" % i, "u_seam_%d" % i, parent))
         recs.append(G.aline(t + 30, "step %d done" % i, "a_seam_%d" % i, "u_seam_%d" % i, stop="end_turn"))
         parent = "a_seam_%d" % i
-    return compacting_variant(recs, "seam")
+    return compacting_variant(recs, "seamcut")   # a tag whose minted uuids (u_seamcut_1, ...) cannot collide with the seam's own
+    #                                                u_seam_N: a collision rebinds a pre-cut record and makes the resolved graph
+    #                                                cyclic, which the writer now refuses (T402 follow-up)
 
 
 class RestartSeam(Harness):

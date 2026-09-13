@@ -458,6 +458,154 @@ class AssemblyRoadCounters(Harness):
                 self._append(path, tail(t0))
                 self._seeded_vs_cold(name, path, expect_refused=(boot_road == "whole"))
 
+    def _strip_bit(self, path):
+        """The standing document as a kernel before the childless bit wrote it."""
+        import gzip as _gz
+        cp = em._asm_ckpt_file(path); doc = json.loads(_gz.decompress(cp.read_bytes())); doc.pop("tipChildless", None)
+        cp.write_bytes(_gz.compress(json.dumps(doc, separators=(",", ":")).encode("utf-8"), compresslevel=6))
+
+    def test_a_document_the_chain_proof_refused_is_rewritten_by_the_whole_parse_that_follows(self):
+        """Follow-up: a standing document without the childless bit was refused at EVERY boot until the session happened to move
+        (sixteen of twenty-six sessions paid a whole parse per boot); the whole parse that follows a chain refusal writes the
+        document then and there, so the next restore takes it. The same for a refusal by the tail's shape: the parse writes what
+        it can (the writer decides), and the restore that follows answers by the rule."""
+        with self.subTest(shape="a_document_without_the_bit"):
+            path, t0 = self._documented("rewrite-bit"); self._strip_bit(path)
+            self.fresh(); self._reset()
+            tree, parse, reads = self._served(path)
+            self.assertEqual((parse.get("restore:chainRefused"), parse.get("full:refused"), parse.get("write:afterRefusal")), (1, 1, 1), parse)
+            import gzip as _gz
+            self.assertIs(json.loads(_gz.decompress(em._asm_ckpt_file(path).read_bytes())).get("tipChildless"), True, "the rewritten document carries the bit")
+            self.fresh(); self._reset()
+            tree2, parse2, reads2 = self._served(path)
+            self.assertEqual((parse2.get("restore"), parse2.get("restore:chainRefused", 0), parse2.get("full", 0)), (1, 0, 0), "the next restore takes it: %s" % parse2)
+            self.assertEqual(tree2, self._cold(path))
+        with self.subTest(shape="a_rerooted_tail"):
+            path, t0 = self._documented("rewrite-reroot")
+            self._append(path, self.REROOT_SHAPES["x4_self_link_last"](t0))
+            self.fresh(); self._reset(); w0 = em.asm_checkpoint_stats()["written"]
+            tree, parse, reads = self._served(path)
+            self.assertEqual(parse.get("restore:chainRefused"), 1, parse)
+            self.assertEqual(parse.get("write:afterRefusal", 0) + parse.get("write:afterRefusalSkipped", 0), 1,
+                             "the whole parse offered its document to the writer: %s (skipped: %s)" % (parse, em.asm_checkpoint_stats()["skipped"]))
+            self.assertEqual(tree, self._cold(path))
+
+    def test_a_document_refused_for_the_tails_shape_is_marked_and_no_road_retries_while_the_leaf_stands(self):
+        """Follow-up round two, medium 1: the rewrite converges only for the missing bit; for a tail whose SHAPE refuses (a
+        re-rooted tail here, x4) the same cut reproduces the same refusal, so every boot paid the proof and the rewrite attempt
+        again. The refusal is marked in the sidecar at the leaf's stat: three boots write once (the first parse's attempt) and
+        run the proof zero times after the mark; both seeded readers walk cold without the proof; the mark clears when the leaf
+        moves. The missing-bit case keeps its one rewrite (the test above)."""
+        import gzip as _gz
+        path, t0 = self._documented("marked-x4")
+        self._append(path, self.REROOT_SHAPES["x4_self_link_last"](t0))
+        rk = os.path.realpath(path)
+        for boot in (1, 2, 3):
+            with self.subTest(boot=boot):
+                self.fresh(); self._reset(); w0 = em.asm_checkpoint_stats()["written"]
+                tree, parse, reads = self._served(path)
+                if boot == 1:
+                    self.assertEqual(parse.get("restore:chainRefused"), 1, parse)
+                    self.assertEqual(parse.get("write:afterRefusal", 0) + parse.get("write:afterRefusalSkipped", 0), 1, "one write attempt: %s" % parse)
+                    meta = json.loads(em._asm_ckpt_file(path).with_name(em._asm_ckpt_file(path).name + ".meta").read_text())
+                    self.assertEqual(meta.get("refused", {}).get("reason"), "shape", meta)
+                    self.assertTrue(em._asm_refusal_stands(path))
+                else:
+                    self.assertEqual(parse.get("restore:refusedStanding"), 1, "%s: the mark stands: no proof" % boot)
+                    self.assertEqual(parse.get("restore:chainRefused", 0), 0, "%s: the proof did not run" % boot)
+                    self.assertEqual(parse.get("write:afterRefusal", 0) + parse.get("write:afterRefusalSkipped", 0), 0, "%s: no rewrite attempt" % boot)
+                    self.assertEqual(em.asm_checkpoint_stats()["written"] - w0, 0)
+                self.assertEqual(parse.get("full:refused"), 1, parse)
+                self.assertEqual(tree, self._cold(path))
+        with self.subTest(road="seeded"):
+            self.fresh(); self._reset()
+            n0 = em.asm_checkpoint_stats()["parse"].get("seeded:refusedStanding", 0)
+            seeded_m = em.chain_membership(path, [path], rompuuid=SID); seeded_r = em.file_rewound(path, rompuuid=SID)
+            parse = em.asm_checkpoint_stats()["parse"]
+            self.assertEqual(parse.get("seeded:refusedStanding", 0) - n0, 2, "both readers walked cold on the mark: %s" % parse)
+            self.assertEqual(parse.get("seeded:chainRefused", 0), 0, "no proof ran")
+            saved = em._CKPT_DIR_FN; em._CKPT_DIR_FN = None
+            try:
+                self.fresh(); cold_m = em.chain_membership(path, [path], rompuuid=SID); cold_r = em.file_rewound(path, rompuuid=SID)
+            finally:
+                em._CKPT_DIR_FN = saved
+            self.assertEqual((seeded_m, seeded_r), (cold_m, cold_r))
+        with self.subTest(road="the leaf moves"):
+            self._append(path, [G.uline(t0 + 800, "more", "u_more", "u_self")])
+            self.assertFalse(em._asm_refusal_stands(path), "a moved leaf clears the mark")
+            self.fresh(); self._reset()
+            tree, parse, reads = self._served(path)
+            self.assertEqual(parse.get("restore:refusedStanding", 0), 0, "the proof runs again for the moved leaf: %s" % parse)
+            self.assertEqual(tree, self._cold(path))
+
+    def test_a_declined_unproven_rewrite_is_marked_so_the_proof_is_not_repeated(self):
+        """Round three, low 3: an unproven refusal (the missing bit) whose offered rewrite the writer DECLINES repeated the proof,
+        the second walk, the build and the offer at every boot with no mark; a declined offer marks the sidecar like a shape."""
+        path, t0 = self._documented("declined-bit"); self._strip_bit(path)
+        self.fresh(); self._reset()
+        saved = em.asm_checkpoint_write
+        em.asm_checkpoint_write = lambda *a, **k: False              # the writer declines (a document past the cap, say)
+        try:
+            tree, parse, reads = self._served(path)
+        finally:
+            em.asm_checkpoint_write = saved
+        self.assertEqual((parse.get("restore:chainRefused"), parse.get("write:afterRefusalSkipped")), (1, 1), parse)
+        self.assertTrue(em._asm_refusal_stands(path), "a declined offer leaves the mark")
+        self.fresh(); self._reset()
+        tree, parse, reads = self._served(path)
+        self.assertEqual((parse.get("restore:refusedStanding"), parse.get("restore:chainRefused", 0)), (1, 0), "no second proof: %s" % parse)
+        self.assertEqual(tree, self._cold(path))
+
+    def test_the_seeded_readers_read_the_mark_once_per_call(self):
+        """Round three, low 4: each reader evaluated the standing mark twice per call, reading the sidecar twice. The document
+        carries a STANDING mark here (the five-lows read, low 3: a healthy document with no mark read once at the base too)."""
+        path, t0 = self._documented("once")
+        self.assertTrue(em._asm_mark_refused(path, "shape", SID)); self.assertTrue(em._asm_refusal_stands(path))
+        calls = []
+        real = em._asm_refusal_stands
+        em._asm_refusal_stands = lambda p: (calls.append(p), real(p))[1]
+        try:
+            self.fresh(); em.chain_membership(path, [path], rompuuid=SID); n1 = len(calls)
+            em.file_rewound(path, rompuuid=SID); n2 = len(calls) - n1
+        finally:
+            em._asm_refusal_stands = real
+        self.assertEqual((n1, n2), (1, 1), "one sidecar read per reader call")
+
+    def test_the_mark_writes_under_its_own_tmp_name_and_reads_back(self):
+        """Round three, low 2: the mark's read-modify-write shared the writer's and the refresh's tmp name under a different lock;
+        it takes the writer's key lock, writes under a tmp name of its own and reads the file back."""
+        import inspect
+        src = inspect.getsource(em._asm_mark_refused)
+        self.assertIn('".mark.%d.%x.tmp"', src); self.assertIn("_asm_key_lock(key)", src)
+        path, t0 = self._documented("mark-own")
+        self.assertTrue(em._asm_mark_refused(path, "shape", SID))
+        self.assertTrue(em._asm_refusal_stands(path))
+        meta = em._asm_ckpt_file(path).with_name(em._asm_ckpt_file(path).name + ".meta")
+        self.assertEqual([p.name for p in meta.parent.glob("*.tmp")], [], "no tmp left behind")
+
+    def test_a_cyclic_resolved_graph_refuses_the_write_instead_of_walking_to_the_guard(self):
+        """Follow-up (the demote gate's later low): a reused uuid can make the resolved graph cyclic, and the writer's spine walk
+        ran to its 500,000 guard and stored the collected chain; the walk is bounded by the record count and a cycle refuses."""
+        t0 = NOW
+        recs = [G.uline(t0, "first ask", "u1", "a1"), G.aline(t0 + 10, "first reply", "a1", "u1", stop="end_turn"),   # u1 <-> a1
+                G.compact_line(t0 + 600, "b1", "a1"), G.compact_summary_line(t0 + 601, "s1", "b1"),
+                G.uline(t0 + 610, "after", "u4", "s1"), G.aline(t0 + 620, "reply", "a4", "u4", stop="end_turn")]
+        path = self.write("cycle", recs)
+        self.fresh(); self._parse_lineage(path, [path])
+        sk0 = dict(em.asm_checkpoint_stats()["skipped"])
+        self.assertFalse(self.doc(path), "no document for a cyclic graph")
+        self.assertEqual(em.asm_checkpoint_stats()["skipped"].get("cycle", 0) - sk0.get("cycle", 0), 1, em.asm_checkpoint_stats()["skipped"])
+
+    def test_a_uuid_less_record_bearing_a_parent_is_not_a_node_of_the_walk(self):
+        """Follow-up (the demote gate's later low): the parse indexes nothing for a record without a uuid, so a null or interior
+        parent on such a record must not cost a whole parse; it is not walked, and the restore stands equal to a cold parse."""
+        path, t0 = self._documented("uuidless")
+        rec = {k: v for k, v in G.uline(t0 + 700, "no uuid", "u_x", "a1").items() if k != "uuid"}
+        self._append(path, [rec]); self.fresh(); self._reset()
+        tree, parse, reads = self._served(path)
+        self.assertEqual((parse.get("restore"), parse.get("restore:chainRefused", 0)), (1, 0), parse)
+        self.assertEqual(tree, self._cold(path))
+
     def test_the_seeded_readers_take_the_chain_rule_and_fall_to_the_cold_walk(self):
         """Round four, medium 2: chain_membership and file_rewound seeded an adapter from the document with no chain rule, and
         the goal sweep archived on their answer (over a rewound tail the seeded signature named one eclipsed record where the

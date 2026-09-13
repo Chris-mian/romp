@@ -17,7 +17,7 @@ const RENDER = fs.readFileSync(path.join(UI, "render.ts"), "utf8");
 const KERNEL = fs.readFileSync(path.resolve(process.cwd(), "..", "kernel", "kernel.py"), "utf8");
 const FEED_CSS = fs.readFileSync(path.join(UI, "feed.css"), "utf8");
 
-const TABS = ["general", "chat", "feed", "sessions", "tasks", "appearance", "debug"];
+const TABS = ["general", "chat", "feed", "sessions", "automation", "tasks", "debug"];   // T404: Automation new, Appearance a General section
 // the panes, cut from the markup string by their openers (each pane opens with the literal below and the next pane's opener ends it)
 function panes(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -31,10 +31,10 @@ function panes(): Record<string, string> {
   return out;
 }
 
-test("seven tabs, in the user's order (T400: General first, Task tracking for Automatic, Debug last), from ONE list the pills, the panes and selectTab read", () => {
-  assert.match(GEAR, /^var RS_TABS = \[\['general', 'General'\], \['chat', 'Chat'\], \['feed', 'Feed'\], \['sessions', 'Sessions'\], \['tasks', 'Task tracking'\], \['appearance', 'Appearance'\], \['debug', 'Debug'\]\];/m);
+test("seven tabs, in the user's order (T400: General first, Debug last; T404: Automation new, Appearance folded into General), from ONE list the pills, the panes and selectTab read", () => {
+  assert.match(GEAR, /^var RS_TABS = \[\['general', 'General'\], \['chat', 'Chat'\], \['feed', 'Feed'\], \['sessions', 'Sessions'\], \['automation', 'Automation'\], \['tasks', 'Task tracking'\], \['debug', 'Debug'\]\];/m);
   // older remembered tabs and older asks land on the tab that holds their rows now, never a blank card
-  assert.match(GEAR, /^var TAB_ALIASES = \{ automatic: 'tasks', system: 'debug', tabs: 'chat' \};/m);
+  assert.match(GEAR, /^var TAB_ALIASES = \{ automatic: 'tasks', system: 'debug', tabs: 'chat', appearance: 'general' \};/m, "the former Appearance tab maps to General (T404)");
   assert.match(GEAR, /function knownTab\(t\) \{ t = TAB_ALIASES\[t\] \|\| t; return RS_TABS\.some\(function \(x\) \{ return x\[0\] === t; \}\) \? t : null; \}/);
   assert.match(GEAR, /'<div class=rs-tabs id=rs-tabs role=tablist>' \+ RS_TABS\.map\(function \(t\) \{ return '<button class=rs-tab type=button role=tab data-tab=' \+ t\[0\] \+ ' aria-selected=false>' \+ t\[1\] \+ '<\/button>'; \}\)\.join\(''\) \+ '<\/div>' \+/);
   const ps = panes();
@@ -45,13 +45,13 @@ test("seven tabs, in the user's order (T400: General first, Task tracking for Au
 test("every existing control keeps its id and sits in exactly one pane, by the approved grouping", () => {
   const ps = panes();
   const where: Record<string, string[]> = {
-    general: ["rs-billing", "rs-login-acct", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed"],
-    chat: ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-filelink", "rs-filesctl", "rs-chatscheme", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-widgets", "rs-striprows"],
+    general: ["rs-billing", "rs-login-acct", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
+    chat: ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets"],
     feed: ["rs-feedcollapsed"],
-    sessions: ["rs-defaultdir", "rs-backend", "rs-fileedit", "rs-activeonly", "rs-collapsegaps"],
-    tasks: ["rs-autonudge", "rs-suggestcompact", "rs-conserve", "rs-thinksum", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
-    appearance: ["rs-theme", "rs-cmap", "rs-pal"],
-    debug: ["rs-updates", "rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
+    sessions: ["rs-defaultdir", "rs-backend"],
+    automation: ["rs-autonudge", "rs-suggestcompact"],
+    tasks: ["rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
+    debug: ["rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
   };
   for (const [pane, ids] of Object.entries(where)) {
     for (const id of ids) {
@@ -63,14 +63,33 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   assert.match(ps.general, /\+ SHORTCUT_ROWS \+/);
   assert.match(GEAR, /^var SHORTCUT_ROWS =\s*\n\s*'<div class=rs-key id=rs-keys-web hidden>/m);
   for (const t of TABS.filter((x) => x !== "general")) assert.doesNotMatch(ps[t], /SHORTCUT_ROWS/, t + " holds no shortcut rows");
-  // T400: General opens with the account, then the panes and the shortcuts; Debug opens with updates, then the judges' debug views, then the diagnostics
-  assert.ok(ps.general.indexOf(">Account<") < ps.general.indexOf("id=rs-panes-sec") && ps.general.indexOf("id=rs-panes-sec") < ps.general.indexOf(">Keyboard shortcuts<"), "General: Account, Panes, Keyboard shortcuts");
-  assert.ok(ps.debug.indexOf(">Updates<") < ps.debug.indexOf(">Judging bands<") && ps.debug.indexOf(">Judging bands<") < ps.debug.indexOf(">Diagnostics<") && ps.debug.indexOf(">Diagnostics<") < ps.debug.indexOf("id=rsver"), "Debug: Updates, Judging bands, Diagnostics, the version last");
+  // T404: General opens with the account, then the panes (the Files control among them), Appearance, Permissions, This machine, the
+  // shortcuts; Debug opens with the judges' debug views, then the diagnostics (Updates went to General)
+  const G = ps.general;
+  assert.ok(G.indexOf(">Account<") < G.indexOf("id=rs-panes-sec") && G.indexOf("id=rs-panes-sec") < G.indexOf("id=rs-filesctl") && G.indexOf("id=rs-filesctl") < G.indexOf("data-section=appearance>Appearance<")
+            && G.indexOf("data-section=appearance>Appearance<") < G.indexOf(">Permissions<") && G.indexOf(">Permissions<") < G.indexOf("id=rs-fileedit") && G.indexOf("id=rs-fileedit") < G.indexOf(">This machine<")
+            && G.indexOf(">This machine<") < G.indexOf("id=rs-conserve") && G.indexOf("id=rs-conserve") < G.indexOf("id=rs-updates") && G.indexOf("id=rs-updates") < G.indexOf(">Keyboard shortcuts<"),
+            "General: Account, Panes (with the Files control), Appearance, Permissions, This machine, Keyboard shortcuts");
+  assert.match(G, /<b>Allow file editing<\/b>/, "the permission row's name (T404)");
+  assert.match(G, /<b>Updates install automatically <span class=rs-mixed hidden><\/span><\/b>/, "the updates row's name (T404)");
+  assert.doesNotMatch(GEAR, /id=rs-filelink\b|File links open in|fileLinkPane/, "the file-links setting is gone: the route follows the open Files pane (T404)");
+  assert.doesNotMatch(GEAR, /id=rs-activeonly\b|id=rs-collapsegaps\b|>Sessions pane</, "the Sessions-pane rows left settings: the pane carries them (T404)");
+  assert.doesNotMatch(GEAR, /data-pane=appearance\b|\['appearance', 'Appearance'\]/, "no Appearance pane or pill remains");
+  // Chat: Display (the transcript rows, the text scheme, the strip's one-group-per-row), Comments, Thinking, Tab widgets
+  const C = ps.chat;
+  assert.ok(C.indexOf(">Display<") < C.indexOf("id=rs-compact") && C.indexOf("id=rs-branch") < C.indexOf("id=rs-chatscheme") && C.indexOf("id=rs-chatscheme") < C.indexOf("id=rs-striprows")
+            && C.indexOf("id=rs-striprows") < C.indexOf(">Comments<") && C.indexOf(">Comments<") < C.indexOf("id=rs-cmtmodel") && C.indexOf("id=rs-cmtfast") < C.indexOf(">Thinking<")
+            && C.indexOf(">Thinking<") < C.indexOf("id=rs-thinksum") && C.indexOf("id=rs-thinksum") < C.indexOf("data-section=tabwidgets"), "Chat: Display, Comments, Thinking, Tab widgets");
+  assert.doesNotMatch(C, />Transcript<|>Text and comments<|>Files<|>Strip</, "the old Chat heads are gone");
+  // Automation: the nudges; Task tracking: the judges alone; Debug: the judges' views then the diagnostics
+  assert.ok(ps.automation.indexOf(">Nudges<") < ps.automation.indexOf("id=rs-autonudge") && ps.automation.indexOf("id=rs-autonudge") < ps.automation.indexOf("id=rs-suggestcompact"), "Automation: Nudges, Auto Nudge, Suggest /compact");
+  assert.ok(ps.tasks.indexOf("<div class='rs-sec rs-sec-first'>Judges</div>") === ps.tasks.indexOf("<div class='rs-sec"), "Task tracking opens with the Judges");
+  assert.ok(ps.debug.indexOf(">Judging bands<") < ps.debug.indexOf(">Diagnostics<") && ps.debug.indexOf(">Diagnostics<") < ps.debug.indexOf("id=rsver") && ps.debug.indexOf(">Updates<") < 0, "Debug: Judging bands, Diagnostics, the version; no Updates");
   assert.doesNotMatch(GEAR, /data-pane=(automatic|system)\b/, "no Automatic or System pane remains");
   // the tab widgets are a SECTION of Chat (the user's amendment 2026-09-12), after the chat's own sections, then the strip's controls;
   // its head carries the data-section anchor the strip's gear asks for; there is no Tabs tab
   assert.match(ps.chat, /<div class='rs-sec' data-section=tabwidgets>Tab widgets<\/div>/);
-  assert.ok(ps.chat.indexOf(">Text and comments<") < ps.chat.indexOf("data-section=tabwidgets") && ps.chat.indexOf("data-section=tabwidgets") < ps.chat.indexOf(">Strip<"), "Tab widgets after the chat's sections, Strip last");
+  assert.ok(ps.chat.indexOf(">Thinking<") < ps.chat.indexOf("data-section=tabwidgets"), "Tab widgets after the chat's sections, last (the Strip section folded into Display, T404)");
   assert.doesNotMatch(GEAR, /data-pane=tabs\b/);
   assert.doesNotMatch(GEAR, /\['tabs', 'Tabs'\]/);
   // the old Context gauge row is gone: its WHEN is the Context bar widget's option in the Tab widgets section
@@ -87,7 +106,7 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   assert.match(GEAR, /b\.classList\.toggle\('on', on\); b\.setAttribute\('aria-selected', on \? 'true' : 'false'\);/);
   assert.match(GEAR, /pn\.hidden = pn\.getAttribute\('data-pane'\) !== t;/);
   assert.match(GEAR, /try \{ localStorage\.setItem\(TAB_KEY, t\); \} catch \(e\) \{\}/);
-  assert.match(GEAR, /function openSettings\(tab, section\) \{\s*\n\s*if \(!p\.hidden\) \{ if \(knownTab\(tab\)\) \{ selectTab\(tab\); if \(section\) showSection\(section\); else clearSectionScroll\(\); return; \} closeSettings\(\); return; \}/,
+  assert.match(GEAR, /function openSettings\(tab, section\) \{\s*\n\s*if \(tab === 'appearance' && !section\) section = 'appearance';[^\n]*\n\s*if \(!p\.hidden\) \{ if \(knownTab\(tab\)\) \{ selectTab\(tab\); if \(section\) showSection\(section\); else clearSectionScroll\(\); return; \} closeSettings\(\); return; \}/,
     "a named tab on an open panel switches to it and scrolls to its section; a bare ask still toggles");
   assert.match(GEAR, /if \(e\.data && e\.data\.romp === 'openSettings'\) openSettings\(typeof e\.data\.tab === 'string' \? e\.data\.tab : undefined, typeof e\.data\.section === 'string' \? e\.data\.section : undefined\);/, "the tab and the section ride the message");
   // the SECTION anchor (the user's amendment 2026-09-12): looked up in the shown pane only; the card, the modal's one scroll box, scrolls so the head

@@ -1543,7 +1543,13 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   them go to `jobs.other`, which carries bytes only, never `ms` (the same for
   `push.other`); `prelude` is the cycle's opening (the liveness snapshot, the
   names), so the top stages sum to `s`; `splitFailed` counts a split the
-  bookkeeping could not close. The restart ledger's boot-health row carries
+  bookkeeping could not close; `cycleFailed` counts a cycle that raised out
+  of the pusher's loop and was skipped (the loop goes on; before, one raise
+  from the prologue or the finally ended the pusher for the process's life),
+  said once per exception kind on stderr; the failing path clears the wake
+  flag and paces its retry at the backstop, then doubling to five seconds
+  until a clean cycle, so a cycle that woke the pusher itself before raising
+  cannot spin the loop. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
   stage without the kernel alive, and `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
@@ -1566,9 +1572,24 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   standing disagreement with the cold parse remains outside the rule: a tail
   record whose stamp precedes the cut or the tip chains soundly but the
   write-time stamp-order guard is not re-checked, so such a restore can
-  differ from a cold parse; a later round); a document written before the bit is unproven, so every standing
-  document is refused once at its first restore after the change and booked
-  `full:refused`, then rewritten with the bit; the restore falls to the whole parse, at boot
+  differ from a cold parse; a later round); a document written before the bit is unproven, so a standing
+  document is refused at its first restore after the change, booked
+  `full:refused`, and rewritten from the whole parse that follows the
+  refusal, then and there (`write:afterRefusal`), so the next restore takes
+  it; when the writer declines that rewrite (`write:afterRefusalSkipped`)
+  nothing is taken and the document is marked as below; a document refused
+  for the tail's SHAPE (a re-rooted tail, a reused pre-cut uuid), or whose
+  offered rewrite the writer declined for any reason, including a transient
+  decline (the entry evicted between the parse and the write, `noEntry`),
+  which marks a document whose only defect was the missing bit until the
+  next accepted write clears it, a bounded cost, is marked refused in its
+  sidecar at the leaf's stat (under
+  the key lock, re-read after the write), and while that stat stands every
+  road goes straight to the whole or cold parse with no proof and no rewrite
+  (`restore:refusedStanding`, `seeded:refusedStanding`); the mark clears when
+  the leaf moves or a write the writer accepts replaces the sidecar; a whole parse whose resolved graph is cyclic writes no
+  document (`skipped.cycle`); a record without a uuid is not a node of the
+  chain walk; the restore falls to the whole parse, at boot
   and after a demotion alike, and `seeded:chainRefused` counts the same
   refusal by the chain-membership and file-rewound readers, which then walk
   the file cold, T402), `full` with
@@ -1586,6 +1607,24 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   (T401): the first eight characters of the session ids whose parses the
   boot's nudge walk `skipped` on its memo, those it `parsed` (at most forty
   each), and how many it `deferred` to a later pass.
+  `firstCycleStacks` is the pusher's stack sampled through the first cycle
+  only, once a second for the first thirty samples and every five seconds
+  after, so the sixty-row cap covers three minutes and a long cycle shows
+  where it ended (each row the seconds into the cycle, the stage mark and
+  the eight innermost frames as "function (file:line)", the /perf sample's
+  shape, no session content), by a daemon thread that ends with the cycle
+  and whose start degrades to no samples when a thread cannot be started;
+  `firstCycleStacksFailed` counts walks that raised, so a short list is not
+  mistaken for a fast cycle, and a failed walk fills a cap slot like a row,
+  so an all-failing sampler retires with the cap. The cost is one frame
+  walk a sample (about 7 us) and about 330 bytes a sample on the row (20 KB
+  for sixty, 30 KB at worst) in a ledger with no rotation: the boot-settled
+  writer (`_append_boot_settled`) parses every line of it at each boot, and
+  two other readers (`_last_deploy_restart_t`, `_consumed_audit_t`) read the
+  whole file before slicing its tail, so a 20 KB row is read whole by each
+  of them from then on, and the file grows by that once per boot whose
+  first cycle ran that long. The sampler exists because two live reads of a
+  slow boot missed the cycle (the watch's poll was slower than it).
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
@@ -1647,14 +1686,14 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `stacks`: every live thread's stack, keyed `"<ident> <kind>"`. The kind
   is the thread's name up to the naming convention's colon (`sdk` and
   `sdk-intr` for a session's threads, `codex` for a Codex session's worker,
-  `end-host` for a session's end hook, `peer` for a postal peer loop), the
+  `end-host` for a session's end hook, `port-up` for a dial's port watch, `peer` for a postal peer loop), the
   target function for a thread the code left unnamed (`_ask_poll`,
   `_parent_watch`, `_update_check_loop`, `_tunnel_supervisor`,
   `serve_forever`, ...), `handler` for the HTTP server's request threads,
   `judge-index`, `judge-triage` and the other tiers' pool workers, `pool`
   for an unprefixed pool worker, `thread` for a default name with no target,
   `pusher`, `producer`, `index`, `triage`, `parse-warm`, `boot-warm`,
-  `sdk-boot`, `main`; never a session's name, sid, host or path (the ident
+  `sdk-boot`, `first-cycle-sampler`, `main`; never a session's name, sid, host or path (the ident
   keeps two workers sharing a kind apart). Each row has `self` (the thread building the
   sample), `stage` (the thread's current stage mark: the pusher's
   `jobs.<job>` or `push`, a handler's `connect`, `null` outside one) and
@@ -1837,10 +1876,95 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   state log, the goal store with its override journal and archive, the
   episode log, the clears log, the postal log, the kernel's downtime log
   (the working verdict's suspension check reads a list that log refills)
-  and the nudge ledger; the pass takes every session's stat before it reads
-  any pass-level snapshot, so no input a look reads is older than the key
-  its memo is recorded under;
-  `nudgeGate` is the auto-nudge walk's
+  and the nudge ledger (one file for the box, so any ledger write moves every
+  session's key and the next pass re-evaluates each alive session once);
+  the pass takes every session's stat before it reads any pass-level
+  snapshot, so no input a look reads is older than the key its memo is
+  recorded under; a debtor's key also carries the registry row
+  (`STATE/sdk/<asker>.json`, an absent row as a stable absent marker) of
+  each peer with an open ask on it, oldest asks first and at most eight
+  (the persisted memo row is 22 to 38 elements: the ten files and up to
+  eight rows), because a dead asker's ask becomes owed again only when the
+  asker revives and a revival writes that row; the debt leg reads a keyed
+  asker's aliveness from that same row (alive true or false, the SDK
+  backend's own liveness record), never from the pass's alive set, which is
+  older than the key, so the verdict and the key come from one file and a
+  revival landing between the two cannot record a memo that owes nothing;
+  a row that cannot be read or decoded, or parses without an alive bit, is
+  unproven, neither dead nor alive: the look notes None under
+  `askerRowUnproved`, so one transient read fault never latches a
+  skippable memo, and the ask follows the pass's alive set, the backend's
+  own answer over that row or its last good content, so the reminder never
+  asks a debtor to answer a peer the backend calls dead (a missing row is
+  dead, the key's absent marker); a keyed
+  dead asker notes nothing and the debtor skips like any quiet session;
+  any asker beyond the eight keyed rows notes None under `askerOverflow`,
+  alive or not, since its row is outside the key. The pass stats the postal
+  log before it builds the asker index from it and the key carries that
+  earlier stat, so the key never claims a newer log than the selection
+  read. The limit:
+  the row invariant holds for the SDK backend only; a Codex session's
+  liveness is in memory with its registry at `STATE/codex/registry.json`,
+  so a Codex asker's revival would move nothing in a debtor's key (not
+  reachable today: a Codex session cannot identify itself to the bus and so
+  cannot ask). The honest measure of what remains unbounded is
+  `memos.nudgeWalk.unbounded` over looks on the first boot after this lands,
+  since the leg counts are notes, not looks. `unboundedBy` counts the
+  unbounded NOTES per leg at the look that recorded them; the legs the
+  kernel emits are `askerOverflow`, `askerRowUnproved`, `debtUnproved`,
+  `debtUnlanded`, `deferralNew`, `pausedTiers`, `deferralStanding`,
+  `queuedSend`, `storeFault`, `allDelegated`, `awaitingPeer`,
+  `stampedWait`, `unjudgeable`, `refusedWrite`, `legacyNoAnchor`, and
+  `unmarked:<verdict>` when no named leg noted the look (the None-site
+  census in the gate's test pins that every site names its leg with a
+  literal); the legs partition the NOTES,
+  not the looks (a look over two top goals can note two legs); the
+  dead-asker notes (an ask in the postal wait maps whose asker is not alive
+  now) were about four in five of the notes on the first boot with the
+  counts, since an ask a dead peer left in the log stays there for good,
+  which the keyed rows answer for the memo; ageing such an ask out of the
+  wait maps would delete a wait the postal surfaces show and is the user's
+  call, the open hygiene question here; while `unbounded` counts a LATER
+  look's refused skip, so the two are not comparable;
+  `spendTree` is the spend guard's memo of each live
+  session's subagents tree (`entries`, `bytes`, `bound`, a sixty-fourth of
+  the machine's memory or `ROMP_SPEND_GUARD_TREE_MEMO_BYTES`, and the
+  reads since boot: `dirStats`, `fileStats`, `entryStats` (the per-entry
+  stats a listing performs), `listings`, `loaded`, `loadFailed`, `dropped`
+  (paths outside the root a load discarded), `written`, `writeFailed` (a
+  memo write that raised, a read-only directory or a full disk, said once a
+  life; the memo stays dirty and is retried each cycle), `dumpSkipped` (a
+  write skipped after three dumps lost the race with the pusher, said once
+  a life), `evicted` (memos the byte bound shed), `swept`); the memo is
+  persisted at `STATE/spend-tree/<sid>.json` when
+  dirty and at exit and loaded lazily when the session's guard first runs
+  after a boot. What the load saves is the listings (the scandir and its
+  per-entry stat for every directory): a boot stats each directory once and
+  lists only one whose mtime moved. One stat per file remains, because an
+  append while the kernel was down moves no directory's mtime, and it is
+  spread over the cycles after the load, hot files first, at most
+  `SPEND_GUARD_RESTAT_PER_CYCLE` (400, about 2 ms) a cycle, so the largest
+  tree is whole again within seven cycles and no cycle carries a whole
+  tree. A corrupt or misshapen file, or one that does not name the
+  session's own root, is a failed load and relisted, never raised; a path
+  outside the root is dropped and counted; a memo the byte bound evicts is
+  written first when it is dirty (a drain step marks it so, and so does any
+  stat that changes a stored mtime, so a file that grew is carried to disk;
+  a memo whose file already holds its state is not rewritten, since on a
+  binding bound the eviction fires every cycle), with its remaining re-stat
+  list, and its rescan clock stays in memory for the kernel's life (dropped
+  when its file is swept or fails to load, or when the session leaves the
+  live set), so the reload drains on and runs its full pass
+  instead of restarting both; the directory is swept once per kernel life at
+  the guard's first tick, before the disabled ceiling's early return, so a
+  kernel with the guard off sweeps too (never the boot's first cycle, since
+  the sweep parses every memo), of memos whose leaf is gone, that name no
+  leaf or that do not parse, and of tmp files a kill left (a failed replace
+  unlinks its own tmp at once); the guard's job itself skips
+  the boot's first cycle, since its first pass lists every alive session's
+  tree (4.2 s on one boot, 60 trees of 16,752 agent transcripts in 1,542
+  directories, the largest 2,581 files) and a runaway spend is minutes,
+  not the first cycle (T401 follow-up); `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue
@@ -1898,7 +2022,58 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   entry per (session, parse family) keyed on the parse object's identity and
   the machine-cut stamp (`hit`, `miss`, `evict` for entries released when a
   session leaves the alive set or the memo is cleared at its cap, and the
-  gauge `entries`). `statesOverlay` is the awaiting overlay's read of the
+  gauge `entries`). `deadWait` is the dead-wait sweep's reads: `passes`,
+  `candidates` (corroborated-dead sessions walked), `sharedLoads` (reads
+  through the shared read-only store view, one per store per pass: the
+  candidate's own and every alive session's for the peer-death arm),
+  `loadFaults` (a view that could not be read or parsed, of any kind; the
+  candidate stands down re-armed and the next pass retries; an OSError
+  files a judge-errors row, `store-unreadable`, once per fault episode and
+  prints nothing, and any other exception is said on stderr once per
+  episode, an episode being the pair of the store and the fault's text; an
+  alive session's store the view cannot read re-arms the candidate too, so
+  that peer's conversion waits for the next pass rather than the next
+  death), `sharedFallback` (a view that degraded internally to a private
+  load: an absent store file, an unreadable journal, unparseable bytes, the
+  shared cache switched off; told by the object the view returned, a plain
+  store in place of the frozen one, never by a global load count another
+  thread could move; while it climbs the pass is back to the private-load
+  cost), `mutableLoads` (every private load the sweep's work makes: the two
+  block writers' own, counted inside them so they mean what the writer did
+  wherever it is called, the sweep's three sites and the wake goal's dormant
+  branch alike, and the heal's one load when a briefless procedural block
+  stands), `blocks` (counted inside the writers: each block written), and
+  `healed` (a briefless procedural block whose brief was settled from its
+  why, re-tested on the fresh node before the write). 
+  `tickSeen` is the event-keyed tick jobs' memo (the
+  interrupt block, the working note, the nudge walk's looks), the ten-file
+  key compared per session, with the gauge `entries` and `byJob`, one block
+  per job: `hits` (the one return that skips), `misses`, `neverSeen` (no
+  kernel on record had looked), `noTranscript`, `clockParse` (the walk's
+  parse on a matched key that a clock leg refused to serve: a flip due, a
+  None flip, the closer toggle off), and `missBy[file]`, which counts, per
+  miss, each key position that differed from the recorded one so a boot read
+  can name what moved; the positions in order are `transcript`, `states`
+  (the state log), `store` (the goal store), `overrides` (its journal),
+  `archive`, `episode`, `cleared`, `messages` (the postal log), `downtime`,
+  `ledger` (the nudge ledger, one file for the box), then `askerRow` for the
+  walk's asker registry rows and `shape` for a key of another length or an
+  unreadable entry; per job, hits plus misses plus neverSeen plus
+  noTranscript plus clockParse is the checks. The interrupt block's key
+  keeps that shape but moves only with the files its road reads: the
+  transcript, the state log, the downtime log, the goal store with its
+  journal and archive, and the clears log (the store readers' override
+  replay gates a journalled move on the clears log, so a clear or an undo
+  row busts the key by design); the ledger position carries this session's
+  own `intrBlocked` row (a checksum and its length) rather than the ledger's
+  stat, while the episode and messages positions hold the constant pair
+  `-1.0, -1`, which no stat can produce; so a postal message or a walk
+  write to another session's row no longer re-evaluates every session's
+  interrupt block (the quiet boot read of 2026-09-13 counted 125 interrupt
+  block misses: messages 50, the ledger 50, cleared 25, and no episode
+  row; the two constant positions and the ledger row answer 100 of them).
+  `statesOverlay` is the
+  awaiting overlay's read of the
   states log through the shared append-incremental reader, one carried answer
   per states file (`hit`: the records were the cached ones and no row was
   stepped; `append`: only the appended rows were stepped; `refold`: every row

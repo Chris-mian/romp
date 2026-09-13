@@ -94,7 +94,7 @@ const measure = (label, shownBy) => page.evaluate(([label, shownBy]) => {
   return { label, shownBy, rows: tops.length, tabs: r(tabs), tabbar: r(tabbar), content: r(content), viewport: { w: window.innerWidth, h: window.innerHeight },
            pill: pill ? r(pill) : null, pillShown: !!pill && cs.display !== "none" && cs.visibility !== "hidden",
            inBody: pill ? pill.parentElement === document.body : null, parent: pill ? pill.parentElement.className : null,
-           position: cs ? cs.position : null, pointer: cs ? cs.pointerEvents : null, bg: cs ? cs.backgroundColor : null, border: cs ? cs.borderTopColor : null };
+           position: cs ? cs.position : null, pointer: cs ? cs.pointerEvents : null, anchorPointer: (pill && pill.parentElement && pill.parentElement.classList.contains("tx-loading-anchor")) ? getComputedStyle(pill.parentElement).pointerEvents : null, bg: cs ? cs.backgroundColor : null, border: cs ? cs.borderTopColor : null };
 }, [label, shownBy]);
 const cases = [];
 // one row: the wide viewport
@@ -144,7 +144,7 @@ class ServedLandingNoticeAnchor(unittest.TestCase):
                                 os.path.join(EXT, "node_modules", "playwright")], capture_output=True, text=True)
         if probe.returncode != 0 or not os.path.exists(probe.stdout.strip()):
             raise unittest.SkipTest("no playwright browser on this box — the served guard needs one (CI installs none)")
-        cls.lab = tempfile.mkdtemp(prefix="loading-pill-")
+        cls.lab = tempfile.mkdtemp(prefix="notice-anchor-")
         before = os.environ.get("LOADING_PILL_DIST", "")
         if before:
             src = before

@@ -312,7 +312,7 @@ class ExitThenBoot(unittest.TestCase):
                                     "the statesOverlay fold resumed for every session's states log: %s" % perf["restoredFolds"])
             walk = self._get(p2, "/perf")["memos"].get("nudgeWalk") or {}
             for name in ("lastState", "machineCut"):     # the folds the nudge walk's look runs per session (T401 (2)): at this
-                #                                          second boot the walk SKIPS every session whose nine files are unchanged
+                #                                          second boot the walk SKIPS every session whose ten files are unchanged
                 #                                          since the first kernel's last completed look (the tick memo persisted at
                 #                                          its exit), so the fold resumes only for the sessions it looked at; every
                 #                                          session is either looked at (the fold resumed) or skipped by the gate
