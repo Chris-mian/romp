@@ -12280,7 +12280,7 @@ _DEAD_WAIT_STATS = {"passes": 0, "candidates": 0, "sharedLoads": 0, "sharedFallb
 #   goal's dormant branch is a fourth caller); sharedFallback counts a view that degraded internally to a private load
 
 
-_DEAD_WAIT_VIEW_SAID = [set()]     # the sids whose view raised a non-OSError fault last pass: said once per EPISODE (the life idiom)
+_DEAD_WAIT_VIEW_SAID = [set()]     # the (sid, fault text) pairs whose view raised a non-OSError fault last pass: said once per EPISODE
 
 
 def _dead_wait_shared_view(sid, stats=None):
@@ -12289,17 +12289,19 @@ def _dead_wait_shared_view(sid, stats=None):
     spending the death transition silently (round two, low 2); such a fault is counted, and named on stderr once per episode
     through the pass's collapse (`stats`, round three: the base printed a traceback, silence is not an option). Counted under
     memos.deadWait: sharedLoads, loadFaults, and sharedFallback for a view that degraded INTERNALLY to a private load (an
-    absent store file, an unreadable journal, unparseable bytes, the shared cache switched off), read off the writer-side
-    loader's count, so /perf cannot claim the saving while the cache is off."""
+    absent store file, an unreadable journal, unparseable bytes, the shared cache switched off), told by the RETURNED object
+    (the shared view hands back a FrozenStore; every fallback road hands back load_goals' plain private store), never by a
+    delta over a process-global counter, which another thread's private load would move (round four, medium); so /perf
+    cannot claim the saving while the cache is off."""
     _DEAD_WAIT_STATS["sharedLoads"] += 1
-    loads0 = jd.goal_io_stats().get("loads", 0)
     try:
         store, fault = jd.load_goals_shared_or_fault(sid)
     except Exception as e:
         store, fault = None, e
         if stats is not None:
             stats.setdefault("viewFault", {})[sid] = "%s: %s" % (type(e).__name__, str(e)[:120])
-    _DEAD_WAIT_STATS["sharedFallback"] += max(0, jd.goal_io_stats().get("loads", 0) - loads0)
+    if store is not None and fault is None and not isinstance(store, jd.FrozenStore):
+        _DEAD_WAIT_STATS["sharedFallback"] += 1              # a private store came back: the view fell back for this call
     if fault is not None or store is None:
         _DEAD_WAIT_STATS["loadFaults"] += 1
         return None, fault if fault is not None else RuntimeError("no store")
@@ -12443,8 +12445,8 @@ def _dead_wait_sweep(alive_ids, nudged, now):
             sys.stderr.write("dead-wait: %d candidate(s) hold no reg but show recent life; stood down "
                              "(a registry moved aside?)\n" % len(life_sids))
     vf = stats.get("viewFault") or {}
-    if set(vf) != _DEAD_WAIT_VIEW_SAID[0]:                # once per EPISODE (the life idiom): the pass runs every 0.5 s
-        _DEAD_WAIT_VIEW_SAID[0] = set(vf)
+    if set(vf.items()) != _DEAD_WAIT_VIEW_SAID[0]:        # once per EPISODE (the life idiom): the pass runs every 0.5 s; a fault
+        _DEAD_WAIT_VIEW_SAID[0] = set(vf.items())         #  whose TEXT changes on the same store is a new episode (round four, low 2)
         if vf:
             first = next(iter(vf.items()))
             sys.stderr.write("dead-wait: the goal-store view raised for %d store(s) (%s: %s); the candidates stand down re-armed "

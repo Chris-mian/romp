@@ -417,10 +417,12 @@ class DeadWaitBlock(_HermeticDeadWait):
             km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 903)        # healed: the next pass converts
         self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"))
 
-    def test_a_view_that_degrades_to_a_private_load_is_counted_as_a_fallback(self):
-        """Round three, low 2: the shared view falls back to load_goals internally (an absent store file, an unreadable journal,
-        unparseable bytes, the cache off); those loads counted under sharedLoads only, so /perf could claim the saving with
-        the cache off. sharedFallback counts them off the writer-side loader's count."""
+    def test_a_view_that_degrades_to_a_private_load_is_counted_as_a_fallback_and_another_threads_load_is_not(self):
+        """Round three, low 2, and round four's medium: the shared view falls back to load_goals internally (an absent store file,
+        an unreadable journal, unparseable bytes, the cache off); those loads counted under sharedLoads only, so /perf could
+        claim the saving with the cache off. sharedFallback counts them by the OBJECT the view returned (a plain store where
+        the frozen one is due), never by a delta over the process-global load count, which another thread's private load
+        moved: 200 warm views under a burst of load_goals on another thread counted 166 degrades where none happened."""
         _seed_store()
         _write_state("idle", STAMP_T + 50)
         alive = _fresh_sid(); (jd.SDKDIR / (alive + ".json")).write_text(json.dumps({"sid": alive, "alive": True}))   # no store FILE
@@ -428,7 +430,40 @@ class DeadWaitBlock(_HermeticDeadWait):
         before = dict(km._DEAD_WAIT_STATS)
         km._dead_wait_sweep({alive}, self.nudged, STAMP_T + 900)
         d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
-        self.assertGreaterEqual(d["sharedFallback"], 1, "the alive store without a file fell back to a private load: %r" % d)
+        self.assertEqual(d["sharedFallback"], 1, "the alive store without a file fell back to a private load: %r" % d)
+        other = _fresh_sid(); jd.save_goals(other, jd.load_goals(other))    # a readable, cached store for the warm views
+        import threading
+        stop = threading.Event()
+        def burst():                                                      # another thread's private loads, the WS handler's shape
+            while not stop.is_set():
+                jd.load_goals(SID)
+        th = threading.Thread(target=burst, daemon=True); th.start()
+        try:
+            before = dict(km._DEAD_WAIT_STATS)
+            for _ in range(200):
+                store, fault = km._dead_wait_shared_view(other)
+                self.assertIsNone(fault); self.assertIsInstance(store, jd.FrozenStore)
+        finally:
+            stop.set(); th.join(5)
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["sharedLoads"], d["sharedFallback"]), (200, 0), "200 warm views, no degrade, whatever another thread loaded: %r" % d)
+
+    def test_a_fault_whose_text_changes_on_the_same_store_is_a_new_episode(self):
+        """Round four, low 2: the episode compared the SET of sids, so a different ValueError on the same store was never re-said,
+        where the OSError episode table treats a different text as a new episode; the pairs (sid, text) are compared."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        real_shared = jd.load_goals_shared_or_fault
+        err = io.StringIO()
+        km._PREV_ALIVE = None
+        try:
+            for text in ("journal row: t is not a number", "journal row: t is not a number", "journal row: gid missing"):
+                jd.load_goals_shared_or_fault = (lambda sid, tx=text: (_ for _ in ()).throw(ValueError(tx)))
+                with redirect_stderr(err):
+                    km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals_shared_or_fault = real_shared
+        self.assertEqual(err.getvalue().count("the goal-store view raised"), 2, "said for the first text and again for the new text, not for the repeat: %r" % err.getvalue())
 
     def test_the_heal_takes_one_mutable_load_and_counts(self):
         """The brief repair is a write: it takes a private load only when a briefless procedural block stands, and counts it."""
