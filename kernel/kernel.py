@@ -55080,7 +55080,7 @@ _LANDING_COLLAPSE_JS = """
   if(qp!==null){po={chat:false,fleet:false,feed:false,timeline:false,files:false};qp.split(',').forEach(function(k){k=k.trim();if(k in po)po[k]=true;});}
   function saveP(){try{localStorage.setItem(PK,JSON.stringify(po));}catch(e){}}
   var LBL={chat:'chat',fleet:'fleet',feed:'feed',timeline:'timeline',files:'files pane'};
-  // THE FILES CONTROL'S OWN SETTING (T317, the user 2026-09-10): the gear's "Files control in the dashboard bar"
+  // THE FILES CONTROL'S OWN SETTING (T317, the user 2026-09-10): the gear's Files row (Settings, General, Panes; T407)
   // (romp:settings.showFilesControl, gear.js; hidden unless the store holds the literal true: OFF by default since T317b,
   // the user 2026-09-10, who wants the control asked for, not shipped. A FRESH key: the T317-era gear saved its merged-in
   // filesControl: true on any settings change, so that key cannot tell a chosen on from a merged-in one and is never read).

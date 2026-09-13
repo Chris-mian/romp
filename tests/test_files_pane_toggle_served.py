@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """T317 (the user 2026-09-10): clicking the dashboard's Files control opened the timeline in a side pane instead of
 the Files pane. Reproduction and guard on the real shell page (`/`) of a hermetic kernel: the desktop rail's Files
-toggle and the phone layout's Files tab open the Files pane once the gear's "Files control in the dashboard bar"
-setting (T317 add-on) is on; OFF by default since T317b (the user 2026-09-10): a fresh store hides both, closes a pane
+toggle and the phone layout's Files tab open the Files pane once the gear's Files row (Settings, General, Panes;
+"Files control in the dashboard bar" until T407) is on; OFF by default since T317b (the user 2026-09-10): a fresh store hides both, closes a pane
 an earlier session left open and refuses a bring-forward, and the gear's write (heard through the storage event) shows
 the control without a reload. With FILES_SHOTS=<dir> the driver writes screenshots (the control shown, and hidden; the
 bottom bar with the control hidden by default and shown after the toggle, dark and light). Skips LOUDLY without

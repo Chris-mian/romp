@@ -36,10 +36,11 @@ test("the Suggest /compact copy names no workers and promises every connected ma
   const sub = GEAR.slice(at, GEAR.indexOf("</label>", at));
   assert.ok(!/workers/i.test(sub), "no 'workers' in the copy — not a romp concept");
   assert.ok(!sub.includes("keeps its own copy"), "no per-install sentence");
-  assert.ok(sub.includes("Applies on every connected machine’s kernel."),
-    "the fileEditing wording: the setting follows to every attached kernel");
-  assert.ok(sub.includes("Off by default for a fresh install"), "the default stays stated");
-  assert.ok(/muted sessions/.test(sub) && /mid-turn/.test(sub), "the muted and mid-turn exclusions stay named");
+  // T408 (the user 2026-09-13): the row's copy is one concise sentence on a permanent line, not a hover tooltip; it still
+  // promises every connected machine; the exclusions (muted sessions, mid-turn) and the default live in the kernel's gate
+  // and its tests (tests/test_compact_suggest.py), not in the row
+  assert.ok(sub.includes("on every connected machine."), "the setting follows to every attached kernel");
+  assert.ok(sub.includes("class=rs-line>") && !sub.includes("rs-sub"), "a permanent line, no tooltip");
 });
 
 test("the suggestion's gate reads no session tags: a *_workers roster is not romp's concept (T248)", () => {

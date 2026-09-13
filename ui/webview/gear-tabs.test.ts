@@ -71,6 +71,8 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
             && G.indexOf(">This machine<") < G.indexOf("id=rs-conserve") && G.indexOf("id=rs-conserve") < G.indexOf("id=rs-updates") && G.indexOf("id=rs-updates") < G.indexOf(">Keyboard shortcuts<"),
             "General: Account, Panes (with the Files control), Appearance, Permissions, This machine, Keyboard shortcuts");
   assert.match(G, /<b>Allow file editing<\/b>/, "the permission row's name (T404)");
+  assert.match(G, /<input type=checkbox id=rs-filesctl>' \+\s*\n\s*'<span><b>Files<\/b>'/, "the Files row reads Files, like Sessions, Outline and Feed above it (T407)");
+  assert.doesNotMatch(GEAR, /Files control in the dashboard bar/, "the old words are gone from the gear");
   assert.match(G, /<b>Updates install automatically <span class=rs-mixed hidden><\/span><\/b>/, "the updates row's name (T404)");
   assert.doesNotMatch(GEAR, /id=rs-filelink\b|File links open in|fileLinkPane/, "the file-links setting is gone: the route follows the open Files pane (T404)");
   assert.doesNotMatch(GEAR, /id=rs-activeonly\b|id=rs-collapsegaps\b|>Sessions pane</, "the Sessions-pane rows left settings: the pane carries them (T404)");
@@ -84,6 +86,14 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   // Automation: the nudges; Task tracking: the judges alone; Debug: the judges' views then the diagnostics
   assert.ok(ps.automation.indexOf(">Nudges<") < ps.automation.indexOf("id=rs-autonudge") && ps.automation.indexOf("id=rs-autonudge") < ps.automation.indexOf("id=rs-suggestcompact"), "Automation: Nudges, Auto Nudge, Suggest /compact");
   assert.ok(ps.tasks.indexOf("<div class='rs-sec rs-sec-first'>Judges</div>") === ps.tasks.indexOf("<div class='rs-sec"), "Task tracking opens with the Judges");
+  // T408: the two Automation rows carry a permanent one-sentence line in place of a hover tooltip, and no title attribute
+  assert.match(ps.automation, /<span class=rs-line id=rs-autonudge-sub>' \+ AUTONUDGE_SUB \+ '<\/span>'/, "Auto Nudge's line, the var fillAutoNudge appends the mixed hosts to");
+  assert.match(GEAR, /var AUTONUDGE_SUB = "When a session goes idle with its work still in progress and nothing awaited, nudge it once for a status update, on every connected machine\.";/);
+  assert.match(ps.automation, /<span class=rs-line>When a session has sat idle for an hour with a lot of context built up, suggest one \/compact at a natural point, once per fill-up, on every connected machine\.<\/span>/);
+  assert.doesNotMatch(ps.automation, /rs-sub/, "no hover tooltip in the Automation pane: a popup under a two-row pane ran past the card and scrolled it");
+  assert.doesNotMatch(ps.automation, /title=/, "no title attribute either");
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.css"), "utf8");
+  assert.match(CSS, /#rsettings \.rs-line \{ display: block; color: var\(--text-muted, #9aa0a6\); font-size: 0\.92em; line-height: 1\.35; margin-top: 1px; \}/, "the note's dress, on its own line, in the flow");
   assert.ok(ps.debug.indexOf(">Judging bands<") < ps.debug.indexOf(">Diagnostics<") && ps.debug.indexOf(">Diagnostics<") < ps.debug.indexOf("id=rsver") && ps.debug.indexOf(">Updates<") < 0, "Debug: Judging bands, Diagnostics, the version; no Updates");
   assert.doesNotMatch(GEAR, /data-pane=(automatic|system)\b/, "no Automatic or System pane remains");
   // the tab widgets are a SECTION of Chat (the user's amendment 2026-09-12), after the chat's own sections, then the strip's controls;

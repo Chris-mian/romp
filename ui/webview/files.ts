@@ -73,7 +73,7 @@ function paint(): void {
   if (open) return;
   const title = el("div", "fs-title"); title.textContent = "No file open";
   const hint = el("div", "fs-hint");
-  hint.textContent = "While this pane is open, a file or folder clicked in the chat opens here. Closed, they open over the pane you clicked. Turn on the Files control in the dashboard bar (Settings, General, Panes) to open this pane.";
+  hint.textContent = "While this pane is open, a file or folder clicked in the chat opens here. Closed, they open over the pane you clicked.";   // no third sentence: whoever reads this has the pane open, so its control is already on (T407)
   const out: HTMLElement[] = [title, hint];
   if (recent.length) {
     const list = el("div", "fs-recent");

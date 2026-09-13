@@ -111,7 +111,27 @@ const out = {};
       await page.screenshot({ path: cfg.shots + "-" + tab + "-" + theme + ".png", clip: { x: fr.x + card.x, y: fr.y + card.y, width: card.width, height: card.height } });
     };
     out.bar = {};
-    for (const theme of ["dark", "light"]) { await shot("general", theme); out.bar[theme] = (await readPanel(setF)).bar; await shot("chat", theme); await shot("debug", theme); }
+    // T407 / T408: the Panes rows' labels; the Automation rows' permanent lines and the card's scroll box at rest and with the
+    // pointer on the last row (a hover tooltip there ran past the card and scrolled it), in both themes, with a shot of the pane
+    const readAutomation = () => setF.evaluate(() => {
+      const card = document.querySelector("#rsettings .rs-card");
+      const rows = ["rs-autonudge", "rs-suggestcompact"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); const line = row && row.querySelector(".rs-line");
+        return { id, label: row ? row.querySelector("b").textContent : null, line: line ? line.textContent : null, lineShown: !!line && getComputedStyle(line).display !== "none" && line.getBoundingClientRect().height > 0,
+                 lineBelowLabel: !!line && line.getBoundingClientRect().top >= row.querySelector("b").getBoundingClientRect().bottom - 1,
+                 hasSub: !!(row && row.querySelector(".rs-sub")), title: row ? row.getAttribute("title") : null, inputTitle: el ? el.getAttribute("title") : null }; });
+      return { rows, card: { scrollHeight: card.scrollHeight, clientHeight: card.clientHeight, scrollable: card.scrollHeight > card.clientHeight + 1 } };
+    });
+    out.automationRows = {};
+    for (const theme of ["dark", "light"]) {
+      await shot("general", theme); out.bar[theme] = (await readPanel(setF)).bar; await shot("chat", theme); await shot("debug", theme);
+      await shot("automation", theme);
+      const rest = await readAutomation();
+      await setF.hover("#rs-suggestcompact"); await setF.waitForTimeout(150);
+      const hover = await readAutomation();
+      await page.mouse.move(2, 2); await setF.waitForTimeout(100);   // the pointer off the rows (the mouse is the page's, not the frame's)
+      out.automationRows[theme] = { rest, hoverCard: hover.card, theme };
+    }
+    out.panesLabels = await setF.evaluate(() => ["rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl"].map((id) => { const el = document.getElementById(id), row = el && el.closest("label"); return row ? row.querySelector("b").textContent : null; }));
     for (const f of [page, setF]) await f.evaluate(() => document.body.classList.remove("theme-light"));
     await setF.click('#rsettings .rs-tab[data-tab="debug"]'); await setF.waitForTimeout(150);
     out.debug = await readPanel(setF);
@@ -270,6 +290,30 @@ class ServedSettingsTabs(unittest.TestCase):
         self.assertEqual(g["heads"]["automation"], ["Nudges"], table)
         self.assertEqual(g["heads"]["feed"], ["Cards"], table)
         self.assertEqual(g["heads"]["sessions"], ["New sessions"], "the Sessions-pane rows left settings: the pane carries them" + table)
+
+    def test_the_files_row_reads_files_like_the_pane_rows_above_it(self):
+        # T407 (the user 2026-09-13, a screenshot of the Panes section): the row read "Files control in the dashboard bar"
+        r = self._run(); table = "\n  " + json.dumps(r.get("panesLabels"))
+        self.assertEqual(r.get("panesLabels"), ["Sessions", "Outline", "Feed", "Files"], table)
+
+    def test_the_automation_rows_carry_a_line_each_no_tooltip_and_the_card_does_not_scroll_at_rest_or_under_the_pointer(self):
+        # T408 (the user 2026-09-13, a screenshot of the Automation tab): the pane scrolled over two rows because a hover tooltip
+        # under the last row ran past the card's bottom (the card is the modal's one scroll box), and the tooltip was hard to see
+        a = self._run()["automationRows"]
+        for theme in ("dark", "light"):
+            t = a[theme]; table = "\n  " + theme + ": " + json.dumps(t)
+            rows = {r["id"]: r for r in t["rest"]["rows"]}
+            self.assertEqual(rows["rs-autonudge"]["label"], "Auto Nudge", table)
+            self.assertEqual(rows["rs-autonudge"]["line"], "When a session goes idle with its work still in progress and nothing awaited, nudge it once for a status update, on every connected machine.", table)
+            self.assertEqual(rows["rs-suggestcompact"]["line"], "When a session has sat idle for an hour with a lot of context built up, suggest one /compact at a natural point, once per fill-up, on every connected machine.", table)
+            for rid in ("rs-autonudge", "rs-suggestcompact"):
+                self.assertTrue(rows[rid]["lineShown"] and rows[rid]["lineBelowLabel"], rid + ": the line is on screen, under the label" + table)
+                self.assertFalse(rows[rid]["hasSub"], rid + ": no hover tooltip" + table)
+                self.assertIsNone(rows[rid]["title"], rid + ": no title on the row" + table)
+                self.assertIsNone(rows[rid]["inputTitle"], rid + ": no title on the box" + table)
+            self.assertFalse(t["rest"]["card"]["scrollable"], theme + ": no scrollbar with the two rows and their lines" + table)
+            self.assertFalse(t["hoverCard"]["scrollable"], theme + ": …nor with the pointer on the last row" + table)
+            self.assertEqual(t["hoverCard"]["scrollHeight"], t["rest"]["card"]["scrollHeight"], theme + ": hovering adds nothing to the scroll box" + table)
 
     def test_the_seven_pills_sit_on_one_row_of_the_card_in_both_themes(self):
         # round one, LOW 1: at 10px of side padding the seven needed 528px against 518 available, and Debug alone dropped to a second

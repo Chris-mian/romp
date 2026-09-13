@@ -48,10 +48,11 @@ var SHORTCUT_ROWS =
   '<span class=rs-key-desc>view, record and rebind every dashboard shortcut</span></div>' +
   '<div class=rs-key id=rs-keys-vsc hidden><span class=rs-key-desc>Shortcuts are VS Code keybindings here — search "rompChat" in Keyboard Shortcuts.</span></div>';
 
-// Auto Nudge's hover description lives in a var because fillAutoNudge() appends to it when the attached
-// machines disagree — the row then has to say WHICH ones, and this is the one level down from the label.
-var AUTONUDGE_SUB = "When a session goes idle but its goal still shows working (not blocked, not awaiting agents or a job "
-  + "you), automatically nudge it once for a status update. Applies to every connected machine's kernel.";
+// Auto Nudge's one-sentence line under its label (T408, the user 2026-09-13: the Automation rows' hover tooltips were hard to
+// see, since a popup at the bottom of a two-row pane runs past the card and scrolls it; the rows say what they do in a line
+// that is always there instead) lives in a var because fillAutoNudge() appends to it when the attached machines disagree:
+// the row then has to say WHICH ones, and this is the one level down from the label.
+var AUTONUDGE_SUB = "When a session goes idle with its work still in progress and nothing awaited, nudge it once for a status update, on every connected machine.";
 // Fast mode's one-line hint, in a var because judgeFastGate() swaps it for the greyed-out reason when no
 // judge tier is on Opus (the opt-in rides only a call whose model is Opus, so the box is inert then).
 var JUDGEFAST_SUB = "This tier's judge calls run in Claude Code's fast mode (an Opus-only research preview, billed at a premium, "
@@ -117,7 +118,7 @@ var GEAR_HTML =
   // window carries filesControl: true without ever touching this box; the old key is never read and load() drops it,
   // so the next save leaves it behind.
   '<label class=rs-row><input type=checkbox id=rs-filesctl>' +
-  '<span><b>Files control in the dashboard bar</b>' +
+  '<span><b>Files</b>' +   // the row's name follows Sessions, Outline and Feed above it (T407, the user 2026-09-13); the id, the key and the default stand
   '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links then open over the pane you clicked.</span>' +
   '</span></label>' +
   // APPEARANCE, a section of General since T404 (the user 2026-09-13; a tab of its own before, renamed from Colors 2026-08-28): the
@@ -233,13 +234,16 @@ var GEAR_HTML =
   '<div class=rs-pane data-pane=automation hidden>' +
   // AUTOMATION (T404, the user 2026-09-13): what romp sends to the sessions on its own
   "<div class='rs-sec rs-sec-first'>Nudges</div>" +
+  // the two rows carry a permanent one-sentence line (rs-line) in place of a hover tooltip (T408): the pane has two rows, so a
+  // popup under either ran past the card's bottom, and the card, the modal's one scroll box, grew a scrollbar for it and clipped
+  // it. A note about what changes while task tracking is off may follow the line (the master switch's), in that order.
   "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
   '<span><b>Auto Nudge</b><span class=rs-mixed id=rs-autonudge-split hidden></span>' +
-  '<span class=rs-sub id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
+  '<span class=rs-line id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
   '</span></label>' +
   "<label class='rs-row'><input type=checkbox id=rs-suggestcompact>" +
   '<span><b>Suggest /compact</b><span class=rs-mixed hidden></span>' +
-  '<span class=rs-sub>When a session has been idle over an hour with a lot of context built up (first past 400k tokens, again past 800k), send it ONE suggestion to /compact at a natural boundary — its call, once per fill-up. Never sent to muted sessions or anything mid-turn. Off by default for a fresh install. Applies on every connected machine’s kernel.</span>' +
+  '<span class=rs-line>When a session has sat idle for an hour with a lot of context built up, suggest one /compact at a natural point, once per fill-up, on every connected machine.</span>' +
   '</span></label>' +
   '</div>' +
   '<div class=rs-pane data-pane=tasks hidden>' +
