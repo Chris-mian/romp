@@ -61,3 +61,18 @@ test("render.ts: one helper writes #content.scrollTop, files the row only when t
   // the gesture marker: a write's echo is consumed, anything else files a gesture row
   assert.match(RENDER, /const cls = classifyScroll\(c\.scrollTop, lastScrollWriteAfter\);\s*\n\s*const gv = activeId \? views\.get\(activeId\) : null;\s*\n\s*if \(gv\) gv\.gestureScroll = cls === "gesture";[^\n]*\n\s*if \(cls === "gesture"\) \{ if \(gestureEvidence\(settleLastInput, Date\.now\(\), settleScrollerHeld\)\) settleGesture\(\); else settleSample\(\); \}[^\n]*\n(?:\s*\/\/[^\n]*\n){3}\s*lastScrollWriteAfter = null;[^\n]*\n\s*if \(cls !== "write-echo"\) scrollDiagRow\("scrollgesture", \{ sid: activeId \|\| "", top: c\.scrollTop, gesture: true, sh: c\.scrollHeight, ch: c\.clientHeight \}\);/, "the scroll nobody's code asked for is the user's; a write's echo is consumed, never filed (the classification is read once and marks the view for the edge check, T366)");
 });
+
+test("render.ts: the append path hands the write the scrollTop it read before the re-render, so a tail that came back shorter is claimed, not a gesture", () => {
+  // a lone tool turn folding into a group when the next call lands, a queued card replaced by a shorter landed atom: the browser
+  // clamps a bottom reader at the forced layout before the write runs; without `from` the write moved nothing, filed no row, set no
+  // echo marker, and the clamp's pending scroll event filed as a gesture (the T262h and T262i labs, red alone on the devbox)
+  assert.match(RENDER, /const before = content\.scrollTop;\s*\n\s*const heightBefore = content\.scrollHeight;/, "the append path reads the reader's spot before the re-render");
+  assert.match(RENDER, /writeScroll\(content, content\.scrollHeight, "append-stick", true, before\);/, "…and hands it to the stick write as the move's origin");
+  assert.match(RENDER, /writeScroll\(content, top, "toolgroup-toggle", false, top\);/, "the toggle's origin is the top it read before the collapse (round two, medium; pinned round three, low 3)");
+  assert.match(RENDER, /function restoreScrollAnchor\(content: HTMLElement, v: View, a: \{ uuid: string; y: number \} \| null, from\?: number\): boolean \{/, "the anchor restore takes the caller's pre-change read (round three, medium)");
+  assert.match(RENDER, /writeScroll\(content, yNow - a\.y, "anchor-restore", false, from\);/, "…and hands it to its write as the origin");
+  assert.match(RENDER, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor, before\)\)\)/, "…which the append path passes: a reader a few pixels off the bottom whose tail came back shorter");
+  const reveal = RENDER.slice(RENDER.indexOf("function renderLiveAsk() {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function renderLiveAsk() {")));
+  assert.ok(reveal.indexOf("const topBefore = content ? content.scrollTop : 0;") < reveal.indexOf("host.replaceChildren();"), "the reveal's origin is read before the card is emptied, the first layout-forcing change in the function (round three, low 1)");
+  assert.match(RENDER, /const before = from \?\? content\.scrollTop;/, "the write takes the caller's origin over its own read");
+});

@@ -604,7 +604,7 @@ class RewoundMemo(Harness):
                               "print(s.get('docConsults'), sorted(s['docMemo']))"],
                              cwd=os.path.dirname(HERE), env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(out.stdout.strip(), "0 ['bytes', 'capBytes', 'entries']", out.stdout + out.stderr)
+        self.assertEqual(out.stdout.strip(), "0 ['bytes', 'capBytes', 'entries', 'parseMultiple']", out.stdout + out.stderr)
 
     def test_a_state_rebind_forgets_the_memoized_document(self):
         """Round one, low 3: set_checkpoint_dir cleared every checkpoint table but the document memo; the harnesses' fresh process
@@ -636,9 +636,11 @@ class RewoundMemo(Harness):
         em._doc_folds_on_disk(p1); em._doc_folds_on_disk(p2)
         with em._CKPT_LOCK:
             self.assertEqual(list(em._DOC_MEMO), [p2], "over the cap the oldest goes and the newest stays")
-        self.assertEqual(em.checkpoint_stats()["docMemo"], {"entries": 1, "bytes": s2, "capBytes": 1})
+        w2 = int(s2 * em._DOC_MEMO_PARSE_MULTIPLE)                          # the weight is RESIDENT bytes: size on disk times the
+        self.assertGreater(w2, s2)                                          #  measured parse multiple, never the file size alone
+        self.assertEqual(em.checkpoint_stats()["docMemo"], {"entries": 1, "bytes": w2, "capBytes": 1, "parseMultiple": em._DOC_MEMO_PARSE_MULTIPLE})
         em._doc_folds_on_disk(p2)                                           # served from the memo: no growth
-        self.assertEqual(em.checkpoint_stats()["docMemo"]["bytes"], s2)
+        self.assertEqual(em.checkpoint_stats()["docMemo"]["bytes"], w2)
 
 
 if __name__ == "__main__":

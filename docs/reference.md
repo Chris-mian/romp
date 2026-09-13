@@ -964,8 +964,9 @@ dashboard receives its active tab whole and every other tab as a skeleton, so
 the one parse it needs is the one its own connect push runs. The feed-only warm
 parses only sessions whose transcript, state log or goal store changed since
 the boot, or that are working now. The interrupt-block and working-note tick
-jobs skip a session whose transcript, state log and goal store are unchanged
-since their last look, with the boot as the first baseline: a session blocked
+jobs skip a session whose keyed files (the transcript, the state log, the goal
+store with its override journal and archive, the episode, clears, postal and
+downtime logs and the nudge ledger, ten in all) are unchanged since their last look, with the boot as the first baseline: a session blocked
 before the restart and untouched after reads blocked from the store the
 previous kernel wrote, with no parse. The judges' passes walk sessions newest
 first and yield between them; their first pass still parses what it
@@ -1533,7 +1534,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   served); `GET /perf?ring=all` carries the whole ring, which holds
   `stageRingMax` cycles: `ROMP_PERF_STAGE_RING` when set, else one per 256 MiB
   of the machine's memory floored at 16, resolved once, never a literal
-  count, and an override above the fraction is clamped to it. Under `jobs`
+  count, and an override above the fraction is clamped to it.
+  `GET /perf?stacks=1` (`romp perf stacks`) fills `stacks` on demand (its
+  shape below), the read a slow boot needs to name the lock a thread waits
+  on (the nudge walk queued behind a judge's parse) instead of inferring it
+  from the byte rows (T401); token-gated like every `/perf` read. Under `jobs`
   every tick job is a sub-stage (`jobs.<job>`), and the bytes read between
   them go to `jobs.other`, which carries bytes only, never `ms` (the same for
   `push.other`); `prelude` is the cycle's opening (the liveness snapshot, the
@@ -1541,15 +1546,46 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   bookkeeping could not close. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
   stage without the kernel alive, and `parse`, the assembly's road counters at
-  the first cycle's end (T398): `serve`, `fold`, `restore`, `full` with
+  the first cycle's end (T398): `serve`, `fold`, `restore` (with
+  `restore:afterDemote`, the restores taken over an entry the gates demoted
+  instead of a whole parse, and `restore:chainRefused`, a document that stood
+  but whose leaf tail does not chain onto it: every tail record bearing a
+  uuid or a parentUuid key must REACH, through its parent chain within the
+  tail, the pre-cut spine tip, and only when the document's `tipChildless` bit says the writer proved,
+  from the resolved graph, that the tip had no pre-cut child (a compaction
+  anchored on it counts; an older document without the bit is not proven); a
+  compaction boundary in the tail is held to the same rule through its
+  effective parent, resolved as the parse resolves it (the logical parent,
+  else, for a truthy anchor naming no known record, the preserved segment's
+  tail, anchor or head that does; a boundary with no anchor is a root); so a
+  null or missing parent, a self-link, a cycle, a tail uuid reusing a pre-cut
+  record's (a uuid repeated within the tail is resolved as the parse resolves
+  it, the last record's parent winning), a parent anywhere else in the pre-cut part,
+  an unproven tip, an unknown parent, or a boundary re-anchored into the
+  interior or onto an unknown uuid refuses, whatever the record's type (one
+  standing disagreement with the cold parse remains outside the rule: a tail
+  record whose stamp precedes the cut or the tip chains soundly but the
+  write-time stamp-order guard is not re-checked, so such a restore can
+  differ from a cold parse; a later round); a document written before the bit is unproven, so every standing
+  document is refused once at its first restore after the change and booked
+  `full:refused`, then rewritten with the bit; the restore falls to the whole parse, at boot
+  and after a demotion alike, and `seeded:chainRefused` counts the same
+  refusal by the chain-membership and file-rewound readers, which then walk
+  the file cold, T402), `full` with
   `full:demoted` (an entry the gates demoted, the `g:<reason>` beside it:
+  `descent` when the new leaf does not chain to the old through the delta,
   `rewrite` when the leaf's record entry was replaced by a from-zero read
-  under a new generation, `nonleaf` when a lineage file moved),
+  under a new generation, `nonleaf` when a lineage file moved or grew,
+  `inputs`, `recs-gone`, `no-leaf-slot`, `empty-graph`, `uuid-known`,
+  `boundary`, `summary`, `promptid`, `skill-link`, `ts`, `kept`),
   `full:noDocument`, `full:noDir` (no checkpoint directory), `full:refused` (a document that stood but did not verify,
   its fallback reason counted), `bypass` (a pending cut armed on the session)
   and `fallback`; the same block rides `asmCheckpoint.parse` on GET /perf,
   beside `asmCheckpoint.removed`, the document files removed per reason (a
-  fallback's reason, or the boot sweep).
+  fallback's reason, or the boot sweep). The row also carries `nudgeWalk`
+  (T401): the first eight characters of the session ids whose parses the
+  boot's nudge walk `skipped` on its memo, those it `parsed` (at most forty
+  each), and how many it `deferred` to a later pass.
 - `checkpoints`: the folds' checkpoints since boot: `restored` (files whose
   folds resumed from one), `restoredFolds` (restores per fold name), `writes`,
   `swept` (checkpoints of vanished files removed at boot), `refolds` (per fold
@@ -1582,8 +1618,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   validated read that the two boot restore paths, a write's carry and a
   retirement's consult share; at boot the restore paths dominate it, one per
   checkpointed file), `docMemo` (the documents that read keeps for the write
-  that follows: `entries`, `bytes` as their sizes on disk, and `capBytes`, a
-  ceiling of MemTotal / 512 floored at 64 MiB, `ROMP_DOC_MEMO_CAP_MB`).
+  that follows: `entries`, `bytes` as their RESIDENT weight, each file's size
+  on disk times `parseMultiple`, the measured 4.5 a parsed document weighs
+  against its bytes on disk, and `capBytes`, a ceiling on that resident
+  weight of MemTotal / 512 floored at 64 MiB, `ROMP_DOC_MEMO_CAP_MB`; the
+  ceiling is what the memo may hold in memory, not a sum of file sizes).
   `rewoundMemo`: the judges' incident scan used to read every dead episode
   file of a lineage whole at every boot (`_per_file_rewound`, 542 MB on one
   devbox boot); its verdict set per frozen file is now the fold `rewoundUuids`
@@ -1605,9 +1644,25 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   rise with no growth is a surprise) and the
   walks whose memo could not be read or stored (`fallback`: a document state
   of the wrong shape, or no reader entry after the walk).
-- `stacks`: every thread's last six frames, keyed by the thread's ident and
-  name, when the kernel runs with `ROMP_PERF_STACKS` set (a debugging aid for a
-  served test on a runner nobody can log into); `null` otherwise.
+- `stacks`: every live thread's stack, keyed `"<ident> <kind>"`. The kind
+  is the thread's name up to the naming convention's colon (`sdk` and
+  `sdk-intr` for a session's threads, `codex` for a Codex session's worker,
+  `end-host` for a session's end hook, `peer` for a postal peer loop), the
+  target function for a thread the code left unnamed (`_ask_poll`,
+  `_parent_watch`, `_update_check_loop`, `_tunnel_supervisor`,
+  `serve_forever`, ...), `handler` for the HTTP server's request threads,
+  `judge-index`, `judge-triage` and the other tiers' pool workers, `pool`
+  for an unprefixed pool worker, `thread` for a default name with no target,
+  `pusher`, `producer`, `index`, `triage`, `parse-warm`, `boot-warm`,
+  `sdk-boot`, `main`; never a session's name, sid, host or path (the ident
+  keeps two workers sharing a kind apart). Each row has `self` (the thread building the
+  sample), `stage` (the thread's current stage mark: the pusher's
+  `jobs.<job>` or `push`, a handler's `connect`, `null` outside one) and
+  `frames`, "function (file:line)" strings innermost last, at most 40; no
+  locals, arguments or session content. Filled when the kernel runs with
+  `ROMP_PERF_STACKS` set (a debugging aid for a served test on a runner
+  nobody can log into) or when the request says `?stacks=1` (`romp perf
+  stacks`, T401); `null` otherwise.
 - `recordCache`: the reader's record cache (the JSONL records held in memory):
   `entries`, `bytes`, `budgetBytes`, `countCap`, `inserts`, `evictions`,
   `evictedBytes`, `budgetEvictions`, `dropped` and `droppedBytes` (the
@@ -1761,7 +1816,31 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   read-only store cache (`hit`, `miss`, `compare_miss`, `refuse`, `dup`,
   `absent`, `corrupt`, `unreadable_journal`, `evict`, `fallback`, `poisoned`,
   with `entries`, `bytes` and `off`); `chain` is the write-moment chain memo
-  (`hit`, `miss`, `populate`, `bypass`); `nudgeGate` is the auto-nudge walk's
+  (`hit`, `miss`, `populate`, `bypass`); `nudgeWalk` is the auto-nudge walk's
+  parse gate (T401): `looks`, `skippedParses` (a session whose files are
+  unchanged since its last completed look and whose clock legs, noted by that
+  look with the instant each could flip, have not come due; the skip repeats
+  the recorded verdict and does nothing else; only a look whose verdict came
+  from a road marked file-keyed, or the full walk run to its end, records a
+  skippable memo, every other exit an unbounded one), `parses`, `coldParses`
+  (parses no cache held), `deferredSessions` (the yield: with a client
+  connected the pass stops after a look that paid a cold parse; the first
+  deferred session is the resume cursor, so the next pass rotates the
+  recency order to start there and every session is reached within as many
+  passes as there are cold parses), `unbounded` (memos refused because a leg's release is not one
+  of the session's files: a deferral retired by a judge pass, a stamped wait
+  a peer's bounce can end, an owed reminder a refused ledger write left
+  standing), `clockDue` (memos refused because a noted flip has come) and
+  `wakeOnly` (looks with injected follow-ups off, which neither skip nor
+  record because the toggle is not a file, so that configuration keeps the
+  boot's cold parses); the files the memo keys on are the transcript, the
+  state log, the goal store with its override journal and archive, the
+  episode log, the clears log, the postal log, the kernel's downtime log
+  (the working verdict's suspension check reads a list that log refills)
+  and the nudge ledger; the pass takes every session's stat before it reads
+  any pass-level snapshot, so no input a look reads is older than the key
+  its memo is recorded under;
+  `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue

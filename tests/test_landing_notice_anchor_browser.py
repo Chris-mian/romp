@@ -13,7 +13,7 @@ and #content in three layouts: a viewport wide enough for ONE row of tabs, a nar
 or more rows, and the wrapped one reached by resizing WHILE the pill shows (the rows change under a showing pill).
 Each expects the pill's top edge at or below the strip's bottom edge and the pill inside the chat section's box, and
 the pill outside the body (its parent the anchor). Where the page has no hook (a build before the fix) the driver
-shows the pill the way the old code did, a .tx-loading-pill appended to the body, and says so (shownBy), so a run
+shows the pill the way the old code did, a .tx-landing-notice appended to the body, and says so (shownBy), so a run
 against the old build fails on the geometry and the hook pin alike: LOADING_PILL_DIST=<dir> serves another tree's UI
 bundle (the red run's before); LOADING_PILL_SHOTS=<prefix> writes <prefix>-dark.png and <prefix>-light.png of the
 wrapped layout with the pill showing; the light theme is measured on every run. Skips LOUDLY without the extension
@@ -80,15 +80,15 @@ await page.waitForTimeout(600);
 // show the pill: the page's hook when the build has one, else the way the old code did (the red run's before)
 const show = () => page.evaluate(() => {
   if (typeof window.__rompLoadingPill === "function") { window.__rompLoadingPill(true); return "hook"; }
-  let p = document.querySelector(".tx-loading-pill");
-  if (!p) { p = document.createElement("div"); p.className = "tx-loading-pill"; p.textContent = "Loading earlier messages…"; document.body.appendChild(p); }
+  let p = document.querySelector(".tx-landing-notice");
+  if (!p) { p = document.createElement("div"); p.className = "tx-landing-notice"; p.textContent = "Loading earlier messages…"; document.body.appendChild(p); }
   p.style.display = ""; return "legacy-body-append";
 });
 const measure = (label, shownBy) => page.evaluate(([label, shownBy]) => {
   const r1 = (v) => Math.round(v * 10) / 10;
   const r = (el) => { const b = el.getBoundingClientRect(); return { top: r1(b.top), bottom: r1(b.bottom), left: r1(b.left), right: r1(b.right), w: r1(b.width), h: r1(b.height) }; };
   const tabs = document.getElementById("tabs"), tabbar = document.getElementById("tabbar"), content = document.getElementById("content");
-  const pill = document.querySelector(".tx-loading-pill");
+  const pill = document.querySelector(".tx-landing-notice");
   const tops = [...new Set(Array.from(tabs.querySelectorAll(".tab[data-id]")).map((t) => Math.round(t.getBoundingClientRect().top)))];
   const cs = pill ? getComputedStyle(pill) : null;
   return { label, shownBy, rows: tops.length, tabs: r(tabs), tabbar: r(tabbar), content: r(content), viewport: { w: window.innerWidth, h: window.innerHeight },
@@ -104,7 +104,7 @@ cases.push(await measure("one row", by));
 await page.setViewportSize({ width: cfg.narrow, height: 760 }); await page.waitForTimeout(300);
 cases.push(await measure("wrapped while showing", by));
 // the wrapped layout, the pill hidden then shown again there
-await page.evaluate(() => { const p = document.querySelector(".tx-loading-pill"); if (p) p.style.display = "none"; });
+await page.evaluate(() => { const p = document.querySelector(".tx-landing-notice"); if (p) p.style.display = "none"; });
 await page.waitForTimeout(50);
 by = await show(); await page.waitForTimeout(100);
 cases.push(await measure("wrapped", by));
@@ -116,15 +116,15 @@ if (cfg.shots) await page.screenshot({ path: cfg.shots + "-light.png" });
 await page.evaluate(() => document.body.classList.remove("theme-light"));
 // hidden again: the pill stays in place, invisible, no second node
 await page.evaluate(() => { if (typeof window.__rompLoadingPill === "function") window.__rompLoadingPill(false); });
-const after = await page.evaluate(() => ({ pills: document.querySelectorAll(".tx-loading-pill").length, anchors: document.querySelectorAll(".tx-loading-anchor").length,
-  shown: (() => { const p = document.querySelector(".tx-loading-pill"); return !!p && getComputedStyle(p).display !== "none"; })() }));
+const after = await page.evaluate(() => ({ pills: document.querySelectorAll(".tx-landing-notice").length, anchors: document.querySelectorAll(".tx-loading-anchor").length,
+  shown: (() => { const p = document.querySelector(".tx-landing-notice"); return !!p && getComputedStyle(p).display !== "none"; })() }));
 fs.writeFileSync(cfg.out, JSON.stringify({ cases, after }));
 await browser.close();
 console.log("RESULT: ok");
 """
 
 
-class ServedLoadingPillAnchor(unittest.TestCase):
+class ServedLandingNoticeAnchor(unittest.TestCase):
     maxDiff = None
     result = None
 

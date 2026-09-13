@@ -161,8 +161,9 @@ class RestartOverACheckpointedSession(unittest.TestCase):
                 try:
                     perf = self._get(port, "/perf")
                     ai = perf.get("asmIndex") or {}
-                    stacks = {n: fr for n, fr in (perf.get("stacks") or {}).items()
-                              if not any("stop.wait" in l or "waiter.acquire" in l or "selector" in l for l in fr[-1:])}   # the idle ones aside
+                    stacks = {n: fr for n, fr in (perf.get("stacks") or {}).items()   # T401: a row per thread, its frames
+                              if not any(l.startswith(("wait (", "acquire (", "select (", "_wait_for_tstate_lock ("))   # "function (file:line)"
+                                         for l in (fr.get("frames") or [])[-1:])}   # the idle ones aside (their innermost frame is a wait)
                     timeline.append({"t": round(time.time() - t0, 1), "built": ai.get("materialized"), "builtBy": ai.get("materializedBy"),
                                      "hydratedBy": (perf.get("asmCheckpoint") or {}).get("hydratedBy"),
                                      "process": perf.get("process"), "pusher": perf.get("pusher"), "stagesMs": perf.get("stages_ms"),

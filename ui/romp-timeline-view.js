@@ -424,6 +424,13 @@ let MENU_STYLE = null, MENU_CHECK_STYLE = null;   // set by applyPal() below (da
 const TAG_CHIP_STYLE = 'display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:9px;font-size:0.82em;border:1px solid ';
 const TAG_CHIP_OFF_OPACITY = '0.45';
 const TAG_CHIP_OFF_CLASS = 'tag-chip-off';
+// the same pill's numbers for a chip drawn in SVG (T399: the pane's tag group heads mirror tagChip, never a filled pill and
+// never a second set of literals): parsed from TAG_CHIP_STYLE, so a change to the shared chip moves the SVG twin too
+const TAG_CHIP_GEOM = (() => {
+  const num = (re, d) => { const m = re.exec(TAG_CHIP_STYLE); return m ? parseFloat(m[1]) : d; };
+  const pad = /padding:(\d+)px (\d+)px/.exec(TAG_CHIP_STYLE);
+  return { padY: pad ? +pad[1] : 2, padX: pad ? +pad[2] : 7, radius: num(/border-radius:(\d+)px/, 9), fontEm: num(/font-size:([\d.]+)em/, 0.82), border: num(/border:(\d+)px/, 1) };
+})();
 const TAG_CHIP_ROW_STYLE = 'padding:3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;';
 // Judging band: a compact second timeline UNDER the session lanes, on the SAME axis — one row per
 // summarizer judge (docs/judges.md). Each mark is FILLED with the colour of the SESSION it acted on and
@@ -454,6 +461,83 @@ const JUDGE_KIND = { segment: 'caption', turn: 'turn caption', index: 'archived'
   distill: 'key takeaway', brief: 'decision brief' };
 
 function el(t, a) { const n = document.createElementNS(SVGNS, t); for (const k in a) n.setAttribute(k, a[k]); return n; }
+
+// GROUP BY TAG (T399, the user 2026-09-12: the Sessions pane sections its lanes by tag the way the chat tab strip does,
+// ui/webview/tab-groups.ts): one section per tag in the user's tag order (viewTagUnion), a session under EVERY tag it
+// carries (a lane in each section), the sessions in no tag trailing unlabeled behind a divider, as on the strip. ONE blob
+// for both surfaces, the strip's own romp:tabgroups (this file is served raw and loads no module, so the shape is mirrored
+// here and a drift test compares): the FOLDS (collapsed / expanded, archived folded by default, the pins carried through)
+// are one truth, so a section folded here is folded on the strip; the SWITCH is the pane's own field in it (`timeline`,
+// present only while on, so the pane is exactly as it was until the user turns it on). Per browser, like the strip's.
+const TABGROUPS_KEY = 'romp:tabgroups';
+const TABGROUPS_EVENT = 'romp-tabgroups';
+const TABGROUPS_DEFAULT_COLLAPSED = ['archived'];   // tab-groups.ts DEFAULT_COLLAPSED (that tag exists to put sessions away)
+function tabGroupsState() {
+  let o = {}; try { o = JSON.parse(localStorage.getItem(TABGROUPS_KEY) || '{}') || {}; } catch (e) { o = {}; }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) o = {};
+  const strs = (xs) => (Array.isArray(xs) ? xs.filter((x) => typeof x === 'string') : []);
+  return { raw: o, on: o.on !== false, collapsed: strs(o.collapsed), expanded: strs(o.expanded), timeline: o.timeline === true };
+}
+function writeTabGroupsBlob(blob) {
+  try { localStorage.setItem(TABGROUPS_KEY, JSON.stringify(blob)); } catch (e) { /* quota / private mode: the preference does not outlive the page */ }
+  try { window.dispatchEvent(new CustomEvent(TABGROUPS_EVENT)); } catch (e) { /* no window */ }
+}
+function tlGroupByTag() { return tabGroupsState().timeline; }
+// the switch: a read-modify-write of the strip's blob, every other field carried (the strip's own writer does the same for
+// this one, tab-groups.ts writeTabGroups); off DROPS the field, so the blob is as before T399
+function setTlGroupByTag(on) {
+  const blob = Object.assign({}, tabGroupsState().raw);
+  if (on) blob.timeline = true; else delete blob.timeline;
+  writeTabGroupsBlob(blob);
+}
+function sectionFolded(st, name) {
+  if (st.collapsed.indexOf(name) >= 0) return true;
+  if (st.expanded.indexOf(name) >= 0) return false;
+  return TABGROUPS_DEFAULT_COLLAPSED.indexOf(name) >= 0;
+}
+// the fold, in the strip's shape (tab-groups.ts setSectionCollapsed): a name is listed only where it differs from the
+// default set; the pins and every other field ride through untouched
+function toggleSectionFold(name) {
+  const st = tabGroupsState(), folded = !sectionFolded(st, name);
+  const collapsed = st.collapsed.filter((n) => n !== name), expanded = st.expanded.filter((n) => n !== name);
+  const dflt = TABGROUPS_DEFAULT_COLLAPSED.indexOf(name) >= 0;
+  if (folded) { if (!dflt) collapsed.push(name); } else if (dflt) expanded.push(name);
+  writeTabGroupsBlob(Object.assign({}, st.raw, { on: st.on, collapsed, expanded, pinned: Array.isArray(st.raw.pinned) ? st.raw.pinned : [] }));
+  return folded;
+}
+function tagSections(vis, unions) {
+  const out = [], seen = new Set();
+  for (const u of unions) {
+    const lanes = vis.filter((s) => u.members.indexOf(s.id) >= 0);
+    if (!lanes.length) continue;
+    lanes.forEach((s) => seen.add(s.id));
+    out.push({ name: u.name, color: u.color || '', lanes });
+  }
+  return { sections: out, trail: vis.filter((s) => !seen.has(s.id)) };
+}
+// THE ROW MODEL: what draw() lays out, one entry per LANE_GAP row, top to bottom. Off: the visible lanes in their order,
+// nothing else (the pane exactly as before T399, row for row). On: each section's head (`folded` keeps the head alone),
+// its lanes, then the untagged trail behind a divider row when a section preceded it. Pure, so the rule executes in tests.
+// the rows that wear the selection band (T399, the round-two low: every copy wore it, so the row cursor was invisible between
+// two copies): grouped with copies, the cursor's row when it is one of this session's lanes, else the first lane; one lane,
+// or ungrouped, that lane; folded away, none
+function selBandRows(rows, sid, selRow, grouped) {
+  const mine = []; rows.forEach((r, i) => { if (r.kind === 'lane' && r.s.id === sid) mine.push(i); });
+  if (!grouped || mine.length <= 1) return mine;
+  return (selRow != null && mine.indexOf(selRow) >= 0) ? [selRow] : [mine[0]];
+}
+function tlRows(vis, unions, st, grouped) {
+  const rows = [];
+  if (!grouped) { for (const s of vis) rows.push({ kind: 'lane', s }); return rows; }
+  const sec = tagSections(vis, unions);
+  for (const g of sec.sections) {
+    const folded = sectionFolded(st, g.name);
+    rows.push({ kind: 'head', name: g.name, color: g.color, count: g.lanes.length, folded });
+    if (!folded) for (const s of g.lanes) rows.push({ kind: 'lane', s });
+  }
+  if (sec.trail.length) { if (sec.sections.length) rows.push({ kind: 'trail' }); for (const s of sec.trail) rows.push({ kind: 'lane', s }); }
+  return rows;
+}
 function esc(s) { return (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 // Strip romp's own HTML-comment markers (<!-- romp-injected/-system/-auto/-goal-id … -->) from a prompt before
 // it's shown. They're classification metadata — invisible in the chat's MARKDOWN render, but the timeline
@@ -1451,6 +1535,8 @@ class TimelinePanel {
     // in another same-origin iframe. React to that via the storage event so they apply live (no reload):
     // re-read collapseGaps, then repaint (draw() reads debug fresh).
     try {
+      // T399: a fold or the group-by-tag switch toggled in another window (the strip's own key) repaints the lanes
+      window.addEventListener('storage', (e) => { if (e && e.key === TABGROUPS_KEY) this.draw(); });
       window.addEventListener('storage', (e) => {
         if (!e || e.key !== 'romp:settings') return;
         try { const s2 = JSON.parse(e.newValue || localStorage.getItem('romp:settings') || '{}');
@@ -1663,12 +1749,21 @@ class TimelinePanel {
     else if (e.key === 'Enter') { e.preventDefault(); this.composeSelected(); }    // Enter → cursor into the prompt box
   }
   moveSelection(dir) {
-    const vis = this._vis || [];
-    if (!vis.length) return;
-    let idx = vis.findIndex((s) => s.id === this.selectedSid);
-    if (idx < 0) idx = dir > 0 ? -1 : vis.length;            // first press lands on the first/last lane
-    idx = Math.max(0, Math.min(vis.length - 1, idx + dir));
-    this.selectedSid = vis[idx].id;
+    // the ROWS the pane shows (T399, the fold verifier's second medium: the walk stepped the ungrouped visible list, a lane
+    // folded away included, and auto-opened it): grouped, the visible lanes in section order, a session under two tags
+    // twice, the heads and the divider skipped; ungrouped, the visible lanes as before. The position is a ROW, so a copy
+    // stepped onto is left by the next press instead of snapping back to the session's first lane.
+    // `walk`: the drawn lanes with their ROW indices (_selRow is a row, the same index the click and the band use)
+    const walk = [];
+    if (this._grouped && this._rows) this._rows.forEach((r, i) => { if (r.kind === 'lane') walk.push({ s: r.s, i }); });
+    else (this._vis || []).forEach((s, i) => walk.push({ s, i }));
+    if (!walk.length) return;
+    let pos = (this._selRow != null) ? walk.findIndex((w) => w.i === this._selRow && w.s.id === this.selectedSid) : -1;
+    if (pos < 0) pos = walk.findIndex((w) => w.s.id === this.selectedSid);
+    if (pos < 0) pos = dir > 0 ? -1 : walk.length;           // first press lands on the first/last lane the pane shows
+    pos = Math.max(0, Math.min(walk.length - 1, pos + dir));
+    this._selRow = walk[pos].i;
+    this.selectedSid = walk[pos].s.id;
     this.draw();
     // debounce the auto-open so holding/rapid arrows settle on the lane you land on (not every one
     // in between) — preview-only, focus stays on the timeline.
@@ -1682,15 +1777,33 @@ class TimelinePanel {
     const t = turns.length ? turns[turns.length - 1] : null;
     return s.id;   // T278b: a bar carries no tid on the wire; the lane key is the session it belongs to
   }
+  // the selected session as a DRAWN lane (T399): grouped, a session folded away is none, so no open or compose reaches it
+  _selectedLane() {
+    if (this._grouped && this._rows) { const r = this._rows.find((r) => r.kind === 'lane' && r.s.id === this.selectedSid); return r ? r.s : null; }
+    return (this._vis || []).find((x) => x.id === this.selectedSid) || null;
+  }
+  // a reveal or focus aimed at a session whose lanes are all folded away (T399, the ruling of 2026-09-13): the user asked for
+  // THAT session, so the section carrying its first lane unfolds, written to the shared fold state so the strip follows, and
+  // the pan and pulse then land on the lane as for a visible one. Returns the section's name, null when nothing was folded
+  _unfoldFor(sid) {
+    if (!sid || !this._grouped || (this._rowOf && sid in this._rowOf)) return null;
+    const st = tabGroupsState();
+    for (const u of viewTagUnion(this._curViews())) {
+      if (u.members.indexOf(sid) < 0 || !sectionFolded(st, u.name)) continue;
+      toggleSectionFold(u.name);
+      return u.name;
+    }
+    return null;
+  }
   openSelected(preserveFocus) {
-    const s = (this._vis || []).find((x) => x.id === this.selectedSid);
+    const s = this._selectedLane();
     if (!s) return;
     this.openChat(this._laneTid(s), null, preserveFocus);   // switch → bottom (latest), no specific anchor
   }
   // Enter on the selected lane → open its tab (at bottom) and drop the cursor into the chat's message
   // box so you can type a message to that session. (Needs the chat composer enabled — vs_chat.)
   composeSelected() {
-    const s = (this._vis || []).find((x) => x.id === this.selectedSid);
+    const s = this._selectedLane();
     if (!s) return;
     this.openChat(this._laneTid(s), null, false, true);
   }
@@ -2386,7 +2499,16 @@ class TimelinePanel {
   }
 
   // set the single selection highlight + redraw only on a real change.
-  _select(sid) { if (sid && this.selectedSid !== sid) { this.selectedSid = sid; this.draw(); } }
+  // `row`: the drawn row the click landed on (T399, the round-two medium: without it the arrow walk resumed from the session's
+  // FIRST copy, one row above the copy just clicked): the cursor for the walk and the band. A click on a copy of the already
+  // selected session moves the row all the same; a selection carrying no row (the chat's active tab) lets the walk find one
+  _select(sid, row) {
+    if (!sid) return;
+    const r = (row != null && row >= 0) ? row : null;
+    if (this.selectedSid === sid && this._selRow === r) return;
+    this.selectedSid = sid; this._selRow = r;
+    this.draw();
+  }
 
   // Reverse hover: a glyph hover tells the host to light the matching feed card + glow the chat turns
   // in [t0,t1] (the host has the receivers; web kernel only — no-op in Obsidian). sid null → clear.
@@ -2434,6 +2556,7 @@ class TimelinePanel {
     this._suppressClick = false;
     this._drag = {
       sid, fromIdx, order, toIdx: fromIdx, moved: false, mode: null,
+      noReorder: tlGroupByTag(),                                 // T399: grouped lanes follow the tag order; a vertical drag is a click
       startX: e.clientX, startY: e.clientY,                    // client coords → axis decision
       panOff: this.offSec(), panWin: this.winSec(),           // pan baseline (constant scale from gesture start)
     };
@@ -2448,6 +2571,7 @@ class TimelinePanel {
     if (d.mode == null) {
       d.mode = dragAxis(ev.clientX - d.startX, ev.clientY - d.startY);
       if (d.mode == null) return;                              // below threshold → still a potential click
+      if (d.mode === 'row' && d.noReorder) { this._drag = null; return; }   // grouped: no reorder; the release is a plain click
       d.moved = true; this.wrap.classList.add('tl-grabbing');   // closed-fist cursor over the whole plot (pan OR reorder)
       if (d.mode === 'row') this.selectedSid = d.sid;
     }
@@ -2718,6 +2842,7 @@ class TimelinePanel {
     const onWork = !!byId && (f.anchor === 'work' ? true : (f.anchor === 'prompt' ? false : kindWork));
     const sid = byId ? byId.sid : this._laneForFocusSid(f.sid);  // else fall back to sid (fork-aware)
     const t = byId ? byId.t : f.t;                               // else the written time (turn START)
+    if (sid) this._unfoldFor(sid);                               // T399: a session folded away is unfolded first (its section, shared)
     this._panToTime(t);                                          // pan so the target sits ~mid-window if off-screen
     if (sid) this.selectedSid = sid;
     this.draw();                                     // redraw with the new pan + selection (refreshes _geom/_vis)
@@ -2748,6 +2873,7 @@ class TimelinePanel {
     const lane = tb ? tb.sid : this._laneForFocusSid(sid);
     const tt = tb ? tb.t : t;
     if (tt == null) return;
+    if (lane) this._unfoldFor(lane);                // T399: a session folded away is unfolded first (its section, shared)
     this._panToTime(tt);
     if (lane) this.selectedSid = lane;
     this.draw();                                    // refreshes _geom/_vis, which _pulseFocus reads
@@ -2760,7 +2886,12 @@ class TimelinePanel {
   // on the work, not on a prompt/message glyph. (A poll redraw may clear it early — that's fine.)
   _pulseFocus(sid, t, workTurn) {
     const g = this._geom; if (!g) return;
-    const i = (this._vis || []).findIndex((s) => s.id === sid);
+    // the ROW of the session's first lane (T399: under group-by-tag heads take rows and a session under two tags has two
+    // lanes; the connectors and dots land on the first, and so does the pulse), the visible index when nothing is grouped
+    const rowOf = this._rowOf || {};
+    // grouped, a session with no lane row is folded away under its section's head: it pulses NOWHERE (the fold verifier's
+    // first medium: the fallback to the ungrouped visible index drew the ring on another row); ungrouped, the visible index
+    const i = (sid in rowOf) ? rowOf[sid] : (this._grouped ? -1 : (this._vis || []).findIndex((s) => s.id === sid));
     if (i < 0) return;
     const y = g.top + i * LANE_GAP + LANE_GAP * 0.5;
     // The outline goes INTO the live plot group when the last build left one (_tickPlot): the tick translates
@@ -4304,6 +4435,10 @@ class TimelinePanel {
         tagRow(g.name, g.color, !lensAll(lens) && (lens.tags || []).indexOf(g.name) >= 0)
           .addEventListener('click', () => apply(lensToggle(lens, { tag: g.name }), false));
       sep();
+      // GROUP BY TAG (T399): the pane's sections, the chat's "Group tabs by tag" in this menu's ✓-row vocabulary; the menu
+      // stays open across the toggle (a settings panel, the gear's rule). Per browser, in the strip's own blob.
+      item('Group by tag', { current: tlGroupByTag() }).addEventListener('click', () => { setTlGroupByTag(!tlGroupByTag()); this.draw(); build(); });
+      sep();
       item('Configure tags…', { dim: true }).addEventListener('click', () => {
         this._closeViewsMenu();
         this._openViewsDialog(null);
@@ -5664,7 +5799,15 @@ class TimelinePanel {
       vis = vis.slice().sort((a, b) => ((oidx.has(a.id) ? oidx.get(a.id) : Infinity) - (oidx.has(b.id) ? oidx.get(b.id) : Infinity)));
     }
     this._vis = vis;   // visible lanes in order → keyboard ↑/↓ selection
-    const vidx = {}; vis.forEach((s, i) => { vidx[s.id] = i; });
+    // the ROWS (T399): lanes, or under group-by-tag the sections' heads and their lanes (a folded section keeps its
+    // head alone), the untagged trail last behind a divider; a session under two tags has a lane in each section, and
+    // vidx names its FIRST lane (connectors and dots land there)
+    const grouped = tlGroupByTag();
+    const rows = tlRows(vis, grouped ? viewTagUnion(this._curViews()) : [], tabGroupsState(), grouped);
+    const laneRows = []; rows.forEach((r, i) => { if (r.kind === 'lane') laneRows.push({ s: r.s, i }); });
+    const vidx = Object.create(null); laneRows.forEach(({ s, i }) => { if (!(s.id in vidx)) vidx[s.id] = i; });
+    this._rows = rows; this._rowOf = vidx; this._grouped = grouped;   // the focus pulse and the drag read the row model
+    const selBand = new Set(selBandRows(rows, this.selectedSid, this._selRow, grouped));   // the band's rows (one, with copies)
     // (The half-row gap at host boundaries — a 2026-07-02 cue for remote lanes — was REMOVED (the user
     // 2026-08-08): hosts no longer interleave in one shared order, so the lanes list out uniformly and
     // the quiet "host:" name prefix alone marks a remote session.)
@@ -5697,6 +5840,7 @@ class TimelinePanel {
     const effortGap = maxEffortPiece > 0 ? META_GAP : 0;
     const maxModel = Math.ceil(maxModelPiece) + effortGap + Math.ceil(maxEffortPiece);   // whole meta column width
     const maxChip = Math.max(0, ...visB.map((b) => (b ? this.badgeWidth(b.label) + 12 : 0)));
+    const visIdx = new Map(vis.map((s, k) => [s.id, k]));   // the per-session columns (visB, visC) by session: a lane loop's i is a ROW index under group-by-tag (T399)
     const maxCtx = (visC.some((c) => c) || vis.some((s) => compactingNow(s))) ? BAT_W : 0;   // ctx column = battery bar
     // gear column: a per-session settings gear between the name and the model, on LIVE lanes (the user
     // 2026-06-19). Reserve its width only when there IS a live lane, so an all-historical view keeps the
@@ -5732,8 +5876,8 @@ class TimelinePanel {
     // the merge's events, never a timer here. Not lanes: never in vis/vidx, no hit targets, no drag.
     const pend = Array.isArray(data.pendingHosts) ? data.pendingHosts.filter((h) => typeof h === 'string') : [];
     const pendDead = Array.isArray(data.pendingDead) ? data.pendingDead : [];
-    const pendBase = Math.max(1, vis.length);   // the first placeholder row sits under the last lane (or the empty-window line)
-    const plotW = W - M.left - M.right, H = M.top + (Math.max(1, vis.length) + pend.length) * LANE_GAP + bandH + M.bottom;
+    const pendBase = Math.max(1, rows.length);   // the first placeholder row sits under the last lane (or the empty-window line)
+    const plotW = W - M.left - M.right, H = M.top + (Math.max(1, rows.length) + pend.length) * LANE_GAP + bandH + M.bottom;
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.setAttribute('height', H); svg.setAttribute('width', W);
     // x is LINEAR in compressed time → smooth pan (only zoom rescales). Identity compress = plain linear.
     const x = (t) => M.left + (compress(t) - cT0) / winSec * plotW;
@@ -5815,7 +5959,36 @@ class TimelinePanel {
       t.textContent = (pendDead.indexOf(h) >= 0 ? 'reconnecting to ' : 'loading sessions from ') + h + '\u2026';
       svg.appendChild(t);
     });
-    vis.forEach((s, i) => {
+    // GROUP BY TAG (T399): the section heads, drawn as the chat strip draws its tag group head (render.ts makeGroupHead,
+    // styles.css .tab-group-head): the tag's chip in its colour first, then the caret, then the count, one tag per row, the
+    // whole row the fold's click target; the untagged trail sits behind a thin divider, unlabeled, as on the strip
+    rows.forEach((r, i) => {
+      if (r.kind === 'trail') { svg.appendChild(el('line', { class: 'tl-trail-sep', x1: PADL, y1: laneY(i), x2: W - M.right, y2: laneY(i), stroke: MODEL_FG, 'stroke-opacity': 0.35, 'stroke-width': 1, 'pointer-events': 'none' })); return; }
+      if (r.kind !== 'head') return;
+      // THE tag chip, as tag-menu.ts tagChip draws it everywhere (T321; the user 2026-09-13 on this mockup: no filled
+      // pill): a 1px border and the text in the tag's own colour on a transparent ground, weight 400, the pill's padding and
+      // radius, at the host's size (the strip's head passes inheritSize; here the host is the lane font, so the chip's own
+      // 0.82em of it). Every number comes from TAG_CHIP_GEOM, the parse of the shared pill's bytes.
+      const y = laneY(i), G = TAG_CHIP_GEOM, fs = Math.round(12 * G.fontEm * 100) / 100;
+      this._mc.font = '400 ' + fs + 'px ' + this._fontFace();   // measured at the drawn weight and size (the fold's low 1: a 650 measurement left the name off centre)
+      const tw = this._mc.measureText(r.name).width, chipH = Math.round(fs * 1.2) + 2 * G.padY, w = Math.ceil(tw) + 2 * G.padX;
+      const g = el('g', { class: 'tl-group-head' + (r.folded ? ' collapsed' : ''), 'data-group': r.name, 'data-folded': r.folded ? '1' : '0', role: 'button', 'aria-expanded': r.folded ? 'false' : 'true' });
+      const hit = el('rect', { x: 0, y: y - LANE_GAP / 2, width: W, height: LANE_GAP, fill: 'transparent' });
+      hit.style.cursor = 'pointer';
+      const title = el('title'); title.textContent = (r.folded ? 'show the ' : 'fold the ') + r.count + (r.count === 1 ? ' session' : ' sessions') + ' tagged ' + r.name; hit.appendChild(title);
+      hit.addEventListener('click', () => { toggleSectionFold(r.name); this.draw(); });
+      g.appendChild(hit);
+      g.appendChild(el('rect', { x: PADL + 0.5, y: y - chipH / 2 + 0.5, width: w, height: chipH, rx: Math.min(G.radius, chipH / 2), fill: 'transparent',
+                                stroke: r.color, 'stroke-width': G.border, 'pointer-events': 'none' }));
+      const nm = el('text', { x: PADL + 0.5 + G.padX, y: y + fs * 0.36, 'font-size': fs, 'font-weight': 400, 'letter-spacing': 'normal', fill: r.color, 'pointer-events': 'none' });
+      nm.textContent = r.name; g.appendChild(nm);
+      const caret = el('text', { x: PADL + w + 10, y: y + 4, 'font-size': fs, fill: MODEL_FG, 'text-anchor': 'middle', 'pointer-events': 'none' });
+      caret.textContent = r.folded ? '\u25B8' : '\u25BE'; g.appendChild(caret);
+      const cnt = el('text', { x: PADL + w + 18, y: y + 4, 'font-size': fs, fill: MODEL_FG, 'fill-opacity': 0.75, 'pointer-events': 'none' });
+      cnt.textContent = String(r.count); g.appendChild(cnt);
+      svg.appendChild(g);
+    });
+    laneRows.forEach(({ s, i }) => {
       const y = laneY(i);
       // perceptual idle fade: faded lanes blend their colors toward bgRGB to a uniform low luminance.
       const F = (hex) => s.faded ? fadeHex(hex, bgRGB) : hex;
@@ -5823,7 +5996,7 @@ class TimelinePanel {
       // ONE highlight: a soft filled block (light gray, NO border) on the SELECTED lane. Selection is
       // set by clicking a lane/item, by ↑/↓, and by the chat's active tab — all the same highlight.
       // Drawn first → bars/dots sit on top.
-      if (this.selectedSid === s.id) {
+      if (this.selectedSid === s.id && selBand.has(i)) {
         svg.appendChild(el('rect', { x: 2, y: y - LANE_GAP / 2 + 1, width: W - 4, height: LANE_GAP - 2, rx: 4,
           fill: PAL().laneSelFill, 'fill-opacity': 0.1 }));
       }
@@ -5836,7 +6009,7 @@ class TimelinePanel {
       rowHit.addEventListener('mousedown', (e) => this._beginDrag(s.id, e));   // drag starts on EMPTY row space only (bars/dots keep their click → jump-to-chat)
       rowHit.addEventListener('click', () => {
         if (this._suppressClick) { this._suppressClick = false; return; }   // just finished a drag → not a select
-        this._select(s.id); this.openChat(this._laneTid(s), null, true);
+        this._select(s.id, i); this.openChat(this._laneTid(s), null, true);
       });
       // ever-so-slight hover tint on the row (much fainter than the selected block) + un-fade a faded
       // lane's colors to full while hovered, so an idle row is readable when you point at it.
@@ -5871,7 +6044,7 @@ class TimelinePanel {
         // period's start as the by-time fallback. This was a bare lane-open with NO anchor, so every
         // work-bar click visibly did nothing while prompt-dot clicks worked (the user, 2026-06-12).
         // The prompt dot keeps the prompt-line uuid.
-        hit.addEventListener('click', () => { this._select(s.id); this.openChat(s.id, workAnchorOf(t), false, false, t.start); });
+        hit.addEventListener('click', () => { this._select(s.id, i); this.openChat(s.id, workAnchorOf(t), false, false, t.start); });
         plot.appendChild(hit);
         if (liveEdge) riders.push({ el: bar, attr: 'width', base: bwRaw, min: 2 }, { el: hit, attr: 'width', base: bwRaw, min: 2 });   // the un-clamped extent with the 2 px floor: a just-opened bar grows as a full draw would draw it
       });
@@ -5902,7 +6075,7 @@ class TimelinePanel {
           wh.addEventListener('mousedown', (e) => this._beginDrag(s.id, e));
           wh.addEventListener('click', () => {
             if (this._suppressClick) { this._suppressClick = false; return; }
-            this._select(s.id); this.openChat(this._laneTid(s), null, true);
+            this._select(s.id, i); this.openChat(this._laneTid(s), null, true);
           });
           plot.appendChild(wh);
           if (edgeLive) riders.push({ el: ln, attr: 'x2', base: lx2 }, { el: wh, attr: 'width', base: lx2 - lx1 });
@@ -5953,7 +6126,7 @@ class TimelinePanel {
         sh.addEventListener('mouseenter', (e) => { grow(eh); this.showTip(shtml(), e); });
         sh.addEventListener('mousemove', (e) => this.moveTip(e));
         sh.addEventListener('mouseleave', () => { grow(BAR_H); this.hideTip(); });
-        sh.addEventListener('click', () => { this._select(s.id); this.openChat(this._laneTid(s), null, true); });
+        sh.addEventListener('click', () => { this._select(s.id, i); this.openChat(this._laneTid(s), null, true); });
         plot.appendChild(sh);
         if (open && edgeLive) riders.push({ el: back, attr: 'width', base: bx1 - bx0, min: 2 }, { el: stripe, attr: 'width', base: x(sb) - x(sa), min: 2 }, { el: sh, attr: 'width', base: bx1 - bx0, min: 2 });
       }
@@ -5980,7 +6153,7 @@ class TimelinePanel {
         ch.addEventListener('mouseenter', (e) => { cgrow(eh); this.showTip(chtml(), e); });
         ch.addEventListener('mousemove', (e) => this.moveTip(e));
         ch.addEventListener('mouseleave', () => { cgrow(BAR_H); this.hideTip(); });
-        ch.addEventListener('click', () => { this._select(s.id); this.openChat(this._laneTid(s), null, true); });
+        ch.addEventListener('click', () => { this._select(s.id, i); this.openChat(this._laneTid(s), null, true); });
         plot.appendChild(ch);
         if (open && edgeLive) riders.push({ el: cback, attr: 'width', base: cwRaw, min: 2 }, { el: chx, attr: 'width', base: cwRaw, min: 2 }, { el: ch, attr: 'width', base: cwRaw, min: 2 });
       }
@@ -6004,7 +6177,7 @@ class TimelinePanel {
         ch.addEventListener('mouseenter', (e) => { cgrow(eh); this.showTip(chtml(), e); });
         ch.addEventListener('mousemove', (e) => this.moveTip(e));
         ch.addEventListener('mouseleave', () => { cgrow(BAR_H); this.hideTip(); });
-        ch.addEventListener('click', () => { this._select(s.id); this.openChat(this._laneTid(s), null, true); });
+        ch.addEventListener('click', () => { this._select(s.id, i); this.openChat(this._laneTid(s), null, true); });
         plot.appendChild(ch);
       }
       // A /CLEAR SEAM — an episode boundary: the conversation ended here and a blank one began. Drawn
@@ -6068,7 +6241,7 @@ class TimelinePanel {
       nhit.addEventListener('mousedown', (e) => this._beginDrag(s.id, e));   // still drag-to-reorder / pan
       nhit.addEventListener('click', () => {
         if (this._suppressClick) { this._suppressClick = false; return; }   // just finished a drag → not a jump
-        this._select(s.id); this.openChat(this._laneTid(s), null, false);   // focus=true → jump into the chat
+        this._select(s.id, i); this.openChat(this._laneTid(s), null, false);   // focus=true → jump into the chat
       });
       // keep the row's hover treatment (faint tint + un-fade) while pointing at the name
       nhit.addEventListener('mouseenter', () => { rowHit.setAttribute('fill', '#ffffff'); rowHit.setAttribute('fill-opacity', '0.035'); for (const f of fadedEls) f.el.setAttribute('fill', f.full); });
@@ -6188,7 +6361,7 @@ class TimelinePanel {
           if (s.effort) drawPiece('effort', s.effort, effortColX);
         }
       }
-      const bdg = visB[i];
+      const bdg = visB[visIdx.get(s.id)];
       if (bdg) {
         const h = 14, padX = 6, w = Math.ceil(this.badgeWidth(bdg.label)) + padX * 2, by = y - h / 2;
         const chipBg = el('rect', { x: chipColX, y: by, width: w, height: h, rx: h / 2, fill: F(bdg.bg), 'pointer-events': 'none' }); svg.appendChild(chipBg);
@@ -6209,7 +6382,7 @@ class TimelinePanel {
       }
       // context-window battery bar (matches the chat view): faint box + level-colored fill (width ∝ pct)
       // + "N%" inside. While COMPACTING it instead shows a rainbow scan-bar (no %), the live cue.
-      const cinfo = visC[i], isComp = compactingNow(s);
+      const cinfo = visC[visIdx.get(s.id)], isComp = compactingNow(s);
       if (cinfo || isComp) {
         const byTop = y - BAT_H / 2;
         svg.appendChild(el('rect', { x: ctxColX, y: byTop, width: BAT_W, height: BAT_H, rx: 3, fill: PAL().batFill, stroke: PAL().batStroke, 'stroke-width': 1, 'pointer-events': 'none' }));
@@ -6288,7 +6461,7 @@ class TimelinePanel {
       bhit.addEventListener('mouseenter', bEnter);
       bhit.addEventListener('mousemove', (e) => this.moveTip(e));
       bhit.addEventListener('mouseleave', () => { bbar.setAttribute('opacity', '0.85'); this.hideTip(); });
-      bhit.addEventListener('click', () => { this._select(s.id); this.openChat(s.id, br.cut ? 'branch:' + br.cut : '', false, false, br.t); });
+      bhit.addEventListener('click', () => { this._select(s.id, vidx[s.id]); this.openChat(s.id, br.cut ? 'branch:' + br.cut : '', false, false, br.t); });
       nearEdge(plot.appendChild(bhit), bx);
     });
 
@@ -6299,7 +6472,7 @@ class TimelinePanel {
     const sendXT = (mm) => mm.fromThreadT || mm.sent;
     const landXT = (mm) => mm.toThreadT || execAt(mm);
     data.messages.forEach((mm) => { if (inWin(landXT(mm)) && vidx[mm.toId] != null) obstacles.push({ x: x(landXT(mm)), lane: vidx[mm.toId] }); });
-    vis.forEach((s, i) => turnsOf(s.id).forEach((t) => { if (inWin(startAt(t))) obstacles.push({ x: x(startAt(t)), lane: i }); }));
+    laneRows.forEach(({ s, i }) => turnsOf(s.id).forEach((t) => { if (inWin(startAt(t))) obstacles.push({ x: x(startAt(t)), lane: i }); }));   // every lane row, a copy too (T399)
 
     // one connector per directed FLOW (A→B): a single line spanning the flow's first
     // send → last delivery, whose THICKNESS grows linearly with the message count
@@ -6339,7 +6512,7 @@ class TimelinePanel {
     // user 2026-08-24). A nameless row falls back to the raw id: information, not an empty span
     // (the CLI's unmappable-member precedent).
     const msgHtml = (mm) => () => { const col = colorOf(mm.fromId); return '<div class="r"><span class="chip" style="background:' + col + '"></span><span class="who" style="color:' + col + '">' + esc(mm.from || mm.fromId) + '</span><span class="ar">→</span><span class="who" style="color:' + colorOf(mm.toId) + '">' + esc(mm.to || mm.toId) + '</span>' + (mm.pending ? ' <span class="k">pending</span>' : '') + '<span class="t">' + clock(mm.sent) + (mm.pending ? ' → …' : ' → ' + clock(mm.exec)) + '</span></div>' + this.body(esc(mm.summary || mm.text || '')); };
-    const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); this._select(mm.toId); this.openChat(mm.toId, mm.id || (an && (an.promptId || an.replyUuid)), false, false, execAt(mm)); };   // land on the message's OWN postal card BY ID — the chat matches mm.id to the card's data-mid (the user 2026-06-20); nearest-turn uuid / time only as fallback
+    const msgNav = (mm) => () => { const an = this.nearestTurnAnchor(mm.toId, execAt(mm)); this._select(mm.toId, vidx[mm.toId]); this.openChat(mm.toId, mm.id || (an && (an.promptId || an.replyUuid)), false, false, execAt(mm)); };   // land on the message's OWN postal card BY ID — the chat matches mm.id to the card's data-mid (the user 2026-06-20); nearest-turn uuid / time only as fallback
     // OVERLAP HOVER (the user 2026-08-24): message marks stack — several exchanges on one pair, a
     // stub riding another's track — and the topmost hit swallowed the hover, so the modal named ONE
     // message where the cursor covered several. Resolve every message element under the point
@@ -6493,7 +6666,8 @@ class TimelinePanel {
       const lineAttr = { d, fill: 'none', stroke: col, 'stroke-width': MSG_W0, opacity: arrived ? 0.5 : 0.4, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
       if (!arrived) lineAttr['stroke-dasharray'] = '1 4';
       if (mm.pending && !mm.toThreadT) liveRiders = true;   // a pending message lands AT the live edge (execAt): not a translate
-      plot.appendChild(el('path', lineAttr));
+      const lineEl = el('path', lineAttr); lineEl.setAttribute('data-tl-from', String(mm.fromId || '')); lineEl.setAttribute('data-tl-to', String(mm.toId || ''));   // the ends, for the served pins (T399)
+      plot.appendChild(lineEl);
       // A connector in the focused journey (DAG card hover) or the hovered subtree's delegation messages
       // lights EXACTLY like its native hover: the own-color highlight overlay at full strength — no white
       // casing (the user 2026-07-17). msgLit remembers the drawn state so a local mouseleave restores it.
@@ -6569,7 +6743,7 @@ class TimelinePanel {
     data.messages.forEach((mm) => { if (!mm.pending && vidx[mm.toId] != null) { let a = execByTo.get(mm.toId); if (!a) { a = []; execByTo.set(mm.toId, a); } a.push(execAt(mm)); } });
     execByTo.forEach((a) => a.sort((p, q) => p - q));
     const execNear = (sid, t) => sortedHasWithin(execByTo.get(sid), t, 1);
-    vis.forEach((s, i) => {
+    laneRows.forEach(({ s, i }) => {
       const y = laneY(i);
       turnsOf(s.id).forEach((t) => {
         if (t.cont) return;                  // a post-sleep continuation piece of one segment: its prompt dot belongs to the FIRST piece, not here
@@ -6593,7 +6767,7 @@ class TimelinePanel {
           : isRomp
           ? () => '<div class="r"><img src="' + mediaUrl('romp-swirl-glyph.svg') + '" width="13" height="13" style="vertical-align:-2px;margin-right:5px;border-radius:2px"><span class="who" style="color:#fff">romp</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t))
           : () => '<div class="r"><span class="chip" style="background:' + s.color + '"></span><span class="who" style="color:' + s.color + '">' + esc(s.name) + '</span><span class="t">' + clock(startAt(t)) + '</span></div>' + this.body(this.req(t));
-        dot(dx, y, isRomp ? '#000' : s.color, tip, () => { this._select(s.id); this.openChat(s.id, t.promptId, false, false, startAt(t), 'user'); }, null, dotLit(t, dagOrHover));   // romp message → a black dot (the swirl reads on it); prompt-intent → time fallback restricted to user turns
+        dot(dx, y, isRomp ? '#000' : s.color, tip, () => { this._select(s.id, i); this.openChat(s.id, t.promptId, false, false, startAt(t), 'user'); }, null, dotLit(t, dagOrHover));   // romp message → a black dot (the swirl reads on it); prompt-intent → time fallback restricted to user turns
         if (isRomp) {                                    // the romp favicon swirl INSIDE the black dot; pointer-events:none → the dot keeps its hover/click
           const sz = DOT_R * 1.9;
           nearEdge(plot.appendChild(el('image', { x: dx - sz / 2, y: y - sz / 2, width: sz, height: sz, href: mediaUrl('romp-swirl-glyph.svg'), 'pointer-events': 'none' })), dx);
@@ -6606,7 +6780,7 @@ class TimelinePanel {
     // SESSION's own color with the same white border and footprint as a message dot (the user
     // 2026-08-15 — the shape alone says "comment"), dimmed once resolved. Click → the chat at that
     // message, where the yellow highlight opens the thread.
-    vis.forEach((s, i) => {
+    laneRows.forEach(({ s, i }) => {
       const y = laneY(i);
       (s.comments || []).forEach((c) => {
         if (!c.t || !inWin(c.t)) return;
@@ -6622,7 +6796,7 @@ class TimelinePanel {
         sq.addEventListener('mouseenter', qEnter);
         sq.addEventListener('mousemove', (e) => this.moveTip(e));
         sq.addEventListener('mouseleave', () => { qGrow(0); this.hideTip(); });
-        sq.addEventListener('click', () => { this._select(s.id); this.openChat(s.id, c.uuid, false, false, c.t); });
+        sq.addEventListener('click', () => { this._select(s.id, i); this.openChat(s.id, c.uuid, false, false, c.t); });
         nearEdge(plot.appendChild(sq), cx);
       });
     });
@@ -6631,7 +6805,7 @@ class TimelinePanel {
     // by the SESSION it acted on; adjacent same-session marks merge into a stretch of attention. A mark
     // within ~8s of the live edge is "running now" (white-outlined). (docs/judges.md; data.judging.)
     if (jShow) {
-      const jb0 = M.top + (vis.length + pend.length) * LANE_GAP + JB_TOPGAP;     // top of the first judge row, under the lanes (+ the pending-host rows)
+      const jb0 = M.top + (rows.length + pend.length) * LANE_GAP + JB_TOPGAP;   // under every ROW (heads and the divider too, T399)     // top of the first judge row, under the lanes (+ the pending-host rows)
       const jY = (i) => jb0 + i * JROW + JROW * 0.5;
       const nameOf = (sid) => { const s = data.sessions.find((z) => z.id === sid); return s ? s.name : sid; };
       const sepY = jb0 - JB_TOPGAP * 0.5;
@@ -6855,4 +7029,4 @@ class TimelinePanel {
   body(s) { return s ? '<div class="b">' + s + '</div>' : ''; }
 }
 
-module.exports = { TimelinePanel, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES };
+module.exports = { TimelinePanel, tlRows, selBandRows, tagSections, tabGroupsState, sectionFolded, toggleSectionFold, tlGroupByTag, setTlGroupByTag, TAG_CHIP_GEOM, TAG_CHIP_STYLE, TABGROUPS_KEY, TABGROUPS_DEFAULT_COLLAPSED, expandBar, expandBars, expandJudging, BAR_WIRE, JUDGING_WIRE, badgeFor, roundedPath, crossX, workAnchorOf, idleGaps, fmtSpan, dotLit, barLit, interpNow, shouldReanchorEdge, reanchorEdge, isFreshNowSample, barEndT, dragAxis, stripRompMarks, collapseRepeat, reqText, menuTop, offsetRect, viewVisible, viewLabel, viewMoreCount, viewToggleMember, viewTagUnion, lensAll, lensToggle, lensVisible, lensLabel, lensSummary, timelineLens, loadModelChoices, MODEL_CHOICES };

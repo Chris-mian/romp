@@ -31,6 +31,8 @@ setup() {
     export SNAP_A="$TEST_DIR/a.json"
     export SNAP_B="$TEST_DIR/b.json"
     export SNAP_C="$TEST_DIR/c.json"
+    export SNAP_S="$TEST_DIR/s.json"
+    export SNAP_OLD="$TEST_DIR/old.json"
     # A and B: the same kernel process ten seconds apart. Over the window: 20 cycles, 60 wakes, 6 s of
     # cycle time (4 s of it in push, 3 s of that in the chat block), 300 ms of pusher CPU and 50 ms of
     # judge CPU inside 500 ms of process CPU, 2 chat rebuilds (one of the watched tab, one of a background
@@ -71,6 +73,23 @@ JSON
     # Stub curl: records argv AND stdin (the auth header rides stdin as a curl config) and emits the
     # body followed by the -w status trailer the script asks for. A POST answers the toggle's ack; a
     # GET serves snapshot A first, then B (or C under CURL_RESTART), so two reads see counters move.
+    # S: a snapshot with the thread-stack sample (GET /perf?stacks=1): the pusher inside the nudge job waiting on a
+    # lock, a handler thread answering, a producer idle; frames innermost last
+    cat > "$SNAP_S" <<'JSON'
+{"now": 1000.0, "since": 900.0, "uptime_s": 100.0, "log": false,
+ "process": {"rss_kb": 409600, "threads": 3, "cpu_s": 60.0, "pid": 4242},
+ "stacks": {
+  "11 pusher": {"self": false, "stage": "jobs.autoNudge",
+   "frames": ["_pusher (kernel.py:100)", "_job_stage (kernel.py:200)", "_auto_nudge_session (kernel.py:300)", "parse_session (event_model.py:400)", "__enter__ (threading.py:500)"]},
+  "12 producer": {"self": false, "stage": null, "frames": ["_producer (kernel.py:600)", "wait (threading.py:700)"]},
+  "13 handler": {"self": true, "stage": null, "frames": ["do_GET (kernel.py:800)", "_thread_stacks (kernel.py:900)"]}}}
+JSON
+    # OLD: the switch's shape before the sample (T358): ident and name to a list of format_stack lines; well-formed JSON, so
+    # the dict guard alone does not refuse it and the per-row frames check must
+    cat > "$SNAP_OLD" <<'JSON'
+{"now": 1000.0, "process": {"pid": 4242},
+ "stacks": {"11 pusher": ["  File \"kernel.py\", line 100, in _pusher\n    _pusher_cycle()", "  File \"kernel.py\", line 200, in _pusher_cycle"]}}
+JSON
     cat > "$MOCK/curl" <<'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$CURL_LOG"
@@ -80,6 +99,12 @@ if [ -n "${CURL_403:-}" ]; then printf 'forbidden: token required\n403'; exit 0;
 if [[ "$*" == *"-X POST"* ]]; then
     printf '{"ok": true, "log": %s}\n200' "$([[ "$*" == *'"log": true'* ]] && echo true || echo false)"
     exit 0
+fi
+if [[ "$*" == *"stacks=1"* ]]; then
+    if [ -n "${CURL_OLD_KERNEL:-}" ]; then cat "$SNAP_A"
+    elif [ -n "${CURL_OLD_SHAPE:-}" ]; then cat "$SNAP_OLD"
+    else cat "$SNAP_S"; fi
+    printf '\n200'; exit 0
 fi
 n=0; [ -f "$CURL_CALLS" ] && n="$(cat "$CURL_CALLS")"
 echo $((n + 1)) > "$CURL_CALLS"
@@ -159,6 +184,52 @@ teardown() { rm -rf "$TEST_DIR"; }
     [ "$status" -eq 0 ]
     echo "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["pusher"]["cycles"] == 100; assert d["process"]["pid"] == 4242'
     [ "$(cat "$CURL_CALLS")" -eq 1 ]
+}
+
+@test "romp perf stacks: reads GET /perf?stacks=1 once and prints one block per thread, its stage and its frames innermost last" {
+    run "$ROMP_SCRIPT" perf stacks
+    [ "$status" -eq 0 ]
+    [ "$(grep -c "127.0.0.1:29855/perf?stacks=1" "$CURL_LOG")" -eq 1 ]
+    grep -q "X-Romp-Token: TESTTOKEN123" "$CURL_STDIN"
+    echo "$output" | grep -q "^3 threads at 1000.000 (pid 4242)"
+    echo "$output" | grep -q "^pusher (ident 11)  stage jobs.autoNudge$"
+    echo "$output" | grep -q "^producer (ident 12)$"
+    echo "$output" | grep -q "^handler (ident 13) \[answering this request\]$"
+    # the pusher's frames in order, innermost last
+    echo "$output" | python3 -c '
+import sys
+lines = [l for l in sys.stdin.read().splitlines()]
+i = lines.index("pusher (ident 11)  stage jobs.autoNudge")
+assert lines[i + 1:i + 6] == ["    _pusher (kernel.py:100)", "    _job_stage (kernel.py:200)", "    _auto_nudge_session (kernel.py:300)",
+                              "    parse_session (event_model.py:400)", "    __enter__ (threading.py:500)"], lines[i:i + 6]'
+}
+
+@test "romp perf stacks --json: prints the raw stacks list" {
+    run "$ROMP_SCRIPT" perf stacks --json
+    [ "$status" -eq 0 ]
+    echo "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert sorted(d) == ["11 pusher", "12 producer", "13 handler"], sorted(d); assert d["11 pusher"]["stage"] == "jobs.autoNudge"'
+}
+
+@test "romp perf stacks: a kernel from before the sample is named as such and the exit is 1, never 0 threads" {
+    CURL_OLD_KERNEL=1 run "$ROMP_SCRIPT" perf stacks
+    [ "$status" -eq 1 ]
+    echo "$output" | grep -q "does not answer stacks"
+    run bash -c "CURL_OLD_KERNEL=1 '$ROMP_SCRIPT' perf stacks 2>/dev/null | grep -c threads"
+    [ "$output" = "0" ]
+}
+
+@test "romp perf stacks: the OLD switch shape (a list of lines per thread) is refused like no stacks, in both forms" {
+    CURL_OLD_SHAPE=1 run "$ROMP_SCRIPT" perf stacks
+    [ "$status" -eq 1 ]
+    echo "$output" | grep -q "does not answer stacks"
+    CURL_OLD_SHAPE=1 run "$ROMP_SCRIPT" perf stacks --json
+    [ "$status" -eq 1 ]
+}
+
+@test "romp perf stacks: an unknown flag is refused with the usage" {
+    run "$ROMP_SCRIPT" perf stacks --bogus
+    [ "$status" -eq 2 ]
+    echo "$output" | grep -q "usage: romp perf"
 }
 
 @test "romp perf: reads GET /perf on the kernel, authorizing on stdin, twice" {

@@ -88,6 +88,30 @@ test("executed: per-browser state — on by default, archived starts folded, tog
   assert.deepEqual(parseTabGroups("[1,2]"), d);
 });
 
+test("the Sessions pane's group-by-tag switch rides the same blob: present only while on, carried through the strip's writes (T399)", () => {
+  // one blob for both surfaces so the FOLDS are one truth; the pane's switch is its own field, absent until turned on,
+  // so every earlier reader's shape is unchanged and the pane is as it was by default
+  assert.equal(parseTabGroups('{"on":true,"collapsed":[]}').timeline, undefined, "absent reads as off");
+  assert.equal(parseTabGroups('{"on":true,"timeline":"yes"}').timeline, undefined, "only true turns it on");
+  assert.deepEqual(parseTabGroups('{"on":false,"timeline":true,"collapsed":["qa"]}'), { on: false, collapsed: ["qa"], expanded: [], pinned: [], timeline: true });
+  const store = new Map<string, string>();
+  const g: any = globalThis;
+  const savedLS = g.localStorage;
+  g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); } };
+  try {
+    writeTabGroups({ on: true, collapsed: ["qa"], expanded: [], pinned: [], timeline: true });
+    assert.equal(JSON.parse(store.get(TABGROUPS_KEY)!).timeline, true, "written while on");
+    assert.deepEqual(readTabGroups(), { on: true, collapsed: ["qa"], expanded: [], pinned: [], timeline: true });
+    const st = readTabGroups();
+    writeTabGroups({ ...st, on: false });                                  // the strip's own toggle carries the pane's switch through
+    assert.deepEqual(readTabGroups(), { on: false, collapsed: ["qa"], expanded: [], pinned: [], timeline: true });
+    writeTabGroups({ ...readTabGroups(), timeline: false });
+    assert.equal("timeline" in JSON.parse(store.get(TABGROUPS_KEY)!), false, "off drops the field, the blob as before T399");
+  } finally {
+    g.localStorage = savedLS;
+  }
+});
+
 test("executed: write → read round-trips through localStorage under romp:tabgroups (the view-order two-path idiom)", () => {
   const store = new Map<string, string>();
   const g: any = globalThis;

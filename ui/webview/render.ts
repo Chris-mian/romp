@@ -4995,9 +4995,10 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
   // move is the pane's own (journaled), never a clamp the follow-mode latch never saw (T262h)
   const contentX = document.getElementById("content");
   const wasAtBottom = !!contentX && contentX.scrollHeight > contentX.clientHeight + 2 && atBottom(contentX);
+  const beforeX = contentX ? contentX.scrollTop : 0;   // read BEFORE the removal: the browser clamps a bottom reader at the forced layout, and the write claims that move (see writeScroll)
   bub?.remove();
   if (grp) reflowQueuedGroup(grp);
-  if (contentX && wasAtBottom) writeScroll(contentX, contentX.scrollHeight, "queued-x", true);
+  if (contentX && wasAtBottom) writeScroll(contentX, contentX.scrollHeight, "queued-x", true, beforeX);
 }
 
 // The composer state around each ✕-click's optimistic restore, keyed `sid + " " + md`, so a FAILED
@@ -11110,11 +11111,13 @@ function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "s
     ? { type: "clientDiag", surface: "chat", what: kind + "-capped", data: { sid: activeId || "", perMinute: scrollDiagCap } }
     : { type: "clientDiag", surface: "chat", what: kind, data });
 }
-// `from`: the scrollTop the caller read BEFORE its own DOM change (the append path, a gap fill). A tail that re-renders SHORTER under
-// a bottom reader is clamped by the browser at the forced layout, before this write runs: without `from` the write finds the reader
-// already at the new bottom, moves nothing, files no row and owes no echo, and the clamp's own scroll event, still pending, files as
-// a gesture, an unwritten move for a move the pane's re-render caused. With `from`, the move is the pane's: the row names it and the
-// pending event is its echo. (The same parameter as the scroll clamp fix; the two meet at the merge.)
+// `from`: the scrollTop the caller read BEFORE its own DOM change (the append path). A tail that re-renders SHORTER under a
+// bottom reader (a lone tool turn folding into a group when the next call lands, a queued card replaced by a shorter landed
+// atom) is clamped by the browser at the forced layout, before this write runs: without `from` the write finds the reader
+// already at the new bottom, moves nothing, files no row and owes no echo, and the clamp's own scroll event, still pending,
+// files as a gesture, an unwritten move for a move the pane's re-render caused (the T262h and T262i labs red on the devbox
+// from the one-shot marker on). With `from`, the move is the pane's: the row names it and the pending event is its echo.
+// A gap fill (T386 stage 2) passes its pre-change read the same way: the page appearing in place is the pane's move, never a gesture.
 function writeScroll(content: HTMLElement, top: number, writer: string, stick = false, from?: number): void {
   const before = from ?? content.scrollTop;
   content.scrollTop = top;
@@ -11669,8 +11672,11 @@ function ensureView(id: string): View {
     // tail unit re-rendering shorter outside the append path — moves the transcript's bottom UP, and the browser
     // clamps scrollTop to the new maximum on its own: an unwritten move the follow-mode latch never saw. When the
     // view's RECORDED follow mode held (`stick`, the pre-change truth), the reader is written to the new bottom
-    // through writeScroll — where the clamp left them, so nothing moves twice, but the move is the pane's own,
-    // attributed in the journal, and the latch re-reads from a real scroll event. A scrolled-up reader is untouched.
+    // through writeScroll — where the clamp left them, so nothing moves twice. This write cannot CLAIM the clamp's move:
+    // it writes scrollHeight, the value the clamp already set, and the scroll steps that classify the clamp's event run
+    // before the ResizeObserver steps of the same frame, so the row for that move is the clamp's (a gesture unless a
+    // writer with a pre-change origin claimed it, as the append path does); what this write keeps is the view's saved
+    // position and the latch's record for the next frame. A scrolled-up reader is untouched.
     if (typeof ResizeObserver === "function") {
       let lastH = -1;                                        // -1 = not yet measured (observe fires once on attach)
       const view = v;                                        // the closure's own binding (the outer `v` is a let)
@@ -12273,7 +12279,10 @@ function toggleToolGroup(key: string): void {
   // the expand/collapse changes the DOM without changing the event set, so mark the view stale to force
   // the compact rebuild past the cache guard (a plain tab switch leaves stale false → reuses the cache).
   if (activeId) { const v = views.get(activeId); if (v) v.stale = true; syncView(activeId); }
-  if (content) writeScroll(content, top, "toolgroup-toggle");
+  // `top` is also the write's origin: a collapse makes the transcript shorter, the browser clamps a bottom reader at the forced
+  // layout before this write runs, and a write that read the clamped value would move nothing, file no row and set no marker,
+  // leaving the clamp's own scroll event to file as a gesture (see writeScroll)
+  if (content) writeScroll(content, top, "toolgroup-toggle", false, top);
   refillOpenCommentPop();   // the popover renders the same units — its copy of this run must flip too
   scheduleRailSticky();
 }
@@ -13185,12 +13194,15 @@ function captureScrollAnchor(content: HTMLElement, v: View): { uuid: string; y: 
   return null;
 }
 
-function restoreScrollAnchor(content: HTMLElement, v: View, a: { uuid: string; y: number } | null): boolean {
+function restoreScrollAnchor(content: HTMLElement, v: View, a: { uuid: string; y: number } | null, from?: number): boolean {
   if (!a) return false;
   const el = v.el.querySelector(`[data-uuid="${cssEscape(a.uuid)}"]`) as HTMLElement | null;
   if (!el) return false;
   const yNow = el.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop;
-  writeScroll(content, yNow - a.y, "anchor-restore");   // the anchor turn keeps its exact on-screen offset
+  // `from` is the caller's scrollTop read BEFORE its DOM change: a reader a few pixels off the bottom whose tail came back shorter
+  // was clamped by the browser at the forced layout, and the restore computes the very value the clamp left, so without the
+  // origin the write moved nothing, filed no row and set no marker, and the clamp's event filed as a gesture (see writeScroll)
+  writeScroll(content, yNow - a.y, "anchor-restore", false, from);   // the anchor turn keeps its exact on-screen offset
   return true;
 }
 
@@ -13267,9 +13279,11 @@ function appendActive() {
   // Follow-mode pins the bottom only when there is something new to follow (T262, the user 2026-09-08): a
   // status-only tail changes no content, and pinning on it snapped a reader wheeling up from the tail of a
   // busy session back down within the first 80 px, frame after frame. Decision in scroll-keep.ts followTail.
-  if (stick && followTail(distBefore, heightBefore, content.scrollHeight)) writeScroll(content, content.scrollHeight, "append-stick", true);
+  // …passing the scrollTop read BEFORE the re-render: a tail that came back SHORTER was clamped by the browser at the forced
+  // layout, and the write must claim that move as its own (see writeScroll), else the clamp's pending scroll event files as a gesture
+  if (stick && followTail(distBefore, heightBefore, content.scrollHeight)) writeScroll(content, content.scrollHeight, "append-stick", true, before);
   else if (stick) { /* near the bottom, nothing new: the reader stays where they are */ }
-  else if (!(v && restoreScrollAnchor(content, v, anchor))) writeScroll(content, before, "append-raw");
+  else if (!(v && restoreScrollAnchor(content, v, anchor, before))) writeScroll(content, before, "append-raw", false, before);   // the same origin as the stick write: a shorter tail is claimed, not a gesture
   scheduleRailSticky();
   updateJumpBtn();   // appends can cross the overflow boundary either way — re-read the chip's truth
 }
@@ -14652,6 +14666,8 @@ function renderLiveAsk() {
   const host = document.getElementById("live-ask");
   const footer = document.getElementById("footer");
   const content = document.getElementById("content");
+  const topBefore = content ? content.scrollTop : 0;   // read BEFORE any change below (the re-parent, the card's emptying, the render): a card re-rendered SHORTER under a
+                                                       // bottom reader is clamped at the first forced layout, and a read after it names the clamped value as the origin (round three, low 1)
   if (!host) return;
   // Keep the picker the LAST child of #content so it sits beneath the active thread even if a thread was
   // appended after it (e.g. switching to a never-seen session while a picker is up).
@@ -14684,7 +14700,7 @@ function renderLiveAsk() {
   // Reveal the picker if the user is parked at the bottom — it's part of the scroll flow now, so new/taller
   // pickers would otherwise land below the fold. Never yank a user who has scrolled UP to read context.
   const v = activeId ? views.get(activeId) : undefined;
-  if (content && (!v || v.stick)) writeScroll(content, content.scrollHeight, "liveask-reveal", true);
+  if (content && (!v || v.stick)) writeScroll(content, content.scrollHeight, "liveask-reveal", true, topBefore);
 }
 
 // The focused option's side-by-side preview box, reproduced VERBATIM in a monospace block (the user

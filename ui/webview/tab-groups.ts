@@ -62,6 +62,10 @@ export interface TabGroupsState {
    *  (followTagRenames); absent for an entry stamped from a blob that carried none (a kernel from before
    *  the stamp, or a store from before it), which no blob is older than */
   followedSeq?: Record<string, number>;
+  /** the Sessions pane sections its lanes by tag too (T399, the user 2026-09-12): its own switch beside the strip's
+   *  `on`, in the one blob so the FOLDS (collapsed / expanded) are one truth for both surfaces; present only while on,
+   *  so the pane is as it was until the user turns it on and every earlier reader's blob shape is unchanged */
+  timeline?: boolean;
 }
 
 /** The section a union makes, as pins are matched and written against it. */
@@ -140,7 +144,7 @@ export function parseTabGroups(raw: string | null | undefined, unions: readonly 
     };
     const followedSeq = seqs(o.followedSeq);
     return { on: o.on !== false, collapsed: strs(o.collapsed), expanded: strs(o.expanded), pinned: pins(o.pinned),
-             ...(followed ? { followed } : {}), ...(followedSeq ? { followedSeq } : {}) };
+             ...(followed ? { followed } : {}), ...(followedSeq ? { followedSeq } : {}), ...(o.timeline === true ? { timeline: true } : {}) };
   } catch {
     return fresh();
   }
@@ -161,6 +165,7 @@ export function writeTabGroups(st: TabGroupsState): void {
     const blob: Record<string, unknown> = { on: st.on, collapsed: st.collapsed, expanded: st.expanded, pinned: st.pinned };
     if (st.followed && Object.keys(st.followed).length) blob.followed = st.followed;
     if (st.followedSeq && Object.keys(st.followedSeq).length) blob.followedSeq = st.followedSeq;
+    if (st.timeline === true) blob.timeline = true;   // the Sessions pane's switch rides the strip's writes (T399)
     localStorage.setItem(TABGROUPS_KEY, JSON.stringify(blob));
   } catch {
     /* quota / private mode → this preference just doesn't outlive the page */
