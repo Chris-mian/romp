@@ -195,6 +195,67 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         km._tick_job_done("interrupt-block", r, st)
         self.assertFalse(km._tick_job_skips("interrupt-block", r), "and stays evaluated every tick until a file exists")
 
+    def test_the_memo_counts_why_it_re_evaluated_by_key_position(self):
+        """The boot follow-up (2026-09-13): the measurement boot re-parsed every session in the interrupt tick (38 s) and the key
+        position that had moved could not be named after the fact. Every check counts under memos.tickSeen: hits, misses,
+        neverSeen, noTranscript, and missBy[job][file] for each position that differed on a miss, in _session_files_stat's
+        order (the ten files, then askerRow, then shape for a key of another length)."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        def snap():
+            rep = km._tick_seen_report(); return {k: rep[k] for k in ("hits", "misses", "neverSeen", "noTranscript")}, rep["missBy"]
+        def delta(by0, by1, job="interrupt-block"):                     # the counters are cumulative for the module: deltas
+            a, b = by0.get(job, {}), by1.get(job, {})
+            return {k: b.get(k, 0) - a.get(k, 0) for k in set(a) | set(b) if b.get(k, 0) != a.get(k, 0)}
+        c0, by0 = snap()
+        skip, st = km._tick_job_check("interrupt-block", r)
+        c1, _ = snap(); self.assertEqual(c1["neverSeen"] - c0["neverSeen"], 1, "a session no kernel had looked at")
+        km._tick_job_done("interrupt-block", r, st)
+        self.assertTrue(km._tick_job_skips("interrupt-block", r))
+        c2, _ = snap(); self.assertEqual(c2["hits"] - c1["hits"], 1)
+        led = km.jd.STATE / "auto-nudge.json"; led.parent.mkdir(parents=True, exist_ok=True)
+        led.write_text(json.dumps({"enabled": True, "nudged": {}, "walkGates": {}, "t": time.time()}))   # the ledger moved: position ten
+        os.utime(led, (time.time() + 5, time.time() + 5))
+        skip, st = km._tick_job_check("interrupt-block", r)
+        self.assertFalse(skip)
+        c3, by3 = snap(); self.assertEqual(c3["misses"] - c2["misses"], 1)
+        self.assertEqual(delta(by0, by3), {"ledger": 1}, "the ledger is the one position that moved: %r" % delta(by0, by3))
+        km._tick_job_done("interrupt-block", r, st)
+        with open(r["path"], "a") as f:
+            f.write(json.dumps({"type": "assistant", "uuid": "a2"}) + "\n")
+        os.utime(r["path"], (time.time() + 9, time.time() + 9))
+        km._tick_job_check("interrupt-block", r)
+        _, by4 = snap(); self.assertEqual(delta(by3, by4), {"transcript": 1}, delta(by3, by4))
+        self.assertEqual(list(km._TICK_KEY_FILES), ["transcript", "states", "store", "overrides", "archive", "episode", "cleared",
+                                                    "messages", "downtime", "ledger"], "the order the reference names")
+        bad = {"sid": SID_NEW, "path": "/nonexistent-t401.jsonl", "name": "web"}
+        km._tick_job_check("interrupt-block", bad)
+        c4, _ = snap(); self.assertEqual(c4["noTranscript"] - c3["noTranscript"], 1)
+        self.assertIn("entries", km._tick_seen_report())
+
+    def test_the_walks_key_counts_beside_the_tick_jobs(self):
+        """The nudge walk's look memo shares the tick memo; its checks count under the same report, job auto-nudge, and a
+        differing asker row past the ten files counts as askerRow."""
+        d = tempfile.mkdtemp()
+        r = _row(d, SID_OLD, old=True)
+        st = km._session_files_stat(r) + (5.0, 7)                    # ten files plus one asker row
+        km._nudge_look_done(r, st, [], "working")
+        rep0 = km._tick_seen_report()
+        km._NUDGE_LOOK_STATS[SID_OLD] = st
+        try:
+            self.assertTrue(km._nudge_look_check(r, time.time())[0])
+            self.assertEqual(km._tick_seen_report()["hits"] - rep0["hits"], 1)
+            km._NUDGE_LOOK_STATS[SID_OLD] = km._session_files_stat(r) + (6.0, 7)   # the asker's row moved
+            self.assertFalse(km._nudge_look_check(r, time.time())[0])
+            by = km._tick_seen_report()["missBy"].get("auto-nudge", {})
+            self.assertEqual(by.get("askerRow", 0) - rep0["missBy"].get("auto-nudge", {}).get("askerRow", 0), 1, by)
+            km._NUDGE_LOOK_STATS[SID_OLD] = km._session_files_stat(r)                  # a key of another length: shape
+            self.assertFalse(km._nudge_look_check(r, time.time())[0])
+            by = km._tick_seen_report()["missBy"]["auto-nudge"]
+            self.assertEqual(by.get("shape", 0) - rep0["missBy"].get("auto-nudge", {}).get("shape", 0), 1, by)
+        finally:
+            km._NUDGE_LOOK_STATS.clear()
+
     def test_jobs_keep_separate_memos(self):
         d = tempfile.mkdtemp()
         r = _row(d, SID_NEW, old=False)

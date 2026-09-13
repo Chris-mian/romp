@@ -684,7 +684,8 @@ class _PerfStats:
                           ("backref", jd.backref_memo_stats), ("captions", jd.captions_memo_stats),
                           ("goalArchive", jd.goal_archive_memo_stats), ("plannerSkip", jd.planner_skip_stats),
                           ("liftGate", _lift_gate_report), ("bgTops", _bg_tops_report),
-                          ("intrMarks", _intr_marks_memo_report), ("statesOverlay", _states_overlay_report),
+                          ("intrMarks", _intr_marks_memo_report), ("tickSeen", _tick_seen_report),
+                          ("statesOverlay", _states_overlay_report),
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
                           ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
@@ -10010,6 +10011,35 @@ _TICK_SEEN_FILE = "tick-seen.json"   # the memo PERSISTED under the state dir (j
 #                                      last tick and this boot read as unchanged and was never blocked). A crash
 #                                      loses the newest writes: the affected sessions are evaluated once, the safe way.
 _TICK_SEEN_DIRTY = [False]
+_TICK_KEY_FILES = ("transcript", "states", "store", "overrides", "archive", "episode", "cleared", "messages", "downtime", "ledger")
+#   the ten keyed files in the order _session_files_stat lays them out, two elements (mtime, size) each; a key element past the
+#   twentieth is an asker's registry row (the nudge walk's key, T401 (2) follow-up)
+_TICK_SEEN_STATS = {"hits": 0, "misses": 0, "neverSeen": 0, "noTranscript": 0, "missBy": {}}   # GET /perf memos.tickSeen: why the
+#   event-keyed jobs re-evaluated (the 2026-09-13 measurement boot re-parsed every session in jobs.interruptBlock, 38 s, and the
+#   key position that moved could not be named after the fact); missBy[job][file] counts, per miss, each position that differed
+
+
+def _tick_key_miss_by(job, st, prev):
+    """Count a miss with a previous entry: which of the key's positions differed (twenty comparisons, nothing else). A key of
+    another length than the recorded one counts once under `shape`; a differing element past the ten files is `askerRow`."""
+    with _TICK_SEEN_LOCK:
+        _TICK_SEEN_STATS["misses"] += 1
+        by = _TICK_SEEN_STATS["missBy"].setdefault(job, {})
+        n = min(len(st), len(prev))
+        if len(st) != len(prev):
+            by["shape"] = by.get("shape", 0) + 1
+        for i in range(0, n - 1, 2):
+            if st[i] != prev[i] or st[i + 1] != prev[i + 1]:
+                name = _TICK_KEY_FILES[i // 2] if i // 2 < len(_TICK_KEY_FILES) else "askerRow"
+                by[name] = by.get(name, 0) + 1
+
+
+def _tick_seen_report():
+    with _TICK_SEEN_LOCK:
+        out = {k: v for k, v in _TICK_SEEN_STATS.items() if k != "missBy"}
+        out["missBy"] = {j: dict(v) for j, v in _TICK_SEEN_STATS["missBy"].items()}
+    out["entries"] = len(_TICK_SEEN)
+    return out
 
 
 def _tick_seen_path():
@@ -10067,13 +10097,22 @@ def _tick_job_check(job, s):
     same memo plus the earliest instant one of its clock legs could flip (T401 (2))."""
     st = _session_files_stat(s)
     if not st[0]:
+        with _TICK_SEEN_LOCK:
+            _TICK_SEEN_STATS["noTranscript"] += 1
         return False, st                      # no transcript to stat: nothing is known about it, so never a skip
     key = (job, str(s.get("sid") or ""))
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(key)
     if prev is None:
+        with _TICK_SEEN_LOCK:
+            _TICK_SEEN_STATS["neverSeen"] += 1
         return False, st                      # never evaluated by any kernel on record: evaluate once
-    return st == prev, st
+    if st == prev:
+        with _TICK_SEEN_LOCK:
+            _TICK_SEEN_STATS["hits"] += 1
+        return True, st
+    _tick_key_miss_by(job, st, prev)          # which position moved: the boot read decodes it (memos.tickSeen.missBy)
+    return False, st
 
 
 def _tick_job_done(job, s, st):
@@ -10232,8 +10271,15 @@ def _nudge_look_check(s, now):
         return False, st, None
     with _TICK_SEEN_LOCK:
         prev = _TICK_SEEN.get(("auto-nudge", str(s.get("sid") or "")))
-    if prev is None or len(prev) != len(st) + 2 or tuple(prev[:len(st)]) != tuple(st):
+    if prev is None:
+        with _TICK_SEEN_LOCK:
+            _TICK_SEEN_STATS["neverSeen"] += 1
         return False, st, None
+    if len(prev) != len(st) + 2 or tuple(prev[:len(st)]) != tuple(st):
+        _tick_key_miss_by("auto-nudge", tuple(st), tuple(prev[:-2]))   # the walk's key beside the tick jobs' (memos.tickSeen)
+        return False, st, None
+    with _TICK_SEEN_LOCK:
+        _TICK_SEEN_STATS["hits"] += 1
     flip, verdict = prev[len(st)], prev[len(st) + 1]
     if verdict == "closer-unsettled" and not jd.CLOSER_ON:
         return False, st, None                        # recorded under the closer toggle, read with it off (an import-time toggle,
