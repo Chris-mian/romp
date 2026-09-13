@@ -118,6 +118,10 @@ async function drag(label) {
            ev: { dragstart: log.filter((e) => e.k === "dragstart").length, drop: log.filter((e) => e.k === "drop").length, dragend: log.filter((e) => e.k === "dragend").length } };
 }
 const out = { start: await layout() };
+// the LIGHT theme: both boxes read the themed token, so their borders match each other AND differ from the dark theme's (the review: on cream the bare literal fell to a 3 of 255 edge on both)
+await page.evaluate(() => document.body.classList.add("theme-light")); await page.waitForTimeout(150);
+out.light = await layout();
+await page.evaluate(() => document.body.classList.remove("theme-light")); await page.waitForTimeout(150);
 out.unlockedDrag = await drag("unlocked: the 3rd tab to the first slot");
 const press = async () => { if (!(await layout()).lock.present) return false; await page.click("#tabs .tab-lockbox .tab-lock"); await page.waitForTimeout(400); return true; };
 out.pressed = await press();
@@ -309,6 +313,11 @@ class ServedTabLock(unittest.TestCase):
         self.assertEqual((lk["w"], lk["h"]), (tb["w"], tb["h"]), "the same box as the tag button" + table2)
         self.assertEqual(lk["border"], tb["border"], "the same border colour as the tag button (one source)" + table2)
         self.assertEqual(lk["radius"], tb["radius"], table2)
+        # the light theme: the same border on both boxes, and not the dark theme's (the shared token is themed)
+        lt = self._run()["light"]; lkl, tbl = lt["lock"], lt["tagBtn"]; table3 = "\n  light lock=" + json.dumps({k: lkl[k] for k in ("w", "h", "border")}) + " tag=" + json.dumps(tbl) + " dark=" + lk["border"]
+        self.assertEqual(lkl["border"], tbl["border"], "light: the same border on both" + table3)
+        self.assertNotEqual(lkl["border"], lk["border"], "light: not the dark theme's border (both boxes read the themed token)" + table3)
+        self.assertEqual((lkl["w"], lkl["h"]), (tbl["w"], tbl["h"]), table3)
         self.assertNotEqual(lk["color"], s["accent"], "gray at rest, not the accent" + table)
         self.assertEqual(s["store"]["tabsLocked"], "absent", "nothing written until pressed" + table)
 

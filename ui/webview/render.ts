@@ -27,7 +27,7 @@ import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./sub
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext, DayWalk } from "./time-marker";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
@@ -6723,7 +6723,7 @@ function renderTabs() {
   lock.innerHTML = settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN;
   lock.title = settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again";
   lock.setAttribute("aria-label", "Lock tabs");
-  lock.style.setProperty("--tab-lock-border", TAG_BTN_BORDER);   // the tag button's border, from its one source (tag-menu.ts), so the two boxes match by value (T395 round two)
+  lock.style.setProperty("--tab-lock-border", TAG_BTN_BORDER_CSS);   // the tag button's border, from its one source (tag-menu.ts): the themed token, so the two boxes match in every theme
   lock.setAttribute("aria-pressed", settings.tabsLocked ? "true" : "false");
   lock.addEventListener("click", (e) => { e.stopPropagation(); setTabsLocked(!settings.tabsLocked); });
   lockBox.appendChild(lock);
