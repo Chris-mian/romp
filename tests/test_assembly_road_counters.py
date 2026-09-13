@@ -144,7 +144,7 @@ class AssemblyRoadCounters(Harness):
 
     SIBLING = "cccccccc-0000-0000-0000-000000000000"
 
-    def _five_shape_file(self, name, resume=False, tip_fork=False):
+    def _five_shape_file(self, name, resume=False, tip_fork=False, abandoned_compaction=False):
         """Three turns, an attached compaction, two turns: the document's pre-cut records u1 a1 u2 a2 u3 a3 (the spine tip a3).
         With `resume`, a sibling file beside the leaf holds x1 x2 and u1 parents x2 (a two-file lineage). With `tip_fork`, the
         tip a3 has a second, abandoned pre-cut child a_d before the compaction (a rollback onto a3, then the compaction whose
@@ -155,6 +155,12 @@ class AssemblyRoadCounters(Harness):
                 G.uline(t0 + 40, "third ask", "u3", "a2"), G.aline(t0 + 50, "third reply", "a3", "u3", stop="end_turn")]
         if tip_fork:
             recs.append(G.aline(t0 + 55, "an abandoned reply", "a_d", "a3", stop="end_turn"))
+        if abandoned_compaction:
+            # round five, medium 1: an auto-compaction at a3, abandoned (its branch rewound away), then the next compaction anchored
+            # at a3 again, so the cut falls at the second boundary and the tip a3 has a pre-cut child whose ROW parent is null
+            recs += [G.compact_line(t0 + 60, "b0", "a3", trigger="auto"), G.compact_summary_line(t0 + 61, "s0", "b0"),
+                     G.uline(t0 + 62, "abandoned after the first compaction", "u3x", "s0"),
+                     G.aline(t0 + 63, "abandoned reply", "a3x", "u3x", stop="end_turn")]
         recs += [G.compact_line(t0 + 600, "b1", "a3"), G.compact_summary_line(t0 + 601, "s1", "b1"),
                 G.uline(t0 + 610, "after the compaction", "u4", "s1"), G.aline(t0 + 620, "fourth reply", "a4", "u4", stop="end_turn"),
                 G.uline(t0 + 630, "then more", "u5", "a4"), G.aline(t0 + 640, "fifth reply", "a5", "u5", stop="end_turn")]
@@ -228,9 +234,9 @@ class AssemblyRoadCounters(Harness):
                                            G.uline(t0 + 710, "after a second compaction", "u6", "s2")], "boundary"),
     }
 
-    def _documented(self, name, resume=False):
+    def _documented(self, name, resume=False, **shape):
         """A five-shape file with its document standing and its entry restored from it; the counters reset."""
-        made = self._five_shape_file(name, resume=resume)
+        made = self._five_shape_file(name, resume=resume, **shape)
         path, cands = made[0], ([made[0], made[2]] if resume else [made[0]])
         self.fresh(); self._parse_lineage(path, cands); self.assertTrue(self.doc(path))
         self.fresh(); self._parse_lineage(path, cands); self._reset()          # the entry stands, restored from the document
@@ -285,6 +291,92 @@ class AssemblyRoadCounters(Harness):
                 em._read_jsonl_entry(path, tail_ok=True)
                 tree, parse, reads = self._served(path)
                 self._check(name, tree, parse, reads, "whole", path, reason="descent")
+
+    # Round five: the tip's childlessness is a WRITE-time fact from the resolved graph (a compaction anchored on the tip is a
+    # child though its row parent is null), and a tail boundary is held to its EFFECTIVE parent (logical, else the preserved
+    # segment's tail, anchor or head), as the parse resolves it.
+    TIP_CHILD_SHAPES = {
+        "m1_spur_onto_the_tip": lambda t0: [G.api_error_line(t0 + 700, "e5", "a3")],
+        "m1_spur_onto_the_tip_with_prompt": lambda t0: [G.api_error_line(t0 + 700, "e5", "a3"), G.uline(t0 + 710, "after the spur", "u6", "e5")],
+        "m1_rewind_onto_the_tip": lambda t0: [G.uline(t0 + 700, "a rewind onto the tip", "u_rw5", "a3")],
+    }
+    BOUNDARY_SHAPES = {   # (tail, the boot road): a second compaction in the tail
+        "j1_boundary_into_the_interior": (lambda t0: [G.compact_line(t0 + 700, "b2", "a1"), G.compact_summary_line(t0 + 701, "s2", "b2"),
+                                                       G.uline(t0 + 710, "after the second compaction", "u7", "s2"), G.aline(t0 + 720, "reply", "a7", "u7", stop="end_turn")], "whole"),
+        "j2_boundary_into_the_interior_later": (lambda t0: [G.uline(t0 + 700, "more", "u6", "a5"), G.aline(t0 + 705, "reply", "a6", "u6", stop="end_turn"),
+                                                             G.compact_line(t0 + 710, "b2", "a1"), G.compact_summary_line(t0 + 711, "s2", "b2"),
+                                                             G.uline(t0 + 720, "after", "u7", "s2")], "whole"),
+        "j3_boundary_onto_an_unknown_uuid": (lambda t0: [G.compact_line(t0 + 700, "b2", "00000000-no-such-record"), G.compact_summary_line(t0 + 701, "s2", "b2"),
+                                                          G.uline(t0 + 710, "after", "u7", "s2")], "whole"),
+        "j4_broken_stitch_whose_preserved_tail_is_the_interior": (lambda t0: [G.compact_line_broken(t0 + 700, "b2", "00000000-no-such-record", "a1"),
+                                                                              G.compact_summary_line(t0 + 701, "s2", "b2"), G.uline(t0 + 710, "after", "u7", "s2")], "whole"),
+        "l_boundary_onto_a_tail_record": (lambda t0: [G.compact_line(t0 + 700, "b2", "a5"), G.compact_summary_line(t0 + 701, "s2", "b2"),
+                                                       G.uline(t0 + 710, "after", "u7", "s2")], "restore"),
+    }
+
+    def _seeded_vs_cold(self, name, path, expect_refused):
+        self.fresh(); self._reset()
+        n0 = em.asm_checkpoint_stats()["parse"].get("seeded:chainRefused", 0)
+        seeded_m = em.chain_membership(path, [path], rompuuid=SID); seeded_r = em.file_rewound(path, rompuuid=SID)
+        refused = em.asm_checkpoint_stats()["parse"].get("seeded:chainRefused", 0) - n0
+        saved = em._CKPT_DIR_FN; em._CKPT_DIR_FN = None
+        try:
+            self.fresh(); cold_m = em.chain_membership(path, [path], rompuuid=SID); cold_r = em.file_rewound(path, rompuuid=SID)
+        finally:
+            em._CKPT_DIR_FN = saved
+        self.assertEqual(seeded_m, cold_m, "%s: the membership equals the cold walk's" % name)
+        self.assertEqual(seeded_r, cold_r, "%s: the rewound set equals the cold walk's" % name)
+        self.assertEqual(refused, 2 if expect_refused else 0, "%s: both readers refused the document, or neither" % name)
+
+    def test_a_tip_with_an_abandoned_pre_cut_compaction_is_not_childless(self):
+        """Round five, medium 1: the childless-tip proof read each row's RAW parent, but the graph follows parentUuid or
+        logicalParentUuid; a pre-cut compaction anchored on the tip has a null row parent, so the tip passed as childless and a
+        tail spur onto it restored frozen verdicts where a cold parse eclipses the abandoned branch. The bit is decided at write
+        time from the resolved graph: the three shapes parse whole on the descent road, at boot and through both seeded readers."""
+        for name, tail in self.TIP_CHILD_SHAPES.items():
+            with self.subTest(shape=name, road="descent"):
+                path, t0 = self._documented("tipchild-" + name, abandoned_compaction=True)
+                import gzip as _gz
+                self.assertIs(json.loads(_gz.decompress(em._asm_ckpt_file(path).read_bytes())).get("tipChildless"), False, "the document says the tip has a child")
+                self._append(path, tail(t0)); em._read_jsonl_entry(path, tail_ok=True)
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, "whole", path, reason="descent")
+            with self.subTest(shape=name, road="boot"):
+                path, t0 = self._documented("tipchild-boot-" + name, abandoned_compaction=True)
+                self._append(path, tail(t0)); self.fresh(); self._reset()
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, "whole", path, reason=None, boot=True)
+            with self.subTest(shape=name, road="seeded"):
+                path, t0 = self._documented("tipchild-seeded-" + name, abandoned_compaction=True)
+                self._append(path, tail(t0))
+                self._seeded_vs_cold(name, path, expect_refused=True)
+        with self.subTest(shape="plain_tip_is_proven_childless"):
+            path, t0 = self._documented("tipchild-plain")
+            import gzip as _gz
+            self.assertIs(json.loads(_gz.decompress(em._asm_ckpt_file(path).read_bytes())).get("tipChildless"), True)
+
+    def test_a_tail_boundary_is_held_to_its_effective_parent(self):
+        """Round five, medium 2: a tail compact_boundary was read past by type with no look at its anchor, so a compaction
+        re-anchored into the pre-cut interior (a rewind before compacting) or onto an unknown uuid restored at the next boot over
+        a document it invalidated. The boundary's effective parent is resolved as the parse resolves it and must be in the tail
+        or the proven tip; an ordinary boundary onto a tail record restores. On the descent road every boundary in the delta
+        takes the gates' own boundary demotion (whole) and never the restore; the rule meets these shapes at boot and through
+        the seeded readers."""
+        for name, (tail, boot_road) in self.BOUNDARY_SHAPES.items():
+            with self.subTest(shape=name, road="descent"):
+                path, t0 = self._documented("tailb-" + name)
+                self._append(path, tail(t0)); em._read_jsonl_entry(path, tail_ok=True)
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, "boundary", path, reason="boundary")
+            with self.subTest(shape=name, road="boot"):
+                path, t0 = self._documented("tailb-boot-" + name)
+                self._append(path, tail(t0)); self.fresh(); self._reset()
+                tree, parse, reads = self._served(path)
+                self._check(name, tree, parse, reads, boot_road, path, reason=None, boot=True)
+            with self.subTest(shape=name, road="seeded"):
+                path, t0 = self._documented("tailb-seeded-" + name)
+                self._append(path, tail(t0))
+                self._seeded_vs_cold(name, path, expect_refused=(boot_road == "whole"))
 
     def test_the_seeded_readers_take_the_chain_rule_and_fall_to_the_cold_walk(self):
         """Round four, medium 2: chain_membership and file_rewound seeded an adapter from the document with no chain rule, and

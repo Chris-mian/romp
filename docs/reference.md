@@ -1545,11 +1545,16 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood
   but whose leaf tail does not chain onto it: every tail record bearing a
-  uuid must parent a record in the tail or the pre-cut spine tip when the
-  document's rows prove the tip has no pre-cut child, the compaction boundary
-  alone read past as the tail's root, so a null or missing parent, a parent
-  anywhere else in the pre-cut part, a tip with a pre-cut child, or an unknown
-  parent refuses, whatever the record's type; the restore falls to the whole parse, at boot
+  uuid or a parentUuid key must parent a record in the tail, or the pre-cut
+  spine tip when the document's `tipChildless` bit says the writer proved,
+  from the resolved graph, that the tip had no pre-cut child (a compaction
+  anchored on it counts; an older document without the bit is not proven); a
+  compaction boundary in the tail is held to the same rule through its
+  effective parent, resolved as the parse resolves it (the logical parent,
+  else the preserved segment's tail, anchor or head that names a known
+  record); so a null or missing parent, a parent anywhere else in the pre-cut
+  part, an unproven tip, an unknown parent, or a boundary re-anchored into
+  the interior or onto an unknown uuid refuses, whatever the record's type; the restore falls to the whole parse, at boot
   and after a demotion alike, and `seeded:chainRefused` counts the same
   refusal by the chain-membership and file-rewound readers, which then walk
   the file cold, T402), `full` with

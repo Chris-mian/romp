@@ -5575,6 +5575,12 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                 chain.append(u)
             u = ad.parent_of.get(u); guard_n += 1
         spine = [row_of[u] for u in reversed(chain) if u in row_of]   # record indexes, root to cut
+        tip = chain[0] if chain else None                 # the pre-cut spine's tip: the first pre-cut record on the leaf's path
+        tip_childless = tip is not None and not any(    # decided HERE from the RESOLVED graph (parentUuid or logicalParentUuid,
+            p == tip and ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid   #  the stitch repair applied): a pre-cut child of
+            for u, p in ad.parent_of.items())           #  the tip, a compaction anchored on it included, means a tail child would
+        #                                                   decide the fork (T402 round five, medium 1); the restore reads this
+        #                                                   bit, never the rows' raw parents
         seq_ts = None
         i = bisect.bisect_left(ad._seq_ts, (cut_seq,)) - 1
         if i >= 0:
@@ -5692,7 +5698,7 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                "gates": {"prompt_ids": sorted(ad.prompt_ids), "boundary_pids": sorted(ad.boundary_pids),
                          "skill_use_ids": sorted(ad.skill_use_ids), "src_tool_links": sorted(ad.src_tool_links),
                          "dangling": sorted(ad.dangling)},
-               "carry": _carry_encode(st), "identity": identity, "t": time.time()}
+               "carry": _carry_encode(st), "identity": identity, "t": time.time(), "tipChildless": bool(tip_childless)}
         try:
             text = json.dumps(doc, separators=(",", ":"))
         except TypeError:
@@ -6011,20 +6017,39 @@ def _entry_current(entry, candidate_files):
     return True
 
 
+def _boundary_effective_parent(r, known):
+    """A compact_boundary's parent as the parse resolves it (FileAdapter._ingest, then _repair_compaction_stitches): its
+    logicalParentUuid when that names a known record, else the first of compactMetadata.preservedSegment's tail, anchor and
+    head that does; None when nothing does (an unknown anchor: the boundary re-roots the graph)."""
+    target = r.get("parentUuid") or r.get("logicalParentUuid")
+    if target and target in known:
+        return target
+    seg = (r.get("compactMetadata") or {}).get("preservedSegment") or {}
+    for k in ("tailUuid", "anchorUuid", "headUuid"):
+        cand = seg.get(k)
+        if cand and cand in known:
+            return cand
+    return None
+
+
 def _tail_chains_onto_the_document(leaf_path, doc):
-    """Whether the leaf's tail (its records past the document's cut) CHAINS onto the document: EVERY tail record that bears a
+    """Whether the leaf's tail (its records past the document's cut) CHAINS onto the document: every tail record that bears a
     uuid or a parentUuid key, whatever its type (user, assistant, a system spur, a summary, a sidechain record, an attachment),
-    parents a record IN THE TAIL, or the pre-cut SPINE TIP when the document proves the tip has no pre-cut child (its rows
-    carry every pre-cut record's parent; a boundary's logical parent is metadata and no child). The compaction boundary alone
-    is read past, as the tail's root. A missing parentUuid key counts as a null root. So a /clear fork, a rewind onto any
-    pre-cut record but a childless tip, a system spur anchored before the cut, an orphan parent, a summary or sidechain
-    record parented into the pre-cut part all refuse to the whole parse: graph invalidations the document's byte checks
-    cannot see, after which the pre-cut verdicts the document carries may be stale (T402 rounds one to four). The childless
-    tip is exempt because a first child cannot change which pre-cut branch is active; a tip with an abandoned pre-cut child
-    is not, since a further child decides the fork (round four, medium 1), and the live manual /compact chains its command
-    wrappers onto the pre-compact leaf, a childless tip, in ten of thirteen corpus cases (the golden detached scenario). One
-    predicate for EVERY read that seeds an adapter from a document: the boot restore, the restore after a descent, rewrite or
-    nonleaf demotion, the chain-membership and file-rewound readers. A leaf with no cut in the document has no tail to chain."""
+    parents a record IN THE TAIL, or the pre-cut SPINE TIP when the document says the writer proved the tip had no pre-cut
+    child (`tipChildless`, decided at write time from the resolved graph, a compaction anchored on the tip counting as a child;
+    an older document without the bit is not proven, so the exemption does not apply). A compaction boundary in the tail is
+    held to the same rule through its EFFECTIVE parent, resolved as the parse resolves it (logicalParentUuid, else the
+    preserved segment's tail, anchor or head that names a known record): the boundary at the cut anchors on the tip or a tail
+    record; one anchored in the pre-cut interior, or on no known record, invalidated the document. A missing parentUuid key
+    counts as a null root. So a /clear fork, a rewind onto any pre-cut record but a proven-childless tip, a system spur
+    anchored before the cut, an orphan parent, a summary or sidechain record parented into the pre-cut part, a compaction
+    re-anchored into the interior or onto an unknown uuid all refuse to the whole parse: graph invalidations the document's
+    byte checks cannot see, after which the pre-cut verdicts the document carries may be stale (T402 rounds one to five). The
+    childless tip is exempt because a first child cannot change which pre-cut branch is active, and the live manual /compact
+    chains its command wrappers onto the pre-compact leaf, a childless tip, in ten of thirteen corpus cases (the golden detached
+    scenario). One predicate for EVERY read that seeds an adapter from a document: the boot restore, the restore after a
+    descent, rewrite or nonleaf demotion, the chain-membership and file-rewound readers. A leaf with no cut in the document
+    has no tail to chain."""
     fsid = Path(leaf_path).stem
     f = (doc.get("files") or {}).get(fsid) or {}
     cut = f.get("cut")
@@ -6036,16 +6061,18 @@ def _tail_chains_onto_the_document(leaf_path, doc):
         recs = recs[int(cut[1]) - ent[5]:]
     tail_uuids = {r.get("uuid") for r in recs if isinstance(r, dict) and r.get("uuid")}
     rows, spine = doc.get("records") or [], doc.get("spine") or []
+    pre_uuids = {row[0] for row in rows}
     tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
-    if tip is not None and any(len(row) > 9 and row[9] == tip for row in rows):
-        tip = None                                        # the tip has a pre-cut child: a tail child would decide the fork
-    allowed = tail_uuids | ({tip} if tip is not None else set())
+    allowed = tail_uuids | ({tip} if tip is not None and doc.get("tipChildless") is True else set())
+    known = pre_uuids | tail_uuids
     for r in recs:
         if not isinstance(r, dict) or not (r.get("uuid") or "parentUuid" in r):
             continue                                      # no graph node: a file-history snapshot, a summary index row
         if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
-            continue                                      # the tail's root; its parent is metadata
-        if r.get("parentUuid") not in allowed:
+            parent = _boundary_effective_parent(r, known)   # the boundary's anchor as the parse resolves it (round five, medium 2)
+        else:
+            parent = r.get("parentUuid")
+        if parent not in allowed:
             return False
     return True
 
