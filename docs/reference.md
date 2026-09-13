@@ -1578,7 +1578,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `fallbacks` per reason (`version`, `path`, `shrunk`, `guard`, `rewrite`,
   `corrupt`), `dirty` (files whose folds moved since their last write),
   `readBytes` and `readByPath` (what the JSONL reader pulled off disk since
-  boot, in total and per file).
+  boot, in total and per file), `docConsults` (fold documents loaded through the one
+  validated read that the two boot restore paths, a write's carry and a
+  retirement's consult share; at boot the restore paths dominate it, one per
+  checkpointed file), `docMemo` (the documents that read keeps for the write
+  that follows: `entries`, `bytes` as their sizes on disk, and `capBytes`, a
+  ceiling of MemTotal / 512 floored at 64 MiB, `ROMP_DOC_MEMO_CAP_MB`).
   `rewoundMemo`: the judges' incident scan used to read every dead episode
   file of a lineage whole at every boot (`_per_file_rewound`, 542 MB on one
   devbox boot); its verdict set per frozen file is now the fold `rewoundUuids`
@@ -1613,7 +1618,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   append and a restore's tail read are not whole reads and are not counted;
   `wholeReadsByStage` is the same table keyed `<stage>:<kind><-<caller>`,
   the stage being the pusher thread's current tick job (`jobs.<job>`) or
-  `push`, `none` outside the cycle (T401), and `asmCheckpoint.hydratedByStage`
+  `push`, `connect` for a fresh client's full push on its handler thread (a
+  browser reload or reconnect), `none` outside those (T401), and `asmCheckpoint.hydratedByStage`
   does the same for the hydration rows.
 - `asmCheckpoint`: the assembly documents since boot: `written`, `restored`,
   `fallbacks` per reason (`version`, `session`, `inputs`, `lineage`, `shrunk`,

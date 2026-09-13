@@ -747,7 +747,7 @@ def _stage_marked(name):
         @functools.wraps(fn)
         def marked(*args, **kwargs):
             prev = getattr(_STAGE_TL, "name", None)
-            _STAGE_TL.name = name
+            _STAGE_TL.name = name(*args, **kwargs) if callable(name) else name   # a callable names the stage from the call
             try:
                 return fn(*args, **kwargs)
             finally:
@@ -12953,8 +12953,8 @@ def _nudge_placement_gate(sid, turns, store):
     cached only when that view is STILL the current one after the derivation. The clears log's stat is taken
     BEFORE the derivation, so a boundary appended during it leaves a key the next cycle's stat cannot match.
     A parse the cache does not hold, or a store that is not the current shared view, is derived every time
-    and never cached. The exception path is unchanged: a gate that cannot be computed answers not unplanned (the walk proceeds on the closer gate alone: nudges waved past the planner gate, counted under failed)
-    silently, and is never cached."""
+    and never cached. The exception path is unchanged: a gate that cannot be computed answers not unplanned (the walk proceeds on the
+    closer gate alone: nudges waved past the planner gate, counted under failed and said on stderr with its traceback), and is never cached."""
     pk = jd._parse_entry(sid, turns=turns)     # the entry holding THESE turns, never the sid's newest slot (an agent
     #                                             view stored between the walk's parse and this read: review find)
     parse_key = pk[0] if (pk is not None and pk[1] is not None and pk[1].get("turns") is turns) else None
@@ -12970,9 +12970,9 @@ def _nudge_placement_gate(sid, turns, store):
     except Exception:
         unplanned = False                        # minimal/legacy turn shapes → the closer gate stands alone,
         _NUDGE_GATE_STATS["failed"] += 1         # counted, so a test can pin that this leg was never entered
-        sys.stderr.write("auto-nudge placement gate (session %s): %s\n"   # but never SILENTLY (the user
-                         % (sid, traceback.format_exc()))                 #  2026-07-21: a mute gate error
-        return unplanned                         #  would wave nudges through); a failed derivation is not cached
+        sys.stderr.write("auto-nudge placement gate (session %s): %s\n"   # and said, so the failure is visible
+                         % (sid, traceback.format_exc()))                 #  (the user 2026-07-21: a mute gate
+        return unplanned                         #  error would wave nudges through); a failed derivation is not cached
     _NUDGE_GATE_STATS["derived"] += 1
     if parse_key is not None:
         try:
@@ -46776,7 +46776,9 @@ def _feed_first(now, live_map, targets, connect):
     return True
 
 
-@_stage_marked("push")             # T401: the push's reads count under "push", the mark restored whatever exit the body takes
+@_stage_marked(lambda targets, connect=False, live_map=None: "connect" if connect else "push")
+#                                   T401: the pusher's push reads under "push"; a fresh client's full push on its handler thread
+#                                   (a browser reload) under "connect", so push: rows stay the cycle's; restored whatever exit
 def _push(targets, connect=False, live_map=None):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
