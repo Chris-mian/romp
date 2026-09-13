@@ -2105,7 +2105,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   parse on a matched key that a clock leg refused to serve: a flip due, a
   None flip, the closer toggle off), and `missBy[file]`, which counts, per
   miss, each key position that differed from the recorded one so a boot read
-  can name what moved; the positions in order are `transcript`, `states`
+  can name what moved (the counts overlap: one miss counts under every
+  position that moved, so their sum can exceed `misses`; read them beside
+  `misses`); the positions in order are `transcript`, `states`
   (the state log), `store` (the goal store), `overrides` (its journal),
   `archive`, `episode`, `cleared`, `messages` (the postal log), `downtime`,
   `ledger` (the nudge ledger, one file for the box), then `askerRow` for the
@@ -2124,9 +2126,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   interrupt block (the quiet boot read of 2026-09-13 counted 125 interrupt
   block misses: messages 50, the ledger 50, cleared 25, and no episode
   row; the two constant positions and the ledger row answer 100 of them).
-  `statesOverlay` is the
-  awaiting overlay's read of the
-  states log through the shared append-incremental reader, one carried answer
+  `statesOverlay` is the awaiting overlay's read of the states log through
+  the shared append-incremental reader, one carried answer
   per states file (`hit`: the records were the cached ones and no row was
   stepped; `append`: only the appended rows were stepped; `refold`: every row
   was stepped again, after a rewrite or a shrink or on the file's first read;

@@ -316,6 +316,30 @@ class RowTallyEqualsAtomTally(TA.Harness):
         self.assertEqual(em._ASM_INDEX_STATS["materialized"] - m0, 1, "that row alone is built")
         self.assertEqual(km._interrupt_marks_atoms(users, 0.0, ""), (1100, 1200), "the inline interrupt counts as the stop")
 
+    def test_a_new_index_joins_the_live_set_under_the_lock_the_gauge_sums_under(self):
+        """1597 low 1: LazyIndex.__init__ added itself to the live set without _MAT_LOCK while asm_index_stats summed the set under
+        it, so a /perf read beside a parse could raise "set changed size during iteration" and answer 500. The add takes the
+        lock: a recording lock sees an acquisition during construction, and a sum racing 200 constructions never raises."""
+        import threading
+        enters = []
+        real = em._MAT_LOCK
+        class Recording:
+            def __enter__(self): enters.append(1); return real.__enter__()
+            def __exit__(self, *a): return real.__exit__(*a)
+        recs = [["r0", None, "u", None, 0, 1000, 0, None, None, None]]
+        rows = [{"r": 0, "s": {"type": "user", "author": "human", "t": 1000}, "seq": 0}]
+        with mock.patch.object(em, "_MAT_LOCK", Recording()):
+            em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "w.jsonl")
+        self.assertGreaterEqual(len(enters), 1, "the add to the live set took the lock")
+        keep = []
+        def maker():
+            for _ in range(200):                                                   # bounded: 200 constructions, then done
+                keep.append(em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "w.jsonl"))
+        th = threading.Thread(target=maker); th.start()
+        sums = [em.asm_index_stats()["userFacts"] for _ in range(200)]              # bounded: 200 reports beside the maker
+        th.join(10)
+        self.assertEqual(len(keep), 200); self.assertTrue(all(isinstance(x, int) for x in sums), "no report raised")
+
     def test_the_user_facts_gauge_counts_the_live_indexes_and_falls_when_one_is_dropped(self):
         """Round three medium: asmIndex.userFacts is a GAUGE of the light facts resident across the live indexes, summed at report
         time from each index's own cache (no lock on the tally's hot path), and it falls when an index is dropped."""

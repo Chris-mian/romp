@@ -1184,13 +1184,13 @@ _INTR_MARKS_MEMO_MAX = 512
 _intr_marks_memo_stats = {"hit": 0, "miss": 0, "evict": 0, "restored": 0, "refused": 0, "computeMs": 0.0}
 _INTR_MARKS_STATS_LOCK = threading.Lock()
 _INTR_MARKS_FILE = "intr-marks.json"   # the marks memo PERSISTED under the state dir (T401 (3) target 3): {"v": 2, "rows": {sid:
-#                                        [mtime_ns, size, cut_t, cut_cause, sdk_mtime_ns, sdk_size, last_intr, last_human]}}, one row per alive session,
+#                                        [mtime_ns, size, cut_t, cut_cause, sdk_owned, last_intr, last_human]}}, one row per alive session,
 #                                        written when a row changed by the persist job and at exit, loaded at boot; a row that is
 #                                        malformed, of another length or not under a uuid-shaped sid is REFUSED (counted, recomputed)
-_INTR_MARKS_DISK = {}                  # sid -> [mtime_ns, size, cut_t, cut_cause, sdk_mtime_ns, sdk_size, last_intr, last_human]
+_INTR_MARKS_DISK = {}                  # sid -> [mtime_ns, size, cut_t, cut_cause, sdk_owned, last_intr, last_human] (_INTR_MARKS_ROW_LEN)
 _INTR_MARKS_DISK_DIRTY = [False]
 _INTR_MARKS_DISK_LOCK = threading.Lock()
-_INTR_MARKS_DISK_V = 2                 # v2 (round two): the SDK registry row's stat joined the key; a v1 file loads nothing
+_INTR_MARKS_DISK_V = 2                 # v2 (rounds two and three): the parse's sdk-ownership bit joined the key; a v1 file loads nothing
 _INTR_MARKS_ROW_LEN = 7
 _UUIDISH_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")   # the one uuid shape (also
 #                                        the postal index's; defined here because the marks memo loads at import, below)
@@ -10253,7 +10253,8 @@ def _tick_seen_bump(job, key, n=1):
 
 
 def _tick_key_miss_by(job, st, prev):
-    """Count a miss with a previous entry: which of the key's positions differed (twenty comparisons, nothing else). A key of
+    """Count a miss with a previous entry: which of the key's positions differed (one comparison per (mtime_ns, size) pair of
+    the key: ten for the tick's ten-file key, eighteen for the walk's, which adds the asker rows; nothing else). A key of
     another length than the recorded one counts once under `shape`, as does a previous entry that is not a sequence (an
     observation counter is never the raising path); a differing element past the ten files is `askerRow`."""
     with _TICK_SEEN_LOCK:
@@ -10308,8 +10309,8 @@ def _persist_tick_seen(force=False):
     try:
         p = _tick_seen_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per thread: the exit's force
-        tmp.write_text(json.dumps(snap), encoding="utf-8")                                  #  write runs beside the jobs thread's
+        tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per WRITER: the exit's force write
+        tmp.write_text(json.dumps(snap), encoding="utf-8")                                    #  runs beside the pusher's persist
         os.replace(tmp, p)
         return True
     except Exception:
@@ -10325,7 +10326,7 @@ _TICK_KEY_UNREAD = (-1.0, -1)         # the constant written at a position a job
 
 
 def _interrupt_block_key(s, data=None):
-    """The interrupt tick's key: the ten files' SHAPE (so memos.tickSeen.missBy decodes as for every job) with only the files
+    """The interrupt tick's key: the ten files' SHAPE (so memos.tickSeen.byJob[job].missBy decodes as for every job) with only the files
     the road reads moving it. The quiet boot read of 2026-09-13 (memos.tickSeen at 116 s: interrupt-block misses 125, missBy
     messages 50, ledger 50, cleared 25) named three box-wide files the tick reads none of: every postal message, every clear
     and every walk write to the nudge ledger re-evaluated every alive session's interrupt block, and at boot the walk's
@@ -10379,7 +10380,7 @@ def _tick_job_check(job, s, st=None):
     if st == prev:
         _tick_seen_bump(job, "hits")
         return True, st
-    _tick_key_miss_by(job, st, prev)          # which position moved: the boot read decodes it (memos.tickSeen.missBy)
+    _tick_key_miss_by(job, st, prev)          # which position moved: the boot read decodes it (memos.tickSeen.byJob[job].missBy)
     return False, st
 
 
@@ -12614,8 +12615,10 @@ def _dead_wait_shared_view(sid, stats=None):
     spending the death transition silently (round two, low 2); such a fault is counted, and named on stderr once per episode
     through the pass's collapse (`stats`, round three: the base printed a traceback, silence is not an option). Counted under
     memos.deadWait: sharedLoads, loadFaults, and sharedFallback for a view that degraded INTERNALLY to a private load (an
-    absent store file, an unreadable journal, unparseable bytes, the shared cache switched off), told by the RETURNED object
-    (the shared view hands back a FrozenStore; every fallback road hands back load_goals' plain private store), never by a
+    absent store file, an unreadable journal, unparseable bytes, the shared cache switched off, and the journal-unread road,
+    whose store load_goals marks `_unread` before handing it back), told by the RETURNED object (the shared view hands back a
+    FrozenStore; every fallback road, the `_unread` one included, hands back load_goals' plain private store, so ANY
+    non-FrozenStore return counts, whatever its road), never by a
     delta over a process-global counter, which another thread's private load would move (round four, medium); so /perf
     cannot claim the saving while the cache is off."""
     _DEAD_WAIT_STATS["sharedLoads"] += 1
@@ -39738,7 +39741,8 @@ def _persist_spend_trees(force=False, only=None):
             continue                                         # `only` writes the one memo too, and only when dirty (low 5: an
         #                                                      eviction on a binding bound fires every cycle)
         p = _spend_tree_path(leaf)
-        tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per thread, as the tick memo's
+        tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))   # per WRITER (pid and thread): the exit's
+        #                                                      force write and the pusher's persist on one leaf never share a staged file
         body = None
         for _ in range(3):                                   # the exit's write runs beside the pusher, which may be
             try:                                             #  mutating the dicts (round two, low 2): a resize under the
@@ -39852,8 +39856,8 @@ def _spend_window_files(leaf, since, now=None):
                     m["files"].pop(p, None)
                 continue
             if cur != mt:
-                m["dirs"][d] = cur
-                _spend_tree_list_dir(d, m, set(m["dirs"]))
+                m["dirs"][d] = cur; m["dirty"] = True         # dirty at the assignment: the listing below marks dirty only when its
+                _spend_tree_list_dir(d, m, set(m["dirs"]))    #  scandir succeeds, and a memo whose mtime moved must be written (1589 low 1)
         if root not in m["dirs"]:
             _SPEND_TREE_CACHE.pop(key, None)                 # the tree is gone: listed afresh if it returns
             return [key]
