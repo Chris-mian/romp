@@ -4,6 +4,7 @@ totals and a ring of whole-cycle durations, so nothing named the stage. The push
 reader's bytes, the hydrated bytes), the boot's first for the process under `pusher.firstCycle`, the last cycles in a ring
 sized as a fraction of memory under `pusher.stageRing`, and the restart ledger's boot-health row carries the first split."""
 import inspect
+import io
 import os
 import sys
 import threading
@@ -260,7 +261,6 @@ class LabBootFirstCycle(unittest.TestCase):
         the thread is stored only once started, and the cycle completes and writes its row."""
         km = self.km
         self._marked_push(0.05)
-        import io
         err = io.StringIO()
         with mock.patch.object(threading.Thread, "start", side_effect=RuntimeError("can't start new thread")), \
              mock.patch.object(sys, "stderr", err):
@@ -346,7 +346,7 @@ class LabBootFirstCycle(unittest.TestCase):
         t0 = time.thread_time()
         try:
             with mock.patch.object(km, "_pusher_cycle", cycle), mock.patch.object(km, "_PUSHER_FAILED_SAID", {}), \
-                 mock.patch.object(km.sys, "stderr", __import__("io").StringIO()), mock.patch.dict(km._PERF_STATS.pusher, {"cycleFailed": 0}):
+                 mock.patch.object(km.sys, "stderr", io.StringIO()), mock.patch.dict(km._PERF_STATS.pusher, {"cycleFailed": 0}):
                 km._pusher()
                 cpu = time.thread_time() - t0
                 self.assertLess(n[0], 10, "the retries are paced, not spun: %d cycles in a second" % n[0])
