@@ -210,6 +210,40 @@ class LabBootFirstCycle(unittest.TestCase):
         km.NAMES, km._live_map, km._push_all, km._append_restart_cut, km._BOOT_HEALTH_DONE[0] = self.saved
         km._PERF_STATS.reset()
 
+    def test_the_boot_row_carries_the_pushers_stack_samples_from_the_first_cycle_only(self):
+        """T401 (3): two live reads of a slow first cycle were missed because the /perf stack sample could not be taken in time.
+        The pusher's stack is sampled once a second during the boot's first cycle by a daemon thread that ends with it, and the
+        samples ride the boot-health row as firstCycleStacks (seconds into the cycle, the stage mark, the innermost frames); a
+        later cycle adds nothing and writes no row."""
+        km = self.km
+        km._FIRST_CYCLE_SAMPLER.update({"started": False, "stop": threading.Event(), "rows": [], "thread": None})
+        km._push_all = km._stage_marked("push")(lambda live_map=None: time.sleep(2.3))   # marked as the real push is
+        with km._clients_lock:                                             # a client, so the cycle pushes (the sleep above)
+            km._clients.append({"app": "feed", "wid": "lab", "send": lambda *a, **k: None, "alive": True})
+        self.addCleanup(lambda: [km._clients.remove(c) for c in list(km._clients) if c.get("wid") == "lab"])
+        km._pusher_cycle()
+        self.assertEqual(len(self.rows), 1, "one boot-health row")
+        samples = self.rows[0].get("firstCycleStacks")
+        self.assertIsInstance(samples, list, "the row carries the samples: %r" % sorted(self.rows[0]))
+        self.assertGreaterEqual(len(samples), 2, "one a second through a 2.3 s cycle: %r" % samples)
+        self.assertLessEqual(len(samples), km.FIRST_CYCLE_SAMPLES_MAX)
+        for row in samples:
+            self.assertEqual(set(row), {"t", "stage", "frames"}, row)
+            self.assertTrue(all(isinstance(f, str) and " (" in f and f.endswith(")") for f in row["frames"]), row["frames"])
+            self.assertLessEqual(len(row["frames"]), km.FIRST_CYCLE_SAMPLE_FRAMES)
+        self.assertIn("push", [row["stage"] for row in samples], "a sample taken during the push carries the pusher's stage mark")
+        waited = [row for row in samples if row["frames"] and "test_first_cycle_stage_split.py" in row["frames"][-1]]
+        self.assertTrue(waited, "the innermost Python frame names where the cycle waited (the stubbed push; time.sleep itself is C): %r"
+                        % [row["frames"][-1:] for row in samples])
+        self.assertTrue(any("_pusher_cycle" in f for f in waited[0]["frames"]), "walked from the cycle: %r" % waited[0]["frames"])
+        self.assertFalse(any(t.name == "first-cycle-sampler" for t in threading.enumerate()), "the sampler ended with the cycle")
+        n = len(km._FIRST_CYCLE_SAMPLER["rows"])
+        km._push_all = lambda live_map=None: time.sleep(1.2)
+        km._pusher_cycle()
+        self.assertEqual(len(self.rows), 1, "a later cycle writes no row")
+        self.assertEqual(len(km._FIRST_CYCLE_SAMPLER["rows"]), n, "and adds no sample")
+        self.assertFalse(any(t.name == "first-cycle-sampler" for t in threading.enumerate()))
+
     def test_the_boots_first_cycle_names_its_stages(self):
         km = self.km
         km._push_all = lambda live_map=None: time.sleep(0.005)

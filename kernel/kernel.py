@@ -23692,6 +23692,56 @@ def _boot_row_due_locked():
 
 BOOT_FIRST_CYCLE_BOUND_S = float(os.environ.get("ROMP_BOOT_FIRST_CYCLE_BOUND_S", "10"))
 _BOOT_HEALTH_DONE = [False]
+FIRST_CYCLE_SAMPLE_S = 1.0             # the pusher's stack is sampled this often during the boot's FIRST cycle only
+FIRST_CYCLE_SAMPLES_MAX = 60           # and at most this many samples (a minute of a slow boot) ride the boot-health row
+FIRST_CYCLE_SAMPLE_FRAMES = 8          # innermost frames kept per sample: enough to name the lock or the read, not the whole stack
+_FIRST_CYCLE_SAMPLER = {"started": False, "stop": threading.Event(), "rows": [], "thread": None}
+
+
+def _first_cycle_sample(tid, t0):
+    """One sample of the pusher thread's stack: seconds since the cycle opened, its stage mark and the innermost frames as
+    "function (file:line)" strings, the same shape as the /perf stack sample, no locals and no session content."""
+    frame = sys._current_frames().get(tid)
+    rows = []
+    f = frame
+    while f is not None and len(rows) < FIRST_CYCLE_SAMPLE_FRAMES:
+        rows.append("%s (%s:%d)" % (f.f_code.co_name, os.path.basename(f.f_code.co_filename), f.f_lineno))
+        f = f.f_back
+    rows.reverse()                                        # innermost last, as _thread_stacks
+    return {"t": round(time.monotonic() - t0, 1), "stage": _STAGE_BY_TID.get(tid), "frames": rows}
+
+
+def _first_cycle_sampler_run(tid, t0):
+    ev = _FIRST_CYCLE_SAMPLER["stop"]
+    while not ev.wait(FIRST_CYCLE_SAMPLE_S):              # loop-ok: bounded by the first cycle's end and the sample cap
+        if len(_FIRST_CYCLE_SAMPLER["rows"]) >= FIRST_CYCLE_SAMPLES_MAX:
+            return
+        try:
+            _FIRST_CYCLE_SAMPLER["rows"].append(_first_cycle_sample(tid, t0))
+        except Exception:
+            return
+
+
+def _first_cycle_sampler_start(t0):
+    """The boot's first pusher cycle is where a slow boot spends its time, and two live reads of it were missed because the
+    /perf stack sample could not be taken in time (the watch's poll latency was longer than the cycle). A daemon thread
+    samples the PUSHER's stack once a second for the first cycle only, at most FIRST_CYCLE_SAMPLES_MAX rows, and the rows
+    ride the boot-health row as `firstCycleStacks`, so a boot read names the read or the lock the cycle waited in without
+    the kernel alive. Cost: one sys._current_frames() and one walk of one thread's frames a second (tens of microseconds)
+    for the length of the first cycle, then the thread ends; nothing after the first cycle."""
+    if _FIRST_CYCLE_SAMPLER["started"]:
+        return
+    _FIRST_CYCLE_SAMPLER["started"] = True
+    th = threading.Thread(target=_first_cycle_sampler_run, args=(threading.get_ident(), t0), name="first-cycle-sampler", daemon=True)
+    _FIRST_CYCLE_SAMPLER["thread"] = th
+    th.start()
+
+
+def _first_cycle_sampler_stop():
+    _FIRST_CYCLE_SAMPLER["stop"].set()
+    th = _FIRST_CYCLE_SAMPLER.get("thread")
+    if th is not None:
+        th.join(timeout=2.0)
 
 
 def _boot_health_first_cycle(dt):
@@ -23714,6 +23764,7 @@ def _boot_health_first_cycle(dt):
     _NUDGE_WALK_FIRST_OPEN[0] = False                           # T401 (2): which sessions' parses the boot's walk skipped, paid or
     row["nudgeWalk"] = {"skipped": list(_NUDGE_WALK_FIRST["skipped"]), "parsed": list(_NUDGE_WALK_FIRST["parsed"]),
                         "deferred": _NUDGE_WALK_FIRST["deferred"]}   #  deferred to a later pass
+    row["firstCycleStacks"] = list(_FIRST_CYCLE_SAMPLER["rows"])   # the pusher's stack once a second through the cycle (T401 (3))
     if row["slow"]:
         try:
             sys.stderr.write("boot health: the first pusher cycle took %.1f s (bound %.0f s): sessions and cards waited behind it; "
@@ -50010,6 +50061,8 @@ def _pusher_cycle():
     few-hundred-ms staleness by construction — they always saw a snapshot aged by however many jobs
     ran before them."""
     _t_cycle = time.monotonic()
+    if not _BOOT_HEALTH_DONE[0]:
+        _first_cycle_sampler_start(_t_cycle)   # the boot's first cycle: the pusher's stack sampled once a second (T401 (3))
     _PERF_STATS.cycle_begin()               # T397 round two, low 3: the split opens with the cycle, so the prelude below (the
     #                                         liveness snapshot, the names) is a stage of its own and the stages sum to the wall
     _c_cycle = time.thread_time()           # this thread's CPU: the wall above includes lock waits and any forked child
@@ -50047,6 +50100,8 @@ def _pusher_cycle():
         _live_scope.msgsum = None
         _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
                           idle=(_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle)
+        if not _BOOT_HEALTH_DONE[0]:
+            _first_cycle_sampler_stop()                         # the samples are complete before the row reads them
         _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
 
 
