@@ -731,6 +731,35 @@ class _PerfStats:
 _PERF_STATS = _PerfStats()
 
 
+_STAGE_TL = threading.local()     # the calling thread's current stage name (T401): set by _job_stage and the push, read by the
+#                                   event model's per-stage read and hydration rows through set_read_stage_provider
+
+
+def _current_read_stage():
+    return getattr(_STAGE_TL, "name", None)
+
+
+def _stage_marked(name):
+    """Decorator: the calling thread's stage mark is `name` for the function's duration and restored on EVERY exit, a raise or an
+    early return included (T401 round one: _push set the mark inline and restored it at its end, so a caught build failure
+    returned before the restore and the pusher thread stayed marked `push` for the process's life)."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def marked(*args, **kwargs):
+            prev = getattr(_STAGE_TL, "name", None)
+            _STAGE_TL.name = name
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _STAGE_TL.name = prev
+        return marked
+    return deco
+
+
+em.set_read_stage_provider(_current_read_stage)   # T401: the thread's stage mark, so reads and hydrations count per (stage, caller)
+
+
+
 class _CountedEvent(threading.Event):
     """A threading.Event whose set() also counts in _PERF_STATS: the pusher's wake. Counting at the
     event keeps every existing call site as it is, including the bound-method callbacks
@@ -46747,6 +46776,7 @@ def _feed_first(now, live_map, targets, connect):
     return True
 
 
+@_stage_marked("push")             # T401: the push's reads count under "push", the mark restored whatever exit the body takes
 def _push(targets, connect=False, live_map=None):
     """Build the payloads once (cached parses) and send each target only the pieces that CHANGED for it.
     Drives both the periodic pusher (all clients) and a fresh connect (one client): a new/reconnecting
@@ -46767,7 +46797,6 @@ def _push(targets, connect=False, live_map=None):
     # build (want_chat), so opening the fleet alone showed an empty/loading screen until a chat push happened.
     _PERF_STATS.stage_boundary()                 # T397: the push's sub-stages measure their bytes from here (the cards-first
     #                                              path below included: round one, low 1), not from the cycle's start
-    _prev_stage = getattr(_STAGE_TL, "name", None); _STAGE_TL.name = "push"   # T401: the push's reads count under "push"
     want_fleet = any(c["app"] == "fleet" for c in targets)
     want_feed = _feed_audience(targets)          # the Sessions pane (app "fleet") rides the feed payload; chat needs feed["working"]
     want_tl = any(c["app"] == "timeline" for c in targets)
@@ -47221,7 +47250,6 @@ def _push(targets, connect=False, live_map=None):
                     bars_down = True
             sys.stderr.write("push send %s (%s): %s\n" % ("feed" if is_feed else "bars", c.get("app"), traceback.format_exc()))
     _PERF_STATS.stage("push.send", time.monotonic() - _t_stage)
-    _STAGE_TL.name = _prev_stage                 # the push's reads counted; the mark returns to the caller's (T401)
     # the cards' windows, ahead of a click (the warming, 2026-09-11): AFTER the send stage, so the feed frame of the cycle a
     # card moves never waits for the renders; only with a board to click on (a feed or fleet client among the targets;
     # want_feed counts the chat too, which cannot click a card) and a proto-2 chat client to serve pages to; its own stage key
@@ -49710,17 +49738,6 @@ def _pusher_cycle():
         _PERF_STATS.cycle(time.monotonic() - _t_cycle, time.thread_time() - _c_cycle,
                           idle=(_PERF_STATS.marks(), jd._GOAL_IO["saves"], jd._GOAL_IO["writes"]) == _m_cycle)
         _boot_health_first_cycle(time.monotonic() - _t_cycle)   # the boot's first cycle, on the record (a no-op after)
-
-
-_STAGE_TL = threading.local()     # the calling thread's current stage name (T401): set by _job_stage and the push, read by the
-#                                   event model's per-stage read and hydration rows through set_read_stage_provider
-
-
-def _current_read_stage():
-    return getattr(_STAGE_TL, "name", None)
-
-
-em.set_read_stage_provider(_current_read_stage)   # T401: the thread's stage mark, so reads and hydrations count per (stage, caller)
 
 
 def _job_stage(name, thunk):

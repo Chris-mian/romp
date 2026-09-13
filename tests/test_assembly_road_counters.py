@@ -166,6 +166,43 @@ class AssemblyRoadCounters(Harness):
         self.assertTrue(any(k.startswith("none:zero<-") for k in em.record_cache_stats()["wholeReadsByStage"]), "outside the cycle: none")
         self.assertIsNone(km._current_read_stage(), "the mark returns after the job")
 
+    def test_the_push_mark_is_restored_on_every_exit_and_the_pushs_reads_count_under_push(self):
+        """T401 round one, medium: _push set the thread's mark inline and restored it at its end, so a caught build failure returned
+        before the restore and the pusher thread stayed marked `push` for the process's life, booking every later read outside a
+        stage under push:. The mark is a decorator with a finally. And a read inside the push books push:<kind><-<caller>."""
+        km = kernel_module()
+        saved = (km._chat_tab_sessions, km._live_map, km.NAMES)
+        def restore():
+            km._chat_tab_sessions, km._live_map, km.NAMES = saved
+        self.addCleanup(restore)
+        km._live_map = lambda: {}; km.NAMES = {}
+        def boom(now, live_map):
+            raise RuntimeError("a synthetic build failure")
+        km._chat_tab_sessions = boom
+        import io
+        err = io.StringIO(); saved_err = sys.stderr; sys.stderr = err
+        try:
+            km._push([{"app": "chat", "wid": "lab", "send": lambda *a, **k: None, "alive": True, "dedup": {}}], live_map={})
+        except Exception:
+            pass
+        finally:
+            sys.stderr = saved_err
+        self.assertIsNone(km._current_read_stage(), "the mark is restored after a build failure (the leak)")
+        # a read inside the push books push:<kind><-<caller>
+        records, sent = G.SINGLE_FILE["compaction_atom"]
+        path = self.write("pushread", records(), sent=sent)
+        self.fresh()
+        with em._JSONL_CACHE_LOCK:
+            em._RECORD_CACHE_STATS["wholeReadsByStage"] = {}
+        km._chat_tab_sessions = lambda now, live_map: (em._read_jsonl_entry(path, tail_ok=False), [])[1]   # a whole read inside the push
+        try:
+            km._push([{"app": "chat", "wid": "lab", "send": lambda *a, **k: None, "alive": True, "dedup": {}}], live_map={})
+        except Exception:
+            pass
+        rows = em.record_cache_stats()["wholeReadsByStage"]
+        self.assertTrue(any(k.startswith("push:zero<-") for k in rows), "the push's read under its mark: %r" % rows)
+        self.assertIsNone(km._current_read_stage())
+        self.assertTrue(hasattr(km._push, "__wrapped__"), "the push carries the stage decorator (set at entry, restored in a finally)")
 
 if __name__ == "__main__":
     unittest.main()
