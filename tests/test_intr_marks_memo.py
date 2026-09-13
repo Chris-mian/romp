@@ -435,7 +435,11 @@ class RowTallyEqualsAtomTally(TA.Harness):
         self.assertLess(built[0], built[1], "the landing time outranks the stop, so a reader finds the stop older than the last prompt")
 
     def test_the_cold_tally_over_the_lazy_road_is_linear_in_the_rows_and_builds_nothing(self):
-        """Round two, low 2: the linearity test drove plain dicts; a restored LazyIndex is the road the change is about."""
+        """Round two, low 2: the linearity test drove plain dicts; a restored LazyIndex is the road the change is about.
+        Linearity is asserted by COUNTS, not by a wall-clock ratio: under a full suite's heap the collector made the 16,000-row
+        tally read 18 to 28 times the 4,000-row one on two machines (1610 round two's suite and CI), a time-based bound being
+        the wrong instrument. Each row is decoded exactly once per tally (rowDecodes grows by n), no atom is built, the
+        maxima are exact."""
         def lazy(n):
             recs = [[("u%d" % i), None, "u" if i % 2 == 0 else "a", None, i, 1000 + i, 0, None, None, None] for i in range(n)]
             rows = [{"r": i, "s": {"type": "user" if i % 2 == 0 else "assistant", "author": "human" if i % 2 == 0 else None, "t": 1000 + i}, "seq": i}
@@ -443,12 +447,14 @@ class RowTallyEqualsAtomTally(TA.Harness):
             index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
             return [{"id": "t1", "t": 1000, "atoms": em.LazyAtoms(index, range(n))}]
         m0 = em._ASM_INDEX_STATS["materialized"]
-        t0 = time.perf_counter(); r1 = km._interrupt_marks_atoms(km._interrupt_marks_facts(lazy(4000)), 0.0, ""); dt1 = time.perf_counter() - t0
-        t0 = time.perf_counter(); r4 = km._interrupt_marks_atoms(km._interrupt_marks_facts(lazy(16000)), 0.0, ""); dt4 = time.perf_counter() - t0
+        d0 = em._ASM_INDEX_STATS["rowDecodes"]
+        r1 = km._interrupt_marks_atoms(km._interrupt_marks_facts(lazy(4000)), 0.0, "")
+        d1 = em._ASM_INDEX_STATS["rowDecodes"] - d0
+        r4 = km._interrupt_marks_atoms(km._interrupt_marks_facts(lazy(16000)), 0.0, "")
+        d4 = em._ASM_INDEX_STATS["rowDecodes"] - d0 - d1
         self.assertEqual(em._ASM_INDEX_STATS["materialized"], m0, "no atom built over 20,000 lazy rows")
         self.assertEqual((r1, r4), ((0, 4998), (0, 16998)))
-        self.assertLess(dt4 / max(dt1, 1e-6), 8.0, "four times the rows under eight times the time on the lazy road (%.3f vs %.3f s)" % (dt1, dt4))
-        self.assertLess(dt4, 2.0)
+        self.assertEqual((d1, d4), (4000, 16000), "one decode per row, four times the rows four times the decodes: linear by count")
 
 
 if __name__ == "__main__":
