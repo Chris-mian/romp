@@ -156,7 +156,7 @@ class InjectedTurnDeadlockEndToEnd(unittest.TestCase):
         km._revivers_pending = lambda *a: ""          # every other reviver exhausted
         km._pending_ops = {}
         jd._segs = lambda tn, store: []
-        jd.plan_units = lambda session, store: []
+        jd.plan_units = lambda session, store, **kw: []   # the callers pass lazy_text (T396)
         # _turn_romp_injected stays REAL: the deadlock lives in its interaction with the arm scan.
         self.turns = [self._turn("t1", ARM_T, "human", ended=True),
                       self._turn("t2", INJ_T, "romp", ended=True)]

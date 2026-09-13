@@ -35,7 +35,7 @@ test("a command turn wears the ✦ chip dress on the USER's side (the user 2026-
   assert.doesNotMatch(CSS, /\.turn-user\.turn-cmd:not\(\.injected\) \{ align-items: flex-start; \}/);
   assert.doesNotMatch(CSS, /\.turn-cmd \.msg-acts \{ align-self: flex-start; \}/);
   assert.match(CSS, /\.user-bubble\.cmd-row \{ max-width: none; background: none; border: none;/);
-  assert.match(CSS, /\.user-bubble\.cmd-row::before \{ content: "✦"; margin-right: 8px; color: var\(--dim\); \}/);
+  assert.match(CSS, /\.user-bubble\.cmd-row:not\(\.echo-bubble\)::before \{ content: "✦"; margin-right: 8px; color: var\(--dim\); \}/);
 });
 
 // guards on the regex's intent (executed): a whole leading token is chipped; a path is not.

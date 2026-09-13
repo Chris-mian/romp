@@ -106,6 +106,9 @@ HELPERS = {
     "_seg_jump": ("sig", ("transcript",)),
     "_seg_key": ("sig", ("transcript",)),
     "_seg_last_text": ("sig", ("transcript",)),
+    "_summary_text_anchor": ("sig", ("transcript",)),   # T388: the brief line's text-atom landing, read from the parse's atoms
+    "_summary_outrun": ("sig", ("store", "transcript")),   # T388: the T153 outrun rule on a node's stamps and its trail's segment times
+    "_landing_inputs": ("sig", ("store",)),               # T388: the shown line and completed bit from a node's state and its brief fields
     "_segs_seam": ("sig", ("transcript",)),
     "em.turn_scalar": ("sig", ("transcript",)),
     "jd._prompt_anchor_uuid": ("sig", ("transcript",)),
@@ -156,6 +159,9 @@ HELPERS = {
 
 # ── the module-scope names the body reads without calling, name -> (kind, labels or note) ─────────────────
 MODULE_READS = {
+    "_SUMMARY_ANCHOR_STATS": ("sig", ("transcript",)),   # T388: the landing tier's fault counter, read to mark a derivation that
+    #                                                        met an unreadable body; such an entry is served but never memoized, so a
+    #                                                        memoized entry always carries faults 0 and the key needs no component
     "_NEEDS_INPUT_STATES": ("const", "the live-prompt perm states (permission, picker), a tuple of strings bound once"),
     "jd.CITE_MIN_CHARS": ("const", "the judge module's citation floor, an int bound once"),
     "jd.WHY_IN_FLIGHT": ("const", "the in-flight-class stall reasons, a tuple of the judge module's constant strings"),
@@ -180,7 +186,8 @@ CTX = {
 }
 
 # closures defined inside the body: pure over its locals, no component
-LOCAL = ("_subtree", "_closure_done", "_fsubmax", "_closure_blocked", "_block_check_floor", "_note_peers", "flatten")
+LOCAL = ("_subtree", "_closure_done", "_fsubmax", "_closure_blocked", "_block_check_floor", "_note_peers", "flatten",
+         "_brief_landing")   # T388: the one resolve of a node's brief landing, a closure over the body's segment maps
 
 KINDS = {"sig", "pure", "clock"}          # HELPERS and CTX
 READ_KINDS = {"const", "sig", "pure"}     # MODULE_READS

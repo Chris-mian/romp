@@ -103,7 +103,9 @@ test("creating a session opens the provisional tab instead of a modal", () => {
   // the opening dot comes from the one dot rule (tabDotClass, T262g)
   const TS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-state.ts"), "utf8");
   assert.match(TS, /if \(st === "opening"\) return "tab-dot opening";/);
-  assert.match(RENDER, /const dotCls = tabDotClass\(st\);/);
+  const TW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-widgets.ts"), "utf8");   // the dot is a WIDGET since T379: its render is the one rule's site
+  assert.match(TW, /const cls = tabDotClass\(status\.state\);/, "the dot widget renders from the one rule");
+  assert.match(RENDER, /composeTabWidgets\(tab, "before"/, "the strip composes it");
   assert.match(CSS, /\.tab-dot\.opening \{ background: var\(--accent\); animation: opening-line-pulse/);
   assert.match(RENDER, /order\.push\(id\);/, "the tab survives reconcileTabOrder as a not-yet-kernel-known extra");
 });

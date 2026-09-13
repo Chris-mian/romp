@@ -154,6 +154,19 @@ export function awaitBreakdown(items: readonly AwaitRow[] | null | undefined): s
   return groupRows(items).map((g) => g.rows.length + " " + rowWord(g.kind, g.rows.length)).join(" · ");
 }
 
+/** The header's words for the rows wearing the judge's verdict (T394, the user 2026-09-12): tracked tasks the closer audited
+ *  past their launch without a wait, so nobody waits on them; they list in their kind's section, dimmed, and the header names
+ *  how many of its listed rows are such ("1 kept running"), a subset of the breakdown, never a further partition. "" when none. */
+export function keptWord(n: number): string {
+  return n > 0 ? n + " kept running" : "";
+}
+
+/** The header's tail: the breakdown of every row it is given (the caller feeds it every top-level row the list shows, by kind),
+ *  then how many of them wear the verdict; either alone when the other is empty. */
+export function listBreakdown(items: readonly AwaitRow[] | null | undefined, kept: number): string {
+  return [awaitBreakdown(items), keptWord(kept)].filter(Boolean).join(" · ");
+}
+
 // ── nested waits (2026-09-10): what an awaited agent is in turn waiting on ────────────────────────────
 /** Every row beneath these, depth-first: a row's waits, their waits, and so on. */
 export function flattenWaits(items: readonly AwaitRow[] | null | undefined): AwaitRow[] {

@@ -3095,9 +3095,14 @@ class PlanTuning(unittest.TestCase):
     def test_why_cap_raised_to_300(self):
         long = "word " * 100                                   # ~500 chars after normalization
         ops = jd._parse_plan('{"ops":[{"why":"%s","do":"mint","text":"G"}]}' % long.strip(), 1)
-        self.assertEqual(len(ops[0]["why"]), 300, "planner why capped at 300 (was 200)")
+        # the ceiling is 300 (was 200); since T388 the cut lands at a word or sentence boundary under it and ends
+        # with the visible cut mark, so the stored why is never a mid-word stump the brief judge could misread
+        self.assertLessEqual(len(ops[0]["why"]), 300 + len(jd.WHY_CUT_MARK), "planner why capped at 300 (was 200)")
+        self.assertGreaterEqual(len(ops[0]["why"]), 150, "…and cut no lower than half the cap")
+        self.assertTrue(ops[0]["why"].endswith("word" + jd.WHY_CUT_MARK), ops[0]["why"][-12:])
         done = jd._parse_close('{"done":[{"goal":1,"why":"%s"}]}' % long.strip(), 1)["done"]
-        self.assertEqual(len(done[1]), 300, "closer doneWhy capped at 300 (was 200)")
+        self.assertLessEqual(len(done[1]), 300 + len(jd.WHY_CUT_MARK), "closer doneWhy capped at 300 (was 200)")
+        self.assertTrue(done[1].endswith("word" + jd.WHY_CUT_MARK), done[1][-12:])
 
     def test_planner_eager_done_and_no_grouping(self):
         # the user 2026-06-17: the planner biases toward marking goals done EAGERLY, and (split out the

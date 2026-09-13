@@ -83,6 +83,12 @@ toggles, in-progress loading dots, the Fleet pill, focus cues — anywhere you w
 romp blue." Do NOT use it for STATUS colors, which keep their own meaning: working =
 `--st-working-bg` (yellow), blocked/API-error = red, ready = `--st-ready-bg`, compacting =
 teal. New accent chrome should reference `var(--accent)`, never re-hardcode the hex.
+ONE exception, the user's choice of 2026-09-12 (T394): the background box's COMMAND rows wear
+the accent blue as their KIND hue (`--kind-command`, the dot and the caption word), beside
+the agents' working gold and the watches' awaiting green. That is a kind, not a status: the
+status still overrides it where it means something (a failed row's dot is the blocked red,
+a completed row's the dim ink). The light theme's accent is an orange, so `--kind-command`
+carries its own blue there (`#356890`).
 
 ### Loading/waiting states: show the romp loader FIRST
 Anytime something is loading, parsing, or otherwise making the user wait, the FIRST

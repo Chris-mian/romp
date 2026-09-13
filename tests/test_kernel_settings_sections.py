@@ -7,6 +7,7 @@ global Colormap, lives under Colors now.)
 """
 import os
 import unittest
+from pathlib import Path
 from romp_load import load_source
 import tempfile
 
@@ -22,72 +23,81 @@ km = load_source("romp_kernel", os.path.join(BIN, "romp-kernel"))
 
 
 class SettingsSectionsTest(unittest.TestCase):
+    """The panel is in TABS since T379 (the user 2026-09-12): seven pills (General, Chat, Feed, Sessions, Task tracking,
+    Appearance, Debug: T400's cut, the user 2026-09-12), one pane each (the tab widgets are a section of Chat); every row keeps its id and its key; each pane opens with a first section head and keeps its
+    sub-heads in the approved order; the version footer stays last."""
+    PANES = ("general", "chat", "feed", "sessions", "automation", "tasks", "debug")   # T404: Automation new, Appearance a General section
+
     def test_the_subsection_headers_are_present_in_order(self):
-        # The 2026-08-30 regrouping, the user's anchors fixed: login at the very top (Account),
-        # Comments folded into Chat, session lifecycle apart from the panes, colors together,
-        # judges low, updates + debug + version at the very bottom.
         h = _gear_src()
-        self.assertIn("<div class='rs-sec rs-sec-first'>Account</div>", h)
-        for sec in ("Sessions", "Chat", "Sessions pane", "Feed", "Appearance",   # Colors renamed 2026-08-28: it owns the overall Theme now
-                    "Keyboard shortcuts", "Judges", "Updates & debug"):
-            self.assertIn("<div class=rs-sec>%s</div>" % sec, h)
-        # Panes (the user 2026-09-10): which optional panes this browser shows; the per-pane view prefs follow it
-        self.assertIn("<div class=rs-sec id=rs-panes-sec>Panes</div>", h)
-        # header forms for Sessions and Feed: the Panes rows carry those words as labels (<b>Feed</b>)
-        order = [">Account<", "rs-sec>Sessions<", ">Chat<", ">Panes<", ">Sessions pane<", "rs-sec>Feed<",
-                 ">Appearance<", ">Keyboard shortcuts<", ">Judges<", ">Updates & debug<",
-                 ">romp · version<"]
-        idx = [h.index(t) for t in order]
-        self.assertEqual(idx, sorted(idx), "sections in the 2026-08-30 order, version last")
+        self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=general"), "the pills come first")
+        for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Comments", "Thinking", "Tab widgets"]),
+                            ("feed", ["Cards"]), ("sessions", ["New sessions"]), ("automation", ["Nudges"]), ("tasks", ["Judges"]),
+                            ("debug", ["Judging bands", "Diagnostics"])):
+            p = _pane(h, pane)
+            self.assertIn("<div class='rs-sec rs-sec-first'>%s</div>" % heads[0], p, pane + " opens with its first head")
+            idx = [p.index(">%s<" % t) for t in heads]
+            self.assertEqual(idx, sorted(idx), pane + ": sub-heads in order")
+        self.assertIn("<div class=rs-sec id=rs-panes-sec>Panes</div>", h)   # the Panes head keeps its id (initGear hides it off the dashboard)
+        # the tab widgets are a SECTION of Chat (the user 2026-09-12), its head the anchor the strip's gear opens the panel at; no Tabs tab
+        self.assertIn("<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>", _pane(h, "chat"))
+        self.assertNotIn("data-pane=tabs", h)
+        self.assertLess(h.index(">Diagnostics<"), h.index(">romp · version<"), "version last")
 
     def test_each_setting_sits_under_the_right_section(self):
         h = _gear_src()
-        # Account (the very top, the user 2026-08-30): the login row leads the gear
-        self.assertTrue(h.index(">Account<") < h.index("id=rs-login-btn") < h.index(">Sessions<"))
-        # Sessions (lifecycle): dir, backend, nudge, conserve, file editing — before Chat
-        for rid in ("id=rs-defaultdir", "id=rs-backend", "id=rs-autonudge", "id=rs-suggestcompact",
-                    "id=rs-conserve", "id=rs-thinksum", "id=rs-fileedit"):
-            self.assertTrue(h.index(">Sessions<") < h.index(rid) < h.index(">Chat<"), rid)
-        # Chat: transcript prefs AND the comment defaults (comments are part of the chat)
-        for rid in ("id=rs-compact", "id=rs-dense", "id=rs-branch", "id=rs-striprows", "id=rs-filelink", "id=rs-cmtmodel", "id=rs-cmtfast"):
-            self.assertTrue(h.index(">Chat<") < h.index(rid) < h.index(">Panes<"), rid)
-        # Panes: three checkboxes, Sessions, Outline, Feed, in the rail's order and words (the chat is required,
-        # so it is not listed); each on by default, each with a one-line hint
-        for rid in ("id=rs-pane-timeline checked", "id=rs-pane-fleet checked", "id=rs-pane-feed checked"):
-            self.assertTrue(h.index(">Panes<") < h.index(rid) < h.index(">Sessions pane<"), rid)
-        panes = h[h.index(">Panes<"):h.index(">Sessions pane<")]
-        self.assertEqual(panes.count("<label class=\"rs-row rs-panes-row\">"), 3)
-        self.assertEqual(panes.count("<span class=rs-sub>"), 3, "one hint per row")
-        for lbl in ("<b>Sessions</b>", "<b>Outline</b>", "<b>Feed</b>"):
-            self.assertIn(lbl, panes)
+        where = {
+            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
+            "chat": ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets"],
+            "feed": ["rs-feedcollapsed"],
+            "sessions": ["rs-defaultdir", "rs-backend"],
+            "automation": ["rs-autonudge", "rs-suggestcompact"],
+            "tasks": ["rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
+            "debug": ["rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
+        }
+        panes = {k: _pane(h, k) for k in self.PANES}
+        for pane, ids in where.items():
+            for rid in ids:
+                homes = [k for k in self.PANES if ("id=%s " % rid) in panes[k] or ("id=%s>" % rid) in panes[k] or ("id=%s " % rid).rstrip() + "\n" in panes[k]]
+                self.assertEqual(homes, [pane], "%s lives in %s alone (found in %r)" % (rid, pane, homes))
+        # the keyboard-shortcuts rows ride the SHORTCUT_ROWS variable into the General pane (T400)
+        self.assertIn("+ SHORTCUT_ROWS +", panes["general"])
+        # Panes (the user 2026-09-10): three rows, one hint each, Sessions before Outline before Feed; the chat is required, Files keeps its rail toggle
+        pn = panes["general"]   # the Panes section moved to General (T400)
+        self.assertEqual(pn.count('<label class="rs-row rs-panes-row">'), 3)
+        self.assertLess(pn.index("<b>Sessions</b>"), pn.index("<b>Outline</b>"))
+        self.assertLess(pn.index("<b>Outline</b>"), pn.index("<b>Feed</b>"))
         self.assertNotIn("id=rs-pane-chat", h, "the chat is required")
         self.assertNotIn("id=rs-pane-files", h, "the Files pane keeps its rail toggle")
-        self.assertLess(panes.index("<b>Sessions</b>"), panes.index("<b>Outline</b>"))
-        self.assertLess(panes.index("<b>Outline</b>"), panes.index("<b>Feed</b>"))
-        # Sessions pane, then Feed, then Colors
-        self.assertTrue(h.index(">Sessions pane<") < h.index("id=rs-collapsegaps") < h.index("rs-sec>Feed<"))
-        self.assertTrue(h.index("rs-sec>Feed<") < h.index("id=rs-feedcollapsed") < h.index(">Appearance<"))
-        self.assertTrue(h.index(">Appearance<") < h.index("id=rs-cmap") < h.index(">Keyboard shortcuts<"))
-        self.assertTrue(h.index(">Appearance<") < h.index("id=rs-pal") < h.index(">Keyboard shortcuts<"))
-        # Judges sit low: the six dropdowns between Judges and the bottom group
-        self.assertTrue(h.index(">Judges<") < h.index("id=rs-judgemodel") < h.index(">Updates & debug<"))
-        self.assertTrue(h.index(">Judges<") < h.index("id=rs-indexeffort") < h.index(">Updates & debug<"))
-        # Fast mode for the judges: a checkbox on the Triage model row, in the Judges section like the knobs it rides with
-        self.assertTrue(h.index(">Judges<") < h.index("id=rs-judgefast") < h.index(">Updates & debug<"))
+        # Automation (T404): the two nudges in their order; Task tracking: the judge tiers alone
+        am = panes["automation"]
+        self.assertTrue(am.index(">Nudges<") < am.index("id=rs-autonudge") < am.index("id=rs-suggestcompact"))
+        au = panes["tasks"]
+        self.assertTrue(au.index(">Judges<") < au.index("id=rs-judgemodel") < au.index("id=rs-indexeffort") < au.index("id=rs-judgeconc"))
+        for gone in ("id=rs-autonudge", "id=rs-conserve", "id=rs-thinksum", ">Sessions<"):
+            self.assertNotIn(gone, au, gone + " left Task tracking (T404)")
+        # General (T404): the login leads, then the panes with the Files control, Appearance, Permissions (Allow file editing), This machine
+        # (Conserve memory, Updates install automatically), then the shortcuts; Debug: the judges' debug views, then Open log as the last
+        # button before the version (T290)
+        ge = panes["general"]
+        self.assertTrue(ge.index(">Account<") < ge.index("id=rs-login-btn") < ge.index("id=rs-panes-sec") < ge.index("id=rs-pane-feed") < ge.index("id=rs-filesctl")
+                        < ge.index("data-section=appearance>Appearance<") < ge.index("id=rs-theme") < ge.index("id=rs-pal") < ge.index(">Permissions<") < ge.index("id=rs-fileedit")
+                        < ge.index(">This machine<") < ge.index("id=rs-conserve") < ge.index("id=rs-updates") < ge.index(">Keyboard shortcuts<"))
+        self.assertIn("<b>Allow file editing</b>", ge)
+        self.assertIn("<b>Updates install automatically <span class=rs-mixed hidden></span></b>", ge)
+        # Chat (T404): Display (the transcript rows, the text scheme, the strip's one-group-per-row), Comments, Thinking, Tab widgets
+        ch = panes["chat"]
+        self.assertTrue(ch.index(">Display<") < ch.index("id=rs-compact") < ch.index("id=rs-branch") < ch.index("id=rs-chatscheme") < ch.index("id=rs-striprows") < ch.index(">Comments<")
+                        < ch.index("id=rs-cmtmodel") < ch.index("id=rs-cmtfast") < ch.index(">Thinking<") < ch.index("id=rs-thinksum") < ch.index("data-section=tabwidgets"))
+        for gone in ("id=rs-filelink", "File links open in", "id=rs-activeonly", "id=rs-collapsegaps", ">Sessions pane<", "data-pane=appearance"):
+            self.assertNotIn(gone, h, gone + " is gone from the gear (T404)")
+        de = panes["debug"]
+        self.assertTrue(de.index(">Judging bands<") < de.index("id=rs-judges-index") < de.index(">Diagnostics<") < de.index("id=ra-open") < de.index("id=rs-log-open") < de.index("id=rsver"))
+        self.assertNotIn(">Updates<", de, "Updates went to General's This machine section (T404)")
         self.assertNotIn("rs-oldest", h)
-        # Updates & debug (the very bottom): auto-updates, the judge-SHOW toggles, analytics, version
-        self.assertLess(h.index(">Updates & debug<"), h.index("id=rs-updates"))
-        self.assertLess(h.index(">Updates & debug<"), h.index("id=rs-judges-index"))
-        self.assertLess(h.index(">Updates & debug<"), h.index("id=rs-judges-triage"))
-        self.assertLess(h.index("id=rs-judges-triage"), h.index("id=ra-open"))
-        self.assertLess(h.index("id=ra-open"), h.index("id=rs-log-open"), "Open log is the section's last row (T290)")
-        self.assertLess(h.index("id=rs-log-open"), h.index("id=rsver"), "version is the very bottom")
-        self.assertNotIn("id=rs-debug", h)   # the single Debug toggle is gone
-        # the judge toggles read as a DEBUG *show* control, not an on/off for the judges (the user 2026-06-30):
-        # labels lead with "Show", and the sub spells out that it doesn't enable/disable them
-        self.assertIn("<b>Show indexing judges</b>", h)
-        self.assertIn("<b>Show triage judges</b>", h)
-        self.assertIn("does NOT turn the judges on or off", h)
+        # the old Context gauge row is gone: its WHEN is the Context bar widget's option in the Chat tab's Tab widgets section
+        self.assertNotIn("id=rs-tabctx", h)
+
 
     def test_the_sdk_backend_is_labelled_plain_sdk(self):
         # the backends as the user reads them (T288, the user 2026-09-09): "Claude Code" (the default, no
@@ -161,19 +171,22 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertNotRegex(css, r"\.rs-fastin\.rs-off \{[^}]*opacity", "no opacity on the label: the hint inside it would fade with it")
         self.assertRegex(css, r"\.rs-fastin\.rs-off \{[^}]*color: var\(--text-faint", "the word greys by token, not by fading")
 
-    def test_collapse_gaps_is_wired_to_the_shared_collapseGaps_setting(self):
-        # the gear JS persists/loads romp:settings.collapseGaps; the timeline reads it (see romp-timeline-view.js)
-        self.assertIn("collapseGaps: true", _gear_src())
-        self.assertIn("s.collapseGaps = cg.checked", _gear_src())
-
-    def test_show_active_only_is_wired_to_the_shared_activeOnly_setting(self):
-        # "Show active sessions only" (the user 2026-08-12): a Timeline-section checkbox, default ON,
-        # persisted as romp:settings.activeOnly; the timeline hides lanes with no activity in the
-        # visible window and re-shows them when zoom/pan reaches their work (romp-timeline-view.js).
-        self.assertIn("id=rs-activeonly checked", _gear_src())
-        self.assertIn("activeOnly: true", _gear_src())
-        self.assertIn("s.activeOnly = ao.checked", _gear_src())
-        self.assertIn("ao.checked = s.activeOnly !== false", _gear_src())
+    def test_the_sessions_pane_carries_its_two_toggles_and_the_gear_has_no_rows_for_them(self):
+        # T404 (the user 2026-09-13): "Collapse idle gaps" and "Show active sessions only" left settings; the Sessions pane's own
+        # corner menu flips them (ui/romp-timeline-view.js), writing the same romp:settings keys the gear used to, and the pane
+        # re-reads them on the storage event, so the keys and their defaults are unchanged
+        gear = _gear_src()
+        for gone in ("id=rs-collapsegaps", "id=rs-activeonly", "s.collapseGaps = cg.checked", "s.activeOnly = ao.checked", ">Sessions pane<"):
+            self.assertNotIn(gone, gear, gone + " is gone from the gear")
+        view = (Path(__file__).resolve().parents[1] / "ui" / "romp-timeline-view.js").read_text()
+        self.assertIn("item('Collapse idle gaps', { current: !!this._collapseGaps, dim: true })", view)
+        self.assertIn(".addEventListener('click', () => flip('collapseGaps', this._collapseGaps));", view)
+        self.assertIn("item('Active sessions only', { current: !!this._activeOnly, dim: true })", view)
+        self.assertIn(".addEventListener('click', () => flip('activeOnly', this._activeOnly));", view)
+        self.assertIn("s[key] = !cur;", view)   # the flip writes romp:settings
+        self.assertIn("localStorage.setItem('romp:settings', JSON.stringify(s));", view)
+        self.assertIn("if (raw) this._collapseGaps = JSON.parse(raw).collapseGaps !== false;", view)   # default ON, a stored false opts out
+        self.assertIn("if (raw) this._activeOnly = JSON.parse(raw).activeOnly !== false;", view)
 
     def test_one_group_per_row_is_wired_to_the_shared_stripGroupRows_setting(self):
         # "One tag group per row in the tab strip": a Chat-section checkbox, default ON, persisted as
@@ -214,6 +227,17 @@ if __name__ == "__main__":
 # The gear moved from kernel-inline strings into the shared feed bundle
 # (2026-07-13): ui/webview/gear.js is the single source both hosts render, so
 # the gear pins read THAT file (and feed.css for its styling).
+
+
+def _pane(h, key):
+    """The markup of one pane: from its opener to the next pane's (or the login modal)."""
+    a = h.index("'<div class=rs-pane data-pane=%s hidden>' +" % key)
+    rest = h[a + 10:]
+    nxt = rest.find("'<div class=rs-pane data-pane=")
+    end = h.index("'<div id=rs-login-modal hidden>' +") if nxt < 0 else a + 10 + nxt
+    return h[a:end]
+
+
 def _gear_src():
     import pathlib
     return (pathlib.Path(__file__).resolve().parent.parent / "ui" / "webview" / "gear.js").read_text()

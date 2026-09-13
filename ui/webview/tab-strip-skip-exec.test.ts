@@ -83,8 +83,8 @@ function lift(): (hooks: Hooks) => Api {
   // the chip, the drag listeners and the context gauge live in helpers above renderTabs, shared with the
   // skeleton tab (2026-09-07): lifted for real, so the paint wears the state class and a dragstart resets the signature
   const h0 = RENDER.indexOf("function applyTabStatus("), h1 = RENDER.indexOf("// SKELETON tab (2026-09-07)", h0);
-  const g0 = RENDER.indexOf("function appendTabCtxGauge(", h1), g1 = RENDER.indexOf("// A loading PLACEHOLDER tab", g0);
-  assert.ok(h0 > 0 && h1 > h0 && g0 > h1 && g1 > g0, "anchors not found — applyTabStatus / wireTabDrag / appendTabCtxGauge or the skeleton-tab / placeholder comments moved; re-anchor");
+  const g0 = RENDER.indexOf("function appendTabAfterWidgets(", h1), g1 = RENDER.indexOf("// A loading PLACEHOLDER tab", g0);
+  assert.ok(h0 > 0 && h1 > h0 && g0 > h1 && g1 > g0, "anchors not found — applyTabStatus / wireTabDrag / appendTabAfterWidgets or the skeleton-tab / placeholder comments moved; re-anchor");
   const js = requireCjs("esbuild").transformSync(RENDER.slice(h0, h1) + RENDER.slice(g0, g1) + RENDER.slice(a, b), { loader: "ts" }).code;
   const prelude = `
     let renameActive = false, renderPendingAfterRename = false, tabPointerHeld = false, renderPendingWhilePressed = false;
@@ -95,8 +95,16 @@ function lift(): (hooks: Hooks) => Api {
     // stripGroupRows mirrors the default. Its break site is never reached here: FakeEl has no childElementCount,
     // so the gate's last operand is undefined whatever the setting, hence no makeRowBreak stub. Give FakeEl a
     // childElementCount and this prelude needs one.
-    let settings = { tabCtx: "over50", stripGroupRows: true, theme: "classic", colormap: "aurora" };
+    let settings = { tabCtx: "over50", stripGroupRows: true, theme: "classic", colormap: "aurora", tabWidgets: { on: {}, order: [], opts: {} } };
     const H = HOOKS;
+    // the tab-title widgets (T379): a faithful stand-in for the registry's composition over the real tab-state rules, so the
+    // dot slot and the gauge land as the strip paints them; the hot-key store is empty here
+    const composeTabWidgets = (tab, slot, sid, status, prefs) => {
+      if (slot === "before") { const cls = H.tabDotClass(status.state); if (cls) { const d = el("span", cls); const t = H.tabDotTitle(status.state); if (t) d.title = t; tab.appendChild(d); } }
+      else if (slot === "after") { const st = status.state; if (status.ctx && settings.tabCtx !== "never" && st !== "compacting" && st !== "closed") { const pct = parseInt(status.ctx, 10) || 0; if (settings.tabCtx === "always" || pct >= 50) tab.appendChild(el("span", "tab-ctx")); } }
+    };
+    const tabHotkey = () => "";
+    const window = { __rompShowStrip: false }; const openSettingsOn = () => {};   // the tab-widgets gear mounts only where a gear can be reached (VS Code's strip or the shell); neither here
     const el = (tag, cls) => new H.FakeEl(tag, cls);
     const document = { activeElement: null,
       getElementById: (id) => id === "tabs" ? H.bar : id === "mtag-slot" ? H.mslot : null,
@@ -141,6 +149,8 @@ function lift(): (hooks: Hooks) => Api {
     const fedMissing = false;   // the page has its federation manager (render.ts fedMissing, 2026-09-10): tabs drag as before
     const showTabTip = (tab, s) => { H.tips.push(s); }; const toggleLedgerCollapsed = () => {}; const showTabMenu = () => {}; const openPicker = () => {};
     const tagMenuButton = () => el("span", "tag-btn"); const openTagMenu = () => {}; const postLens = () => {}; const vscodeApi = null;
+    const ICON_LOCK = "<svg data-lock=seated></svg>"; const ICON_LOCK_OPEN = "<svg data-lock=open></svg>"; const setTabsLocked = () => {};   // the tab lock (T395): the strip builds the button; its press is outside this slice
+    const TAG_BTN_BORDER_CSS = "var(--card-border, rgba(255,255,255,0.10))";   // the tag button's themed border the lock borrows (T395)
     const syncTagFilter = () => { H.tagSyncs++; }; const paintTabRowLines = () => { H.rowPaints++; }; const ensureTabRowObserver = () => {};
     const focusActiveTab = () => {}; const syncNoSessionsPlaceholder = (v, t) => { H.aftermaths.push([v, t]); };
   `;
@@ -176,7 +186,7 @@ function world(): { H: Hooks; api: Api; sessions: Map<string, any>; tabMeta: Map
   const api = lift()(H);
   const sessions = new Map<string, any>([["a", session("web", "ready")], ["b", session("api", "working")]]);
   const tabMeta = new Map<string, any>([["p", { name: "tests", color: { bg: "#112233", fg: "#ffffff" } }]]);
-  const settings = { tabCtx: "over50", stripGroupRows: true, theme: "classic", colormap: "aurora" };
+  const settings = { tabCtx: "over50", stripGroupRows: true, theme: "classic", colormap: "aurora", tabWidgets: { on: {}, order: [], opts: {} } };
   api.set({ order: ["a", "b", "p"], sessions, tabMeta, settings, activeId: "a" });
   return { H, api, sessions, tabMeta, settings };
 }

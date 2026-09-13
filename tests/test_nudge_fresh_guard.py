@@ -77,7 +77,7 @@ class FreshGuard(unittest.TestCase):
         km._all_outstanding_delegated = lambda nodes, gid: False
         km._pending_ops = {}
         jd._segs = lambda tn, store: []
-        jd.plan_units = lambda session, store: []
+        jd.plan_units = lambda session, store, **kw: []   # the callers pass lazy_text (T396)
         uid = "u-t1"
         self.turns = [{"id": "t1", "t": ARM_T, "end": ARM_T + 60, "ended": True,
                        "trigger": {"uuid": uid},

@@ -243,10 +243,11 @@ test("the /compact suggestion is a real settings checkbox beside Auto Nudge (the
   // T208 shipped the kernel toggle with no UI; the user ruled it must be an ordinary settings
   // checkbox next to Auto Nudge — off by default for new installs, one click to turn on.
   assert.ok(GEAR.includes("id=rs-suggestcompact"), "the checkbox exists in the gear markup");
-  const sessions = GEAR.indexOf(">Sessions<"), chat = GEAR.indexOf(">Chat<");
+  const auto = GEAR.indexOf("data-pane=automation"), next = GEAR.indexOf("data-pane=tasks");   // the nudges are the Automation tab since T404 (Task tracking before, Automatic before that)
+  assert.ok(auto > 0 && next > 0, "both panes exist (indexOf's -1 would pass every order check below)");
   const at = GEAR.indexOf("id=rs-suggestcompact");
-  assert.ok(sessions < at && at < chat, "…in the Sessions section, with its siblings");
-  assert.ok(GEAR.indexOf("id=rs-autonudge") < at && at < GEAR.indexOf("id=rs-conserve"),
+  assert.ok(auto < at && at < next, "…in the Automation tab, with Auto Nudge (T379 regrouped the panel into tabs; T400 renamed this one; T404 cut Automation)");
+  assert.ok(GEAR.indexOf("id=rs-autonudge") < at && at < next,
     "…directly after Auto Nudge, where the user asked for it");
   assert.ok(/csg\.addEventListener\('change'/.test(GEAR)
     && GEAR.includes("post({ type: 'setCompactSuggest', enabled: csg.checked, gt: gclock.stamp('compact-suggest') })"),
@@ -273,7 +274,7 @@ test("one tooltip per settings row: the Account row's live status is NOT a secon
   // stacks a second bordered popover — the 2026-09-02 stacked double tooltip (even empty it painted
   // a box). #rs-login-state is a live inline status, not a description: it wears rs-note.
   assert.ok(GEAR.includes("id=rs-login-state class=rs-note"), "the login status line is an inline note");
-  const billing = GEAR.slice(GEAR.indexOf("id=rs-billing"), GEAR.indexOf(">Sessions<"));
+  const billing = GEAR.slice(GEAR.indexOf("id=rs-billing"), GEAR.indexOf("id=rs-panes-sec"));   // the Account row leads the General tab, the Panes section next (T379, re-cut T400)
   assert.equal((billing.match(/class=rs-sub/g) || []).length, 1, "the Account row keeps ONE description popover");
   assert.ok(GEAR_CSS.includes("#rsettings .rs-note {") && GEAR_CSS.includes("#rsettings .rs-note:empty { display: none; }"),
     "rs-note is inline, hidden while it has nothing to say");

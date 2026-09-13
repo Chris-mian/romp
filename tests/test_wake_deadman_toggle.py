@@ -91,7 +91,7 @@ class _Base(unittest.TestCase):
         km._debt_backstop_tick = lambda now: None
         km._PREV_ALIVE = {SID}                       # no death transition pending
         jd._segs = lambda tn, store: []
-        jd.plan_units = lambda session, store: []
+        jd.plan_units = lambda session, store, **kw: []   # the callers pass lazy_text (T396)
         self.turns = [{"id": "t1", "ended": True, "end": NOW - 8 * H, "t": NOW - 8 * H - 10, "atoms": []}]
         jd.parsed_session = lambda sid, paths, now: {"turns": self.turns}
         self.gid = SID + ":g1"

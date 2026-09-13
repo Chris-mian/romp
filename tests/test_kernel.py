@@ -4609,7 +4609,7 @@ class ViewBuilder(unittest.TestCase):
         # the user 2026-06-23: descriptions become HOVER tooltips (decluttered), and the analytics button drops
         # its 📊 emoji.
         self.assertIn("#rsettings .rs-sub { display: none; }", _gear_css_src())               # descriptions hidden by default
-        self.assertRegex(_gear_css_src(), r"#rsettings \.rs-row:hover \.rs-sub \{ display: block; position: absolute")  # float on hover
+        self.assertRegex(_gear_css_src(), r"#rsettings \.rs-row:hover \.rs-sub, #rsettings \.rs-widget:hover \.rs-sub \{ display: block; position: absolute")   # the widget rows share the popover (T379)  # float on hover
         self.assertNotIn("\U0001F4CA", _gear_src())                                 # the 📊 emoji is gone
         self.assertIn("Token usage analytics", _gear_src())                          # the label itself stays
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The Files pane (app=files): the file viewer as a dashboard column of its own, beside Chat,
-Sessions, Outline and Feed, off by default, with the gear's "File links open in" setting routing a
+Sessions, Outline and Feed, off by default, with the open Files pane taking a file click (the file-links setting is gone since T404) and the pane routing a
 chat file-link click into it. The kernel side, pinned here:
 
 - the pane is not a feed consumer. The viewer is request/response (HTTP /file for the bytes; the
@@ -259,7 +259,7 @@ class Shell(unittest.TestCase):
         _has(self, "window.addEventListener('storage',function(e){if(!e||!e.key||e.key===SK)reconcile(true);apply();});", js)   # the gear writes from another document: this is the event (a gear save re-reads the optional panes before the titles refresh)
         mob = km._LANDING_MOBILE_JS
         _has(self, "function show(p){if(p==='files'&&!filesCtlM())p='chat';", mob)
-        # the gear's row, in the panes section beside "File links open in", UNCHECKED by default (T317b); the chat's route reads the word
+        # the gear's row, in General's Panes section since T404 (beside the file-links setting before, which is gone), UNCHECKED by default (T317b); the chat's route reads the word
         gear = (UI / "gear.js").read_text()
         _has(self, "<input type=checkbox id=rs-filesctl>", gear)
         self.assertNotIn("id=rs-filesctl checked", gear, "off by default: the box is not pre-checked")
@@ -279,12 +279,14 @@ class Shell(unittest.TestCase):
         _has(self, "filter((c) => !c.hidden && (!c.when || c.when()))", (UI / "palette.ts").read_text())
         # a ?panes= bookmark stays a view: the forced close is never written over the stored set
         _has(self, "if(!ctl&&po.files){po.files=false;if(qp===null)saveP();}", js)
-        self.assertLess(gear.index("id=rs-filelink"), gear.index("id=rs-filesctl"), "the row follows the file-link setting it qualifies")
+        self.assertNotIn("id=rs-filelink", gear, "the file-links setting is gone (T404): the route follows the open Files pane")
+        self.assertLess(gear.index("id=rs-pane-feed"), gear.index("id=rs-filesctl"), "the row sits in General's Panes section, after the three pane toggles (T404)")
+        self.assertLess(gear.index("id=rs-filesctl"), gear.index("data-section=appearance>Appearance<"), "…before the Appearance section")
         render = (UI / "render.ts").read_text()
-        _has(self, "fileLinkRoute(settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false)", render)
+        _has(self, "fileLinkRoute(window.parent !== window, panesOn.files === true, panesAvail.files !== false)", render)   # no setting since T404
         # the hint in the pane stays true: it speaks of the pane being open or closed, never of the control
         files = (UI / "files.ts").read_text()
-        _has(self, "To open them here while it is closed, turn on the Files control in the dashboard bar and set File links open in to The Files pane in the gear.", files)
+        _has(self, "Closed, they open over the pane you clicked. Turn on the Files control in the dashboard bar (Settings, General, Panes) to open this pane.", files)
 
     def test_mobile_tab_and_the_palette_command(self):
         _has(self, "#chat-pane,#fleet-pane,#feed-pane,#files-pane,#tl-pane{display:contents!important}", self.html)
@@ -342,16 +344,18 @@ class Relay(unittest.TestCase):
         # gesture reader); the pane validates the identity and caches it per sid (files.ts)
         render = (UI / "render.ts").read_text()
         _has(self, 'window.parent.postMessage({ romp: "viewFile", path, sid: to, pane: "pane",', render)
-        _has(self, "fileLinkRoute(settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false)", render)
+        _has(self, "fileLinkRoute(window.parent !== window, panesOn.files === true, panesAvail.files !== false)", render)   # no setting since T404
         files = (UI / "files.ts").read_text()
         _has(self, "asIdentity(m.identity)", files)
         route = (UI / "file-route.ts").read_text()
-        _has(self, "export function fileLinkRoute(pane: unknown, framed: boolean, filesOpen: boolean, filesAvail: boolean = true): FileRoute {", route)
+        _has(self, "export function fileLinkRoute(framed: boolean, filesOpen: boolean, filesAvail: boolean = true): FileRoute {", route)   # no setting since T404
 
     def test_the_gear_and_the_guide_say_the_open_pane_wins(self):
+        # T404: the file-links row is gone from the gear; the Files control row and the pane's own hint say the rule
         gear = (UI / "gear.js").read_text()
-        _has(self, "While the Files pane is open, both open there.", gear)
-        _has(self, "<option value=chat>The pane you clicked</option><option value=pane>The Files pane</option>", gear)
+        _has(self, "closes the Files pane if it is open; file links then open over the pane you clicked.", gear)
+        self.assertNotIn("<option value=chat>The pane you clicked</option>", gear, "the setting's options are gone")
+        _has(self, "While this pane is open, a file or folder clicked in the chat opens here. Closed, they open over the pane you clicked.", (UI / "files.ts").read_text())
         guide = (Path(ROOT) / "docs" / "guide.md").read_text()
         _has(self, "### Files\n", guide)
         _has(self, "While the pane is open, a file link clicked in the chat opens in it.", guide.replace("\n", " "))
@@ -566,7 +570,7 @@ class BrowseRelay(unittest.TestCase):
         # identity, opens the browser, routes a pick through its own open, and owes the shell no browseClosed
         render = (UI / "render.ts").read_text()
         _has(self, 'window.parent.postMessage({ romp: "browseFiles", path: path || ".", sid: to, pane: "pane",', render)
-        _has(self, "browseRoute(web, settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false)", render)
+        _has(self, "browseRoute(web, window.parent !== window, panesOn.files === true, panesAvail.files !== false)", render)   # no setting since T404
         files = (UI / "files.ts").read_text()
         _has(self, "shellRestore: false,", files)
         _has(self, "if (sid && id) identities.set(sid, id);", files)
@@ -575,15 +579,15 @@ class BrowseRelay(unittest.TestCase):
         browse = (UI / "file-browse.ts").read_text()
         _has(self, "if (!shellRestore) return;", browse)
         route = (UI / "file-route.ts").read_text()
-        _has(self, "export function browseRoute(web: boolean, pane: unknown, framed: boolean, filesOpen: boolean, filesAvail: boolean = true): BrowseRoute {", route)
+        _has(self, "export function browseRoute(web: boolean, framed: boolean, filesOpen: boolean, filesAvail: boolean = true): BrowseRoute {", route)
         _has(self, 'export type BrowseRoute = FileRoute | "editor";', route)
 
     def test_the_gear_and_the_guide_name_the_folder(self):
         gear = (UI / "gear.js").read_text()
-        _has(self, "Where a file or folder clicked in the chat opens. While the Files pane is open, both open there.", gear)
-        _has(self, "<option value=chat>The pane you clicked</option><option value=pane>The Files pane</option>", gear, "the options are unchanged")
+        self.assertNotIn("Where a file or folder clicked in the chat opens.", gear, "the file-links row is gone (T404)")
+        _has(self, "closes the Files pane if it is open; file links then open over the pane you clicked.", gear)
         guide = (Path(ROOT) / "docs" / "guide.md").read_text().replace("\n", " ")
-        _has(self, "open a listing of that folder by the same rule: in this pane while it is open or when the setting names it, otherwise over the chat.", guide)
+        _has(self, "open a listing of that folder by the same rule: in this pane while it is open, otherwise over the chat.", guide)
         _has(self, "Pick a file in the listing and it opens where the listing is.", guide)
         _has(self, "While the pane is open, a file link clicked in the chat opens in it.", guide, "the file sentence stands")
 

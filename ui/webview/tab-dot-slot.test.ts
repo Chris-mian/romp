@@ -29,9 +29,12 @@ test("every state maps to a dot class; the ones without a visible dot get the hi
   for (const st of ["waiting", "idle", "blocked", "closed", "dead", "needsYou"]) assert.equal(tabDotClass(st), "tab-dot none", st);
 });
 
-test("render.ts appends the slot from the one rule; the compacting bar branch stays", () => {
-  assert.match(RENDER, /import \{[^}]*\btabDotClass\b[^}]*\} from "\.\/tab-state";/);
-  assert.match(RENDER, /const dotCls = tabDotClass\(st\);\s*\n\s*if \(dotCls\) tab\.appendChild\(el\("span", dotCls\)\);/);
+const TW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "tab-widgets.ts"), "utf8");   // the dot is a WIDGET since T379 (the user 2026-09-12): its render is the rule's one site
+
+test("the dot widget renders the slot from the one rule, and render.ts composes it; the compacting bar branch stays", () => {
+  assert.match(TW, /import \{ tabDotClass, tabDotTitle \} from "\.\/tab-state";/);
+  assert.match(TW, /const cls = tabDotClass\(status\.state\);\s*\n\s*if \(!cls\) return null;/, "compacting: the widget renders nothing, the bar takes the slot");
+  assert.match(RENDER, /composeTabWidgets\(tab, "before", s\.id \|\| "", s\.status, settings\.tabWidgets\);/, "render.ts composes the slot through the registry");
   assert.doesNotMatch(RENDER, /if \(st === "working"\) tab\.appendChild\(el\("span", "tab-dot"\)\);/, "the per-state appends are gone");
   assert.match(RENDER, /const ci = el\("span", "tab-compacting-bar"\);/);
 });
@@ -64,12 +67,9 @@ test("every visible dot explains itself on hover in the feed's words; the hidden
   }
 });
 
-test("render.ts titles the slot it just appended, from the title rule beside the class rule", () => {
-  assert.match(RENDER, /import \{[^}]*\btabDotTitle\b[^}]*\} from "\.\/tab-state";/);
-  // the title is written while the slot is still the tab's last child: right after the append, before the
-  // compacting bar (and the label, gauge and close button the callers add after)
-  assert.match(RENDER, /const dotCls = tabDotClass\(st\);\s*\n\s*if \(dotCls\) tab\.appendChild\(el\("span", dotCls\)\);\s*\n\s*const dotTip = dotCls \? tabDotTitle\(st\) : null;\s*\n\s*if \(dotTip\) \(tab\.lastElementChild as HTMLElement\)\.title = dotTip;/,
-    "the title lands on the slot while it is the tab's last child");
+test("the dot widget titles the slot it renders, from the title rule beside the class rule", () => {
+  // the title is written on the slot the widget returns, before the strip appends it (tab-widgets.ts composeTabWidgets)
+  assert.match(TW, /const tip = tabDotTitle\(status\.state\);\s*\n\s*if \(tip\) d\.title = tip;/, "the title lands on the slot the widget renders");
 });
 
 test("the hidden slot is laid out (visibility, never display:none), same box as the dot", () => {

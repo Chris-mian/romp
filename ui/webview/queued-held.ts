@@ -31,25 +31,36 @@ export type HeldCopy = {
 export type HeldEvent = { kind: string; uuid?: string; md?: string; qid?: string; qids?: (string | null)[]; blocks?: string[]; undelivered?: boolean };
 export type HeldQueued = { md?: string; qid?: string; qts?: number; hiddenByPending?: boolean; optimistic?: boolean; landing?: boolean; romp?: boolean; rompSystem?: boolean; rompAuto?: boolean; followUp?: boolean; goal?: string; fuCtx?: string; imgPaths?: string[] };
 
+import { OVERLAY_KINDS } from "./send-pending";   // the kernel's live overlay cards: never an anchor (T389)
+
 const sameText = (a: string, b: string): boolean => a.trim() === b.trim();
 const isEcho = (u?: string): boolean => !!u && u.startsWith("echo:");
 const isOptimistic = (u?: string): boolean => !!u && u.startsWith("optimistic:");
 
 /** Whether a landed user event (a real record, never the kernel's echo nor our own bubble) carries this copy — by
- *  identity when the copy has one, by text otherwise (its md, or one of its blocks). */
+ *  identity where the RECORD carries one (the copy's id is the atom's `qid`, or one of its `qids`), by text otherwise (its
+ *  md, or one of its blocks). Identity decides only where the frame shows it, the pending-send rule's reading
+ *  (send-pending.ts landedCopies, T252c): a record the kernel could not pair (no feed ledger on this backend, a copy that
+ *  left the queue by another door) lands by its words; before, an identified held copy met such a record and never
+ *  released, so the landed row and the held card showed the same message twice until a later landing (T389). */
 export function landsCopy(e: HeldEvent, c: { md: string; qid?: string }): boolean {
   if (e.kind !== "user" || isEcho(e.uuid) || isOptimistic(e.uuid)) return false;
-  if (c.qid) return e.qid === c.qid || (Array.isArray(e.qids) && e.qids.includes(c.qid));
+  const paired = !!e.qid || (Array.isArray(e.qids) && e.qids.length > 0 && e.qids.every((q) => !!q));
+  if (c.qid && paired) return e.qid === c.qid || (Array.isArray(e.qids) && e.qids.includes(c.qid));
   if (typeof e.md === "string" && sameText(e.md, c.md)) return true;
   return Array.isArray(e.blocks) && e.blocks.some((b) => typeof b === "string" && sameText(b, c.md));
 }
 
-/** The uuid of the last KERNEL event that carries one (not our own bubble, not a queued group, not a uuid-less
- *  compacting/clearing marker), or null: the anchor a hold is judged against. */
+/** The uuid of the last KERNEL event that carries one (not our own bubble, not one of the kernel's live overlay cards, not a
+ *  uuid-less compacting/clearing marker), or null: the anchor a hold is judged against. The overlay cards (the queued group,
+ *  the to-do box, the API-error card and the rest, OVERLAY_KINDS: one set with the pending-send rule) sit after every
+ *  transcript event and wear word uuids; anchored on one, a hold read the events after it, which are none, and never saw
+ *  the record that landed its copy, so the landed row and the landing card stood side by side for the rest of the turn
+ *  (T389 review: a to-do card after the transcript). */
 export function lastKernelUuid(events: HeldEvent[]): string | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
-    if (e.kind === "queued" || !e.uuid || isOptimistic(e.uuid)) continue;
+    if (OVERLAY_KINDS.has(e.kind) || !e.uuid || isOptimistic(e.uuid)) continue;
     return e.uuid;
   }
   return null;

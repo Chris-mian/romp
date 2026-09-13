@@ -183,14 +183,15 @@ class Shell(unittest.TestCase):
 
     def test_one_opener_and_every_caller_uses_it(self):
         js = km._LANDING_SETTINGS_JS
-        _has(self, "window.__rompOpenSettings=function(){var f=document.getElementById('f-settings');", js)
+        _has(self, "window.__rompOpenSettings=function(tab,section){var f=document.getElementById('f-settings');", js)   # tab and section (T379): the strip's tab-widgets gear names the Chat tab at its Tab widgets section
         # the first open gives the iframe its src and holds the ask for the page's load (a message into a document
         # still loading is dropped); a second ask while one waits is not queued (the page's opener toggles)
         _has(self, "if(!f.getAttribute('src')){var u=f.getAttribute('data-src');if(!u)return;sPend=true;f.setAttribute('src',u);", js)
         _has(self, "if(sPend){sPend=false;open();}});return;}", js)
         _has(self, "if(sPend)return;", js)
         _has(self, "if(gear)gear.onclick=function(){window.__rompOpenSettings();};", js, "the rail's gear")
-        _has(self, "if(m.romp==='openSettings')window.__rompOpenSettings();", js, "a pane's ask is forwarded")
+        _has(self, "if(m.romp==='openSettings')window.__rompOpenSettings(m.tab,m.section);", js, "a pane's ask is forwarded, its tab and its section with it (T379)")
+        _has(self, "var msg={romp:'openSettings'};if(typeof tab==='string'&&tab)msg.tab=tab;if(typeof section==='string'&&section)msg.section=section;", js, "the tab and the section ride into the settings iframe; a bare ask stays bare")
         _has(self, "var A={settings:function(){try{window.__rompOpenSettings&&window.__rompOpenSettings();}catch(e){}},", km._LANDING_MOBILE_JS, "the phone's action")
         _has(self, 'run: () => { if (w.__rompOpenSettings) w.__rompOpenSettings(); },', PALETTE, "the palette's settings.open goes through the shell's opener (the page may not be loaded yet)")
         _lacks(self, 'pane("f-settings")!.contentWindow!.postMessage({ romp: "openSettings" }', PALETTE)

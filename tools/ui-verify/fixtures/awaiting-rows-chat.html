@@ -15,6 +15,7 @@
          running-yellow dot, the box wears its neutral border, there is NO note, and the statusline reads
          Working. Before 2026-09-06 this state showed a legacy "4 background tasks" list instead (or nothing),
          so the box swapped views at every turn boundary.
+     T394 (2026-09-12): every row wears its kind (bg-kind-agents / -commands / -watches), the hue of its dot and caption word.
      Invented content (notes-api demo domain), the DOM class for class as renderBgTasks / bgRow /
      updateStatusline emit it. The two agent rows are the JOINED shape (2026-09-06): each background agent is
      reported by both the SubagentStart hook and the CLI's task stream, and shows ONCE — labelled by its
@@ -32,24 +33,24 @@
   <div class="bg-fold-head bg-await open" data-act="bg-fold"><span class="bg-caret">▾</span><span class="bg-dot"></span><span class="bg-fold-label">Awaiting 4 · 2 agents · 1 command · 1 watch</span></div>
   <div class="bg-list">
     <div class="bg-group-head">Agents</div>
-    <div class="bg-task bg-running">
+    <div class="bg-task bg-running bg-kind-agents">
       <div class="bg-head" data-act="bg-toggle"><span class="bg-dot"></span><span class="bg-sum">Map the notes-api parser</span><span class="tool-open-agent bg-open-agent" role="button"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H4a1 1 0 0 0-1 1V12a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V9"/><path d="M9.5 3h3.5v3.5"/><path d="M13 3 7.5 8.5"/></svg></span><span class="bg-since">· 12m</span><span class="bg-status">running</span><button class="bg-stop">Stop</button><span class="bg-caret">▸</span></div>
     </div>
-    <div class="bg-task bg-running bg-sub">
+    <div class="bg-task bg-running bg-sub bg-kind-commands">
       <div class="bg-head bg-flat"><span class="bg-waits-on">waiting on</span><span class="bg-dot"></span><span class="bg-sum">Run the parser test chunk</span><span class="bg-since">· 3m</span><span class="bg-status">running</span><button class="bg-stop">Stop</button></div>
     </div>
-    <div class="bg-task bg-running bg-sub">
+    <div class="bg-task bg-running bg-sub bg-kind-agents">
       <div class="bg-head bg-flat"><span class="bg-waits-on bg-waits-blank"></span><span class="bg-dot"></span><span class="bg-sum">Check the fixture loader</span><span class="bg-deeper">· waiting on 1 command</span><span class="tool-open-agent bg-open-agent" role="button"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H4a1 1 0 0 0-1 1V12a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V9"/><path d="M9.5 3h3.5v3.5"/><path d="M13 3 7.5 8.5"/></svg></span><span class="bg-since">· 1m</span><span class="bg-status">running</span><button class="bg-stop">Stop</button></div>
     </div>
-    <div class="bg-task bg-running">
+    <div class="bg-task bg-running bg-kind-agents">
       <div class="bg-head bg-flat"><span class="bg-dot"></span><span class="bg-sum">Audit the exporter's retries</span><span class="tool-open-agent bg-open-agent" role="button"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H4a1 1 0 0 0-1 1V12a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V9"/><path d="M9.5 3h3.5v3.5"/><path d="M13 3 7.5 8.5"/></svg></span><span class="bg-since">· 4m</span><span class="bg-status">running</span></div>
     </div>
     <div class="bg-group-head">Commands</div>
-    <div class="bg-task bg-running">
+    <div class="bg-task bg-running bg-kind-commands">
       <div class="bg-head" data-act="bg-toggle"><span class="bg-dot"></span><span class="bg-sum">Build the docs site</span><span class="bg-since">· 9m</span><span class="bg-status">running</span><button class="bg-stop">Stop</button><span class="bg-caret">▸</span></div>
     </div>
     <div class="bg-group-head">Watches</div>
-    <div class="bg-task bg-armed">
+    <div class="bg-task bg-armed bg-kind-watches">
       <div class="bg-head" data-act="bg-toggle"><span class="bg-dot"></span><span class="bg-sum">the CI run on web</span><span class="bg-since">· 31m</span><span class="bg-status">armed</span><button class="bg-stop bg-cancel">Cancel</button><span class="bg-caret">▸</span></div>
     </div>
     <div class="bg-await-note">The session is idle until this finishes; it picks back up on its own when the result lands.</div>
@@ -63,24 +64,24 @@
   <div class="bg-fold-head bg-running open" data-act="bg-fold"><span class="bg-caret">▾</span><span class="bg-dot"></span><span class="bg-fold-label">In the background · 2 agents · 1 command · 1 watch</span></div>
   <div class="bg-list">
     <div class="bg-group-head">Agents</div>
-    <div class="bg-task bg-running">
+    <div class="bg-task bg-running bg-kind-agents">
       <div class="bg-head" data-act="bg-toggle"><span class="bg-dot"></span><span class="bg-sum">Map the notes-api parser</span><span class="tool-open-agent bg-open-agent" role="button"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H4a1 1 0 0 0-1 1V12a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V9"/><path d="M9.5 3h3.5v3.5"/><path d="M13 3 7.5 8.5"/></svg></span><span class="bg-since">· 12m</span><span class="bg-status">running</span><button class="bg-stop">Stop</button><span class="bg-caret">▸</span></div>
     </div>
-    <div class="bg-task bg-running bg-sub">
+    <div class="bg-task bg-running bg-sub bg-kind-commands">
       <div class="bg-head bg-flat"><span class="bg-waits-on">waiting on</span><span class="bg-dot"></span><span class="bg-sum">Run the parser test chunk</span><span class="bg-since">· 3m</span><span class="bg-status">running</span><button class="bg-stop">Stop</button></div>
     </div>
-    <div class="bg-task bg-running bg-sub">
+    <div class="bg-task bg-running bg-sub bg-kind-agents">
       <div class="bg-head bg-flat"><span class="bg-waits-on bg-waits-blank"></span><span class="bg-dot"></span><span class="bg-sum">Check the fixture loader</span><span class="bg-deeper">· waiting on 1 command</span><span class="tool-open-agent bg-open-agent" role="button"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H4a1 1 0 0 0-1 1V12a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V9"/><path d="M9.5 3h3.5v3.5"/><path d="M13 3 7.5 8.5"/></svg></span><span class="bg-since">· 1m</span><span class="bg-status">running</span><button class="bg-stop">Stop</button></div>
     </div>
-    <div class="bg-task bg-running">
+    <div class="bg-task bg-running bg-kind-agents">
       <div class="bg-head bg-flat"><span class="bg-dot"></span><span class="bg-sum">Audit the exporter's retries</span><span class="tool-open-agent bg-open-agent" role="button"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H4a1 1 0 0 0-1 1V12a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V9"/><path d="M9.5 3h3.5v3.5"/><path d="M13 3 7.5 8.5"/></svg></span><span class="bg-since">· 4m</span><span class="bg-status">running</span></div>
     </div>
     <div class="bg-group-head">Commands</div>
-    <div class="bg-task bg-running">
+    <div class="bg-task bg-running bg-kind-commands">
       <div class="bg-head" data-act="bg-toggle"><span class="bg-dot"></span><span class="bg-sum">Build the docs site</span><span class="bg-since">· 9m</span><span class="bg-status">running</span><button class="bg-stop">Stop</button><span class="bg-caret">▸</span></div>
     </div>
     <div class="bg-group-head">Watches</div>
-    <div class="bg-task bg-armed">
+    <div class="bg-task bg-armed bg-kind-watches">
       <div class="bg-head" data-act="bg-toggle"><span class="bg-dot"></span><span class="bg-sum">the CI run on web</span><span class="bg-since">· 31m</span><span class="bg-status">armed</span><button class="bg-stop bg-cancel">Cancel</button><span class="bg-caret">▸</span></div>
     </div>
   </div>

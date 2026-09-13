@@ -59,19 +59,20 @@ test("renderTabs draws a skeleton tab BEFORE the placeholder branch; both draw t
   assert.match(rt, /const s = sessions\.get\(id\);\s*\n(?:\s*\/\/[^\n]*\n)?\s*if \(renderKind\(skeletonTabs, id, !!s\) === "skeleton"\) \{\s*\n\s*const sk = makeSkeletonTab\(id\);\s*\n\s*if \(copyGroup !== undefined\) sk\.dataset\.copy = copyGroup \?\? "";[^\n]*\n\s*bar\.appendChild\(sk\); continue;\s*\n\s*\}\s*\n\s*if \(!s\) \{\s*\n\s*const ph = makePlaceholderTab\(id\);/,
     "skeleton first: a stale session entry must not make the tab read as loaded");
   assert.match(rt, /const st = applyTabStatus\(tab, s\);/, "the loaded tab's chip comes from the shared helper");
-  assert.match(rt, /appendTabCtxGauge\(tab, s\);/, "…and its gauge");
+  assert.match(rt, /appendTabAfterWidgets\(tab, s\);/, "…and its after-the-name widgets (the gauge, the hot-key keycap; T379)");
   assert.match(rt, /wireTabDrag\(tab, id\);/, "…and its drag listeners");
   // exactly ONE status→class/dot block in the file: the helper (the "MISSING state" ring included — since T262g the
   // dot's class is tab-state.ts's tabDotClass, one slot in every state, so the file has ONE call and no ring literal)
-  assert.equal(RENDER.split("const dotCls = tabDotClass(st);").length - 1, 1, "one dot-slot site: applyTabStatus");
+  assert.equal(RENDER.split("const dotCls = tabDotClass(st);").length - 1, 0, "no dot-slot site in render.ts: the dot is a widget (tab-widgets.ts, T379)");
+  assert.equal(RENDER.split('composeTabWidgets(tab, "before"').length - 1, 1, "one before-slot composition: applyTabStatus");
   assert.equal(RENDER.split('el("span", "tab-dot unknown")').length - 1, 0, "no hand-rolled unknown ring anywhere");
   // …and the state → class step inside it is tab-state.ts's shared rule (tab groups, 2026-09-04: the folded
   // section header's pip reads the same function), so the file has ONE such call and no hand-rolled class literal
   assert.equal(RENDER.split("const stateCls = tabStateClass(s.status);").length - 1, 1, "one state-class site: applyTabStatus wears the shared rule");
   assert.equal(RENDER.split('tab.classList.add("tab-working")').length - 1, 0, "no hand-rolled state class anywhere");
   const chip = fn("applyTabStatus");
-  assert.match(chip, /^function applyTabStatus\(tab: HTMLElement, s: \{ status: Partial<Status> \}\): ChipState \| undefined \{\s*\n\s*const st = s\.status\.state;/);
-  assert.match(chip, /const dotCls = tabDotClass\(st\);\s*\n\s*if \(dotCls\) tab\.appendChild\(el\("span", dotCls\)\);/, "no state → the honest unknown ring (tabDotClass: a missing state is the gray ring)");
+  assert.match(chip, /^function applyTabStatus\(tab: HTMLElement, s: \{ id\?: string; status: Partial<Status> \}\): ChipState \| undefined \{\s*\n\s*const st = s\.status\.state;/);
+  assert.match(chip, /composeTabWidgets\(tab, "before", s\.id \|\| "", s\.status, settings\.tabWidgets\);/, "no state → the honest unknown ring: the dot widget renders tabDotClass, a missing state is the gray ring (T379)");
   assert.match(chip, /return st;\s*\n\}/);
 });
 
@@ -84,11 +85,11 @@ test("makeSkeletonTab: the loaded-tab chrome minus what it does not know — no 
   assert.match(sk, /tab\.dataset\.id = id;/);
   assert.match(sk, /tab\.dataset\.act = "select";/, "the stable #tabs delegate — click-safe like every tab");
   assert.match(sk, /tab\.addEventListener\("keydown", onTabKey\);/);
-  assert.match(sk, /tab\.draggable = !fedMissing;\s*\n\s*wireTabDrag\(tab, id\);/, "a real live session: reordering is legitimate — unless the page has no manager to arrange it (2026-09-10)");
+  assert.match(sk, /tab\.draggable = !fedMissing && !settings\.tabsLocked;\s*\n\s*wireTabDrag\(tab, id\);/, "a real live session: reordering is legitimate — unless the page has no manager to arrange it (2026-09-10), or the tabs are locked (T395)");
   assert.match(sk, /tab\.classList\.add\("colored"\)/);
-  assert.match(sk, /const status = skeletonTabs\.status\.get\(id\) as Status \| undefined;\s*\n\s*applyTabStatus\(tab, \{ status: status \?\? \{\} \}\);/,
+  assert.match(sk, /const status = skeletonTabs\.status\.get\(id\) as Status \| undefined;\s*\n\s*applyTabStatus\(tab, \{ id, status: status \?\? \{\} \}\);/,
     "the chip reads ONLY the kernel's status frames; none yet → an empty status → the unknown ring");
-  assert.match(sk, /if \(status\) appendTabCtxGauge\(tab, \{ status \}\);/, "the gauge only from a kernel-sent status");
+  assert.match(sk, /if \(status\) appendTabAfterWidgets\(tab, \{ id, status \}\);/, "the gauge (and the keycap) only from a kernel-sent status");
   assert.match(sk, /const dead = status\?\.state === "closed";\s*\n\s*closeBtn\.title = dead \? "Close tab" : "End session";\s*\n\s*if \(dead\) closeBtn\.dataset\.dead = "1";/,
     "a dead session drawn as a skeleton drops like a dead loaded tab (the delegate's dead branch), no End confirm (review find 2026-09-08)");
   assert.match(sk, /tab\.title = "Not loaded yet — click to load";/);
@@ -98,12 +99,12 @@ test("makeSkeletonTab: the loaded-tab chrome minus what it does not know — no 
   assert.doesNotMatch(sk, /showTabTip/, "no rich hover tip — it reads a session's dir/model");
   assert.match(fn("makePlaceholderTab"), /tab-ph-swirl/, "the placeholder keeps its swirl");
   // DOM order label → gauge → ✕ (the ✕ keeps the right edge), as on a loaded tab
-  const label = sk.indexOf("tab.appendChild(label);"), gauge = sk.indexOf("appendTabCtxGauge(tab"), close = sk.indexOf('const closeBtn = el("span", "tab-close");');
+  const label = sk.indexOf("tab.appendChild(label);"), gauge = sk.indexOf("appendTabAfterWidgets(tab"), close = sk.indexOf('const closeBtn = el("span", "tab-close");');
   assert.ok(label >= 0 && label < gauge && gauge < close);
   // the builders sit ABOVE makePlaceholderTab: tabs-first.test.ts slices makePlaceholderTab→renderTabs and
   // forbids close/drag there, and tab-ctx-gauge.test.ts orders the file's first label < gauge < `const close`
   const ph = RENDER.indexOf("function makePlaceholderTab(");
-  for (const f of ["applyTabStatus", "wireTabDrag", "makeSkeletonTab", "appendTabCtxGauge"]) assert.ok(RENDER.indexOf(`function ${f}(`) < ph, f + " above the placeholder builder");
+  for (const f of ["applyTabStatus", "wireTabDrag", "makeSkeletonTab", "appendTabAfterWidgets"]) assert.ok(RENDER.indexOf(`function ${f}(`) < ph, f + " above the placeholder builder");
 });
 
 test("statusOnly begins with the skeleton branch: store + scheduleRenderTabs (one frame for a burst), never renderTabs; a status for a session the page holds nothing of is HELD for its strip, never the no-base ask", () => {

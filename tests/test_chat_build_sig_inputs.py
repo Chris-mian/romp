@@ -66,6 +66,7 @@ CENSUS = {
     "_auth_both": ("sig", "acct", "the credential store's login and the settings' key presence"),
     "_awaiting_task_descs": ("sig", "bg", "the live task rows; the split reads the stamped tops (stamp), the store and the transcript"),
     "_awaiting_task_ids": ("sig", "bg", "as _awaiting_task_descs"),
+    "_bg_service_ids": ("sig", "bg", "as _awaiting_task_descs"),
     "_awaiting_items_payload": ("sig", "bg", "the wait's own rows (as _session_awaiting), else the rows in flight mid-turn: the row's agents (row), the live task rows and the watches (watch)"),
     "_bg_tasks": ("sig", "row", "the row's live task set gates the transcript's scan; each output tail is a taskout dep; the spawn epoch reads reg and gone"),
     "_chat_agent_open_at": ("pure", "over the events"),

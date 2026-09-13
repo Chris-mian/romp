@@ -23,6 +23,8 @@
 
 var gclock = require('./gesture-clock.js');   // every `gt` below is minted here (see that file)
 var BN = require('./backend-names.ts');   // the backends' user-facing names and the offer rule (T288)
+var TW = require('./tab-widgets.ts');   // the tab-title widgets (T379): the registry the Tab widgets section's rows render from, the strip's own module
+var LS = require('./landing-settle.ts');   // gestureEvidence: the chat's rule for telling the user's scroll from the browser's own (the section ask ends only on input, T379 follow-up)
 function kb() { return (typeof window !== 'undefined' && window.__rompKernelBase) || ''; }
 function ku(path) {
   var tok = (typeof window !== 'undefined' && window.__rompKernelToken) || '';
@@ -36,6 +38,11 @@ function ku(path) {
 // commands, rebindable in VS Code's own Keyboard Shortcuts editor, so the row says that instead
 // (a second editor there would fight the native one). The old static list is gone with the section
 // (it opened with "Enter — send message", a typing key nobody looks up, and went stale per surface).
+var RS_TABS = [['general', 'General'], ['chat', 'Chat'], ['feed', 'Feed'], ['sessions', 'Sessions'], ['automation', 'Automation'], ['tasks', 'Task tracking'], ['debug', 'Debug']];
+// older remembered tabs (romp:settingsTab) and older asks map to the tab that holds their rows now, never a blank card (T400):
+// Automatic became Task tracking, System dissolved into Debug (its account rows into General), the short-lived Tabs tab is Chat's section,
+// and Appearance is General's section since T404 (the user 2026-09-13): an ask for it lands on General scrolled to that section
+var TAB_ALIASES = { automatic: 'tasks', system: 'debug', tabs: 'chat', appearance: 'general' };
 var SHORTCUT_ROWS =
   '<div class=rs-key id=rs-keys-web hidden><button id=rs-keys-btn type=button>Customize shortcuts…</button>' +
   '<span class=rs-key-desc>view, record and rebind every dashboard shortcut</span></div>' +
@@ -61,6 +68,15 @@ var GEAR_HTML =
   '<button id=rgear hidden aria-hidden=true></button>' +
   '<div id=rsettings hidden><div class=rs-card>' +
   '<div class=rs-h>Settings</div>' +
+  // THE TABS (T379, the user 2026-09-12; re-cut T400 into General, Chat, Feed, Sessions, Task tracking, Appearance, Debug): the
+  // settings grouped by the surface they belong to, seven pills under the
+  // title in the menu vocabulary; every row keeps its id and its key. The tab-widgets gear on the chat strip opens the
+  // Chat tab scrolled to its Tab widgets section (openSettings(tab, section)); the last tab used is remembered per
+  // browser (romp:settingsTab). RS_TABS is the one list the pills, the panes and selectTab read.
+  '<div class=rs-tabs id=rs-tabs role=tablist>' + RS_TABS.map(function (t) { return '<button class=rs-tab type=button role=tab data-tab=' + t[0] + ' aria-selected=false>' + t[1] + '</button>'; }).join('') + '</div>' +
+  '<div class=rs-pane data-pane=general hidden>' +
+  // GENERAL (T400, the user 2026-09-12): the account this machine is logged in as, which panes this browser's dashboard shows at
+  // all, and the keyboard shortcuts: settings about the dashboard as a whole, not one surface of it
   "<div class='rs-sec rs-sec-first'>Account</div>" +
   "<div class='rs-row' id=rs-billing style='cursor:default'>" +
   '<span style="flex:1 1 auto"><b>Claude login</b>' +
@@ -76,40 +92,76 @@ var GEAR_HTML =
   // Remove; filled from the kernel's authed /logins (labels and dates, never a token)
   "<div id=rs-logins class=rs-logins style='margin-top:8px'></div>" +
   '</span></div>' +
-  '<div class=rs-sec>Sessions</div>' +
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>" +
-  '<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>' +
-  "<div style='display:flex;gap:6px;margin-top:5px'>" +
-  "<input id=rs-defaultdir type=text spellcheck=false placeholder='install/serve default' style='flex:1 1 auto;min-width:0;box-sizing:border-box;background:var(--input-bg, #1e1e1e);color:var(--fg, #ccc);" +
-  "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'>" +
-  "<button id=rs-defaultdir-browse type=button style='flex:0 0 auto;cursor:pointer;background:var(--btn-bg, #2a2a2a);color:var(--fg, #ccc);border:1px solid var(--hairline, #3a3a3a);border-radius:5px;padding:3px 8px'>Browse…</button>" +
-  '</div></span></div>' +
-  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>" +
-  '<span class=rs-sub>What the + button uses for a NEW session. Claude Code runs the session through romp itself; Codex runs an OpenAI Codex agent (docs/codex.md).</span>' +
-  "<select id=rs-backend style='display:none'>" +
-  '<option value=sdk>Claude Code</option><option value=codex>Codex</option>' +
-  '</select></span></div>' +
-  "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
-  '<span><b>Auto Nudge</b><span class=rs-mixed id=rs-autonudge-split hidden></span>' +
-  '<span class=rs-sub id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
+  // Panes (the user 2026-09-10): which optional panes this browser's dashboard shows at all. The chat is
+  // required and not listed; the rows are Sessions, Outline and Feed (the rail's own words for the panes
+  // keys: timeline, 'fleet', feed), on by default. A pane off here is not in the dashboard: no rail button,
+  // no phone tab, no palette command, its iframe never given a src (nothing loads, no socket). The kernel
+  // keeps judging and tracking every session regardless; this is where THIS browser looks. The section is
+  // for the dashboard's own gear (ownPage): the VS Code panels have no dashboard, so initGear hides it there.
+  '<div class=rs-sec id=rs-panes-sec>Panes</div>' +
+  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-timeline checked>' +
+  '<span><b>Sessions</b>' +
+  '<span class=rs-sub>The lanes across the bottom: every session\'s turns, judging and messages on one time axis. Off, the band and its button are gone from this browser.</span>' +
   '</span></label>' +
-  "<label class='rs-row'><input type=checkbox id=rs-suggestcompact>" +
-  '<span><b>Suggest /compact</b><span class=rs-mixed hidden></span>' +
-  '<span class=rs-sub>When a session has been idle over an hour with a lot of context built up (first past 400k tokens, again past 800k), send it ONE suggestion to /compact at a natural boundary — its call, once per fill-up. Never sent to muted sessions or anything mid-turn. Off by default for a fresh install. Applies on every connected machine’s kernel.</span>' +
+  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-fleet checked>' +
+  '<span><b>Outline</b>' +
+  '<span class=rs-sub>The by-session goal trees, with search across sessions. Off, the column and its button are gone from this browser.</span>' +
   '</span></label>' +
+  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-feed checked>' +
+  '<span><b>Feed</b>' +
+  '<span class=rs-sub>The cards: what needs you, what is in progress, what shipped. Off, the column and its button are gone from this browser; tracking carries on and the other browsers and devices are unaffected.</span>' +
+  '</span></label>' +
+  // the Files control (T317, the user 2026-09-10, who recalled a setting for it; a Panes row since T404): the toggle at the bottom of
+  // the dashboard and the Files tab on a phone. OFF by default (T317b, the user the same day: the control is asked for,
+  // not shipped): on shows both; off hides both, closes an open Files pane, and a file link opens over the pane you
+  // clicked (the shell reads this store key and tells the panes: kernel.py
+  // _LANDING_COLLAPSE_JS, render.ts panesAvail). Only the literal true shows it, so the box is unchecked until read.
+  // The key is showFilesControl, a FRESH one (T317b review): the T317-era load() merged its default filesControl: true
+  // into the object and save() wrote the whole object on ANY change, so a profile that touched any setting in that
+  // window carries filesControl: true without ever touching this box; the old key is never read and load() drops it,
+  // so the next save leaves it behind.
+  '<label class=rs-row><input type=checkbox id=rs-filesctl>' +
+  '<span><b>Files control in the dashboard bar</b>' +
+  '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links then open over the pane you clicked.</span>' +
+  '</span></label>' +
+  // APPEARANCE, a section of General since T404 (the user 2026-09-13; a tab of its own before, renamed from Colors 2026-08-28): the
+  // theme, the colormap and the session palette; an older ask or remembered tab named appearance lands here (TAB_ALIASES)
+  "<div class='rs-sec' data-section=appearance>Appearance</div>" +
+  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Theme</b>" +
+  "<span class=rs-sub>The dashboard's overall look, every pane. Classic and Yatharth are dark (they differ in the tab strip: original high-contrast vs the contributed flat-wash); Yatharth light is the warm light theme — inside VS Code it wins over the editor theme, deliberately.</span>" +
+  "<div id=rs-theme style='position:relative;margin-top:5px'></div>" +
+  '</span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>" +
+  '<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>' +
+  "<div id=rs-cmap><button id=rs-cmap-btn type=button aria-label='Pick the recency colormap'></button>" +
+  '<div id=rs-cmap-list hidden></div></div></span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>" +
+  '<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>' +
+  "<div id=rs-pal><button id=rs-pal-btn type=button aria-label='Pick the session palette'></button>" +
+  '<div id=rs-pal-list hidden></div></div></span></div>' +
+  // PERMISSIONS (T404): what romp may do on this machine on your behalf
+  '<div class=rs-sec>Permissions</div>' +
+  "<label class='rs-row'><input type=checkbox id=rs-fileedit>" +
+  '<span><b>Allow file editing</b><span class=rs-mixed hidden></span>' +
+  '<span class=rs-sub>Let the file viewer’s Edit save straight to disk on the file’s machine. Off by default; the viewer asks the first time. A session working in the edited folder is told, and a save always refuses when the file changed underneath you. Applies on every connected machine’s kernel.</span>' +
+  '</span></label>' +
+  // THIS MACHINE (T404): the install's own housekeeping, memory and updates
+  '<div class=rs-sec>This machine</div>' +
   "<label class='rs-row'><input type=checkbox id=rs-conserve>" +
   '<span><b>Conserve memory</b><span class=rs-mixed hidden></span>' +
   '<span class=rs-sub>Close the claude process of a session that has FADED (idle over an hour) and is on no open tab (each averages ~340MB). Everything persists — it revives on a tab click, a message, or a scheduled wake. An open tab always keeps its process; off = every session keeps its process for as long as it lives.</span>' +
   '</span></label>' +
-  "<label class='rs-row'><input type=checkbox id=rs-thinksum>" +
-  '<span><b>Thinking summaries</b>' +
-  '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
-  '</span></label>' +
-  "<label class='rs-row'><input type=checkbox id=rs-fileedit>" +
-  '<span><b>File editing</b><span class=rs-mixed hidden></span>' +
-  '<span class=rs-sub>Let the file viewer’s Edit save straight to disk on the file’s machine. Off by default; the viewer asks the first time. A session working in the edited folder is told, and a save always refuses when the file changed underneath you. Applies on every connected machine’s kernel.</span>' +
-  '</span></label>' +
-  '<div class=rs-sec>Chat</div>' +
+  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Updates install automatically <span class=rs-mixed hidden></span></b>" +
+  '<span class=rs-sub>romp watches for new tagged releases (every 6 hours) AND new commits on main (origin polled every few minutes, plus a restart offer when updated code sits on disk unbooted) — one banner covers both, and acting on it converges every attached machine. Check and ask (the default) offers the banner with an Update button; Install automatically converges by itself: a change to kernel code restarts it at once (turns in flight are cut and resume with their history); anything else (the UI, the docs, the postal bus) converges in place with the kernel left up; Off never checks. Kernel-side setting.</span>' +
+  "<select id=rs-updates style='display:none'>" +
+  '<option value=ask>Check and ask</option><option value=auto>Install automatically</option><option value=off>Off</option>' +
+  '</select></span></div>' +
+  
+  '<div class=rs-sec>Keyboard shortcuts</div>' + SHORTCUT_ROWS +
+  '</div>' +
+  '<div class=rs-pane data-pane=chat hidden>' +
+  // DISPLAY (T404, the user 2026-09-13; Transcript before): how the chat shows things, nothing here changes what a session does
+  "<div class='rs-sec rs-sec-first'>Display</div>" +
   '<label class=rs-row><input type=checkbox id=rs-compact>' +
   '<span><b>Compact transcript</b>' +
   '<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>' +
@@ -130,97 +182,74 @@ var GEAR_HTML =
   '<span><b>Show git branch</b>' +
   "<span class=rs-sub>Show the session's git branch (when it's in a repo) in the chat bottom bar, beside the directory.</span>" +
   '</span></label>' +
-  '<label class=rs-row><input type=checkbox id=rs-striprows checked>' +
-  '<span><b>One tag group per row in the tab strip</b>' +
-  '<span class=rs-sub>With the tabs grouped by tag, each group starts on its own row with its tag at the left edge. Off, the groups follow one another across the strip and wrap as they need, so many tags do not mean many rows.</span>' +
-  '</span></label>' +
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Context gauge in tabs</b>" +
-  "<span class=rs-sub>A slim vertical bar beside each session's name in the tab strip, filling as its context fills — the same colors as the context battery, no number. By default it appears only once a session is half full, so quiet tabs stay clean.</span>" +
-  "<select id=rs-tabctx style='display:none'>" +
-  '<option value=over50>When above 50%</option><option value=always>Always</option><option value=never>Never</option>' +
-  '</select>' +
-  "<div id=rs-tabctx-pick style='position:relative;margin-top:5px'></div>" +
-  '</span></div>' +
-  // where a file or folder clicked in the chat opens (render.ts openPath and openBrowse through file-route.ts):
-  // the hidden select is
-  // the value holder, selectPick below dresses it as a house menu like the other selects
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>File links open in</b>" +
-  '<span class=rs-sub>Where a file or folder clicked in the chat opens. While the Files pane is open, both open there. When the pane is closed, this setting decides: over the pane you clicked, or in the Files pane, which then opens and stays open. Needs the Files control below to be on; with it off (the default), links open over the pane you clicked. Browser dashboard only: in VS Code file links open in the editor, and a chat tab opened on its own has no Files pane.</span>' +
-  "<select id=rs-filelink style='display:none'>" +
-  '<option value=chat>The pane you clicked</option><option value=pane>The Files pane</option>' +
-  '</select>' +
-  '</span></div>' +
-  // the Files control itself (T317, the user 2026-09-10, who recalled a setting for it): the toggle at the bottom of
-  // the dashboard and the Files tab on a phone. OFF by default (T317b, the user the same day: the control is asked for,
-  // not shipped): on shows both; off hides both, closes an open Files pane, and a file link set to open in the Files
-  // pane opens over the pane you clicked instead (the shell reads this store key and tells the panes: kernel.py
-  // _LANDING_COLLAPSE_JS, render.ts panesAvail). Only the literal true shows it, so the box is unchecked until read.
-  // The key is showFilesControl, a FRESH one (T317b review): the T317-era load() merged its default filesControl: true
-  // into the object and save() wrote the whole object on ANY change, so a profile that touched any setting in that
-  // window carries filesControl: true without ever touching this box; the old key is never read and load() drops it,
-  // so the next save leaves it behind.
-  '<label class=rs-row><input type=checkbox id=rs-filesctl>' +
-  '<span><b>Files control in the dashboard bar</b>' +
-  '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links set to open in the Files pane then open over the pane you clicked.</span>' +
-  '</span></label>' +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Text scheme</b>" +
   "<span class=rs-sub>Chat text colors only. Each option previews its own tiers — prose, the dimmer tool text, code. (Solarized Light is omitted — its tiers are made for a light page and turn muddy here.)</span>" +
   "<div id=rs-chatscheme style='position:relative;margin-top:5px'></div>" +
   '</span></div>' +
-  
+  '<label class=rs-row><input type=checkbox id=rs-striprows checked>' +
+  '<span><b>One tag group per row in the tab strip</b>' +
+  '<span class=rs-sub>With the tabs grouped by tag, each group starts on its own row with its tag at the left edge. Off, the groups follow one another across the strip and wrap as they need, so many tags do not mean many rows.</span>' +
+  '</span></label>' +
+  "<div class='rs-sec'>Comments</div>" +
   "<div class='rs-row rs-jrow'><b>Comment model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model NEW comment threads start on. Same as the session (the default) keeps each thread on the model of the conversation it branches from; pinning one here starts every new thread on it. The comment dialog shows this default and its own pick still wins. Follows to every connected machine's kernel.</span><select id=rs-cmtmodel></select></div>" +
   "<div class='rs-row rs-jrow'><b>Comment effort <span class=rs-mixed hidden></span></b><span class=rs-sub>Thinking effort for new comment threads. Same as the session (the default) inherits the effort of the conversation the thread branches from. Follows to every connected machine's kernel.</span><select id=rs-cmteffort></select></div>" +
   "<label class='rs-row'><input type=checkbox id=rs-cmtfast>" +
   '<span><b>Fast comment threads</b><span class=rs-mixed hidden></span>' +
   "<span class=rs-sub>Start new comment threads in fast mode (Opus-only research preview). If the thread's model can't run it, the thread still opens on that model at normal speed, with a notice. Off = same as the session. Follows to every connected machine's kernel.</span>" +
   '</span></label>' +
-  // Panes (the user 2026-09-10): which optional panes this browser's dashboard shows at all. The chat is
-  // required and not listed; the rows are Sessions, Outline and Feed (the rail's own words for the panes
-  // keys: timeline, 'fleet', feed), on by default. A pane off here is not in the dashboard: no rail button,
-  // no phone tab, no palette command, its iframe never given a src (nothing loads, no socket). The kernel
-  // keeps judging and tracking every session regardless; this is where THIS browser looks. The section is
-  // for the dashboard's own gear (ownPage): the VS Code panels have no dashboard, so initGear hides it there.
-  '<div class=rs-sec id=rs-panes-sec>Panes</div>' +
-  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-timeline checked>' +
-  '<span><b>Sessions</b>' +
-  '<span class=rs-sub>The lanes across the bottom: every session\'s turns, judging and messages on one time axis. Off, the band and its button are gone from this browser.</span>' +
+  // THINKING (T404): asks the API for reasoning summaries on every new session, so it CREATES (tokens the session pays for, and
+  // adaptive thinking turned on where it was off), which is why it sits in Chat and not under Display
+  "<div class='rs-sec'>Thinking</div>" +
+  "<label class='rs-row'><input type=checkbox id=rs-thinksum>" +
+  '<span><b>Thinking summaries</b>' +
+  '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
   '</span></label>' +
-  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-fleet checked>' +
-  '<span><b>Outline</b>' +
-  '<span class=rs-sub>The by-session goal trees, with search across sessions. Off, the column and its button are gone from this browser.</span>' +
-  '</span></label>' +
-  '<label class="rs-row rs-panes-row"><input type=checkbox id=rs-pane-feed checked>' +
-  '<span><b>Feed</b>' +
-  '<span class=rs-sub>The cards: what needs you, what is in progress, what shipped. Off, the column and its button are gone from this browser; tracking carries on and the other browsers and devices are unaffected.</span>' +
-  '</span></label>' +
-  '<div class=rs-sec>Sessions pane</div>' +  '<label class=rs-row><input type=checkbox id=rs-activeonly checked>' +
-  '<span><b>Show active sessions only</b>' +
-  '<span class=rs-sub>Only draw lanes for sessions with work in the visible time range, so idle sessions do not take up room. They stay in the chat, and a lane reappears the moment you zoom or pan to a stretch where it did something.</span>' +
-  '</span></label>' +
-  '<label class=rs-row><input type=checkbox id=rs-collapsegaps checked>' +
-  '<span><b>Collapse idle gaps</b>' +
-  '<span class=rs-sub>Squish long idle stretches (no work on any lane — e.g. overnight) into a thin break on the timeline, so the active periods get the width.</span>' +
-  '</span></label>' +
-  '<div class=rs-sec>Feed</div>' +
+  // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own): the strip's gear opens the
+  // panel here (data-section is the anchor showSection scrolls the card to), then the strip's own controls follow
+  "<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>" +
+  // the widget rows are built by initGear from the registry (tab-widgets.ts): a live demo, the name and what it does, the
+  // sliding switch and the widget's own options; every control built once and re-filled in place (click-safe)
+  '<div class=rs-hint>What a tab title carries, in this order. Each row shows the widget live.</div>' +
+  '<div id=rs-widgets class=rs-widgets></div>' +
+  '</div>' +
+  '<div class=rs-pane data-pane=feed hidden>' +
+  "<div class='rs-sec rs-sec-first'>Cards</div>" +
   '<label class=rs-row><input type=checkbox id=rs-feedcollapsed>' +
   '<span><b>Collapse cards by default</b>' +
   '<span class=rs-sub>Every card arrives collapsed to its one-line gist; expanding one is a per-card override. Moved here from the feed footer — a set-and-forget default, not a per-glance action.</span>' +
   '</span></label>' +
-  '<div class=rs-sec>Appearance</div>' +   // renamed from Colors (2026-08-28): it owns the overall theme now, not just tints
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Theme</b>" +
-  "<span class=rs-sub>The dashboard's overall look, every pane. Classic and Yatharth are dark (they differ in the tab strip: original high-contrast vs the contributed flat-wash); Yatharth light is the warm light theme — inside VS Code it wins over the editor theme, deliberately.</span>" +
-  "<div id=rs-theme style='position:relative;margin-top:5px'></div>" +
-  '</span></div>' +
-  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>" +
-  '<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>' +
-  "<div id=rs-cmap><button id=rs-cmap-btn type=button aria-label='Pick the recency colormap'></button>" +
-  '<div id=rs-cmap-list hidden></div></div></span></div>' +
-  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>" +
-  '<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>' +
-  "<div id=rs-pal><button id=rs-pal-btn type=button aria-label='Pick the session palette'></button>" +
-  '<div id=rs-pal-list hidden></div></div></span></div>' +
-  '<div class=rs-sec>Keyboard shortcuts</div>' + SHORTCUT_ROWS +
-  '<div class=rs-sec>Judges</div>' +
+  '</div>' +
+  '<div class=rs-pane data-pane=sessions hidden>' +
+  "<div class='rs-sec rs-sec-first'>New sessions</div>" +
+  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Default directory</b>" +
+  '<span class=rs-sub>The default directory for NEW sessions (still editable per session). Persisted kernel-side — also settable with <code>romp default-dir</code>. Falls back to the romp install dir until you set one; blank reverts to it. ~ and $VARs expand.</span>' +
+  "<div style='display:flex;gap:6px;margin-top:5px'>" +
+  "<input id=rs-defaultdir type=text spellcheck=false placeholder='install/serve default' style='flex:1 1 auto;min-width:0;box-sizing:border-box;background:var(--input-bg, #1e1e1e);color:var(--fg, #ccc);" +
+  "border:1px solid #3a3a3a;border-radius:5px;padding:3px 6px'>" +
+  "<button id=rs-defaultdir-browse type=button style='flex:0 0 auto;cursor:pointer;background:var(--btn-bg, #2a2a2a);color:var(--fg, #ccc);border:1px solid var(--hairline, #3a3a3a);border-radius:5px;padding:3px 8px'>Browse…</button>" +
+  '</div></span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Default backend</b>" +
+  '<span class=rs-sub>What the + button uses for a NEW session. Claude Code runs the session through romp itself; Codex runs an OpenAI Codex agent (docs/codex.md).</span>' +
+  "<select id=rs-backend style='display:none'>" +
+  '<option value=sdk>Claude Code</option><option value=codex>Codex</option>' +
+  '</select></span></div>' +
+  '</div>' +
+  '<div class=rs-pane data-pane=automation hidden>' +
+  // AUTOMATION (T404, the user 2026-09-13): what romp sends to the sessions on its own
+  "<div class='rs-sec rs-sec-first'>Nudges</div>" +
+  "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
+  '<span><b>Auto Nudge</b><span class=rs-mixed id=rs-autonudge-split hidden></span>' +
+  '<span class=rs-sub id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
+  '</span></label>' +
+  "<label class='rs-row'><input type=checkbox id=rs-suggestcompact>" +
+  '<span><b>Suggest /compact</b><span class=rs-mixed hidden></span>' +
+  '<span class=rs-sub>When a session has been idle over an hour with a lot of context built up (first past 400k tokens, again past 800k), send it ONE suggestion to /compact at a natural boundary — its call, once per fill-up. Never sent to muted sessions or anything mid-turn. Off by default for a fresh install. Applies on every connected machine’s kernel.</span>' +
+  '</span></label>' +
+  '</div>' +
+  '<div class=rs-pane data-pane=tasks hidden>' +
+  // TASK TRACKING (T404, the user 2026-09-13): the judges alone; the nudges went to Automation, Conserve memory to General, Thinking
+  // summaries to Chat. PR 2's master switch goes at the top of this pane.
+  "<div class='rs-sec rs-sec-first'>Judges</div>" +
   "<div class='rs-row rs-jrow'><b>Triage model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model the triage judges use — planner, grouper, closer, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart. A pick here follows to every connected machine's kernel.</span><select id=rs-judgemodel></select>" +
   // Fast mode sits with the model (the user 2026-09-10, who wanted the setting to speak the chat's own words
   // and sit with the model): the chat's statusline badge and docs/reference.md call it fast mode, so this
@@ -237,13 +266,11 @@ var GEAR_HTML =
   "<span class=rs-sub id=rs-indexfast-sub>" + JUDGEFAST_SUB + "</span></label></div>" +
   "<div class='rs-row rs-jrow'><b>Indexing effort <span class=rs-mixed hidden></span></b><span class=rs-sub>Thinking effort for the indexing judges. Default keeps this high-volume work cheap: effort low on models with adaptive thinking (Fable, Opus 4.6 and later, Sonnet 4.6 and later); Haiku, Sonnet 4.5 and Opus 4.5 have none, so they run with thinking off and no flag. Follows to every connected machine's kernel.</span><select id=rs-indexeffort></select></div>" +
   "<div class='rs-row rs-jrow'><b>Judge concurrency <span class=rs-mixed hidden></span></b><span class=rs-sub>How many judge calls run at once, across every tier. Default is 6, or the ROMP_JUDGE_CONCURRENCY the kernel's service environment sets. Applies on the judges' next pass; no restart. Follows to every connected machine's kernel.</span><select id=rs-judgeconc></select></div>" +
-  '<div class=rs-sec>Updates & debug</div>' +
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Automatic updates <span class=rs-mixed hidden></span></b>" +
-  '<span class=rs-sub>romp watches for new tagged releases (every 6 hours) AND new commits on main (origin polled every few minutes, plus a restart offer when updated code sits on disk unbooted) — one banner covers both, and acting on it converges every attached machine. Check and ask (the default) offers the banner with an Update button; Install automatically converges by itself: a change to kernel code restarts it at once (turns in flight are cut and resume with their history); anything else (the UI, the docs, the postal bus) converges in place with the kernel left up; Off never checks. Kernel-side setting.</span>' +
-  "<select id=rs-updates style='display:none'>" +
-  '<option value=ask>Check and ask</option><option value=auto>Install automatically</option><option value=off>Off</option>' +
-  '</select></span></div>' +
-  
+  '</div>' +
+  '<div class=rs-pane data-pane=debug hidden>' +
+  // DEBUG (T400, the user 2026-09-12): updates, the judges' debug views, the token usage analytics, the log and the version; the
+  // former System tab dissolved here, its account rows to General; Updates went to General's This machine section (T404)
+  "<div class='rs-sec rs-sec-first'>Judging bands</div>" +   // the two debug views of the judges' activity, from the Feed tab (T400)
   '<div class=rs-judges>' +
   '<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>' +
   '<span><b>Show indexing judges</b>' +
@@ -254,11 +281,12 @@ var GEAR_HTML =
   "<span class=rs-sub>Debug view: draws the planner, grouper, closer, distiller + courier on the timeline's judging band. It does NOT turn the judges on or off — they always run; this only shows their activity.</span>" +
   '</span></label>' +
   '</div>' +
+  '<div class=rs-sec>Diagnostics</div>' +
   "<div class=rs-sep style='padding-top:8px'>" +
   '<button id=ra-open class=ra-openbtn>Token usage analytics</button>' +
   '<button id=rs-log-open class=ra-openbtn hidden>Open log<span class=rs-log-n hidden></span></button></div>' +   // T290: the Log moved here from the bottom bar (web shell only); the span is the unread count
   "<div class='rs-h rs-sep'>romp · version</div>" +
-  '<div id=rsver>…</div></div></div>' +
+  '<div id=rsver>…</div></div></div></div>' +
   '<div id=rs-login-modal hidden>' +
   '<div class=rs-login-card>' +
   "<div class=rs-h style='margin-bottom:4px'>Log in to Claude Code</div>" +
@@ -306,12 +334,11 @@ function initGear(post, opts) {
     cvm = document.getElementById('rs-conserve'),
     csg = document.getElementById('rs-suggestcompact'),
     dd = document.getElementById('rs-defaultdir'), gb = document.getElementById('rs-branch'), sbg = document.getElementById('rs-badge'),
-    tc = document.getElementById('rs-tabctx'), fl = document.getElementById('rs-filelink'), fsc = document.getElementById('rs-filesctl'),
+    fsc = document.getElementById('rs-filesctl'),
     sr = document.getElementById('rs-striprows'),
     dn = document.getElementById('rs-dense'),
     cs = document.getElementById('rs-chatscheme'),
     tt = document.getElementById('rs-theme'),
-    cg = document.getElementById('rs-collapsegaps'), ao = document.getElementById('rs-activeonly'),
     fc = document.getElementById('rs-feedcollapsed'),
     jm = document.getElementById('rs-judgemodel'),
     im = document.getElementById('rs-indexmodel'), je = document.getElementById('rs-judgeeffort'),
@@ -325,7 +352,11 @@ function initGear(post, opts) {
     pn = { timeline: document.getElementById('rs-pane-timeline'), fleet: document.getElementById('rs-pane-fleet'), feed: document.getElementById('rs-pane-feed') },
     ths = document.getElementById('rs-thinksum'),
     ans = document.getElementById('rs-autonudge-split'), asub = document.getElementById('rs-autonudge-sub');
-  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
+  // No default for tabWidgets (round one, HIGH): an injected empty object won over a pre-widgets store's tabCtx, so the
+  // Context bar read as on at 50 percent whatever the user had chosen, and a save of ANY setting wrote the empty prefs and
+  // rewrote the mirror. A store with no tabWidgets derives the prefs from tabCtx at read time (widgetPrefs, the same
+  // derivation settings.ts makes), and only a widget change writes the key (saveWidgets).
+  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
   function tabCtxMode(v) { return (v === 'always' || v === 'never') ? v : (v === false ? 'never' : 'over50'); }
@@ -349,8 +380,6 @@ function initGear(post, opts) {
   if (sr) sr.addEventListener('change', function () { var s = load(); s.stripGroupRows = sr.checked; save(s); });
   // compact tabs and agents (off by default): render.ts applies a body class on the save, and the strip and the panel repaint through the cascade
   if (dn) dn.addEventListener('change', function () { var s = load(); s.denseChrome = dn.checked; save(s); });
-  if (tc) tc.addEventListener('change', function () { var s = load(); s.tabCtx = tc.value; save(s); });
-  if (fl) fl.addEventListener('change', function () { var s = load(); s.fileLinkPane = fl.value; save(s); });   // webview-local pref read at click time (render.ts openPath)
   if (fsc) fsc.addEventListener('change', function () { var s = load(); s.showFilesControl = fsc.checked; save(s); });   // the shell hears the store change (its storage listener) and hides or shows the control (T317)
   // the optional panes: the whole set is rewritten from the three boxes on every change (a missing key reads
   // as shown everywhere, settings.ts paneSet), and the shell hears the save as a storage event
@@ -479,28 +508,210 @@ function initGear(post, opts) {
     ttDrop(THEMES, themeOf(load()));
   }
   ttPaint();
-  // The Context-gauge picker joins the same builder (the user 2026-08-27, approving the flagged
-  // migration: one menu vocabulary across the whole panel — the native select stuck out beside
-  // the two house menus). Plain-text options, so the rows are just labels; the HIDDEN select
-  // stays the VALUE holder (the versionMenu pattern): fill()/openSettings keep writing tc.value,
-  // and the pick fires the select's own change event so persistence is the existing handler.
-  var TABCTX = [
-    { id: 'over50', name: 'When above 50%' },
-    { id: 'always', name: 'Always' },
-    { id: 'never', name: 'Never' }
-  ];
-  function tabCtxRowHTML(o) {
-    return '<span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--menu-fg, #ccc)">' + o.name + '</span>';
+  // (the Context gauge picker moved onto the Context bar widget's row in the Chat tab's Tab widgets section, T379: tcPaint below is its stand-in)
+  function tcPaint() {}
+  // ── THE TABS (T379, re-cut T400) ── seven pills, one pane each; selectTab shows one pane and remembers it per browser (an older
+  // remembered name maps through TAB_ALIASES)
+  var TAB_KEY = 'romp:settingsTab';
+  function knownTab(t) { t = TAB_ALIASES[t] || t; return RS_TABS.some(function (x) { return x[0] === t; }) ? t : null; }
+  function selectTab(t) {
+    t = knownTab(t) || knownTab((function () { try { return localStorage.getItem(TAB_KEY); } catch (e) { return null; } })()) || 'chat';
+    Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { var on = b.getAttribute('data-tab') === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
+    Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-pane'), function (pn) { pn.hidden = pn.getAttribute('data-pane') !== t; });
+    try { localStorage.setItem(TAB_KEY, t); } catch (e) {}
+    return t;
   }
-  var tcDrop = housePick(document.getElementById('rs-tabctx-pick'), 'tabctx', tabCtxRowHTML, function (id) {
-    if (tc) { tc.value = id; tc.dispatchEvent(new Event('change')); }
-    tcPaint();
-  });
-  function tcPaint() {
-    if (!tcDrop) return;
-    tcDrop(TABCTX, tc ? tc.value : 'over50');
+  Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-tab'), function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); selectTab(b.getAttribute('data-tab')); clearSectionScroll(); }); });   // a pill change starts its pane at the top with no section room left behind (the follow-up's round one, LOW 1)
+  // a SECTION of the tab (the user 2026-09-12): an ask may name a section of the tab it opens (data-section on the section's
+  // head; the strip's tab-widgets gear asks for chat / tabwidgets), and the card scrolls so that head sits at its top, under
+  // the padding. Looked up in the SHOWN pane only, after the panel is displayed (rects exist only then). Set on the card,
+  // the modal's one scroll box, never scrollIntoView, which would scroll the host document too.
+  // the one pending section ask (round two, LOW 2): an observer registered for an unlaid-out ask is disconnected on close and
+  // before a new ask, so a later open never fires a stale scroll; a plain open (no section) resets the card (LOW 7)
+  var sectionRO = null, sectionAsk = null, sectionWrote = false;
+  // THE ASK'S OWN WRITES, marked (round three, LOW 1): a scrollTop write that moves the card owes exactly one scroll event, its
+  // echo, which the scroll handler below consumes and never reads as the user's, even when the user's press on a row fell within
+  // the input window before it (the ask died 0 and 60 ms after a press, measured by the review). A write that did not move owes
+  // none, and must not eat a later gesture. The chat's writeScroll pairs a write with its echo the same way (lastScrollWriteAfter).
+  // A move is what the FRAME renders (round four, MEDIUM 1): the value the frame started from (from, read by the caller before any
+  // layout it changed) against the value after the write. go() drops the room to measure, which clamps the card from 594 to 0, and
+  // lands it back at 594: Chromium renders no net move and fires no scroll event, so a mark read off the clamped intermediate was a
+  // debt the user's first real scroll paid (a wheel tick moved the card and the ask stood, measured by the review). And a debt no
+  // event pays (two writes in one frame netting to its start) is forgiven two frames on, before it could eat the user's own scroll:
+  // the echo comes with the next frame's scroll events or never.
+  function writeCard(card, top, from) {
+    var before = from === undefined ? card.scrollTop : from;
+    card.scrollTop = top;
+    if (card.scrollTop === before) return;
+    sectionWrote = true;
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(function () { requestAnimationFrame(function () { sectionWrote = false; }); });
   }
-  tcPaint();
+  function clearSectionScroll() {
+    if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
+    sectionAsk = null;
+    var card = document.querySelector('#rsettings .rs-card');
+    if (card) { writeCard(card, 0); card.removeAttribute('data-section-landed'); }
+    Array.prototype.forEach.call(document.querySelectorAll('#rsettings .rs-pane'), function (pn) { pn.style.paddingBottom = ''; });
+  }
+  function showSection(section) {
+    if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
+    sectionAsk = null;
+    var card0 = document.querySelector('#rsettings .rs-card');
+    if (card0) card0.removeAttribute('data-section-landed');   // a new ask's landing is its own: the earlier mark goes with the earlier ask
+    if (typeof section !== 'string' || !section) return;
+    var sec = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="' + section + '"]');
+    var card = document.querySelector('#rsettings .rs-card');
+    var pane = sec && sec.closest('.rs-pane');
+    if (!sec || !card || !pane) return;
+    var go = function () {
+      var top0 = card.scrollTop;   // where the frame started: the room drop below clamps the card, and the landing is measured against this, not the clamp
+      pane.style.paddingBottom = '';   // measure the pane's own end: a re-ask on an already roomed pane must not read its earlier room
+      var cs = getComputedStyle(card), padT = parseFloat(cs.paddingTop) || 0, padB = parseFloat(cs.paddingBottom) || 0;
+      // room at the pane's END so the head can reach the top even when the section is the last thing in the pane (round two,
+      // LOW 1: the scroll used to stop at the card's end with the head far below the padding): the pane grows by what is
+      // missing below the section, cleared on close, a plain open or a pill change. The room is sized to the card's CAP
+      // (max-height, 88vh, a content box), not its current height: below the cap the card is content-driven and grows
+      // under any room added, so the head stopped short on tall windows (152px off at 1200px, measured by the review);
+      // sized to the cap, the card lands exactly there in one pass, whatever the window. A second measurement after the
+      // write takes up rounding, or a cap the computed style did not resolve to pixels.
+      var below = function () { return pane.getBoundingClientRect().bottom - sec.getBoundingClientRect().top; };
+      var land = function () {
+        writeCard(card, card.scrollTop + sec.getBoundingClientRect().top - card.getBoundingClientRect().top - padT, top0);
+        card.setAttribute('data-section-landed', section);   // the landing's mark: what a lab waits for before it measures (never a delay)
+      };
+      var capH = parseFloat(cs.maxHeight);
+      if (!isFinite(capH) || capH <= 0) { pane.style.paddingBottom = ''; land(); return; }   // no cap (not this sheet's case: the card is capped at 88vh): the card fits its content, nothing to room for
+      // the cap is a BORDER box on the served page (feed.css: every element is border-box), so the content the room fills is the
+      // cap less the paddings and borders; under a content box (no such rule) the cap is the content itself
+      var edges = cs.boxSizing === 'border-box' ? padT + padB + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0) : 0;
+      var content = capH - edges;
+      var missing = content - below();
+      pane.style.paddingBottom = missing > 0 ? Math.ceil(missing) + 'px' : '';
+      var short = (card.clientHeight - padT - padB) - below();   // measured ONCE after the write: rounding
+      if (short > 0) pane.style.paddingBottom = Math.ceil(Math.max(missing, 0) + short) + 'px';
+      land();
+    };
+    var ask = {};
+    sectionAsk = ask;
+    if (card.clientHeight > 0) go();   // laid out already: an open panel, or a host that never hides this document
+    // The ask STANDS until the user's own input scrolls the card, a pill changes the pane, or the panel closes: the scroll
+    // re-lands the head whenever the pane's or the card's size changes, whatever scroll events came before (a browser's scroll
+    // anchoring nudge, the clamp a taller window applies: neither is the user's). Two reasons, both events, never timers: in the shell this document
+    // sits in an iframe that is display:none until the shell hears the settings-open message feedFull just posted, and
+    // a scroll set on a box with no size clamps to zero (the served lab measured 0 on the first open), so the card
+    // gaining a size is the first landing; and a layout that settles AFTER that first size (a web font arriving, a list
+    // filling) moves everything above the section, so the head slid off the top on a slow runner (CI, 2026-09-13: neither
+    // at the top nor at the end). Only a size change re-lands it, so a picker opening over the pane moves nothing.
+    if (typeof ResizeObserver !== 'function') return;
+    sectionRO = new ResizeObserver(function () { if (sectionAsk === ask && card.clientHeight > 0) go(); });
+    sectionRO.observe(card);
+    sectionRO.observe(pane);
+  }
+  // The USER's scroll ends a standing section ask; the browser's never does. A scroll event is the user's only with INPUT
+  // evidence: a wheel, a key or a touch within the settle rule's window before it, or a pointer holding the scroller's gutter
+  // (a thumb drag), the chat's own rule (landing-settle.ts gestureEvidence). A scroll delta is no evidence: Chrome's scroll
+  // anchoring moved the card 2px after a late layout settle, and a taller window's clamp moved it 143px, and both were read as
+  // the user's, killing the ask (the follow-up's review, 2026-09-13).
+  // The inputs are read on the WINDOW with capture, the way the chat reads them (render.ts settleInput), never on the card
+  // (round three, MEDIUM): the card has no tabindex, so a key scroll after a click in it targets BODY and never reached a
+  // listener on the card; the ask stood and the next size change threw the user's scroll away. Scoped to the card: a wheel, a
+  // touch or a press by its target's containment; a key by the card being the scroll focus (the user's last press fell in it,
+  // or the focus sits in it), and never while a field has the focus (typing scrolls the field, not the card).
+  (function () {
+    var card = document.querySelector('#rsettings .rs-card');
+    if (!card) return;
+    var inputAt = 0, held = false, pressedIn = false;
+    var inCard = function (e) { return e.target instanceof Node && card.contains(e.target); };
+    // a FIELD is an element that consumes the scroll keys (Page, Home, End, the arrows): a text-like input, a textarea, a select, a
+    // contenteditable. A checkbox, radio, button or range input is none (round four, MEDIUM 2: PageUp after a click on a checkbox row
+    // scrolled the card with no evidence counted, and the next size change re-landed over the user's scroll)
+    var NOT_FIELDS = { checkbox: 1, radio: 1, button: 1, submit: 1, reset: 1, range: 1, color: 1, file: 1, image: 1 };
+    var inField = function () { var a = document.activeElement; if (!a) return false;
+      if (a.tagName === 'INPUT') return !NOT_FIELDS[String(a.getAttribute('type') || 'text').toLowerCase()];
+      return a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || !!a.isContentEditable; };
+    var keyFocus = function () { var a = document.activeElement; return pressedIn || (!!a && a !== document.body && card.contains(a)); };
+    var onInput = function (e) {
+      if (e.type === 'keydown') { if (inField() || !keyFocus()) return; }
+      else if (e.type === 'pointerdown') {
+        pressedIn = inCard(e);
+        if (!pressedIn) return;
+        // the hold latches on the scroller's GUTTER only (round three, LOW 2): a press whose target is the card's own padding is a
+        // press like any other, with the timed window, not a grab that outlives it
+        var r = card.getBoundingClientRect();
+        // offsets from the PADDING box (the border box less clientLeft and clientTop), the box clientWidth and clientHeight measure
+        // (round four, LOW 2: measured from the border box, the innermost content pixel column read as the gutter)
+        if (LS.scrollerGrab(false, e.clientX - r.left - card.clientLeft, e.clientY - r.top - card.clientTop, card.clientWidth, card.clientHeight)) held = true;
+      }
+      else if (!inCard(e)) return;
+      inputAt = performance.now();
+    };
+    ['wheel', 'keydown', 'touchstart', 'pointerdown'].forEach(function (k) { window.addEventListener(k, onInput, { capture: true, passive: true }); });
+    window.addEventListener('pointerup', function () { held = false; });
+    window.addEventListener('pointercancel', function () { held = false; });
+    // a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round three, LOW 2; the chat's
+    // round four): the hold ends with the page's focus or visibility as well, or a lost release would make the next scroll of
+    // any origin end the ask
+    window.addEventListener('blur', function () { held = false; });
+    document.addEventListener('visibilitychange', function () { held = false; });
+    card.addEventListener('scroll', function () {
+      if (sectionWrote) { sectionWrote = false; return; }   // the ask's own write echoing (one event per moving write): never the user's
+      if (!sectionAsk || !LS.gestureEvidence(inputAt, performance.now(), held)) return;
+      if (sectionRO) { sectionRO.disconnect(); sectionRO = null; }
+      sectionAsk = null;
+      card.removeAttribute('data-section-landed');
+    });
+  })();
+
+  // ── THE WIDGET ROWS (T379) ── one per registered widget: the live demo (a miniature tab rendering the widget over a
+  // synthetic status through the SAME render the strip uses), the name and what it does, the sliding switch, and the
+  // widget's own options as house pickers. Built once; every paint re-fills in place (click-safe). A change writes
+  // settings.tabWidgets and the tabCtx mirror through save(), and the strip repaints on the romp:settings signal.
+  var wHost = document.getElementById('rs-widgets');
+  var wRows = {};
+  function widgetPrefs(s) { return TW.tabWidgetPrefs(s.tabWidgets, s.tabCtx); }
+  function saveWidgets(prefs) { var s = load(); s.tabWidgets = prefs; s.tabCtx = TW.tabCtxOfPrefs(prefs); save(s); paintWidgets(); }
+  function widgetOptRowHTML(o) { return '<span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--menu-fg, #ccc)">' + o.name + '</span>'; }
+  function buildWidgets() {
+    if (!wHost || wHost.children.length) return;
+    TW.tabWidgets().forEach(function (w) {
+      var row = document.createElement('div'); row.className = 'rs-widget'; row.setAttribute('data-widget', w.id);
+      var demo = document.createElement('span'); demo.className = 'rs-widget-demo';
+      var name = document.createElement('span'); name.className = 'rs-widget-name';
+      var b = document.createElement('b'); b.textContent = w.label; name.appendChild(b);
+      var d = document.createElement('span'); d.className = 'rs-sub'; d.textContent = w.description; name.appendChild(d);   // the panel's idiom: the description is the row's hover popover
+      var sw = document.createElement('button'); sw.type = 'button'; sw.className = 'rs-switch'; sw.setAttribute('role', 'switch'); sw.setAttribute('aria-label', w.label);
+      sw.addEventListener('click', function (e) { e.stopPropagation(); var prefs = widgetPrefs(load()); prefs.on[w.id] = !TW.widgetOn(prefs, w); saveWidgets(prefs); });
+      var opts = document.createElement('span'); opts.className = 'rs-widget-opts';
+      var paints = [];
+      (w.options || []).forEach(function (o) {
+        var wrap = document.createElement('span'); wrap.className = 'rs-widget-opt'; wrap.style.position = 'relative'; wrap.setAttribute('data-opt', o.key); wrap.title = o.label;
+        opts.appendChild(wrap);
+        var drop = housePick(wrap, 'wopt-' + w.id + '-' + o.key, widgetOptRowHTML, function (id) { var prefs = widgetPrefs(load()); prefs.opts[w.id] = prefs.opts[w.id] || {}; prefs.opts[w.id][o.key] = id; saveWidgets(prefs); });
+        paints.push(function (prefs) { if (drop) drop(o.choices.map(function (c) { return { id: c.value, name: c.label }; }), TW.widgetOpts(prefs, w)[o.key]); });
+      });
+      row.appendChild(demo); row.appendChild(name); row.appendChild(sw); row.appendChild(opts);
+      wHost.appendChild(row);
+      wRows[w.id] = { row: row, demo: demo, sw: sw, paints: paints };
+    });
+  }
+  function paintWidgets() {
+    buildWidgets();
+    var prefs = widgetPrefs(load());
+    TW.tabWidgets().forEach(function (w) {
+      var r = wRows[w.id]; if (!r) return;
+      var on = TW.widgetOn(prefs, w);
+      r.sw.classList.toggle('on', on); r.sw.setAttribute('aria-checked', on ? 'true' : 'false');
+      r.row.classList.toggle('rs-widget-off', !on);
+      // the demo: a miniature tab, the widget's node where the strip would put it (before the name or after it)
+      var tab = document.createElement('span'); tab.className = 'tab';
+      var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web';
+      var node = TW.renderWidgetDemo(w, prefs);
+      if (w.slot === 'before') { if (node) tab.appendChild(node); tab.appendChild(label); }
+      else { tab.appendChild(label); if (node) tab.appendChild(node); }
+      r.demo.replaceChildren(tab);
+      r.paints.forEach(function (fn) { fn(prefs); });
+    });
+  }
   // The remaining native selects sweep onto the same builder (the user 2026-08-27, closing the
   // 3-house/3-native split the gauge migration left): a generic adapter over ANY hidden select —
   // options snapshot from sel.options (so the effort selects, whose options arrive from /models
@@ -534,7 +745,6 @@ function initGear(post, opts) {
   }
   selectPick(upm, 'margin-top:5px');
   selectPick(bk, 'margin-top:5px');
-  selectPick(fl, 'margin-top:5px');
   selectPick(je, 'flex:0 0 auto;width:45%');
   selectPick(ie, 'flex:0 0 auto;width:45%');
   selectPick(jc, 'flex:0 0 auto;width:45%');   // T277: the concurrency select wears the same facade as the effort picks
@@ -542,8 +752,6 @@ function initGear(post, opts) {
   selectPick(cme, 'flex:0 0 auto;width:45%');
   jix.addEventListener('change', function () { var s = load(); s.showIndexJudges = jix.checked; save(s); });
   jtr.addEventListener('change', function () { var s = load(); s.showTriageJudges = jtr.checked; save(s); });
-  if (cg) cg.addEventListener('change', function () { var s = load(); s.collapseGaps = cg.checked; save(s); });
-  if (ao) ao.addEventListener('change', function () { var s = load(); s.activeOnly = ao.checked; save(s); });
   if (fc) fc.addEventListener('change', function () { var s = load(); s.collapsed = fc.checked; save(s); });
   // Every gt-stamped post below mints its stamp through the gesture clock (gesture-clock.js): epoch
   // ms at the click, lifted above the highest stamp this page has seen for that store — fill()
@@ -1364,16 +1572,19 @@ function initGear(post, opts) {
       document.body.classList.remove('rs-lifted'); document.body.classList.remove('rs-pane-gone');
       clearPaneVars();
       window.removeEventListener('resize', onRsResize); } }
-  function closeSettings() { p.hidden = true; setModalCls(false); feedFull(false); }
-  function openSettings() { if (!p.hidden) { closeSettings(); return; }   // the opener toggles the modal
+  function closeSettings() { clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
+  function openSettings(tab, section) {
+    if (tab === 'appearance' && !section) section = 'appearance';   // the former Appearance tab is General's section (T404)
+    if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); if (section) showSection(section); else clearSectionScroll(); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)
+    selectTab(tab);
     // Signal the SHELL first, then measure (the picker's order, adopted 2026-08-09): feedFull posts
     // settings-open, which is what un-hides #feed-pane when the feed is toggled off — measuring first
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fl) fl.value = s.fileLinkPane === 'pane' ? 'pane' : 'chat'; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); if (tc) tc.value = tabCtxMode(s.tabCtx); tcPaint(); csPaint(); ttPaint(); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
-  window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(); });
+  window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin
   // document and calls this synchronously): close the modal and say so, unless one of its own dialogs is up
   // (the login card, an open house dropdown), which the document's own Escape handlers close one level at a

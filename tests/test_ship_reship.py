@@ -178,6 +178,8 @@ def kernel_env(lab, claude, dist, port, token, **seams):
                ROMP_SERVE_TOKEN=token, ROMP_KERNEL_PORT=str(port),
                ROMP_DIST_DIR=dist,
                ROMP_MODEL_CATALOG="off",     # hermetic: the T222 catalog fetch must never reach the network
+               ROMP_UPDATE_CHECK="off",      # hermetic: the update check reads the release remote's tags over the network, and a
+               #   newer release raises the shell's update banner over the page under test (CI, 2026-09-13)
                ROMP_POSTAL_PORT=str(_free_port()), ROMP_POSTAL_PEERS="0", ROMP_POSTAL_CLIENT_ONLY="1",
                ROMP_POSTAL_HERMETIC="1")   # the port above is this run's own: the bus honours it under a test (2026-09-11)
     env.update(seams)
@@ -525,7 +527,7 @@ class LabKernelEnv(unittest.TestCase):
     # what the lab itself puts in: its roots, the serve seams, and a postal bus of its own that is never started
     OWN = {"XDG_STATE_HOME": os.path.join(LAB, "xdg"), "CLAUDE_CONFIG_DIR": os.path.join(LAB, "claude"),
            "ROMP_MANAGER_PORT": "1", "ROMP_KERNEL_NO_OPEN": "1", "ROMP_SERVE_TOKEN": "testtok",
-           "ROMP_KERNEL_PORT": "4321", "ROMP_DIST_DIR": os.path.join(LAB, "dist"), "ROMP_MODEL_CATALOG": "off",
+           "ROMP_KERNEL_PORT": "4321", "ROMP_DIST_DIR": os.path.join(LAB, "dist"), "ROMP_MODEL_CATALOG": "off", "ROMP_UPDATE_CHECK": "off",
            "ROMP_POSTAL_PEERS": "0", "ROMP_POSTAL_CLIENT_ONLY": "1", "ROMP_POSTAL_HERMETIC": "1"}
     # the port a kernel with no ROMP_POSTAL_PORT of its own dials: the machine's bus, when a session's shell names it
     MACHINE_BUS_PORT = "25302"

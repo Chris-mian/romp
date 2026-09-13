@@ -32,6 +32,23 @@ test("an identified copy that vanished from the queue is held until the atom wit
   assert.deepEqual(m2.held, []);
 });
 
+test("a held copy under the kernel's to-do card (or any overlay card) is released by its landing: the anchor is the last TRANSCRIPT uuid, never the card's", () => {
+  // T389 review (executed on the served page at the base): with a to-do card after the transcript, the hold anchored on the card's
+  // word uuid, read the events after it (none: the overlays are last), never saw the landing, and the landing card stood beside
+  // the landed row for the rest of the turn
+  const todo: HeldEvent = { kind: "todo", uuid: "todo" };
+  const withOverlay = [...base, todo];
+  assert.equal(lastKernelUuid(withOverlay), "a1", "the anchor skips the to-do card");
+  assert.equal(lastKernelUuid([...base, { kind: "apiError", uuid: "apiError" }]), "a1", "…and the API-error card");
+  assert.equal(lastKernelUuid([...base, { kind: "queued", uuid: "queued" }, todo]), "a1", "…and the queued group under it");
+  let m = reconcileHeld(fresh(), withOverlay, [{ md: mail, qid: "echo:m1", qts: 5, romp: true }]);
+  assert.equal(m.anchor, "a1");
+  m = reconcileHeld(m, withOverlay, []);                                                        // push 1: the copy left the queue, nothing landed → held
+  assert.deepEqual(m.held.map((h) => [h.qid, h.since]), [["echo:m1", "a1"]]);
+  m = reconcileHeld(m, [...base, { kind: "user", uuid: "am1", md: mail, qid: "echo:m1" }, todo], []);   // push 2: the record lands, the card still last
+  assert.deepEqual(m.held, [], "released: the landing sits after the transcript anchor, before the card");
+});
+
 test("a copy that vanishes and lands in the SAME push is released, never held (the anchor is the previous push's)", () => {
   const m = reconcileHeld(withCard("echo:m1"), [...base, { kind: "user", uuid: "am1", md: mail, qid: "echo:m1" }], []);
   assert.deepEqual(m.held, [], "its landing sits after the previous push's tail: released");
@@ -105,7 +122,13 @@ test("our own bubble and hidden copies never become held copies; a landing is a 
   assert.deepEqual(m.held.map((h) => h.qid), ["echo:m1"]);
   assert.equal(landsCopy({ kind: "user", uuid: "echo:m1", md: mail }, { md: mail, qid: "echo:m1" }), false, "the kernel's echo is not a landing");
   assert.equal(landsCopy({ kind: "user", uuid: "optimistic:1", md: mail }, { md: mail }), false, "our bubble is not a landing");
-  assert.equal(landsCopy({ kind: "user", uuid: "u9", md: mail }, { md: mail, qid: "echo:m1" }), false, "an id-bearing copy needs its id, not its text");
+  // identity decides where the RECORD carries one (T389): a record the kernel paired to another id is not this copy's,
+  // whatever its words; a record the kernel could not pair (no feed ledger, a copy that left the queue by another door)
+  // lands the identified copy by its words, as the pending-send rule reads it
+  assert.equal(landsCopy({ kind: "user", uuid: "u9", md: mail, qid: "echo:zz" }, { md: mail, qid: "echo:m1" }), false, "paired to another id: not this copy's, whatever its words");
+  assert.equal(landsCopy({ kind: "user", uuid: "u9", md: mail, qids: ["echo:zz", "echo:yy"], blocks: [mail, "other"] }, { md: mail, qid: "echo:m1" }), false, "every block paired to other ids: not this copy's");
+  assert.equal(landsCopy({ kind: "user", uuid: "u9", md: mail }, { md: mail, qid: "echo:m1" }), true, "an unpaired record lands the identified copy by its words (T389)");
+  assert.equal(landsCopy({ kind: "user", uuid: "u9", md: "other words" }, { md: mail, qid: "echo:m1" }), false, "…only its own words");
   assert.equal(landsCopy({ kind: "user", uuid: "u9", md: mail }, { md: mail }), true);
   assert.equal(lastKernelUuid([...base, { kind: "compacting" }, { kind: "queued" }]), "a1", "a uuid-less marker or a queued group is no anchor");
 });

@@ -308,9 +308,19 @@ class ExitThenBoot(unittest.TestCase):
             self.assertEqual(got, 128, "the agent file was read as a TAIL: its 64 guard bytes checked and captured again, nothing of its "
                                        "content, since nothing was appended (its size %d; bytes by class in this boot: %s)" % (agent_size, report))
             self.assertGreaterEqual(perf["restoredFolds"].get("agentGist", 0), 1, "the gist fold resumed from its recorded state: %s" % perf["restoredFolds"])
-            for name in ("statesOverlay", "lastState", "machineCut"):   # the folds the feed and the busy hint run per session
-                self.assertGreaterEqual(perf["restoredFolds"].get(name, 0), len(ALL),
-                                        "the %s fold resumed for every session's states log: %s" % (name, perf["restoredFolds"]))
+            self.assertGreaterEqual(perf["restoredFolds"].get("statesOverlay", 0), len(ALL),   # the fold the feed runs per session
+                                    "the statesOverlay fold resumed for every session's states log: %s" % perf["restoredFolds"])
+            walk = self._get(p2, "/perf")["memos"].get("nudgeWalk") or {}
+            for name in ("lastState", "machineCut"):     # the folds the nudge walk's look runs per session (T401 (2)): at this
+                #                                          second boot the walk SKIPS every session whose ten files are unchanged
+                #                                          since the first kernel's last completed look (the tick memo persisted at
+                #                                          its exit), so the fold resumes only for the sessions it looked at; every
+                #                                          session is either looked at (the fold resumed) or skipped by the gate
+                self.assertGreaterEqual(perf["restoredFolds"].get(name, 0) + walk.get("skippedParses", 0), len(ALL),
+                                        "the %s fold resumed for every session the walk looked at, the rest skipped by the parse gate: %s, walk %s"
+                                        % (name, perf["restoredFolds"], walk))
+            self.assertGreaterEqual(walk.get("skippedParses", 0), len(ALL),
+                                    "the second boot's walk skipped every unchanged session on the memo the first kernel left: %s" % walk)
             # what stays whole is asserted, not hidden: the leaf transcripts and their states logs, which the parse
             # reads (stage 4's), cost their whole size plus the guard check the folds' restore made on each
             for sid, sp in self.states_files.items():

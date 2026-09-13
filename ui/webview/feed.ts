@@ -70,6 +70,8 @@ interface AskTreeNode {
   followupPending?: boolean;                                     // this sub was optimistically reopened by a per-sub follow-up → "↻ Followed up" chip (kernel flatten, judges 047264f)
   summary?: string | null;                                       // the DISTILLER's key takeaway for a completed goal (artifact or 1-3 sentences) → the modal's auto-line for a DONE node (kernel flatten 78fc97b)
   blockSummary?: string | null;                                  // the BLOCK-distiller's decision brief for a blocked goal → the modal's auto-line for a BLOCKED node (kernel 466393c); null until produced
+  summaryAnchorUuid?: string | null;                            // the brief/summary line's own landing (kernel T388): the text atom that carries it
+  summaryAnchorQuote?: string | null;                           // …and its located span, sent as the click's quote
   relayNote?: string | null;   // a far host still holds a relayed question after its wait ended (kernel relayCarried) → its own dim line under the brief, never a brief paragraph
   trgb?: [number, number, number];                               // last-activity recency tint (timestamp)
   cleared?: boolean;                                             // user-cleared sub (nodeOverride op:clear) → struck-through faded row + "cleared" chip; the mark stays tied to status (box = done, the user 2026-07-26)
@@ -3295,7 +3297,18 @@ function renderTreeNode(box: HTMLElement, it: AskItem, node: AskTreeNode, byId: 
     // it follows to where the node resolved (its work anchor, the SAME target as the node's mark/time zones).
     // Wired on EITHER anchor: goWork itself falls to the prompt anchor when the work one is cold-null, so
     // gating on anchorUuid alone dead-ended the line during a cold beat (the user 2026-07-20).
-    if (!repeat && (node.anchorUuid || node.promptAnchorUuid)) {
+    // The brief's OWN landing first (T388): the kernel resolves the text atom that carries the line (a validated
+    // citation, else the opening sentence located in the newest segment's turn) and its span, so the click never
+    // lands on the node's work anchor, which for a long turn can be a tool call inside a collapsed group.
+    if (!repeat && node.summaryAnchorUuid) {
+      sum.classList.add("ftree-summary-link");
+      sum.title = "jump to where this was written";
+      // the ROW's own session, never the card's (navSidOf, the same resolver goWork uses): a serving-folded worker
+      // row inside the sender's card resolved its landing in the worker's parse, and the worker's atom sent to
+      // the sender's chat could only honest-fail (the verifier's first round)
+      const su = node.summaryAnchorUuid, sq = node.summaryAnchorQuote || undefined, ss = navSidOf(it, node);
+      sum.onclick = (ev: Event) => { ev.stopPropagation(); focusEcho(ss); vscodeApi?.postMessage({ type: "showOnTimeline", itemId: node.id || it.turnId, sid: ss, t: node.mt ?? node.t, anchor: "work", anchorUuid: su, quote: sq }); };
+    } else if (!repeat && (node.anchorUuid || node.promptAnchorUuid)) {
       sum.classList.add("ftree-summary-link");
       sum.title = "jump to where this was written";
       sum.onclick = goWork;

@@ -195,7 +195,12 @@ reorders the tags on every surface (the timeline's tag table shows the same orde
 a tab into another group, right-click it and pick **Move to <tag>** under **Tags**: one click
 adds that tag and drops the tag of the group you right-clicked it in, leaving its other tags alone. The row's
 **+** adds the tag without moving the tab. **Group tabs by tag**, at the foot of the tag
-button's menu, turns the sections off for this browser. Every group starts on its own row; turning off
+button's menu, turns the sections off for this browser. The Sessions pane has the same
+sections: **Group by tag** in its Filter menu (off until you turn it on, per browser) lays the
+lanes out one section per tag in the same order, each session under every tag it carries and
+the untagged sessions behind a divider, with the tag's chip, the caret and the count on a row
+of its own; a section folded in either place is folded in both, and while grouped the lanes
+follow the tag order (dragging a lane pans, it does not reorder). A session reached from a card or the chat while its section is folded unfolds that section, in the strip too, and the arrow keys walk the rows on screen. Every group starts on its own row; turning off
 the gear's **One tag group per row in the tab strip** lets the groups follow one another across the
 strip and wrap as they need, with the untagged sessions behind a thin divider, so a strip with many
 tags stays short.
@@ -315,16 +320,15 @@ find past work: the search box reaches every session, live or closed.
 
 The Files pane holds the file viewer in a column of its own, beside the chat
 and the feed, so an open file covers neither. While the pane is open, a file
-link clicked in the chat opens in it. When it is closed and the Files control
-is on, the gear's **File links open in** setting decides where a link opens:
-over the pane you clicked (the default), or in the Files pane, which then
-opens and stays open; with the control off (the default), a link always opens
-over the pane you clicked. On a phone, closing the file takes you back to the
+link clicked in the chat opens in it. When it is closed, a link opens over the
+pane you clicked; there is no setting to decide otherwise, the open pane is the
+rule. The Files control (Settings, General, Panes) shows or hides the pane's
+toggle; it is off by default. On a phone, closing the file takes you back to the
 tab you came from. The folder
 shown under the chat (the session's working directory), the **Directory** row
 of the **System context** card and **Browse files** on a tab's right-click menu
-open a listing of that folder by the same rule: in this pane while it is open
-or when the setting names it, otherwise over the chat. Pick a file in the
+open a listing of that folder by the same rule: in this pane while it is open,
+otherwise over the chat. Pick a file in the
 listing and it opens where the listing is. Selecting a passage in the viewer
 puts the quote in the chat's composer, as it does from the viewer over the
 chat. When no file is open, the pane lists the files most recently opened in

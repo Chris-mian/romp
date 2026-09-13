@@ -444,16 +444,20 @@ class SidecarCrashSafety(_Base):
     meaning of None (the callers' no-propagation gates silently skip the fan-out on it)."""
 
     def _crash_on_write(self, n):
-        """Patch Path.write_text to raise OSError on call number `n` from now (both the raw
-        write_text shape and _atomic_write's temp-file write funnel through it)."""
+        """Patch Path.write_text to raise OSError on write number `n` of THIS STORE'S files from now (the
+        judge-model value and its .gt sidecar, whose _atomic_write temps carry the file's name); writes to
+        any other path are passed through uncounted. A count over every write let a stray write by another
+        module's lingering kernel thread move the crash from the value onto the sidecar in a full-suite run,
+        so the old stamp kept guarding and the stale gesture applied (one red, 2026-09-13)."""
         import pathlib
         counter = {"n": 0}
         orig = pathlib.Path.write_text
 
         def failing(p, *a, **k):
-            counter["n"] += 1
-            if counter["n"] == n:
-                raise OSError("simulated crash between the store's two writes")
+            if str(pathlib.Path(p).name).startswith("judge-model"):
+                counter["n"] += 1
+                if counter["n"] == n:
+                    raise OSError("simulated crash between the store's two writes")
             return orig(p, *a, **k)
 
         pathlib.Path.write_text = failing
@@ -478,6 +482,25 @@ class SidecarCrashSafety(_Base):
         self.assertEqual(km._set_judge_model("fable", gt=T_NEW + 1), T_NEW + 1)
         self.assertEqual((km.jd.STATE / "judge-model").read_text(), "fable")
         self.assertEqual(km._judge_state_gt("judge-model"), T_NEW + 1)
+
+    def test_a_stray_write_by_another_thread_never_moves_the_crash_onto_the_sidecar(self):
+        # the full suite runs this module after others whose kernel threads may still write state files; a
+        # crash stub that counts EVERY write then fires on the sidecar instead of the value, the old stamp keeps
+        # guarding, and the stale gesture applies (romp_metrics, one full-suite red, 2026-09-13). The stub keys on
+        # the store's own files, so a stray write elsewhere never moves the crash.
+        self.assertEqual(km._set_judge_model("opus", gt=T_OLD), T_OLD)
+        restore = self._crash_on_write(2)
+        try:
+            (km.jd.STATE / "some-other-state.json").write_text("{}")   # another thread's write, mid-sequence
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertIsNone(km._set_judge_model("fable", gt=T_NEW), "the interrupted pick reports not-applied")
+        finally:
+            restore()
+        t_mid = (T_OLD + T_NEW) // 2
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(km._set_judge_model("haiku", gt=t_mid),
+                              "a stale gesture must never apply, whatever a crash left behind, whatever else was written meanwhile")
+        self.assertNotEqual((km.jd.STATE / "judge-model").read_text(), "haiku")
 
     def test_the_crash_errs_toward_stand_down_never_inversion(self):
         # the state a crash may leave: the STAMP advanced, the VALUE kept — never the reverse

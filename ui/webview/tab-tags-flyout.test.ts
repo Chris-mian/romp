@@ -38,26 +38,29 @@ test("diagonal tolerance: entering either surface cancels the close; leaving bot
   assert.doesNotMatch(WIRE, /window\.addEventListener/, "no window listener: the harness slices count them");
 });
 
-test("the Billing flyout's placement (T380 review): prefer right, fall left with room, else drop below the row inside the viewport; no Automatic radio for an older kernel", () => {
-  const BILL = RENDER.slice(RENDER.indexOf("const openBillingFly = (): HTMLElement | null => {"), RENDER.indexOf('wireFlyout(menu, item, ".ctx-sub-billing"'));
-  assert.match(BILL, /if \(ir\.right \+ 2 \+ sr\.width <= window\.innerWidth - 8\) left = Math\.round\(ir\.right \+ 2\);/, "prefer right");
-  assert.match(BILL, /else if \(ir\.left - 2 - sr\.width >= 8\) left = Math\.round\(ir\.left\) - sr\.width - 2;/, "fall left only with room");
+test("the flyouts' placement (T380 review, one helper since T387): prefer right, fall left with room, else drop below the row inside the viewport", () => {
+  const PLACE = RENDER.slice(RENDER.indexOf("function placeFlyBeside("), RENDER.indexOf("\n}\n", RENDER.indexOf("function placeFlyBeside(")));
+  assert.match(PLACE, /if \(ir\.right \+ 2 \+ sr\.width <= window\.innerWidth - 8\) left = Math\.round\(ir\.right \+ 2\);/, "prefer right");
+  assert.match(PLACE, /else if \(ir\.left - 2 - sr\.width >= 8\) left = Math\.round\(ir\.left\) - sr\.width - 2;/, "fall left only with room");
   // no room either side: below the row when it fits, else above the row's top, and only then clamped (round 3: a short
   // window's clamp pulled the drop-below back over the row)
-  assert.match(BILL, /left = Math\.max\(8, Math\.min\(Math\.round\(ir\.left\), window\.innerWidth - sr\.width - 8\)\);/, "clamped inside the viewport horizontally");
-  assert.match(BILL, /if \(ir\.bottom \+ 2 \+ sr\.height <= window\.innerHeight - 4\) top = ir\.bottom \+ 2;/, "below the row when it fits");
-  assert.match(BILL, /else if \(ir\.top - 2 - sr\.height >= 0\) top = ir\.top - 2 - sr\.height;/, "else above the row's top");
-  assert.match(BILL, /else top = Math\.max\(0, Math\.min\(ir\.top, window\.innerHeight - sr\.height - 4\)\);/, "only when neither fits, clamped");
-  assert.doesNotMatch(BILL, /Math\.max\(0, Math\.min\(ir\.right \+ 2, window\.innerWidth - sr\.width - 4\)\)/, "the old slide-over-the-row rule is gone");
-  assert.match(BILL, /const olderKernel = avail\.defaultExplicit === undefined;/);
-  // the Default group offers the machine's own login and the key only (T346 beside T380): the kernel takes no stored login
-  // as the machine default yet, and its scoped arm refuses that value by name
-  assert.match(BILL, /const machineChoices = choices\.filter\(\(c\) => c\.value === "login" \|\| c\.value === "key"\);/, "a stored login is not a machine-default radio yet");
-  assert.match(BILL, /const radios = \[\.\.\.machineChoices\.map\(/, "the radios come from the filtered list");
-  assert.match(BILL, /\.\.\.\(olderKernel \? \[\] : \[\{ label: `Automatic \(\$\{autoWord\}\)`, value: "auto", why: "", cur: !explicit \}\]\)/, "an older kernel that takes no auto gets no Automatic radio");
+  assert.match(PLACE, /left = Math\.max\(8, Math\.min\(Math\.round\(ir\.left\), window\.innerWidth - sr\.width - 8\)\);/, "clamped inside the viewport horizontally");
+  assert.match(PLACE, /if \(ir\.bottom \+ 2 \+ sr\.height <= window\.innerHeight - 4\) top = ir\.bottom \+ 2;/, "below the row when it fits");
+  assert.match(PLACE, /else if \(ir\.top - 2 - sr\.height >= 0\) top = ir\.top - 2 - sr\.height;/, "else above the row's top");
+  assert.match(PLACE, /else top = Math\.max\(0, Math\.min\(ir\.top, window\.innerHeight - sr\.height - 4\)\);/, "only when neither fits, clamped");
+  assert.doesNotMatch(PLACE, /Math\.max\(0, Math\.min\(ir\.right \+ 2, window\.innerWidth - sr\.width - 4\)\)/, "the old slide-over-the-row rule is gone");
+  const BILL = RENDER.slice(RENDER.indexOf("const openBillingFly = (): HTMLElement | null => {"), RENDER.indexOf('wireFlyout(menu, item, ".ctx-sub-billing"'));
+  assert.match(BILL, /placeFlyBeside\(item, sub\);/, "the Billing flyout rides the helper…");
+  assert.match(BILL, /placeFlyBeside\(setDef, d\);/, "…and so does its nested default submenu (T387)");
+  assert.match(BILL, /if \(pickable\.length > 1 && avail\.default && avail\.defaultExplicit !== undefined\) \{/, "an older kernel that takes no auto and marks no default gets no Set default billing entry");
+  assert.match(BILL, /if \(explicit\) \{[\s\S]*?auto\.textContent = "Automatic";/, "the way back to the helper rule, only while an explicit default stands");
+  // the Default flyout offers the machine's own login and the key only (T346 beside T380 and T387): the kernel takes no stored
+  // login as the machine default yet, and its scoped arm refuses that value by name
+  assert.match(BILL, /const defaultChoices = choices\.filter\(\(c\) => c\.value === "login" \|\| c\.value === "key"\);/, "a stored login is not a machine-default choice yet");
+  assert.match(BILL, /for \(const c of defaultChoices\) \{/, "the flyout lists the filtered choices");
   const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
-  assert.match(CSS, /\.ctx-sub-billing \{ max-width: 22em; \}/, "a menu's width: the note wraps");
-  assert.match(CSS, /\.ctx-sub-billing \.ctx-sub-head \.ctx-item-sub \{ display: block; white-space: normal; line-height: 1\.3; \}/);
+  assert.match(CSS, /\.ctx-sub-billing, \.ctx-sub-default \{ max-width: 22em; \}/, "a menu's width for both levels");
+  assert.doesNotMatch(CSS, /\.ctx-sub-head/, "the group head and its note are gone (T387)");
 });
 
 test("expansion follows the standing side rule and the caret faces right", () => {

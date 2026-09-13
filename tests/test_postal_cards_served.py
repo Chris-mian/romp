@@ -14,6 +14,7 @@ full width. With POSTAL_SHOTS=<dir> the driver also writes
 screenshots at 1000 px, 520 px, 340 px dark and 1000 px, 340 px light, named romp_chat-postal-cards-<theme>-<width>.png (the phone width: the head wraps, the ends first, the kind word and the icon on
 that line or the next as one unit, the gist last on its own full-width line, T313) and the light theme. Skips LOUDLY without the extension deps or a Playwright browser. SYNTHETIC
 fixtures only (the notes-api demo world: web / api / tests; host TESTHOST)."""
+import ast
 import json
 import os
 import re
@@ -35,6 +36,19 @@ ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
 sys.path.insert(0, HERE)
+
+
+def _palettes():
+    """Every colour the gear offers: PALETTES from kernel/palette.py, read as the literal table it is. Not an import: in a
+    whole-suite run another module binds `kernel` to the kernel's own module, so `kernel.palette` is not importable there
+    (CI's Python jobs went red on that collection error), and a load by path would put a state-resolving module's rules on
+    this file for a table that reads no state."""
+    src = Path(ROOT, "kernel", "palette.py").read_text()
+    node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "PALETTES")
+    return ast.literal_eval(node.value)
+
+
+PALETTES = _palettes()
 import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment: a list of names, never a copy of the runner's
 
 WEB = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -187,7 +201,7 @@ const measure = () => page.evaluate(() => {
     const kind = t.querySelector(".postal-kind");
     const icon = t.querySelector(".postal-delivery");
     const self = t.querySelector(".notice-src-self");
-    const peer = t.querySelector(".notice-src-chip:not(.notice-src-self)");
+    const peer = t.querySelector(".notice-src-peer");
     const cs = getComputedStyle(n);
     const glyph = t.querySelector(".notice-glyph");
     const ends = t.querySelector(".notice-src-ends");
@@ -229,7 +243,17 @@ const measure = () => page.evaluate(() => {
       state: icon ? icon.dataset.state : null, title: icon ? (icon.getAttribute("aria-label") || "") : null,
       iconRight: icon && n ? Math.round(n.getBoundingClientRect().right - icon.getBoundingClientRect().right) : null,
       peerText: peer ? peer.textContent : null, peerBg: peer ? getComputedStyle(peer).backgroundColor : null,
+      // T390: the ends are bold names inked in the identity colour, no chip (the class, the fill, the padding all gone)
+      peerColor: peer ? asRGB(getComputedStyle(peer).color) : null, peerWeight: peer ? getComputedStyle(peer).fontWeight : null,
+      peerPad: peer ? getComputedStyle(peer).paddingLeft : null, peerChip: !!(peer && peer.classList.contains("notice-src-chip")),
+      peerIdentity: peer ? peer.style.getPropertyValue("--peer-bg") : null,
+      // the ink the sheet asks for: the identity colour at the theme's lightness token (--peer-ink-l, read as computed), resolved
+      // by the canvas the same way the engine resolves the rule; the fold's floor makes it differ from the colour itself when darker
+      peerExpected: peer && peer.style.getPropertyValue("--peer-bg") ? asRGB("oklch(from " + peer.style.getPropertyValue("--peer-bg") + " " + getComputedStyle(peer).getPropertyValue("--peer-ink-l").trim() + " c h)") : null,
+      inkToken: peer ? getComputedStyle(peer).getPropertyValue("--peer-ink-l").trim() : null,
       selfText: self ? self.textContent : null, selfBg: self ? getComputedStyle(self).backgroundColor : null,
+      selfColor: self ? asRGB(getComputedStyle(self).color) : null, selfWeight: self ? getComputedStyle(self).fontWeight : null,
+      selfChip: !!(self && self.classList.contains("notice-src-chip")),
       selfWidth: self ? Math.round(self.getBoundingClientRect().width) : null,
       bg: asRGB(cs.backgroundColor), border: cs.borderTopStyle, provisional: n.classList.contains("queued-bubble"),
       opacity: cs.opacity,   // T337: the provisional dress fades by its colours, never by an element opacity
@@ -269,6 +293,47 @@ const composite = (washCss, pageCss) => {
   const w = nums(washCss), p = nums(pageCss), a = w[3];
   return "rgb(" + [0, 1, 2].map((i) => Math.round(w[i] * a + p[i] * (1 - a))).join(", ") + ")";
 };
+// T390 fold (the verifier's high): every colour of every palette the gear offers, set as the identity colour of BOTH ends on every
+// card (and as the incoming cards' wash hue, the peer's own hue under the peer's name), the worst contrast per palette against the
+// ground each name sits on. The fixture's own colours are put back afterwards.
+const sweep = (palettes) => page.evaluate((pals) => {
+  const asRGB = (css) => { if (!/^(oklch|oklab|color)\(/.test(css) || /\//.test(css)) return css;
+    const cv = document.createElement("canvas"); cv.width = cv.height = 1; const ctx = cv.getContext("2d");
+    ctx.fillStyle = css; ctx.fillRect(0, 0, 1, 1); const d = ctx.getImageData(0, 0, 1, 1).data;
+    return "rgb(" + d[0] + ", " + d[1] + ", " + d[2] + ")"; };
+  const nums = (css) => { const m = css.match(/color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)(?: \/ ([\d.]+))?\)/);
+    if (m) return [255 * +m[1], 255 * +m[2], 255 * +m[3], m[4] === undefined ? 1 : +m[4]];
+    const n = css.match(/\d+(\.\d+)?/g).map(Number); return [n[0], n[1], n[2], n.length > 3 ? n[3] : 1]; };
+  const composite = (wash, pg) => { const w = nums(wash), q = nums(pg), a = w[3]; return "rgb(" + [0, 1, 2].map((i) => Math.round(w[i] * a + q[i] * (1 - a))).join(", ") + ")"; };
+  const lum = (css) => { const m = nums(css).slice(0, 3).map((v) => v / 255).map((c) => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)); return 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]; };
+  const contrast = (a, b) => { const la = lum(a), lb = lum(b); return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05); };
+  const pg = document.createElement("div"); pg.style.background = "var(--bg)"; document.body.appendChild(pg); const pageBg = getComputedStyle(pg).backgroundColor; pg.remove();
+  const cards = Array.from(document.querySelectorAll(".turn-postal-service"));
+  const ends = cards.flatMap((t) => [t.querySelector(".notice-src-peer"), t.querySelector(".notice-src-self")].filter(Boolean));
+  const saved = ends.map((e) => e.style.getPropertyValue("--peer-bg"));
+  const savedRail = cards.map((t) => [t.style.getPropertyValue("--notice-rail"), t.style.getPropertyValue("--notice-dot")]);
+  const out = {};
+  for (const [name, colours] of Object.entries(pals)) {
+    let worst = null; let n = 0;
+    for (const col of colours) {
+      for (const e of ends) e.style.setProperty("--peer-bg", col);
+      for (const t of cards) if (t.classList.contains("postal-service-in")) { t.style.setProperty("--notice-rail", col); t.style.setProperty("--notice-dot", col); }
+      cards.forEach((t, ci) => {
+        const ground = composite(asRGB(getComputedStyle(t.querySelector(".notice")).backgroundColor), pageBg);
+        for (const e of [t.querySelector(".notice-src-peer"), t.querySelector(".notice-src-self")]) {
+          if (!e || e.getBoundingClientRect().width <= 12) continue;   // no end, or the collapsed own-end dot (no text)
+          const ink = asRGB(getComputedStyle(e).color); const ratio = contrast(ink, ground); n++;
+          if (!worst || ratio < worst.ratio) worst = { ratio: Math.round(ratio * 100) / 100, colour: col, card: ci, dir: t.classList.contains("postal-service-in") ? "in" : "out",
+                                                          end: e.classList.contains("notice-src-peer") ? "peer" : "self", ink, ground };
+        }
+      });
+    }
+    out[name] = { ...worst, measured: n, colours: colours.length };
+  }
+  ends.forEach((e, i) => saved[i] ? e.style.setProperty("--peer-bg", saved[i]) : e.style.removeProperty("--peer-bg"));
+  cards.forEach((t, i) => { for (const [k, v] of [["--notice-rail", savedRail[i][0]], ["--notice-dot", savedRail[i][1]]]) v ? t.style.setProperty(k, v) : t.style.removeProperty(k); });
+  return out;
+}, palettes);
 const results = {};
 let page;
 for (const pass of [{ width: 1000, theme: "dark" }, { width: 520, theme: "dark" }, { width: 340, theme: "dark" }, { width: 1000, theme: "light" }, { width: 340, theme: "light" }]) {
@@ -293,6 +358,11 @@ for (const pass of [{ width: 1000, theme: "dark" }, { width: 520, theme: "dark" 
   const boxOnPage = composite(m.boxBg, m.pageBg);
   // every kind word against the ground it actually sits on: the page, the box, or the provisional wash (T337)
   for (const c of m.cards) c.kindContrast = c.kind && c.kindColor ? contrast(c.kindColor, composite(c.bg, m.pageBg)) : null;
+  // T390: both names against the ground they sit on (the card's, provisional wash included), per theme
+  for (const c of m.cards) {
+    c.peerContrast = c.peerColor ? contrast(c.peerColor, composite(c.bg, m.pageBg)) : null;
+    c.selfContrast = c.selfColor && c.selfWidth > 12 ? contrast(c.selfColor, composite(c.bg, m.pageBg)) : null;   // not the collapsed dot
+  }
   m.contrast = {}; m.contrastOn = {}; m.contrastPage = {};
   for (const k of ["delegate", "coordinate", "question"]) {
     if (!m.kinds[k]) { m.contrast[k] = null; continue; }
@@ -302,11 +372,13 @@ for (const pass of [{ width: 1000, theme: "dark" }, { width: 520, theme: "dark" 
   }
   results[pass.theme === "light" ? (width === 1000 ? "light" : "light" + width) : String(width)] = m;
   if (cfg.shots) { fs.mkdirSync(cfg.shots, { recursive: true }); await page.screenshot({ path: cfg.shots + "/romp_chat-postal-cards-" + pass.theme + "-" + width + ".png", fullPage: false }); }
+  if (width === 1000 && cfg.palettes) m.sweep = await sweep(cfg.palettes);   // after the shot: the sweep repaints every end
   await page.close();
 }
-fs.writeSync(1, "RESULT:" + JSON.stringify(results) + "\n");
 await browser.close();
-process.exit(0);
+// through the stream, drained before the exit: a single synchronous write of a line past the pipe's 64 KiB buffer came out
+// truncated (the T390 measurements pushed this result past it), and the reader saw an unterminated string
+process.stdout.write("RESULT:" + JSON.stringify(results) + "\n", () => process.exit(0));
 """
 
 
@@ -376,11 +448,25 @@ class ServedPostalCards(unittest.TestCase):
             k.kill(); k.wait()
         shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
 
-    def test_every_kind_and_delivery_state_renders_as_ruled(self):
+    @staticmethod
+    def _rgb(hex_color):
+        """A #rrggbb identity colour as the browser reports a computed colour."""
+        h = hex_color.strip().lstrip("#")
+        return "rgb(%d, %d, %d)" % (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+    _r = None
+
+    def _result(self):
+        """One driver run for the class: five passes, the measurements, the palette sweep (T390 fold) and the shots."""
+        cls = type(self)
+        if cls._r is not None:
+            print("RESULT:" + json.dumps(cls._r), file=sys.stderr)
+            return cls._r
         cfg = os.path.join(self.lab, "cfg.json")
         with open(cfg, "w") as f:
             json.dump({"chat": "http://127.0.0.1:%d/chat?token=%s" % (self.port, self.token), "count": self.count,
-                       "shots": os.environ.get("POSTAL_SHOTS", "")}, f)
+                       "shots": os.environ.get("POSTAL_SHOTS", ""),
+                       "palettes": {name: list(p["bg"]) for name, p in PALETTES.items()}}, f)   # every colour the gear offers
         driver = os.path.join(self.lab, "driver.mjs")
         with open(driver, "w") as f:
             f.write(DRIVER)
@@ -392,6 +478,12 @@ class ServedPostalCards(unittest.TestCase):
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         r = json.loads(line[len("RESULT:"):])
+        print("RESULT:" + json.dumps(r), file=sys.stderr)   # the whole measurement rides the captured stderr (-rA shows it for a pass too)
+        cls._r = r
+        return r
+
+    def test_every_kind_and_delivery_state_renders_as_ruled(self):
+        r = self._result()
         wide, narrow, phone, light = r["1000"], r["520"], r["340"], r["light"]
         cards = wide["cards"]
         self.assertEqual(len(cards), 12, cards)
@@ -420,6 +512,26 @@ class ServedPostalCards(unittest.TestCase):
                 if c["provisional"]:
                     self.assertEqual(c["opacity"], "1", "no element opacity on the provisional card: %r" % c)
         self.assertTrue(any(c["provisional"] and c["kind"] for c in wide["cards"]), "a provisional card with a kind word is in the world")
+        # (1b) T390 (the user 2026-09-12): both ends are the NAME itself, bold, in the session's identity colour, no chip box and
+        # no fill, in both themes; the colour reads on the card's ground (the cream theme deepens it on its own hue)
+        for m, name in ((wide, "dark"), (light, "light")):
+            for c in m["cards"]:
+                self.assertFalse(c["peerChip"] or c["selfChip"], "%s: no chip class on either end: %r" % (name, c))
+                self.assertEqual(c["peerBg"], "rgba(0, 0, 0, 0)", "%s: the peer's name has no fill: %r" % (name, c))
+                self.assertEqual(c["peerPad"], "0px", "%s: no chip padding: %r" % (name, c))
+                self.assertEqual(c["peerWeight"], "700", "%s: the peer's name is bold: %r" % (name, c))
+                self.assertGreaterEqual(c["peerContrast"] or 0, 4.5, "%s: the peer's name reads on its ground: %r" % (name, c))
+                if c["selfContrast"] is not None:
+                    self.assertEqual(c["selfBg"], "rgba(0, 0, 0, 0)", "%s: this session's name has no fill: %r" % (name, c))
+                    self.assertEqual(c["selfWeight"], "700", "%s: this session's name is bold: %r" % (name, c))
+                    self.assertGreaterEqual(c["selfContrast"], 4.5, "%s: this session's name reads on its ground: %r" % (name, c))
+        # the ink is the identity colour at the theme's lightness token, the sheet's own expression resolved by the engine: in the dark
+        # theme the colour's own lightness lifted to the floor (T390 fold; a colour above the floor is inked as it is), on cream 0.46
+        for m, name, token in ((wide, "dark", "max(l, 0.72)"), (light, "light", "0.46")):
+            for c in m["cards"]:
+                if c["peerIdentity"]:
+                    self.assertEqual(c["inkToken"], token, "%s: the sheet's lightness token: %r" % (name, c))
+                    self.assertEqual(c["peerColor"], c["peerExpected"], "%s: the name is inked from the identity colour at the token: %r" % (name, c))
         # (2) the delivery icon per state, at the head's right edge, with a worded title
         states = {c["gist"][:20]: c["state"] for c in cards}
         self.assertIsNone(card("Take the retry-loop")["state"], "an incoming message in hand: no icon")
@@ -469,7 +581,7 @@ class ServedPostalCards(unittest.TestCase):
         for c in cards:
             self.assertTrue(c["peerText"], c)
             self.assertTrue(c["selfText"] and "web" in c["selfText"], "this session's own end: %r" % c)
-            self.assertEqual(c["selfBg"], "rgb(156, 210, 255)", "web's own colour on its chip: %r" % c)
+            self.assertEqual(c["selfColor"], "rgb(156, 210, 255)", "web's own colour as its ink, no fill (T390): %r" % c)
             if c["dir"] == "in":
                 self.assertTrue(c["boxed"] and not c["slim"], "incoming is boxed: %r" % c)
                 self.assertNotEqual(c["bg"], wide["boxBg"], "the tint: the peer's hue on the ground, never the plain box: %r" % c)
@@ -478,8 +590,12 @@ class ServedPostalCards(unittest.TestCase):
             else:
                 self.assertEqual(c["slim"], not c["collapsible"], "a sent card is slim unless it has a fold: %r" % c)
             self.assertFalse(c["selfDot"], "the own chip wears no working dot: %r" % c)
-        self.assertEqual(card("Take the retry-loop")["peerBg"], "rgb(30, 161, 235)", "api's colour on its chip")
-        self.assertEqual(card("Heads-up")["peerBg"], "rgb(84, 178, 4)", "tests' colour on its chip")
+        # api's and tests' colours sit under the dark floor: their inks are lighter than the colours, on their hue (T390 fold)
+        self.assertEqual(card("Take the retry-loop")["peerIdentity"].lower(), "#1ea1eb", "api's identity colour rides the token")
+        self.assertEqual(card("Heads-up")["peerIdentity"].lower(), "#54b204", "tests' identity colour rides the token")
+        for gist, own in (("Take the retry-loop", (30, 161, 235)), ("Heads-up", (84, 178, 4))):
+            ink = tuple(int(x) for x in re.findall(r"\d+", card(gist)["peerColor"]))
+            self.assertGreater(sum(ink), sum(own), "%s: the ink is lifted above the colour, not the colour itself: %r" % (gist, card(gist)))
         # the tint is the PEER's hue: two peers' incoming cards wear two grounds, in both themes, and a landed sent card none
         for m, name in ((wide, "dark"), (light, "light")):
             grounds = {}
@@ -590,6 +706,20 @@ class ServedPostalCards(unittest.TestCase):
         # the phone-width light pass reads too (the fourth screenshot the user looks at)
         for k in ("delegate", "coordinate", "question"):
             self.assertGreaterEqual(r["light340"]["contrast"][k] or 0, 4.5, "%s reads on the light page at 340 px" % k)
+
+    def test_every_palette_colour_reads_on_every_card_ground_in_both_themes(self):
+        """T390 fold (the verifier's high): sixty colours across the five palettes, each as both ends' identity colour on all twelve
+        cards, the incoming cards' wash at that hue; the worst ratio per palette and theme at or above 4.5:1. Without the dark
+        floor the darkest colours read under 2:1 on the plain card and phase failed on every incoming card."""
+        r = self._result()
+        for m, name in ((r["1000"], "dark"), (r["light"], "light")):
+            sw = m.get("sweep") or {}
+            self.assertEqual(sorted(sw), sorted(PALETTES), "%s: every palette swept: %r" % (name, sorted(sw)))
+            line = " ".join("%s=%.2f" % (k, sw[k]["ratio"]) for k in sorted(sw))
+            print("SWEEP %s %s" % (name, line), file=sys.stderr)   # the per-palette worst, quoted in the head mail from this line
+            for k, w in sw.items():
+                self.assertGreaterEqual(w["measured"], 12 * w["colours"], "%s/%s: every card measured for every colour: %r" % (name, k, w))
+                self.assertGreaterEqual(w["ratio"], 4.5, "%s/%s: the worst name against its ground: %r" % (name, k, w))
 
 
 if __name__ == "__main__":

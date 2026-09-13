@@ -795,7 +795,7 @@ class BackendHostRules(unittest.TestCase):
         host, stop = self._serve_fake_host(d)
         import threading
         try:
-            with mock.patch.object(sb, "proc_start", lambda p, run=None: {999999997: "1", 999999996: "2"}.get(p)):
+            with mock.patch.object(sb, "proc_start", lambda p, run=None: {999999997: "1", 999999996: "2", 999999995: "3", 999999994: "4"}.get(p)):
                 self.assertEqual(ht.host_lease_state(sb.read_lease(d, SID), time.time()), "attach")
                 self.assertTrue(be.kill(SID))
                 th = be._end_threads[SID]
@@ -816,14 +816,17 @@ class BackendHostRules(unittest.TestCase):
                 starts = []
                 real_start = threading.Thread.start
                 def start_recording(thread):
-                    if thread.name.startswith("romp-end-host-"):
+                    if thread.name.startswith("end-host:"):
                         starts.append(held.depth > 0)
                     return real_start(thread)
+                # a NEW host holds the lease (the first was told to end and a later End for it opens no socket): its End starts a thread
+                lease = sb.read_lease(d, SID); lease["holder"] = dict(lease["holder"], pid=999999995, start="3"); sb.write_lease(d, lease)
                 with mock.patch.object(threading.Thread, "start", start_recording):
                     self.assertTrue(be._end_host_by_lease(SID))
                     be._end_threads[SID].join(10)
                 self.assertEqual(starts, [True], "the end thread starts while the lock is held")
-                # two concurrent Ends: one thread, one socket
+                # two concurrent Ends for a host not yet told to end: one thread, one socket
+                lease = sb.read_lease(d, SID); lease["holder"] = dict(lease["holder"], pid=999999994, start="4"); sb.write_lease(d, lease)
                 host.got.clear()
                 results = []
                 racers = [threading.Thread(target=lambda: results.append(be._end_host_by_lease(SID))) for _ in range(2)]
@@ -832,7 +835,32 @@ class BackendHostRules(unittest.TestCase):
                 be._end_threads[SID].join(10)
                 self.assertEqual(results, [True, True])
                 self.assertEqual(sum(1 for f in host.got if f.get("t") == "attach"), 1, "one socket for two concurrent Ends: %r" % [f.get("t") for f in host.got])
-                self.assertEqual(sum(1 for l in be._test_logs if "already under way" in l), 1)
+                self.assertEqual(sum(1 for l in be._test_logs if "already under way" in l or "already told to end" in l), 1,
+                                 "the second End was refused a socket whether the first thread was still alive or had finished: %r" % be._test_logs[-4:])
+        finally:
+            stop()
+
+    def test_a_second_end_after_the_first_finished_opens_no_socket_and_a_new_holder_ends_normally(self):
+        # main's Python 3.11 job (2026-09-12): two concurrent Ends opened two sockets ("attach, end, attach, end") when the
+        # first thread had already finished; the guard remembers the lease holder it told to end
+        d, be = self._be(short=True)
+        self._marked(d); self._host_lease(d)
+        host, stop = self._serve_fake_host(d)
+        try:
+            with mock.patch.object(sb, "proc_start", lambda p, run=None: {999999997: "1", 999999996: "2", 999999995: "3"}.get(p)):
+                self.assertTrue(be._end_host_by_lease(SID))
+                be._end_threads[SID].join(10)
+                self.assertEqual([f.get("t") for f in host.got], ["attach", "end"])
+                self.assertTrue(be._end_host_by_lease(SID), "a later End for the same host is a no-op that reports done")
+                self.assertEqual([f.get("t") for f in host.got], ["attach", "end"], "no second socket to a host already told to end")
+                self.assertEqual(sum(1 for l in be._test_logs if "already told to end" in l), 1)
+                # a NEW host took the lease under the same sid: it is a different holder and ends normally
+                lease = sb.read_lease(d, SID)
+                lease["holder"] = dict(lease["holder"], pid=999999995, start="3")
+                sb.write_lease(d, lease)
+                self.assertTrue(be._end_host_by_lease(SID))
+                be._end_threads[SID].join(10)
+                self.assertEqual([f.get("t") for f in host.got], ["attach", "end", "attach", "end"], "the new holder is ended")
         finally:
             stop()
 

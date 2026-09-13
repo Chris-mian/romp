@@ -49,6 +49,11 @@ class _TimedPool(ThreadPoolExecutor):
     2026-09-08). Thread-locals do not cross into pool workers on their own, which is why the mark rides
     the submit rather than the tier."""
 
+    def __init__(self, *args, **kwargs):
+        if "thread_name_prefix" not in kwargs:            # the workers carry their tier: judge-index_0, judge-triage_3, ... so the
+            kwargs["thread_name_prefix"] = "judge-" + (threading.current_thread().name or "tier").split(":", 1)[0]   # kernel's
+        super().__init__(*args, **kwargs)                 #  stack sample keys them by tier, never as an anonymous pool (T401)
+
     def submit(self, fn, /, *args, **kwargs):
         def run():
             _judge_ctx.in_pass = True
@@ -2635,6 +2640,41 @@ def _tool_arg(name, inp):
 # where the outcome lives (the user 2026-07-14: a completed card's summary click landed on the
 # announcement stub instead of the wrap-up).
 CITE_MIN_CHARS = 80
+WHY_CUT_MARK = "…"      # the visible ellipsis a cut why ends with: the reader (and the brief judge) can tell a cut
+WHY_MAX = 300                # a verdict's why (a planner op's rationale, the closer's done, block or awaiting why): the
+#                              ceiling as before (tests/test_judge.py pins it), now reached at a boundary, never mid-word
+
+
+class _CutWhy(str):
+    """A why _cut_why shortened: a str that carries the fact, so record_verdict can store it on the row (whyCut) and
+    the fold can materialize blockWhyCut; a complete why that happens to end with an ellipsis is never mistaken for
+    a cut one (the verifier's first round on T388)."""
+    cut = True
+
+
+def _cut_why(why, cap):
+    """A verdict's why, whitespace-collapsed and cut to `cap` characters at a SENTENCE end (past half the cap) or
+    else a word boundary, with WHY_CUT_MARK appended when anything was cut; never mid-word. A why the raw slice cut
+    mid-word ("... Also say whether the d") read to the brief judge as a fifth, half-stated question the user had to
+    restate (the manager's T388 finding, 2026-09-12): the stump was the cap's, not the closer's, and nothing marked it."""
+    s = " ".join(str(why or "").split())
+    if len(s) <= cap:
+        return s
+    head = s[:cap]
+    cut = -1
+    for m in re.finditer(r"[.!?](?=\s)", head):     # the last sentence end that leaves at least half the cap
+        if m.end() >= cap // 2:
+            cut = m.end()
+    if cut < 0:
+        sp = head.rfind(" ")
+        cut = sp if sp >= cap // 2 else cap        # a word boundary, else the bare cap (one unbroken token)
+    return _CutWhy(head[:cut].rstrip() + WHY_CUT_MARK)
+
+
+def why_was_cut(why):
+    """Whether a why object carries the cut fact (a _CutWhy from _cut_why); a stored node reads blockWhyCut instead.
+    Never a suffix test on the ellipsis: a complete why may end with one."""
+    return bool(getattr(why, "cut", False))
 
 # a PR/commit/compare link in a tool result — the result class the anchor study convicted (T218):
 # the substance of "shipped it" IS the link, so the atom holding it must be citable
@@ -2727,6 +2767,21 @@ def _prompt_text(atoms):
         if a.get("type") == "user" and a.get("author") == "human":
             return _FOLLOWUP_MARKER_RE.sub("", _atom_text(a)).strip()
     return ""
+
+
+def _unit_nonempty(atoms):
+    """Whether `_unit_text(atoms)` would be non-empty, decided from the atoms' scalars and the USER bodies alone (T396):
+    _unit_text frames three sources, a user atom (any author) whose text survives the romp-marker strip, an assistant atom
+    (not an API error) with text, and an assistant tool call. The assistant side is answered by the markers' scalars (nt,
+    the tool calls); the user side reads the user atoms' bodies, small, because a text made only of romp markers strips to
+    nothing (the one case a scalar cannot see). The planner's emptiness gate asks this in place of reading the unit text,
+    which hydrated every assistant body of every unplaced segment at every pass (42.8 MB on one boot)."""
+    for a in atoms:
+        if a.get("type") == "assistant" and not a.get("isApiError") \
+                and (em._has_text(a) or any(nm for _i, nm in em.atom_tool_uses(a))):   # a tool call counts with a NAME, as
+            return True                                                                  #  _unit_text frames it (round three, low 1)
+    return any(_FOLLOWUP_MARKER_RE.sub("", _atom_text(a)).strip()
+               for a in atoms if a.get("type") == "user" and a.get("author") is not None and em._has_text(a))
 
 
 def _has_asst_work(atoms):
@@ -4184,7 +4239,7 @@ def _parse_plan(raw, menu_len, allow_extend=False):
         if not isinstance(o, dict):
             continue
         do = str(o.get("do", "")).strip().lower()
-        why = " ".join(str(o.get("why", "")).split())[:300]
+        why = _cut_why(o.get("why", ""), WHY_MAX)
         text = " ".join(str(o.get("text", "")).split())[:120]
         if not do and why.lower() == "skip":
             do = "skip"                            # the model sometimes answers {"why": "skip"} with no
@@ -6138,6 +6193,7 @@ def _per_file_rewound(fsid, files):
     out, seen, fails = set(), set(), 0
     leaf = Path(files[0])
     cands = [Path(f) for f in files]
+    lineage = set(cands)                                  # the live session's own files (the leaf, its /clear anchor): resident
     for row in episode_rows(fsid):
         fs = str(row.get("fsid") or "")
         if fs:
@@ -6153,7 +6209,24 @@ def _per_file_rewound(fsid, files):
             # pre-cut verdicts and the tail read now instead of the whole file (T323 stage 4a). A non-empty
             # transcript that yields ZERO records raises OSError there (the incremental reader swallows a
             # permissions break into an empty list): a failed read, not an empty file, and it must count like one.
-            out |= em.file_rewound(fp, rompuuid=fsid if fp == leaf else None, sdk_human=_sdk_owned(fsid) if fp == leaf else None)
+            if fp == leaf and len(files) == 1 and em.asm_document_seeds(fp):   # the leaf road: the document's pre-cut verdicts
+                em.rewound_memo_forget(fp)                #  and the tail read now; a document written over a two-file lineage (a
+                #                                           /clear anchor beside, or a resume fork's from-file among its inputs)
+                #                                           cannot seed the one-file walk, and the leaf takes the memo road (round
+                #                                           one, low 1); the memo's cursor from the leaf's documentless days is
+                #                                           dropped at the flip so the checkpoint's cut follows the live folds (low 2)
+                out |= em.file_rewound(fp, rompuuid=fsid, sdk_human=_sdk_owned(fsid))
+            else:                                         # a dead episode's frozen file, or a leaf with no assembly document (no
+                #                                           compaction boundary yet, or ever: its seeded walk had nothing to seed
+                #                                           and read the file whole at every boot, 104 MB on one): the walk once, its
+                #                                           verdict set memoized in the file's fold document and restored at the next
+                #                                           process; a leaf's memo is retired by its next append like any other's
+                out |= em.rewound_uuids(fp, drop=fp not in lineage and not _sdk_owned(fp.stem))   # the file's fold document,
+            #     ^ restored at the next process (T391); a live session's anchor keeps its records resident, since the chain walk
+            #       above reads it whole at every pass and a drop here made that a whole read per pass (round one, medium); so does
+            #       ANY registered session's own file (<sid>.jsonl with a reg): a fork's episode log names its parent's anchor,
+            #       and the fork's scan dropping it made the parent's chain walk read it whole once more per process, by pass
+            #       order (round two, low 2)
             #     ^ the one-file walk asks for the leaf's document quietly: a lineage document (a /clear's anchor, a
             #       resume fork) is not this walk's and stays the display's
         except Exception as e:
@@ -9196,7 +9269,7 @@ def unit_text_for(seg, phase):
     return _seam_text(seg)
 
 
-def plan_units(session, store=None, floor=_UNSET_FLOOR):
+def plan_units(session, store=None, floor=_UNSET_FLOOR, lazy_text=False):
     """Ordered (seg_id, phase, t, text, human, followup, trigger) planner units for the TWO-RUN model (the
     user 2026-06-21, via link_audit), oldest-first. `trigger` (the user 2026-07-01, via bugs) is the
     segment's trigger atom uuid (seg["trigger"], None for an autonomous/continuation segment with no
@@ -9261,7 +9334,13 @@ def plan_units(session, store=None, floor=_UNSET_FLOOR):
                 if not _memo:                             #  placed yet: a hydration over a restored tree (T377)
                     _memo.append(_seam_text(seg))
                 return _memo[0]
-            if not any(_placed_phase(seg, ph) for ph in ("work", "prompt", "delegation", "live")) and not _wt():
+            _nonempty = []
+
+            def _ne(seg=seg, _nonempty=_nonempty):        # whether the unit text is non-empty: lazy_text decides it from the
+                if not _nonempty:                         #  scalars and the user bodies (_unit_nonempty, T396), never reading
+                    _nonempty.append(_unit_nonempty(seg["atoms"]) if lazy_text else bool(_wt()))   # the assistant bodies
+                return _nonempty[0]
+            if not any(_placed_phase(seg, ph) for ph in ("work", "prompt", "delegation", "live")) and not _ne():
                 continue                                  # an unplaced empty segment drops, as before; a placed segment yields its
             #                                               unit without the emptiness check (no text is read for it), an inert unit
             #                                               at worst, which every consumer skips as placed (review, low 1)
@@ -9277,7 +9356,11 @@ def plan_units(session, store=None, floor=_UNSET_FLOOR):
             def _put(phase, text_fn, human_, followup_, seg=seg, trig=trig):
                 if _placed_phase(seg, phase):             # placed already: the key, time and scalars; no text and no quote read
                     out.append((seg["id"], phase, seg["t"], None, human_, followup_, trig, None)); return
-                t = text_fn()
+                if lazy_text and phase != "prompt":       # T396: the unit's text and quote are read by the consumer, after its own
+                    if _ne():                             #  filters (unit_text_for, _mint_quote: _plan_session's placed-yield road),
+                        out.append((seg["id"], phase, seg["t"], None, human_, followup_, trig, None))   # so a unit that never
+                    return                                #  reaches the model is never read; the emptiness gate is the scalar one.
+                t = text_fn()                             # a prompt unit's text is its one user atom: read here, as before
                 if t:
                     out.append((seg["id"], phase, seg["t"], t, human_, followup_, trig, _quote()))
             if not is_open_final and not _has_asst_work(seg["atoms"]):
@@ -9307,8 +9390,9 @@ def plan_units(session, store=None, floor=_UNSET_FLOOR):
                     # own reopen/dismiss row is the release, and _strip_unevidenced_dones keeps a
                     # workless reply from CLAIMING completion (the closer holds done authority). Nudges
                     # keep their skip: their machinery re-asks and escalates on its own.
-                    _put("work", _wt, _seg_human(seg), _seg_followup(seg))
-                continue
+                    _wn = _work_note(seg)                 # ONE text rule with the ended work-run below and with unit_text_for
+                    _put("work", (lambda: (_wn + _wt()) if _wt() else "") if _wn else _wt, _seg_human(seg), _seg_followup(seg))
+                continue                                  #  (round three, low 2: the lazy road resolves through unit_text_for)
             _pm = _seg_peer(seg)
             if _pm and _pm[0]:                            # POSTAL segment with a KNOWN sender → DELEGATION work-run
                 if not is_open_final:                     # ended → the recipient's work is known; place it under G
@@ -9878,6 +9962,9 @@ def _reassert_blocks(store, seg_id, seg_t, items):
         if nd is None or nd.get("blocked") or nd.get("cleared") or nd.get("nodeComplete"):
             continue
         ev = max(seg_t or 0, _floor_of(store, nd) + 1)
+        src_rows = [e for e in (nd.get("log") or []) if e.get("kind") == "block" and str(e.get("why") or "") == str(why)]
+        if src_rows and src_rows[-1].get("whyCut"):    # the why comes back from a row the parser cut: the fact rides the new
+            why = _CutWhy(why)                         # row too, or the brief judge's note would vanish on the re-assert (T388)
         if record_verdict(store, nd, "planner", "block", ev, why=why, seg=seg_id):
             nd["mt"] = seg_t or ev
             if seg_id and seg_id not in (nd.get("trail") or []):
@@ -10007,6 +10094,7 @@ def record_verdict(store, nd, src, kind, ev_t=None, why=None, seg=None, msg=Fals
         log = nd.setdefault("log", [])
         log.append({"ev_t": ev_t, "src": src, "kind": kind,
                     **({"why": why} if why else {}), **({"seg": seg} if seg else {}),
+                    **({"whyCut": True} if why_was_cut(why) else {}),   # the parser's cut, stored beside the text (T388)
                     **({"msg": True} if msg else {}),  # a user message rides this reopen (chip derivation)
                     **({"undo": True} if undo else {}),   # an undo-restore reopen: not a "not done" assertion
                     **({"lift": True} if lift else {}),   # an `awaiting` row that ENDS the wait, not asserts it
@@ -10122,6 +10210,7 @@ def _fold_node(nd):
     cur_settle, prev_settle = None, None
     awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None     # the live ⏳ stamp (see docstring); None = not awaiting
     done_why = block_why = None           # the landing verdicts' rationale (doneWhy/blockWhy derivation)
+    block_why_cut = False                 # the landing block's why was cut by the parser's cap (row whyCut, T388)
     held = pending = False                # held: an unanswered USER reopen pins the node open (no bottom-up
     #                                       re-completion); pending: an unanswered msg-reopen wears the chip.
     #                                       "Answered" = ANY later non-user event — the judges looked.
@@ -10179,7 +10268,8 @@ def _fold_node(nd):
         elif kind == "block":
             if src in ("user", "agent") or t > floor:
                 state = "blocked"
-                block_why = e.get("why") or block_why
+                if e.get("why"):
+                    block_why, block_why_cut = e["why"], bool(e.get("whyCut"))
                 reopen_snap = None
                 awaiting_why = awaiting_at = awaiting_kind = awaiting_peers = None
         elif kind == "unblock":
@@ -10224,7 +10314,7 @@ def _fold_node(nd):
             "awaitingAt": awaiting_at if state == "open" else None,
             "awaitingKind": awaiting_kind if state == "open" else None,
             "awaitingPeers": awaiting_peers if state == "open" else None,
-            "doneWhy": done_why, "blockWhy": block_why}
+            "doneWhy": done_why, "blockWhy": block_why, "blockWhyCut": block_why_cut}
 
 
 def _fold_node_state(nd):
@@ -10553,8 +10643,13 @@ def _materialize_node(nd):
         if st == "blocked":
             if f["blockWhy"]:
                 nd["blockWhy"] = f["blockWhy"]         # the landing block's rationale; a why-less event
+                if f.get("blockWhyCut"):               # the parser cut it: the brief's material says so (T388)
+                    nd["blockWhyCut"] = True
+                else:
+                    nd.pop("blockWhyCut", None)
         else:                                          # (legacy synth) keeps whatever text is already there
             nd.pop("blockWhy", None)                   # cache hygiene: the why goes with the block
+            nd.pop("blockWhyCut", None)
         if st == "done" and f["doneWhy"]:
             nd["doneWhy"] = f["doneWhy"]
         for key, val in (("followupAt", f["floor"]), ("settledAt", f["settledAt"]),
@@ -11212,6 +11307,12 @@ def _latch_ask_anchors(fsid, session, store):
     return n
 
 
+em.register_whole_read_passthrough(parsed_session, parse_cached, _parse_store)   # the judges' parse family: a whole read through
+#                                                                                   them names the walker beyond (T384)
+em.register_hydrate_text_reader(_unit_text, _prompt_text, _atom_text)   # the judges' shared text readers: a hydration through them is
+#                                                                          attributed with the walker that called them (T377, T384)
+
+
 def _plan_session(fsid, path, now):
     """Advance ONE session's goal tree: place its un-placed planner UNITS oldest-first (each sees the prior
     tree's open menu) and GROUP after every placement (the user 2026-06-17: planner + grouper are both
@@ -11249,11 +11350,11 @@ def _plan_session(fsid, path, now):
     #                                                   an identical-text twin (crash-heal restart resumes) must
     #                                                   not be swallowed as a "drift" of an already-placed one
     if store.get("placementsV") != PLACEMENTS_V:      # P2: seal/adopt on identity-version change (199118f)
-        ready = [_unit_key(u[0], u[1]) for u in plan_units(session, store, floor=floor)]
+        ready = [_unit_key(u[0], u[1]) for u in plan_units(session, store, floor=floor, lazy_text=True)]
         if _migrate_placements(store, ready, live):
             save_goals(fsid, store)
     units, retired, seen = [], False, set()
-    for u in plan_units(session, store, floor=floor):
+    for u in plan_units(session, store, floor=floor, lazy_text=True):
         seg_id, phase = u[0], u[1]
         key = _unit_key(seg_id, phase)
         if key in seen:                               # plan_units yields one unit per TURN, so a same-second
@@ -11315,6 +11416,13 @@ def _plan_session(fsid, path, now):
                 continue
             text = unit_text_for(seg, phase)
             if not text:
+                # A unit the lazy gate yielded whose text reads empty (a shape the scalars cannot see: an assistant message
+                # whose content is a bare string; a blind spot of any later kind): RETIRE it, never skip it. Skipped, it
+                # wrote no placement and no retirement, and the nudge placement gate read its key as unplanned on every
+                # tick and silenced the session's escalation ladder (the 2026-08-16 wedge shape; round three, low 1). The
+                # unit's OWN key: `key` here is the collection loop's last binding, not this unit's (round four, medium).
+                store["placements"][_unit_key(seg_id, phase)] = None
+                save_goals(fsid, store)
                 continue
             if vq is None:
                 vq = _mint_quote(seg)
@@ -11953,7 +12061,7 @@ def fast_forward_placements(fsid, path=None, now=None):
     store = load_goals(fsid)
     placements = store["placements"]
     n = 0
-    for u in plan_units(session, store):
+    for u in plan_units(session, store, lazy_text=True):   # keys alone: no unit text read (T396)
         seg_id, phase = u[0], u[1]
         keys = {_unit_key(seg_id, phase)}
         if phase == "prompt":
@@ -12180,7 +12288,7 @@ def _parse_group(raw, menu_len):
         if not isinstance(o, dict):
             continue
         do = str(o.get("do", "")).strip().lower()
-        why = " ".join(str(o.get("why", "")).split())[:300]
+        why = _cut_why(o.get("why", ""), WHY_MAX)
         text = " ".join(str(o.get("text", "")).split())[:120]
         if do in ("mint", "group"):
             # RETIRED (the user 2026-08-26, T101): the board's unit is the individual ask — no
@@ -13723,7 +13831,7 @@ def _parse_close(raw, menu_len):
             except (TypeError, ValueError):
                 continue
             if 1 <= n <= menu_len and n not in out and n not in skip:
-                why = " ".join(str(it.get("why", "")).split())[:300]
+                why = _cut_why(it.get("why", ""), WHY_MAX)   # the user-facing question, never cut mid-word
                 if kinds:
                     k = str(it.get("kind") or "").strip().lower()
                     out[n] = {"why": why, "kind": k if k in AWAIT_KINDS_JUDGED else None}   # a closer files a specific kind, never "mixed"
@@ -16383,6 +16491,8 @@ def _owed_why(nd):
     host still holds after the wait ended (relayCarried: carried on before it could be withdrawn, or the host
     unreachable; the third verdict)."""
     why = str((nd or {}).get("blockWhy") or "")
+    if (nd or {}).get("blockWhyCut"):               # the stored reason ends where the cap cut it: say so, or the brief
+        why += " (the recorded reason ends here; the rest was not kept)"   # reads the stump as an owed question (T388)
     notes = [s for s in (str((nd or {}).get(k) or "").strip() for k in ("relayRefusal", "relayCarried")) if s]
     return "%s (%s)" % (why, "; ".join(notes)) if notes else why
 

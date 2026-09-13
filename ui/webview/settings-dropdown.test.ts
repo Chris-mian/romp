@@ -78,8 +78,8 @@ test("dismissal is event-based: outside click, Escape, the sibling dropdown, and
 test("both pickers build on the ONE dropdown, and repaint on every settings open", () => {
   assert.match(GEAR, /var csDrop = housePick\(cs, 'scheme', schemeRowHTML,/);
   assert.match(GEAR, /var ttDrop = housePick\(tt, 'theme', themeRowHTML,/);
-  assert.match(GEAR, /tcPaint\(\); csPaint\(\); ttPaint\(\); if \(cg\)/,
-    "openSettings repaints ALL closed rows — a pick made in another pane shows current on open");
+  assert.match(GEAR, /tcPaint\(\); paintWidgets\(\); csPaint\(\); ttPaint\(\); if/,
+    "openSettings repaints ALL closed rows (and the widget rows, T379) — a pick made in another pane shows current on open");
 });
 
 test("an empty option list paints a placeholder, never a crash — the effort selects start blank", () => {
@@ -100,13 +100,13 @@ test("every remaining native select rides the adapter — one vocabulary across 
     "fill() sets values with no change event — the closed rows repaint at its end");
 });
 
-test("the Context-gauge picker rides the same builder; its hidden select stays the value holder", () => {
-  // The user (2026-08-27) approved the flagged migration: one menu vocabulary across the panel.
-  // The select persists invisibly (the versionMenu pattern) so fill()/openSettings keep writing
-  // tc.value and the existing change handler keeps persisting — the pick fires that same event.
-  assert.match(GEAR, /<select id=rs-tabctx style='display:none'>/);
-  assert.match(GEAR, /var tcDrop = housePick\(document\.getElementById\('rs-tabctx-pick'\), 'tabctx', tabCtxRowHTML,/);
-  assert.match(GEAR, /tc\.value = id; tc\.dispatchEvent\(new Event\('change'\)\);/);
-  assert.match(GEAR, /if \(tc\) tc\.value = tabCtxMode\(s\.tabCtx\); tcPaint\(\);/,
-    "openSettings writes the authoritative value THEN repaints the closed row");
+test("the Context bar widget's option rides the same builder (the Context-gauge picker moved onto its row, T379); tabCtx is written as the widgets' mirror", () => {
+  // The user (2026-08-27) approved the one menu vocabulary across the panel; since T379 the gauge's WHEN is the Context bar
+  // widget's option in the Chat tab's Tab widgets section, a house picker per option, and the older tabCtx key is written from the prefs on every
+  // widget save so older readers keep their meaning (tab-widgets.ts tabCtxOfPrefs).
+  assert.doesNotMatch(GEAR, /id=rs-tabctx\b/, "the old Context gauge row and its hidden select are gone");
+  assert.match(GEAR, /var drop = housePick\(wrap, 'wopt-' \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/);
+  assert.match(GEAR, /function saveWidgets\(prefs\) \{ var s = load\(\); s\.tabWidgets = prefs; s\.tabCtx = TW\.tabCtxOfPrefs\(prefs\); save\(s\); paintWidgets\(\); \}/,
+    "a widget change writes the prefs and the mirror, then repaints the rows in place");
+  assert.match(GEAR, /tcPaint\(\); paintWidgets\(\);/, "openSettings repaints the widget rows from the store");
 });

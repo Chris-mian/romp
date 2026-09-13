@@ -1,6 +1,6 @@
 // Where a FOLDER click opens: the folder shown under the chat, the system-context card's Directory row and a
 // tab menu's Browse files walk the file link's own ladder (file-route.ts browseRoute): an open Files pane
-// takes the listing whatever the gear says, a closed one only when the gear's "File links open in" names it,
+// takes the listing; a closed one leaves the browser over the chat (no setting brings a closed pane forward since T404),
 // and otherwise the browser opens over the chat as it always has; VS Code keeps its own folder opener. Five
 // legs. The ladder itself, executed (pure). The chat's end (render.ts browseRouteNow, openBrowse, the tab menu's
 // sub-line and the host contract the chat hands its browser instance), lifted and run over stubs (the
@@ -38,38 +38,34 @@ const SID_TAB = "11111111-2222-3333-4444-666666666666";   // a session the tab s
 const SID_NONE = "11111111-2222-3333-4444-777777777777";  // a sid neither names
 const COLOR = { bg: "#123456", fg: "#ffffff" };
 const IDENTITY = { name: "web", color: COLOR };
-const SETTINGS: unknown[] = ["chat", "pane", undefined, null, "purple", 42];   // the gear's two values, an unset store, foreign values
-const GRID: Array<[unknown, boolean, boolean]> = [];
-for (const s of SETTINGS) for (const framed of [true, false]) for (const open of [true, false]) GRID.push([s, framed, open]);
-const label = (s: unknown, framed: boolean, open: boolean) => `setting=${String(s)}, framed=${framed}, filesOpen=${open}`;
+const GRID: Array<[boolean, boolean]> = [];   // framed, filesOpen: the whole input space since T404 (no setting)
+for (const framed of [true, false]) for (const open of [true, false]) GRID.push([framed, open]);
+const label = (framed: boolean, open: boolean) => `framed=${framed}, filesOpen=${open}`;
 
-// ── the ladder, executed ──────────────────────────────────────────────────────────────────────────
-
-test("browseRoute: VS Code keeps the editor's own folder opener, whatever the setting or the panes say", () => {
-  for (const [s, framed, open] of GRID) assert.equal(browseRoute(false, s, framed, open), "editor", label(s, framed, open));
+test("browseRoute: VS Code keeps the editor's own folder opener, whatever the panes say", () => {
+  for (const [framed, open] of GRID) assert.equal(browseRoute(false, framed, open), "editor", label(framed, open));
 });
 
-test("browseRoute: web dashboard, Files pane OPEN: the listing opens in the Files pane, whatever the setting", () => {
-  for (const s of SETTINGS) assert.equal(browseRoute(true, s, true, true), "pane", `setting=${String(s)}`);
+test("browseRoute: web dashboard, Files pane OPEN: the listing opens in the Files pane", () => {
+  assert.equal(browseRoute(true, true, true), "pane");
 });
 
-test("browseRoute: web dashboard, Files pane CLOSED: only the setting's literal 'pane' brings it forward; the default and a foreign value keep the listing over the chat", () => {
-  assert.equal(browseRoute(true, "pane", true, false), "pane", "the setting names the Files pane: the shell brings it forward");
-  assert.equal(browseRoute(true, "chat", true, false), "here", "the default: the browser over the chat, as before");
-  for (const s of [undefined, null, "purple", 42, "feed"]) assert.equal(browseRoute(true, s, true, false), "here", `setting=${String(s)} reads as the default`);
+test("browseRoute: web dashboard, Files pane CLOSED: the listing opens over the chat; no setting brings the pane forward (T404)", () => {
+  assert.equal(browseRoute(true, true, false), "here");
+  assert.equal(browseRoute(true, true, false, true), "here", "the control shown changes nothing while the pane is closed");
 });
 
-test("browseRoute: no shell (standalone /chat): the browser over this document, whatever the setting or the cache", () => {
-  for (const s of SETTINGS) for (const open of [true, false]) assert.equal(browseRoute(true, s, false, open), "here", label(s, false, open));
+test("browseRoute: no shell (standalone /chat): the browser over this document, whatever the cache", () => {
+  for (const open of [true, false]) assert.equal(browseRoute(true, false, open), "here", label(false, open));
 });
 
 test("browseRoute on the web IS fileLinkRoute: the same verdict for the whole grid, no substitution for a folder", () => {
-  for (const [s, framed, open] of GRID) assert.equal(browseRoute(true, s, framed, open), fileLinkRoute(s, framed, open), label(s, framed, open));
+  for (const [framed, open] of GRID) assert.equal(browseRoute(true, framed, open), fileLinkRoute(framed, open), label(framed, open));
 });
 
 test("browseRoute names three targets: the editor, the Files pane and this document", () => {
   const seen = new Set<BrowseRoute>();
-  for (const web of [true, false]) for (const [s, framed, open] of GRID) seen.add(browseRoute(web, s, framed, open));
+  for (const web of [true, false]) for (const [framed, open] of GRID) seen.add(browseRoute(web, framed, open));
   assert.deepEqual([...seen].sort(), ["editor", "here", "pane"]);
 });
 
@@ -88,12 +84,12 @@ const ts = (code: string): string => requireCjs("esbuild").transformSync(code, {
 type Host = { shellRestore?: boolean; onRelay?: (m: { path: string; sid?: unknown; identity?: unknown }) => void; openFile?: (path: string, sid: string | null) => void } | undefined;
 type ChatHooks = {
   up: Array<[unknown, string]>; here: Array<[string, string | null]>; vs: unknown[];
-  settings: { fileLinkPane: unknown }; framed: boolean; protocol: string; activeId: string | null; panes: Record<string, boolean>;
+  framed: boolean; protocol: string; activeId: string | null; panes: Record<string, boolean>;
   host: Host; poster: ((m: unknown) => void) | null;
 };
 type ChatApi = { openBrowse: (p: string, sid?: string | null) => void; browseRouteNow: () => BrowseRoute; setPanes: (on: Record<string, boolean>) => void };
 function liftChat(over: Partial<ChatHooks> = {}): { H: ChatHooks; api: ChatApi } {
-  const H: ChatHooks = { up: [], here: [], vs: [], settings: { fileLinkPane: "chat" }, framed: true, protocol: "http:", activeId: SID, panes: {}, host: undefined, poster: null, ...over };
+  const H: ChatHooks = { up: [], here: [], vs: [], framed: true, protocol: "http:", activeId: SID, panes: {}, host: undefined, poster: null, ...over };
   const code = ts(sliceOf(RENDER, "function browseRouteNow(): BrowseRoute {", "\n// A clickable file name that opens the real file", "browseRouteNow through the chat's browser host"));
   const prelude = `
     const H = HOOKS;
@@ -133,30 +129,26 @@ test("the chat's end, executed: with the Files pane on screen a folder click pos
   assert.deepEqual(H.here, []);
 });
 
-test("the chat's end, executed: with the pane off the setting decides, read at the click; a foreign value is the default; the pane coming on screen overrides it", () => {
+test("the chat's end, executed: with the pane off the browser opens over this chat; the pane coming on screen takes the listing (T404: no setting)", () => {
   const { H, api } = liftChat({ panes: { chat: true, feed: true, files: false } });
   api.openBrowse("/repo/notes-api", SID);
-  assert.deepEqual(H.here, [["/repo/notes-api", SID]], "the default: the browser over this chat, as before");
+  assert.deepEqual(H.here, [["/repo/notes-api", SID]], "the browser over this chat, as before");
   assert.deepEqual(H.up, []);
-  H.settings.fileLinkPane = "pane";
-  api.openBrowse("/repo/notes-api", SID);
-  assert.deepEqual(relayedUp(H), [{ romp: "browseFiles", path: "/repo/notes-api", sid: SID, pane: "pane", identity: IDENTITY }], "the setting names the pane: handed up, the shell brings it forward");
-  H.settings.fileLinkPane = "purple";
   api.openBrowse("", SID);
-  assert.deepEqual(H.here[1], [".", SID], "a foreign stored value is the default, and no path is the cwd");
-  assert.equal(H.up.length, 1, "no further relay");
+  assert.deepEqual(H.here[1], [".", SID], "no path is the cwd, still here");
+  assert.equal(H.up.length, 0, "nothing relayed while the pane is closed");
   api.setPanes({ chat: true, files: true });
   api.openBrowse("/repo/notes-api", SID);
-  assert.equal(H.up.length, 2, "on screen: the pane takes it whatever the setting says");
+  assert.equal(H.up.length, 1, "on screen: the pane takes it");
   assert.equal(H.here.length, 2);
 });
 
 test("the chat's end, executed: no shell (standalone /chat) never relays; VS Code opens nothing here at all, the folder link's own act keeps the editor's opener", () => {
-  const solo = liftChat({ framed: false, settings: { fileLinkPane: "pane" }, panes: { files: true } });
+  const solo = liftChat({ framed: false, panes: { files: true } });
   solo.api.openBrowse("/repo/notes-api", SID);
-  assert.deepEqual(solo.H.here, [["/repo/notes-api", SID]], "unframed: over this document, whatever the cache or setting says");
+  assert.deepEqual(solo.H.here, [["/repo/notes-api", SID]], "unframed: over this document, whatever the cache says");
   assert.deepEqual(solo.H.up, []);
-  const code = liftChat({ protocol: "vscode-webview:", settings: { fileLinkPane: "pane" }, panes: { files: true } });
+  const code = liftChat({ protocol: "vscode-webview:", panes: { files: true } });
   code.api.openBrowse("/repo/notes-api", SID);
   assert.deepEqual([code.H.here, code.H.up, code.H.vs], [[], [], []], "the webview cannot reach the kernel origin; asFolderLink gave the click openFolder instead");
 });
@@ -181,13 +173,13 @@ test("the chat's end, executed: the host the chat hands its browser owes the she
   assert.deepEqual(H.vs, [{ type: "listDir", path: "/repo/notes-api", reqId: 1 }]);
 });
 
-test("browseRouteNow reads the cache and the setting at the call, so the tab menu's sub-line and the click cannot disagree", () => {
+test("browseRouteNow reads the cache and the host at the call, so the tab menu's sub-line and the click cannot disagree", () => {
   const { H, api } = liftChat({ panes: { files: true } });
   assert.equal(api.browseRouteNow(), "pane");
   api.setPanes({ chat: true });
   assert.equal(api.browseRouteNow(), "here");
-  H.settings.fileLinkPane = "pane";
-  assert.equal(api.browseRouteNow(), "pane");
+  api.setPanes({ chat: true, files: true });
+  assert.equal(api.browseRouteNow(), "pane", "the pane back on screen takes it again");
   H.protocol = "vscode-webview:";
   assert.equal(api.browseRouteNow(), "editor", "the host is read at the call too");
 });

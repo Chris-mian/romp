@@ -8,7 +8,7 @@
 
 import { hostOf, bareId } from "./host-prefix";
 import { mediaSrc } from "./media";
-import { ICON_DOWNLOAD, ICON_COPY } from "./icons";   // the shared stroke-family glyphs (T367)
+import { ICON_DOWNLOAD, ICON_COPY, ICON_CHECK, ICON_CROSS } from "./icons";   // the shared stroke-family glyphs (T367)
 import * as pz from "./pinch";
 
 // Extensions the kernel's _PREVIEW_MIME serves — keep the two lists in step (tests pin both).
@@ -318,18 +318,33 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
       img.replaceWith(next);
       img = next;
       pzc.retarget(next);                                // a step lands on the fit view, zoom reset
-      name.textContent = e.path; name.title = e.path;
+      setName(e.path);                                   // the two-element title follows the step
       dl.href = fileUrl(e.path, e.sid) + (e.pin ? "&pin=" + encodeURIComponent(e.pin) : "");
       dl.download = e.path.slice(e.path.lastIndexOf("/") + 1) || "image";
       if (cue) cue.textContent = (at + 1) + "/" + nav.length;
     };
   }
+  // ── the bar, ABOVE the picture (T385, the user 2026-09-12: the controls sit at the top, the way a file opens) ──
+  // It IS the file viewer's bar (file-view.ts, T367): .fileview-bar for the row, .fileview-name as a dimmed directory
+  // and the basename (only the directory may truncate), .fileview-acts holding the file group (download, copy) and the
+  // close cross alone at the end, glyph buttons as .fileview-btn.fileview-icon. One set of rules for both surfaces
+  // (styles.css .fileview-*), so a control added to one wears the same dress in the other. The lightbox's own classes
+  // stay as HOOKS: the bar's placement over the backdrop (styles.css) and the stage's tap rule (wirePinchZoom's
+  // closest(".romp-lightbox-bar")). Prepended to the column below, so it precedes the picture and the PDF frame.
   const bar = document.createElement("div");
-  bar.className = "romp-lightbox-bar";
-  const name = document.createElement("span");
-  name.className = "romp-lightbox-name";
-  name.textContent = path;
-  name.title = path;
+  bar.className = "fileview-bar romp-lightbox-bar";
+  const name = document.createElement("div");
+  name.className = "fileview-name romp-lightbox-name";
+  const dir = document.createElement("span"); dir.className = "fileview-dir";
+  const base = document.createElement("span"); base.className = "fileview-base";
+  name.append(dir, base);
+  const setName = (p: string) => {
+    const cut = p.lastIndexOf("/");
+    dir.textContent = cut >= 0 ? p.slice(0, cut + 1) : "";
+    base.textContent = p.slice(cut + 1);
+    name.title = p;                                       // the full path, one hover away
+  };
+  setName(path);
   // download rides an ANCHOR with the download attribute (the user 2026-08-19): the browser saves
   // the same bytes the lightbox is showing — the pinned URL when a pin rode in, so a re-generated
   // file can't swap the image between viewing and saving. The filename is the path's basename.
@@ -339,16 +354,20 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
     cue.textContent = (at + 1) + "/" + nav.length;
     cue.title = "picture " + (at + 1) + " of " + nav.length + " in this chat — ←/→ to step";
   }
+  const acts = document.createElement("div");
+  acts.className = "fileview-acts";
+  const group = document.createElement("span");
+  group.className = "fileview-group fileview-group-file";
   const dl = document.createElement("a");
-  dl.className = "romp-lightbox-dl";
+  dl.className = "fileview-btn fileview-icon romp-lightbox-dl";
   dl.href = fileUrl(path, sid) + (pin ? "&pin=" + encodeURIComponent(pin) : "");
   dl.download = path.slice(path.lastIndexOf("/") + 1) || "image";
   // the tray icon every download control should wear (the composer buttons' stroke family) as an
   // inline SVG: the old text glyph (U+2B73, arrow-to-bar) has no coverage in the mac system fonts
   // and rendered as a tofu box instead of an icon (the user 2026-08-19). A literal — no sanitize.
   dl.innerHTML = ICON_DOWNLOAD;   // icons.ts: the one tray drawing, shared with the file viewer's bar (T367)
-  dl.title = "download";
-  dl.setAttribute("aria-label", "download");
+  dl.title = "Download";
+  dl.setAttribute("aria-label", "Download");
   dl.onclick = (ev) => ev.stopPropagation();               // saving must not also dismiss
   // copy beside download (the user 2026-08-31): the image ITSELF onto the clipboard. It reads the
   // CURRENT img's src at CLICK time — mkImg bakes the pin param into src and an arrow step rebinds
@@ -358,20 +377,30 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
   // control). Clipboards take image/png; any other source re-encodes through a canvas. The
   // ClipboardItem takes the PROMISE form so write() runs synchronously inside the click gesture
   // (Safari refuses a write that awaits first — the tailnet phone case). Success and failure both
-  // speak in place: the icon flips to a check, or to an × whose title names the reason, and the
-  // button restores itself either way.
+  // speak in place, the file viewer's glyph swap (T367): the press dims the button in the same tick
+  // (click-safe: every press acknowledges, ui/CLAUDE.md; a large jpeg's decode is not instant), then a
+  // check and "Copied", or a cross whose words name the reason, and the button restores itself either
+  // way on ONE timer that every swap clears (two presses inside the pulse never let the first wipe the
+  // second's check early; the viewer's copyTimer rule).
   const COPY_SVG = ICON_COPY;   // icons.ts: the one two-sheets drawing, shared with the file viewer's bar (T367)
   let cp: HTMLButtonElement | null = null;
   if (curImg && typeof ClipboardItem !== "undefined" && navigator.clipboard && navigator.clipboard.write) {
     const btn = document.createElement("button");
     cp = btn;
-    btn.className = "romp-lightbox-copy";
-    btn.innerHTML = COPY_SVG;
-    btn.title = "copy image";
-    btn.setAttribute("aria-label", "copy image");
-    const restore = () => { btn.innerHTML = COPY_SVG; btn.title = "copy image"; btn.classList.remove("ok", "err"); };
+    btn.type = "button";
+    btn.className = "fileview-btn fileview-icon romp-lightbox-copy";
+    let copyTimer: number | null = null;                 // window.setTimeout's handle (a number in the page)
+    const say = (icon: string, word: string, cls: string, ms: number | null) => {
+      btn.innerHTML = icon; btn.title = word; btn.setAttribute("aria-label", word);
+      btn.classList.remove("ok", "err", "fileview-busy"); if (cls) btn.classList.add(cls);
+      if (copyTimer) { window.clearTimeout(copyTimer); copyTimer = null; }
+      if (ms !== null) copyTimer = window.setTimeout(() => say(COPY_SVG, "Copy image", "", null), ms);
+    };
+    say(COPY_SVG, "Copy image", "", null);
     btn.onclick = (ev) => {
       ev.stopPropagation();                                // copying must not also dismiss
+      say(COPY_SVG, "Copy image", "", null);               // a press inside the last pulse: its check and its restore timer go, so the restore never wipes this press's dim (review, round two)
+      btn.classList.add("fileview-busy");                  // the same-tick acknowledgement
       const src = curImg!().src;
       const png = (async () => {
         const blob = await (await fetch(src)).blob();
@@ -383,23 +412,21 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
         return await new Promise<Blob>((res, rej) =>
           cv.toBlob((b) => (b ? res(b) : rej(new Error("png encode failed"))), "image/png"));
       })();
-      navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(() => {
-        btn.textContent = "✓"; btn.classList.add("ok"); btn.title = "copied";
-        window.setTimeout(restore, 1400);                  // the ack pulse, then back to a button
-      }, (e) => {
-        btn.textContent = "✕"; btn.classList.add("err");   // loud: the reason, never a silent no-op
-        btn.title = "copy failed: " + ((e && (e as Error).message) || String(e));
-        window.setTimeout(restore, 3000);
-      });
+      navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(
+        () => say(ICON_CHECK, "Copied", "ok", 1400),        // the ack pulse, then back to a button
+        (e) => say(ICON_CROSS, "Copy failed: " + ((e && (e as Error).message) || String(e)), "err", 3000));   // loud: the reason, never a silent no-op
     };
   }
   const close = document.createElement("button");
-  close.className = "romp-lightbox-close";
+  close.type = "button";
+  close.className = "fileview-btn fileview-close romp-lightbox-close";
   close.textContent = "✕";
-  close.title = "close (Esc)";
-  const controls = [dl, ...(cp ? [cp] : []), close];
-  if (cue) bar.append(name, cue, ...controls); else bar.append(name, ...controls);
-  inner.appendChild(bar);
+  close.title = "Close (Esc)";
+  close.setAttribute("aria-label", "Close the picture");
+  group.append(dl, ...(cp ? [cp] : []));
+  acts.append(group, close);
+  if (cue) bar.append(name, cue, acts); else bar.append(name, acts);
+  inner.prepend(bar);                                      // FIRST in the column: above the picture and the PDF frame
   wrap.appendChild(inner);
   const dismiss = () => { wrap.remove(); document.removeEventListener("keydown", onKey, true); };
   const onKey = (ev: KeyboardEvent) => {
@@ -413,6 +440,13 @@ export function openLightbox(path: string, sid?: string | null, pin?: string): v
   wrap.onclick = (ev) => { if (ev.target === wrap) dismiss(); };   // backdrop closes; content clicks don't
   document.addEventListener("keydown", onKey, true);
   document.body.appendChild(wrap);
+  // the column's FLOOR (review, round two): a picture narrower than the download-and-copy group (about 68px) let the group run
+  // out of the column to the left, since the bar contributes no intrinsic width (contain: inline-size: the picture sets the
+  // column, never the path text). The floor is the GROUP's own width, read off its controls (their widths are intrinsic:
+  // flex 0 0 auto buttons in a constrained box still measure themselves), set once per open as the variable the sheet reads
+  // (.romp-lightbox-inner min-width). The close may wrap beneath the group under a tiny picture; the picture centres under them.
+  const ctl = Array.from(group.children) as HTMLElement[];
+  inner.style.setProperty("--lb-acts-w", Math.ceil(ctl.reduce((a, c) => a + c.getBoundingClientRect().width, 0) + 4 * Math.max(0, ctl.length - 1) + 8) + "px");
 }
 
 // FULL-SIZE inline render for a mentioned image in the CHAT (the user 2026-07-20, who wanted not even a

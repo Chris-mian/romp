@@ -63,7 +63,9 @@ test("the client keys the green wash on the kernel's replyOwed; the gesture latc
   assert.match(RENDER, /cmtAwaitBase\.set\(synth\.tid, \{ \.\.\.CMT_LATCH_ZERO \}\);/, "the create gesture latches its synthetic thread");
   assert.match(COMMENTS, /queued\?: number;/); assert.match(COMMENTS, /unreachable\?: boolean \| null;/); assert.match(COMMENTS, /lastUuid\?: string;/);
   assert.match(KERNEL, /"queued": queued,/); assert.match(KERNEL, /"unreachable": unreachable or None,/); assert.match(KERNEL, /"lastUuid": last_uuid,/);
-  assert.match(KERNEL, /held = \[a for a in live if sb\.echo_text_key\(a\.get\("_echo_text"\)\) and not a\.get\("command"\)/, "echo-held sends count as owed, the chat's own fold (under the one echo text key, session_backend.echo_text_key)");
+  assert.match(KERNEL, /held = \[a for a in live if _echo_holdable\(a\) and not _landed\(a\)/, "echo-held sends count as owed, the chat's own fold, through the one holdable predicate");
+  assert.match(KERNEL, /def _echo_holdable\(e\):[\s\S]*?return bool\(sb\.echo_text_key\(e\.get\("_echo_text"\)\)\) and not e\.get\("command"\)/,
+    "the predicate keys on the one echo text key, session_backend.echo_text_key, and skips command echoes");
   assert.match(KERNEL, /def _settle\(a\):/, "the stop's settle record is skipped when reading the landing");
   assert.match(KERNEL, /reply_owed = status == "open" and \(turn_open or queued > 0 or owes_first/);
   assert.match(RENDER, /else if \(m\.type === "commentSendFailed" && m\.tid\) \{\s*\n\s*cmtAwaitBase\.delete\(String\(m\.tid\)\);/, "a refused send releases its latch");

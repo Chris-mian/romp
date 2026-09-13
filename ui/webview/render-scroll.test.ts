@@ -67,7 +67,7 @@ test("appendActive snaps only when the user is already near the bottom of OVERFL
   // the slack rule (the user 2026-08-25): while nothing overflows, atBottom is trivially true —
   // ungated, the very append crossing the overflow boundary yanked the view; now streaming into
   // slack writes in place and grows the scrollbar, and the stick engages only once overflowing
-  assert.match(RENDER, /const stick = content\.scrollHeight > content\.clientHeight \+ 2 && atBottom\(content\);[\s\S]*?if \(stick && followTail\(distBefore, heightBefore, content\.scrollHeight\)\) writeScroll\(content, content\.scrollHeight, "append-stick", true\)/,   // …and only when there is new content to follow (T262 followTail)
+  assert.match(RENDER, /const stick = content\.scrollHeight > content\.clientHeight \+ 2 && atBottom\(content\);[\s\S]*?if \(stick && followTail\(distBefore, heightBefore, content\.scrollHeight\)\) writeScroll\(content, content\.scrollHeight, "append-stick", true, before\)/,   // …and only when there is new content to follow (T262 followTail)
     "tail-append follows the live edge only if content overflows AND the reader was at the bottom");
   // the popover's thread list speaks the same rule
   assert.match(RENDER, /const overflowed = list\.scrollHeight > list\.clientHeight \+ 2;/);
@@ -83,13 +83,13 @@ test("a scrolled-up append restores by turn ANCHOR (data-uuid), raw scrollTop on
   const fn = RENDER.slice(RENDER.indexOf("function appendActive"), RENDER.indexOf("window.addEventListener(\"resize\", scheduleRestamp)"));
   assert.match(fn, /const anchor = !stick && v \? captureScrollAnchor\(content, v\) : null;/,
     "the anchor is captured BEFORE the rebuild, only when scrolled up");
-  assert.match(fn, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor\)\)\) writeScroll\(content, before, "append-raw"\);/,
+  assert.match(fn, /else if \(!\(v && restoreScrollAnchor\(content, v, anchor, before\)\)\) writeScroll\(content, before, "append-raw", false, before\);/,
     "anchor-relative restore first; the raw pixel offset only when the anchor was evicted");
   assert.match(RENDER, /function captureScrollAnchor\(content: HTMLElement, v: View\)/);
   assert.match(RENDER, /r\.bottom > cTop \+ 1/, "the anchor is the first turn still visible at the viewport top");
   assert.match(RENDER, /querySelector\(`\[data-uuid="\$\{cssEscape\(a\.uuid\)\}"\]`\)/,
     "the anchor re-resolves by its stable uuid after the rebuild");
-  assert.match(RENDER, /writeScroll\(content, yNow - a\.y, "anchor-restore"\);/, "the anchor turn keeps its exact on-screen offset");
+  assert.match(RENDER, /writeScroll\(content, yNow - a\.y, "anchor-restore", false, from\);/, "the anchor turn keeps its exact on-screen offset, the write's origin the caller's pre-change read (round three, medium)");
 });
 
 // BY-ID landing only — NO time-based fallback anywhere (the user 2026-06-20, who wanted to shrink the 29%, then remove

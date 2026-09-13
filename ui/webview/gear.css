@@ -58,7 +58,7 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 /* the per-setting description is a HOVER tooltip (the user 2026-06-23): hidden by default,
    floats below the row on hover (absolute → no layout shift). */
 #rsettings .rs-sub { display: none; }
-#rsettings .rs-row:hover .rs-sub { display: block; position: absolute; left: 0; right: 0; top: 100%; z-index: 10;
+#rsettings .rs-row:hover .rs-sub, #rsettings .rs-widget:hover .rs-sub { display: block; position: absolute; left: 0; right: 0; top: 100%; z-index: 10;
   margin-top: 2px; color: var(--text-soft, #cdd3da); font-size: 0.92em; line-height: 1.35; background: var(--input-bg, #1b1b1c); border: 1px solid var(--hairline, #3a3a3a);
   border-radius: 6px; padding: 6px 9px; box-shadow: 0 4px 14px #000000aa; pointer-events: none; }
 #rsettings .rs-sub code { background: #0d0d0d; border-radius: 3px; padding: 0 3px; }
@@ -227,3 +227,45 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 .rs-logins .rs-login-rm { flex: 0 0 auto; cursor: pointer; font: inherit; background: var(--btn-bg, #2a2a2a); color: var(--fg, #ccc);
   border: 1px solid var(--hairline, #3a3a3a); border-radius: 5px; padding: 2px 8px; }
 .rs-logins .rs-login-rm[disabled] { opacity: 0.5; cursor: default; }
+/* THE TABS (T379, the user 2026-09-12; re-cut T400): the settings grouped by surface, seven pills under the title in the menu vocabulary,
+   8px of side padding so the seven fit the 560px card's one row (at 10px they needed 528px against 518 and Debug wrapped)
+   (menu tokens, the accent wash on the current one); one pane shows at a time ([hidden] restored against the flex rules) */
+#rsettings .rs-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 10px; padding-bottom: 10px; border-bottom: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12)); }
+#rsettings .rs-tab { font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12));
+  background: transparent; color: var(--fg, #ccc); cursor: pointer; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
+#rsettings .rs-tab:hover { border-color: var(--accent, #9cd2ff); color: var(--accent, #9cd2ff); }
+#rsettings .rs-tab.on { color: var(--accent, #9cd2ff); border-color: var(--accent, #9cd2ff); background: var(--accent-wash, rgba(156, 210, 255, 0.12)); font-weight: 600; }
+#rsettings .rs-pane[hidden] { display: none; }
+#rsettings .rs-hint { color: var(--text-muted, #9aa0a6); font-size: 12px; margin: 4px 0 6px; }
+/* a WIDGET ROW: the live demo (a miniature tab), the name (its one-line description behind the panel's hover popover, .rs-sub), the sliding switch, the options */
+/* ONE grid across every row (round one, LOW 2: each row was its own grid, so the switches did not line up): the host holds
+   the columns, each row spans them through a subgrid, so the demos, the switches and the options align down the list */
+#rsettings .rs-widgets { display: grid; grid-template-columns: 96px 1fr auto auto; column-gap: 10px; }
+#rsettings .rs-widget { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; padding: 7px 0; position: relative;
+  border-bottom: 1px solid var(--menu-border, rgba(255, 255, 255, 0.08)); }
+#rsettings .rs-widget:last-child { border-bottom: 0; }
+#rsettings .rs-widget-demo { display: inline-flex; align-items: center; justify-content: center; height: 30px; border-radius: 6px;
+  background: var(--bg, #1e1e1e); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.1)); }
+#rsettings .rs-widget-off .rs-widget-demo { opacity: 0.45; }
+#rsettings .rs-widget-name b { display: block; color: var(--text-bright, #e8eaed); font-weight: 600; }
+/* the SLIDING TOGGLE (the user's pick over a plain checkbox, 2026-09-12): a pill with a knob; on wears the accent */
+#rsettings .rs-switch { width: 34px; height: 18px; border-radius: 999px; border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.14)); background: transparent;
+  position: relative; cursor: pointer; padding: 0; flex: 0 0 auto; transition: background 0.12s ease, border-color 0.12s ease; }
+#rsettings .rs-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-muted, #9aa0a6); transition: left 0.12s ease, background 0.12s ease; }
+#rsettings .rs-switch.on { background: var(--accent, #9cd2ff); border-color: var(--accent, #9cd2ff); }
+#rsettings .rs-switch.on::after { left: 18px; background: var(--accent-fg, #0c1a2e); }
+#rsettings .rs-widget-opts { display: inline-flex; gap: 6px; min-width: 0; }
+#rsettings .rs-widget-opt { display: inline-block; min-width: 140px; }
+/* the demo's miniature tab wears the STRIP's vocabulary (styles.css .tab, .tab-dot, .tab-ctx, .tab-key), in this sheet's
+   fallbacks: the gear's hosts load feed.css and gear.css, not the chat's sheet */
+#rsettings .rs-widget-demo .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg, #ccc); position: relative; }
+#rsettings .rs-widget-demo .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg, #e0b020); }
+#rsettings .rs-widget-demo .tab-dot.await { background: var(--st-awaitbg-bg, #54B204); }
+#rsettings .rs-widget-demo .tab-dot.none { visibility: hidden; }
+#rsettings .rs-widget-demo .tab-dot.idle { background: var(--text-muted, #9aa0a6); opacity: 0.45; }
+#rsettings .rs-widget-demo .tab-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1.5px #8a8a8a; }
+#rsettings .rs-widget-demo .tab-dot.opening { background: var(--accent, #9cd2ff); }
+#rsettings .rs-widget-demo .tab-ctx { flex: 0 0 auto; position: relative; width: 4px; height: 13px; border-radius: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.13); }
+#rsettings .rs-widget-demo .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
+#rsettings .rs-widget-demo .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted, #9aa0a6); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.18));
+  border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }

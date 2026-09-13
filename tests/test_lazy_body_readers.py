@@ -50,7 +50,7 @@ EVENT_MODEL_ALLOWED = {
     "chain_membership", "file_rewound", "_membership_of", "_seed_from_doc", "_entry_current", "_carry_encode", "_carry_decode",
     "_LazyBody", "_LazyBody._refuse", "_Unhydrated", "_ckpt_encode", "_ckpt_decode", "_fold_eof_fragment", "_trailing_record",
     "_atom_line", "_dump",                              # the module's own --test dump over a whole parse (never a restored tree)
-    "fold_records", "_read_jsonl_entry_unlocked", "_read_jsonl_entry", "record_offsets", "_scan_jsonl_bytes", "resume_fork_links",
+    "fold_records", "_read_jsonl_entry_unlocked", "_read_jsonl_entry", "_scan_jsonl_bytes", "resume_fork_links",
     "_lineage_closure", "_load_states", "_read_jsonl", "_read_jsonl_incremental", "_tail_read", "_pinned_entry",
 }
 SDK_BACKEND_ALLOWED = None        # the backend builds live atoms and reads raw records only: every site allowed, listed for the record

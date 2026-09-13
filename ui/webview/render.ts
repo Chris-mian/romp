@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
+import { ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -27,17 +27,17 @@ import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./sub
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton, syncTagFilter, tagChip } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext, DayWalk } from "./time-marker";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
 import { senderKind, SenderKind } from "./sender-identity";
-import { loadSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
+import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
 import { backendLabel, effectiveDefaultBackend } from "./backend-names";
 import { delegate } from "./actions";
 import { flash } from "./actions";   // its own line: the import above is pinned verbatim by click-safe.test.ts (the file-view precedent)
-import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, GROUP_TITLE, workingFor, type AwaitRow } from "./spin-caption";
+import { awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, listBreakdown, keptWord, GROUP_TITLE, ROW_KINDS, workingFor, type AwaitRow } from "./spin-caption";
 import { CHIP_LABEL, chipWords, statusChip, type ChipState } from "./status-chip";   // the session status chip: its words and its classes, the one builder the bar and the tag overview's rows share (T322b)
 import { isClearCmd, openTopTitles, clearConfirmDetail, endConfirmDetail } from "./clear-confirm";
 import { prebuildPlan, type ViewState } from "./prebuild";
@@ -49,7 +49,8 @@ import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionR
          followAdoption, reorderTagOrder, homeSectionOf, neighborOfFolded, TABGROUPS_KEY, TABGROUPS_EVENT, type TabSection, type StripItem } from "./tab-groups";
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
-import { tabStateClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
+import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
+import { composeTabWidgets, tabHotkey } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry
 import { titleWithKey, chordOf, effectiveChord, loadOverrides } from "./keybindings";
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
@@ -109,6 +110,7 @@ import { dragSlotIndex } from "./dragslot";
 import { acceptDragEnter } from "./drag-accept";
 import { perfFrameHandler } from "./perf-telemetry";
 import { linkifyPrRefs, senderPrRepo, postalSenderHost } from "./pr-links";
+import { SETTLE_MS, SETTLE_FIRST_PAINT_MS, SETTLE_ROW_VIEWPORT_CAP, settleStep, settleRowFields, reachableOffset, gestureEvidence, scrollerGrab, writerIsReader, type SettleSample } from "./landing-settle";   // a deep-link landing settles before its row is filed (T386 stage 1)
 import { listenForFrames, federationMissing, federationLoadEntry, fedRetryKey } from "./frame-listener";
 import { highlightHtml } from "./highlight-cache";
 import { wrapCodeLines, addCopyBtn } from "./code-block";   // a fence's per-line rows and Copy button, shared with the file viewer
@@ -316,7 +318,7 @@ type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: stri
 // the add flow could read for a stored one), `why` the reason it is greyed when `available` is false
 interface AuthLogin { id?: string; value?: string; label?: string; machine?: boolean; available?: boolean; why?: string; expiresSoon?: boolean }
 interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean; logins?: AuthLogin[] }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
-interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -386,6 +388,17 @@ if ((window as any).__rompShowStrip) {
 initStrip(() => window.postMessage({ romp: "openSettings" }, "*"),
   (m) => vscodeApi?.postMessage(m));
 installSettingsSync();   // a gear save in ANOTHER VS Code pane lands here via the host
+// Open the settings gear on a NAMED tab, at a named SECTION of it when one is given (T379: the tab-widgets glyph opens
+// the Chat tab scrolled to its Tab widgets section): the same openSettings message every opener posts, with the tab and
+// the section named. Through the shell when this pane sits in one (the kernel's __rompOpenSettings relays it into the
+// settings iframe, tab and section and all); else to this window, whose own gear (the VS Code chat's, mounted above)
+// listens for it.
+function openSettingsOn(tab: string, section?: string): void {
+  const m: { romp: string; tab: string; section?: string } = { romp: "openSettings", tab };
+  if (section) m.section = section;
+  if (inRompShell()) { try { window.parent.postMessage(m, "*"); } catch { /* no shell to ask */ } return; }
+  window.postMessage(m, "*");
+}
 
 let settings: RompSettings = loadSettings();   // global webview settings (compact mode, …) — see settings.ts
 // (compact mode's expanded tool/notice runs are keyed in openFolds — "tg:<uuid>" / "ng:<uuid>" — the ONE fold
@@ -1606,7 +1619,7 @@ document.addEventListener("click", (e) => {
 //     first cut filled the feed pane, and reading a file cost the cards). The bytes come to the
 //     browser over /file, which is the fix for the original break (the user 2026-08-08): the kernel
 //     used to run an opener on ITS machine, the wrong screen entirely from another device.
-//   • Web dashboard, the Files pane on screen, or the gear's "File links open in" naming it → the
+//   • Web dashboard, the Files pane on screen (the one route to it since T404: no setting names a closed pane) → the
 //     open is handed to the SHELL, which brings that pane forward and forwards the click into it
 //     (kernel.py's landing shell; ui/webview/files.ts): the viewer as a column of its own, which stays
 //     up beside the chat and the feed instead of covering either.
@@ -1631,7 +1644,7 @@ function openPath(path: string, sid?: string | null, ev?: MouseEvent | null, fra
   if (!vscodeApi) return;
   if (location.protocol === "http:" || location.protocol === "https:") {
     const to = sid || activeId || null;
-    const route = fileLinkRoute(settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
+    const route = fileLinkRoute(window.parent !== window, panesOn.files === true, panesAvail.files !== false);
     // with its gesture, read first: a Cmd/Ctrl- or middle-click on a PDF takes the browser's own tab wherever
     // the plain click would have landed; a plain click routed to the Files pane is handed to the shell.
     // `frag`: a section to land on (the preview popover's "open" of a path#slug link, T351), through either route
@@ -1665,12 +1678,12 @@ function onMiddleClick(a: HTMLElement, fn: (e: MouseEvent) => void): void {
 // tells the person where Browse files will land, so the two cannot disagree.
 function browseRouteNow(): BrowseRoute {
   const web = location.protocol === "http:" || location.protocol === "https:";
-  return browseRoute(web, settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
+  return browseRoute(web, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
 }
 // Surface the FILE BROWSER at `path` for the session: the folder shown under the chat, the system context
 // card's Directory row, a tab menu's Browse files, a chat-hosted viewer's directory link. The listing goes
 // where a file link would (the ladder above):
-//   "pane"   the Files pane is on screen, or the gear's "File links open in" names it: the listing opens IN
+//   "pane"   the Files pane is on screen (no setting names a closed one since T404): the listing opens IN
 //            that pane (files.ts hosts the same browser as a column); a closed pane comes forward and stays.
 //            The message names its target and carries the session's IDENTITY (name and colour, looked up the
 //            way openPath's viewFile looks it up, null when neither list names the sid) for the pane, which
@@ -5005,9 +5018,10 @@ function rescindQueued(el: HTMLElement, toComposer: boolean): void {
   // move is the pane's own (journaled), never a clamp the follow-mode latch never saw (T262h)
   const contentX = document.getElementById("content");
   const wasAtBottom = !!contentX && contentX.scrollHeight > contentX.clientHeight + 2 && atBottom(contentX);
+  const beforeX = contentX ? contentX.scrollTop : 0;   // read BEFORE the removal: the browser clamps a bottom reader at the forced layout, and the write claims that move (see writeScroll)
   bub?.remove();
   if (grp) reflowQueuedGroup(grp);
-  if (contentX && wasAtBottom) writeScroll(contentX, contentX.scrollHeight, "queued-x", true);
+  if (contentX && wasAtBottom) writeScroll(contentX, contentX.scrollHeight, "queued-x", true, beforeX);
 }
 
 // The composer state around each ✕-click's optimistic restore, keyed `sid + " " + md`, so a FAILED
@@ -5381,11 +5395,11 @@ function setPeerDot(peerEl: HTMLElement, on: boolean) {
   else if (!on && has) prev!.remove();
 }
 function refreshPostalDots() {
-  // the PEER chips only: this session's own end (.notice-src-self) shows its state elsewhere, and a dot that
-  // arrives with the next working frame and leaves on the next rebuild would only flap (T302 review)
-  document.querySelectorAll(".notice-src-chip:not(.notice-src-self)").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p.textContent || "").trim())));
+  // the PEER ends only: this session's own end (.notice-src-self) shows its state elsewhere, and a dot that
+  // arrives with the next working frame and leaves on the next rebuild would only flap (T302 review). The name is read
+  // without its muted host prefix (the working set is keyed by the bare name)
+  document.querySelectorAll(".notice-src-peer").forEach((p) => setPeerDot(p as HTMLElement, workingSet.has((p as HTMLElement).dataset.name || (p.textContent || "").trim())));
 }
-
 
 // The interaction TYPE of a postal message, parsed from its leading intent token → a small chip on the
 // card head, shown in both the compact and expanded views (the user 2026-06-16). There are THREE
@@ -5435,9 +5449,13 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   // colour, which that ruling removed as reading like this session's, is back since 2026-09-11 (the user asked
   // where the tint had gone): styles.css paints the incoming card's ground from its rail, which is the peer's
   // colour here (`rail` below), so nothing more is set on the card. Click a name → that session's tab.
-  const peer = el("span", "notice-src-chip");
-  peer.textContent = ev.peer;
-  if (ev.color) { peer.style.setProperty("--peer-bg", ev.color.bg); peer.style.setProperty("--peer-fg", ev.color.fg); }
+  // T390 (the user 2026-09-12): a session's name is the NAME ITSELF, bold, in the session's identity colour, the way the
+  // awaiting fold names a peer (bg-await-peer): no chip box, no fill, in either theme. The identity colour rides --peer-bg
+  // and the sheet inks the text from it (a relative colour: the cream theme deepens it to read on the card's ground).
+  const peer = el("span", "notice-src-end notice-src-peer");
+  peer.append(...hostPartsNodes(ev.peerHost, ev.peer));   // the host prefix muted, as the tab wears it (the one helper)
+  peer.dataset.name = ev.peer;                            // the bare name the working set is keyed by (refreshPostalDots)
+  if (ev.color) peer.style.setProperty("--peer-bg", ev.color.bg);
   makeSessionChip(peer, ev.peer);
   setPeerDot(peer, workingSet.has(ev.peer));   // working dot before the peer name if that session is working
   // the session that OWNS the transcript being built (a comment popover's parent, a subagent viewer's session),
@@ -5450,11 +5468,11 @@ function renderPostalService(ev: Extract<ChatEvent, { kind: "postal-service" }>)
   if (own && ownId) {
     // this session's own end: its name (the host label muted, as the tab wears it) in its identity colour; a
     // narrow head collapses it to its coloured dot (the container query in styles.css) — both colours still show
-    const self = el("span", "notice-src-chip notice-src-self");
+    const self = el("span", "notice-src-end notice-src-self");
     const nm = el("span", "notice-src-name"); nm.append(...hostNameNodes(own.name, ownId));
     self.appendChild(nm);
     self.title = own.name;
-    if (own.color) { self.style.setProperty("--peer-bg", own.color.bg); self.style.setProperty("--peer-fg", own.color.fg); }
+    if (own.color) self.style.setProperty("--peer-bg", own.color.bg);
     src.appendChild(document.createTextNode(ev.direction === "in" ? " to " : " from "));
     src.appendChild(self);
   }
@@ -5824,7 +5842,7 @@ function flipTabs(mutate: () => void): void {
   });
 }
 function reorderTo(dragId: string, targetId: string, after: boolean): boolean {   // whether it reordered: a drop that it refused is not a committed drag
-  if (fedMissing) return false;   // no manager: the strip shows the kernel's seed, not an arrangement — a reorder here would be a lie to keep
+  if (fedMissing || settings.tabsLocked) return false;   // no manager: the strip shows the kernel's seed, not an arrangement — a reorder here would be a lie to keep; or the tabs were locked mid-drag by another window (T395 round one)
   const di = order.indexOf(dragId);
   if (di < 0) return false;
   order.splice(di, 1);
@@ -5990,6 +6008,15 @@ let renderPendingWhilePressed = false;
 // before the rebuild. Reset ("") wherever the strip's DOM is changed outside renderTabs — a tab drag's live
 // reorder — so the next render rebuilds whatever the inputs say.
 let tabStripSig = "";
+// THE TAB LOCK (T395, the user 2026-09-12): one press freezes every way a tab moves (the drag reorder, a drag into another
+// column or the split's edge, the tab menu's Move to rows) until the next press. A per-browser setting like the gear's,
+// written through the same store and fanned out the same way: the same-document signal every consumer listens to (the
+// strip repaints through its signature), and the host relay VS Code's separate panes need.
+function setTabsLocked(on: boolean): void {
+  settings = saveSettings({ tabsLocked: on });
+  try { window.dispatchEvent(new Event("romp:settings")); } catch { /* no window event: nothing listens */ }
+  vscodeApi?.postMessage({ type: "settingsSync", settings });
+}
 // Release the press-hold and flush any deferred rebuild. Hoisted so the DRAG handlers can call it
 // too: a native drag swallows the pointerup, so without this a finished drag would leave the strip
 // frozen against pushes until the next unrelated press (see the dragend handler).
@@ -6118,8 +6145,9 @@ function makeGroupHead(sec: TabSection, collapsed: boolean, holdsActive: boolean
     }
   }
   head.setAttribute("aria-label", spoken);
-  head.draggable = true;
+  head.draggable = !settings.tabsLocked;   // the tab lock (T395) holds the groups too
   head.addEventListener("dragstart", (e) => {
+    if (settings.tabsLocked) { e.preventDefault(); return; }
     draggedGroup = name;
     if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setDragImage(dragImageBlank(), 0, 0); }
     head.classList.add("dragging");
@@ -6181,7 +6209,7 @@ function sectionHeadOf(node: HTMLElement): HTMLElement | null {
 // the stale pre-outage session it holds underneath. `s.status` may be EMPTY (a skeleton before its first
 // status frame lands): no state → the gray "unknown" ring, the honest "listed, state not yet known". Returns
 // the state so the caller can finish its own chrome (the ✕ title, the gauge).
-function applyTabStatus(tab: HTMLElement, s: { status: Partial<Status> }): ChipState | undefined {
+function applyTabStatus(tab: HTMLElement, s: { id?: string; status: Partial<Status> }): ChipState | undefined {
   const st = s.status.state;
   // the state class — working gold, an on-YOU block alarm-red dashed vs a transient API error's
   // amber auto-retry, awaiting, compacting, closed — is tab-state.ts's rule, shared with the
@@ -6199,10 +6227,10 @@ function applyTabStatus(tab: HTMLElement, s: { status: Partial<Status> }): ChipS
   // that added or removed a row and slid the transcript under the reader by a row's height (tabDotClass).
   // Each pip explains itself on hover, the same titles the feed's DOT_TIP speaks (the user 2026-07-22; tab-state.ts
   // tabDotTitle, beside the class rule); the hidden slot and the compacting bar say nothing.
-  const dotCls = tabDotClass(st);
-  if (dotCls) tab.appendChild(el("span", dotCls));
-  const dotTip = dotCls ? tabDotTitle(st) : null;
-  if (dotTip) (tab.lastElementChild as HTMLElement).title = dotTip;
+  // The slot is a WIDGET now (T379, the user 2026-09-12): the dot widget's render is tab-state.ts's rule (tabDotClass,
+  // tabDotTitle), composed here with every other before-the-name widget the user keeps on (tab-widgets.ts, the one
+  // module the strip and the gear's live demos draw from); off in the gear, no slot at all.
+  composeTabWidgets(tab, "before", s.id || "", s.status, settings.tabWidgets);
   // compacting → a tiny animated compaction bar before the name (the tab gets no outline for this state,
   // so the bar IS the cue). A teal fill whose right edge slides left and loops — the same "compression"
   // motion as the statusline ctx-scan bar (.ctx-compress), miniaturised. Replaces the static ⇲ glyph the
@@ -6246,7 +6274,7 @@ function wireTabDrag(tab: HTMLElement, id: string): void {
   // visual, browser-style. dragImageBlank must be a rendered DOM node at dragstart (Chromium
   // snapshots it), hence the fixed off-viewport 1px div installed once below.
   tab.addEventListener("dragstart", (e) => {
-    if (fedMissing) { e.preventDefault(); return; }   // no manager: the strip is the kernel's seed, not an arrangement — nothing to reorder (see fedMissing)
+    if (fedMissing || settings.tabsLocked) { e.preventDefault(); return; }   // the tab lock (T395) holds it; no manager: the strip is the kernel's seed, not an arrangement — nothing to reorder (see fedMissing)
     draggedId = id; draggedEl = tab; tabDragCommitted = false;
     tabStripSig = "";   // the drag live-reorders the strip's DOM: whatever the order ends up, the next render rebuilds
     if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setDragImage(dragImageBlank(), 0, 0); }
@@ -6294,7 +6322,7 @@ function makeSkeletonTab(id: string): HTMLElement {
   tab.dataset.id = id;
   tab.dataset.act = "select";   // click → setActive via the stable #tabs delegate (./actions), click-safe as every tab
   tab.addEventListener("keydown", onTabKey);
-  tab.draggable = !fedMissing;
+  tab.draggable = !fedMissing && !settings.tabsLocked;
   wireTabDrag(tab, id);
   if (color) {
     tab.style.setProperty("--chip-bg", color.bg);
@@ -6303,11 +6331,11 @@ function makeSkeletonTab(id: string): HTMLElement {
   }
   if (id === peekId) tab.classList.add("tab-peek");
   const status = skeletonTabs.status.get(id) as Status | undefined;
-  applyTabStatus(tab, { status: status ?? {} });   // no status yet → the unknown ring, never a pre-outage state
+  applyTabStatus(tab, { id, status: status ?? {} });   // no status yet → the unknown ring, never a pre-outage state
   const label = el("span", "tab-label");
   label.replaceChildren(...hostNameNodes(name, id));
   tab.appendChild(label);
-  if (status) appendTabCtxGauge(tab, { status });
+  if (status) appendTabAfterWidgets(tab, { id, status });
   tab.title = "Not loaded yet — click to load";
   const closeBtn = el("span", "tab-close");
   closeBtn.textContent = "×";
@@ -6329,18 +6357,13 @@ function makeSkeletonTab(id: string): HTMLElement {
 // Drawn AFTER the label by both callers, so the ✕ keeps the tab's right edge. (Defined below makeSkeletonTab
 // on purpose: tab-ctx-gauge.test.ts orders the file's FIRST label append before its first gauge append,
 // and tabs-first.test.ts wants nothing between makePlaceholderTab and renderTabs but the placeholder.)
-function appendTabCtxGauge(tab: HTMLElement, s: { status: Partial<Status> }): void {
-  const st = s.status.state;
-  // Slim vertical context gauge right of the name (the user 2026-08-08): the statusline battery's
-  // fill % + colormap colour, rotated upright and with no % text — so "this session is filling up"
-  // reads at a glance across the whole strip. Skipped while compacting (the compacting bar owns that
-  // moment, and the % is about to be wrong) and on dead tabs. gear → Chat picks WHEN it shows:
-  // only once ≥50% full (the default — a gauge on every quiet tab is clutter; it appears when it
-  // has news), always, or never (the user 2026-08-08 v2, replacing the on/off toggle).
-  if (settings.tabCtx !== "never" && s.status.ctx && st !== "compacting" && st !== "closed") {
-    const pct = Math.max(0, Math.min(100, parseInt(s.status.ctx, 10) || 0));
-    if (settings.tabCtx === "always" || pct >= 50) tab.appendChild(tabCtxGauge(s.status.ctx, pickTone(s.status.ctxColor, s.status.ctxTone)));
-  }
+function appendTabAfterWidgets(tab: HTMLElement, s: { id?: string; status: Partial<Status> }): void {
+  // The after-the-name WIDGETS (T379, the user 2026-09-12): the slim vertical context gauge (the user 2026-08-08: the
+  // statusline battery's fill % + colormap colour, rotated upright, no % text, so "this session is filling up" reads at
+  // a glance across the strip; from half full by default, or always, the gear's Tab widgets section picks; skipped while
+  // compacting and on dead tabs) and the hot-key keycap (when one is assigned), composed from the registry in the
+  // configured order. Drawn AFTER the label by both callers, so the ✕ keeps the tab's right edge.
+  composeTabWidgets(tab, "after", s.id || "", s.status, settings.tabWidgets);
 }
 
 // A loading PLACEHOLDER tab (the user 2026-06-26): name + identity color from the kernel's tabOrder push,
@@ -6408,24 +6431,6 @@ function syncNoSessionsPlaceholder(visibleCount: number, totalCount = 0, heldCou
   ph.id = "no-sessions";
   ph.textContent = txt;
   content.appendChild(ph);
-}
-
-// The tab strip's vertical context gauge: fill height = context-used %, coloured by the SAME
-// server-computed global-colormap RGB the statusline battery / timeline use (setCtxBar), with the
-// same traffic-light fallback for an older kernel that doesn't ship ctxColor. Passive — a click
-// falls through to the tab's own select; the statusline battery keeps the click-to-/compact.
-function tabCtxGauge(ctxStr: string, ctxColor?: number[]): HTMLElement {
-  const pct = Math.max(0, Math.min(100, parseInt(ctxStr, 10) || 0));
-  const g = el("span", "tab-ctx");
-  const fill = el("span", "tab-ctx-fill");
-  fill.style.height = pct + "%";
-  fill.style.background = (ctxColor && ctxColor.length === 3) ? `rgb(${ctxColor.join(",")})`
-    : ctxFallbackColor(pct);   // theme-aware pair (ctx-color.ts): classic keeps main's 60/85 verbatim.
-  // FILLS wear the tone as-is in every theme — readableRgb is for TEXT (re-encoding the warn amber
-  // fill made it a muddy brown on light; the user 2026-08-31, off the live preview)
-  g.appendChild(fill);
-  g.title = `context ${pct}% used`;
-  return g;
 }
 
 // A hairline under EVERY row of tabs (T134, the user 2026-08-27, overturning the survey's
@@ -6587,7 +6592,7 @@ function renderTabs() {
   // input missing here is a repaint that never happens.
   const stripSig = JSON.stringify([
     activeId, peekId, ids, visibleIds, activeId ? tabInView(activeId) : null, plan.items,
-    settings.tabCtx, settings.stripGroupRows, settings.theme, settings.colormap, titleWithKey("Open a session", "session.new"),
+    settings.tabCtx, settings.stripGroupRows, settings.tabsLocked, settings.theme, settings.colormap, settings.tabWidgets, titleWithKey("Open a session", "session.new"),   // tabWidgets: which widgets a tab carries, their order and options (T379); tabsLocked: the tab lock (T395)
     surfaceLens(effViews(), "chat"), unions,
     snapView,   // the section whose view the pane shows (makeGroupHead: the header's mark and its way-back act)
     visibleIds.map((id) => {
@@ -6595,12 +6600,12 @@ function renderTabs() {
       if (renderKind(skeletonTabs, id, !!s) === "skeleton") {                                              // makeSkeletonTab's reads:
         const m = tabMeta.get(id), kst = skeletonTabs.status.get(id) as Status | undefined;               // the kernel's list + its
         return ["k", m?.name || s?.name, (m?.color || s?.color)?.bg, (m?.color || s?.color)?.fg, id === peekId,   // status frames, never the
-                kst?.state, kst && tabStateClass(kst), !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note];   // stale session's status
+                kst?.state, kst && tabStateClass(kst), !!kst?.faded, kst?.ctx, kst?.ctxColor, kst?.ctxTone, down, note, tabHotkey(id)];   // stale session's status; + the hot-key keycap's chord (T379)
       }
       if (!s) { const m = tabMeta.get(id); return ["p", m?.name, m?.color?.bg, m?.color?.fg, down, note]; }   // makePlaceholderTab's reads
       const st = s.status;
       return [s.name, s.color?.bg, s.color?.fg, st.state, tabStateClass(st), !!st.faded,
-              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note];
+              st.ctx, st.ctxColor, st.ctxTone, !!s.sub, down, note, tabHotkey(id)];   // + the hot-key keycap's chord (T379): a rebind repaints
     }),
   ]);
   const mslotEl = document.getElementById("mtag-slot");
@@ -6626,6 +6631,7 @@ function renderTabs() {
   // the active tab. Captured before the tab rule below, which keeps its pinned two-line shape.
   const focusedEl = document.activeElement as HTMLElement | null;
   const focusedGroup = (focusedEl?.closest(".tab-group-head") as HTMLElement | null)?.dataset.group;
+  const focusedLock = !!focusedEl?.closest(".tab-lock");   // a keyboard press on the lock rebuilt the strip: the lock keeps the focus (T395 round one)
   const refocusTab = bar.contains(document.activeElement);
   bar.replaceChildren();
   // A session under several tags has a COPY in each group (T264b, the user 2026-09-08: tags are
@@ -6668,7 +6674,7 @@ function renderTabs() {
     tab.addEventListener("keydown", onTabKey);
     // drag-to-reorder (synced with the timeline via the shared session-order file). A subagent viewer
     // stays put: it is client-only, and a reorder would post its id into the kernel's order.
-    tab.draggable = !s.sub && !fedMissing && !isProvisionalId(id);   // …and a page without its manager offers no drag at all (fedMissing); a create in flight has no session to move yet (the chat split: a zone's drop would open a column on an id the kernel does not know)
+    tab.draggable = !s.sub && !fedMissing && !isProvisionalId(id) && !settings.tabsLocked;   // the tab lock (T395) holds every tab; …and a page without its manager offers no drag at all (fedMissing); a create in flight has no session to move yet (the chat split: a zone's drop would open a column on an id the kernel does not know)
     wireTabDrag(tab, id);   // the dragstart/dragend pair, shared with the skeleton tab (2026-09-07)
     if (s.color) {
       tab.style.setProperty("--chip-bg", s.color.bg);
@@ -6694,7 +6700,7 @@ function renderTabs() {
       tab.addEventListener("mouseleave", () => { label.style.color = fadedColor(full); label.classList.add("name-faded"); });
     }
     tab.appendChild(label);
-    appendTabCtxGauge(tab, s);   // the context gauge, shared with the skeleton tab (2026-09-07)
+    appendTabAfterWidgets(tab, s);   // the context gauge and the hot-key keycap, the after-the-name widgets (T379), shared with the skeleton tab (2026-09-07)
     // Rich hover tooltip (custom DOM — a native title can't colour/bold): backend in its own colour, the
     // full dir path, and mode/model/effort/context each on a line (the user 2026-06-23). See showTabTip.
     if (!s.sub) {   // the rich tip reads a real session's dir/branch/model; a viewer has none of them
@@ -6734,6 +6740,23 @@ function renderTabs() {
   add.title = titleWithKey("Open a session", "session.new");
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
+  // THE TAB LOCK (T395, the user 2026-09-12): right after the + tab and before the tags box, in a little rounded box like
+  // the tags box (the user says the position may move later): the padlock the Sessions pane shows at its bottom (icons.ts,
+  // one drawing). A press freezes every tab move until the next press (setTabsLocked); locked, the box wears the menu
+  // vocabulary's current dress, the accent on the glyph and its outline, never a fill. The state is in the strip's
+  // signature, so the toggle repaints through it; the click is the node's own, click-safe because the strip is rebuilt
+  // only when its signature changes.
+  const lockBox = el("span", "tab-lockbox");
+  const lock = el("button", "tab-lock" + (settings.tabsLocked ? " on" : "")) as HTMLButtonElement;
+  lock.type = "button";
+  lock.innerHTML = settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN;
+  lock.title = settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again";
+  lock.setAttribute("aria-label", "Lock tabs");
+  lock.style.setProperty("--tab-lock-border", TAG_BTN_BORDER_CSS);   // the tag button's border, from its one source (tag-menu.ts): the themed token, so the two boxes match in every theme
+  lock.setAttribute("aria-pressed", settings.tabsLocked ? "true" : "false");
+  lock.addEventListener("click", (e) => { e.stopPropagation(); setTabsLocked(!settings.tabsLocked); });
+  lockBox.appendChild(lock);
+  bar.appendChild(lockBox);
   // the shared TAG-ICON filter (the user 2026-08-25): identical across surfaces, opening the one
   // multi-select lens menu — this instance governs the TAB STRIP (actives.chat)
   const tagBtn = tagMenuButton("filter these tabs by tag", (btn) => {
@@ -6763,6 +6786,23 @@ function renderTabs() {
   const tagChipsHost = el("span", "tab-tagchips");
   tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
   tagBox.appendChild(tagChipsHost);
+  // THE TAB-WIDGETS GEAR (T379, the user 2026-09-12): one glyph at the strip's right end, inside the tag box so it
+  // takes no extra height, opening the settings on the Chat tab scrolled to its Tab widgets section (the widget rows;
+  // the user's amendment 2026-09-12: no tab of their own). The ask rides the openSettings
+  // message every opener uses, with the tab named: to the shell when this pane sits in one (the kernel's
+  // __rompOpenSettings relays it into the settings iframe), else to this window (the VS Code chat hosts its own
+  // gear). A standalone /chat with neither has no gear to open, so it shows no glyph (an honest absence, never a
+  // dead control). Built once per strip paint like the tag button beside it; the click is its own, click-safe
+  // because the strip is rebuilt only when its signature changes.
+  if ((window as any).__rompShowStrip || inRompShell()) {
+    const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
+    gear.type = "button";
+    gear.title = "Tab widgets…";
+    gear.setAttribute("aria-label", "Tab widgets");
+    gear.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("chat", "tabwidgets"); });
+    tagBox.appendChild(gear);
+  }
   bar.appendChild(tagBox);
   {
     const v = effViews();
@@ -6807,7 +6847,8 @@ function renderTabs() {
     const h = Array.from(bar.querySelectorAll<HTMLElement>(".tab-group-head")).find((x) => x.dataset.group === focusedGroup);
     // the group gone, or now holding the active tab (no stop): the old rule
     if (h && h.tabIndex >= 0) h.focus(); else focusActiveTab();
-  } else if (refocusTab) focusActiveTab();
+  } else if (focusedLock) (bar.querySelector(".tab-lock") as HTMLElement | null)?.focus();   // not the active tab: Enter again would drop the caret into the composer
+  else if (refocusTab) focusActiveTab();
   stripAftermath(visibleIds, ids);
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
   // the rotated toggles in the chat pane's vertical strip — see _LANDING_FLEET_JS — so the pill was redundant.)
@@ -6949,6 +6990,39 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
   return span;
 }
 
+// The Billing flyout's ENTRY LIST (T387): one function for the session's picks and the machine-default submenu, so the
+// two menus can never list different billings. Each entry: its label (Login named by the machine's account when known,
+// the key plainly "API key", no fragment of it anywhere), the setAuth value, and why it is greyed here (a side this box
+// cannot bill, the kernel's reason) or "". The stored logins (T346) arrive here: the list grows with them; the default
+// submenu lists the machine's own login and the key only until the kernel takes a stored login as a machine default.
+function billingChoices(st: Status, avail: AuthAvail): Array<{ label: string; value: string; why: string }> {
+  // every login this host knows plus the key (T346, authLoginChoices: the machine's own first, then the stored ones); an
+  // older kernel sends no `logins` and keeps the two-entry list below, the machine's login named by its account
+  if (avail.logins && avail.logins.length) return authLoginChoices(avail);
+  return [{ label: st.authAcct ? `Login (${st.authAcct})` : "Login", value: "login", why: avail.login ? "" : (avail.loginWhy || "no Claude login signed in on this machine") },
+          { label: "API key", value: "key", why: avail.key ? "" : (avail.keyWhy || "no apiKeyHelper configured") }];
+}
+// A flyout placed beside its row (the Billing flyout and its nested default submenu, T387; the side rule the Tags flyout
+// and the model-version submenus follow): PREFER right; fall LEFT when the right edge would clip and the left has room;
+// with room on neither side (a narrow window) drop BELOW the row when it fits there, else ABOVE the row's top, and only
+// when neither fits clamp inside the viewport, never over the row while a place beside or beyond it exists (the T380
+// review: at 560 px it covered its menu and ran 33 px out; at 560 by 420 the clamp pulled the drop-below back over the
+// row). .ctx-menu is position: fixed, so the coordinates are viewport-space. The flyout is in the document already.
+function placeFlyBeside(anchor: HTMLElement, fly: HTMLElement): void {
+  const ir = anchor.getBoundingClientRect();
+  const sr = fly.getBoundingClientRect();
+  let left: number, top: number = ir.top;
+  if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
+  else if (ir.left - 2 - sr.width >= 8) left = Math.round(ir.left) - sr.width - 2;
+  else {
+    left = Math.max(8, Math.min(Math.round(ir.left), window.innerWidth - sr.width - 8));
+    if (ir.bottom + 2 + sr.height <= window.innerHeight - 4) top = ir.bottom + 2;
+    else if (ir.top - 2 - sr.height >= 0) top = ir.top - 2 - sr.height;
+    else top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4));
+  }
+  fly.style.left = left + "px";
+  fly.style.top = Math.max(0, Math.min(top, window.innerHeight - sr.height - 4)) + "px";
+}
 // The tab menu's ONE flyout gesture (T163 for Tags, the user 2026-08-28; T380 for Billing, the user
 // 2026-09-12): a hover of HOVER_INTENT_MS over the row opens the flyout (the feed's intent debounce:
 // enough to skip a graze, never a wait), a click opens it at once (byClick: a click may focus an input,
@@ -7197,11 +7271,15 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
           if (home) {
             lb.append("Move to ", named()); bodyE.appendChild(lb);
             row.appendChild(bodyE);
+            // the tab lock (T395): a move row is a tab move, so it reads held (the label dims, the row answers nothing); the + beside
+            // it still tags (adding is not a move), so it keeps its strength and says so itself (round one, LOW 1)
+            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock in the tab strip"; }
             const plus = el("button", "ctx-tag-x ctx-tag-plus") as HTMLButtonElement;
-            plus.type = "button"; plus.textContent = "+"; plus.title = "add this tag too — the session keeps its other tags";
+            plus.type = "button"; plus.textContent = "+";
+            plus.title = "add this tag too (the session keeps its other tags)" + (settings.tabsLocked ? ": adding is not a move, so the lock does not hold it" : "");
             plus.addEventListener("click", (e2) => { e2.stopPropagation(); editUnion(g, { add: [id] }); build(); sb.textContent = subText(); });
             row.appendChild(plus);
-            row.addEventListener("click", (e2) => { e2.stopPropagation(); moveUnion(home, g); build(); sb.textContent = subText(); });
+            row.addEventListener("click", (e2) => { e2.stopPropagation(); if (settings.tabsLocked) return; moveUnion(home, g); build(); sb.textContent = subText(); });
           } else {
             lb.append("+ ", named()); bodyE.appendChild(lb);
             row.appendChild(bodyE);
@@ -7360,12 +7438,14 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
   // fragment of it anywhere. A pick posts the same setAuth the badge used (the session reconnects to
   // apply, so the sub-line says "applying…" while st.authPending rides the status). An older kernel
   // sends no authAvail: its authBoth keeps the old both-or-nothing gate. The flyout opens on HOVER as
-  // the Tags flyout does, and on click (T380, the user 2026-09-12: one gesture, wireFlyout), and below
-  // the session's choices carries "Default for <machine>": the same choices as a radio group, the
-  // current default marked (authAvail.default, the owning kernel's seed, so a remote session's flyout
-  // shows ITS host's default), a pick posting setAuth with scope "machine", which writes the seed every
-  // NEW session and every session with no pick of its own launches on and touches no session that
-  // carries its own pick; the group's note says exactly that.
+  // the Tags flyout does, and on click (T380, the user 2026-09-12: one gesture, wireFlyout). Below the
+  // session's choices, behind a rule, ONE entry, "Set default billing" (T387, the user 2026-09-12), opens a
+  // further submenu holding exactly the same entries with the machine's default check-marked
+  // (authAvail.default, the owning kernel's seed, so a remote session's flyout shows ITS host's default);
+  // a click there posts setAuth with scope "machine", which writes the seed every NEW session and every
+  // session with no pick of its own launches on and touches no session that carries its own pick. The
+  // rule and the entry appear only when there is more than one billing to choose from here. No sub-line
+  // under anything: the entries say what they are.
   const st = s ? s.status : null;
   if (st && st.auth && (st.authAvail || st.authBoth)) {
     const avail: AuthAvail = st.authAvail || { login: true, key: true };
@@ -7394,11 +7474,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       if (already) return already as HTMLElement;
       menu.querySelector(".ctx-sub")?.remove();                    // one flyout at a time
       const sub = el("div", "ctx-menu ctx-sub ctx-sub-billing");
-      // every login this host knows plus the key (T346, authLoginChoices); an older kernel sends no `logins` and
-      // keeps the two-entry list, the machine's login named by its account
-      const choices = avail.logins && avail.logins.length ? authLoginChoices(avail)
-        : [{ label: st.authAcct ? `Login (${st.authAcct})` : "Login", value: "login", why: avail.login ? "" : (avail.loginWhy || "no Claude login signed in on this machine") },
-           { label: "API key", value: "key", why: avail.key ? "" : (avail.keyWhy || "no apiKeyHelper configured") }];
+      const choices = billingChoices(st, avail);                  // the ONE list both menus below draw from (T387)
       for (const c of choices) {
         const cur = authChoiceCurrent(st, c.value);   // the key, or a login by WHICH login (st.authLogin)
         const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
@@ -7415,69 +7491,58 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
         });
         sub.appendChild(opt);
       }
-      // ── Default for this machine (T380) ── the owning kernel's seed (authAvail.default): what a NEW
-      // session, and a session with no pick of its own, launches on. The same choices as radios, the
-      // current one marked; a pick posts setAuth with scope "machine" and changes no session that carries
-      // its own pick. A remote session's flyout names ITS host, whose kernel holds the seed.
-      if (avail.default) {
+      // ── Set default billing (T387, the user 2026-09-12) ── below the picks, behind a rule, ONE entry opening a further
+      // submenu with exactly the same entries, the machine's default check-marked. Both the rule and the entry only when
+      // there is more than one billing to choose from HERE (a side this box cannot bill is not a choice), and only from a
+      // kernel that says whether the default is explicit (an older one takes no scoped "auto" and marks no default). No
+      // sub-line anywhere. The submenu rides the same hover-intent road, wired on the Billing flyout itself and appended
+      // inside it, so leaving both closes both and the menu's dismissal covers it; the same placement rule places it.
+      const pickable = choices.filter((c) => !c.why);
+      if (pickable.length > 1 && avail.default && avail.defaultExplicit !== undefined) {
         sub.appendChild(el("div", "ctx-sep"));
-        const explicit = !!avail.defaultExplicit;
-        const head = el("div", "ctx-item ctx-item-toggle ctx-sub-head");
-        const hb = el("span", "ctx-item-body");
-        const hl = el("span", "ctx-item-label"); hl.textContent = "Default for " + (hostOf(id) || "this machine"); hb.appendChild(hl);
-        const hs = el("span", "ctx-item-sub");
-        // the sub-line says which rule holds (review): set here, or automatic (the helper rule) as before
-        hs.textContent = explicit
-          ? "set here: new and unpicked sessions follow it; a session's own pick stays"
-          : "automatic: the API key when a helper is configured, else the login; new and unpicked sessions follow it";
-        hb.appendChild(hs);
-        head.appendChild(hb); sub.appendChild(head);
-        // the same choices as radios, then Automatic (the helper rule), which clears the explicit default (review: the flag
-        // was one-way and invisible); the current mark sits on the explicit side, else on Automatic
-        const autoWord = avail.key ? "API key" : "Login";
-        // an older kernel sends no defaultExplicit and takes no "auto": its flyout marks the side it computed and offers no
-        // Automatic radio (review: the click would be swallowed there)
-        const olderKernel = avail.defaultExplicit === undefined;
-        // the machine's own login and the key only (T346 beside T380): a stored login as the machine's default is not
-        // taken by the kernel yet (its scoped arm refuses the value by name), so the group does not offer it
-        const machineChoices = choices.filter((c) => c.value === "login" || c.value === "key");
-        const radios = [...machineChoices.map((c) => ({ ...c, cur: olderKernel ? avail.default === c.value : (explicit && avail.default === c.value) })),
-                        ...(olderKernel ? [] : [{ label: `Automatic (${autoWord})`, value: "auto", why: "", cur: !explicit }])];
-        for (const c of radios) {
-          const opt = el("div", "ctx-item ctx-radio" + (c.cur ? " current" : "") + (c.why ? " disabled" : ""));
-          opt.textContent = c.label;
-          opt.dataset.scope = "machine";
-          if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
-          opt.addEventListener("click", (ev2) => {
-            ev2.stopPropagation();
-            if (c.why) return;
-            dismissTabMenu();
-            if (!c.cur && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value, scope: "machine" });
-          });
-          sub.appendChild(opt);
-        }
+        const setDef = el("div", "ctx-item ctx-item-toggle ctx-item-setdefault");
+        const sl = el("span", "ctx-item-label"); sl.textContent = "Set default billing"; setDef.appendChild(sl);
+        const sc = el("span", "ctx-caret"); sc.textContent = "▸"; setDef.appendChild(sc);
+        const openDefaultFly = (): HTMLElement | null => {
+          const open = sub.querySelector(".ctx-sub-default");
+          if (open) return open as HTMLElement;
+          const explicit = !!avail.defaultExplicit;
+          const d = el("div", "ctx-menu ctx-sub ctx-sub-default");
+          const post = (value: string) => { dismissTabMenu(); if (vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value, scope: "machine" }); };
+          // the machine's own login and the key only (T346 beside T380 and T387): a stored login as the machine's default is
+          // not taken by the kernel yet (its scoped arm refuses the value by name), so the flyout does not offer it
+          const defaultChoices = choices.filter((c) => c.value === "login" || c.value === "key");
+          for (const c of defaultChoices) {
+            const cur = explicit && avail.default === c.value;   // the check sits on the EXPLICIT default only; automatic marks nothing
+            const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
+            opt.textContent = c.label;
+            opt.dataset.scope = "machine";   // a MARKER for the labs and the sheet, never read for the wire: post() carries the scope
+            if (c.why) { opt.title = c.why; opt.setAttribute("aria-disabled", "true"); }
+            // the picks list one level up dismisses on its current entry too (review): the same gesture, the same answer, nothing posted
+            opt.addEventListener("click", (ev2) => { ev2.stopPropagation(); if (c.why) return; if (cur) { dismissTabMenu(); return; } post(c.value); });
+            d.appendChild(opt);
+          }
+          if (explicit) {
+            // the way BACK to the helper rule once a default stands (the manager's call for the user, 2026-09-12, open to
+            // their veto): at the end, behind its own rule, only while an explicit default is set, so a set default can be
+            // cleared; the kernel's scoped "auto" (T380) clears the flag and the seed
+            d.appendChild(el("div", "ctx-sep"));
+            const auto = el("div", "ctx-item ctx-item-auto");
+            auto.textContent = "Automatic";
+            auto.dataset.scope = "machine";   // the marker again
+            auto.addEventListener("click", (ev2) => { ev2.stopPropagation(); post("auto"); });
+            d.appendChild(auto);
+          }
+          sub.appendChild(d);
+          placeFlyBeside(setDef, d);
+          return d;
+        };
+        wireFlyout(sub, setDef, ".ctx-sub-default", () => openDefaultFly());
+        sub.appendChild(setDef);
       }
-      // INSIDE the menu node (so dismissTabMenu and the outside-mousedown check cover it), placed
-      // beside the item — .ctx-menu is position:fixed, so the coords are viewport-space, clamped
+      // INSIDE the menu node (so dismissTabMenu and the outside-mousedown check cover it), placed beside the item
       menu.appendChild(sub);
-      const ir = item.getBoundingClientRect();
-      const sr = sub.getBoundingClientRect();
-      // the side rule (Tags, the model-version submenus): PREFER right; fall LEFT when the right edge would clip and
-      // the left has room; with room on neither side (a narrow window) the flyout drops BELOW the row when it fits
-      // there, else ABOVE the row's top, and only when neither fits is it clamped inside the viewport — never over
-      // the row while a place beside or beyond it exists (review: at 560 px it covered its menu and ran 33 px out;
-      // at 560 by 420 the clamp pulled the drop-below back over the row)
-      let left: number, top: number = ir.top;
-      if (ir.right + 2 + sr.width <= window.innerWidth - 8) left = Math.round(ir.right + 2);
-      else if (ir.left - 2 - sr.width >= 8) left = Math.round(ir.left) - sr.width - 2;
-      else {
-        left = Math.max(8, Math.min(Math.round(ir.left), window.innerWidth - sr.width - 8));
-        if (ir.bottom + 2 + sr.height <= window.innerHeight - 4) top = ir.bottom + 2;
-        else if (ir.top - 2 - sr.height >= 0) top = ir.top - 2 - sr.height;
-        else top = Math.max(0, Math.min(ir.top, window.innerHeight - sr.height - 4));
-      }
-      sub.style.left = left + "px";
-      sub.style.top = Math.max(0, Math.min(top, window.innerHeight - sr.height - 4)) + "px";
+      placeFlyBeside(item, sub);
       return sub;
     };
     wireFlyout(menu, item, ".ctx-sub-billing", () => openBillingFly());
@@ -7588,7 +7653,7 @@ function startTabRename(id: string, copy?: string) {   // `copy`: which copy of 
     input.remove();
     fixed?.remove();
     label.style.display = "";
-    tab.draggable = !fedMissing;
+    tab.draggable = !fedMissing && !settings.tabsLocked;
     renameActive = false;
     if (renderPendingAfterRename) { renderPendingAfterRename = false; renderTabs(); }
     // The bare name, never the display string: the host prefix is this viewer's, and the kernel that
@@ -7911,7 +7976,10 @@ const PROVISIONAL_WAIT_MS = 90_000;
 // viewer are this page's own, never the store's, though both carry data-id on the strip), and whether this column has
 // a create in flight, or a failed one still holding its text, that would die with the document. Shape checks and a flag
 // read: any column's page answers for any id.
-(window as any).__rompMovableSession = (sid: unknown): boolean => typeof sid === "string" && !!sid && !isProvisionalId(sid) && !isSubId(sid);
+(window as any).__rompMovableSession = (sid: unknown): boolean => typeof sid === "string" && !!sid && !isProvisionalId(sid) && !isSubId(sid) && !settings.tabsLocked;   // …and nothing moves while the tabs are locked (T395)
+// the REASON behind the answer above (T395 round one): the shell's refusal toast names the padlock for a lock, and says
+// "only an open session" for the rest, instead of one line for both
+(window as any).__rompMoveRefusal = (sid: unknown): string => typeof sid !== "string" || !sid || isProvisionalId(sid) || isSubId(sid) ? "not-open" : settings.tabsLocked ? "locked" : "";
 (window as any).__rompColumnBusy = (): boolean => !!provisionalId || failedProvisionals.size > 0;
 
 function openProvisional(req: CreateReq): void {
@@ -11146,13 +11214,23 @@ function scrollDiagRow(kind: "scrollwrite" | "scrollgesture" | "tailchange" | "s
     ? { type: "clientDiag", surface: "chat", what: kind + "-capped", data: { sid: activeId || "", perMinute: scrollDiagCap } }
     : { type: "clientDiag", surface: "chat", what: kind, data });
 }
-function writeScroll(content: HTMLElement, top: number, writer: string, stick = false): void {
-  const before = content.scrollTop;
+// `from`: the scrollTop the caller read BEFORE its own DOM change (the append path). A tail that re-renders SHORTER under a
+// bottom reader (a lone tool turn folding into a group when the next call lands, a queued card replaced by a shorter landed
+// atom) is clamped by the browser at the forced layout, before this write runs: without `from` the write finds the reader
+// already at the new bottom, moves nothing, files no row and owes no echo, and the clamp's own scroll event, still pending,
+// files as a gesture, an unwritten move for a move the pane's re-render caused (the T262h and T262i labs red on the devbox
+// from the one-shot marker on). With `from`, the move is the pane's: the row names it and the pending event is its echo.
+function writeScroll(content: HTMLElement, top: number, writer: string, stick = false, from?: number): void {
+  const before = from ?? content.scrollTop;
   content.scrollTop = top;
   const after = content.scrollTop;
   if (after !== before) lastScrollWriteAfter = after;   // a write that moved the view owes exactly one scroll event, its echo; one that did not move owes none, and must not eat a later gesture landing near its target (verifier low, round two)
   lastKnownSh = content.scrollHeight;
   if (after !== before) scrollDiagRow("scrollwrite", scrollWriteRow(activeId || "", writer, before, after, stick, content.scrollHeight, content.clientHeight));
+  // a write of #content while a landing settles: a writer the census calls the READER's (landing-settle.ts WRITER_CLASS: a key or a
+  // chord, a link or the chips, the wheel over a notch) is their takeover (round four: their writes read as another mover's and
+  // land-realign undid them), every other writer's move is a sample for the settle rule, which re-lands (T386)
+  if (after !== before && landSettling && !landSettling.done && writer !== "land-on" && writer !== "land-realign") { if (writerIsReader(writer)) settleGesture(); else settleSample(); }
 }
 // EVERY mover of #content goes through writeScroll (T262j, the user 2026-09-08: an unwritten move the journal could
 // not name). scrollBy and scrollIntoView are scrollTop writes expressed differently, so they are expressed as such:
@@ -11295,9 +11373,37 @@ function scrollToAnchor(uuid: string): boolean {
     return true;
   }
   landTrail.push("pointer-exact");
-  landOn(target, uuid);
-  if (pendingAnchorQuote) { highlightCiteSpan(target, pendingAnchorQuote); pendingAnchorQuote = null; }
+  // T386 (the user 2026-09-12): a card's anchor is the FIRST atom of its transcript turn, often a tool call inside a collapsed
+  // group, while the text the card quotes sits atoms later; a landing on the anchor's own top put the reader on the group
+  // with the words far below. The landing aligns on the quoted span when the frame carries one and it is found in the
+  // turn's atoms (the anchor's element and the atoms after it up to the next user turn), else on the turn's first text
+  // atom below a tool or thinking atom, else on the anchor's element as before. The anchor's element is what flashes.
+  const quote = pendingAnchorQuote; pendingAnchorQuote = null;
+  const quoteEl = quote ? highlightCiteSpan(target, quote) : null;
+  landOn(target, uuid, quoteEl ?? firstTextAtomBelow(target), quote);
   return true;
+}
+/** The atoms of the transcript turn the anchor's element opens: itself and the following event elements up to (not
+ *  including) the next user turn. */
+function turnAtomsOf(target: HTMLElement): HTMLElement[] {
+  const out = [target];
+  for (let n = target.nextElementSibling; n; n = n.nextElementSibling) {
+    if (!(n instanceof HTMLElement) || !n.classList.contains("turn") || n.classList.contains("turn-user")) break;
+    out.push(n);
+  }
+  return out;
+}
+/** The first text atom below a tool, tool-group or thinking anchor within its turn (the element the words live in), else
+ *  null. A grouped run of tool calls renders as ONE .turn-toolgroup head carrying the first tool's uuid (renderToolGroup),
+ *  which is the shape a card's anchor takes on a long turn (round one, medium 5): the head counts as a tool atom. */
+function firstTextAtomBelow(target: HTMLElement): HTMLElement | null {
+  if (!isToolOrThinkingAtom(target)) return null;
+  for (const n of turnAtomsOf(target).slice(1)) { const md = n.querySelector(".assistant.md"); if (md) return md as HTMLElement; }
+  return null;
+}
+/** A tool atom, a grouped run of them, or a thinking atom: the shapes a turn opens with before its words. */
+function isToolOrThinkingAtom(n: Element): boolean {
+  return n.classList.contains("turn-tool") || n.classList.contains("turn-toolgroup") || n.classList.contains("turn-thinking");
 }
 
 /** The time-only landing (see landActive): the event whose epoch sits nearest `t` among the
@@ -11340,9 +11446,10 @@ function landNearestMoment(t: number): boolean {
 // one-shot: when a jump also switches tabs, the tab bar re-renders (possibly
 // wrapping to a SECOND row) and the ledger box for the new session appears — both
 // AFTER the scroll ran. #content shrinks by that growth and the landed turn drifts
-// off its mark. So: re-align whenever the bar/ledger actually resizes, plus two
-// timed retries for late layout (images, markdown), for ~1.2s — canceled the
-// moment the user wheel-scrolls so we never fight a real gesture.
+// off its mark. So the landing SETTLES (landing-settle.ts, the block below): for ~1.2 s every event that can move the
+// target is a sample (the target's or a spacer's box, the boxes above the transcript, any other writer, the first paint
+// and the window's end), a sample off the row re-lands, and the landing yields only to the reader's own gesture, a
+// scroll with their input behind it; the row is filed when the settle ends, with the measured distance.
 // The supporting SPAN (T218): the distiller quoted the sentence its takeaway rests on, the kernel
 // located it in the cited atom, and the landing highlights it INSIDE the (often long, multi-topic)
 // message — the study's most common partial was the right message with the claim buried deep. The
@@ -11350,19 +11457,29 @@ function landNearestMoment(t: number): boolean {
 // never mutated (the click-safety family); a browser without it, or an unfindable quote, keeps
 // today's whole-message landing exactly (the honest-fallback rule).
 let pendingAnchorQuote: string | null = null;
-function highlightCiteSpan(target: HTMLElement, quote: string): void {
+/** Highlight the quoted sentence within the anchor's TURN (its element and the atoms after it, turnAtomsOf: a card's anchor is
+ *  the turn's first atom, the words it quotes may be a later one, T386) and return the element the sentence starts in, for
+ *  the landing to align on; null when the quote is not in the rendered text (no highlight, no guess) or the browser has no
+ *  highlight API. The landing itself is landOn's (one write, settled), no longer a second write from here. */
+function highlightCiteSpan(target: HTMLElement, quote: string): HTMLElement | null {
   try {
     const H = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
-    if (!H || typeof Highlight === "undefined") return;
-    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+    if (!H || typeof Highlight === "undefined") return null;
+    // the words are looked for in the turn's TEXT atoms first, then in its tool and thinking atoms (round one, low 3): a
+    // sentence written through a Write tool and then said in prose must land on the prose, where the card quoted it
+    const atoms = turnAtomsOf(target);
+    const ordered = [...atoms.filter((a) => !isToolOrThinkingAtom(a)), ...atoms.filter((a) => isToolOrThinkingAtom(a))];
     const nodes: Text[] = []; let full = "";
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) { nodes.push(n as Text); full += (n as Text).data; }
+    for (const atom of ordered) {
+      const walker = document.createTreeWalker(atom, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) { nodes.push(n as Text); full += (n as Text).data; }
+    }
     let at = full.indexOf(quote);
     let len = quote.length;
     if (at < 0) {
       const pat = new RegExp(quote.trim().split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "i");
       const m = pat.exec(full);
-      if (!m) return;                                    // unfindable in the rendered text → no highlight, no guess
+      if (!m) return null;                               // unfindable in the rendered text → no highlight, no guess
       at = m.index; len = m[0].length;
     }
     const range = document.createRange();
@@ -11373,36 +11490,172 @@ function highlightCiteSpan(target: HTMLElement, quote: string): void {
       if (started && at + len <= end) { range.setEnd(tn, at + len - pos); break; }
       pos = end;
     }
-    if (!started) return;
+    if (!started) return null;
     H.set("cite-span", new (Highlight as unknown as { new(...r: Range[]): unknown })(range));
     window.setTimeout(() => { try { H.delete("cite-span"); } catch { /* gone with a nav */ } }, 6000);
-    const el0 = range.startContainer.parentElement;
-    const content0 = document.getElementById("content");
-    if (el0 && content0) scrollElInto(content0, el0, "center", "land-on");   // land ON the sentence, not the message top (attributed, T262j)
-  } catch { /* highlight is chrome, never load-bearing */ }
+    return range.startContainer.parentElement;
+  } catch { return null; /* highlight is chrome, never load-bearing */ }
 }
 
-function landOn(target: HTMLElement, flashKey?: string) {
+// ── a landing SETTLES before it is called good (T386 stage 1, the user 2026-09-12) ──────────────────────────────────
+// The landing audit had filed a card click's landing as exact while the reader saw the view elsewhere: the landing write
+// put the target at the viewport top, and a write of the page's own then moved it. The served lab named the writer
+// (tests/test_landing_settles_browser.py): the run's REPLACE by the window shrank the transcript, and the follow-mode
+// snap (tail-shrink) wrote the reader back to the bottom, because the landing had left `stick` on; the 250 ms re-align
+// rescued the lab, and the reader's first wheel cancels that re-align. Two things follow. A landing ENDS follow mode
+// unless it put the reader at the bottom (below). And the landing keeps the target aligned until the transcript stops
+// moving under it (landing-settle.ts, the rule): every event that can move the target is a sample (the target's or a
+// spacer's box resizing, the boxes above the transcript resizing, ANY other writer moving #content, two bounded
+// timers); a sample off the row re-lands ("land-realign"); the landing row is filed when the settle ends, with the
+// measured distance and whether it settled, so `ok` alone is never again the whole verdict. One settle in flight: a
+// newer landing supersedes the older's. The walk-forward of a detached window that fits the viewport waits for it.
+let landSettling: { turn: HTMLElement; at: HTMLElement; uuid: string | null; quote: string | null; rowH: number; samples: SettleSample[]; start: number;
+                    gesture: boolean; row: Record<string, unknown> | null; ro: ResizeObserver | null; timers: number[]; done: boolean; clamp: number } | null = null;
+const afterSettle: (() => void)[] = [];   // what waits for the landing to settle (the window's edge check)
+/** When the reader last put a hand on the scroller (ms): a pointer down or a drag on it or its scrollbar, a touch, a wheel, or a
+ *  key outside an editable field. The scroll listener reads it: a gesture-classified scroll within SETTLE_INPUT_MS of it is the
+ *  reader's takeover; one without is the browser's anchoring or another mover, a sample (round two, medium). */
+let settleLastInput = 0;
+/** The pointer HELD on the scroller itself (round three): a scrollbar thumb drag is one pointerdown on the scroller and then
+ *  scrolls with NO pointer moves until the release, so the timed evidence alone undid a grab-then-move drag (the pause past
+ *  SETTLE_INPUT_MS made every scroll a sample, and land-realign wrote the reader back). While the hold stands every scroll is
+ *  the reader's, whatever the clock says; the timed window stays for wheels, keys, touches and drags inside the content. */
+let settleScrollerHeld = false;
+function settleInput(e: Event): void {
+  const c = document.getElementById("content");
+  if (e.type === "pointerup" || e.type === "pointercancel") { settleScrollerHeld = false; return; }
+  if (e.type === "keydown") {
+    const a = document.activeElement;
+    if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" || (a as HTMLElement).isContentEditable)) return;   // typing scrolls the field, not #content
+  } else {
+    if (e.type === "pointermove" && !(e as PointerEvent).buttons) return;   // a hover is not a hand on the scroller; a drag inside the content is
+    if (!c || !(e.target instanceof Node) || !c.contains(e.target)) return;   // the scroller and its scrollbar (its own box), nothing else
+    if (e.type === "pointerdown") {
+      const pe = e as PointerEvent, cr = c.getBoundingClientRect();
+      if (scrollerGrab(e.target === c, pe.clientX - cr.left, pe.clientY - cr.top, c.clientWidth, c.clientHeight)) settleScrollerHeld = true;
+    }
+  }
+  settleLastInput = Date.now();
+}
+for (const ev of ["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchmove", "wheel", "keydown"]) window.addEventListener(ev, settleInput, { capture: true, passive: true });
+// a page put behind another mid-press gets neither pointerup nor pointercancel from Chromium (round four, low 1): the hold ends
+// with the page's focus or visibility as well
+window.addEventListener("blur", () => { settleScrollerHeld = false; });
+document.addEventListener("visibilitychange", () => { settleScrollerHeld = false; });
+function settleEnd(s: NonNullable<typeof landSettling>): void {
+  s.done = true; s.ro?.disconnect(); s.ro = null;
+  for (const t of s.timers) clearTimeout(t);
+  if (landSettling === s) landSettling = null;
+}
+/** A newer landing takes over before this one settled: its deferred row is FILED, not dropped (round one, medium 2: the
+ *  user's own double click lost its first row in the very machinery built to diagnose it), as it stood, with the mark. */
+function settleSupersede(s: NonNullable<typeof landSettling>): void {
+  settleEnd(s);
+  if (s.row) vscodeApi?.postMessage({ ...s.row, ...settleRowFields("gave-up", s.samples, s.rowH), gesture: undefined, settled: false, superseded: true, ...(s.clamp ? { clamp: s.clamp } : {}) });   // superseded, not the reader's takeover
+}
+/** The reader took over: a scroll the classifier calls a gesture (never a write's echo) WITH the reader's input behind it (a
+ *  wheel, a scrollbar drag, a touch swipe, a key; settleInput, round two): the landing yields (round one, medium 1: only a
+ *  wheel or a key ended it before, so a scrollbar drag during the settle was undone by the re-land). */
+function settleGesture(): void { const s = landSettling; if (s && !s.done) { s.gesture = true; settleTick(); } }
+/** The anchor's element by uuid in the active view: the selectors scrollToAnchor lands by. */
+function findTurnEl(uuid: string): HTMLElement | null {
+  const v = activeId ? views.get(activeId) : null; if (!v) return null;
+  const u = cssEscape(uuid);
+  return (v.el.querySelector(`.turn[data-uuid="${u}"]`) || v.el.querySelector(`.turn[data-orphan-of="${u}"]`) || v.el.querySelector(`.turn[data-mid="${u}"]`)
+          || v.el.querySelector(`.turn[data-mids~="${u}"]`) || v.el.querySelector(`.turn[data-uuids~="${u}"]`)) as HTMLElement | null;
+}
+/** The element a settling landing aligns on, re-resolved by uuid when a rebuild replaced the DOM under it (the virtualiser's
+ *  rewindow after a far landing detaches the old nodes; a detached box measures as zeros, which read as a constant miss and
+ *  walked the view up one tab bar's height per re-land in the lab). null when the anchor's turn is gone from the view. */
+function settleResolve(s: NonNullable<typeof landSettling>): HTMLElement | null {
+  // a connected element with a box: measurable. A detached one (the rewindow replaced the DOM) or one with no box (the view
+  // hidden by a tab switch mid-settle: display none measures as zeros, round one low 4) is re-found by uuid, and a turn that
+  // still has no box is treated as gone
+  if (s.at.isConnected && s.at.getClientRects().length) return s.at;
+  const turn = s.uuid ? findTurnEl(s.uuid) : null;
+  if (!turn || !turn.getClientRects().length) return null;
+  s.turn = turn;
+  s.at = (s.quote ? highlightCiteSpan(turn, s.quote) : null) ?? firstTextAtomBelow(turn) ?? turn;
+  s.rowH = settleRowHeight(s.at);   // the swapped element's own row (round one, low 1)
+  s.ro?.observe(s.at); if (s.at !== turn) s.ro?.observe(turn);
+  return s.at;
+}
+/** The row the landing must sit within: the aligned element's own height, capped at a fraction of the viewport (round one,
+ *  low 1: a 600 px miss on a 900 px message read settled), never under a few pixels (withinRow's floor). */
+function settleRowHeight(at: HTMLElement): number {
+  const c = document.getElementById("content");
+  return Math.max(8, Math.min(at.getBoundingClientRect().height, (c ? c.clientHeight : 600) * SETTLE_ROW_VIEWPORT_CAP));
+}
+function settleLand(s: NonNullable<typeof landSettling>, writer: string): void {
+  const c = document.getElementById("content"); const at = settleResolve(s);
+  if (c && at) scrollElInto(c, at, "start", writer);
+}
+function settleFinish(s: NonNullable<typeof landSettling>, fields: { dist: number | null; settled: boolean }): void {
+  settleEnd(s);
+  if (s.row) vscodeApi?.postMessage({ ...s.row, ...fields, ...(s.clamp ? { clamp: s.clamp } : {}) });
+  const q = afterSettle.splice(0);
+  for (const f of q) f();
+}
+/** One measurement of the target against the spot it CAN reach, then the rule's step. Near the tail the scroll clamp stops
+ *  the target short of the viewport top (round one, medium 3: a correct landing within a viewport of the tail read dist 93,
+ *  settled false, and re-landed no-op writes for the whole window); the reachable offset is subtracted, and the row carries
+ *  it as `clamp` so the reader of the audit knows why the target sits where it does. */
+function settleSample(): void {
+  const s = landSettling; if (!s || s.done) return;
+  const c = document.getElementById("content"); if (!c) return;
+  const at = settleResolve(s);
+  if (!at) { settleFinish(s, { dist: null, settled: false }); return; }   // the turn left the view: nothing to align, the row says so
+  const cr = c.getBoundingClientRect(), r = at.getBoundingClientRect();
+  const floor = reachableOffset(r.top - cr.top + c.scrollTop, c.scrollHeight, c.clientHeight);
+  s.clamp = floor;
+  s.samples.push({ at: Date.now() - s.start, dist: (r.top - cr.top) - floor });
+  settleTick();
+}
+function settleTick(): void {
+  const s = landSettling; if (!s || s.done) return;
+  const step = settleStep(s.samples, s.rowH, s.gesture, Date.now() - s.start);
+  if (step === "wait") return;
+  if (step === "realign") { settleLand(s, "land-realign"); return; }
+  settleFinish(s, settleRowFields(step, s.samples, s.rowH));
+}
+function landOn(target: HTMLElement, flashKey?: string, alignOn?: HTMLElement | null, quote?: string | null) {
   // the land and its re-alignments are writes of #content like any other, attributed (T262j): "land-on" for the
-  // landing itself, "land-realign" for each re-land while the boxes above size in
-  const land = (writer: string) => { const c = document.getElementById("content"); if (c) scrollElInto(c, target, "start", writer); };
-  const realign = () => land("land-realign");
+  // landing itself, "land-realign" for each re-land while the transcript settles under it. `alignOn` (T386): the element
+  // whose top goes to the viewport top when it is not the turn's own (the quoted span, or a turn's text below a tool
+  // group); `quote` re-finds that span after a rebuild; the turn is still what flashes
+  const at = alignOn ?? target;
+  settleLastInput = 0; settleScrollerHeld = false;   // the input that caused this landing (a click on a link in the scroller) is not evidence for taking it over (round three, low 4); a hold whose release never reached the page (a press held across an alt-tab) does not outlive the landing (round four, low 1)
+  const land = (writer: string) => { const c = document.getElementById("content"); if (c) scrollElInto(c, at, "start", writer); };
   land("land-on");
+  // a landing is the reader's intent to be AT this message: follow mode ends unless the landing put them at the bottom
+  // (the follow-mode snap otherwise writes them back to the bottom on the next shrink, the T386 double click)
+  { const c = document.getElementById("content"); const v = activeId ? views.get(activeId) : null; if (c && v) v.stick = atBottom(c); }
   if (flashKey == null || flashKey !== flashedAnchor) {   // one flash per navigation (see flashedAnchor)
     if (flashKey != null) flashedAnchor = flashKey;
-    target.classList.add("anchor-flash");
-    setTimeout(() => target.classList.remove("anchor-flash"), 1700);
+    at.classList.add("anchor-flash");                     // the ALIGNED element flashes: the turn may sit above the viewport when the words are aligned (round one, low 2)
+    setTimeout(() => at.classList.remove("anchor-flash"), 1700);
   }
-  const until = Date.now() + 1200;
-  let ro: ResizeObserver | null = null;
-  const stop = () => { ro?.disconnect(); ro = null; window.removeEventListener("wheel", stop); };
+  if (landSettling) settleSupersede(landSettling);   // a newer landing supersedes the older's settle: its row is filed as it stood, marked
+  const landSettle = { turn: target, at, uuid: flashKey ?? null, quote: quote ?? null, rowH: settleRowHeight(at), samples: [] as SettleSample[],
+                       start: Date.now(), gesture: false, row: null as Record<string, unknown> | null, ro: null as ResizeObserver | null, timers: [] as number[], done: false, clamp: 0 };
+  landSettling = landSettle;
   if (typeof ResizeObserver === "function") {
-    ro = new ResizeObserver(() => { if (Date.now() < until) realign(); else stop(); });
+    const ro = new ResizeObserver(() => settleSample());
+    ro.observe(at); if (at !== target) ro.observe(target);
     for (const id of ["tabbar", "ledger"]) { const c = document.getElementById(id); if (c) ro.observe(c); }
+    const v = activeId ? views.get(activeId) : null;
+    if (v) for (const sp of Array.from(v.el.querySelectorAll(".tx-spacer"))) ro.observe(sp);
+    landSettle.ro = ro;
   }
-  window.addEventListener("wheel", stop, { passive: true });
-  setTimeout(() => { if (ro && Date.now() < until + 100) realign(); }, 250);
-  setTimeout(() => { if (ro) realign(); stop(); }, 1200);
+  // the reader's takeover reaches settleGesture through the scroll listener: the classifier's gesture verdict with the reader's
+  // input behind it (settleInput: pointer, touch, wheel or key; round two)
+  // two bounded backstops beside the event samples (round one, low 5): the first paint after the landing's own render, and the
+  // window's end, where the landing is filed as it stands (settled on its row, else unsettled; nothing settles early, round two
+  // low 1). Every other sample is an event: a box resizing, another writer's move, a scroll with no input behind it
+  landSettle.timers.push(window.setTimeout(settleSample, SETTLE_FIRST_PAINT_MS), window.setTimeout(settleSample, SETTLE_MS + 20));
+  // the landing's own first sample, at the write (round two), is taken by the caller once the row is attached (landActive): taken
+  // here, an unmeasurable target finished the settle inside landOn with no row to file, and the caller then posted a row with no
+  // dist or settled key, the shape the audit reserves for an older bundle (round three, low 1)
 }
 
 
@@ -11521,8 +11774,11 @@ function ensureView(id: string): View {
     // tail unit re-rendering shorter outside the append path — moves the transcript's bottom UP, and the browser
     // clamps scrollTop to the new maximum on its own: an unwritten move the follow-mode latch never saw. When the
     // view's RECORDED follow mode held (`stick`, the pre-change truth), the reader is written to the new bottom
-    // through writeScroll — where the clamp left them, so nothing moves twice, but the move is the pane's own,
-    // attributed in the journal, and the latch re-reads from a real scroll event. A scrolled-up reader is untouched.
+    // through writeScroll — where the clamp left them, so nothing moves twice. This write cannot CLAIM the clamp's move:
+    // it writes scrollHeight, the value the clamp already set, and the scroll steps that classify the clamp's event run
+    // before the ResizeObserver steps of the same frame, so the row for that move is the clamp's (a gesture unless a
+    // writer with a pre-change origin claimed it, as the append path does); what this write keeps is the view's saved
+    // position and the latch's record for the next frame. A scrolled-up reader is untouched.
     if (typeof ResizeObserver === "function") {
       let lastH = -1;                                        // -1 = not yet measured (observe fires once on attach)
       const view = v;                                        // the closure's own binding (the outer `v` is a let)
@@ -12069,7 +12325,10 @@ function toggleToolGroup(key: string): void {
   // the expand/collapse changes the DOM without changing the event set, so mark the view stale to force
   // the compact rebuild past the cache guard (a plain tab switch leaves stale false → reuses the cache).
   if (activeId) { const v = views.get(activeId); if (v) v.stale = true; syncView(activeId); }
-  if (content) writeScroll(content, top, "toolgroup-toggle");
+  // `top` is also the write's origin: a collapse makes the transcript shorter, the browser clamps a bottom reader at the forced
+  // layout before this write runs, and a write that read the clamped value would move nothing, file no row and set no marker,
+  // leaving the clamp's own scroll event to file as a gesture (see writeScroll)
+  if (content) writeScroll(content, top, "toolgroup-toggle", false, top);
   refillOpenCommentPop();   // the popover renders the same units — its copy of this run must flip too
   scheduleRailSticky();
 }
@@ -12861,11 +13120,15 @@ function landActive(content: HTMLElement | null, v: View): void {
   // Diagnostics: log every landing attempt; a deep-link that couldn't resolve announces itself loudly
   // instead of impersonating a successful jump.
   if (att.anchor || att.t != null) {
-    vscodeApi?.postMessage({
+    const row: Record<string, unknown> = {
       type: "locateDiag", id: activeId, ok: scrolled, trail: landTrail.slice(),
       anchor: att.anchor ?? undefined, anchorT: att.t ?? undefined, kind: att.kind ?? undefined,
       keep: att.keep || undefined,
-    });
+    };
+    // an exact landing's row waits for the landing to SETTLE and goes out with the measured distance (T386); every
+    // other outcome (a miss, a fetch in flight, a keep-offset restore) files at once, as before
+    if (scrolled && landSettling && !landSettling.done && landTrail[landTrail.length - 1] === "pointer-exact") { landSettling.row = row; settleSample(); }   // the row attached, then the write-time sample: a takeover in the first frames files the landing as it stood, an unmeasurable one files settled false (rounds two and three)
+    else vscodeApi?.postMessage(row);
     // A keep-offset restore is NOT a user navigation — nobody asked to locate anything, so a failed one must
     // not raise "couldn't locate this in the transcript" at a reader who only scrolled. It still gets its
     // audit row above (trail + keep), which is where a lost position is diagnosed from.
@@ -12977,12 +13240,15 @@ function captureScrollAnchor(content: HTMLElement, v: View): { uuid: string; y: 
   return null;
 }
 
-function restoreScrollAnchor(content: HTMLElement, v: View, a: { uuid: string; y: number } | null): boolean {
+function restoreScrollAnchor(content: HTMLElement, v: View, a: { uuid: string; y: number } | null, from?: number): boolean {
   if (!a) return false;
   const el = v.el.querySelector(`[data-uuid="${cssEscape(a.uuid)}"]`) as HTMLElement | null;
   if (!el) return false;
   const yNow = el.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop;
-  writeScroll(content, yNow - a.y, "anchor-restore");   // the anchor turn keeps its exact on-screen offset
+  // `from` is the caller's scrollTop read BEFORE its DOM change: a reader a few pixels off the bottom whose tail came back shorter
+  // was clamped by the browser at the forced layout, and the restore computes the very value the clamp left, so without the
+  // origin the write moved nothing, filed no row and set no marker, and the clamp's event filed as a gesture (see writeScroll)
+  writeScroll(content, yNow - a.y, "anchor-restore", false, from);   // the anchor turn keeps its exact on-screen offset
   return true;
 }
 
@@ -13059,9 +13325,11 @@ function appendActive() {
   // Follow-mode pins the bottom only when there is something new to follow (T262, the user 2026-09-08): a
   // status-only tail changes no content, and pinning on it snapped a reader wheeling up from the tail of a
   // busy session back down within the first 80 px, frame after frame. Decision in scroll-keep.ts followTail.
-  if (stick && followTail(distBefore, heightBefore, content.scrollHeight)) writeScroll(content, content.scrollHeight, "append-stick", true);
+  // …passing the scrollTop read BEFORE the re-render: a tail that came back SHORTER was clamped by the browser at the forced
+  // layout, and the write must claim that move as its own (see writeScroll), else the clamp's pending scroll event files as a gesture
+  if (stick && followTail(distBefore, heightBefore, content.scrollHeight)) writeScroll(content, content.scrollHeight, "append-stick", true, before);
   else if (stick) { /* near the bottom, nothing new: the reader stays where they are */ }
-  else if (!(v && restoreScrollAnchor(content, v, anchor))) writeScroll(content, before, "append-raw");
+  else if (!(v && restoreScrollAnchor(content, v, anchor, before))) writeScroll(content, before, "append-raw", false, before);   // the same origin as the stick write: a shorter tail is claimed, not a gesture
   scheduleRailSticky();
   updateJumpBtn();   // appends can cross the overflow boundary either way — re-read the chip's truth
 }
@@ -13269,6 +13537,10 @@ function updateReplyChips(): void {
     const cls = classifyScroll(c.scrollTop, lastScrollWriteAfter);
     const gv = activeId ? views.get(activeId) : null;
     if (gv) gv.gestureScroll = cls === "gesture";   // read once by the edge check this event runs next (T366): a write's echo is no gesture
+    if (cls === "gesture") { if (gestureEvidence(settleLastInput, Date.now(), settleScrollerHeld)) settleGesture(); else settleSample(); }          // the reader took over, by any input (a scrollbar drag, a touch swipe, a wheel): a settling landing yields (T386 round one, medium 1)
+    // …a gesture with a reader's input behind it (round two, medium): the browser's own scroll anchoring (a node inserted or a spacer
+    // re-estimated above the viewport) moves scrollTop with no write and no input, and the classifier calls that a gesture too; for
+    // the settle it is a sample, or the landing that was and stayed exact filed settled false
     lastScrollWriteAfter = null;   // one-shot: the first event after a write consumes its marker, echo or not (a gesture that lands within a pixel of an older write's target is a gesture)
     if (cls !== "write-echo") scrollDiagRow("scrollgesture", { sid: activeId || "", top: c.scrollTop, gesture: true, sh: c.scrollHeight, ch: c.clientHeight });
     lastKnownSh = c.scrollHeight;   // sh/ch: a clamp reads top == sh - ch after sh dropped (T262e)
@@ -13756,7 +14028,13 @@ function renderLedger() {
 // the box's fold + each row's detail fold key into openFolds ("bgfold:<sid>" / "bgrow:<id>") — the ONE fold
 // store since 2026-09-08 (these had their own bgFoldOpen / bgExpanded sets)
 const BG_RANK: Record<string, number> = { failed: 3, running: 2, completed: 1 };
-const BG_LEFTOVER_TITLE = "Also running";   // tracked tasks the wait does not name (a dev server the session keeps around)
+// T394 (the user 2026-09-12, from a screenshot of the fold with a section for tasks merely also running): a tracked task the kernel's rows do
+// not name is still a command or an agent, and what set it apart was a JUDGE'S VERDICT (the closer audited its launch without a
+// wait), not a kind. So it lists in its kind's section, dimmed, with the verdict as a muted suffix on the row (kept running, not
+// waited on), and the header counts it with every listed row by kind, naming how many wear the verdict; the section of its own, whose title said nothing of
+// that, is gone. One hue per kind for the dot and the caption word (the sheet: bg-kind-*), status overriding for failed and
+// completed rows.
+const BG_KEPT_WORD = "· kept running, not waited on";
 // ── SUBAGENT VIEWER (plans/subagent-transcripts.md, 2026-09-05) ─────────────────────────────────
 // The arrow on an Agent head (or an agent bg-task row) opens the agent's whole transcript as a PEEK tab:
 // a client-only pseudo-session in `sessions`/`order` with id `<parentId>/agent/<agentId>`, fed by the
@@ -13953,20 +14231,40 @@ function renderBgTasks() {
   // (awaitingTaskIds — an exact launch-id match; the ids' PRESENCE, never the chip state); the status DOT
   // keeps its own meaning (yellow = the row is running)
   const awaited = new Set<string>(s.status.awaitingTaskIds || []);
+  // the JUDGE's verdict on the tracked tasks, shipped (kernel _bg_split's services, bgServiceIds, in every turn state): a task
+  // the closer audited past its launch without a wait is furniture the session keeps running. Only that verdict earns the
+  // kept-running word (T394 round one: inferring it from a missing row called a placed task under a stamped top, and every
+  // agent, kept running mid-turn, when the kernel simply enumerates no rows for them then)
+  const services = new Set<string>(s.status.bgServiceIds || []);
   host.classList.toggle("bg-awaited", !!why || tasks.some((t) => awaited.has(t.id)));
   const open = openFolds.has("bgfold:" + sid);
   const groups = groupRows(items);
   const awPeers = s.status.awaitingPeers || [];
   const itemIds = rowIds(items);   // the rows AND what nests under them (an agent's own waits name their tasks too)
   const leftovers = tasks.filter((t) => !itemIds.has(t.id));   // tracked tasks the wait does not name (services)
+  const kept = leftovers.map((t) => taskRowSpec(t, awaited.has(t.id), services.has(t.id)));   // …as rows of their KIND (T394): the judge's services dimmed, the verdict as a suffix
+  const keptN = kept.filter((row) => row.kept).length;   // the header counts the rows that WEAR the verdict, none other (round one, medium 1)
+  // every row the list shows, by kind (round two, medium): the kernel's rows AND the tracked tasks they do not name, so a box
+  // whose only row is a placed command or a finished one reads "In the background · 1 command", never a separator with nothing after it
+  const counted: AwaitRow[] = [...items, ...kept.map((row) => ({ kind: row.kind || "commands", id: row.id, label: row.label }))];
   // the header dot: await-green while waiting, like the chip; otherwise the worst tracked status, so a
   // failed task is glanceable while collapsed (running-yellow when nothing tracked has failed)
-  const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, "running");
+  // seeded from the tasks' own statuses (round two, low 2): seeded "running", a completed-only box wore the running gold and
+  // the header's completed tint matched nothing
+  const worst = tasks.reduce((w, t) => (BG_RANK[t.status] || 0) > (BG_RANK[w] || 0) ? t.status : w, tasks.length ? (tasks[0].status || "running") : "running");
   const head = el("div", "bg-fold-head " + (why ? "bg-await" : "bg-" + worst) + (open ? " open" : ""));
   head.dataset.act = "bg-fold"; head.dataset.id = sid;
   const car = el("span", "bg-caret"); car.textContent = open ? "▾" : "▸"; head.appendChild(car);   // ▸ closed → ▾ open (expands DOWNWARD beneath the header)
   head.appendChild(el("span", "bg-dot"));
   const lab = el("span", "bg-fold-label");
+  // THE HEADER'S RULE (T394 round three, lows 1 and 2; round four): the leading word is the wait and its count is the awaited rows
+  // (the chip's number); the breakdown after the separator counts every TOP-LEVEL row the list shows, by kind, awaited or not, a
+  // peer row as a peer; "N kept running" is the subset of those rows wearing the judge's verdict, never a further partition. So
+  // "Awaiting 2 · 1 agent · 2 commands · 1 kept running" is a session waiting on two of three listed rows, one of them a command
+  // the judge called furniture. An agent's OWN waits, drawn as sub-rows under it, are the agent's and stay out of the count, as
+  // they stay out of the chip's (the session waits on the agent, the agent on them). The one-kind idle header and the peer-named
+  // one keep the wait's own words and add the breakdown only when the list shows rows beyond the wait's (else the word, or the
+  // names, already count them all).
   if (why) {
     // IDLE, waiting on the rows — the chip reads Awaiting and the header agrees with it in number: ONE rule
     // words both (awaitWord). The kernel's why leads with the verb ("waiting on a background command: …");
@@ -13985,17 +14283,17 @@ function renderBgTasks() {
         lab.appendChild(nm);
       });
       lab.append(" · " + why.replace(/^delegated to [^;]*;\s*/i, "").replace(/^(waiting on|awaiting)\s+/i, ""));
+      if (kept.length) lab.append(" · " + listBreakdown(counted, keptN));   // every listed row counted, the peer rows as peers (round four): the names alone count them otherwise
     } else if (groups.length > 1) {
-      lab.textContent = "Awaiting " + word + " · " + awaitBreakdown(items);   // mixed kinds: the number, then the breakdown
+      lab.textContent = "Awaiting " + word + " · " + listBreakdown(counted, keptN);   // mixed kinds: the number, then every listed row by kind, then the kept rows
     } else {
-      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "");
+      lab.textContent = "Awaiting" + (word ? " " + word : "") + " · " + why.replace(/^(waiting on|awaiting)\s+/i, "") + (kept.length ? " · " + listBreakdown(counted, keptN) : "");   // the rows beyond the wait's counted too, by kind, the kept subset after (round three, low 3)
     }
   } else {
     // WORKING (or idle with nothing awaited — a service the session keeps around): the same rows, worded
-    // as what they are, no idle note. The breakdown counts the in-flight rows, or the tracked tasks when
-    // the kernel names none (they are shell tasks by construction — _bg_split never makes an agent a service).
-    const counted: AwaitRow[] = items.length ? items : leftovers.map((t) => ({ kind: "commands", id: t.id, label: t.summary }));
-    lab.textContent = "In the background · " + awaitBreakdown(counted);
+    // as what they are, no idle note. The header counts every row the list shows (T394): the in-flight rows by
+    // kind, then the tracked tasks the kernel names no row for, counted with them by kind, the rows wearing the verdict named after.
+    lab.textContent = "In the background · " + listBreakdown(counted, keptN);
   }
   head.appendChild(lab);
   host.appendChild(head);
@@ -14016,9 +14314,13 @@ function renderBgTasks() {
   }
   const taskById = new Map<string, BgTask>(tasks.map((t) => [t.id, t]));
   const peerByName = new Map<string, PeerIdent>(awPeers.map((p) => [p.name, p]));
-  const headers = groups.length + (leftovers.length ? 1 : 0) >= 2;   // group headers only when there is more than one group to tell apart
+  // the sections, one per KIND in display order: a kind the kernel's rows bring, or one only a kept row brings (T394)
+  const sections: { kind: string; rows: AwaitRow[] }[] = [...ROW_KINDS, "other"]
+    .filter((k) => groups.some((g) => g.kind === k) || kept.some((row) => row.kind === k))
+    .map((k) => ({ kind: k, rows: (groups.find((g) => g.kind === k) || { rows: [] as AwaitRow[] }).rows }));
+  const headers = sections.length >= 2;   // group headers only when there is more than one group to tell apart
   const list = el("div", "bg-list");
-  for (const g of groups) {
+  for (const g of sections) {
     if (headers) { const gh = el("div", "bg-group-head"); gh.textContent = GROUP_TITLE[g.kind] || "Other"; list.appendChild(gh); }
     for (const it of g.rows) {
       list.appendChild(bgRow(awaitRowSpec(it, taskById.get(it.id || ""), peerByName), sid));
@@ -14035,10 +14337,7 @@ function renderBgTasks() {
         list.appendChild(bgRow(spec, sid));
       });
     }
-  }
-  if (leftovers.length) {
-    if (headers) { const gh = el("div", "bg-group-head"); gh.textContent = BG_LEFTOVER_TITLE; list.appendChild(gh); }
-    for (const t of leftovers) list.appendChild(bgRow(taskRowSpec(t, awaited.has(t.id)), sid));
+    for (const row of kept) if (row.kind === g.kind) list.appendChild(bgRow(row, sid));   // the kept rows of this kind, after the awaited ones
   }
   // the plain-words note on what the state means — for the idle wait only, where the state is not obvious
   // from the header; "In the background" says all a working session needs (2026-09-06)
@@ -14073,13 +14372,18 @@ interface BgRowSpec {
   command?: string | null;    // the fold: an agent's prompt, a command's command line, a watch's predicate
   output?: string | null;     // the fold: a command's output tail (never an agent's — its output file IS the transcript; the arrow is the way in)
   peer?: PeerIdent | null;    // a peer row: the name in identity colour
+  kind?: string | null;       // the row's kind (agents | commands | watches | peer | timer): its section, and the hue of its dot and caption (T394)
+  kept?: boolean;             // a tracked task the judge called a service (kernel bgServiceIds: audited past its launch without a wait), still running: dimmed, the verdict as a muted suffix (T394)
   sub?: "first" | "rest" | null;   // a NESTED row — what the agent above it waits on (2026-09-10): indented; "first" wears the "waiting on" label, "rest" its blank twin so the dots align
   deeper?: string | null;     // a nested row that has waits of its own: their count, said in the label ("waiting on 1 command") — the box draws one level
 }
 
-function taskRowSpec(t: BgTask, awaited: boolean): BgRowSpec {
+function taskRowSpec(t: BgTask, awaited: boolean, service: boolean): BgRowSpec {
   const status = t.status || "running";
+  // its kind's section; the kept-running word only on a task the judge called a service (the kernel's verdict, never inferred
+  // from a missing row) and only while it runs: a completed or failed task is finished, not kept (round one, medium 2 and low 1)
   return { id: t.id, status, caption: status, label: t.summary || "Background task", awaited,
+           kind: t.agentId ? "agents" : "commands", kept: service && status === "running",
            agentId: t.agentId || null, stopId: status === "running" ? t.id : null,
            command: t.command || null, output: t.agentId ? null : (t.output || "(no output captured)") };
 }
@@ -14095,30 +14399,31 @@ function awaitRowSpec(it: AwaitRow, tracked: BgTask | undefined, peerByName: Map
   // the nested rows would have no Stop at all.
   const stopId = running ? tracked!.id : (it.stoppable && id ? id : null);
   if (it.kind === "agents") {
-    return { id, status: "running", caption: "running", label: it.label || (tracked && tracked.summary) || "background agent",
+    return { id, status: "running", caption: "running", kind: "agents", label: it.label || (tracked && tracked.summary) || "background agent",
              agentId: it.agentId || (tracked && tracked.agentId) || null, since: it.since,
              stopId, command: (tracked && tracked.command) || null, output: null };
   }
   if (it.kind === "commands") {
     const status = (tracked && tracked.status) || "running";
-    return { id, status, caption: status, label: it.label || (tracked && tracked.summary) || "background command", since: it.since,
+    return { id, status, caption: status, kind: "commands", label: it.label || (tracked && tracked.summary) || "background command", since: it.since,
              stopId, command: (tracked && tracked.command) || null,
              output: tracked ? (tracked.output || "(no output captured)") : null };
   }
   if (it.kind === "watches") {
-    return { id, status: "armed", caption: "armed", label: it.label || "a watch", since: it.since,
+    return { id, status: "armed", caption: "armed", kind: "watches", label: it.label || "a watch", since: it.since,
              watchId: it.watchId || null, command: it.detail || null };
   }
   if (it.kind === "peer") {
-    return { id, status: "waiting", label: it.label || "a peer", peer: peerByName.get(it.label || "") || null };
+    return { id, status: "waiting", kind: "peer", label: it.label || "a peer", peer: peerByName.get(it.label || "") || null };
   }
-  return { id, status: "waiting", caption: it.kind === "timer" ? "timer" : null, label: it.label || it.kind, since: it.since };
+  return { id, status: "waiting", caption: it.kind === "timer" ? "timer" : null, kind: it.kind, label: it.label || it.kind, since: it.since };
 }
 
 function bgRow(t: BgRowSpec, sid: string): HTMLElement {
   const tOpen = openFolds.has("bgrow:" + t.id);
   const foldable = !!(t.command || t.output);
-  const row = el("div", "bg-task bg-" + (t.status || "running") + (t.awaited ? " bg-awaited" : "") + (t.sub ? " bg-sub" : "") + (tOpen && foldable ? " open" : ""));
+  const row = el("div", "bg-task bg-" + (t.status || "running") + (t.kind ? " bg-kind-" + t.kind : "") + (t.kept ? " bg-kept" : "")
+                     + (t.awaited ? " bg-awaited" : "") + (t.sub ? " bg-sub" : "") + (tOpen && foldable ? " open" : ""));
   const rh = el("div", "bg-head" + (foldable ? "" : " bg-flat"));
   if (foldable) { rh.dataset.act = "bg-toggle"; rh.dataset.id = t.id; }   // the row header toggles; clicks in the detail body don't collapse it
   if (t.sub) {
@@ -14136,6 +14441,7 @@ function bgRow(t: BgRowSpec, sid: string): HTMLElement {
     if (t.peer.color && t.peer.color.bg) sum.style.color = t.peer.color.bg;
   } else sum.textContent = t.label || "Background task";
   rh.appendChild(sum);
+  if (t.kept) { const kw = el("span", "bg-kept-word"); kw.textContent = BG_KEPT_WORD; rh.appendChild(kw); }   // the judge's verdict, muted, beside the label (T394)
   if (t.deeper) {
     // the level the box does not draw, counted in words (the meta rung, like the elapsed time)
     const dp = el("span", "bg-deeper"); dp.textContent = "· waiting on " + t.deeper; rh.appendChild(dp);
@@ -14347,6 +14653,8 @@ function renderLiveAsk() {
   const host = document.getElementById("live-ask");
   const footer = document.getElementById("footer");
   const content = document.getElementById("content");
+  const topBefore = content ? content.scrollTop : 0;   // read BEFORE any change below (the re-parent, the card's emptying, the render): a card re-rendered SHORTER under a
+                                                       // bottom reader is clamped at the first forced layout, and a read after it names the clamped value as the origin (round three, low 1)
   if (!host) return;
   // Keep the picker the LAST child of #content so it sits beneath the active thread even if a thread was
   // appended after it (e.g. switching to a never-seen session while a picker is up).
@@ -14379,7 +14687,7 @@ function renderLiveAsk() {
   // Reveal the picker if the user is parked at the bottom — it's part of the scroll flow now, so new/taller
   // pickers would otherwise land below the fold. Never yank a user who has scrolled UP to read context.
   const v = activeId ? views.get(activeId) : undefined;
-  if (content && (!v || v.stick)) writeScroll(content, content.scrollHeight, "liveask-reveal", true);
+  if (content && (!v || v.stick)) writeScroll(content, content.scrollHeight, "liveask-reveal", true, topBefore);
 }
 
 // The focused option's side-by-side preview box, reproduced VERBATIM in a monospace block (the user
@@ -17081,13 +17389,13 @@ function olderOnServer(s: Session): boolean {
 // CLICK of the reader's (a card, a lane, a deep link, a notch, a reply chip, a comment tick: any anchor landing with no keep
 // offset), which the strip names as the message they opened, with its time when the frame carried one; the reload restore
 // of their own saved place arms a keep offset and keeps the plain sentence (verifier low, round two)
-const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null }>();
+const pendingWindowNav = new Map<string, { nav: boolean; named: boolean; t: number | null; kind: string | null }>();
 function requestAround(sid: string, uuid: string): boolean {
   const s = sessions.get(sid);
   if (!s || s.proto !== 2 || loadingOlder.has(sid)) return false;
   const nav = !relandAsk;
   const kind = pendingAnchorKind ?? pendingAnchorIntent ?? null;
-  pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null });
+  pendingWindowNav.set(sid, { nav, named: nav && pendingAnchorKeepY == null, t: nav ? (pendingAnchorT ?? null) : null, kind: nav ? kind : null });   // t and kind ride to the adoption (T386)
   // every window ask leaves a diagnostic row (T366: the rows of the report had the reply's landing but nothing said
   // which pass asked for the window): the landing trail so far, the anchor's kind, whether a keep-offset restore asked;
   // under the same per-minute budget as the other scroll rows (verifier low 5)
@@ -17158,7 +17466,9 @@ function chatWindow(msg: any) {
   if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) return;
   const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
-  if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
+  // the same landing re-armed, so the click's time and kind ride through (T386: the adoption used to reset them, and the
+  // landing row lost the datum that ties it to the click); a window with no navigation behind it carries none
+  if (target) { pendingAnchor = target; pendingAnchorIntent = null; pendingAnchorT = ask?.t ?? null; pendingAnchorKind = ask?.kind ?? null; flashedAnchor = null; pendingAnchorKeepY = null; anchorPendingOlder = false; }
   showActive();
   updateLivePaused();
   window.requestAnimationFrame(() => edgeCheckAfterWindow(msg.id));
@@ -17168,6 +17478,7 @@ function chatWindow(msg: any) {
 // (it returns on "everything rendered", or asks for older first), so its next page is asked for directly (round 2, item 7;
 // round 3: chatMore too, so a short page appended to a short run keeps walking).
 function edgeCheckAfterWindow(sid: string): void {
+  if (landSettling && !landSettling.done) { afterSettle.push(() => edgeCheckAfterWindow(sid)); return; }   // a fresh landing settles first (T386): the walk never moves the reader off it
   const c = document.getElementById("content");
   const cur = sessions.get(sid);
   if (cur && cur.detached && c && c.scrollHeight <= c.clientHeight + 1) { requestNewer(sid); return; }
@@ -17251,7 +17562,7 @@ function awaitChanged(sid: string): void {
 function awaitKey(st: Status | undefined): string {
   if (!st) return "";
   return JSON.stringify([st.state, st.awaitingWhy || "", st.awaitingKind || "", st.awaitingCount ?? null,
-                         st.awaitingTasks || [], st.awaitingTaskIds || [], st.awaitingItems || [],
+                         st.awaitingTasks || [], st.awaitingTaskIds || [], st.bgServiceIds || [], st.awaitingItems || [],   // the verdict repaints the box (round two, low 1)
                          (st.awaitingPeers || []).map((p) => [p.host || "", p.name || ""])]);
 }
 

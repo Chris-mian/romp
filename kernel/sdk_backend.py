@@ -13331,6 +13331,8 @@ class SdkBackend:
             return False
         sock = ht.host_sock(self.state_dir, sid)
         ident = self._kernel_identity()
+        holder = (lease or {}).get("holder") or {}
+        holder_key = (holder.get("pid"), holder.get("start"))   # WHICH host this end is for (a later holder is a new host)
         async def go():
             t = ht.HostTransport(str(sock), kernel=ident, ack=-1, end_grace=ht.sh.END_GRACE_KILL_S)
             try:
@@ -13349,6 +13351,8 @@ class SdkBackend:
                 self._log("host (%s): end by lease failed: %s: %s" % (sid[:8], type(e).__name__, e))
                 return
             await t.end_and_close()             # `end` with the kill bound, whatever the initialize gate says
+            with self._lock:                    # the host named by the lease has been told to end: a later End for the
+                self.__dict__.setdefault("_ended_hosts", {})[sid] = holder_key   # same holder opens no second socket
         def run():
             try:
                 asyncio.run(go())
@@ -13360,13 +13364,20 @@ class SdkBackend:
             # `busy` to the second landed as a false failure row (the commit-17 review's first item); an unstarted
             # thread's is_alive() is False, so the start is inside the lock too
             threads = self.__dict__.setdefault("_end_threads", {})
+            if self.__dict__.get("_ended_hosts", {}).get(sid) == holder_key:
+                # the first End's thread finished before the second arrived (a host answers `end` in milliseconds):
+                # the is_alive check below no longer sees it, and a second socket to a host already told to end landed
+                # as a false failure row (main's Python 3.11 job, 2026-09-12). The lease still names that host, so it
+                # has not gone yet; a NEW holder under the same sid is a new host and ends normally
+                self._log("host (%s): the live host (pid %s) was already told to end through its lease" % (sid[:8], holder.get("pid")))
+                return True
             prev = threads.get(sid)
             if prev is not None and prev.is_alive():
                 self._log("host (%s): an end through the lease is already under way" % sid[:8])
                 return True                     # one end thread per sid: a second End click starts no second socket
             self._log("host (%s): kill with no session object; ending the live host (pid %s) through its lease"
                       % (sid[:8], ((lease or {}).get("holder") or {}).get("pid")))
-            th = threading.Thread(target=run, name="romp-end-host-" + sid[:8], daemon=True)
+            th = threading.Thread(target=run, name="end-host:" + sid[:8], daemon=True)   # kind:payload: the stack sample keeps the kind
             threads[sid] = th
             th.start()
         return True

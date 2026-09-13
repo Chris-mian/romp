@@ -15,6 +15,8 @@ through, (2) an append costs only its delta, (3) the cap still bounds the cache.
 import json
 import os
 import sys
+import shutil
+from pathlib import Path
 import tempfile
 import threading
 import time
@@ -285,6 +287,69 @@ class DropAfterQuiescentFold(unittest.TestCase):
         self.assertIn('"recordCache": em.record_cache_stats(),', src, "/perf carries the record cache")
         unit = open(os.path.join(BIN, "romp-service")).read()
         self.assertIn("Environment=MALLOC_ARENA_MAX=2", unit, "the service unit hands the allocator setting to the manager and its kernels")
+
+
+class WholeReadsByCaller(unittest.TestCase):
+    """T384: every read that pulls a file whole is counted on /perf by the reader's kind and the first frame outside the event
+    model, so a boot's whole reads are named the way hydratedBy named the planner. A tail entry served, an append, and a
+    restore's tail read are not whole reads."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.clear(); em._RECORD_CACHE_STATS["wholeReads"] = {}
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_a_tail_entry_upgraded_to_the_whole_file_is_named_as_an_upgrade(self):
+        """Review, low 3: a restored tail entry met by a whole reader is read whole (the reader's `upgrade`), counted as such."""
+        ck = os.path.join(self.dir, "ck"); os.makedirs(ck)
+        em.set_checkpoint_dir(lambda: Path(ck))
+        try:
+            path = os.path.join(self.dir, "leaf.jsonl"); _write_jsonl(path, 30)
+            cache = {}
+            em.fold_records(cache, path, lambda: 0, lambda st, o: st + 1, ckpt="upgradeFold")
+            self.assertTrue(em.checkpoint_write(path))
+            with em._JSONL_CACHE_LOCK:
+                em._JSONL_CACHE.clear(); em._RECORD_CACHE_STATS["wholeReads"] = {}
+            cache.clear(); em.set_checkpoint_dir(lambda: Path(ck))       # a fresh process: the fold restores over a TAIL entry
+            em.fold_records(cache, path, lambda: 0, lambda st, o: st + 1, ckpt="upgradeFold")
+            self.assertEqual(em.record_cache_stats()["wholeReads"], {}, "the restore's tail read is not a whole read")
+            def some_whole_reader():
+                return em._read_jsonl_incremental(path)
+            self.assertEqual(len(some_whole_reader()), 30)
+            wr = em.record_cache_stats()["wholeReads"]
+            self.assertEqual(list(wr), ["upgrade<-some_whole_reader"], "%s" % wr)
+        finally:
+            em.set_checkpoint_dir(None)
+
+    def test_a_whole_read_from_inside_a_generator_expression_names_the_enclosing_function(self):
+        """A generator expression's own frame is no caller: the row names the function around it (the same exposure the
+        hydration attribution had to a comprehension's frame before Python 3.12)."""
+        path = os.path.join(self.dir, "leaf.jsonl"); _write_jsonl(path, 10)
+        def genexpr_reader():
+            return sum(len(em._read_jsonl_incremental(p)) for p in [path])
+        self.assertEqual(genexpr_reader(), 10)
+        self.assertEqual(list(em.record_cache_stats()["wholeReads"]), ["zero<-genexpr_reader"], "%s" % em.record_cache_stats()["wholeReads"])
+
+    def test_a_from_zero_read_is_named_for_its_caller_and_an_append_is_not(self):
+        path = os.path.join(self.dir, "leaf.jsonl"); _write_jsonl(path, 20)
+        size = os.path.getsize(path)
+        def some_boot_reader():
+            return em._read_jsonl_incremental(path)
+        self.assertEqual(len(some_boot_reader()), 20)
+        wr = em.record_cache_stats()["wholeReads"]
+        self.assertEqual(wr, {"zero<-some_boot_reader": {"count": 1, "bytes": size}}, "%s" % wr)
+        _write_jsonl(path, 25)                                         # an append: a tail read, not a whole one
+        self.assertEqual(len(some_boot_reader()), 25)
+        self.assertEqual(em.record_cache_stats()["wholeReads"]["zero<-some_boot_reader"]["count"], 1, "the append did not count")
+        with em._JSONL_CACHE_LOCK:
+            em._JSONL_CACHE.clear()
+        cache = {}
+        em.fold_records(cache, path, lambda: 0, lambda st, o: st + 1)   # a fold's first read: whole, named for the fold's caller
+        keys = em.record_cache_stats()["wholeReads"]
+        self.assertTrue(any(k.startswith("zero<-") and k.endswith("test_a_from_zero_read_is_named_for_its_caller_and_an_append_is_not") for k in keys), "%s" % keys)
 
 
 class RecordCacheDefaultBudget(unittest.TestCase):

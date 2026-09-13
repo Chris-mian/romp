@@ -368,15 +368,20 @@ class _PostalTokenFile(unittest.TestCase):
 
 
 class PostalTokenBirth(_PostalTokenFile):
-    def test_token_is_0600_from_its_first_byte_and_the_live_path_is_never_opened_for_writing(self):
-        """Expected first error on the old loader: the rename count is 0 (it wrote the live file with
-        write_text, at the umask's mode, and chmod'd it a line later)."""
+    def _load_watched(self, before=None, after=None):
+        """_load_serve_token with os.replace and os.open recorded for the whole process; `before` runs after the
+        patch and before the load, `after` after the load and still under the patch (a parallel writer started, then
+        joined, so its rename falls inside the recorder's window whatever the scheduling). The rename recorder keeps ONLY renames onto the token path
+        (2026-09-13: a foreign rename in the window, another module's background write in the same pytest process,
+        landed in the count on CI, 2 != 1, and reading a foreign temp's body can even raise once its writer has
+        moved it); the open list is filtered by path at the assertion, as it always was."""
         os.umask(0o022)
         swaps, opens = [], []
         real_replace, real_open = os.replace, os.open
 
         def _replace(src, dst, *a, **k):
-            swaps.append((str(src), str(dst), _mode(src), Path(src).read_text()))
+            if str(dst) == str(self.f):
+                swaps.append((str(src), str(dst), _mode(src), Path(src).read_text()))
             return real_replace(src, dst, *a, **k)
 
         def _open(path, flags, *a, **k):
@@ -385,10 +390,16 @@ class PostalTokenBirth(_PostalTokenFile):
 
         os.replace, os.open = _replace, _open
         try:
+            if before:
+                before()
             tok = ps._load_serve_token()
+            if after:
+                after()
         finally:
             os.replace, os.open = real_replace, real_open
+        return tok, swaps, opens
 
+    def _assert_birth(self, tok, swaps, opens):
         self.assertEqual(len(swaps), 1, "the mint must land by one rename of a finished temp file")
         src, dst, mode, body = swaps[0]
         self.assertEqual(dst, str(self.f))
@@ -400,6 +411,28 @@ class PostalTokenBirth(_PostalTokenFile):
                          "the live token path is never opened for writing at all")
         self.assertEqual(_mode(self.f), 0o600)
         self.assertEqual(self.f.read_text(), tok)
+
+    def test_token_is_0600_from_its_first_byte_and_the_live_path_is_never_opened_for_writing(self):
+        """Expected first error on the old loader: the rename count is 0 (it wrote the live file with
+        write_text, at the umask's mode, and chmod'd it a line later)."""
+        tok, swaps, opens = self._load_watched()
+        self._assert_birth(tok, swaps, opens)
+
+    def test_a_parallel_writers_rename_inside_the_window_is_not_the_mint(self):
+        """A helper thread renames an UNRELATED temp file (its own directory under the fixture's root) while the
+        recorder is armed: started after the patch, joined after the load, its whole body the one rename. The birth
+        assertions hold unchanged. Expected first error on the old recorder: 2 != 1 at the rename count."""
+        other = self.f.parent / "another-writer"
+        other.mkdir(exist_ok=True)
+        self.addCleanup(lambda: [q.unlink() for q in other.glob("*")] and other.rmdir() if other.exists() else None)
+        tmp, live = other / "state.tmp", other / "state"
+        tmp.write_text("{}")
+        # the body looks os.replace up when it runs (a bound target would carry the real function from before the patch)
+        writer = threading.Thread(target=lambda: os.replace(str(tmp), str(live)), name="another-writer")
+        tok, swaps, opens = self._load_watched(before=writer.start, after=lambda: writer.join(timeout=5))
+        self.assertFalse(writer.is_alive(), "the other writer finished inside the window")
+        self.assertTrue(live.exists() and not tmp.exists(), "its rename went through, unrecorded")
+        self._assert_birth(tok, swaps, opens)
 
 
 class PostalTokenFlock(_PostalTokenFile):

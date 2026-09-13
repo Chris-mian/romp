@@ -676,7 +676,12 @@ def _record_cache_default_budget_bytes(meminfo_text=None):
 _JSONL_CACHE_BUDGET_BYTES = (int(float(os.environ["ROMP_RECORD_CACHE_BUDGET_MB"]) * 1024 * 1024)
                              if os.environ.get("ROMP_RECORD_CACHE_BUDGET_MB") else _record_cache_default_budget_bytes())
 _JSONL_CACHE_BYTES = [0]          # the sum of every held entry's weight, kept in step with _JSONL_CACHE under its lock
-_RECORD_CACHE_STATS = {"inserts": 0, "evictions": 0, "evictedBytes": 0, "budgetEvictions": 0, "dropped": 0, "droppedBytes": 0}
+_RECORD_CACHE_STATS = {"inserts": 0, "evictions": 0, "evictedBytes": 0, "budgetEvictions": 0, "dropped": 0, "droppedBytes": 0,
+                       "wholeReads": {}}   # "kind<-caller" -> {"count", "bytes"}: every read that pulled a file WHOLE (from zero, or a
+#                                          tail entry upgraded to the whole file), named by the reader's kind and the first frame
+#                                          outside this module (T384: the way hydratedBy named the planner; the 0.8 GB of whole
+#                                          reads of restored leaves the per-path bytes could not attribute). A restore's tail read
+#                                          and an append are not whole reads and are not counted here.
 _DROP_AFTER_QUIESCENT_S = float(os.environ.get("ROMP_RECORD_CACHE_DROP_QUIESCENT_S", "120"))   # a file this long unchanged
 #                                   is one whose writer has finished (a subagent that returned): its records are not kept
 
@@ -720,8 +725,13 @@ def record_cache_stats() -> dict:
     """The record cache for /perf: entries, held bytes, the budget, and the counters (inserts, evictions by count and by
     budget, evicted bytes, drop-after-fold drops)."""
     with _JSONL_CACHE_LOCK:
-        return {"entries": len(_JSONL_CACHE), "bytes": _JSONL_CACHE_BYTES[0], "budgetBytes": _JSONL_CACHE_BUDGET_BYTES,
-                "countCap": _JSONL_CACHE_MAX, **_RECORD_CACHE_STATS}
+        out = {"entries": len(_JSONL_CACHE), "bytes": _JSONL_CACHE_BYTES[0], "budgetBytes": _JSONL_CACHE_BUDGET_BYTES,
+               "countCap": _JSONL_CACHE_MAX, **_RECORD_CACHE_STATS}
+        table = _RECORD_CACHE_STATS.get("wholeReads")
+        out["wholeReads"] = {k: dict(v) for k, v in table.items()} if isinstance(table, dict) else {}
+        bys = _RECORD_CACHE_STATS.get("wholeReadsByStage")             # T401: the same reads per (stage, caller)
+        out["wholeReadsByStage"] = {k: dict(v) for k, v in bys.items()} if isinstance(bys, dict) else {}
+        return out
 
 
 _JSONL_TAIL_GUARD = 64            # bytes of pre-offset content re-verified before an incremental read
@@ -736,9 +746,32 @@ _READ_BYTES = {}                  # path -> bytes this process read from it thro
 _READ_BYTES_LOCK = threading.Lock()
 
 
+_READ_BYTES_TOTAL = [0]           # the reader's bytes off disk since the process began, one integer (T397: a stage mark)
+_THREAD_BYTES = threading.local()  # the same, per THREAD (`read`, `hydrated`): the pusher's stage split reads its own thread's
+
+
 def _count_read(path, n):
     with _READ_BYTES_LOCK:
         _READ_BYTES[path] = _READ_BYTES.get(path, 0) + int(n)
+        _READ_BYTES_TOTAL[0] += int(n)
+    _THREAD_BYTES.read = getattr(_THREAD_BYTES, "read", 0) + int(n)
+
+
+def read_bytes_total():
+    """What the reader pulled off disk since the process began, as one number (the per-path table is read_bytes_report)."""
+    with _READ_BYTES_LOCK:
+        return _READ_BYTES_TOTAL[0]
+
+
+def thread_read_bytes():
+    """What the reader pulled off disk on the CALLING thread since it began (T397 round one, low 2: a stage's bytes are the
+    pusher's own, not the judges' first pass or a boot warm reading through the same window)."""
+    return getattr(_THREAD_BYTES, "read", 0)
+
+
+def thread_hydrated_bytes():
+    """The assembly cut's hydrated bytes on the CALLING thread since it began (the process total is asmCheckpoint.hydratedBytes)."""
+    return getattr(_THREAD_BYTES, "hydrated", 0)
 
 
 def read_bytes_report():
@@ -746,7 +779,7 @@ def read_bytes_report():
     file, so a test or /perf can say how much of a boot was tails and how much whole files."""
     with _READ_BYTES_LOCK:
         out = dict(_READ_BYTES)
-    out["total"] = sum(out.values())
+        out["total"] = _READ_BYTES_TOTAL[0]              # the running total, kept for this report alone (T397 round two, low 1)
     return out
 
 
@@ -764,6 +797,7 @@ def read_bytes_report():
 _CKPT_V = 1
 _CKPT_DIR_FN = None               # () -> Path of the checkpoint directory; None = checkpoints off
 _CKPT_STATS = {"restored": 0, "writes": 0, "swept": 0, "skippedFolds": 0, "fallbacks": {}, "restoredFolds": {}, "droppedRestores": 0,
+               "docConsults": 0,      # fold documents loaded by the shared validated read (seeded: the key stands before the first load)
                "oversizeFolds": {}, "coldFolds": {}, "coldWrites": {},
                "refolds": {},         # per fold name: {"count", "bytes"} of whole refolds that READ (a fold with no cursor and nothing to
 #                                       restore over a tail entry reads the file whole; T377 named the boot's whole reads this way)
@@ -923,8 +957,12 @@ def set_checkpoint_dir(fn):
     moves it. None turns checkpoints off."""
     global _CKPT_DIR_FN
     _CKPT_DIR_FN = fn
+    with _ASM_CKPT_LOCK:
+        _ASM_CHAIN_REFUSED_PATHS.clear()                  # a rebind forgets a refusal recorded against another directory's document
     with _CKPT_LOCK:
         _CKPT_PENDING.clear(); _CKPT_SEQ.clear(); _FOLD_DIRTY.clear(); _CKPT_DOC_FOLDS.clear(); _DROP_OWED.clear()
+        _RETIRED_FOLDS.clear()                            # a retirement never outlives a state rebind (round two, low 2)
+        _DOC_MEMO.clear(); _DOC_MEMO_BYTES[0] = 0         # nor does a memoized document (the harnesses' fresh process is this setter)
         _CKPT_CYCLE["cap"] = _ckpt_cycle_default_cap(); _CKPT_CYCLE["spent"] = 0
 
 
@@ -1038,7 +1076,7 @@ def _checkpoint_entry(path, st):
     """A TAIL reader entry restored from `path`'s checkpoint, (mtime, size, offset, guard, [], count, 0), or None. The
     guard bytes are verified by the reader against the file; here the document and the size are: a file shorter than
     the recorded offset is a shrink."""
-    doc = _ckpt_load(path)
+    doc = _ckpt_doc_shared(str(path))   # one read shared with the write's carry and a retirement's consult
     _CKPT_DOC_FOLDS[str(path)] = _doc_fold_shapes(doc.get("folds")) if isinstance(doc, dict) else {}   # what the disk holds (T360)
     if doc is None:
         return None
@@ -1067,7 +1105,7 @@ def _ckpt_pending(path, ent):
     with _CKPT_LOCK:
         if key in _CKPT_SEQ:                          # already consulted (or written) in this process: nothing new
             return None
-    doc = _ckpt_load(path)
+    doc = _ckpt_doc_shared(str(path))   # one read shared with the write's carry and a retirement's consult
     _CKPT_DOC_FOLDS[str(path)] = _doc_fold_shapes(doc.get("folds")) if isinstance(doc, dict) else {}   # what the disk holds (T360)
     if doc is None:
         with _CKPT_LOCK:
@@ -1311,11 +1349,7 @@ def _carry_forward_states(key, folds, base, count, size, mtime):
     cp = _ckpt_file(key)
     if cp is None or not cp.exists():
         return {}
-    try:
-        text = cp.read_bytes(); _count_read(str(cp), len(text))    # the carry's reads are the write's I/O: counted like the rest
-        doc = json.loads(text.decode("utf-8"))
-    except (OSError, ValueError):
-        return {}
+    doc = _ckpt_doc_shared(key)                           # one read, shared with a retirement's consult of the same document (low C)
     if not isinstance(doc, dict) or doc.get("v") != _CKPT_V or doc.get("path") != os.path.realpath(key):
         return {}
     try:
@@ -1389,6 +1423,11 @@ def checkpoint_write(path, force=False):
     if not folds and not force:
         return False
     folds.update(_carry_forward_states(key, folds, base, count, size, mtime))   # the disk document's states for folds this process never ran
+    with _CKPT_LOCK:
+        retired = set(_RETIRED_FOLDS.get(key, ()))        # taken AFTER the cursor snapshot and the carry: a forget that raced the
+    for n in retired:                                     #  snapshot still omits its fold here; every name taken is honoured by
+        folds.pop(n, None)                                #  this write whether the fold was present to pop or already absent
+    omitted = retired
     cut = min([f["count"] for f in folds.values()] or [count])   # the document's cut: the LOWEST written cursor (T359), so the
     moved = None                                          #  next process's tail read holds every record a lagging fold has
     if cut < count and len(ent) >= 8 and ent[7]:          #  yet to step (its append), bounded by the records this entry holds
@@ -1431,8 +1470,15 @@ def checkpoint_write(path, force=False):
         _CKPT_SEQ[key] = seq
         _CKPT_STATS["writes"] += 1
         _CKPT_DOC_FOLDS[key] = _doc_fold_shapes(folds)
-        if left_out:
-            _FOLD_DIRTY.add(key)                          # a lagging fold has no cursor in this document yet
+        _doc_memo_drop(key)                               # the document moved under the memo: the next consult reads the new one
+        if omitted:                                       # the retirements this document honoured are done; any that arrived
+            rem = _RETIRED_FOLDS.get(key)                 #  after the check above stay, and keep the path dirty for the next write
+            if rem is not None:
+                rem -= omitted
+                if not rem:
+                    _RETIRED_FOLDS.pop(key, None)
+        if left_out or _RETIRED_FOLDS.get(key):
+            _FOLD_DIRTY.add(key)                          # a lagging fold has no cursor in this document yet, or a retirement owed
         else:
             _FOLD_DIRTY.discard(key)
     return True
@@ -1537,7 +1583,8 @@ def checkpoint_sweep():
         if not keep:
             try:
                 cp.unlink(); gone += 1
-                if cp.name.endswith(".gz"):
+                if cp.name.endswith(".gz"):                # an assembly document: counted as removed, its sidecar with it
+                    _asm_removed("sweep")
                     cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
             except OSError:
                 pass
@@ -1552,6 +1599,9 @@ def checkpoint_stats():
         out["oversizeFolds"] = dict(_CKPT_STATS["oversizeFolds"]); out["coldFolds"] = dict(_CKPT_STATS["coldFolds"])
         out["coldWrites"] = dict(_CKPT_STATS["coldWrites"]); out["converge"] = dict(_CKPT_STATS["converge"])
         out["refolds"] = {k: dict(v) for k, v in _CKPT_STATS["refolds"].items()}
+        out["rewoundMemo"] = dict(_REWOUND_STATS)
+        out["docMemo"] = {"entries": len(_DOC_MEMO), "bytes": _DOC_MEMO_BYTES[0], "capBytes": _DOC_MEMO_CAP,
+                          "parseMultiple": _DOC_MEMO_PARSE_MULTIPLE}
     d = _ckpt_dir()
     with _READ_BYTES_LOCK:
         out["documentBytes"] = sum(n for p_, n in _READ_BYTES.items() if d is not None and p_.startswith(str(d) + os.sep))
@@ -1587,16 +1637,17 @@ def _scan_jsonl_bytes(data, base_offset, offsets=None):
     return records, base_offset + end + 1
 
 
-def record_offsets(path, base):
-    """[(byte offset, byte length)] of the reader entry's held records for `path`, record `base` first (the entry's
-    base): the assembly checkpoint's record locations. None when the reader holds no entry or its base is later."""
+def _entry_offsets_gen(path):
+    """(record offsets from record 0, generation) of the reader's entry for `path` from ONE entry tuple under one lock
+    acquisition, or (None, None) with no entry or a tail entry: what the assembly writer compares its adapter's source
+    key against before trusting the entry's offsets for the records the adapter read (T396 round one, low 2: the
+    _asm_gates pattern, never two reads of the cache that could see two entries)."""
     with _JSONL_CACHE_LOCK:
         ent = _JSONL_CACHE.get(str(path))
-    if ent is None or len(ent) < 8 or ent[5] > base:
-        return None
+    if ent is None or len(ent) < 8 or ent[5] > 0:
+        return None, None
     offs = ent[7]
-    start = (base - ent[5]) * 2
-    return [(offs[i], offs[i + 1]) for i in range(start, len(offs), 2)]
+    return [(offs[i], offs[i + 1]) for i in range(0, len(offs), 2)], ent[6]
 
 
 def _read_jsonl_incremental(path, on_fail=None):
@@ -1614,6 +1665,44 @@ def _read_jsonl_incremental(path, on_fail=None):
 
 _TAIL_OK = threading.local()      # .flag: the calling fold accepts a tail entry (set by fold_records around its read)
 _READER_TRACE = bool(os.environ.get("ROMP_READER_TRACE"))   # one stderr line per read that pulled bytes (a diagnosis aid)
+_WHOLE_READ_KINDS = ("zero", "rewrite", "guard", "shrunk", "upgrade")   # the reader's kinds that pull a file whole (T384's counter)
+_READ_STAGE_FN = [None]           # T401: the kernel's answer to "which stage is the calling thread in" (a job or push sub-stage name,
+#                                   None outside the pusher's cycle), so a whole read or a hydration is also counted per (stage, caller)
+
+
+def set_read_stage_provider(fn):
+    """Install fn() -> the calling thread's current stage name or None (the kernel's per-thread stage mark), so the whole-read
+    and hydration rows are also counted per stage (T401: the first instrumented boot said jobs.autoNudge read 162.8 MB and
+    the callers' rows could not say which of them read it inside that job)."""
+    _READ_STAGE_FN[0] = fn
+
+
+def _read_stage():
+    fn = _READ_STAGE_FN[0]
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
+_WHOLE_READ_PASSTHROUGH = set()   # the CODE objects of the parse family every walker shares (this module's parse_session, the judges'
+#                                   parsed_session, parse_cached and _parse_store, the kernel's _parse, each registered where it is
+#                                   defined): the whole-read row names the first caller beyond them, the real walker. Matched by code
+#                                   object, never by name (round two, low 3: a local helper named like one of them was skipped)
+
+
+def _synthetic_scope(fr):
+    """A comprehension's, generator expression's or lambda's own frame (a code name in angle brackets other than the module's):
+    the attribution walks keep going to the enclosing function. Before Python 3.12 a list, set or dict comprehension runs in
+    its own frame (PEP 709 inlines them from 3.12 on); a generator expression and a lambda keep theirs on every version."""
+    n = fr.f_code.co_name
+    return n.startswith("<") and n != "<module>"
+
+
+def register_whole_read_passthrough(*fns):
+    """Register functions the whole-read attribution walks past (the parse family a walker reaches the reader through)."""
+    for fn in fns:
+        _WHOLE_READ_PASSTHROUGH.add(fn.__code__)
 _LAST_ENTRY = threading.local()   # .ent: the entry the last _read_jsonl_incremental on this thread served
 
 
@@ -1738,6 +1827,27 @@ def _read_jsonl_entry_unlocked(path, on_fail=None, tail_ok=False, tail_from=None
             fh.seek(tail_from)
             tail = fh.read(offset - tail_from)
             _count_read(path, len(tail))                  # the guard capture is a read too (/perf's count is what was pulled)
+            if kind in _WHOLE_READ_KINDS:                 # a whole read: counted by kind and caller on /perf (T384), always on; the
+                try:                                      #  frame walk runs only here, on the rare whole read, never on a tail or an
+                    fr = sys._getframe(1)                 #  append
+                    while fr is not None and (fr.f_code.co_filename == __file__ or fr.f_code in _WHOLE_READ_PASSTHROUGH
+                                              or _synthetic_scope(fr)):   #  past this module, the parse family and any comprehension's
+                        fr = fr.f_back                    #  or generator expression's own frame, to the walker (review, low 1)
+                    who = fr.f_code.co_name if fr is not None else "?"
+                except Exception:
+                    who = "?"
+                with _JSONL_CACHE_LOCK:
+                    table = _RECORD_CACHE_STATS.get("wholeReads")
+                    if not isinstance(table, dict):       # a harness that zeroes every counter zeroes this one too: a table again
+                        table = _RECORD_CACHE_STATS["wholeReads"] = {}
+                    wr = table.setdefault("%s<-%s" % (kind, who), {"count": 0, "bytes": 0})
+                    wr["count"] += 1; wr["bytes"] += len(data)
+                    stg = _read_stage() or "none"          # T401: the same read under its stage, so a job's reads name their callers
+                    bys = _RECORD_CACHE_STATS.get("wholeReadsByStage")
+                    if not isinstance(bys, dict):
+                        bys = _RECORD_CACHE_STATS["wholeReadsByStage"] = {}
+                    ws = bys.setdefault("%s:%s<-%s" % (stg, kind, who), {"count": 0, "bytes": 0})
+                    ws["count"] += 1; ws["bytes"] += len(data)
             if _READER_TRACE:
                 fr, inner = sys._getframe(1), []          # the caller outside this module, and the path through it
                 while fr is not None and fr.f_code.co_filename == __file__:
@@ -2434,6 +2544,8 @@ class FileAdapter:
         # sibling file happens to sort after it
         files = [f for f in candidate_files if Path(f).stem != leaf_stem] + [Path(leaf_path)]
         self._src_keys = {}      # path -> the reader's (gen, base, count) the records came from (the fold's identity gate)
+        self._src_stat = {}      # path -> the (size, mtime) of the file AS READ for those records: the witness a document row
+        #                          carries for a file wholly before the cut, never the write-time stat (T396 round one)
         if seed is not None:
             self._seq = int(seed["seq_base"])
             self.prompt_ids |= seed["prompt_ids"]; self.boundary_pids |= seed["boundary_pids"]
@@ -2448,6 +2560,9 @@ class FileAdapter:
             if cut == "skip":                                   #  a file wholly before the cut (a fork's prior file, immutable)
                 self._src[str(fp)] = []
                 self._src_keys[str(fp)] = ("skip",)
+                st_skip = (seed or {}).get("stat", {}).get(fsid)   # the document's verified witness for it (the load checked it)
+                if st_skip is not None:
+                    self._src_stat[str(fp)] = tuple(st_skip)
                 continue
             if cut is not None:
                 ent = _read_jsonl_entry(fp, tail_ok=True, tail_from=tuple(cut))
@@ -2456,6 +2571,8 @@ class FileAdapter:
             recs = ent[4] if ent is not None else []
             self._src[str(fp)] = recs
             self._src_keys[str(fp)] = (ent[6], ent[5], ent[5] + len(recs)) if ent is not None else (None, 0, 0)
+            if ent is not None:
+                self._src_stat[str(fp)] = (ent[1], ent[0])    # the reader's (size, mtime) for this very read
             if cut is not None and ent is not None and ent[5] < cut[1]:
                 recs = recs[cut[1] - ent[5]:]            # the entry holds records before the cut (a whole reader came
             #                                              first): the seed stands for those, ingest from the cut on
@@ -2495,7 +2612,7 @@ class FileAdapter:
                         if len(_TS_REPAIRED_SEEN) >= 4096:
                             _TS_REPAIRED_SEEN.clear()
                         _TS_REPAIRED_SEEN.add(u)
-                        _ASM_STATS["ts-repair"] = _ASM_STATS.get("ts-repair", 0) + 1
+                        _asm_stat("ts-repair")
                     if fsid not in _TS_REPAIR_NOTED:
                         if len(_TS_REPAIR_NOTED) >= 64:
                             _TS_REPAIR_NOTED.clear()   # re-arm — capped silence must not become
@@ -3146,7 +3263,7 @@ class FileAdapter:
                 # these would show up, since a silent clamp would hide a CLI write-order change. (The
                 # 2026-09-06 review: two goldens had pinned a landedT 30-40 s before the send, from a
                 # synthetic shape with no tool_result before the attachment.)
-                _ASM_STATS["landedT-clamp"] = _ASM_STATS.get("landedT-clamp", 0) + 1
+                _asm_stat("landedT-clamp")
                 landed_t = t
             atom["t"] = landed_t         # placed where the model READ it (T252d); `sentAt` keeps the send
         if ROMP_AUTO_RE.search(full):   # an AUTO-nudge → flag it, mirroring the native user-record path
@@ -4159,10 +4276,15 @@ def chain_membership(leaf_path, candidate_files=None, states=None, leaf_override
                     sys.stderr.write("chain: entry %s\n" % leaf_path)
                 return _membership_of(entry["ad"])        # the display's own current graph, under its lock
         if _CKPT_DIR_FN is not None:
-            doc = _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
-            if doc is not None:                              # no current entry: the document's pre-cut facts plus the
-                try:                                         #  tail read now, the whole graph's verdicts without the
-                    seed, _landed = _seed_from_doc(doc)      #  whole read (the emit is the parse's, not needed here)
+            _standing = _asm_refusal_stands(leaf_path)   # one sidecar read per call (low 4)
+            doc = None if _standing else _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
+            if _standing:
+                _asm_stat("seeded:refusedStanding")       # the cold walk, no proof, while the mark stands (round two)
+            if doc is not None and not _tail_chains_onto_the_document(leaf_path, doc):
+                _asm_stat("seeded:chainRefused"); doc = None   # the tail re-parents into the pre-cut part: the cold walk, as
+            if doc is not None:                              #  before T391 (T402 round four)
+                try:                                         # no current entry: the document's pre-cut facts plus the tail
+                    seed, _landed = _seed_from_doc(doc)      #  read now, the whole graph's verdicts without the whole read
                     adapter = FileAdapter(candidate_files, leaf_path, resume_links=links, seed=seed)
                     how = "seeded"
                 except Exception as e:                       # noqa: BLE001
@@ -4185,8 +4307,13 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
     path = Path(path)
     ad = None
     if rompuuid is not None and _CKPT_DIR_FN is not None:
-        doc = _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True)
-        if doc is not None:
+        _standing = _asm_refusal_stands(path)              # one sidecar read per call (low 4)
+        doc = None if _standing else _asm_ckpt_load(path, rompuuid, sdk_human, [str(path)], {}, quiet_inputs=True)
+        if _standing:
+            _asm_stat("seeded:refusedStanding")           # the cold walk, no proof, while the mark stands (round two)
+        if doc is not None and not _tail_chains_onto_the_document(path, doc):
+            _asm_stat("seeded:chainRefused"); doc = None      # the cold walk over a tail that re-parents into the pre-cut
+        if doc is not None:                                   #  part (T402 round four)
             try:
                 seed, _landed = _seed_from_doc(doc)
                 ad = FileAdapter([str(path)], str(path), seed=seed)
@@ -4201,6 +4328,93 @@ def file_rewound(path, rompuuid=None, sdk_human=None):
         for u, v in ad.seed["verdicts"].items():
             verdicts.setdefault(u, v)
     return {u for u, v in verdicts.items() if v == "rewind"}
+
+
+_REWOUND_CACHE = {}               # path -> (count, gen, {"uuids": [...]}): file_rewound's verdict set over a FROZEN file, a registered
+#                                   fold (T391) the fold document carries and restores, so a dead episode file is read whole once
+_REWOUND_STATS = {"served": 0, "walked": 0, "stale": 0, "fallback": 0}   # the memo's answers, the walks it took, the memos an
+#                                   append or rewrite retired, and the walks whose memo could not be read or stored
+
+
+def _rewound_walk(path):
+    """The plain one-file walk `rewound_uuids` memoizes: file_rewound's road without a rompuuid, returning the verdict set and
+    the reader's (gen, base, count) the adapter's records came from (FileAdapter._src_keys), the witness the memo is stored at.
+    Its own, never re-fetched from the cache after the walk: an append and a refresh between the two would memoize pre-append
+    verdicts at the post-append witness (T391 round one, low 1)."""
+    key = str(path)
+    ad = FileAdapter([key], key)
+    if not ad.by_uuid and Path(path).stat().st_size > 0:
+        raise OSError("transcript read yielded no records")
+    verdicts = dict(ad.chain_verdicts())
+    return {u for u, v in verdicts.items() if v == "rewind"}, ad._src_keys.get(key, (None, 0, 0))
+
+
+def rewound_uuids(path, drop=True):
+    """`file_rewound(path)` for a file with no rompuuid road (a dead episode's transcript in a lineage, walked by the judges'
+    incident scan), memoized per FROZEN file as the fold `rewoundUuids` of its fold document (T391): the memo rides the
+    existing document, its witness (size, mtime, the cut's guard), its restore, its fold state cap and its counted fallbacks,
+    and the quiescence drop writes it from the walk's own read, so the file is read whole once and not at the next process.
+    fold_records consults it: a hit or a restore at the witness answers with no read; a file that grew or was rewritten steps
+    a `step` that retires the state (None), so the walk runs again and the memo is rewritten; an over-cap set is recorded as
+    such and walked again next time. The leaf road with a rompuuid never comes here.
+
+    `drop`: whether the walk's entry leaves the reader's cache after the memo is stored (the quiescence drop, when the file
+    has been idle past its window). True for a dead episode's file, which nothing else reads; False for a file of a LIVE
+    session's lineage (its /clear anchor, T391 round one, medium): the chain walk reads that file whole first at every pass,
+    and a memo that popped the entry made the next pass's chain walk read it whole again, every pass, while the memo itself
+    found its cursor at a moved generation and walked. Resident, the anchor is read once per process and the memo's cursor
+    stays at the generation the chain walk's entry holds, so the scan reads nothing at all.
+
+    The counters (checkpoints.rewoundMemo): `served`, a memo answered in memory or from the document at the witness; `walked`,
+    every walk; `stale`, the walks over a memo the file's growth or rewrite retired (an in-process cursor stepped past by an
+    append, a document cursor restored and stepped past, a refold whose count moved); a walk over an unchanged file whose entry
+    left memory and came back under a fresh generation is walked, not stale (round one, low 2); `fallback`, a document state of
+    the wrong shape (walked, never trusted) or a walk whose reader entry was gone before the memo could be stored (round one,
+    low 3), both counted so a memo that never takes is visible on /perf."""
+    key = str(path)
+    had = _REWOUND_CACHE.get(key)
+    kinds = []
+    state = fold_records(_REWOUND_CACHE, key, lambda: None, lambda st, o: None, on=kinds.append, ckpt="rewoundUuids")
+    if isinstance(state, dict) and isinstance(state.get("uuids"), list):
+        with _CKPT_LOCK:
+            _REWOUND_STATS["served"] += 1
+        return set(state["uuids"])
+    if state is not None:                                 # a state that is not the memo's shape: never trusted, counted, walked
+        with _CKPT_LOCK:
+            _REWOUND_STATS["fallback"] += 1
+        _REWOUND_CACHE.pop(key, None)
+    out, (gen, base, count) = _rewound_walk(path)         # the walk (a whole read of a frozen file: the record cache holds it)
+    kind = kinds[0] if kinds else None
+    with _CKPT_LOCK:
+        _REWOUND_STATS["walked"] += 1
+        if kind in ("append", "restore") or (kind == "refold" and had is not None and had[0] != count):
+            _REWOUND_STATS["stale"] += 1                  # a memo stood and the file moved under it
+    if gen is None:                                       # no reader entry for the walk's records: nothing to store the memo at
+        with _CKPT_LOCK:
+            _REWOUND_STATS["fallback"] += 1
+        return out
+    _REWOUND_CACHE[key] = (count, gen, {"uuids": sorted(out)})   # the memo at the walk's own witness, dirty
+    with _CKPT_LOCK:
+        r = _RETIRED_FOLDS.get(key)                        # a retirement still pending from a flip before this store is stale:
+        if r is not None:                                  #  the store is the newer event (T391 follow-up, low 7)
+            r.discard("rewoundUuids")
+            if not r:
+                _RETIRED_FOLDS.pop(key, None)
+    with _CKPT_LOCK:
+        _FOLD_DIRTY.add(key)
+    if drop and checkpoint_drop_writes_on():              # the quiescence drop over this frozen file writes the document from the
+        with _JSONL_CACHE_LOCK:                           #  walk's own read and lets the records go (T362's drop, its budget and its
+            ent = _JSONL_CACHE.get(key)                   #  deferral); a file still changing keeps its entry and is written at its
+        if ent is not None and ent[6] == gen:             #  settle; only the very entry the walk read is dropped. With the drop's
+            _drop_quiescent_entry(key, ent, pop=True)     #  document write OFF (a cycle cap of 0) the entry stays resident: the memo
+    #                                                        could not reach the disk, and a drop then made the file a whole read at
+    #                                                        every pass where the old road read it once per process (round two, low 1)
+    return out
+
+
+def rewound_memo_stats():
+    with _CKPT_LOCK:
+        return dict(_REWOUND_STATS)
 
 
 def _membership_of(adapter):
@@ -4256,7 +4470,15 @@ _ASM_CACHE_MAX = 256
 _ASM_LOCK = threading.Lock()       # guards the cache dict + the per-key lock registry only
 _ASM_KEYLOCKS = {}                 # key -> Lock; never pruned (a Lock is tiny, and swapping a
 #                                    key's lock mid-flight would let two folds interleave)
-_ASM_STATS = {"full": 0, "fold": 0, "serve": 0, "bypass": 0, "fallback": 0}   # observability + tests
+_ASM_STATS = {"full": 0, "fold": 0, "serve": 0, "restore": 0, "bypass": 0, "fallback": 0}   # observability + tests (restore
+#                                                                                             seeded: a row without it means zero)
+
+
+def _asm_stat(key, n=1):
+    """One increment of the parse's road counters under _ASM_CKPT_LOCK (the lock the perf copy takes): every write goes through
+    here, so a judge parse and the pusher's parse never lose each other's increment (T398 follow-up, low 3)."""
+    with _ASM_CKPT_LOCK:
+        _ASM_STATS[key] = _ASM_STATS.get(key, 0) + n
 _ASM_WARNED = [False]
 _TS_REPAIR_NOTED = set()     # file stems already warned about a garbled stamp — once per file;
 #                              the cap CLEARS and re-arms (an occasional repeat note beats silence)
@@ -4264,11 +4486,20 @@ _TS_REPAIRED_SEEN = set()    # record uuids already counted in ts-repair — dis
 #                              not parse volume; races only overcount by one, acceptable
 
 
+_ASM_DEMOTE_TL = threading.local()   # the calling thread's last demotion reason: what _assemble reads to pick the road after it
+_ASM_RESTORE_AFTER_DEMOTE = ("descent", "rewrite", "nonleaf")   # the demotions the document still stands for (T402): the tail
+#                                   moved (a spur, a rewind, a fork), the leaf's record entry was replaced, a lineage file moved; the
+#                                   load's own checks refuse a document that no longer fits. Every other reason (a new boundary or
+#                                   summary in the tail, a prompt id, a skill link, a stamp out of order, ...) keeps the whole parse.
+
+
 def _asm_demote(reason):
     """Count WHY a fold demoted to a full parse (g:<reason> in _ASM_STATS) and return None —
-    the hit-rate diagnosis this cache lives or dies by, in prod and in the corpus replay."""
+    the hit-rate diagnosis this cache lives or dies by, in prod and in the corpus replay. The reason is
+    left on the thread for _assemble, which tries the restore road for the reasons the document still stands for."""
     k = "g:" + reason
-    _ASM_STATS[k] = _ASM_STATS.get(k, 0) + 1
+    _asm_stat(k)
+    _ASM_DEMOTE_TL.reason = reason
     return None
 
 
@@ -4310,7 +4541,7 @@ def _asm_full(key, leaf_path, candidate_files, links, rompuuid, postal_index, sd
         while len(_ASM_CACHE) >= _ASM_CACHE_MAX:
             _ASM_CACHE.pop(next(iter(_ASM_CACHE)))   # oldest-used first; hot entries survive floods
         _ASM_CACHE[key] = entry
-    _ASM_STATS["full"] += 1
+    _asm_stat("full")
     return _asm_serve(entry)
 
 
@@ -4369,9 +4600,11 @@ def _asm_gates(entry, leaf_path, candidate_files, links):
     for r in delta:
         t, u = r.get("type"), r.get("uuid")
         if u:
-            if u in ad.by_uuid or u in ad.dangling:
-                return _asm_demote("uuid-known")   # a re-write rebinds last-write-wins index
-                #                  state; a resurrected dangling target rebinds repaired stitches
+            if u in ad.by_uuid or u in ad.dangling or u in ((ad.seed or {}).get("verdicts") or {}):
+                return _asm_demote("uuid-known")   # a re-write rebinds last-write-wins index state; a resurrected dangling target
+                #                                    rebinds repaired stitches; a RESTORED entry's adapter holds only the tail's
+                #                                    records, its pre-cut uuids live in the seed (round seven: a reuse of a pre-cut
+                #                                    uuid folded and served u1 a1 u2 a2 where a cold parse clears them)
             p = r.get("parentUuid") or r.get("logicalParentUuid")
             parent_d[u] = None if p == u else p
             new_leaf = u
@@ -4497,7 +4730,7 @@ def _asm_fold(entry, delta, leaf_recs, leaf_key, leaf_stem, rompuuid, postal_ind
     entry["recs"][leaf_key] = (ogen, obase, ocount + len(delta))   # commit LAST: a bail above re-slices the same
     ad._src[leaf_key] = leaf_recs                 #  delta next visit and the uuid gate demotes it
     ad._src_keys[leaf_key] = entry["recs"][leaf_key]
-    _ASM_STATS["fold"] += 1
+    _asm_stat("fold")
     return _asm_serve(entry)
 
 
@@ -4864,6 +5097,221 @@ _HYDRATED_CAP = _env_or("ROMP_HYDRATED_CAP_MB", max(1024 ** 3, _machine_memory_b
 _LAZY_KINDS = ("a", "u", "c", "o", "k", "b")   # atom kinds whose message is lazy; boundary and refusal atoms carry no message
 
 
+def _asm_sidecar(doc):
+    """The document's sidecar ({"av", "path", "files", "linked"}): what the boot sweep and asm_document_seeds read, a few bytes,
+    never the document. `linked` says resume-fork links joined the inputs (the load refuses a document on its links too)."""
+    return {"av": _ASM_CKPT_V, "path": doc["path"], "files": sorted(doc["files"]), "linked": bool(doc.get("links"))}
+
+
+def asm_sidecar_refresh(leaf_path, doc):
+    """Rewrite an OLDER sidecar (one without the inputs list) beside a document just restored, so the scan's predicate stops
+    degenerating to the one-file lineage test for a session that already carried a document (round one, low 2): a write of
+    a few bytes, the document untouched."""
+    cp = _asm_ckpt_file(leaf_path)
+    if cp is None:
+        return False
+    meta = cp.with_name(cp.name + ".meta")
+    try:
+        text = meta.read_bytes(); _count_read(str(meta), len(text))   # counted like the seeds read (round two, low 3)
+        d = json.loads(text.decode("utf-8"))
+        if isinstance(d, dict) and isinstance(d.get("files"), list) and "linked" in d:
+            return False
+    except (OSError, ValueError):
+        pass
+    try:
+        mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
+        mtmp.write_text(json.dumps(_asm_sidecar(doc)))
+        os.replace(mtmp, meta)
+        return True
+    except OSError:
+        return False
+
+
+def _asm_leaf_stat(leaf_path):
+    try:
+        st_ = os.stat(leaf_path)
+        return [st_.st_size, st_.st_mtime]
+    except OSError:
+        return None
+
+
+def _asm_mark_refused(leaf_path, reason, rompuuid=None, sdk_human=False):
+    """Record in the document's sidecar that the chain proof refused the standing document for the TAIL's SHAPE (a re-rooted
+    tail, a reused pre-cut uuid), with the leaf's stat: while that stat stands, the same cut reproduces the same refusal, so
+    no road retries the proof or the rewrite. The missing-bit case is marked only when the writer DECLINED its offered rewrite
+    (an accepted rewrite converges and is never marked); a transient decline (the entry evicted between the parse and the
+    write) marks a document whose only defect was the missing bit, and the next accepted write clears it, so that cost is
+    bounded. The mark clears when the leaf moves (the stat differs) or a write the writer accepts replaces the sidecar (T402
+    follow-up, round two)."""
+    cp = _asm_ckpt_file(leaf_path)
+    st_ = _asm_leaf_stat(leaf_path)
+    if cp is None or st_ is None:
+        return False
+    meta = cp.with_name(cp.name + ".meta")
+    key = (os.path.realpath(str(leaf_path)), str(rompuuid), bool(sdk_human))   # the writer's own key (asm_checkpoint_write)
+    with _asm_key_lock(key):                                 # the writer and the sidecar refresh write this file under the KEY lock;
+        try:                                                  #  the mark joins them there (round three, low 2), with a tmp name of its
+            d = json.loads(meta.read_bytes().decode("utf-8"))   #  own, and re-reads after its replace: a writer racing in between
+            if not isinstance(d, dict):                        #  leaves the mark absent, which the next refusal re-applies
+                d = {}
+        except (OSError, ValueError):
+            d = {}
+        d["refused"] = {"reason": reason, "size": st_[0], "mtime": st_[1]}
+        try:
+            mtmp = meta.with_name(meta.name + ".mark.%d.%x.tmp" % (os.getpid(), threading.get_ident()))
+            mtmp.write_text(json.dumps(d)); os.replace(mtmp, meta)
+        except OSError:
+            return False
+        try:
+            return (json.loads(meta.read_bytes().decode("utf-8")).get("refused") or {}).get("reason") == reason
+        except (OSError, ValueError, AttributeError):
+            return False
+
+
+def _asm_refusal_stands(leaf_path):
+    """Whether the sidecar marks the standing document refused for the tail's shape at the leaf's CURRENT stat: a few bytes
+    read, no document, no tail; True sends every road straight to the whole or cold parse (restore:refusedStanding)."""
+    cp = _asm_ckpt_file(leaf_path)
+    if cp is None:
+        return False
+    meta = cp.with_name(cp.name + ".meta")
+    try:
+        text = meta.read_bytes(); _count_read(str(meta), len(text))
+        d = json.loads(text.decode("utf-8"))
+        ref = d.get("refused") if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return False
+    if not isinstance(ref, dict):
+        return False
+    st_ = _asm_leaf_stat(leaf_path)
+    return st_ is not None and [ref.get("size"), ref.get("mtime")] == st_
+
+
+def asm_document_seeds(leaf_path):
+    """Whether the assembly document for `leaf_path` can SEED a one-file walk of the leaf: its inputs are the leaf alone. Read
+    from the sidecar's `files` (a few bytes, never the document); a sidecar without the list (an older write) answers as
+    asm_document_stands does, and the next write adds it. A cleared or resume-forked session's document is written over the
+    leaf plus its lineage, so file_rewound's load refused it on the inputs comparison and the leaf was read whole at every
+    process (T391 follow-up, round one, low 1): such a leaf takes the memo road."""
+    if not asm_document_stands(leaf_path):
+        return False
+    cp = _asm_ckpt_file(leaf_path)
+    meta = cp.with_name(cp.name + ".meta")
+    try:
+        text = meta.read_bytes(); _count_read(str(meta), len(text))   # the one steady-state read this predicate adds: counted
+        d = json.loads(text.decode("utf-8"))
+    except (OSError, ValueError):
+        return True                                       # no readable sidecar: the document stands, its inputs unknown
+    files = d.get("files") if isinstance(d, dict) else None
+    if not isinstance(files, list):
+        return True
+    return files == [Path(leaf_path).stem] and not d.get("linked")   # the leaf alone, no resume links among the inputs
+
+
+_RETIRED_FOLDS = {}                # path -> {fold name}: folds a caller retired whose cursor may still sit in the on-disk document;
+#                                   checkpoint_write consults it AFTER its cursor snapshot and its carry, so the document omits them
+#                                   (T391 follow-up, round one, medium: the carry re-added the memo's cursor from the document)
+
+
+def _retire_fold(path, name):
+    """Retire fold `name` of `path` for the next write: the in-memory cursor goes now, and the write skips the name when it
+    carries the on-disk document's states forward, so the document omits the fold and the cut follows the live folds."""
+    key = str(path)
+    with _CKPT_LOCK:
+        _RETIRED_FOLDS.setdefault(key, set()).add(name)
+        while len(_RETIRED_FOLDS) > _DROP_OWED_MAX:       # bounded like the owed drops: the oldest path's retirement is let go
+            _RETIRED_FOLDS.pop(next(iter(_RETIRED_FOLDS)), None)
+        _FOLD_DIRTY.add(key)
+
+
+_DOC_MEMO = {}                     # path -> (document file's (mtime_ns, size), the loaded document): one read shared between the
+#                                   retirement's consult and the write's carry (T391 follow-up, low C), dropped when the file moves
+_DOC_MEMO_PARSE_MULTIPLE = 4.5     # what a parsed fold document weighs resident against its bytes on disk (measured on the devbox's
+#                                    documents, 2026-09-12): the memo's weights and its cap are RESIDENT bytes, so the ceiling means
+#                                    what it says
+_DOC_MEMO_BYTES = [0]              # the memoized documents' resident weight: size on disk times the multiple, summed
+_DOC_MEMO_CAP = _env_or("ROMP_DOC_MEMO_CAP_MB", max(64 * 1024 ** 2, _machine_memory_bytes() // 512), 1024 * 1024)
+#                                    the memo's resident cap: MemTotal / 512, never under 64 MiB (236 MiB on a 118 GiB machine; a count
+#                                    cap said nothing about bytes and held whole documents for files no writer touched again), reported
+#                                    under checkpoints.docMemo
+
+
+def _doc_memo_weight(sig):
+    """A memoized document's resident weight from its file stat: the size on disk times the parse multiple."""
+    return int(sig[1] * _DOC_MEMO_PARSE_MULTIPLE)
+
+
+def _doc_memo_drop(key):
+    """Forget `key`'s memoized document (under _CKPT_LOCK), its bytes let go with it."""
+    old = _DOC_MEMO.pop(key, None)
+    if old is not None:
+        _DOC_MEMO_BYTES[0] -= _doc_memo_weight(old[0])
+
+
+def _ckpt_doc_shared(key):
+    """`key`'s fold document as _ckpt_load verifies it (version, path, shape; a corrupt one counted and removed), or None; the
+    read shared with the write's carry through _DOC_MEMO, keyed by the document file's stat, so a consult and the write that
+    follows read the document once (low C). Counted under checkpoints.docConsults."""
+    cp = _ckpt_file(key)
+    if cp is None or not cp.exists():
+        return None
+    try:
+        st_ = cp.stat(); sig = (st_.st_mtime_ns, st_.st_size)
+    except OSError:
+        return None
+    with _CKPT_LOCK:
+        hit = _DOC_MEMO.get(key)
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+    doc = _ckpt_load(key)                                 # the validated read: version, path and shape (low A: a raw read raised
+    with _CKPT_LOCK:                                      #  on a folds that is not a dict, retired from another path's or an old
+        _CKPT_STATS["docConsults"] += 1                   #  version's document, re-read a corrupt one forever)
+        _doc_memo_drop(key)
+        if doc is not None:
+            _DOC_MEMO[key] = (sig, doc); _DOC_MEMO_BYTES[0] += _doc_memo_weight(sig)
+            while _DOC_MEMO_BYTES[0] > _DOC_MEMO_CAP and len(_DOC_MEMO) > 1:   # bounded in bytes (the caches rule): the oldest
+                _doc_memo_drop(next(iter(_DOC_MEMO)))                          #  documents go; the newest stays for the write it shares
+    return doc
+
+
+def _doc_folds_on_disk(key):
+    """The fold shapes of `key`'s fold document as it sits on disk, {} with none or one that does not verify: what a retirement
+    consults before any fold of this process has loaded the document."""
+    doc = _ckpt_doc_shared(key)
+    folds = doc.get("folds") if isinstance(doc, dict) else None
+    shapes = _doc_fold_shapes(folds) if isinstance(folds, dict) else {}
+    with _CKPT_LOCK:
+        _CKPT_DOC_FOLDS.setdefault(key, shapes)
+    return shapes
+
+
+def rewound_memo_forget(path):
+    """Drop the incident scan's memo cursor for `path` (T391 follow-up, round one, low 2): a leaf that took the memo road while it
+    had no assembly document carries a rewoundUuids cursor in its fold document; once its first compaction lands and the scan
+    flips to the leaf road for good, that cursor would never step again, and the checkpoint's cut, the minimum over the folds,
+    would drag behind it by up to the lag bound (about an eighth of the file) until growth passed it, every later boot's
+    restore reading that much more tail for every fold. Forgotten here, the next write omits the fold and the cut follows the
+    live folds."""
+    key = str(path)
+    had = _REWOUND_CACHE.pop(key, None) is not None
+    with _CKPT_LOCK:
+        shapes = _CKPT_DOC_FOLDS.get(key)
+    if shapes is None:                                    # no fold of this process has read or written the document yet (a fresh
+        shapes = _doc_folds_on_disk(key)                  #  process whose scan reaches the leaf first): ask the disk (low 8)
+    on_disk = "rewoundUuids" in (shapes or {})            # the document as last read or written carries the fold
+    if had or on_disk:                                    # retire only at the FLIP, when there is something to retire: a leaf-road
+        _retire_fold(key, "rewoundUuids")                 #  pass over a clean path retires nothing and dirties nothing (round two:
+    #                                                        an unconditional retirement popped a memo stored later in the process
+    #                                                        out of the next document and kept every leaf-road path dirty forever)
+
+
+def asm_document_stands(leaf_path):
+    """Whether an assembly document file exists for `leaf_path` (a stat, no read; False with no checkpoint directory): the
+    existence half of asm_document_seeds, the predicate the judges' incident scan asks before taking the leaf road."""
+    cp = _asm_ckpt_file(leaf_path)
+    return cp is not None and cp.exists()
+
+
 def _asm_ckpt_file(leaf_path):
     d = _ckpt_dir()
     if d is None:
@@ -4871,11 +5319,23 @@ def _asm_ckpt_file(leaf_path):
     return Path(d) / (hashlib.sha1(os.path.realpath(str(leaf_path)).encode("utf-8")).hexdigest()[:20] + ".asm.json.gz")
 
 
+_ASM_CHAIN_REFUSED_PATHS = {}     # realpath -> why the chain proof refused the standing document at this parse ("unproven": the
+#                                   missing bit; "shape": the tail's own shape): parse_session
+#                                   rewrites the document from the whole parse that follows, then and there (the writer has the
+#                                   resolved graph in hand and the refusal is the event), never leaving it to the entry's next
+#                                   quiescence drop, which a quiet session reaches slowly or never (T402 follow-up: sixteen of
+#                                   twenty-six sessions paid a whole parse at every boot while their documents lacked the bit)
+_ASM_CKPT_REFUSED = {}            # realpath -> the reason a standing document was refused at this path's last restore: read
+#                                   by _assemble to book full:refused, since the note below unlinks the document before the
+#                                   parse decides its road (T398 round one, medium: a refused document read as none at all)
+
+
 def _asm_ckpt_note(path, reason, detail=""):
     with _ASM_CKPT_LOCK:
         _ASM_CKPT_STATS["fallbacks"][reason] = _ASM_CKPT_STATS["fallbacks"].get(reason, 0) + 1
         first = (str(path), reason) not in _ASM_CKPT_SAID
         _ASM_CKPT_SAID.add((str(path), reason))
+        _ASM_CKPT_REFUSED[os.path.realpath(str(path))] = (str(reason), time.monotonic())   # stamped: the write pops only an older one
     if first:
         try:
             sys.stderr.write("assembly checkpoint fallback (%s) for %s%s\n" % (reason, path, (": " + detail) if detail else ""))
@@ -4885,6 +5345,7 @@ def _asm_ckpt_note(path, reason, detail=""):
     if cp is not None:
         try:
             cp.unlink()
+            _asm_removed("fallback:" + str(reason))
             cp.with_name(cp.name + ".meta").unlink(missing_ok=True)
         except OSError:
             pass
@@ -4899,9 +5360,19 @@ def _asm_ckpt_skip(reason):
 def asm_checkpoint_stats():
     with _ASM_CKPT_LOCK:
         out = dict(_ASM_CKPT_STATS); out["fallbacks"] = dict(out["fallbacks"]); out["skipped"] = dict(out["skipped"])
-        out["hydratedBy"] = dict(out["hydratedBy"])
+        out["hydratedBy"] = dict(out["hydratedBy"]); out["removed"] = dict(out.get("removed") or {})
+        out["hydratedByStage"] = dict(out.get("hydratedByStage") or {})   # T401: bytes per (stage, calling function)
         cv = out["converge"] = dict(out["converge"]); cv["skipped"] = dict(cv["skipped"])
-    return out
+    with _ASM_CKPT_LOCK:
+        out["parse"] = dict(_ASM_STATS)               # the parse's roads (T398): serve, fold, restore, full (with its reason), bypass,
+    return out                                        #  fallback, and every g:<reason> demotion, so a whole parse names its road
+
+
+def _asm_removed(reason):
+    """A document file removed, counted per reason (T398): the fallback that refused it, or the boot sweep."""
+    with _ASM_CKPT_LOCK:
+        r = _ASM_CKPT_STATS.setdefault("removed", {})
+        r[reason] = r.get(reason, 0) + 1
 
 
 def asm_converge_stat(name, n=1):
@@ -5114,15 +5585,39 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             except OSError:
                 return skip("stat")
             pre_n = max(0, min(len(recs), cut_seq - first_seq[fp]))   # records of this file before the cut
-            offs = record_offsets(fp, 0)
-            if offs is None or len(offs) != len(recs):
+            is_leaf = Path(fp).stem == Path(leaf_path).stem
+            offs, ent_gen = _entry_offsets_gen(fp)
+            # The reader's entry may hold MORE records than the tree's adapter read: a live LEAF grows between the settle's
+            # parse and this write (the CLI appends while the settle runs), and the reader extends its entry by a new list
+            # whose prefix is the very records the adapter holds, under the same generation. The document's pre-cut part
+            # is that prefix, so the prefix's offsets stand for the leaf; a shorter entry, or one under another generation
+            # (a rewrite, a refold from zero), does not (T396: a continuously active 120 MB session never got a document
+            # while its kernel lived, since every settle's write met an entry one record longer than its tree, and every
+            # boot read it whole through whichever reader came first). A LINEAGE file longer than the tree still skips
+            # (round one, medium): its row would be a skip row proven by a stat alone, and a prior file that gained a record
+            # after the parse (its own session resumed elsewhere, the case _asm_gates demotes as nonleaf) would be stamped
+            # as wholly before the cut with the appended record missing from every restore of this leaf's kernel life.
+            src_gen, src_base = ((getattr(ad, "_src_keys", {}) or {}).get(fp, (None, None)) + (None, None))[:2]
+            # The prefix is accepted for the leaf under the tree's own generation AND from base zero: a seeded adapter that
+            # read the file from its cut (a degenerate document whose pre-cut part holds records but no atoms restores unseen
+            # as restored) holds records the entry's prefix does not begin with, so a whole reader upgrading the entry to
+            # base zero under the same generation must not lend it that prefix (round two, low 1).
+            if offs is None or len(offs) < len(recs) or (len(offs) > len(recs) and not (is_leaf and src_gen == ent_gen and src_base == 0)):
                 return skip("offsets")
-            file_offs[fp] = offs
+            offs = offs[:len(recs)]                       # defensive: no row index below passes len(recs), so the extra
+            file_offs[fp] = offs                          #  offsets of a grown entry are never read (round one, low 3)
             pre_uuids = [r.get("uuid") for r in recs[:pre_n] if r.get("uuid")]
             f = {"path": fp, "size": st_.st_size, "mtime": st_.st_mtime, "pre": pre_n, "n": len(recs),
                  "first": pre_uuids[0] if pre_uuids else None, "last": pre_uuids[-1] if pre_uuids else None}
-            if pre_n >= len(recs) and Path(fp).stem != Path(leaf_path).stem:
+            if pre_n >= len(recs) and not is_leaf:
                 f["skip"] = True                          # wholly before the cut: never read at restore, stat is its proof
+                st_read = (getattr(ad, "_src_stat", {}) or {}).get(fp)
+                if st_read is None:
+                    return skip("stat")                   # no witness for the records the tree was parsed from: no row
+                f["size"], f["mtime"] = int(st_read[0]), float(st_read[1])   # the stat AS READ, never the write-time one: a
+                #                                            record appended to the prior file between the parse and this write
+                #                                            must fail the next boot's verification, not be stamped away (round
+                #                                            one, medium, the half that needed no reader in between)
             else:
                 cut_off = offs[pre_n][0] if pre_n < len(recs) else st_.st_size
                 try:
@@ -5195,12 +5690,20 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                     row["tur"] = a["toolUseResult"]
             pre_atoms.append(row)
         # the pre-cut spine, root to cut
-        chain, u, guard_n = [], ad.leaf_uuid, 0
-        while u is not None and guard_n < 500000:
-            if ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid:
+        chain, u, guard_n, bound = [], ad.leaf_uuid, 0, len(ad.by_uuid) + 1
+        while u is not None and guard_n < bound:              # a walk longer than the record count is a cycle in the resolved
+            if ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid:   #  graph (a reused uuid can make one): no document for it
                 chain.append(u)
             u = ad.parent_of.get(u); guard_n += 1
+        if u is not None:
+            return skip("cycle")
         spine = [row_of[u] for u in reversed(chain) if u in row_of]   # record indexes, root to cut
+        tip = chain[0] if chain else None                 # the pre-cut spine's tip: the first pre-cut record on the leaf's path
+        tip_childless = tip is not None and not any(    # decided HERE from the RESOLVED graph (parentUuid or logicalParentUuid,
+            p == tip and ad.seq_of.get(u, 0) < cut_seq and u in ad.by_uuid   #  the stitch repair applied): a pre-cut child of
+            for u, p in ad.parent_of.items())           #  the tip, a compaction anchored on it included, means a tail child would
+        #                                                   decide the fork (T402 round five, medium 1); the restore reads this
+        #                                                   bit, never the rows' raw parents
         seq_ts = None
         i = bisect.bisect_left(ad._seq_ts, (cut_seq,)) - 1
         if i >= 0:
@@ -5318,7 +5821,7 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
                "gates": {"prompt_ids": sorted(ad.prompt_ids), "boundary_pids": sorted(ad.boundary_pids),
                          "skill_use_ids": sorted(ad.skill_use_ids), "src_tool_links": sorted(ad.src_tool_links),
                          "dangling": sorted(ad.dangling)},
-               "carry": _carry_encode(st), "identity": identity, "t": time.time()}
+               "carry": _carry_encode(st), "identity": identity, "t": time.time(), "tipChildless": bool(tip_childless)}
         try:
             text = json.dumps(doc, separators=(",", ":"))
         except TypeError:
@@ -5330,14 +5833,21 @@ def asm_checkpoint_write(leaf_path, rompuuid, sdk_human=False, tree=None, reason
             cp.parent.mkdir(parents=True, exist_ok=True)
             tmp = cp.with_name("%s.%d.%x.tmp" % (cp.name, os.getpid(), threading.get_ident()))
             tmp.write_bytes(data)
-            os.replace(tmp, cp)
+            _t_write = time.monotonic()                   # the window's edge: a refusal stamped before this was against the document
+            os.replace(tmp, cp)                           #  the replace retires (popped below); one stamped after it stands
             meta = cp.with_name(cp.name + ".meta")            # {"av", "path"}: what the boot sweep reads, never the document
             mtmp = meta.with_name(meta.name + ".%d.tmp" % os.getpid())
-            mtmp.write_text(json.dumps({"av": _ASM_CKPT_V, "path": doc["path"]}))
+            mtmp.write_text(json.dumps(_asm_sidecar(doc)))   # the inputs' fsids and whether resume links joined them: what
+            #                                                   asm_document_seeds reads, never the document
             os.replace(mtmp, meta)
         except OSError:
             return skip("write")
         entry["docWritten"] = True
+        with _ASM_CKPT_LOCK:                              # a fresh document stands: a later parse with none is noDocument, not an
+            _rk = os.path.realpath(str(leaf_path))        #  OLD refusal (T398 follow-up, low 1); a refusal a judge recorded inside this
+            _rv = _ASM_CKPT_REFUSED.get(_rk)              #  write's window (against the document just published) stays (low B)
+            if _rv is not None and _rv[1] < _t_write:
+                _ASM_CKPT_REFUSED.pop(_rk, None)
         entry["docTurns"] = bool(turns_doc)              # the turns section was written (T323 stage 4c)
         entry["docNoTurns"] = _tree_key(tree) if (tree is not None and not turns_doc) else None   # …or this tree yields none
         with _ASM_CKPT_LOCK:
@@ -5605,6 +6115,8 @@ def _seed_from_doc(doc):
             landed.add(u)
     for fsid, f in doc["files"].items():
         seed["cuts"][fsid] = "skip" if f.get("skip") else (int(f["cut"][0]), int(f["cut"][1]), bytes.fromhex(f["cut"][2]))
+        if f.get("skip"):
+            seed.setdefault("stat", {})[fsid] = (int(f["size"]), float(f["mtime"]))   # the witness a rewrite carries forward
     return seed, landed
 
 
@@ -5631,15 +6143,124 @@ def _entry_current(entry, candidate_files):
     return True
 
 
+def _boundary_effective_parent(r, known):
+    """A compact_boundary's parent as the parse resolves it (FileAdapter._ingest, then _repair_compaction_stitches): its
+    parentUuid or logicalParentUuid when that names a known record; when it names an UNKNOWN one, the first of
+    compactMetadata.preservedSegment's tail, anchor and head that does (the stitch repair re-points only a truthy, unknown
+    target); None when the resolved target is falsy (the parse leaves such a boundary a root) or nothing is known."""
+    target = r.get("parentUuid") or r.get("logicalParentUuid")
+    if not target:
+        return None                                       # the parse leaves such a boundary a ROOT and never reads the segment
+    if target in known:
+        return target
+    seg = (r.get("compactMetadata") or {}).get("preservedSegment") or {}
+    for k in ("tailUuid", "anchorUuid", "headUuid"):
+        cand = seg.get(k)
+        if cand and cand in known:
+            return cand
+    return None
+
+
+def _tail_chains_onto_the_document(leaf_path, doc, assume_childless=False):
+    """Whether the leaf's tail (its records past the document's cut) CHAINS onto the document: every tail record that bears a
+    uuid or a parentUuid key, whatever its type (user, assistant, a system spur, a summary, a sidechain record, an attachment),
+    parents a record IN THE TAIL, or the pre-cut SPINE TIP when the document says the writer proved the tip had no pre-cut
+    child (`tipChildless`, decided at write time from the resolved graph, a compaction anchored on the tip counting as a child;
+    an older document without the bit is not proven, so the exemption does not apply). A compaction boundary in the tail is
+    held to the same rule through its EFFECTIVE parent, resolved as the parse resolves it (logicalParentUuid, else the
+    preserved segment's tail, anchor or head that names a known record): the boundary at the cut anchors on the tip or a tail
+    record; one anchored in the pre-cut interior, or on no known record, invalidated the document. A missing parentUuid key
+    counts as a null root. So a /clear fork, a rewind onto any pre-cut record but a proven-childless tip, a system spur
+    anchored before the cut, an orphan parent, a summary or sidechain record parented into the pre-cut part, a compaction
+    re-anchored into the interior or onto an unknown uuid, a self-linked record, a parent cycle, a boundary with no anchor at all, a tail uuid reusing a pre-cut record's, all refuse to the whole parse; a uuid repeated within the tail is the parse's last-wins node: graph invalidations the document's
+    byte checks cannot see, after which the pre-cut verdicts the document carries may be stale (T402 rounds one to six). The rule is REACHABILITY: the tail is a forest whose only root parent is the proven tip and every record's parent chain reaches it (a boundary through its effective parent); set membership alone approved a tail that re-rooted itself while a cold parse dropped the pre-cut conversation. The
+    childless tip is exempt because a first child cannot change which pre-cut branch is active, and the live manual /compact
+    chains its command wrappers onto the pre-compact leaf, a childless tip, in ten of thirteen corpus cases (the golden detached
+    scenario). One predicate for EVERY read that seeds an adapter from a document: the boot restore, the restore after a
+    descent, rewrite or nonleaf demotion, the chain-membership and file-rewound readers. A leaf with no cut in the document
+    has no tail to chain."""
+    fsid = Path(leaf_path).stem
+    f = (doc.get("files") or {}).get(fsid) or {}
+    cut = f.get("cut")
+    if not cut or f.get("skip"):
+        return True
+    ent = _read_jsonl_entry(leaf_path, tail_ok=True, tail_from=(int(cut[0]), int(cut[1]), bytes.fromhex(cut[2])))
+    recs = ent[4] if ent is not None else []
+    if ent is not None and ent[5] < int(cut[1]):          # a whole entry: the tail is the records past the cut
+        recs = recs[int(cut[1]) - ent[5]:]
+    nodes = [r for r in recs if isinstance(r, dict) and r.get("uuid")]   # the graph nodes: records the parse indexes by uuid; a
+    by_uuid = {r["uuid"]: r for r in nodes}                               #  uuid-less record bearing a parentUuid is no node to the
+    rows, spine = doc.get("records") or [], doc.get("spine") or []       #  parse either (nothing is indexed for it), so it is not
+    #                                                                       walked (T402 follow-up); a snapshot or index row is none
+    pre_uuids = {row[0] for row in rows}
+    tip = rows[spine[-1]][0] if spine and spine[-1] < len(rows) else None
+    tip_ok = tip if tip is not None and (doc.get("tipChildless") is True or assume_childless) else None
+    known = pre_uuids | set(by_uuid)
+    if any(u in pre_uuids for u in by_uuid):
+        return False                                      # a tail uuid reusing a pre-cut record's: a cycle across the spine, and the parse
+    #                                                       would re-bind a frozen record (round seven). A uuid REPEATED within the tail is
+    #                                                       resolved as the parse resolves it: the last record wins (by_uuid), so the walk
+    #                                                       below runs over one node per uuid with the last copy's parent; the common real
+    #                                                       shape (a verbatim duplicate, 3.5 percent of transcripts) grafts, and a repeat
+    #                                                       whose last copy is a non-tip root refuses through reachability (round eight)
+    walk_nodes = list(by_uuid.values())
+
+    def parent_of(r):
+        """The record's parent as the parse resolves it; None for a root (a null or missing parent, a self-link)."""
+        if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
+            p = _boundary_effective_parent(r, known)      # the boundary's anchor as the parse resolves it (round five, medium 2)
+        else:
+            p = r.get("parentUuid")
+        return None if (not p or p == r.get("uuid")) else p
+
+    reaches = {}                                          # uuid -> whether its parent chain reaches the proven tip (memoized)
+    for r in walk_nodes:                                  # REACHABILITY, not membership (round six, medium): every tail node's
+        path, on_path, cur = [], set(), r                 #  parent chain must end at the proven tip; a chain ending at any other
+        while True:                                       #  root (null, missing, self-link, unknown), revisiting a record (a
+            u = cur.get("uuid")                           #  cycle) or leaving the tail into the pre-cut part refuses
+            if u is not None and u in reaches:
+                ok = reaches[u]; break
+            if u is not None and u in on_path:
+                ok = False; break                         # a cycle (the set beside the path keeps a backwards-written tail linear)
+            if u is not None:
+                path.append(u); on_path.add(u)
+            p = parent_of(cur)
+            if p is None:
+                ok = False; break                         # a root that is not the tip: the tail re-roots the graph
+            if p == tip_ok:
+                ok = True; break
+            if p in by_uuid:
+                cur = by_uuid[p]; continue
+            ok = False; break                             # the pre-cut interior, an unproven tip, or an unknown uuid
+        for x in path:
+            reaches[x] = ok
+        if not ok:
+            return False
+    return True
+
+
 def _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human):
     """The entry restored from the leaf's assembly checkpoint, served; None when there is none or it does not verify.
     The pre-cut turns come from the document as lazy atoms; the tail is read from the cut and parsed through an
     adapter seeded with the pre-cut graph facts and the carried emit state; the prefix's identity is proven."""
+    if _asm_refusal_stands(leaf_path):
+        _asm_stat("restore:refusedStanding")             # refused for the tail's shape at this very stat: no proof, no rewrite (round two)
+        return None
     doc = _asm_ckpt_load(leaf_path, rompuuid, sdk_human, candidate_files, links)
     if doc is None:
         return None
+    asm_sidecar_refresh(leaf_path, doc)                   # an older sidecar gains the inputs list here (round one, low 2)
     try:
         seed, landed = _seed_from_doc(doc)
+        if not _tail_chains_onto_the_document(leaf_path, doc):
+            _asm_stat("restore:chainRefused")             # the tail does not chain onto the document: the whole parse (T402); the
+            _why = ("unproven" if doc.get("tipChildless") is None and _tail_chains_onto_the_document(leaf_path, doc, assume_childless=True)
+                    else "shape")                         # the missing bit alone, or the tail's own shape
+            with _ASM_CKPT_LOCK:
+                _ASM_CHAIN_REFUSED_PATHS[os.path.realpath(str(leaf_path))] = _why   # the whole parse that follows offers its document
+            #                                               once; for the shape it then marks the sidecar at the leaf's stat, so the
+            #                                               same cut is not proved or rewritten again while the leaf stands (round two)
+            return None                                   #  document stands on disk until the next write replaces it
         fsids = list(doc.get("fsids") or [])
         pre_turns, prefix = [], []
         if doc.get("turns"):
@@ -5715,7 +6336,25 @@ def _hydrate_one(a, rec):
     a.pop("lazy", None)
 
 
-_HYDRATE_TEXT_READERS = ("_unit_text", "_prompt_text", "_atom_text")   # the judges' shared text readers: attributed with their caller
+_HYDRATE_TEXT_READERS = set()     # the CODE objects of the shared text readers (the judges' _unit_text, _prompt_text and _atom_text,
+#                                   the kernel's _atom_user_texts), each registered where it is defined: a hydration through one is
+#                                   attributed with the reader's caller. Matched by code object, never by name (T384 round three: a
+#                                   local function named like a reader was consumed as one)
+
+
+def register_hydrate_text_reader(*fns):
+    """Register shared text readers the hydration attribution names together with their caller."""
+    for fn in fns:
+        _HYDRATE_TEXT_READERS.add(fn.__code__)
+
+
+def unregister_hydrate_text_reader(*fns):
+    for fn in fns:
+        _HYDRATE_TEXT_READERS.discard(fn.__code__)
+
+
+def hydrate_text_reader_registered(fn):
+    return fn.__code__ in _HYDRATE_TEXT_READERS
 
 
 def hydrate(atoms, rompuuid=None, by=None):
@@ -5731,12 +6370,15 @@ def hydrate(atoms, rompuuid=None, by=None):
         return 0
     if by is None:
         try:
-            f = sys._getframe(1); by = f.f_code.co_name
-            if by in _HYDRATE_TEXT_READERS:               # a text reader every walker shares says nothing about WHO walked: the
-                g = f.f_back                              #  first caller outside the shared readers is recorded with it (T377:
-                while g is not None and g.f_code.co_name in _HYDRATE_TEXT_READERS:   #  naming the boot's reader; a reader reached
-                    g = g.f_back                          #  through another reader still names the walker)
-                by = "%s<-%s" % (by, g.f_code.co_name if g is not None else "?")
+            f = sys._getframe(1)
+            while f is not None and _synthetic_scope(f):  # a comprehension's or generator expression's own frame is no caller
+                f = f.f_back
+            by = f.f_code.co_name if f is not None else "?"
+            if f is not None and f.f_code in _HYDRATE_TEXT_READERS:   # a text reader every walker shares says nothing about WHO
+                g = f.f_back                              #  walked: the first caller outside the shared readers is recorded with it
+                while g is not None and (g.f_code in _HYDRATE_TEXT_READERS or _synthetic_scope(g)):   #  (T377: naming the boot's
+                    g = g.f_back                          #  reader; a reader reached through another reader, or through a
+                by = "%s<-%s" % (by, g.f_code.co_name if g is not None else "?")   #  comprehension's frame, still names the walker)
         except Exception:
             by = "?"
     filled, by_file = 0, {}
@@ -5782,7 +6424,11 @@ def hydrate(atoms, rompuuid=None, by=None):
                     raise LazyBodyRead("atom %s: the record at its offset is %s" % (a.get("uuid"), rec.get("uuid")))
                 with _ASM_CKPT_LOCK:
                     _ASM_CKPT_STATS["hydratedBytes"] += ln; _ASM_CKPT_STATS["hydratedAtoms"] += 1
+                    _THREAD_BYTES.hydrated = getattr(_THREAD_BYTES, "hydrated", 0) + ln   # this thread's share (T397)
                     _ASM_CKPT_STATS["hydratedBy"][by] = _ASM_CKPT_STATS["hydratedBy"].get(by, 0) + ln
+                    hbs = _ASM_CKPT_STATS.setdefault("hydratedByStage", {})   # T401: the same bytes under the calling thread's stage
+                    hk = "%s:%s" % (_read_stage() or "none", by)
+                    hbs[hk] = hbs.get(hk, 0) + ln
                     if a.get("uuid"):
                         _HYDRATED[a["uuid"]] = (rec, ln); _HYDRATED_BYTES[0] += ln
                         while _HYDRATED_BYTES[0] > _HYDRATED_CAP and _HYDRATED:
@@ -5809,7 +6455,7 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
     if leaf_override:
         # A pending cut changes the walk anchor and is transient: always a plain full parse,
         # never cached — a cut parse's truncated emit state must not seed later folds.
-        _ASM_STATS["bypass"] += 1
+        _asm_stat("bypass")
         _mode("bypass")
         ad = FileAdapter(candidate_files, leaf_path, leaf_override=leaf_override, resume_links=links)
         ad.sdk_human = sdk_human
@@ -5826,12 +6472,13 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
                     _ASM_CACHE.pop(key, None)
                     _ASM_CACHE[key] = entry       # a served entry is a USED entry (LRU touch)
             if entry is not None:
+                _ASM_DEMOTE_TL.reason = None
                 got = _asm_gates(entry, leaf_path, candidate_files, links)
                 if got is not None:
                     delta, leaf_recs = got
                     _asm_heal(entry, rompuuid, postal_index)
                     if not delta:
-                        _ASM_STATS["serve"] += 1
+                        _asm_stat("serve")
                         _mode("serve")
                         return _asm_serve(entry)
                     served = _asm_fold(entry, delta, leaf_recs, str(leaf_path),
@@ -5841,16 +6488,47 @@ def _assemble(leaf_path, candidate_files, links, rompuuid, postal_index, sdk_hum
                         return served
                 with _ASM_LOCK:                   # gate/invariance demotion: the entry is stale
                     _ASM_CACHE.pop(key, None)
+                # A demoted entry falls to the RESTORE road before the whole parse (T402): for a descent (the delta does not
+                # chain the new leaf to the old: an api_error spur, a rewind, a /clear fork in the tail), a rewrite or a moved
+                # lineage file, the document still stands for the pre-cut part and its own load checks refuse it when it does
+                # not fit; the tail read from the cut covers the moved leaf. The first instrumented boot (T398) paid two whole
+                # parses under g:descent inside the auto-nudge tick where a restore would have read the tail.
+                _why = getattr(_ASM_DEMOTE_TL, "reason", None)
+                if _CKPT_DIR_FN is not None and _why in _ASM_RESTORE_AFTER_DEMOTE:
+                    # every restore over a document, this one and the boot's, first asks whether the tail CHAINS onto it
+                    # (_tail_chains_onto_the_document); a rewind into the pre-cut interior, a /clear fork, a system spur
+                    # anchored before the cut or an orphan parent refuses to the whole parse, as before (rounds one and two)
+                    served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
+                    if served is not None:
+                        _asm_stat("restore"); _asm_stat("restore:afterDemote")
+                        _mode("restore")
+                        return served
             elif _CKPT_DIR_FN is not None:
                 served = _asm_restore(key, leaf_path, candidate_files, links, rompuuid, postal_index, sdk_human)
                 if served is not None:
+                    _asm_stat("restore")
                     _mode("restore")
                     return served
+            # A full parse names its road (T398): an entry the gates DEMOTED (the g:<reason> beside it: the leaf's record
+            # entry replaced by a from-zero read, a lineage file moved), a leaf with NO document file, a document that
+            # stood but was REFUSED at the restore (its fallback reason counted beside), or no checkpoint directory at all.
+            with _ASM_CKPT_LOCK:
+                refused = _ASM_CKPT_REFUSED.pop(os.path.realpath(str(leaf_path)), None)   # the restore's own refusal (reason, stamp), if any
+            if entry is not None:
+                why = "demoted"
+            elif _CKPT_DIR_FN is None:
+                why = "noDir"
+            elif refused is not None:
+                why = "refused"                           # a document stood and did not verify (its reason under fallbacks); the
+            else:                                         #  note unlinked it, so the stat below would have read it as none
+                cp_ = _asm_ckpt_file(leaf_path)
+                why = "noDocument" if cp_ is None or not cp_.exists() else "refused"
+            _asm_stat("full:" + why)
             _mode("full")
             return _asm_full(key, leaf_path, candidate_files, links, rompuuid,
                              postal_index, sdk_human)
     except Exception as e:
-        _ASM_STATS["fallback"] += 1
+        _asm_stat("fallback")
         _mode("fallback")
         if not _ASM_WARNED[0] or _ASM_STATS["fallback"] in (10, 100, 1000, 10000):
             _ASM_WARNED[0] = True    # once, then at count milestones — a PERSISTENT fold bug
@@ -5963,8 +6641,29 @@ def parse_session(leaf_path, rompuuid=None, name=None, color="#888888", dir=None
             "skillLoads": skill_loads}
     if cut_turn:
         out["cutTurn"] = cut_turn                   # a restored tree only (T323 stage 4b): where its lazy atoms ended
+    _rk = os.path.realpath(str(leaf_path))
+    with _ASM_CKPT_LOCK:
+        _why = _ASM_CHAIN_REFUSED_PATHS.pop(_rk, None)
+    if _why is not None and _CKPT_DIR_FN is not None:
+        try:                                        # the chain proof refused the standing document and this whole parse produced a
+            if asm_checkpoint_write(leaf_path, rompuuid, sdk_human, tree=out, who="refusal"):   # sound tree: write its document now,
+                _asm_stat("write:afterRefusal")     #  carrying the childless bit, so the next restore takes it (T402 follow-up)
+            else:
+                _asm_stat("write:afterRefusalSkipped")   # the writer declined (its own skip reason is counted under asmCheckpoint.skipped)
+                _why = "shape"                          # a declined offer, whatever the refusal's reason (a legacy document whose
+                #                                         whole parse builds past the cap, say), would repeat the proof, the second
+                #                                         walk, the build and the offer at every boot: marked like a shape (low 3)
+        except Exception as e:                      # noqa: BLE001 — the flag was popped above, so a write that RAISES is not retried
+            _say_once("assembly checkpoint: %s not rewritten after a refusal: %r" % (leaf_path, e))   # here: the settle's road writes
+            #                                                                                             the entry at its next drop
+        if _why == "shape":
+            _asm_mark_refused(leaf_path, "shape", rompuuid, sdk_human)   # AFTER the write, so an accepted write cannot erase it: the same cut reproduces
+            #                                         the same refusal until the leaf moves (round two, medium 1)
     return out
 
+
+
+register_whole_read_passthrough(parse_session)   # the parse's own entry (T384)
 
 def task_store_dir(fsid):
     """Claude Code's task store for one transcript stem: <CLAUDE_CONFIG_DIR or ~/.claude>/tasks/<fsid>,

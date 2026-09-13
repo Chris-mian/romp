@@ -150,8 +150,12 @@ process.exit(0);
 """
 
 
-class ServedQueuedRescind(unittest.TestCase):
+class QueuedLab(unittest.TestCase):
+    """The boot: a hermetic kernel over a synthetic transcript that ends inside a running tool call, so every send the
+    kernel receives waits behind the turn, and the real /chat page served from a copy of the built bundle. Subclassed by
+    this module's tests and by the provisional-rows lab (T389, tests/test_provisional_rows_browser.py); no tests of its own."""
     maxDiff = None
+    EXT = EXT
 
     @classmethod
     def setUpClass(cls):
@@ -241,6 +245,7 @@ class ServedQueuedRescind(unittest.TestCase):
         shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
 
 
+class ServedQueuedRescind(QueuedLab):
     _r = None
     TEXT1, TEXT2, TEXT3 = "plot it again with the new bound", "and the report needs the new table", "and attach the report to that goal"
 

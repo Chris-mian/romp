@@ -99,6 +99,9 @@ body.scheme-solarized-dark {
      provisional wash and the peer-tinted ground (theme-parity.test.ts holds the contrast on all four), and
      postal-kind-ramp.test.ts holds the stops, the hue distances and the distance from the prose ink. */
   --postal-coordinate: #54b204;  --postal-delegate: #9088f0;  --postal-question: #42a9b0;
+  --peer-ink-l: max(l, 0.72);   /* a session's name in a postal head is inked in its identity colour, lifted to a lightness floor when the colour
+                                    is darker (T390 fold): a sweep of all sixty palette colours over the card grounds (the plain box and the
+                                    incoming card's wash at the peer's own hue) reads 4.9:1 at worst at this floor, 1.7:1 with no floor */
   --postal-wash-l: 0.263;  --postal-wash-c: 0.03;   /* the incoming card's tint: the peer's hue at the box ground's own
                                                        OKLab lightness (the page under the 3% box), a gentle chroma (T337b).
                                                        The lightness here is the shipped theme's FALLBACK: the chat measures
@@ -106,8 +109,12 @@ body.scheme-solarized-dark {
                                                        (postal-wash.ts), since --bg is host-derived in the webview (T337c) */
   /* THE romp accent — light blue (the user 2026-06-24). Use var(--accent) for accent/highlight chrome
      (selected toggles, in-progress loading dots, the Fleet pill, focus) — NOT for STATUS colors, which keep
-     their own meaning (--st-working-bg yellow = working, --st-blocked-bg red, etc.). --accent-fg reads on it. */
+     their own meaning (--st-working-bg yellow = working, --st-blocked-bg red, etc.). --accent-fg reads on it.
+     ONE exception (the user 2026-09-12, T394): the background box's command rows wear it as their KIND hue
+     (--kind-command, below), a kind and not a status; the status still overrides it for failed and completed rows. */
   --accent: #9cd2ff; --accent-fg: #0c1a2e;
+  --kind-command: var(--accent);   /* a command row's hue in the background box (T394): the accent blue the timeline lane icons wear;
+                                      the light block sets its own, its accent being the burnt orange that would read as an error */
   /* THE faint accent wash — the one alpha behind every selected/hovered accent chrome (0.10 and 0.14
      variants drifted in before 2026-08-26). Mirrored in feed.css (own :root). */
   --accent-wash: rgba(156, 210, 255, 0.12);
@@ -247,11 +254,14 @@ body.theme-light {
      at 4.6:1 or better on the cream page, the boxed card, the provisional wash and the peer-tinted ground at every hue
      (T371: the hues hold within a degree of the stops, OKLCH L about .49, chroma at the gamut's edge for the two vivid ones) */
   --postal-coordinate: #386f18;  --postal-delegate: #5f57ab;  --postal-question: #0d6d73;
+  --peer-ink-l: 0.46;   /* a session's name in a postal head, deepened on its own hue to read on the cream card (T390; the kind
+                           words above take the same rule by hand, OKLCH L about .49) */
   --postal-wash-l: 0.919;  --postal-wash-c: 0.045;  /* the cream under the 3% box; a stronger chroma: the cream's own hue
                                                        (71) sits near a warm peer's, and at .03 that tint read at less than half
                                                        a cool one's distance from the ground (T337c, the review of 2026-09-11) */
   --err: #B02A1C;
   --accent: #C2410C; --accent-fg: #FFF8F2;
+  --kind-command: #356890;   /* the dark accent's hue and chroma at OKLCH lightness 0.50 (T394): 4.67:1 as text on the cream box */
   --accent-wash: rgba(194, 65, 12, 0.10);
   --chip-wash: rgba(0, 0, 0, 0.07);   /* a hovered tag chip's ground (T343): on a light card the visible step is darker, and it stays distinct from the card's surface */
   --chip-sel-filter: brightness(0.75);   /* a SELECTED tag chip's strongest level on cream is DARKER (T343 review): brightness(1.3) here paled every selected chip below its faded neighbour; 0.75 lifts each tag's contrast above its rest value */
@@ -552,10 +562,22 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    opening dots (the loading-state rule; the working dot above stays solid on purpose — that rule is about
    real work, this one is about a load in progress). */
 .tab-dot.opening { background: var(--accent); animation: opening-line-pulse 1.2s ease-in-out infinite; }
+/* the dot widget's option (T379): a quiet grey dot when idle instead of the hidden slot, so a tab always shows its dot */
+.tab-dot.idle { background: var(--dim); opacity: 0.45; }
+/* the hot-key keycap widget (T379): the chord at its shortest after the name, a bordered chip in the dim tier, no width
+   beyond its glyphs. ONE rule text, agreed with the tab hot keys pull request (2026-09-12): this file owns .tab-key, and
+   that change drops its copy when it lands on this one */
+.tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); border: 1px solid var(--box-border);
+  border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
+/* the tab-widgets gear (T379): one glyph button at the strip's right end, in the tag box, the tag button's dress */
+.tab-widgets-gear { flex: 0 0 auto; display: inline-flex; align-items: center; margin-left: 4px; padding: 4px 6px; cursor: pointer;
+  background: transparent; border: 1px solid var(--card-border); border-radius: 6px; color: var(--dim);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
+.tab-widgets-gear:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 /* Vertical context gauge right of the name (the user 2026-08-08): the statusline battery rotated
    upright — fills bottom-up with the context-used %, in the SAME global-colormap colour (fill set
-   inline by tabCtxGauge, render.ts), no % text. A faint track so an empty gauge still reads as
-   "gauge", not dirt. Toggled in gear → Chat ("Context gauge in tabs"), default on. */
+   inline by the context bar widget, tab-widgets.ts tabCtxGauge), no % text. A faint track so an empty gauge still reads as
+   "gauge", not dirt. The gear's Tab widgets section (the Context bar row) switches it and picks when it shows; on by default. */
 .tab-ctx { flex: 0 0 auto; position: relative; width: 4px; height: 13px; border-radius: 2px;
   overflow: hidden; background: rgba(255, 255, 255, 0.13); }
 .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
@@ -698,14 +720,19 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    (the user 2026-06-26). The icon is the same metaphor as the timeline lane toggles; a .off icon is slashed
    + dimmed to show the flag is currently off (matching the timeline). */
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--box-border); }
-/* a flyout's group head (the Billing flyout's "Default for this machine", T380): a row that names the radios under it
-   and takes no gesture, so no hover wash; the radios below wear the menu's own current mark */
-.ctx-sub-head, .ctx-sub-head:hover { cursor: default; background: transparent; }
-/* the Billing flyout stays a menu's width (review: the note had grown it to 585 px, past narrow windows): the head's
-   note wraps inside it instead of stretching it */
-.ctx-sub-billing { max-width: 22em; }
-.ctx-sub-billing .ctx-sub-head { white-space: normal; }
-.ctx-sub-billing .ctx-sub-head .ctx-item-sub { display: block; white-space: normal; line-height: 1.3; }
+/* the Billing flyout and its nested default submenu (T387) stay a menu's width (the T380 review: a note had grown the
+   flyout to 585 px, past narrow windows; the note is gone, the cap stays for a long login label), the label truncating
+   inside the item instead of stretching it; the check mark sits in the item's padding, unclipped */
+.ctx-sub-billing, .ctx-sub-default { max-width: 22em; }
+/* the nested level is the flyout's size, not 0.92 of it again (the T387 review measured 11.0 px against 10.1 px: .ctx-menu's
+   0.92em compounds at every nesting, the em rule ui/CLAUDE.md names; the 22em cap follows the size, so it matches too) */
+.ctx-sub-default { font-size: 1em; }
+/* the Set default billing row opens a submenu, so its caret lines up with the Billing and Tags carets: no check-mark
+   room on its right (the .ctx-sub .ctx-item 26px is for the entries that can wear the check) */
+/* four classes: it must OUTRANK .ctx-sub .ctx-item's 26px below (equal specificity lost to the later rule: the fold's served
+   lab measured 26 against 10; the repo's cascade rule, pin the tiebreak) */
+.ctx-sub.ctx-sub-billing > .ctx-item.ctx-item-setdefault { padding-right: 10px; }
+.ctx-sub-billing .ctx-item, .ctx-sub-default .ctx-item { overflow: hidden; text-overflow: ellipsis; }
 .ctx-item-toggle { display: flex; align-items: flex-start; gap: 8px; }
 /* ON = the romp accent blue, matching the timeline lane's feed/mail icons (the user 2026-06-26); OFF = dim
    gray + slashed. So the same blue marks "enabled" in both the menu and the timeline. */
@@ -737,6 +764,11 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    feed view menu's .forced items wear */
 .ctx-sub .ctx-item.disabled { opacity: 0.45; cursor: default; }
 .ctx-sub .ctx-item.disabled:hover { background: transparent; color: inherit; }   /* .ctx-item:hover also recolours */
+/* a Move to row held by the tab lock (T395): the label dims and the row stops answering, but the + beside it still tags
+   (adding is not a move), so it keeps full strength and its own title; hence the dim on the body, not the row */
+.ctx-sub .ctx-item.ctx-item-locked { cursor: default; }
+.ctx-sub .ctx-item.ctx-item-locked > .ctx-item-body { opacity: 0.45; }
+.ctx-sub .ctx-item.ctx-item-locked:hover { background: transparent; color: inherit; }
 .ctx-sub .ctx-item.current::after {
   content: "✓"; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
   background: var(--check-bg); color: #fff; border-radius: 50%;
@@ -797,6 +829,15 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    pill and landed nearly flush under the tab row above, while a line the + shared had air (the
    user 2026-08-25). Inner centering keeps the pill and chips at their own sizes. */
 .tab-tagbox { display: inline-flex; align-items: center; flex-wrap: wrap; min-height: 31px; }
+/* THE TAB LOCK (T395, the user 2026-09-12): a little rounded box like the tags box, right after the + tab (the user says
+   the position may move later), with the same floor so a controls-only line stays as tall as one the + is on; the
+   padlock gray at rest, and locked it wears the menu vocabulary's current dress, the accent on the glyph and the
+   outline, never a colour fill. */
+.tab-lockbox { display: inline-flex; align-items: center; min-height: 31px; margin-left: 4px; }
+.tab-lock { display: inline-flex; align-items: center; background: transparent; border: 1px solid var(--tab-lock-border, var(--box-border)); border-radius: 6px; padding: 4px 6px; cursor: pointer; color: var(--dim); }   /* the border is the tag button's own value, set by the strip from tag-menu.ts (one source); the glyph is 14px like the tag's, so both boxes measure 28 by 24 */
+.tab-lock:hover { color: var(--fg); }
+.tab-lock.on { color: var(--accent); border-color: var(--accent); }
+.tab-lock svg { display: block; }
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
 /* (The .tab-fleet pill was removed 2026-06-24 — Fleet/Chat are now the rotated toggles in the chat pane's
    vertical strip, so the tab-bar pill was redundant.) */
@@ -980,15 +1021,22 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 .bg-stop:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 .bg-stop:disabled { opacity: 0.55; cursor: default; }
 .bg-fold-head.bg-failed { --bgt: var(--st-blocked-bg); }
-.bg-fold-head.bg-completed { --bgt: var(--st-ready-bg); }
+.bg-fold-head.bg-completed { --bgt: var(--dim); }   /* the header's completed tint follows the rows (T394): the ready blue would sit beside the command blue */
 .bg-fold-head.bg-await { --bgt: var(--st-awaitbg-bg); }   /* the Awaiting why header — await-green, like its chip */
 .bg-fold-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 /* level 2: a flat list of task LINES (no boxes) BELOW the header, fills the box and scrolls when many */
 .bg-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; padding: 4px 2px; }
 .bg-task { --bgt: var(--st-working-bg); }
+/* ONE HUE PER KIND (T394, the user 2026-09-12: the kinds could not be told apart, and orange reads as an error): agents keep the
+   working gold, watches the awaiting green, commands take the accent blue (--kind-command, per theme). The row's status still
+   overrides where it means something, in the rules that follow: a failed row's dot is the blocked red, a completed row's the
+   dim ink (the ready blue it wore would collide with the command hue). */
+.bg-task.bg-kind-agents { --bgt: var(--st-working-bg); }
+.bg-task.bg-kind-commands { --bgt: var(--kind-command); }
+.bg-task.bg-kind-watches { --bgt: var(--st-awaitbg-bg); }
 .bg-task.bg-failed { --bgt: var(--st-blocked-bg); }
-.bg-task.bg-completed { --bgt: var(--st-ready-bg); }
+.bg-task.bg-completed { --bgt: var(--dim); }
 /* an armed watch / a peer or timer wait: nothing is computing HERE — the dot wears the await-green (slice 2) */
 .bg-task.bg-armed, .bg-task.bg-waiting { --bgt: var(--st-awaitbg-bg); }
 /* the rows grouped by KIND (slice 2, 2026-09-05): a small dim header per group, in the .bg-status
@@ -1017,6 +1065,16 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    never push them off-screen; no spacer, no margin-left:auto, no space-between. */
 .bg-sum { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.92em; color: var(--fg); }
 .bg-status { flex: 0 0 auto; font-size: 0.72em; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; color: var(--bgt); }
+/* on cream the kind hues fail as TEXT (the gold 4.0:1, the green 2.1:1 on the box), so the caption word is the hue deepened to
+   OKLCH lightness 0.46, the postal head's rule (T390): gold 5.6:1, green 5.2:1, blue 5.6:1; the dot keeps the full hue (T394) */
+body.theme-light .bg-status { color: oklch(from var(--bgt) 0.46 c h); }
+/* a KEPT row (T394): a tracked task the judge called a service (kernel bgServiceIds), the verdict as a muted suffix beside a
+   dimmed label and dot; the caption word keeps its hue, and nothing dims by element opacity (a 55 percent dot read 2.0:1 on
+   cream). The dot is the kind hue greyed toward the dim ink, a colour: at this share every hue reads 3:1 or better on the box
+   in both themes (measured 2026-09-12: gold 6.3 dark, 4.9 cream; green 5.4, 3.6; blue 7.1, 5.2) */
+.bg-task.bg-kept .bg-dot { background: color-mix(in srgb, var(--bgt) 45%, var(--dim)); }
+.bg-task.bg-kept .bg-sum { color: var(--dim); }
+.bg-kept-word { flex: 0 0 auto; font-size: 0.82em; color: var(--dim); white-space: nowrap; }
 .bg-caret { flex: 0 0 auto; color: var(--dim); font-size: 0.72em; width: 10px; opacity: 0.7; }
 /* level 3: a task's command + output, each its own scrollable block, indented under the line (overscroll-
    contain so the wheel scrolls the body, not the chat behind it — the "expanded view won't scroll" fix) */
@@ -1882,7 +1940,7 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
   from { background: rgba(224, 176, 32, 0.30); }
   to   { background: transparent; }
 }
-.turn.anchor-flash { animation: anchor-flash 1.6s ease-out; border-radius: 6px; }
+.anchor-flash { animation: anchor-flash 1.6s ease-out; border-radius: 6px; }   /* the turn, or the aligned element inside it when the landing aligns on quoted words or a text atom (T386) */
 
 /* ---------- user turn — a Signal-style OUTGOING bubble (the user's own messages) ----
    solid saturated blue + white text, right-aligned, so "your voice" is unmistakable.
@@ -1987,13 +2045,15 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
    where their messages sit — right-aligned, riding .turn-user's own flex-end). */
 .user-bubble.cmd-row { max-width: none; background: none; border: none; border-radius: 0;
   padding: 2px 0; color: var(--dim); }
-.user-bubble.cmd-row::before { content: "✦"; margin-right: 8px; color: var(--dim); }
+.user-bubble.cmd-row:not(.echo-bubble)::before { content: "✦"; margin-right: 8px; color: var(--dim); }   /* the mark is the LANDED row's;
+   a provisional command (the echo below) is a queued bubble with the chip inside, as a queued /compact draws it (T403) */
 /* The chip's ink is the OUTGOING-BUBBLE blue on the chat's own ground (the user 2026-08-14: the --code-bg
    terracotta tint read as a stray red here) — the same #2b6cef as .user-bubble, so the gesture still reads
    as "yours" without the said-thing bubble. */
-.user-bubble.cmd-row .slash-cmd-chip { background: var(--bg); color: var(--you);
-  border-color: var(--you); }
-.user-bubble.cmd-row .slash-cmd-args { color: var(--dim); }
+.user-bubble.cmd-row:not(.echo-bubble) .slash-cmd-chip { background: var(--bg); color: var(--you);
+  border-color: var(--you); }   /* the landed row's chip; the provisional command's chip is the queued bubble's default (T403) */
+.user-bubble.cmd-row:not(.echo-bubble) .slash-cmd-args { color: var(--dim); }   /* the landed row's args; a provisional command's args inherit
+   the queued bubble's --prov-ink (T403 round two: unscoped, this rule won the echo's args) */
 .user-bubble.cmd-row .nudge-gist, .user-bubble.cmd-row .nudge-caret { color: var(--dim); }
 .user-bubble.cmd-row .nudge-gist { margin-left: 8px; }
 .user-bubble.cmd-row .nudge-full { color: var(--dim); margin-top: 4px; max-width: 640px; }
@@ -2059,12 +2119,19 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .turn-queued { display: flex; flex-direction: column; align-items: flex-end; padding: 6px 0 10px; gap: 5px; }
 .queued-head { display: inline-flex; align-items: center; gap: 5px; font-size: 0.82em; color: var(--dim); letter-spacing: 0.02em; }
 .queued-head .queued-icon { color: var(--accent); display: flex; }   /* wireframe hourglass in the accent blue */
-.queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble {   /* …and a SENT postal card whose message has
+.queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble,
+.turn.echo .user-bubble.cmd-row.echo-bubble {   /* …and a SENT postal card whose message has
    not landed yet wears the same dress by the same class (T302): one provisional vocabulary. Named at BOTH densities:
    slim, and boxed by a fold (a first line past the head's clip, or a second line). On the boxed card `.notice` alone,
    later in the file at `.queued-bubble`'s specificity, took the border, background and radius back and left a solid
    box at the bubble's 72% width until the receipt landed; `.notice.queued-bubble` outranks it. The slim selector stays:
-   `.notice.notice-slim`, later in the file too, would otherwise beat `.notice.queued-bubble` on the slim card. */
+   `.notice.notice-slim`, later in the file too, would otherwise beat `.notice.queued-bubble` on the slim card.
+   And the kernel's ECHO of a slash COMMAND (T403, the user 2026-09-13): the landed command row sheds its bubble with
+   `border: none`, which leaves the border WIDTH at the initial `medium` (3px) with no style, and the echo dress below set
+   the style alone to dashed, so a provisional /compact wore a thick blue dashed ring nothing else on the page wears, over
+   the queued /model row's thin one. The echo of a command is this bubble, by this selector (five classes: it outranks
+   the landed row's reset and the echo dress), the chip inside as a queued /compact draws it, no ✦ (the mark is the
+   landed row's). */
   max-width: 72%; overflow-wrap: anywhere; display: flow-root;
   /* the FADE is in the dress's colours, not an opacity on the element (T337, the review of the kind colours): an element
      opacity dimmed every colour inside, the postal kind word included, which then read below 4.5:1 on the wash. The
@@ -2079,7 +2146,15 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 /* the kernel's echo of a send ANOTHER window made, not yet read by the model: the sender's tail-bubble dress on the
    user bubble it is drawn as — the same dashed border (its own 1px, so nothing shifts) and dim caption — so two views
    of one session agree on what is pending (2026-09-10) */
-.turn.echo .echo-bubble { border-style: dashed; border-color: color-mix(in srgb, var(--you) 65%, transparent); opacity: 0.85; }
+.turn.echo .echo-bubble { border-width: 1px; border-style: dashed; border-color: color-mix(in srgb, var(--you) 65%, transparent); opacity: 0.85; }   /* the width
+   named too (T403): `border-style` alone inherits whatever width the bubble's own rules left, `medium` after a `border: none` */
+.turn.echo .user-bubble.cmd-row.echo-bubble { opacity: 1; }   /* the queued bubble's fade is in its colours (T337), not an opacity */
+/* the CHIP inside a provisional bubble (a queued /compact, the echo of one) wears the bubble's own tokens (T403 round two): the
+   default chip's white text on a 24% black pill composited to 2.3:1 over the light provisional wash, the landed row's blue-on-ground
+   chip to 4.3:1 there; --prov-ink on a 16% --you tint reads above 4.5:1 on both themes' washes, the dashed edge in the bubble's token */
+.queued-bubble .slash-cmd-chip, .turn.echo .user-bubble.cmd-row.echo-bubble .slash-cmd-chip {
+  background: color-mix(in srgb, var(--you) 16%, transparent); color: var(--prov-ink); border-color: color-mix(in srgb, var(--you) 55%, transparent);
+}
 .echo-note { font-size: 0.82em; color: var(--dim); letter-spacing: 0.02em; text-align: right; }
 .notice.queued-bubble, .notice.notice-slim.queued-bubble { max-width: none; display: block; }   /* the notice keeps its row
    width and flex head at either density; only the dress is the bubble's (the shared rule's specificities, later in the
@@ -2135,7 +2210,9 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
    visible — a loss notice is not a hover secret. Button sizes wear .msg-edit's clothes (one size). */
 /* the bubble KEEPS its solid --you fill (2026-09-08: the old 10% wash put white text on a tint — unreadable on
    cream); the loss reads in the dashed --err edge, the label, and the actions (.notice-act, the one button dress) */
-.user-bubble.undelivered-bubble, .romp-bubble.undelivered-bubble {
+/* the undelivered COMMAND row is named first at three classes (T403 round two): `.user-bubble.cmd-row` resets the border at
+   the same two-class weight as the plain selector below, so the loss row's 1px held by source order alone */
+.user-bubble.cmd-row.undelivered-bubble, .user-bubble.undelivered-bubble, .romp-bubble.undelivered-bubble {
   border: 1px dashed color-mix(in srgb, var(--err) 65%, transparent); opacity: 0.85;
 }
 .undelivered-note { display: flex; align-items: center; gap: 4px; align-self: flex-end; margin-top: 3px; }
@@ -2514,9 +2591,16 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
 .notice-glyph .meta-dots i { background: var(--notice-rail, var(--accent)); }
 .notice-src { flex: 0 0 auto; font-size: 0.72em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--dim); white-space: nowrap; }
-/* the ONE coloured element in the vocabulary: the house session chip naming a peer (postal mail) */
-.notice-src-chip { display: inline-block; padding: 0 7px; border-radius: var(--radius-pill); letter-spacing: 0.02em;
-  text-transform: none; font-weight: 700; background: var(--peer-bg, var(--overlay-10)); color: var(--peer-fg, var(--fg)); }
+/* the ONE coloured element in the vocabulary: a session's NAME in a postal card's head, both ends (T390, the user
+   2026-09-12): the name itself, bold, inked in the session's identity colour, the way the awaiting fold names a peer; no
+   chip box, no fill. The identity colour arrives as --peer-bg (the session's own colour, chosen for a dark ground); the
+   ink is that colour's hue and chroma at the theme's lightness token (--peer-ink-l: the colour's own lightness in the
+   dark theme, a deepened one in cream, where a pastel identity colour would not read on the card's ground), the same
+   relative-colour rule the incoming card's tint uses. The muted host prefix is the tab's (.host-prefix). */
+.notice-src-end { letter-spacing: 0.02em; text-transform: none; font-weight: 700;
+  color: var(--peer-bg, var(--fg));   /* an engine without relative colour syntax keeps the identity colour itself */
+  color: oklch(from var(--peer-bg, var(--fg)) var(--peer-ink-l, l) c h); }
+.notice-src-end .host-prefix { font-weight: 400; }
 .notice-gist { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 0.92em; color: var(--fg); }
 /* where the gist shares the head with a long META and no actions, it keeps a legible floor: flex shrinks the two in
@@ -2581,7 +2665,8 @@ pre code .file-uri-link { color: var(--accent); }   /* a fenced block's path (20
    still show where the words would not fit */
 .notice-src-ends { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
 @container (max-width: 520px) {
-  .turn-postal-service .notice-src-self { width: 10px; height: 10px; padding: 0; border-radius: 50%; align-self: center; overflow: hidden; }
+  .turn-postal-service .notice-src-self { display: inline-block; width: 10px; height: 10px; padding: 0; border-radius: 50%; align-self: center; overflow: hidden;
+    background: var(--peer-bg, var(--overlay-10)); }   /* the dot is the one place the identity colour fills (T390) */
   .turn-postal-service .notice-src-self .notice-src-name { display: none; }
 }
 /* the DELIVERY STATE icon at the head's right edge (postal-state.ts for the map): dim for sent and delivered, the
@@ -3425,8 +3510,8 @@ body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: 
    browser's native viewer. Above every overlay layer. Backdrop click / Esc / ✕ closes. */
 #romp-lightbox { position: fixed; inset: 0; z-index: 1300; background: rgba(0, 0, 0, 0.72);
   display: flex; align-items: center; justify-content: center; }
-.romp-lightbox-inner { display: flex; flex-direction: column; gap: 8px; max-width: 92vw; max-height: 90vh; }
-.romp-lightbox-img { max-width: 92vw; max-height: 82vh; object-fit: contain; border-radius: 8px;
+.romp-lightbox-inner { display: flex; flex-direction: column; gap: 8px; max-width: 92vw; max-height: 90vh; min-width: var(--lb-acts-w, 0px); }   /* the floor: the bar's download-and-copy group, measured by openLightbox (review, round two) */
+.romp-lightbox-img { max-width: 92vw; max-height: 82vh; object-fit: contain; border-radius: 8px; align-self: center;
   box-shadow: var(--shadow-modal);
   transform-origin: 0 0; will-change: transform; }   /* pinch-zoom renders translate+scale from this corner (T162; pinch.ts) */
 /* the stage owns every touch gesture (T162): pinch must zoom the IMAGE, never the page — the bar's
@@ -3434,24 +3519,29 @@ body.drop-over::after { content: ""; position: fixed; inset: 0; pointer-events: 
 .romp-lightbox-inner { touch-action: none; }
 .romp-lightbox-inner.pdf { width: 88vw; height: 88vh; }
 .romp-lightbox-frame { flex: 1 1 auto; width: 100%; border: 0; border-radius: 8px; background: #fff; }
-.romp-lightbox-bar { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.romp-lightbox-name { flex: 1 1 auto; font-size: 0.86em; color: var(--fg); opacity: 0.85;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.romp-lightbox-close { font: inherit; font-size: 0.86em; cursor: pointer; flex: 0 0 auto;
-  padding: 2px 9px; border-radius: 6px; background: transparent; border: 1px solid var(--card-border); color: var(--fg);   /* T151: the one button rest */
-  border: 1px solid rgba(255, 255, 255, 0.18); }
-.romp-lightbox-close:hover { border-color: var(--accent); }
-/* download: an anchor dressed exactly like the close button beside it (one control vocabulary —
-   same chip, same hover cue), sitting between the filename and the ✕ */
+/* the bar sits ABOVE the picture and the PDF frame (T385, the user 2026-09-12: the controls at the top, the way a
+   file opens): it IS the file viewer's bar (.fileview-bar; .fileview-name as dimmed directory + basename; .fileview-acts
+   with the file group and the close cross alone at the end; .fileview-btn.fileview-icon glyph buttons; file-view.ts,
+   T367), one set of rules for both surfaces, so a control added to one wears the same dress in the other. The
+   lightbox's own classes stay as hooks: the placement here and the stage's tap rule (pinch.ts, closest(".romp-lightbox-bar")).
+   The bar's OWN placement rules are scoped under the lightbox id: an id outranks the viewer's later rules of equal
+   specificity, which a plain .romp-lightbox-bar rule tied with and lost to (round one measured the served bar at the
+   viewer's 7px 10px and the title at 12em; the repo's cascade rule: pin the tiebreak). No side padding: the picture's
+   edges are the column's. contain: inline-size makes the bar contribute NO intrinsic width, so the PICTURE sets the
+   column (a 120px thumbnail is a 120px column, not a bar-wide one) and the bar stretches to it; inside, the title
+   truncates, the basename too (the viewer's card owns its width and keeps its basename whole; the lightbox's column is
+   the picture's), and the actions wrap beneath the title when the picture is narrower than they are. */
+#romp-lightbox .romp-lightbox-bar { padding: 0 2px 6px; contain: inline-size; }
+#romp-lightbox .romp-lightbox-bar .fileview-name { min-width: 0; overflow: hidden; }
+#romp-lightbox .romp-lightbox-bar .fileview-base { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* the viewer's rule kept as far as the column allows (review, round two): the directory gives up its room first, by a shrink weight
+   a thousand times the basename's, so the basename reads whole down to the width where it alone does not fit */
+#romp-lightbox .romp-lightbox-bar .fileview-dir { flex-shrink: 1000; }
+/* the backdrop is 72% black in BOTH themes, so inside the lightbox the bar's tokens are the dark theme's whatever the
+   page wears: the light theme's near-black prose, hairline and clay accent would sit on a dark field otherwise */
+#romp-lightbox { --fg: #e8e8e8; --dim: #b8b8b8; --accent: #9cd2ff; --accent-fg: #0c1a2e; --accent-wash: rgba(156, 210, 255, 0.12);
+  --err: #f48771; --card-border: rgba(255, 255, 255, 0.18); --box-border: rgba(255, 255, 255, 0.18); }
 .romp-lightbox-cue { flex: 0 0 auto; font-size: 0.82em; color: var(--dim); font-variant-numeric: tabular-nums; }   /* the ←/→ position mark (house sub scale) */
-.romp-lightbox-dl, .romp-lightbox-copy { font: inherit; font-size: 0.86em; cursor: pointer; flex: 0 0 auto;
-  display: inline-flex; align-items: center;   /* centers the inline SVG in the chip */
-  padding: 3px 9px; border-radius: 6px; background: transparent; border: 1px solid var(--card-border); color: var(--fg);   /* T151: the one button rest */
-  border: 1px solid rgba(255, 255, 255, 0.18); text-decoration: none; line-height: normal; }
-.romp-lightbox-dl:hover, .romp-lightbox-copy:hover { border-color: var(--accent); }
-/* copy's spoken states: the ✓/✕ glyphs sit where the icon was — same chip, no reflow */
-.romp-lightbox-copy.ok { color: var(--accent); border-color: var(--accent); }
-.romp-lightbox-copy.err { color: #f48771; border-color: #f48771; }
 
 /* The "host:" prefix on a FEDERATED session's name (host-prefix.ts): metadata, not part of the name
    (the user 2026-07-11) — quiet gray, never bold, italic, a step smaller than the name it precedes.
@@ -4344,6 +4434,7 @@ body.dense-chrome .tab-add { padding: 3px 8px; font-size: 1.1em; }              
    the 18px line + 2 x 3px dense padding + the 1px border; #tabs stretches every item on a row to the tallest, so
    without this the row holding the + and the tag control would stay 31px beside 25px rows */
 body.dense-chrome .tab-tagbox { min-height: 25px; }                                     /* 31px */
+body.dense-chrome .tab-lockbox { min-height: 25px; }                                    /* 31px; the lock box follows the tags box (T395) */
 body.dense-chrome .tab-group-head { gap: 4px; padding: 3px 5px; }                       /* 5px; 6px 7px — the dense tab's own padding, so the row keeps a tab's box here too (T322) */
 /* the untagged trail's divider (the inline layout, stripGroupRows off): its 1px line is the content area under fixed
    gutters, so the 8px gutters sized for the 32px row would leave a 9px line in the 25px row; 6px keeps the default's

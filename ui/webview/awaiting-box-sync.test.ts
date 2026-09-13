@@ -76,7 +76,7 @@ test("the chip and the box gist take the kind word from ONE count (T225 rider)",
   // gist and the feed pill from the kernel's kind + count + the awaited ROWS — "agent" for one, "3
   // agents" for several, the bare number when the kinds are mixed. kindWord stays underneath for a
   // payload with no rows (an older kernel), so the count still decides the number there.
-  assert.match(RENDER, /import \{ awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, GROUP_TITLE, workingFor, type AwaitRow \} from "\.\/spin-caption";/);   // + the nested-wait helpers (2026-09-10)
+  assert.match(RENDER, /import \{ awaitWord, awaitBreakdown, groupRows, rowIds, waitsNote, listBreakdown, keptWord, GROUP_TITLE, ROW_KINDS, workingFor, type AwaitRow \} from "\.\/spin-caption";/);   // + the nested-wait helpers (2026-09-10), the kept rows' words and the kind order (T394)
   assert.match(RENDER, /awaitingCount\?: number \| null;/, "the Status shape carries the kernel's count");
   assert.match(RENDER, /awaitingItems\?: AwaitRow\[\];/, "…and the rows (slice 2)");
   // the bar's chip is built by status-chip.ts since T322b: ONE awaitWord call words it for the bar and the tag overview's rows
