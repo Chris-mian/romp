@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """T401 (2), 2026-09-13: the auto-nudge walk parsed every alive session on every pass, cold at boot (58.9 s of a 63 s first
-cycle on the first boot with per-stage rows). Its parse is gated now: skipped while the session's transcript, state log and
-store are unchanged since the last completed look AND no clock leg that look declined on has come due; the skip repeats the
-recorded verdict and still runs the parse-free debt reminder. The pass walks by recency and, with a client connected, yields
-after the first cold parse. Synthetic sessions only."""
+cycle on the first boot with per-stage rows). Its parse is gated now: skipped while the nine files the memo keys on are
+unchanged since the last completed look AND no clock leg that look declined on has come due; the skip repeats the recorded
+verdict and does nothing else; only a road marked file-keyed, or the full walk run to its end, records a skippable memo. The
+pass walks by recency and, with a client connected, yields after a look that paid a cold parse. Synthetic sessions only."""
 import os
 import sys
 import tempfile
@@ -21,6 +21,7 @@ STOPPED = [{"id": "t1", "t": 1000, "ended": True, "atoms": [{"t": 1000, "type": 
 
 
 class NudgeWalkParseGate(unittest.TestCase):
+    maxDiff = None
     def setUp(self):
         km._TICK_SEEN.clear()
         for k in km._NUDGE_WALK_STATS:
@@ -245,27 +246,100 @@ class NudgeWalkParseGate(unittest.TestCase):
                 pass
 
     def test_every_marked_road_reads_only_the_keyed_files(self):
-        """Round four: the annotation table traced. For each verdict in the file-keyed set, the functions its road reads
-        (_NUDGE_FILE_KEYED_ROADS) are walked with the ast module; none may reference a name whose source is not one of the nine
-        keyed files (the postal wait maps, the debt asks, the SDK overlay, the backend queue, the liveness map, the flag file,
-        the ledger), and module-level state refilled from a file is traced to that file (the _downtime list to the downtime log,
-        which _session_files_stat stats)."""
-        import ast, inspect
-        NOT_KEYED = {"_postal_wait_maps", "_debt_asks", "_session_awaiting", "_backend_queued", "_backend_rewind_pending", "_pending_ops",
-                     "_auto_nudge_data", "_session_flag", "_wait_for_graph", "live_map", "_alive_sessions", "Sessions", "_compacting_now"}
+        """Round five, medium 2: the census is a TRACE, not a denylist. Each marked road's functions are walked transitively with
+        the ast module (the functions they call, the helpers those call, down to the keyed-file readers); every module-level
+        name a road reads must be a function walked in turn, an immutable constant, or one of the allowlisted keyed-file readers,
+        pure helpers and file-refilled states; any other module-level name, a brand-new list included, fails naming the road and
+        the name. Module state refilled from a file (the _downtime list) is traced to the downtime log, which the stat function
+        must name."""
+        import ast, inspect, types
+        ALLOW = {                                   # module-level names a marked road may read, each traced to its source
+            "jd", "em", "os", "time", "json", "re", "sys", "math", "Path", "threading", "traceback",   # modules and stdlib (pure)
+            "_downtime",                            # the host-suspension list, refilled from STATE/kernel-downtime.jsonl (keyed)
+            "_intr_marks_memo",                     # a memo keyed on the parse identity plus the state log's machineCut pair
+            "_intr_marks_memo_stats", "_INTR_MARKS_STATS_LOCK",   # that memo's hit/miss counters and their lock (no input)
+            "_nudge_gate_memo", "_NUDGE_GATE_STATS",   # the placement gate's memo (the parse identity, the store view, the episode log's stat) and its counters
+            "_last_state_cache", "_machine_cut_cache",   # _fold_records cursors over the state log (a keyed file), keyed by its path and stat
+            "_stat_key",                            # a (mtime, size) reader
+            "_MACHINE_CUT_CAUSES", "_INTERRUPT_CAUSES", "CLOSER_SETTLE_GRACE_S",   # constants read by the interrupt and closer roads
+        }
+        CONST_MODULES = {"sb"}                      # the SDK backend module: a marked road may read only a CONSTANT of it (a cause
+        #                                             name, a marker string) or one of the pure text helpers below, never a live table
+        SB_PURE = {"echo_text_key", "strip_echo_markers", "_strip_marker_tail"}   # pure functions of their text argument (an atom's
+        #                                             user text folded to the echo key the interrupt marks compare against)
         REFILLED = {"_downtime": "kernel-downtime.jsonl"}
+        JD_ALLOW = {"parsed_session", "_parse_entry", "_segs", "plan_units", "_placed_key", "_unit_key", "_closed_turns", "EPIDIR", "STATE",
+                    "GOALDIR", "CLOSER_ON", "load_goals_shared_or_fault", "_seg_key", "_segment_id", "episode_floor", "_view_cleared"}
+        EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record"}   # pure readers of a record or an atom
         stat_src = inspect.getsource(km._session_files_stat)
+        def module_name(n):
+            return n in km.__dict__
+        def locals_of(fn_node):
+            names = {a.arg for a in fn_node.args.args + fn_node.args.kwonlyargs + fn_node.args.posonlyargs}
+            if fn_node.args.vararg: names.add(fn_node.args.vararg.arg)
+            if fn_node.args.kwarg: names.add(fn_node.args.kwarg.arg)
+            for n in ast.walk(fn_node):
+                if isinstance(n, (ast.Name,)) and isinstance(n.ctx, ast.Store): names.add(n.id)
+                if isinstance(n, ast.ExceptHandler) and n.name: names.add(n.name)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n is not fn_node: names.add(n.name)
+                if isinstance(n, ast.Import) or isinstance(n, ast.ImportFrom):
+                    for a in n.names: names.add((a.asname or a.name).split(".")[0])
+            return names
+        problems = []
         for verdict in sorted(km._NUDGE_FILE_KEYED_VERDICTS):
-            roads = km._NUDGE_FILE_KEYED_ROADS[verdict]
-            self.assertTrue(roads, "%s: its road functions are named" % verdict)
-            for fn_name in roads:
-                fn = getattr(km, fn_name)
-                names = {n.id for n in ast.walk(ast.parse(inspect.getsource(fn).lstrip())) if isinstance(n, ast.Name)}
-                self.assertEqual(sorted(names & NOT_KEYED), [], "%s: %s reads a source outside the keyed files" % (verdict, fn_name))
-                for state, filename in REFILLED.items():
-                    if state in names:
-                        self.assertIn(filename, stat_src, "%s: %s reads %s, refilled from %s, which the memo must key on" % (verdict, fn_name, state, filename))
+            todo = list(km._NUDGE_FILE_KEYED_ROADS[verdict]); seen = set()
+            self.assertTrue(todo, "%s: its road functions are named" % verdict)
+            while todo:
+                fn_name = todo.pop()
+                if fn_name in seen: continue
+                seen.add(fn_name)
+                fn = getattr(km, fn_name, None)
+                if not isinstance(fn, types.FunctionType):
+                    problems.append((verdict, fn_name, "not a module-level function")); continue
+                try:
+                    tree = ast.parse(inspect.getsource(fn).lstrip())
+                except (OSError, SyntaxError) as e:
+                    problems.append((verdict, fn_name, "unreadable source: %r" % e)); continue
+                fn_node = tree.body[0]; local = locals_of(fn_node)
+                for n in ast.walk(fn_node):
+                    if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in ("jd", "em"):
+                        allow = JD_ALLOW if n.value.id == "jd" else EM_ALLOW
+                        if n.attr not in allow:
+                            problems.append((verdict, fn_name, "%s.%s is not a traced keyed-file reader" % (n.value.id, n.attr)))
+                    if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in CONST_MODULES:
+                        mod = km.__dict__.get(n.value.id); val = getattr(mod, n.attr, None) if mod is not None else None
+                        if not isinstance(val, (str, int, float, bool, tuple, frozenset)) and n.attr not in SB_PURE:
+                            problems.append((verdict, fn_name, "%s.%s is not a constant or a pure text helper (%s)" % (n.value.id, n.attr, type(val).__name__)))
+                    if not isinstance(n, ast.Name) or not isinstance(n.ctx, ast.Load): continue
+                    name = n.id
+                    if name in local or name in dir(__builtins__) or hasattr(__builtins__, name): continue
+                    if not module_name(name):
+                        continue                                    # a builtin the dir check missed, or a name bound by the harness
+                    val = km.__dict__[name]
+                    if isinstance(val, types.FunctionType):
+                        todo.append(name); continue                 # a helper: walked in turn
+                    if isinstance(val, (int, float, str, bytes, tuple, frozenset, bool, type(None))) or isinstance(val, type):
+                        continue                                    # an immutable constant or a class
+                    if name in ALLOW or name in CONST_MODULES:
+                        if name in REFILLED:
+                            self.assertIn(REFILLED[name], stat_src, "%s: %s reads %s, refilled from %s, which the memo must key on" % (verdict, fn_name, name, REFILLED[name]))
+                        continue
+                    problems.append((verdict, fn_name, "reads module-level %s (%s), traced to no keyed file" % (name, type(val).__name__)))
+            self.assertGreaterEqual(len(seen), len(km._NUDGE_FILE_KEYED_ROADS[verdict]), verdict)
+        self.assertEqual(problems, [], "every marked road reads only the keyed files, through traced helpers")
         self.assertIn("kernel-downtime.jsonl", stat_src)
+
+    def test_a_pending_rollback_cut_makes_the_look_unbounded_before_any_marked_verdict(self):
+        """Round five, medium 1: the parse's cache key carries the pending bare-rollback cut (no file change), and the
+        rewind-pending gate sat BELOW the marked verdicts, so a look under a pending cut recorded user-interrupt or working with
+        nothing-can-flip; the CLI then refused the resume and the cut was dropped with no record landing, and every later look
+        repeated the stale verdict. The gate sits above the marked roads now: a pending cut is an unbounded verdict."""
+        d = tempfile.mkdtemp(); r = _row(d, SID_OLD, old=True); now = time.time(); calls = []
+        km._TICK_SEEN.clear()
+        self.assertEqual(self._look(r, now, calls, _backend_rewind_pending=lambda sid: True), "rewind-pending")
+        self.assertIsNone(km._TICK_SEEN[("auto-nudge", SID_OLD)][-2], "a pending cut: unbounded, whatever the marked roads would say")
+        self.assertEqual(self._look(r, now + 1, calls, _backend_rewind_pending=lambda sid: False), "working", "the cut dropped: the look evaluates")
+        self.assertEqual(calls, [SID_OLD, SID_OLD])
 
     def test_the_perf_memos_and_the_boot_row_carry_the_walk(self):
         self.assertIn("nudgeWalk", km._PERF_STATS.snapshot()["memos"])

@@ -1235,12 +1235,12 @@ def _awake_spans(start, end, acts=None):
 def _record_suspend(iv):
     """Append a detected suspension to the in-memory log + a small jsonl, so it survives a kernel restart
     (the timeline reads _downtime, loaded from the file at startup). Best-effort, never raises."""
-    _downtime.append(iv)
     try:
         with open(jd.STATE / "kernel-downtime.jsonl", "a") as f:
             f.write(json.dumps({"start": iv[0], "end": iv[1]}) + "\n")
     except OSError:
-        pass
+        _nudge_memos_forget()                        # the list moves below with no file to say so: every nudge memo keyed on the
+    _downtime.append(iv)                             #  downtime log is stale, so none may skip (T401 (2) round five, low b)
 
 
 def _load_downtime():
@@ -9966,7 +9966,8 @@ def _persist_tick_seen(force=False):
 
 def _tick_job_check(job, s):
     """T323 stage 1: (skip, stat) for an event-keyed tick job, one whose answer is a pure function of the
-    session's transcript, state log and goal store, never of the wall clock. `skip` is True when those files
+    session's files (_session_files_stat: the transcript, the state log, the goal store with its override journal and
+    archive, the episode, clears, postal and downtime logs), never of the wall clock. `skip` is True when those files
     are UNCHANGED since the job's last COMPLETED evaluation (_tick_job_done) on record, this kernel's or a
     previous one's (the memo persists, _TICK_SEEN_FILE); a session no kernel on record has looked at is
     evaluated once. Why: before this, every such job parsed every alive session on the first cycle after a
@@ -10022,6 +10023,14 @@ _NUDGE_WALK_CURSOR = [None]           # the sid the yield deferred first: the ne
 _NUDGE_WALK_FIRST_OPEN = [True]
 
 
+def _nudge_memos_forget():
+    """Drop every nudge-walk memo: a keyed input moved without its file (a downtime write that failed), so no skip may stand."""
+    with _TICK_SEEN_LOCK:
+        for key in [k for k in _TICK_SEEN if k[0] == "auto-nudge"]:
+            _TICK_SEEN.pop(key, None)
+        _TICK_SEEN_DIRTY[0] = True
+
+
 def _nudge_clock(t):
     """A clock leg of the nudge walk declined now and could flip at `t` (None: its release is not a file of the session, so
     the next look must evaluate). Noted only while a look is collecting (the walk's own thread); a no-op elsewhere."""
@@ -10031,8 +10040,8 @@ def _nudge_clock(t):
 
 
 def _nudge_look_check(s, now):
-    """(skip, stat, verdict): whether the walk may skip `s`'s parse this look. It may when the transcript, state log and store
-    are unchanged since the last COMPLETED look (this kernel's or a previous one's, the persisted memo) and that look noted
+    """(skip, stat, verdict): whether the walk may skip `s`'s parse this look. It may when the nine files the memo keys on
+    (_session_files_stat) are unchanged since the last COMPLETED look (this kernel's or a previous one's, the persisted memo) and that look noted
     no clock leg that could have flipped by `now` (the earliest flip is in the memo; None there means a leg whose release is
     not one of these files, never skipped). `verdict` is the recorded look's result, repeated by the skip."""
     st = _session_files_stat(s)
@@ -10043,6 +10052,9 @@ def _nudge_look_check(s, now):
     if prev is None or len(prev) != len(st) + 2 or tuple(prev[:len(st)]) != tuple(st):
         return False, st, None
     flip, verdict = prev[len(st)], prev[len(st) + 1]
+    if verdict == "closer-unsettled" and not jd.CLOSER_ON:
+        return False, st, None                        # recorded under the closer toggle, read with it off (an import-time toggle,
+    #                                                   not a file): evaluate (round five, low c)
     if flip is None:
         _NUDGE_WALK_STATS["unbounded"] += 1
         return False, st, None
@@ -11259,7 +11271,7 @@ def _auto_nudge_pass(now, live_map, run_dead_wait):
     alive_ids = {s["sid"] for s in alive}
     waitfor = _wait_for_graph(now, alive_ids)             # {sid:{peerSid,name,inCycle}} — the peer-wait gate
     fired = False
-    alive.sort(key=lambda s: -_session_files_stat(s)[0])  # by recency, the judges' rule (T401 (2)): the sessions most likely
+    alive.sort(key=lambda s: -(s.get("mtime") or 0))      # by recency (the row's transcript mtime), the judges' rule (T401 (2)): the
     _NUDGE_HORIZON.cold = 0                               #  to owe a nudge are looked at first, and a yield below defers the rest
     _resume = _NUDGE_WALK_CURSOR[0]                       # a yield's first deferred session: the walk resumes there (rotated), so
     if _resume is not None:                               #  every session is reached within as many passes as there are cold parses
@@ -13024,9 +13036,13 @@ def _nudge_response_ready(turns, store, rec, gid, now):
         # that never ends a turn after the fire emits no event at all — the one residue that keeps
         # a clock, the named dead-man.
         _fire_t = rec.get("at") or 0
-        if any((tn.get("end") or 0) > _fire_t for tn in turns) \
-                and not _nudge_send_queued(gid.rsplit(":", 1)[0], gid):
+        _queued = _nudge_send_queued(gid.rsplit(":", 1)[0], gid)
+        if any((tn.get("end") or 0) > _fire_t for tn in turns) and not _queued:
             return True, None                          # the lost-send event: stamp on real information
+        if _queued:
+            _nudge_clock(None)                         # the send sits in the backend's queue, a read no file backs: when it leaves
+        #                                                the queue without landing the failure is due at once, not at the dead-man
+        #                                                (T401 (2) round five, low e)
         if (now - _fire_t) <= LOST_SEND_DEADMAN_SECS:
             _nudge_clock(_fire_t + LOST_SEND_DEADMAN_SECS)   # the lost-send event's instant (T401 (2))
             return False, None                         # no event yet (parse lag / queued / no turn) → wait
@@ -13105,7 +13121,8 @@ _NUDGE_FILE_KEYED_ROADS = {       # the functions each marked verdict's road rea
     "planner-queue": ("_nudge_placement_gate",),
 }
 #   The roads whose verdict is a pure function of the files the memo keys on (_session_files_stat: the transcript, the state
-#   log, the store with its override journal and archive, the episode log, the clears log, the postal log), marked so that a
+#   log, the store with its override journal and archive, the episode log, the clears log, the postal log, the kernel's
+#   downtime log, nine in all), marked so that a
 #   look ending in one may record a skippable memo. Every OTHER exit of the look, marked or not, records an unbounded memo
 #   (None) by default: the SDK overlay, the backend's queue, an armed rollback, a store fault, a dead asker's revival, a peer's
 #   bounce (T401 (2) round three: the class, not the instances; an unmarked road can never silence a session). The full goal
@@ -13197,6 +13214,10 @@ def _auto_nudge_session(s, now, live_map, nudged, waitfor, alive_ids=None, wake_
     if not turns:
         return "empty-parse"
     lt = turns[-1]
+    if _backend_rewind_pending(sid):                 # an ARMED, unconsumed bare rollback rides the parse's cache key with no file
+        return "rewind-pending"                      #  change, so every verdict computed over this parse is unbounded: the gate
+    #                                                  sits ABOVE the marked roads (T401 (2) round five, medium 1); the original
+    #                                                  gate below stays for its own documentation and is unreachable now
     if _session_working(turns):                      # still actively working (event model) → not orphaned
         return "working"
     if _interrupt_suppresses_nudge(turns, sid, family="judge"):   # the user's LAST action was a GENUINE interrupt → they're
