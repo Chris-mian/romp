@@ -11211,7 +11211,8 @@ function scrollToAnchor(uuid: string): boolean {
                 || v.el.querySelector(`.turn[data-uuids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
     } else if (s && s.proto === 2 && (olderOnServer(s) || (s.regions && s.regions.some((r) => r.kind === "gap")))) {
       // proto 2 (T323 stage 4b): the anchor is outside the resident run — ONE window around it (chatWindow lands it)
-      if (requestAround(activeId, uuid) || loadingOlder.has(activeId)) {
+      if (loadingOlder.has(activeId)) { landTrail.push("pointer-fetch-busy"); return false; }   // a landing is already on the wire (T386 stage 2, low 6): the first stands, the second is refused, not silently repointed
+      if (requestAround(activeId, uuid)) {
         pendingOlderAnchor.set(activeId, uuid);
         pendingOlderKeepY.delete(activeId);
         pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-window"); return false;
@@ -12140,7 +12141,7 @@ function sizeSpacers(v: View): void {
   if (v.avgTurnH == null) {
     let h = 0, n = 0;
     for (const c of Array.from(v.el.children) as HTMLElement[]) {
-      if (c.classList.contains("tx-spacer")) continue;
+      if (c.classList.contains("tx-spacer") || c.classList.contains("tx-gap")) continue;   // the gap's own estimate must not feed the average that sizes it (T386 stage 2, medium 3)
       h += c.offsetHeight; n++;
     }
     if (h > 0 && n > 0) v.avgTurnH = h / n;
@@ -17209,6 +17210,7 @@ let skeletonDiagArmed = true;
 // event, which fires at onopen while the dead socket's last frames may still be draining from the FIFO)
 // A send still unconfirmed at the socket's down edge may never have reached the kernel: say so on its bubble
 window.addEventListener("romp:wsdown", () => markPendingLost("connection"));
+window.addEventListener("romp:wsdown", () => { gapLoading.clear(); document.querySelectorAll("#content .tx-gap-loading").forEach((g) => g.classList.remove("tx-gap-loading")); });   // a page ask dropped at a dead socket is re-asked on the reopen (T386 stage 2), never a gap blocked for the page's life
 
 function chatTail(msg: any) {
   // A tail for a tab held as SKELETON (2026-09-07) violates the contract — the kernel sends such a tab status
@@ -17276,7 +17278,7 @@ function chatTail(msg: any) {
   regionsAbsorbTail(s);                            // the tail run is s.events past the history runs (T386 stage 2)
   const shrank = s.events.length < wasLen;
   if (typeof msg.total === "number") s.headTotal = msg.total;
-  if (s.proto === 2 && s.headKnown) s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);   // the whole is resident: its count
+  if (s.proto === 2 && s.headKnown && !(s.regions && s.regions.some((r) => r.kind === "gap"))) s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);   // the WHOLE is resident (no gap): its count (T386 stage 2, low 7: a mid-transcript gap holds older history, so the resident count is not the total)
   const before = awaitKey(s.status);
   if (msg.status) s.status = msg.status;
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
@@ -17400,7 +17402,7 @@ function chatTurns(msg: any): void {
   insertRegionRun(s, span[0], span[1], (msg.events || []) as ChatEvent[]);
   reconcileOptimistic(s);
   const v = views.get(msg.id);
-  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
+  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) { schedulePrebuild(); return; }
   fillInPlace(msg.id, v);
 }
@@ -17560,9 +17562,15 @@ function chatWindow(msg: any) {
   if (!s) return;
   const ask = pendingWindowNav.get(msg.id) ?? null;
   pendingWindowNav.delete(msg.id);
+  const cancelled = cancelledLandings.delete(msg.id);   // read once, before any return (T386 stage 2, low 2): a missing or span-less reply must not leak the mark onto the next navigation
   if (msg.missing || !(msg.events || []).length || !Array.isArray(msg.span)) {
-    // the honest end of a deep link: the anchor is in no page the kernel can render
-    if (msg.id === activeId && pendingAnchor === anchorUuid) { pendingAnchor = null; anchorPendingOlder = false; landTrail.push("window-missing"); landToast("couldn't locate this in the transcript"); }
+    // T386 stage 2, medium 2: no span is an OLDER kernel's reply (it speaks the pre-regions window protocol); a missing is the honest
+    // end of a deep link. Either way the pre-jump moved the reader, so the notice comes down; a span-less reply says the host is older,
+    // a missing says the anchor is gone; neither is silent (the notice's cancel is the only silence).
+    if (msg.id === activeId && (pendingAnchor === anchorUuid || cancelled)) {
+      pendingAnchor = null; anchorPendingOlder = false;
+      if (!cancelled) { landTrail.push(Array.isArray(msg.span) ? "window-missing" : "window-nospan"); landToast(Array.isArray(msg.span) ? "couldn't locate this in the transcript" : "this session's host is an older version; open it there to jump"); }
+    }
     return;
   }
   // T386 stage 2: the window becomes a RUN among the session's regions by its turn span; the gaps on either side shrink or split and
@@ -17571,10 +17579,9 @@ function chatWindow(msg: any) {
   insertRegionRun(s, Math.max(0, msg.span[0]), msg.span[1], (msg.events || []) as ChatEvent[]);
   reconcileOptimistic(s);
   const v = views.get(msg.id);
-  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.avgTurnH = undefined; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
+  if (v) { v.rendered = 0; v.winStart = 0; v.winEnd = 0; v.spacerCount = undefined; v.spacerCountBot = undefined; v.unitTotal = undefined; v.edgeTop = undefined; v.edgeUp = undefined; v.stale = true; }
   if (msg.id !== activeId) { schedulePrebuild(); return; }
   const target = typeof msg.anchor === "string" ? msg.anchor : anchorUuid;
-  const cancelled = cancelledLandings.delete(msg.id);
   // a NAVIGATION's window lands (the ask's own mark, as before the regions: landActive clears the landing's mark while the ask is in
   // flight, so that mark cannot be the key); the notice's click stands the landing down and the window appears in place instead
   if (target && ask?.nav && !cancelled) {

@@ -2009,9 +2009,10 @@ announces `chatProto2` in its `caps`:
   updates;
 - `loadAround {id, uuid}` is answered by `chatWindow {id, anchor, events, span,
   moreBefore, moreAfter}` in one round trip (`missing: true` when the anchor is
-  in no page; `fault: true` when the kernel could not answer this time); the
-  page inserts the window as a run by its span, and a navigation's window lands
-  while any other fills in place;
+  in no page); the page inserts the window as a run by its span, and a
+  navigation's window lands while any other fills in place; a reply with no
+  `span` is an OLDER host speaking the pre-regions protocol, and the page says
+  so rather than dropping the reader where a pre-jump left them;
 - `loadTurns {id, lo, hi}` asks for a gap's page directly and is answered by
   `chatTurns {id, span, events, head}` (`head: true` at the head, the head cards
   riding along; an empty or out-of-range span is `missing`); `loadNewer` is

@@ -1749,7 +1749,7 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
 .tx-landing-notice {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50;
   background: var(--vscode-menu-background, var(--surface-raised)); color: var(--accent, #9cd2ff); font-size: 12px; font-weight: 600;
-  padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: none; white-space: nowrap;
+  padding: 4px 12px; border-radius: var(--radius-pill); pointer-events: auto; cursor: pointer; white-space: nowrap;   /* the ONE cancel (T386 stage 2): the notice takes the click; its anchor stays inert */
   box-shadow: var(--shadow-toast); border: 1px solid var(--menu-border);
 }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */

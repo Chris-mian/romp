@@ -117,6 +117,7 @@ export const BOOKKEEPING: ReadonlyMap<string, (m: any) => string | null> = new M
   ["needSlot",       (m) => "needSlot" + K + m.slot],              // fleet.ts: a view slot's re-send after a rejected delta
   ["loadOlder",      (m) => "loadOlder" + K + m.id],               // render.ts: the head's older page on a scroll-up or a deep link into it
   ["loadAround",     (m) => "loadAround" + K + m.id],              // render.ts: a window around a deep-link anchor past the resident list (proto 2)
+  ["loadTurns",      (m) => "loadTurns" + K + m.id + K + m.lo + K + m.hi],   // render.ts requestTurns: a gap's page by turn span (T386 stage 2); flushed on the open like loadOlder, one per span
   ["loadNewer",      (m) => "loadNewer" + K + m.id],               // render.ts: the page after a detached window's newest event (proto 2)
   ["reattachKeys",   (m) => "reattachKeys" + K + m.id],            // render.ts: the run's newest keys ahead of a re-attach ask (proto 2)
   ["loadEpisode",    (m) => "loadEpisode" + K + m.id],             // render.ts noticeOpened: a clear notice's conversation on first expand

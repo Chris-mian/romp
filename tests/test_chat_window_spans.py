@@ -94,6 +94,7 @@ class WindowSpans(Harness):
         self.assertTrue(empty["missing"], "an empty span is missing, never a silent empty run")
         past = km._chat_history_reply(SID, {"type": "loadTurns", "id": SID, "lo": len(turns) + 5, "hi": len(turns) + 9}, NOW)
         self.assertTrue(past["missing"], "a span past the transcript is missing")
+        self.assertEqual(past["span"], [len(turns) + 5, len(turns) + 9], "…and echoes the ASKED span, not the clamp, so the page's gapLoading key clears (T386 stage 2, low 3)")
 
     def test_load_newer_is_retired(self):
         self._boot()

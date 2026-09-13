@@ -44355,12 +44355,14 @@ def _chat_history_reply(sid, msg, now, base=None):
         # a gap's page, asked directly (T386 stage 2): the turns [lo, hi) as pages before the floor and, past it, the floor'd
         # list's own events by turn; `head` says the head is reached (the head cards ride along); an empty span is missing
         try:
-            lo, hi = max(0, int(msg.get("lo"))), int(msg.get("hi"))
+            lo, hi0 = max(0, int(msg.get("lo"))), int(msg.get("hi"))
         except (TypeError, ValueError):
             return {"type": "chatTurns", "id": sid, "span": [msg.get("lo"), msg.get("hi")], "events": [], "missing": True}
-        hi = min(hi, len(turns))
+        # the reply echoes the ASKED span (T386 stage 2, low 3): the page keyed its gapLoading and its gap element on what it asked, so a
+        # clamped echo would leave that key set and the gap would stop asking; the clamp below is for SLICING the turn list only
+        hi = min(hi0, len(turns))
         if hi <= lo:
-            return {"type": "chatTurns", "id": sid, "span": [lo, hi], "events": [], "missing": True}
+            return {"type": "chatTurns", "id": sid, "span": [lo, hi0], "events": [], "missing": True}
         out = pages(lo, min(hi, floor)) if lo < floor else []
         if hi > floor:
             a = next((i for i, ti in enumerate(tix) if ti >= max(lo, floor)), len(evs))
@@ -44373,7 +44375,7 @@ def _chat_history_reply(sid, msg, now, base=None):
             _bf = _turn_of_key(base["first"])
             if _bf is not None and lo <= _bf <= hi:       # the span reaches the tail's first turn: the tail run grows upward
                 nb = {"first": _event_key(out[0])}
-        return {"type": "chatTurns", "id": sid, "span": [lo, hi], "events": out, "head": lo == 0, "_base": nb}
+        return {"type": "chatTurns", "id": sid, "span": [lo, hi0], "events": out, "head": lo == 0, "_base": nb}
     return None
 
 

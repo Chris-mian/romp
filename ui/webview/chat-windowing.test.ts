@@ -92,7 +92,8 @@ test("the ONE landing notice shows while a navigation's window is on the wire, p
   assert.match(pillBody, /background: var\(--vscode-menu-background, var\(--surface-raised\)\);/);
   assert.match(pillBody, /border: 1px solid var\(--menu-border\);/);
   assert.doesNotMatch(pillBody, /rgba\(20, 24, 33/);
-  assert.match(pillBody, /pointer-events: none;/);
+  assert.match(pillBody, /pointer-events: auto; cursor: pointer;/, "the notice takes the click: the ONE cancel must be reachable (T386 stage 2, HIGH)");
+  assert.match(anchorBody, /pointer-events: none;/, "…while its anchor stays inert, so it never eats the transcript's clicks");
 });
 
 test("syncView: a fresh build / rewind renders the TAIL window, clamped to the last compaction boundary", () => {

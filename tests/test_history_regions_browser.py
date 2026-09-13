@@ -58,6 +58,18 @@ const filled = await state(); const regionsFilled = await regions();
 const rowAfter = await rowAtTop();
 const gesturesAfter = await gestures();
 const fills = await writes("gap-fill");
+// ROAD 2b (T386 stage 2, low 8): a fill BELOW the viewport. The head gap still stands above the filled run; a jump to the transcript
+// top puts the reader at the gap's TOP edge, the edge met by scrolling DOWN, so the gap asks for its top page (lo 0), which fills in
+// place with the reader's row held.
+const belowBefore = await sentOf("loadTurns");
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
+await painted();
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, belowBefore, { timeout: 10000 }).catch(() => {});
+const belowAsks = await page.evaluate((n) => window.__sent.filter((m) => m.type === "loadTurns").slice(n).map((m) => ({ lo: m.lo, hi: m.hi })), belowBefore);
+const belowRowBefore = await rowAtTop();
+await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
+await painted();
+const belowRegions = await regions(); const belowRowAfter = await rowAtTop(); const belowGestures = await gestures();
 // ROAD 3: a live tail while the reader is up in history: it lands at the tail, nothing pauses
 const k = cfg.turns;
 const tail = { type: "chatTail", id: cfg.sid, afterUuid: regionsFilled ? regionsFilled[regionsFilled.length - 1].last : filled.lastUuid, events: [
@@ -68,7 +80,8 @@ await page.waitForFunction((u) => { const ts = Array.from(document.querySelector
 const live = await state(); const regionsLive = await regions(); const rowLive = await rowAtTop();
 process.stdout.write("RESULT:" + JSON.stringify({ boot: { regions: bootRegions, turns: boot.turns, atBottom: boot.atBottom, notice: boot.notice, strip: boot.strip }, turnsBefore, asks, gapsAsked, regionsAsked, rowBefore, rowAfter, gesturesBefore, gesturesAfter, fills,
   filled: { regions: regionsFilled, gaps: filled.gaps, turns: filled.turns, firstUuid: filled.firstUuid, lastUuid: filled.lastUuid, top: filled.top, notice: filled.notice, strip: filled.strip },
-  rowLive, live: { regions: regionsLive, lastUuid: live.lastUuid, atBottom: live.atBottom, notice: live.notice, strip: live.strip, turns: live.turns, top: live.top } }) + "\n");
+  rowLive, below: { asks: belowAsks, regions: belowRegions, rowBefore: belowRowBefore, rowAfter: belowRowAfter, gestures: belowGestures, gesturesBefore: gesturesAfter },
+  live: { regions: regionsLive, lastUuid: live.lastUuid, atBottom: live.atBottom, notice: live.notice, strip: live.strip, turns: live.turns, top: live.top } }) + "\n");
 await browser.close();
 """
 
@@ -119,6 +132,19 @@ class ServedHistoryRegions(WindowLab):
         self.assertEqual(r["rowAfter"]["uuid"], r["rowBefore"]["uuid"], "the reader's row is still the row under the viewport top: %r → %r" % (r["rowBefore"], r["rowAfter"]))
         self.assertLessEqual(abs(r["rowAfter"]["y"] - r["rowBefore"]["y"]), 2, "…at its offset: %r → %r" % (r["rowBefore"], r["rowAfter"]))
         self.assertFalse(f["notice"], "a scroll-driven fill shows no notice: the glyph inside the gap is its cue")
+
+    def test_a_gap_met_from_above_asks_for_its_top_page_and_fills_below_the_viewport(self):
+        # T386 stage 2, low 8: the head gap's TOP edge, met by scrolling down, asks for the top page (lo 0) and fills with the row held
+        r = self._result()
+        b = r["below"]
+        self.assertGreaterEqual(len(b["asks"]), 1, "the gap met from above asked for no page: %r" % b)
+        self.assertEqual(b["asks"][0]["lo"], 0, "the top edge asks for the head page (lo 0): %r" % b["asks"])
+        self.assertLessEqual(b["asks"][0]["hi"] - b["asks"][0]["lo"], 16, "one page-aligned span, not the whole gap: %r" % b["asks"])
+        self.assertEqual(b["regions"][0]["kind"], "run", "the head page filled into a run at the top: %r" % b["regions"])
+        self.assertEqual(b["regions"][0]["lo"], 0, "…starting at the head: %r" % b["regions"])
+        self.assertEqual(b["gestures"], b["gesturesBefore"], "the below-fill filed no scroll gesture: %r" % b)
+        if b["rowBefore"] and b["rowAfter"]:
+            self.assertEqual(b["rowAfter"]["uuid"], b["rowBefore"]["uuid"], "the reader's row held through the below-fill: %r → %r" % (b["rowBefore"], b["rowAfter"]))
 
     def test_a_live_tail_lands_while_the_reader_is_up_in_history_and_nothing_pauses(self):
         r = self._result()
