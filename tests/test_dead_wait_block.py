@@ -187,6 +187,29 @@ class DeadWaitBlock(_HermeticDeadWait):
         km._dead_wait_sweep({SID}, self.nudged, STAMP_T + 900)
         self.assertFalse(jd.load_goals(SID)["nodes"][GID].get("blocked"))
 
+    def test_the_sweep_reads_through_the_shared_view_and_loads_a_private_store_only_to_write(self):
+        """Boot follow-up (2026-09-13): the sweep loaded a private goal store per candidate (load_goals with its journal replay,
+        9 of the 13 autoNudge stack samples of the measurement boot), and the block writer loaded a second. The read path
+        takes the walk's shared read-only view; a mutable load happens only to heal or to block, and the reads are counted
+        under memos.deadWait."""
+        _seed_store()
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        loads = []; shared = []
+        real_load, real_shared = jd.load_goals, jd.load_goals_shared_or_fault
+        jd.load_goals = lambda sid: (loads.append(sid), real_load(sid))[1]
+        jd.load_goals_shared_or_fault = lambda sid: (shared.append(sid), real_shared(sid))[1]
+        before = dict(km._DEAD_WAIT_STATS)
+        try:
+            km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals, jd.load_goals_shared_or_fault = real_load, real_shared
+        self.assertTrue(jd.load_goals(SID)["nodes"][GID].get("blocked"), "the dead wait still converts")
+        self.assertEqual(shared.count(SID), 1, "one shared read-only view for the candidate: %r" % shared)
+        self.assertEqual(loads.count(SID), 1, "one private load, the block writer's own: %r" % loads)
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["candidates"], d["sharedLoads"], d["mutableLoads"], d["blocks"]), (1, 1, 0, 1), d)
+
     def test_a_post_stamp_peer_ack_does_not_hide_the_wait_from_the_sweep(self):
         # the 100-hour survivors (2026-08-23): a worker's "starting now" mail seconds after the stamp
         # made the peer-answered supersede read the wait as met, so the sweep stood down forever while
@@ -241,6 +264,30 @@ class DeadWaitBlock(_HermeticDeadWait):
         nd = jd.load_goals(SID)["nodes"][GID]
         self.assertTrue((nd.get("blockSummary") or "").startswith(jd.DEAD_WAIT_WHY_PREFIX),
                         "the repair settles the stuck card's brief from its own why")
+
+    def test_the_heal_takes_one_mutable_load_and_counts(self):
+        """The brief repair is a write: it takes a private load only when a briefless procedural block stands, and counts it."""
+        _seed_store()
+        st = jd.load_goals(SID)
+        nd = st["nodes"][GID]
+        jd.record_verdict(st, nd, "nudge", "block", STAMP_T + 100, why=jd.dead_wait_block_why("the full test suite it kicked off"))
+        jd.rollup_status(st, False)
+        jd.save_goals(SID, st)
+        self.assertIsNone(jd.load_goals(SID)["nodes"][GID].get("blockSummary"))
+        _write_state("idle", STAMP_T + 50)
+        km._PREV_ALIVE = None
+        loads = []
+        real_load = jd.load_goals
+        jd.load_goals = lambda sid: (loads.append(sid), real_load(sid))[1]
+        before = dict(km._DEAD_WAIT_STATS)
+        try:
+            km._dead_wait_sweep(set(), self.nudged, STAMP_T + 900)
+        finally:
+            jd.load_goals = real_load
+        d = {k: km._DEAD_WAIT_STATS[k] - before.get(k, 0) for k in km._DEAD_WAIT_STATS}
+        self.assertEqual((d["healed"], d["mutableLoads"]), (1, 1), "the heal's one private load: %r" % d)
+        self.assertEqual(loads.count(SID), 1, "one private load for the heal (the status scan read the shared view): %r" % loads)
+        self.assertTrue((jd.load_goals(SID)["nodes"][GID].get("blockSummary") or "").startswith(jd.DEAD_WAIT_WHY_PREFIX))
 
     def test_a_genuine_block_why_is_never_repaired_over(self):
         # The repair takes PROCEDURAL whys only: a genuine decision brief stays the briefer's job.

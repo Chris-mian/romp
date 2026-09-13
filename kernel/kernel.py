@@ -684,7 +684,8 @@ class _PerfStats:
                           ("backref", jd.backref_memo_stats), ("captions", jd.captions_memo_stats),
                           ("goalArchive", jd.goal_archive_memo_stats), ("plannerSkip", jd.planner_skip_stats),
                           ("liftGate", _lift_gate_report), ("bgTops", _bg_tops_report),
-                          ("intrMarks", _intr_marks_memo_report), ("statesOverlay", _states_overlay_report),
+                          ("intrMarks", _intr_marks_memo_report), ("deadWait", lambda: dict(_DEAD_WAIT_STATS)),
+                          ("statesOverlay", _states_overlay_report),
                           ("lanes", _lanes_memo_report),   # the timeline's per-lane segment memo, live lanes; the dead lanes beside
                           ("spendTree", _spend_tree_memo_report),   # the spend guard's subagent-tree memos: bytes against their bound
                           ("summaryAnchor", _summary_anchor_memo_report),   # the brief line's text-atom landings (T388): bytes against their bound
@@ -12269,6 +12270,12 @@ def _dead_wait_corroborated(sid, stats=None, now=None):
     return True                                  # a names entry with no registry row anywhere: dead history
 
 
+_DEAD_WAIT_STATS = {"passes": 0, "candidates": 0, "sharedLoads": 0, "loadFaults": 0, "mutableLoads": 0, "healed": 0, "blocks": 0}
+#   the sweep's reads for GET /perf (memos.deadWait): before the shared view every candidate paid a private load_goals with its
+#   journal replay (9 of the 13 autoNudge stack samples of the 2026-09-13 measurement boot sat in that load), and the block writer
+#   paid a second; the read path now takes the walk's shared read-only view and a mutable load happens only to heal or to block
+
+
 def _dead_wait_sweep(alive_ids, nudged, now):
     """Find DORMANT sessions whose Working cards still hold a judged awaiting stamp and convert each to
     a procedural block (_dead_wait_block). Event-triggered, never a per-tick poll of every store: the
@@ -12290,12 +12297,19 @@ def _dead_wait_sweep(alive_ids, nudged, now):
     else:
         cands = prev - set(alive_ids)
     stats = {}                                   # loud stand-down tallies → ONE line per reason per pass
+    _DEAD_WAIT_STATS["passes"] += 1
     for sid in cands:
         try:
             if _dead_wait_corroborated(sid, stats=stats, now=now) is not True:
                 _PREV_ALIVE.add(sid)             # not corroborated dead: nothing files, and the death
                 continue                         # transition stays armed for the next tick's re-ask
-            store = jd.load_goals(sid)
+            _DEAD_WAIT_STATS["candidates"] += 1
+            store, fault = jd.load_goals_shared_or_fault(sid)   # the READ-ONLY shared view (the walk's precedent): the status
+            _DEAD_WAIT_STATS["sharedLoads"] += 1                 #  scan and the stamp read need no private copy; the journal is
+            if fault is not None:                                #  replayed per session inside the view, so the per-session
+                _DEAD_WAIT_STATS["loadFaults"] += 1              #  overrides stay correct; a read fault stands the candidate
+                _PREV_ALIVE.add(sid)                             #  down for this tick and keeps the transition armed
+                continue
             nodes = store.get("nodes", {})
             # BRIEF REPAIR (the user 2026-08-23, cards "stuck on Distilling" in Blocked): procedural
             # blocks written before the writers settled briefs inline left blockSummary None on stores
@@ -12303,16 +12317,21 @@ def _dead_wait_sweep(alive_ids, nudged, now):
             # 48h window) — the card asked for a brief forever. The why IS the brief for a procedural
             # block; settle it in place. Runs BEFORE the block calls below, which reload and save
             # their own store copy — a later save of this snapshot would clobber their writes.
-            healed = False
-            for nid, nd in nodes.items():
-                if (nd.get("blocked") and nd.get("blockSummary") is None
-                        and jd.procedural_block_why(nd.get("blockWhy"))):
+            to_heal = [nid for nid, nd in nodes.items()
+                       if nd.get("blocked") and nd.get("blockSummary") is None and jd.procedural_block_why(nd.get("blockWhy"))]
+            if to_heal:                                          # the heal is a WRITE: it takes its own mutable load, only when
+                mstore = jd.load_goals(sid)                      #  there is something to heal (the shared view is frozen)
+                _DEAD_WAIT_STATS["mutableLoads"] += 1
+                mnodes = mstore.get("nodes", {})
+                for nid in to_heal:
+                    nd = mnodes.get(nid)
+                    if nd is None:
+                        continue
                     nd["blockSummary"] = nd.get("blockWhy") or ""
                     nd["briefParts"] = None
-                    nd["briefedMt"] = jd._distill_due_t(store, nid, True)
-                    healed = True
-            if healed:
-                jd.save_goals(sid, store)
+                    nd["briefedMt"] = jd._distill_due_t(mstore, nid, True)
+                    _DEAD_WAIT_STATS["healed"] += 1
+                jd.save_goals(sid, mstore)
                 _mark_views_dirty()
             kids = {}
             for nid, nd in nodes.items():
@@ -12329,7 +12348,8 @@ def _dead_wait_sweep(alive_ids, nudged, now):
                 # mailbox moved nothing, so a recorded wait on a still-Working card converts regardless.
                 stamp = _goal_awaiting_stamp_full(nodes, gid, kids)
                 if stamp:
-                    _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)
+                    _DEAD_WAIT_STATS["blocks"] += 1
+                    _dead_wait_block(sid, gid, stamp[0], stamp[1], nudged, now)   # the writer's own mutable load and save
             # PEER-DEATH CONVERSION (the user 2026-08-24, W1a): this corroborated death is ALSO the
             # ending event for every LIVE session's kind=peer wait ON this sid — the asked session
             # can never answer now. Convert each to a procedural block naming the death (liftable by

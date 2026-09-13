@@ -125,7 +125,7 @@ class Collector(unittest.TestCase):
         self.assertEqual(set(snap["goals"]), {"loads", "saves", "writes"}, "read through jd.goal_io_stats")
         # the three identity memos' readers land here (review find, 2026-09-08: they had no consumer)
         self.assertEqual(set(snap["memos"]), {"pass", "shared", "chain", "nudgeGate", "nudgeWalk", "cleared", "courierSkip", "backref", "captions", "goalArchive", "plannerSkip",
-                                              "bgTops", "liftGate", "intrMarks", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
+                                              "bgTops", "liftGate", "intrMarks", "deadWait", "statesOverlay", "lanes", "spendTree", "summaryAnchor",
                                               "chatMergeSets", "chatPostal", "chatLedger", "chatFoldTasks"})   # the chat build's fixed-cost memos (2026-09-09)
         self.assertEqual(set(snap["memos"]["spendTree"]), {"entries", "bytes", "bound", "dirStats", "fileStats", "entryStats", "listings", "loaded", "loadFailed", "written", "swept"}, "the spend guard's tree memos against their bound")
         self.assertEqual(snap["memos"]["spendTree"]["bound"], km.SPEND_GUARD_TREE_MEMO_BYTES)
