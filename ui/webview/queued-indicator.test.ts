@@ -324,6 +324,6 @@ test("the kernel's echo of a send another window made wears the sender's pending
   assert.match(RENDER, /isKernelEchoUuid, newPending, mintQid/, "the one reader of the backend's echo prefix (send-pending.ts)");
   assert.match(RENDER, /if \(!ev\.undelivered && !injected && isKernelEchoUuid\(ev\.uuid\)\) \{[^\n]*\n\s*turn\.classList\.add\("echo"\);\s*bubble\.classList\.add\("echo-bubble"\);/);
   assert.match(RENDER, /note\.textContent = "sending…";/);
-  assert.match(CSS, /\.turn\.echo \.echo-bubble \{ border-style: dashed; border-color: color-mix\(in srgb, var\(--you\) 65%, transparent\); opacity: 0\.85; \}/);
+  assert.match(CSS, /\.turn\.echo \.echo-bubble \{ border-width: 1px; border-style: dashed; border-color: color-mix\(in srgb, var\(--you\) 65%, transparent\); opacity: 0\.85; \}/, "the width named too (T403): a style alone inherited a command row's medium width");
   assert.match(CSS, /\.echo-note \{ font-size: 0\.82em; color: var\(--dim\); letter-spacing: 0\.02em; text-align: right; \}/);
 });

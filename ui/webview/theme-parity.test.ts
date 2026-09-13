@@ -99,7 +99,9 @@ const PAIRS: Array<[string, string, number]> = [
 
 test("styles.css: the provisional wash the kind pairs are computed against is the one the sheet paints", () => {
   const css = read("styles.css");
-  const bubble = css.slice(css.indexOf(".queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble {"), css.indexOf("\n}\n", css.indexOf(".queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble {")));
+  const SHARED = ".queued-bubble, .notice.queued-bubble, .notice.notice-slim.queued-bubble,";   // the list runs on to the echo of a slash command (T403)
+  const bubble = css.slice(css.indexOf(SHARED), css.indexOf("\n}\n", css.indexOf(SHARED)));
+  assert.ok(css.indexOf(SHARED) > 0, "the shared provisional rule is where the slice looks");
   assert.match(bubble, /background: color-mix\(in srgb, var\(--you\) 8\.5%, transparent\);/);
   assert.doesNotMatch(bubble, /opacity:/, "the fade is in the colours: no element opacity dims the words on the card");
 });
