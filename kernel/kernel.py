@@ -1106,15 +1106,17 @@ _intr_marks_memo = {}
 _INTR_MARKS_MEMO_MAX = 512
 _intr_marks_memo_stats = {"hit": 0, "miss": 0, "evict": 0, "restored": 0, "refused": 0, "computeMs": 0.0}
 _INTR_MARKS_STATS_LOCK = threading.Lock()
-_INTR_MARKS_FILE = "intr-marks.json"   # the marks memo PERSISTED under the state dir (T401 (3) target 3): {"v": 1, "rows": {sid:
-#                                        [mtime_ns, size, cut_t, cut_cause, last_intr, last_human]}}, one row per alive session,
+_INTR_MARKS_FILE = "intr-marks.json"   # the marks memo PERSISTED under the state dir (T401 (3) target 3): {"v": 2, "rows": {sid:
+#                                        [mtime_ns, size, cut_t, cut_cause, sdk_mtime_ns, sdk_size, last_intr, last_human]}}, one row per alive session,
 #                                        written when a row changed by the persist job and at exit, loaded at boot; a row that is
 #                                        malformed, of another length or not under a uuid-shaped sid is REFUSED (counted, recomputed)
-_INTR_MARKS_DISK = {}                  # sid -> [mtime_ns, size, cut_t, cut_cause, last_intr, last_human]: the persisted rows in memory
+_INTR_MARKS_DISK = {}                  # sid -> [mtime_ns, size, cut_t, cut_cause, sdk_mtime_ns, sdk_size, last_intr, last_human]
 _INTR_MARKS_DISK_DIRTY = [False]
 _INTR_MARKS_DISK_LOCK = threading.Lock()
-_INTR_MARKS_DISK_V = 1
-_UUID_SHAPE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_INTR_MARKS_DISK_V = 2                 # v2 (round two): the SDK registry row's stat joined the key; a v1 file loads nothing
+_INTR_MARKS_ROW_LEN = 8
+_UUIDISH_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")   # the one uuid shape (also
+#                                        the postal index's; defined here because the marks memo loads at import, below)
 
 
 def _intr_marks_path():
@@ -1136,9 +1138,9 @@ def _load_intr_marks():
     n = 0
     with _INTR_MARKS_DISK_LOCK:
         for sid, v in rows.items():
-            ok = (isinstance(sid, str) and _UUID_SHAPE.match(sid) and isinstance(v, list) and len(v) == 6
-                  and isinstance(v[0], int) and isinstance(v[1], int) and isinstance(v[2], (int, float))
-                  and isinstance(v[3], str) and isinstance(v[4], (int, float)) and isinstance(v[5], (int, float)))
+            ok = (isinstance(sid, str) and _UUIDISH_RE.match(sid) and isinstance(v, list) and len(v) == _INTR_MARKS_ROW_LEN
+                  and isinstance(v[0], int) and isinstance(v[1], int) and isinstance(v[2], (int, float)) and isinstance(v[3], str)
+                  and isinstance(v[4], int) and isinstance(v[5], int) and isinstance(v[6], (int, float)) and isinstance(v[7], (int, float)))
             if not ok:
                 _intr_marks_bump("refused")
                 continue
@@ -1173,15 +1175,24 @@ def _persist_intr_marks(force=False):
 
 
 def _intr_marks_key(sid, path):
-    """The persisted memo's key, taken BEFORE the tally reads a row (the arc's rule): the transcript's (mtime_ns, size) and
-    the states log's newest machine-cut pair, which together with the transcript's records are the marks' only inputs.
-    None when the transcript cannot be statted (no memo road)."""
+    """The persisted memo's key, taken BEFORE the tally reads a row (the arc's rule): the transcript's (mtime_ns, size), the
+    states log's newest machine-cut pair, and the SDK registry row's (mtime_ns, size) (STATE/sdk/<sid>.json, which decides
+    sdk_human: whether a promptSource "sdk" prompt is the human's, so its arrival or departure re-authors the user rows;
+    zeros when absent), which together with the transcript's records are the judge parse's inputs to the marks. None when
+    the transcript cannot be statted, and None while a bare rollback's cut is ARMED for the session (jd._pending_cut: the
+    parse is then the truncated world, which no file records, so nothing is served or persisted until the arm clears)."""
     try:
         st = os.stat(path)
     except (OSError, TypeError):
         return None
+    if sid and jd._pending_cut(sid):
+        return None
     cut = _last_machine_cut(sid) if sid else (0.0, "")
-    return (st.st_mtime_ns, st.st_size, float(cut[0]), str(cut[1]))
+    try:
+        rs = os.stat(jd.STATE / "sdk" / (str(sid) + ".json")); sdk = (rs.st_mtime_ns, rs.st_size)
+    except OSError:
+        sdk = (0, 0)
+    return (st.st_mtime_ns, st.st_size, float(cut[0]), str(cut[1]), sdk[0], sdk[1])
 
 
 def _interrupt_marks_facts(turns):
@@ -1249,9 +1260,9 @@ def _interrupt_marks(turns, sid="", family=None, path=None):
     if dkey is not None:                                  # the persisted memo (T401 (3) target 3): a row under this exact key
         with _INTR_MARKS_DISK_LOCK:                       #  serves the two maxima without a tally, across boots
             row = _INTR_MARKS_DISK.get(sid)
-        if row is not None and (row[0], row[1], row[2], row[3]) == dkey:
+        if row is not None and tuple(row[:6]) == dkey:
             _intr_marks_bump("restored")
-            res = (row[4], row[5])
+            res = (row[6], row[7])
             if key is not None:
                 _intr_marks_memo[key] = (turns, cut, res)
             return res
@@ -1261,7 +1272,7 @@ def _interrupt_marks(turns, sid="", family=None, path=None):
     res = _interrupt_marks_atoms(_interrupt_marks_facts(turns), cut[0], cut[1])   # the tally over rows: no pre-cut atom built
     _intr_marks_bump("computeMs", (time.perf_counter() - _t0) * 1000.0)
     if dkey is not None:
-        new = [dkey[0], dkey[1], dkey[2], dkey[3], res[0], res[1]]
+        new = list(dkey) + [res[0], res[1]]
         with _INTR_MARKS_DISK_LOCK:
             if _INTR_MARKS_DISK.get(sid) != new:          # dirty by CHANGE only (the 1589 lesson): compare before assign
                 _INTR_MARKS_DISK[sid] = new
@@ -25981,7 +25992,7 @@ def _session_stamped_tops(sid):
     return _session_stamp_read(sid)[1]
 
 
-_UUIDISH_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+# _UUIDISH_RE: defined beside the interrupt-marks memo above (one source for the uuid shape; the memo loads at import)
 
 
 def _peer_identity(psid):
@@ -50884,8 +50895,8 @@ def _pusher_cycle_jobs(now, live_map, any_client):
     except Exception:
         sys.stderr.write("interrupt-block: %s\n" % traceback.format_exc())
     try:                                  # the tick jobs' evaluation memo, persisted when a completed evaluation
-        _job_stage('persistTickSeen', lambda: _persist_tick_seen())
-        _job_stage('persistIntrMarks', lambda: _persist_intr_marks())    # the interrupt-marks memo, when a row changed (T401 (3) target 3)          # moved it (T323 stage 1): the next kernel's first look starts from here
+        _job_stage('persistTickSeen', lambda: _persist_tick_seen())          # moved it (T323 stage 1): the next kernel's first look starts from here
+        _job_stage('persistIntrMarks', lambda: _persist_intr_marks())    # the interrupt-marks memo, when a row changed (T401 (3) target 3)
         _job_stage('persistSpendTrees', lambda: _persist_spend_trees())      # the guard's tree memos, when dirty (T401 follow-up)
     except Exception:
         sys.stderr.write("tick-seen: %s\n" % traceback.format_exc())

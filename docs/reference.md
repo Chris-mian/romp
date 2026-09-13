@@ -2023,16 +2023,24 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the machine-cut stamp (`hit`, `miss`, `evict` for entries released when a
   session leaves the alive set or the memo is cleared at its cap, and the
   gauge `entries`), and behind it a memo PERSISTED across boots at
-  `STATE/intr-marks.json` (version 1: `{"v": 1, "rows": {sid: [mtime_ns,
-  size, cut_t, cut_cause, last_intr, last_human]}}`), one row per alive
-  session keyed on the transcript's stat and the states log's newest
-  machine-cut pair, taken before the tally reads a row, written when a row
-  changed and at exit, dropped with the session when it leaves the alive
-  set: `restored` counts a boot's marks served from a row under a matching
-  key with no tally, `refused` a row the load would not trust (malformed, of
-  another length, not under a uuid-shaped sid: recomputed, never read as
-  dead), `computeMs` the milliseconds the cold tallies took, `persisted`
-  the rows held. The cold tally itself walks the transcript's USER rows
+  `STATE/intr-marks.json` (version 2: `{"v": 2, "rows": {sid: [mtime_ns,
+  size, cut_t, cut_cause, sdk_mtime_ns, sdk_size, last_intr, last_human]}}`),
+  one row per alive session keyed on the transcript's stat, the states log's
+  newest machine-cut pair and the SDK registry row's stat (the row that
+  decides whether a programmatic prompt is the human's), all taken before
+  the tally reads a row, and no key at all while a bare rollback's cut is
+  armed for the session (the parse is then a truncated world no file
+  records, so nothing is served or persisted until the arm clears); written
+  when a row changed and at exit, dropped with the session when it leaves
+  the alive set: `restored` counts a boot's marks served from a row under a
+  matching key with no tally, `refused` a row the load would not trust
+  (malformed, of another length or version, not under a uuid-shaped sid:
+  recomputed, never read as dead; a refused row stands on disk until the
+  next changed write), `computeMs` the whole milliseconds the cold tallies
+  took, `persisted` the rows held. The light facts the tally reads are cached
+  per pre-cut index (user rows only, about 200 bytes each, `asmIndex.userFacts`
+  on `/perf`, cleared whole past a cap) and never built into atoms; a row
+  whose interrupt flag lives only in an inline body is handed to the build. The cold tally itself walks the transcript's USER rows
   through the pre-cut container's light facts (type, time, the recorded
   author, the interrupt flag from the lazy header) and builds no atom but
   the romp-authored notices a stop's classification reads, so a session that

@@ -516,7 +516,8 @@ class NudgeWalkParseGate(unittest.TestCase):
                     "GOALDIR", "CLOSER_ON", "load_goals_shared_or_fault", "_seg_key", "_segment_id", "episode_floor", "_view_cleared",
                     "GOALARCHDIR", "_overrides_dir",   # the two keyed-file paths _session_files_stat itself names (the interrupt tick's key)
                     "load_goals_or_fault", "record_verdict", "append_block", "rollup_status", "save_goals", "INTERRUPT_BLOCK_WHY",
-                    "_intr_paused_only"}   # the interrupt arms' store readers and writers (T401 (3) round two): they load and write
+                    "_intr_paused_only",
+                    "_pending_cut"}   # the armed bare-rollback cut the judge parse reads live (no file): the marks memo takes NO key while it is armed   # the interrupt arms' store readers and writers (T401 (3) round two): they load and write
         #                                    the goal store through its own API, the store, its journal and its archive being keyed
         #                                    files 3 to 5, and the override replay inside load_goals reads the clears log (keyed file 7,
         #                                    which is why the interrupt key keeps that position real); _intr_paused_only is a pure

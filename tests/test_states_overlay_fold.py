@@ -484,7 +484,8 @@ class IntrMarksReport(unittest.TestCase):
             key = (DEAD, "judge")
             km._intr_marks_memo[key] = ([], (0.0, ""), (0, 0))
             rep = km._intr_marks_memo_report()
-            self.assertEqual(set(rep), {"hit", "miss", "evict", "entries"})
+            self.assertEqual(set(rep), {"hit", "miss", "evict", "entries", "restored", "refused", "computeMs", "persisted"},
+                             "the identity memo's counters and the persisted memo's (T401 (3) target 3)")
             self.assertEqual(rep["entries"], 1)
             for k in ("hit", "miss", "evict"):
                 self.assertEqual(rep[k], km._intr_marks_memo_stats[k])

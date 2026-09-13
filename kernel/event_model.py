@@ -4760,7 +4760,8 @@ _ASM_CKPT_V = 5                       # 2: atom rows carry [offset, len], nt for
 _MAT_CAP = _env_or("ROMP_ASM_INDEX_CAP", max(500_000, _machine_memory_bytes() // (32 * 1024)))
 _MAT_LRU = collections.OrderedDict()  # (id(LazyAtoms), row) → (LazyAtoms, row): eviction drops the memo, never a field in place
 _MAT_LOCK = threading.Lock()
-_ASM_INDEX_STATS = {"materialized": 0, "materializedBy": {}, "resident": 0, "evictions": 0, "restoredTurns": 0, "rowDecodes": 0}
+_ASM_INDEX_STATS = {"materialized": 0, "materializedBy": {}, "resident": 0, "evictions": 0, "restoredTurns": 0, "rowDecodes": 0,
+                    "userFacts": 0}   # userFacts: the interrupt-marks tally's light facts cached across the live indexes, about 200 bytes each
 _PRE_TURN_KEYS = ("pre", "uuids", "lastT", "maxT", "lastModel", "tools", "segs", "pcs", "hT")   # a pre-turn's fields beyond a plain turn's
 
 
@@ -4778,6 +4779,7 @@ class _Unmaterialized:
 
 
 _UNMAT = _Unmaterialized()
+_USER_FACTS_CAP = 8192                # light facts cached per index for the interrupt-marks tally: user rows only, cleared whole past this
 
 
 def _materialize_caller():
@@ -4835,24 +4837,28 @@ class LazyIndex:
         try:
             row = json.loads(self.rowb[k])
         except (IndexError, ValueError):
-            cache[k] = None
-            return None
+            return None                                # not cached: a broken row is the build's to report
         ri = row.get("r"); sc = row.get("s") or {}
         tname = {"u": "user", "a": "assistant", "s": "system"}
         typ = sc.get("type") or (tname.get(self.records[ri][2], "user") if ri is not None else None)
         if typ != "user":
-            cache[k] = None
-            return None
+            return None                                # not cached: only USER rows are kept (the bound below is over them)
         rr = self.records[ri] if ri is not None else None
-        lz = row.get("lz") or {}
-        facts = {"type": "user", "uuid": rr[0] if rr else None, "t": rr[5] if rr else 0, "lazy": {"ir": bool(lz.get("ir"))}, "_light": k}
+        lz = row.get("lz")
+        facts = {"type": "user", "uuid": rr[0] if rr else None, "t": rr[5] if rr else 0,
+                 "lazy": {"ir": bool((lz or {}).get("ir"))}, "_light": k}
         for f in ("type", "uuid", "t", "author"):      # the recorded scalars over the record row's fields, exactly as the build
             if f in sc:                                #  applies them (a repaired timestamp lives in the scalars, not the record)
                 facts[f] = sc[f]
-        if "m" in row and lz == {}:                    # an inline body with no lazy header: the flag from the text, as the build's
-            facts["lazy"] = None                       #  atom would read it (is_interrupt_record falls to the text without `lazy`)
-            facts["message"] = row["m"]
+        if lz is None and "m" in row:                  # an inline body with no lazy header: the interrupt flag is in the TEXT, which
+            facts["_build"] = True                     #  only the audited body readers may read, so this rare row is the build's
+        if len(cache) >= _USER_FACTS_CAP:              # bounded: about 200 bytes a row, never the whole corpus (round two, low 1)
+            with _MAT_LOCK:
+                _ASM_INDEX_STATS["userFacts"] -= len(cache)
+            cache.clear()
         cache[k] = facts
+        with _MAT_LOCK:
+            _ASM_INDEX_STATS["userFacts"] += 1
         return facts
 
     def uuid_of(self, k):
@@ -4944,7 +4950,10 @@ class LazyAtoms(list):
                 if a.get("type") == "user":
                     out.append((i, a))
             elif f is not None:
-                out.append((i, f))
+                if f.get("_build"):
+                    out.append((i, self._at(i)))           # an inline-body row: its interrupt flag is in the text, the build reads it
+                else:
+                    out.append((i, f))
         return out
 
     def rows(self):
