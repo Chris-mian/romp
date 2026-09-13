@@ -48,6 +48,11 @@ class _TimedPool(ThreadPoolExecutor):
     2026-09-08). Thread-locals do not cross into pool workers on their own, which is why the mark rides
     the submit rather than the tier."""
 
+    def __init__(self, *args, **kwargs):
+        if "thread_name_prefix" not in kwargs:            # the workers carry their tier: judge-index_0, judge-triage_3, ... so the
+            kwargs["thread_name_prefix"] = "judge-" + (threading.current_thread().name or "tier").split(":", 1)[0]   # kernel's
+        super().__init__(*args, **kwargs)                 #  stack sample keys them by tier, never as an anonymous pool (T401)
+
     def submit(self, fn, /, *args, **kwargs):
         def run():
             _judge_ctx.in_pass = True

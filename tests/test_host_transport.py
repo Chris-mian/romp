@@ -816,7 +816,7 @@ class BackendHostRules(unittest.TestCase):
                 starts = []
                 real_start = threading.Thread.start
                 def start_recording(thread):
-                    if thread.name.startswith("romp-end-host-"):
+                    if thread.name.startswith("end-host:"):
                         starts.append(held.depth > 0)
                     return real_start(thread)
                 # a NEW host holds the lease (the first was told to end and a later End for it opens no socket): its End starts a thread

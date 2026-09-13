@@ -920,6 +920,160 @@ class PerfRoutes(unittest.TestCase):
         st, body = self._req("GET", "/perf", token=False)
         self.assertEqual(st, 403)
         self.assertNotIn("cycles", str(body))
+        st, body = self._req("GET", "/perf?stacks=1", token=False)
+        self.assertEqual(st, 403, "the stack sample is token-gated like the snapshot")
+        self.assertNotIn("frames", str(body))
+
+    def test_get_perf_stacks_carries_one_frame_list_per_thread_with_its_stage_mark(self):
+        """T401 (2)'s proof instrument: `?stacks=1` adds one row per live thread (name, ident, self, stage, frames innermost
+        last); a thread inside a tick job shows `jobs.<job>` and the frame it waits in; the plain snapshot carries no `stacks`;
+        the registry row is gone once the job returns."""
+        ev = threading.Event(); inside = threading.Event()
+        def probe():
+            inside.set(); ev.wait(10)
+        th = threading.Thread(target=lambda: km._job_stage("probe", probe), name="probe-thread", daemon=True)
+        th.start(); self.assertTrue(inside.wait(5))
+        try:
+            st, snap = self._req("GET", "/perf?stacks=1")
+        finally:
+            ev.set(); th.join(5)
+        self.assertEqual(st, 200)
+        rows = snap["stacks"]
+        self.assertIsInstance(rows, dict, "?stacks=1 fills the slot the plain snapshot leaves null")
+        self.assertTrue(rows and all(set(r) == {"self", "stage", "frames"} for r in rows.values()), list(rows.items())[:1])
+        key = "%d probe-thread" % th.ident
+        self.assertIn(key, rows, sorted(rows))                              # keyed "<ident> <kind>" (T358's duplicate-worker case)
+        mine = rows[key]
+        self.assertEqual(mine["stage"], "jobs.probe", mine)
+        self.assertTrue(any(f.startswith("wait (threading.py:") for f in mine["frames"]), mine["frames"])
+        self.assertTrue(any(f.startswith("_job_stage (") for f in mine["frames"]), mine["frames"])   # the kernel's file name is
+        #                                                                                                the launcher's here
+        self.assertEqual(mine["frames"][-1].split(" ")[0], "wait", "innermost last")
+        self.assertEqual(sum(1 for r in rows.values() if r["self"]), 1, "the answering handler thread is marked once")
+        self.assertTrue(all(len(r["frames"]) <= 40 for r in rows.values()))
+        self.assertTrue(any(k.endswith(" handler") and rows[k]["self"] for k in rows), "the answering thread's kind is handler: %s" % sorted(rows))
+        self.assertNotIn(th.ident, km._STAGE_BY_TID, "the registry row is gone once the job returns")
+        st, plain = self._req("GET", "/perf")
+        self.assertIsNone(plain["stacks"], "the plain snapshot carries the slot empty, as before")
+
+    def test_the_sample_keys_threads_by_kind_never_by_a_session_name(self):
+        """Round one, medium 1: an SDK session thread is named "sdk:<session name>", and the sample's key carried it where
+        the reference promised no session content. Keys are "<ident> <kind>", the kind the name up to its colon."""
+        gate = threading.Event()
+        th = threading.Thread(target=gate.wait, name="sdk:notes-api-web", daemon=True); th.start()
+        try:
+            rows = km._thread_stacks()
+        finally:
+            gate.set(); th.join(5)
+        self.assertIn("%d sdk" % th.ident, rows, sorted(rows))
+        self.assertNotIn("notes-api-web", json.dumps(rows), "no session name anywhere in the sample")
+        self.assertEqual((km._thread_kind("sdk-intr:web"), km._thread_kind("Thread-12 (process_request_thread)"), km._thread_kind("pusher"),
+                          km._thread_kind("MainThread"), km._thread_kind(None)), ("sdk-intr", "handler", "pusher", "main", "?"))
+        # round two: every identity-bearing worker follows kind:payload, and a default name keeps its target function
+        self.assertEqual((km._thread_kind("codex:notes-api-web"), km._thread_kind("end-host:11111111"), km._thread_kind("peer:TESTHOST")),
+                         ("codex", "end-host", "peer"))
+        self.assertEqual((km._thread_kind("Thread-7 (_ask_poll)"), km._thread_kind("Thread-9 (serve_forever)"), km._thread_kind("Thread-3")),
+                         ("_ask_poll", "serve_forever", "thread"), "a default name keeps the target function, the identity a slow-boot read needs")
+        self.assertEqual((km._thread_kind("judge-index_2"), km._thread_kind("ThreadPoolExecutor-0_4")), ("judge-index", "pool"))
+        gate = threading.Event()
+        th = threading.Thread(target=gate.wait, daemon=True); th.start()   # unnamed: Python's "Thread-N (wait)"
+        try:
+            rows = km._thread_stacks()
+        finally:
+            gate.set(); th.join(5)
+        self.assertIn("%d wait" % th.ident, rows, sorted(rows))
+
+    def test_every_named_thread_site_maps_to_a_kind_without_an_identity(self):
+        """Round two, medium 1, and round three's medium 1: a census of every thread and pool construction site in the kernel,
+        the backends the kernel loads in-process and the postal service, walked with the ast module (a regex could not cross a
+        newline and missed five named sites, the Codex worker's among them). A constant name is a kind already; a name with a
+        dynamic part (a session name, a sid, a host) must carry it after the convention's separator so _thread_kind drops it; a
+        name built any other way fails. The site count is checked against an independent grep count over the same files."""
+        import ast, re
+        root = os.path.dirname(BIN)
+        files = [os.path.join(root, "kernel", f) for f in ("kernel.py", "sdk_backend.py", "codex_backend.py", "session_host.py")] + \
+                [os.path.join(root, "postal", "postal_service.py")]
+        CTORS = {"Thread", "Timer", "ThreadPoolExecutor", "_TimedPool"}
+        def ctor_of(call):
+            f = call.func
+            n = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
+            return n if n in CTORS else None
+        def static_prefix(v):
+            """(the constant text before any dynamic part, whether the name has a dynamic part), or None for an unreadable expression."""
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                return v.value, False
+            if isinstance(v, ast.JoinedStr):
+                first = v.values[0] if v.values else None
+                return (first.value if isinstance(first, ast.Constant) else ""), any(isinstance(p, ast.FormattedValue) for p in v.values)
+            if isinstance(v, ast.BinOp) and isinstance(v.op, (ast.Mod, ast.Add)) and isinstance(v.left, ast.Constant) and isinstance(v.left.value, str):
+                return v.left.value.split("%")[0], True
+            if isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr == "format" and isinstance(v.func.value, ast.Constant):
+                return v.func.value.value.split("{")[0], True
+            return None, None
+        sites, named, bad, grep_thread, ast_thread = 0, [], [], 0, 0
+        for f in files:
+            src = open(f, encoding="utf-8").read()
+            grep_thread += len(re.findall(r"threading\.Thread\(", src))
+            for node in ast.walk(ast.parse(src)):
+                if not isinstance(node, ast.Call) or ctor_of(node) is None:
+                    continue
+                sites += 1
+                if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id == "threading" and node.func.attr == "Thread":
+                    ast_thread += 1
+                kw = next((k for k in node.keywords if k.arg in ("name", "thread_name_prefix")), None)
+                if kw is None:
+                    continue                                     # a default name: the rule keeps the target function
+                label = "%s:%d" % (os.path.basename(f), node.lineno)
+                static, dynamic = static_prefix(kw.value)
+                named.append(label)
+                if static is None:
+                    bad.append((label, "a name built from an expression the census cannot read", ast.dump(kw.value)[:80])); continue
+                if dynamic:
+                    if not static.endswith(km._THREAD_NAME_SEP):
+                        bad.append((label, "a dynamic part without the kind:payload separator", static)); continue
+                    kind = km._thread_kind(static + "notes-api-web")
+                    if kind != static[:-1] or "notes" in kind:
+                        bad.append((label, "the payload survives", kind))
+                else:
+                    kind = km._thread_kind(static)
+                    if kind != static or re.search(r"[/\\]|[0-9a-f]{8}-", static):
+                        bad.append((label, "a constant name that is not a plain kind", kind))
+        self.assertEqual(ast_thread, grep_thread, "the ast walk sees every threading.Thread( the grep sees")
+        self.assertGreaterEqual(len(named), 23, "the census found every named site, the multi-line ones included: %r" % named)
+        self.assertTrue(any(l.startswith("codex_backend.py:") for l in named), "the Codex worker's site is walked: %r" % named)
+        self.assertEqual(bad, [], "every named thread maps to a kind with no identity in it")
+
+    def test_the_judge_pools_workers_carry_their_tier(self):
+        """Round three, low 2: the pin on the pool prefix was a substring check on the source; the behaviour is pinned instead:
+        a _TimedPool built on a thread named like a tier gives its workers names whose kind is judge-<tier>."""
+        jd = km.jd
+        out = []
+        def tier():
+            with jd._TimedPool(max_workers=1) as ex:
+                out.append(ex.submit(lambda: threading.current_thread().name).result(5))
+        th = threading.Thread(target=tier, name="index"); th.start(); th.join(10)
+        self.assertEqual(len(out), 1, out)
+        self.assertEqual(km._thread_kind(out[0]), "judge-index", out[0])
+
+    def test_the_sample_never_reads_source_through_linecache(self):
+        """Round one, low 1: extract_stack read and cached every source file in every stack (4 MB of kernel) for line text
+        the sample never prints; the frame walk touches no file."""
+        import linecache
+        linecache.clearcache()
+        km._thread_stacks()
+        self.assertEqual([k for k in linecache.cache if k.endswith(("romp-kernel", "kernel.py", "threading.py"))], [],
+                         "the sample loaded source it does not print")
+
+    def test_the_stage_registry_follows_the_marks(self):
+        """`_set_stage` writes the thread-local the readers consult and the by-ident row the sample reads, and clears the row at
+        None; the push decorator and the job thunk both go through it."""
+        tid = threading.get_ident()
+        km._set_stage(None)
+        self.assertNotIn(tid, km._STAGE_BY_TID)
+        km._job_stage("probe", lambda: self.assertEqual((km._current_read_stage(), km._STAGE_BY_TID.get(tid)), ("jobs.probe", "jobs.probe")))
+        self.assertEqual((km._current_read_stage(), km._STAGE_BY_TID.get(tid)), (None, None))
+        km._stage_marked("marked")(lambda: self.assertEqual(km._STAGE_BY_TID.get(tid), "marked"))()
+        self.assertNotIn(tid, km._STAGE_BY_TID)
 
     def test_post_perf_requires_the_token(self):
         st, body = self._req("POST", "/perf", {"log": True}, token=False)
@@ -1007,8 +1161,8 @@ class PerfRoutes(unittest.TestCase):
 
 
 class StacksField(unittest.TestCase):
-    """The perf route's `stacks` (T358, a debugging aid behind ROMP_PERF_STACKS): every thread's last frames, keyed by the
-    thread's ident WITH its name, so two workers sharing a name stay two entries (the duplicate-worker case the aid is for);
+    """The perf route's `stacks` (T358, a debugging aid behind ROMP_PERF_STACKS; T401's sample): every thread's frames, keyed by
+    the thread's ident WITH its kind, so two workers sharing a kind stay two entries (the duplicate-worker case the aid is for);
     None without the switch."""
     def test_two_threads_sharing_a_name_are_two_entries(self):
         import threading
@@ -1024,6 +1178,12 @@ class StacksField(unittest.TestCase):
             self.assertEqual(len(keys), 2, "one entry per thread, the name carried: %s" % sorted(snap.get("stacks") or {}))
             self.assertEqual(len(set(keys)), 2, "keyed by ident: distinct")
             self.assertTrue(all(str(t.ident) in k for t, k in zip(sorted(ths, key=lambda t: t.ident), sorted(keys, key=lambda k: int(k.split()[0])))))
+            for k in keys:                                                   # the value shape (T401): the row the served
+                row = snap["stacks"][k]                                      #  boot diagnostic and romp perf stacks read
+                self.assertEqual(set(row), {"self", "stage", "frames"}, row)
+                self.assertIs(row["self"], False); self.assertIsNone(row["stage"])
+                self.assertTrue(row["frames"] and all(" (" in f and f.endswith(")") for f in row["frames"]), row["frames"])
+                self.assertTrue(row["frames"][-1].startswith("wait ("), "innermost last: the worker waits on its gate")
         finally:
             gate.set()
             for t in ths:

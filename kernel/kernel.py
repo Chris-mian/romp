@@ -699,13 +699,10 @@ class _PerfStats:
         memos["nudgeGate"] = dict(_NUDGE_GATE_STATS)   # the nudge walk's placement gate: served vs re-derived (2026-09-09)
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
         now = time.time()
-        stacks = None
-        if os.environ.get("ROMP_PERF_STACKS"):     # a debugging aid (T358): every thread's last frames, named, for a served test that
-            import traceback                        #  has to say where a kernel sits while a client waits on a runner nobody can log into
-            names = {t.ident: t.name for t in threading.enumerate()}
-            stacks = {"%s %s" % (tid, names.get(tid, "?")): [l.strip() for l in traceback.format_stack(f)[-6:]]
-                      for tid, f in sys._current_frames().items()}   # keyed by ident WITH the name: two workers sharing a name
-            #                                                          stay two entries, the duplicate-worker case the aid is for
+        stacks = _thread_stacks() if os.environ.get("ROMP_PERF_STACKS") else None   # every thread's frames, named and staged: under
+        #                                                                              the switch here (T358's aid for a served test
+        #                                                                              on a runner nobody can log into), on demand
+        #                                                                              through GET /perf?stacks=1 (T401)
         return {"now": now, "since": since, "uptime_s": now - _STARTED, "log": _PERF, "stacks": stacks,
                 "process": _process_stats(), "pusher": pusher, "stages_ms": stages,
                 "builds": builds, "sends": sends, "goals": goals, "memos": memos, "judge": judge, "skillLoadIndex": skill_idx, "http": http,
@@ -739,6 +736,78 @@ def _current_read_stage():
     return getattr(_STAGE_TL, "name", None)
 
 
+_STAGE_BY_TID = {}                # thread ident -> that thread's current stage mark: what the stack sample (GET /perf?stacks=1)
+#                                   prints beside a thread's frames, since another thread's local is unreadable (T401)
+
+
+def _set_stage(name):
+    """The calling thread's stage mark: the thread-local the readers consult and the by-ident row the stack sample reads."""
+    _STAGE_TL.name = name
+    tid = threading.get_ident()
+    if name is None:
+        _STAGE_BY_TID.pop(tid, None)
+    else:
+        _STAGE_BY_TID[tid] = name
+
+
+_THREAD_NAME_SEP = ":"            # the one naming convention for every worker the kernel or a backend names with an identity
+#                                   in it: "<kind>:<payload>" (sdk:<session name>, sdk-intr:<session name>, codex:<session
+#                                   name>, end-host:<sid8>, peer:<host>); the kind rule below keeps the kind and drops the
+#                                   payload, so no session name, sid, host or path reaches the stack sample (T401 round two).
+#                                   The writers (sdk_backend, codex_backend, postal) spell the colon themselves, since they do
+#                                   not import the kernel: the census test over every construction site is the guard
+
+
+def _thread_kind(name):
+    """A thread's KIND from its name, never a session's name, sid, host or path: a name with the convention's separator keeps
+    the part before it (sdk, sdk-intr, codex, end-host, peer); Python's default "Thread-N (target)" keeps the target function
+    (the identity a slow-boot read needs: _ask_poll, _parent_watch, _update_check_loop, serve_forever, ...), "handler" for
+    the HTTP server's process_request_thread; a pool worker "<prefix>_N" keeps its prefix (the judge tiers' pools are
+    prefixed judge-<tier>), a default "ThreadPoolExecutor-K_N" is "pool"; MainThread is "main"; the rest (pusher, producer,
+    index, triage, parse-warm, ...) are kinds already. The stack sample keys its rows by ident and kind (T401 round one,
+    medium 1: a key carried a live session name where the reference promised no session content; round two: the Codex
+    worker's hyphenated name and the end-host's sid slipped past a colon-only rule, and every default name read as handler)."""
+    n = name or "?"
+    if _THREAD_NAME_SEP in n:
+        return n.split(_THREAD_NAME_SEP, 1)[0] or "?"
+    m = re.match(r"Thread-\d+(?: \((.+)\))?$", n)
+    if m:
+        fn = m.group(1) or "thread"
+        return "handler" if fn == "process_request_thread" else fn
+    if n == "MainThread":
+        return "main"
+    if re.match(r"ThreadPoolExecutor-\d+_\d+$", n):
+        return "pool"
+    m = re.match(r"(.+)_\d+$", n)
+    if m:
+        return m.group(1)
+    return n
+
+
+def _thread_stacks(limit=40):
+    """Every live thread's stack, for GET /perf?stacks=1 and the ROMP_PERF_STACKS switch: keyed "<ident> <kind>" (the ident
+    keeps two workers sharing a kind two entries, T358's duplicate-worker case; the kind is _thread_kind's: the name before
+    the convention's separator, a default name's target function, a pool worker's prefix, never a session's name), each a
+    row with `self` (the thread building this sample), `stage` (its current
+    stage mark) and `frames`, "function (file:line)" strings innermost last, at most `limit`, walked frame by frame and
+    never through linecache (extract_stack would read and cache every source file on every stack, 4 MB of kernel for
+    line text the sample does not print). No locals, no arguments, no session content: the shape a slow-boot read needs to
+    NAME the lock a thread waits on (the pusher in a judge's parse, say) instead of inferring it from counters, where
+    py-spy is not available (T401; the T358 convoy read: stacks first). Token-gated like every /perf read."""
+    names = {t.ident: t.name for t in threading.enumerate()}
+    me = threading.get_ident()
+    out = {}
+    for tid, frame in sys._current_frames().items():
+        rows = []
+        f = frame
+        while f is not None and len(rows) < limit:
+            rows.append("%s (%s:%d)" % (f.f_code.co_name, os.path.basename(f.f_code.co_filename), f.f_lineno))
+            f = f.f_back
+        rows.reverse()                                    # innermost last
+        out["%s %s" % (tid, _thread_kind(names.get(tid)))] = {"self": tid == me, "stage": _STAGE_BY_TID.get(tid), "frames": rows}
+    return out
+
+
 def _stage_marked(name):
     """Decorator: the calling thread's stage mark is `name` for the function's duration and restored on EVERY exit, a raise or an
     early return included (T401 round one: _push set the mark inline and restored it at its end, so a caught build failure
@@ -747,11 +816,11 @@ def _stage_marked(name):
         @functools.wraps(fn)
         def marked(*args, **kwargs):
             prev = getattr(_STAGE_TL, "name", None)
-            _STAGE_TL.name = name(*args, **kwargs) if callable(name) else name   # a callable names the stage from the call
+            _set_stage(name(*args, **kwargs) if callable(name) else name)   # a callable names the stage from the call
             try:
                 return fn(*args, **kwargs)
             finally:
-                _STAGE_TL.name = prev
+                _set_stage(prev)
         return marked
     return deco
 
@@ -49750,11 +49819,11 @@ def _job_stage(name, thunk):
     The thread's stage mark is `jobs.<name>` for the job's duration (T401: the reads inside it count under it)."""
     _t = time.monotonic()
     prev = getattr(_STAGE_TL, "name", None)
-    _STAGE_TL.name = "jobs." + name
+    _set_stage("jobs." + name)
     try:
         return thunk()
     finally:
-        _STAGE_TL.name = prev
+        _set_stage(prev)
         _PERF_STATS.stage("jobs." + name, time.monotonic() - _t)
 
 
@@ -56588,8 +56657,10 @@ class Handler(BaseHTTPRequestHandler):
                     rows = rows + _thread_rows()               # bus (the user 2026-08-22); every existing
                 return self._send(200, json.dumps(rows), "application/json", cache="no-cache")   # consumer unchanged
             if p == "/perf":                                  # the kernel's performance counters (`romp perf`); shape: _PerfStats
-                return self._send(200, json.dumps(_PERF_STATS.snapshot(ring_all=(q.get("ring") or [""])[0] == "all")),
-                                  "application/json", cache="no-cache")   # ?ring=all: the whole stage ring (T397)
+                snap = _PERF_STATS.snapshot(ring_all=(q.get("ring") or [""])[0] == "all")   # ?ring=all: the whole stage ring (T397)
+                if (q.get("stacks") or [""])[0] == "1":
+                    snap["stacks"] = _thread_stacks()      # ?stacks=1: one frame list per thread with its stage mark (T401)
+                return self._send(200, json.dumps(snap), "application/json", cache="no-cache")
             if p == "/commands":                              # slash-command list for the composer's "/" autocomplete (SDK get_server_info, per-cwd cached)
                 sid = (q.get("sid") or [""])[0]
                 cmds, warming = _commands_for_cwd(_cwd_of(sid) if sid else "")
@@ -60448,7 +60519,7 @@ def main():
         sys.stderr.write("model-alias migration: %s\n" % traceback.format_exc())   # MUST precede _sdk: regs → chosen_model there
     _write_palette_mirror()                                   # keep bin/romp's palette-colors mirror current across code updates
     _boot_warm()                                              # pre-parse the live fleet during the reconnect gap (fast first paint)
-    threading.Thread(target=_sdk, daemon=True).start()        # construct the SDK backend NOW so its boot
+    threading.Thread(target=_sdk, daemon=True, name="sdk-boot").start()   # construct the SDK backend NOW so its boot
     #                                                           reconcile (cut turns, queues, orphans) runs at
     #                                                           boot, not on the first lazy touch
     threading.Thread(target=_rewind_holds_boot, daemon=True).start()   # resolve holds whose take/fail
@@ -60456,8 +60527,8 @@ def main():
     #                                                           builds the backend itself if it wins the race)
     threading.Thread(target=_rewind_migration_bg, daemon=True).start()   # one-time dead-branch cleanup
     #                                                           of pre-fix residue, marker-gated
-    threading.Thread(target=_producer, daemon=True).start()
-    threading.Thread(target=_pusher, daemon=True).start()
+    threading.Thread(target=_producer, daemon=True, name="producer").start()   # named: the stack sample says whose frames
+    threading.Thread(target=_pusher, daemon=True, name="pusher").start()
     threading.Thread(target=_heartbeat, daemon=True).start()  # WS keepalive on its own thread (see _heartbeat)
     threading.Thread(target=_ask_poll, daemon=True).start()   # scrape live AskUserQuestion pickers → chat
     threading.Thread(target=_parent_watch, daemon=True).start()
