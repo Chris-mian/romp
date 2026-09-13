@@ -1864,7 +1864,28 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   and is the user's call, the open hygiene question here; while
   `unbounded` counts a LATER look's refused skip, so the two are not
   comparable;
-  `nudgeGate` is the auto-nudge walk's
+  `spendTree` is the spend guard's memo of each live
+  session's subagents tree (`entries`, `bytes`, `bound`, a sixty-fourth of
+  the machine's memory or `ROMP_SPEND_GUARD_TREE_MEMO_BYTES`, and the
+  reads since boot: `dirStats`, `fileStats`, `entryStats` (the per-entry
+  stats a listing performs), `listings`, `loaded`, `loadFailed`, `written`,
+  `swept`); the memo is persisted at `STATE/spend-tree/<sid>.json` when
+  dirty and at exit and loaded lazily when the session's guard first runs
+  after a boot. What the load saves is the listings (the scandir and its
+  per-entry stat for every directory): a boot stats each directory once and
+  lists only one whose mtime moved. One stat per file remains, because an
+  append while the kernel was down moves no directory's mtime, and it is
+  spread over the cycles after the load, hot files first, at most
+  `SPEND_GUARD_RESTAT_PER_CYCLE` (400, about 2 ms) a cycle, so the largest
+  tree is whole again within seven cycles and no cycle carries a whole
+  tree. A corrupt or misshapen file, or one that does not name the
+  session's own root, is a failed load and relisted, never raised; a path
+  outside the root is dropped; the directory is swept once per kernel life
+  of memos whose leaf is gone; the guard's job itself skips
+  the boot's first cycle, since its first pass lists every alive session's
+  tree (4.2 s on one boot, 60 trees of 16,752 agent transcripts in 1,542
+  directories, the largest 2,581 files) and a runaway spend is minutes,
+  not the first cycle (T401 follow-up); `nudgeGate` is the auto-nudge walk's
   planner-placement gate, derived once per (parse, store) and served while
   both stand (`served`, `derived`, and `failed`: the derivations that raised;
   the except leg answers NOT unplanned, so the walk skips the planner-queue
