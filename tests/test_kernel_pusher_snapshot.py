@@ -46,7 +46,8 @@ class _CycleFixture(unittest.TestCase):
         td = Path(self.td.name)
         self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
                       km.NAMES, km.Sessions.live, km._sdk,
-                      km._auto_nudge_tick, km._clear_done_working_notes)
+                      km._auto_nudge_tick, km._clear_done_working_notes,
+                      km._turn_notify_tick, km._api_health_frame, km._api_health_push, km._lift_spent_awaiting)
         names = td / "names"; names.mkdir()
         proj = td / "projects"; proj.mkdir()
         jd.NAMES, jd.PROJECTS = names, proj
@@ -77,7 +78,8 @@ class _CycleFixture(unittest.TestCase):
     def tearDown(self):
         (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE,
          km.NAMES, km.Sessions.live, km._sdk,
-         km._auto_nudge_tick, km._clear_done_working_notes) = self.saved
+         km._auto_nudge_tick, km._clear_done_working_notes,
+         km._turn_notify_tick, km._api_health_frame, km._api_health_push, km._lift_spent_awaiting) = self.saved
         with km._clients_lock:
             km._clients[:] = self.saved_clients
         # every scope slot, so a failing test cannot leak a cycle's memo into the next on this thread
@@ -100,9 +102,11 @@ class OneSnapshotPerCycle(_CycleFixture):
         row = self.row
         km.Sessions.live = lambda: (reads.append(1), dict(row))[1]
         got = {}
-        # bracket the job list: the FIRST and the LAST tick job must both receive the cycle's one map
-        km._auto_nudge_tick = lambda now, live_map: got.setdefault("first", live_map)
-        km._clear_done_working_notes = lambda now, live_map: got.setdefault("last", live_map)
+        # bracket the pusher's job list: the FIRST and the LAST job after the push that take the map must both receive the
+        # cycle's one map (the housekeeping jobs run on the jobs thread since 2026-09-13: see the twin below)
+        km._turn_notify_tick = lambda now, live_map: got.setdefault("first", live_map)
+        km._api_health_frame = lambda now, live_map: got.setdefault("last", live_map)
+        km._api_health_push = lambda frame: None
         sent = []
         with km._clients_lock:   # a connected chat client, so the _push leg builds for real
             km._clients[:] = [{"app": "chat", "alive": True, "wid": "", "qbytes": 0,
@@ -118,6 +122,22 @@ class OneSnapshotPerCycle(_CycleFixture):
         n = len(reads)
         km._live_map()
         self.assertEqual(len(reads), n + 1)
+
+    def test_one_jobs_pass_reads_liveness_once_and_hands_it_to_every_job(self):
+        """The jobs thread's twin (the housekeeping split, 2026-09-13): its pass takes ONE snapshot of its own, the first and
+        the last housekeeping job receive that one map, and the scope ends with the pass."""
+        reads = []
+        row = self.row
+        km.Sessions.live = lambda: (reads.append(1), dict(row))[1]
+        got = {}
+        km._lift_spent_awaiting = lambda now, live_map: got.setdefault("first", live_map)
+        km._clear_done_working_notes = lambda now, live_map: got.setdefault("last", live_map)
+        km._jobs_cycle()
+        self.assertEqual(len(reads), 1, "one liveness read per jobs pass")
+        self.assertIn(SID, got.get("first") or {}, "the jobs got the pass's snapshot")
+        self.assertIs(got.get("first"), got.get("last"))
+        self.assertIsNone(km._live_scope.snapshot, "the scope ends with the pass")
+        self.assertIsNone(km._live_scope.sessions)
 
     def test_build_session_reuses_the_callers_snapshot(self):
         # build_session used to take a FRESH liveness read per session build (the bgTasks line) — on
@@ -137,7 +157,8 @@ class OneDiscoverPerCycle(_CycleFixture):
     through _sessions, not counted globally: direct jd.discover callers exist (the wide walk, postal
     enrichment, analytics) and a global count is fixture-fragile."""
 
-    def _cycle(self, client):
+    def _cycle(self, client, cycle=None):
+        cycle = cycle or km._pusher_cycle                 # or km._jobs_cycle: the housekeeping's pass (the split, 2026-09-13)
         depth, inside, outside, keys = [0], [], [], set()
         orig_sessions, orig_fp = km._sessions, jd._discover_fingerprint
 
@@ -158,7 +179,7 @@ class OneDiscoverPerCycle(_CycleFixture):
             km._clients[:] = [client] if client else []
         s0 = dict(km._sessions_scope_stats)
         try:
-            km._pusher_cycle()
+            cycle()
         finally:
             km._sessions, jd._discover_fingerprint = orig_sessions, orig_fp
         s1 = km._sessions_scope_stats
@@ -169,8 +190,17 @@ class OneDiscoverPerCycle(_CycleFixture):
         self.assertEqual(d["miss"], len(keys), "one _sessions sweep per (window, forks) key")
         self.assertIn((jd.WINDOW, True), keys)
         self.assertEqual(fps, d["miss"], "…and one discover fingerprint per sweep")
-        self.assertGreaterEqual(d["hit"], 5, "the tick jobs and the _path_of misses were served from the memo")
+        self.assertGreaterEqual(d["hit"], 1, "the pusher's own jobs and the _path_of misses were served from the memo")
         self.assertIsNone(km._live_scope.sessions, "the memo ends with the cycle")
+
+    def test_one_sweep_per_key_per_jobs_pass(self):
+        # the housekeeping jobs' twin (the split, 2026-09-13): the pass opens its own memo, one sweep per key, the jobs served
+        fps, keys, d = self._cycle(None, cycle=km._jobs_cycle)
+        self.assertEqual(d["miss"], len(keys), "one _sessions sweep per (window, forks) key")
+        self.assertIn((jd.WINDOW, True), keys)
+        self.assertEqual(fps, d["miss"])
+        self.assertGreaterEqual(d["hit"], 5, "the tick jobs and the _path_of misses were served from the memo")
+        self.assertIsNone(km._live_scope.sessions, "the memo ends with the pass")
 
     def test_one_sweep_per_key_per_cycle_with_a_chat_client(self):
         sent = []
@@ -218,7 +248,7 @@ class OneDiscoverPerCycle(_CycleFixture):
         for path in self.paths.values():
             os.utime(path, (old, old))
         self.row = {}
-        fps, keys, d = self._cycle(None)
+        fps, keys, d = self._cycle(None, cycle=km._jobs_cycle)   # the tick jobs' pass (the housekeeping split, 2026-09-13)
         self.assertEqual(d["miss"], len(keys), "one sweep per key, the empty result memoized")
         self.assertEqual(fps, d["miss"])
         self.assertGreaterEqual(d["hit"], 5, "the tick jobs were served the empty list from the memo")
@@ -285,7 +315,7 @@ class OneDiscoverPerCycle(_CycleFixture):
         got = {}
         km._clear_done_working_notes = lambda now, live_map: got.setdefault("alive", km._alive_sessions(now, live_map))
         try:
-            fps, keys, d = self._cycle(None)
+            fps, keys, d = self._cycle(None, cycle=km._jobs_cycle)   # the _alive_sessions callers are the housekeeping jobs
         finally:
             jd.discover = orig
         self.assertEqual(sorted(r["sid"] for r in got["alive"]), sorted([SID, SID2]),

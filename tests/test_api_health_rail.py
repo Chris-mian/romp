@@ -404,15 +404,22 @@ class Wiring(unittest.TestCase):
                   "_usage_poll_tick", "_auto_resume_session_retry", "_auto_retry_tick", "_idle_queue_drive_tick",
                   "_clear_done_working_notes")
 
-    def test_the_frame_is_built_in_the_jobs_block_after_this_cycle_s_pause_decisions(self):
+    def test_the_frame_is_built_in_the_pushers_cycle_and_the_pause_decisions_on_the_jobs_thread(self):
+        # the housekeeping split (2026-09-13): the frame stays with the push (it feeds the shell's cell every cycle); the pause
+        # decisions run on the jobs thread in their order (limit, spend, resume), and the frame reads them at most one jobs
+        # pass (JOBS_PASS_S) old, the staleness the design accepted
         src = inspect.getsource(km._pusher_cycle_jobs)
         self.assertIn("_api_health_push(_api_health_frame(now, live_map))", src)
-        self.assertLess(src.index("_auto_resume_retry(now, live_map)"), src.index("_api_health_push(_api_health_frame"))
+        jobs = inspect.getsource(km._jobs_pass)
+        self.assertLess(jobs.index("_auto_pause_on_limit()"), jobs.index("_auto_pause_on_spend_limit(now, live_map)"))
+        self.assertLess(jobs.index("_auto_pause_on_spend_limit(now, live_map)"), jobs.index("_auto_resume_retry(now, live_map)"))
+        self.assertNotIn("_api_health", jobs, "the frame is the pusher's, never the jobs thread's")
         self.assertNotIn("_api_health", inspect.getsource(km._cached_feed), "not gated by the feed's sig / rebuild floor")
 
     def test_the_jobs_block_runs_the_frame_after_the_pause_decisions(self):
-        # the executing twin of the pin above: a frame built before _auto_resume_retry would carry the pause the
-        # same cycle lifts, so the cell would read paused one cycle late on every lift
+        # the executing twin of the pin above: the jobs pass decides the pauses in order, the pusher's cycle builds and
+        # sends the frame; a frame built before _auto_resume_retry within one list would have carried the pause the same
+        # pass lifts, which the two lists keep apart
         order = []
         quiet = {nm: (lambda *a, **k: None) for nm in self.OTHER_JOBS}
         with mock.patch.multiple(km, **quiet), \
@@ -421,6 +428,8 @@ class Wiring(unittest.TestCase):
                 mock.patch.object(km, "_auto_resume_retry", side_effect=lambda now, live_map: order.append("resume")), \
                 mock.patch.object(km, "_api_health_frame", side_effect=lambda now, live_map: order.append("frame") or {"type": "apiHealth"}), \
                 mock.patch.object(km, "_api_health_push", side_effect=lambda f: order.append("push:" + f["type"])):
+            km._jobs_pass(T_STORM, {})
+            self.assertEqual(order, ["limit", "spend", "resume"], "the jobs pass: the pause decisions in order, no frame")
             km._pusher_cycle_jobs(T_STORM, {}, True)
         self.assertEqual(order, ["limit", "spend", "resume", "frame", "push:apiHealth"])
 

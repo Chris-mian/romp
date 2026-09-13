@@ -524,7 +524,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
                          "the nudge has wall-clock legs: never the plain memo check (documented in _tick_job_check)")   # plain check
         self.assertTrue(walk.startswith("@_nudge_look_gated"), "the look is wrapped by its parse gate")
         self.assertTrue(hasattr(km._auto_nudge_session, "__wrapped__"))
-        cyc = inspect.getsource(km._pusher_cycle_jobs)
+        cyc = inspect.getsource(km._jobs_pass)                          # the jobs thread's list (the housekeeping split, 2026-09-13)
         self.assertLess(cyc.index("_job_stage('interruptBlock', lambda: _interrupt_block_tick(now, live_map))"),
                         cyc.index("_job_stage('persistTickSeen', lambda: _persist_tick_seen())"), "the memo is written after the tick jobs")
         self.assertIn("_persist_tick_seen(force=True)", inspect.getsource(km._drain_and_exit), "and at exit")

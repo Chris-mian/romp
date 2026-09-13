@@ -46,7 +46,7 @@ SID = "11111111-2222-3333-4444-555555555555"
 # A PRIVATE synthetic sid for the goal-store tests: load_goals replays the per-sid override journal,
 # and node ids collide across test modules under the shared placeholder (CLAUDE.md, goal-store fixtures).
 GOAL_SID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
-TOP_KEYS = {"now", "since", "uptime_s", "log", "process", "pusher", "stages_ms", "builds", "sends",
+TOP_KEYS = {"now", "since", "uptime_s", "log", "process", "pusher", "jobs", "stages_ms", "builds", "sends",   # jobs: the jobs thread's passes
             "goals", "memos", "judge", "http", "parses",   # parses: cold event-model parses (T323 stage 1)
             "checkpoints",                                 # checkpoints: the folds' checkpoints (T323 stage 3)
             "asmCheckpoint",                               # asmCheckpoint: the assembly documents (T323 stage 4a)
