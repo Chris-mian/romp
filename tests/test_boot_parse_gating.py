@@ -421,7 +421,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         stopped = [{"id": "t1", "t": 1000, "atoms": [{"t": 1000, "type": "user"}]}]
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
-                      _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
+                      _interrupt_marks=lambda turns, sid, family="judge", path=None: (1000, 900), _session_working=lambda turns: False,
                       _auto_nudge_pause=lambda why: None, _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {},
                       _intr_blocked=lambda sid=None, data=None: None)
         with km._TICK_SEEN_LOCK:
@@ -455,7 +455,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         stopped = [{"id": "t1", "t": 1000, "atoms": [{"t": 1000, "type": "user"}]}]
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
-                      _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
+                      _interrupt_marks=lambda turns, sid, family="judge", path=None: (1000, 900), _session_working=lambda turns: False,
                       _auto_nudge_pause=lambda why: None, _auto_nudge_resume=lambda: None)
         with mock.patch.multiple(km, **common), \
              mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now: {"turns": stopped}), \
@@ -476,7 +476,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         stopped = [{"id": "t1", "t": 1000, "atoms": [{"t": 1000, "type": "user"}]}]
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
-                      _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
+                      _interrupt_marks=lambda turns, sid, family="judge", path=None: (1000, 900), _session_working=lambda turns: False,
                       _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {}, _intr_blocked=lambda sid=None, data=None: "g1")
         with mock.patch.multiple(km, **common), \
              mock.patch.object(km.jd, "parsed_session", side_effect=lambda sid, paths, now: {"turns": stopped}), \
@@ -497,7 +497,7 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         stopped = [{"id": "t1", "t": 1000, "atoms": [{"t": 1000, "type": "user"}]}]
         common = dict(_alive_sessions=lambda now, live_map: [r], _session_flag=lambda sid, flag: False,
                       _compacting_now=lambda *a, **k: False, _api_error=lambda path: False,
-                      _interrupt_marks=lambda turns, sid, family="judge": (1000, 900), _session_working=lambda turns: False,
+                      _interrupt_marks=lambda turns, sid, family="judge", path=None: (1000, 900), _session_working=lambda turns: False,
                       _auto_nudge_resume=lambda: None, _auto_nudge_data=lambda: {}, _intr_blocked=lambda sid=None, data=None: None,
                       _record_interrupt_block=lambda sid, ev: "g1")
         for refused, marked in ((False, False), (True, True)):

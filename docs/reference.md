@@ -2022,7 +2022,36 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   entry per (session, parse family) keyed on the parse object's identity and
   the machine-cut stamp (`hit`, `miss`, `evict` for entries released when a
   session leaves the alive set or the memo is cleared at its cap, and the
-  gauge `entries`). `deadWait` is the dead-wait sweep's reads: `passes`,
+  gauge `entries`), and behind it a memo PERSISTED across boots at
+  `STATE/intr-marks.json` (version 2: `{"v": 2, "rows": {sid: [mtime_ns,
+  size, cut_t, cut_cause, sdk_owned, last_intr, last_human]}}`),
+  one row per alive session keyed on the transcript's stat, the states log's
+  newest machine-cut pair and the parse's sdk-ownership bit (the input that
+  decides whether a programmatic prompt is the human's), all taken before
+  the tally reads a row, and no key at all while a bare rollback's cut is
+  armed for the session (the parse is then a truncated world no file
+  records, so nothing is served or persisted until the arm clears; the arm
+  is checked again after the tally, so a cut armed meanwhile is answered
+  but not persisted); the row is the judge family's alone (the display
+  family's parse carries live-merged atoms and takes no disk key); written
+  when a row changed and at exit, dropped with the session when it leaves
+  the alive set: `restored` counts a boot's marks served from a row under a
+  matching key with no tally, `refused` a row the load would not trust
+  (malformed, of another length or version, not under a uuid-shaped sid:
+  recomputed, never read as dead; a refused row stands on disk until the
+  next changed write), `computeMs` the whole milliseconds the cold tallies
+  took, `persisted` the rows held. The light facts the tally reads are cached
+  per pre-cut index (user rows only, about 447 bytes each, at most 8192 rows
+  an index, the cache cleared whole past that; the parse cache holds up to
+  256 indexes, so about 937 MB at the theoretical worst; `asmIndex.userFacts`
+  on `/perf` is the gauge of resident facts summed over the live indexes,
+  falling when an index is dropped) and never built into atoms; a row
+  whose interrupt flag lives only in an inline body is handed to the build. The cold tally itself walks the transcript's USER rows
+  through the pre-cut container's light facts (type, time, the recorded
+  author, the interrupt flag from the lazy header) and builds no atom but
+  the romp-authored notices a stop's classification reads, so a session that
+  moved pays a tally linear in its rows instead of the whole atom build; the
+  display family's live-merged atoms are not on disk and miss as before. `deadWait` is the dead-wait sweep's reads: `passes`,
   `candidates` (corroborated-dead sessions walked), `sharedLoads` (reads
   through the shared read-only store view, one per store per pass: the
   candidate's own and every alive session's for the peer-death arm),

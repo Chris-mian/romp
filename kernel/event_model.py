@@ -26,7 +26,7 @@ Auxiliary inputs the file adapter may read (same category as the transcript):
                                transcript lost to an API-errored try; judge parse only)
   timeline/messages.jsonl   -> peer rompUuid for a postal atom (join on the msg id)
 """
-import array, bisect, collections, copy, gzip, json, os, re, sys, time, hashlib, threading
+import array, bisect, collections, copy, gzip, json, os, re, sys, time, hashlib, threading, weakref
 from datetime import datetime
 from pathlib import Path
 
@@ -4778,6 +4778,12 @@ class _Unmaterialized:
 
 
 _UNMAT = _Unmaterialized()
+_USER_FACTS_CAP = 8192                # light facts cached PER INDEX for the interrupt-marks tally: user rows only, the cache cleared whole
+#                                       past this (about 447 bytes a row measured; the parse cache holds up to 256 indexes, so the theoretical
+#                                       worst is about 937 MB); the gauge asmIndex.userFacts sums the live indexes' caches at report time
+_LIVE_INDEXES = weakref.WeakSet()     # every LazyIndex alive (the parse cache's and any caller's): what the userFacts gauge sums; a dropped
+#                                       index leaves the set with its cache, so the gauge falls with it (round three medium)
+_IR_TRUE, _IR_FALSE = {"ir": True}, {"ir": False}   # the light facts' lazy header, shared and never mutated (is_interrupt_record reads ir)
 
 
 def _materialize_caller():
@@ -4805,6 +4811,8 @@ class LazyIndex:
         self.rowb = [json.dumps(r, separators=(",", ":")).encode("utf-8") for r in doc["atoms"]]
         self.records = doc["records"]
         self.fsids = list(doc.get("fsids") or [])
+        self._user_facts = {}                             # the interrupt-marks tally's light facts by row (user_facts), bounded by _USER_FACTS_CAP
+        _LIVE_INDEXES.add(self)
 
     def build(self, k):
         with _MAT_LOCK:
@@ -4821,6 +4829,45 @@ class LazyIndex:
         a = _restore_prefix_atoms([row], self.rompuuid, self.records, self.fsids)[0]
         a.pop("_seq", None)                               # the read-order tiebreak: the section fixed the order (parse_session pops it too)
         return a
+
+    def user_facts(self, k):
+        """The fields the interrupt-marks tally reads from a USER row, from one decode and no atom build (T401 (3) target 3):
+        type, uuid, t, author (the recorded scalars applied over the record row's fields, exactly as the build applies them)
+        and lazy.ir (the interrupt flag), as a light dict that is never stored in the slot or the LRU; None for a row that
+        is not a user record. What is cached: the USER rows' facts, per index in self._user_facts, cleared whole past
+        _USER_FACTS_CAP; a non-user row is re-decoded on every tally and a broken row is never cached (the build reports
+        it), so a second tally over the same index decodes every non-user row again. That second tally is rare: the
+        kernel's identity memo answers a repeated tally over the same parse before this method runs, and a changed
+        transcript restores a new index. The gauge asmIndex.userFacts is the sum of the live indexes' caches, taken at
+        report time (asm_index_stats), so this hot path takes no lock but the row-decode counter's."""
+        cache = self._user_facts
+        f = cache.get(k)
+        if f is not None:
+            return f
+        with _MAT_LOCK:
+            _ASM_INDEX_STATS["rowDecodes"] += 1
+        try:
+            row = json.loads(self.rowb[k])
+        except (IndexError, ValueError):
+            return None                                # not cached: a broken row is the build's to report
+        ri = row.get("r"); sc = row.get("s") or {}
+        tname = {"u": "user", "a": "assistant", "s": "system"}
+        typ = sc.get("type") or (tname.get(self.records[ri][2], "user") if ri is not None else None)
+        if typ != "user":
+            return None                                # not cached: only USER rows are kept (the bound below is over them)
+        rr = self.records[ri] if ri is not None else None
+        lz = row.get("lz")
+        facts = {"type": "user", "uuid": rr[0] if rr else None, "t": rr[5] if rr else 0,
+                 "lazy": _IR_TRUE if (lz or {}).get("ir") else _IR_FALSE, "_light": k}
+        for f in ("type", "uuid", "t", "author"):      # the recorded scalars over the record row's fields, exactly as the build
+            if f in sc:                                #  applies them (a repaired timestamp lives in the scalars, not the record)
+                facts[f] = sc[f]
+        if lz is None and "m" in row:                  # an inline body with no lazy header: the interrupt flag is in the TEXT, which
+            facts["_build"] = True                     #  only the audited body readers may read, so this rare row is the build's
+        if len(cache) >= _USER_FACTS_CAP:              # bounded per index: never the whole corpus (round two, low 1)
+            cache.clear()
+        cache[k] = facts
+        return facts
 
     def uuid_of(self, k):
         """A row's uuid without building its atom (the record row's, else the synthesized scalars')."""
@@ -4893,6 +4940,29 @@ class LazyAtoms(list):
     def uuids(self):
         """The atoms' uuids without building them."""
         return [self._index.uuid_of(r) for r in self._rows]
+
+    def user_facts(self):
+        """[(slot, atom-or-facts)] for the USER rows in order, building nothing: a slot already built yields its atom, an
+        unbuilt one the index's light facts (T401 (3) target 3: the interrupt-marks tally used to build every atom of the
+        transcript through __iter__)."""
+        out = []
+        for i, r in enumerate(self._rows):
+            a = list.__getitem__(self, i)
+            if a is not _UNMAT:
+                if a.get("type") == "user":
+                    out.append((i, a))
+                continue
+            f = self._index.user_facts(r) if hasattr(self._index, "user_facts") else None
+            if f is None and not hasattr(self._index, "user_facts"):
+                a = self._at(i)                            # an index without the accessor: the build, as before
+                if a.get("type") == "user":
+                    out.append((i, a))
+            elif f is not None:
+                if f.get("_build"):
+                    out.append((i, self._at(i)))           # an inline-body row: its interrupt flag is in the text, the build reads it
+                else:
+                    out.append((i, f))
+        return out
 
     def rows(self):
         return list(self._rows)
@@ -5078,7 +5148,9 @@ def asm_index_stats():
     with _MAT_LOCK:
         return {"materialized": _ASM_INDEX_STATS["materialized"], "materializedBy": dict(_ASM_INDEX_STATS["materializedBy"]),
                 "resident": len(_MAT_LRU), "evictions": _ASM_INDEX_STATS["evictions"], "cap": _MAT_CAP,
-                "restoredTurns": _ASM_INDEX_STATS["restoredTurns"], "rowDecodes": _ASM_INDEX_STATS["rowDecodes"]}
+                "restoredTurns": _ASM_INDEX_STATS["restoredTurns"], "rowDecodes": _ASM_INDEX_STATS["rowDecodes"],
+                "userFacts": sum(len(ix._user_facts) for ix in list(_LIVE_INDEXES))}   # a GAUGE: the light facts resident across the
+#                                                                                       live indexes (a dropped index takes its cache with it)
 _ASM_CKPT_CAP = 16 * 1024 * 1024   # a document past this is not written (counted): that session parses whole as today
 _ASM_CKPT_STATS = {"written": 0, "restored": 0, "fallbacks": {}, "skipped": {}, "hydratedBytes": 0, "hydratedAtoms": 0,
                    "hydratedBy": {},     # bytes per calling function: a whole-tree hydration anywhere shows here
