@@ -21,6 +21,7 @@ import tempfile
 import time
 import unittest
 from romp_load import load_source
+from fs_clock import move_ctime   # noqa: E402  the shared test helper, on the path the line above put there
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -78,6 +79,7 @@ class _Settings(unittest.TestCase):
         self._managed_before = cred.managed_settings_path
         cred.managed_settings_path = lambda: self.managed
         cred.forget_helper_key()
+        self._mtimes = {}
 
     def tearDown(self):
         cred.managed_settings_path = self._managed_before
@@ -94,6 +96,12 @@ class _Settings(unittest.TestCase):
              "user": os.path.join(self.cfg, "settings.json")}[which]
         os.makedirs(os.path.dirname(p), exist_ok=True)
         Path(p).write_text(json.dumps(d) if not isinstance(d, str) else d)
+        # The settings memo keys on the file's stat, and two writes of one path within one clock tick at the
+        # same byte length would be one identity to it. No person edits that fast; a test does (the failure
+        # loop below rewrites h0.sh..h3.sh), so every write here gets an mtime strictly after the last one's.
+        t = max(os.stat(p).st_mtime_ns, self._mtimes.get(p, 0) + 1)
+        os.utime(p, ns=(t, t))
+        self._mtimes[p] = t
         return p
 
 
@@ -169,6 +177,90 @@ class SettingsPrecedence(_Settings):
         with self.assertRaisesRegex(cred.CredentialError, "not valid JSON") as cm:
             cred.api_key_helper(self.cwd)
         self.assertIn(p, str(cm.exception), "the path, so the user can fix the file")
+
+
+class SettingsReadCache(_Settings):
+    """helper_source and api_key_helper run per push from the kernel's pusher thread and per auth check from the
+    SDK backend; before the memo each call opened and parsed the user and the managed file (~57 opens a second
+    of each, measured on a live box). The memo is keyed on the file's stat, so a change is still seen at once,
+    an absent file is still None, and a broken file is still loud on every call."""
+
+    def _opens(self, path, fn, n):
+        """How many times n calls of fn() open `path`: the module's open, wrapped and counted."""
+        real_open, count = open, [0]
+
+        def counting_open(file, *a, **kw):
+            if os.fspath(file) == path:
+                count[0] += 1
+            return real_open(file, *a, **kw)
+        with patch.object(cred, "open", counting_open, create=True):
+            out = [fn() for _ in range(n)]
+        return count[0], out
+
+    def test_repeated_reads_of_an_unchanged_file_open_it_once(self):
+        p = self._write("user", {"apiKeyHelper": "/u/helper.sh"})
+        opens, out = self._opens(p, cred.helper_source, 20)
+        self.assertEqual(out, ["user"] * 20)
+        self.assertEqual(opens, 1, "one parse, then a stat per call: the pusher thread asks tens of times a second")
+        opens, out = self._opens(p, lambda: cred.api_key_helper(self.cwd), 20)
+        self.assertEqual((opens, out), (0, ["/u/helper.sh"] * 20), "every reader shares the one parse")
+
+    def test_a_changed_file_is_seen_at_the_next_call(self):
+        p = self._write("user", {"apiKeyHelper": "/u/helper.sh"})
+        self.assertEqual(cred.api_key_helper(self.cwd), "/u/helper.sh")
+        # the same byte length on purpose: only the mtime tells the two apart (_write sets it strictly later,
+        # so the test does not ride the clock's grain)
+        self._write("user", {"apiKeyHelper": "/u/second.sh"})
+        self.assertEqual(cred.api_key_helper(self.cwd), "/u/second.sh", "hot reload: a changed helper counts at once")
+        opens, out = self._opens(p, lambda: cred.api_key_helper(self.cwd), 20)
+        self.assertEqual((opens, out), (0, ["/u/second.sh"] * 20), "and the new parse is the one memoized")
+        self._write("user", {"permissions": {}})
+        self.assertIsNone(cred.helper_source(), "a helper removed from the file is gone at the next call")
+
+    def test_an_absent_managed_file_stays_none_and_a_created_one_is_seen(self):
+        self._write("user", {"apiKeyHelper": "/u/helper.sh"})
+        self.assertEqual([cred.helper_source() for _ in range(3)], ["user"] * 3)
+        self._write("managed", {"apiKeyHelper": "/m/helper.sh"})
+        self.assertEqual(cred.helper_source(), "managed", "a file that appears counts at the next call")
+        os.remove(self.managed)
+        self.assertEqual(cred.helper_source(), "user", "and one removed is gone at the next call")
+        self._write("managed", {"apiKeyHelper": "/m/helper.sh"})
+        self.assertEqual(cred.helper_source(), "managed", "back again: no stale absence memoized either")
+
+    def test_a_broken_file_is_loud_on_every_call_and_never_memoized(self):
+        p = self._write("user", "{not json")
+        with self.assertRaisesRegex(cred.CredentialError, "not valid JSON"):
+            cred.helper_source()
+        opens, _ = self._opens(p, lambda: self.assertRaises(cred.CredentialError, cred.helper_source), 3)
+        self.assertEqual(opens, 3, "nothing loud is memoized: each call reads the file and refuses again")
+        os.remove(p)
+        os.makedirs(p)                    # a directory where the file should be: not readable as a file
+        for _ in range(3):
+            with self.assertRaisesRegex(cred.CredentialError, "cannot be read"):
+                cred.helper_source()
+        os.rmdir(p)
+        self._write("user", {"apiKeyHelper": "/u/helper.sh"})
+        self.assertEqual(cred.helper_source(), "user", "fixed: read again at the next call")
+
+    def test_a_file_made_unreadable_is_loud_at_the_next_call(self):
+        """A chmod leaves mtime and size alone; the memo keys on ctime too, so the loud path is taken rather than
+        the old parse served."""
+        if os.geteuid() == 0:
+            self.skipTest("root reads a mode-000 file")
+        p = self._write("user", {"apiKeyHelper": "/u/helper.sh"})
+        self.assertEqual(cred.helper_source(), "user")
+        # Kernels before multigrain timestamps (Linux 6.13) stamp ctime with the coarse tick, so a chmod a few
+        # microseconds after the write lands on the write's tick and IS the memo's identity still (the old parse
+        # served, no CredentialError). Move the ctime first, forced until the clock ticked (fs_clock), so the
+        # mode-000 stat below is one the memo has not seen: the event, not the clock's grain.
+        move_ctime(p)
+        os.chmod(p, 0)
+        try:
+            with self.assertRaisesRegex(cred.CredentialError, "cannot be read"):
+                cred.helper_source()
+        finally:
+            os.chmod(p, 0o644)     # a memo hit here serves the correct old parse anyway: no wait needed
+        self.assertEqual(cred.helper_source(), "user", "readable again: read again")
 
 
 class HelperRun(_Settings):

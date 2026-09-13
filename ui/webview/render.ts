@@ -11115,9 +11115,9 @@ function writeScroll(content: HTMLElement, top: number, writer: string, stick = 
   if (after !== before) lastScrollWriteAfter = after;   // a write that moved the view owes exactly one scroll event, its echo; one that did not move owes none, and must not eat a later gesture landing near its target (verifier low, round two)
   lastKnownSh = content.scrollHeight;
   if (after !== before) scrollDiagRow("scrollwrite", scrollWriteRow(activeId || "", writer, before, after, stick, content.scrollHeight, content.clientHeight));
-  // a write of #content while a landing settles: the READER's own writers (the arrow keys, the wheel over a notch, the jump chip)
-  // are their takeover (round four: their writes read as another mover's and land-realign undid three arrow steps), every other
-  // writer's move is a sample for the settle rule, which re-lands (T386)
+  // a write of #content while a landing settles: a writer the census calls the READER's (landing-settle.ts WRITER_CLASS: a key or a
+  // chord, a link or the chips, the wheel over a notch) is their takeover (round four: their writes read as another mover's and
+  // land-realign undid them), every other writer's move is a sample for the settle rule, which re-lands (T386)
   if (after !== before && landSettling && !landSettling.done && writer !== "land-on" && writer !== "land-realign") { if (writerIsReader(writer)) settleGesture(); else settleSample(); }
 }
 // EVERY mover of #content goes through writeScroll (T262j, the user 2026-09-08: an unwritten move the journal could

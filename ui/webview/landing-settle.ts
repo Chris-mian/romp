@@ -61,7 +61,14 @@ export const WRITER_CLASS: Readonly<Record<string, "reader" | "page">> = {
   "reload-restore": "page", "append-stick": "page", "append-raw": "page", "tail-shrink": "page", "rewindow": "page", "box-resize": "page",
   "box-below": "page", "tabbar-drag": "page", "toolgroup-toggle": "page", "liveask-reveal": "page", "optimistic-send": "page", "queued-x": "page",
 };
-/** The reader's own writers, derived from the census. */
+/** The write helper (the root) and its wrappers, with the position of the WRITER argument in each call (round six, low 1; round
+ *  seven, mediums 1 and 2). The census pin (landing-settle.test.ts, through writer-census.ts on the TypeScript compiler's parser)
+ *  reads every call to one of these out of render.ts: the argument at that position is a plain string literal, counted, or a
+ *  parameter of the enclosing function, which is then a wrapper and must be listed here at that parameter's position; anything
+ *  else there (a template literal, a concatenation, a constant, a variable) fails the pin naming the call, and a function that
+ *  passes its own parameter through, however written and whatever the parameter is called, fails it until listed. */
+export const WRITER_WRAPPERS: Readonly<Record<string, number>> = { writeScroll: 2, scrollContentBy: 2, scrollElInto: 3, land: 0, settleLand: 1 };
+
 export const READER_WRITERS: ReadonlySet<string> = new Set(Object.keys(WRITER_CLASS).filter((w) => WRITER_CLASS[w] === "reader"));
 export function writerIsReader(writer: string): boolean {
   return WRITER_CLASS[writer] === "reader";

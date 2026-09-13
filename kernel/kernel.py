@@ -16634,7 +16634,8 @@ def _auth_both():
     """True when this machine offers BOTH billing choices (a signed-in login and a configured apiKeyHelper).
     Since 2026-09-08 it gates NOTHING in the UI (the Billing menu lists both choices always, greying the
     one this box cannot bill: _auth_avail) and rides the status payload for older clients only. Cheap
-    per-push: _claude_account is mtime-cached and the key is an attribute read."""
+    per-push: _claude_account and helper_source's settings reads are both mtime-cached, and the key is an
+    attribute read."""
     return _auth_key_present() and bool(_claude_account()) and jd._cred.helper_source() != "managed"
 
 
