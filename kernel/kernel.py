@@ -24560,7 +24560,42 @@ def _tunnel_supervisor():
             _remotes_save_if_changed()
         except Exception:
             sys.stderr.write("tunnel-supervisor: %s\n" % traceback.format_exc())
-        _tunnel_wake.wait(15)
+        _tunnel_wake.wait(_supervisor_wait_s(time.time()))
+
+
+SUPERVISOR_PASS_S = 15.0          # the steady pass: every attached tunnel polled end to end this often
+SUPERVISOR_FAST_PASS_S = 2.0      # the pass while a row is in transition (dialing, starting, restarting, no kernel answering)
+SUPERVISOR_FAST_WINDOW_S = 90.0   # how long one transition keeps the fast pass before the steady pass resumes
+_TRANSITIONAL = frozenset(("starting", "connecting", "restarting", "no-kernel"))
+_fast_since = {}                  # host -> when its current transition began (dropped when the row reads up or down)
+
+
+def _supervisor_wait_s(now, rows=None):
+    """How long the supervisor sleeps before its next pass: the steady 15 s, or 2 s while any tunnel row is in
+    transition, for at most 90 s per transition. The laptop's dial ledger (the user, 2026-09-13): every dial had
+    its ssh up within a second and the row read "up" 16 to 18 s later, and a devbox kernel restart read as a 16 s
+    gap, because nothing polled sooner than the next steady pass. A transition is the event; the bound keeps a
+    host that never comes back from being polled every 2 s for good (the backoff ladder still spaces its dials)."""
+    if rows is None:
+        with _remotes_lock:
+            rows = [dict(r) for r in _remotes.values()]
+    fast = False
+    live = set()
+    for r in rows:
+        host = r.get("host")
+        if not host:
+            continue
+        transitional = bool(r.get("_dialing")) or (r.get("status") or "") in _TRANSITIONAL
+        if not transitional:
+            _fast_since.pop(host, None)
+            continue
+        live.add(host)
+        since = _fast_since.setdefault(host, now)
+        if now - since < SUPERVISOR_FAST_WINDOW_S:
+            fast = True
+    for host in [h for h in _fast_since if h not in live]:
+        _fast_since.pop(host, None)
+    return SUPERVISOR_FAST_PASS_S if fast else SUPERVISOR_PASS_S
 
 
 def _session_rows():

@@ -374,5 +374,38 @@ class SourcePins(unittest.TestCase):
         self.assertIn("isn't answering — message not delivered", self.src)
 
 
+class SupervisorPassWhileInTransition(unittest.TestCase):
+    """The laptop's dial ledger (2026-09-13): ssh up within a second, the row "up" 16 to 18 s later, a devbox restart a
+    16 s gap: the steady 15 s pass was the whole cost. A row in transition makes the next pass 2 s, for at most 90 s."""
+
+    def setUp(self):
+        km._fast_since.clear()
+
+    def test_steady_rows_keep_the_steady_pass(self):
+        rows = [{"host": "TESTHOST", "status": "up"}, {"host": "TESTHOST2", "status": "down"}]
+        self.assertEqual(km._supervisor_wait_s(1000.0, rows), km.SUPERVISOR_PASS_S)
+
+    def test_a_transitional_row_makes_the_pass_fast_until_it_settles(self):
+        rows = [{"host": "TESTHOST", "status": "restarting"}]
+        self.assertEqual(km._supervisor_wait_s(1000.0, rows), km.SUPERVISOR_FAST_PASS_S)
+        self.assertEqual(km._supervisor_wait_s(1010.0, [{"host": "TESTHOST", "status": "starting"}]), km.SUPERVISOR_FAST_PASS_S)
+        self.assertEqual(km._supervisor_wait_s(1020.0, [{"host": "TESTHOST", "_dialing": True, "status": "up"}]), km.SUPERVISOR_FAST_PASS_S, "a dial in flight is a transition")
+        self.assertEqual(km._supervisor_wait_s(1030.0, [{"host": "TESTHOST", "status": "up"}]), km.SUPERVISOR_PASS_S, "settled: the steady pass")
+        self.assertEqual(km._fast_since, {}, "the transition record is dropped when the row settles")
+
+    def test_the_fast_pass_is_bounded_per_transition(self):
+        rows = [{"host": "TESTHOST", "status": "no-kernel"}]
+        self.assertEqual(km._supervisor_wait_s(1000.0, rows), km.SUPERVISOR_FAST_PASS_S)
+        self.assertEqual(km._supervisor_wait_s(1000.0 + km.SUPERVISOR_FAST_WINDOW_S + 1, rows), km.SUPERVISOR_PASS_S,
+                         "a host that never comes back is not polled every 2 s for good")
+        rows2 = [{"host": "TESTHOST", "status": "no-kernel"}, {"host": "TESTHOST2", "status": "starting"}]
+        self.assertEqual(km._supervisor_wait_s(1000.0 + km.SUPERVISOR_FAST_WINDOW_S + 2, rows2), km.SUPERVISOR_FAST_PASS_S, "a fresh transition on another row is fast")
+
+    def test_the_supervisor_loop_sleeps_by_the_rule(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        self.assertIn("_tunnel_wake.wait(_supervisor_wait_s(time.time()))", src)
+        self.assertNotIn("_tunnel_wake.wait(15)", src)
+
+
 if __name__ == "__main__":
     unittest.main()
