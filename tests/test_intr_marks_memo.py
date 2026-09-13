@@ -334,12 +334,12 @@ class RowTallyEqualsAtomTally(TA.Harness):
         recs = [["r0", None, "u", None, 0, 1000, 0, None, None, None]]
         rows = [{"r": 0, "s": {"type": "user", "author": "human", "t": 1000}, "seq": 0}]
         with mock.patch.object(em, "_MAT_LOCK", Recording()):
-            em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "w.jsonl")
+            em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "w.jsonl")
         self.assertGreaterEqual(len(enters), 1, "the add to the live set took the lock")
         keep = []
         def maker():
             for _ in range(200):                                                   # bounded: 200 constructions, then done
-                keep.append(em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "w.jsonl"))
+                keep.append(em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "w.jsonl"))
         th = threading.Thread(target=maker); th.start()
         sums = [em.asm_index_stats()["userFacts"] for _ in range(200)]              # bounded: 200 reports beside the maker
         th.join(10)
@@ -404,7 +404,7 @@ class RowTallyEqualsAtomTally(TA.Harness):
             author = "romp" if i % 2 else "human"
             rows.append({"r": i, "s": {"type": "user", "author": author, "t": 1000 + i}, "seq": i,
                          "lz": {"k": "user", "h": "00000000", "nt": True, "ir": False}, "i": i})
-        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "nostop.jsonl")
+        index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "nostop.jsonl")
         atoms = em.LazyAtoms(index, range(6))
         m1 = em._ASM_INDEX_STATS["materialized"]
         users = km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}])
