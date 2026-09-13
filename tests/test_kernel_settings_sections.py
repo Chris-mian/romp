@@ -7,6 +7,7 @@ global Colormap, lives under Colors now.)
 """
 import os
 import unittest
+from pathlib import Path
 from romp_load import load_source
 import tempfile
 
@@ -25,14 +26,14 @@ class SettingsSectionsTest(unittest.TestCase):
     """The panel is in TABS since T379 (the user 2026-09-12): seven pills (General, Chat, Feed, Sessions, Task tracking,
     Appearance, Debug: T400's cut, the user 2026-09-12), one pane each (the tab widgets are a section of Chat); every row keeps its id and its key; each pane opens with a first section head and keeps its
     sub-heads in the approved order; the version footer stays last."""
-    PANES = ("general", "chat", "feed", "sessions", "tasks", "appearance", "debug")
+    PANES = ("general", "chat", "feed", "sessions", "automation", "tasks", "debug")   # T404: Automation new, Appearance a General section
 
     def test_the_subsection_headers_are_present_in_order(self):
         h = _gear_src()
         self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=general"), "the pills come first")
-        for pane, heads in (("general", ["Account", "Panes", "Keyboard shortcuts"]), ("chat", ["Transcript", "Files", "Text and comments", "Tab widgets", "Strip"]),
-                            ("feed", ["Cards"]), ("sessions", ["New sessions", "Sessions pane"]), ("tasks", ["Sessions", "Judges"]), ("appearance", ["Appearance"]),
-                            ("debug", ["Updates", "Judging bands", "Diagnostics"])):
+        for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Comments", "Thinking", "Tab widgets"]),
+                            ("feed", ["Cards"]), ("sessions", ["New sessions"]), ("automation", ["Nudges"]), ("tasks", ["Judges"]),
+                            ("debug", ["Judging bands", "Diagnostics"])):
             p = _pane(h, pane)
             self.assertIn("<div class='rs-sec rs-sec-first'>%s</div>" % heads[0], p, pane + " opens with its first head")
             idx = [p.index(">%s<" % t) for t in heads]
@@ -46,13 +47,13 @@ class SettingsSectionsTest(unittest.TestCase):
     def test_each_setting_sits_under_the_right_section(self):
         h = _gear_src()
         where = {
-            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed"],
-            "chat": ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-filelink", "rs-filesctl", "rs-chatscheme", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-widgets", "rs-striprows"],
+            "general": ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
+            "chat": ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets"],
             "feed": ["rs-feedcollapsed"],
-            "sessions": ["rs-defaultdir", "rs-backend", "rs-fileedit", "rs-activeonly", "rs-collapsegaps"],
-            "tasks": ["rs-autonudge", "rs-suggestcompact", "rs-conserve", "rs-thinksum", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
-            "appearance": ["rs-theme", "rs-cmap", "rs-pal"],
-            "debug": ["rs-updates", "rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
+            "sessions": ["rs-defaultdir", "rs-backend"],
+            "automation": ["rs-autonudge", "rs-suggestcompact"],
+            "tasks": ["rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
+            "debug": ["rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
         }
         panes = {k: _pane(h, k) for k in self.PANES}
         for pane, ids in where.items():
@@ -68,14 +69,31 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertLess(pn.index("<b>Outline</b>"), pn.index("<b>Feed</b>"))
         self.assertNotIn("id=rs-pane-chat", h, "the chat is required")
         self.assertNotIn("id=rs-pane-files", h, "the Files pane keeps its rail toggle")
-        # Automatic: the kernel-side toggles in their order, then the judge tiers
-        au = panes["tasks"]   # Automatic is Task tracking since T400
-        self.assertTrue(au.index("id=rs-autonudge") < au.index("id=rs-suggestcompact") < au.index("id=rs-conserve") < au.index("id=rs-thinksum") < au.index(">Judges<") < au.index("id=rs-judgemodel") < au.index("id=rs-indexeffort"))
-        # General: the login leads, then the panes, then the shortcuts (T400); Debug: updates, the judges' debug views, then Open log as the last button before the version (T290)
+        # Automation (T404): the two nudges in their order; Task tracking: the judge tiers alone
+        am = panes["automation"]
+        self.assertTrue(am.index(">Nudges<") < am.index("id=rs-autonudge") < am.index("id=rs-suggestcompact"))
+        au = panes["tasks"]
+        self.assertTrue(au.index(">Judges<") < au.index("id=rs-judgemodel") < au.index("id=rs-indexeffort") < au.index("id=rs-judgeconc"))
+        for gone in ("id=rs-autonudge", "id=rs-conserve", "id=rs-thinksum", ">Sessions<"):
+            self.assertNotIn(gone, au, gone + " left Task tracking (T404)")
+        # General (T404): the login leads, then the panes with the Files control, Appearance, Permissions (Allow file editing), This machine
+        # (Conserve memory, Updates install automatically), then the shortcuts; Debug: the judges' debug views, then Open log as the last
+        # button before the version (T290)
         ge = panes["general"]
-        self.assertTrue(ge.index(">Account<") < ge.index("id=rs-login-btn") < ge.index("id=rs-panes-sec") < ge.index(">Keyboard shortcuts<"))
+        self.assertTrue(ge.index(">Account<") < ge.index("id=rs-login-btn") < ge.index("id=rs-panes-sec") < ge.index("id=rs-pane-feed") < ge.index("id=rs-filesctl")
+                        < ge.index("data-section=appearance>Appearance<") < ge.index("id=rs-theme") < ge.index("id=rs-pal") < ge.index(">Permissions<") < ge.index("id=rs-fileedit")
+                        < ge.index(">This machine<") < ge.index("id=rs-conserve") < ge.index("id=rs-updates") < ge.index(">Keyboard shortcuts<"))
+        self.assertIn("<b>Allow file editing</b>", ge)
+        self.assertIn("<b>Updates install automatically <span class=rs-mixed hidden></span></b>", ge)
+        # Chat (T404): Display (the transcript rows, the text scheme, the strip's one-group-per-row), Comments, Thinking, Tab widgets
+        ch = panes["chat"]
+        self.assertTrue(ch.index(">Display<") < ch.index("id=rs-compact") < ch.index("id=rs-branch") < ch.index("id=rs-chatscheme") < ch.index("id=rs-striprows") < ch.index(">Comments<")
+                        < ch.index("id=rs-cmtmodel") < ch.index("id=rs-cmtfast") < ch.index(">Thinking<") < ch.index("id=rs-thinksum") < ch.index("data-section=tabwidgets"))
+        for gone in ("id=rs-filelink", "File links open in", "id=rs-activeonly", "id=rs-collapsegaps", ">Sessions pane<", "data-pane=appearance"):
+            self.assertNotIn(gone, h, gone + " is gone from the gear (T404)")
         de = panes["debug"]
-        self.assertTrue(de.index(">Updates<") < de.index("id=rs-updates") < de.index(">Judging bands<") < de.index("id=rs-judges-index") < de.index(">Diagnostics<") < de.index("id=ra-open") < de.index("id=rs-log-open") < de.index("id=rsver"))
+        self.assertTrue(de.index(">Judging bands<") < de.index("id=rs-judges-index") < de.index(">Diagnostics<") < de.index("id=ra-open") < de.index("id=rs-log-open") < de.index("id=rsver"))
+        self.assertNotIn(">Updates<", de, "Updates went to General's This machine section (T404)")
         self.assertNotIn("rs-oldest", h)
         # the old Context gauge row is gone: its WHEN is the Context bar widget's option in the Chat tab's Tab widgets section
         self.assertNotIn("id=rs-tabctx", h)
@@ -153,19 +171,22 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertNotRegex(css, r"\.rs-fastin\.rs-off \{[^}]*opacity", "no opacity on the label: the hint inside it would fade with it")
         self.assertRegex(css, r"\.rs-fastin\.rs-off \{[^}]*color: var\(--text-faint", "the word greys by token, not by fading")
 
-    def test_collapse_gaps_is_wired_to_the_shared_collapseGaps_setting(self):
-        # the gear JS persists/loads romp:settings.collapseGaps; the timeline reads it (see romp-timeline-view.js)
-        self.assertIn("collapseGaps: true", _gear_src())
-        self.assertIn("s.collapseGaps = cg.checked", _gear_src())
-
-    def test_show_active_only_is_wired_to_the_shared_activeOnly_setting(self):
-        # "Show active sessions only" (the user 2026-08-12): a Timeline-section checkbox, default ON,
-        # persisted as romp:settings.activeOnly; the timeline hides lanes with no activity in the
-        # visible window and re-shows them when zoom/pan reaches their work (romp-timeline-view.js).
-        self.assertIn("id=rs-activeonly checked", _gear_src())
-        self.assertIn("activeOnly: true", _gear_src())
-        self.assertIn("s.activeOnly = ao.checked", _gear_src())
-        self.assertIn("ao.checked = s.activeOnly !== false", _gear_src())
+    def test_the_sessions_pane_carries_its_two_toggles_and_the_gear_has_no_rows_for_them(self):
+        # T404 (the user 2026-09-13): "Collapse idle gaps" and "Show active sessions only" left settings; the Sessions pane's own
+        # corner menu flips them (ui/romp-timeline-view.js), writing the same romp:settings keys the gear used to, and the pane
+        # re-reads them on the storage event, so the keys and their defaults are unchanged
+        gear = _gear_src()
+        for gone in ("id=rs-collapsegaps", "id=rs-activeonly", "s.collapseGaps = cg.checked", "s.activeOnly = ao.checked", ">Sessions pane<"):
+            self.assertNotIn(gone, gear, gone + " is gone from the gear")
+        view = (Path(__file__).resolve().parents[1] / "ui" / "romp-timeline-view.js").read_text()
+        self.assertIn("item('Collapse idle gaps', { current: !!this._collapseGaps, dim: true })", view)
+        self.assertIn(".addEventListener('click', () => flip('collapseGaps', this._collapseGaps));", view)
+        self.assertIn("item('Active sessions only', { current: !!this._activeOnly, dim: true })", view)
+        self.assertIn(".addEventListener('click', () => flip('activeOnly', this._activeOnly));", view)
+        self.assertIn("s[key] = !cur;", view)   # the flip writes romp:settings
+        self.assertIn("localStorage.setItem('romp:settings', JSON.stringify(s));", view)
+        self.assertIn("if (raw) this._collapseGaps = JSON.parse(raw).collapseGaps !== false;", view)   # default ON, a stored false opts out
+        self.assertIn("if (raw) this._activeOnly = JSON.parse(raw).activeOnly !== false;", view)
 
     def test_one_group_per_row_is_wired_to_the_shared_stripGroupRows_setting(self):
         # "One tag group per row in the tab strip": a Chat-section checkbox, default ON, persisted as

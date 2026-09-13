@@ -4,7 +4,7 @@
 // Three documents host it, each through initFileBrowse with its own contract (BrowseHost): the FEED pane,
 // the shell's relay target for a browse ask naming no pane and the one document whose close restores a
 // pane (the default contract); the FILES pane (files.ts), the listing as a column of its own while that
-// pane is on screen or the gear's "File links open in" names it; and the chat, where a folder's listing
+// pane is on screen (no setting names a closed pane since T404); and the chat, where a folder's listing
 // opens over the transcript otherwise (render.ts openBrowse decides among them at the click, by the file
 // link's ladder in file-route.ts browseRoute).
 //

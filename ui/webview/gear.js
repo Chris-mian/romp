@@ -38,10 +38,11 @@ function ku(path) {
 // commands, rebindable in VS Code's own Keyboard Shortcuts editor, so the row says that instead
 // (a second editor there would fight the native one). The old static list is gone with the section
 // (it opened with "Enter — send message", a typing key nobody looks up, and went stale per surface).
-var RS_TABS = [['general', 'General'], ['chat', 'Chat'], ['feed', 'Feed'], ['sessions', 'Sessions'], ['tasks', 'Task tracking'], ['appearance', 'Appearance'], ['debug', 'Debug']];
+var RS_TABS = [['general', 'General'], ['chat', 'Chat'], ['feed', 'Feed'], ['sessions', 'Sessions'], ['automation', 'Automation'], ['tasks', 'Task tracking'], ['debug', 'Debug']];
 // older remembered tabs (romp:settingsTab) and older asks map to the tab that holds their rows now, never a blank card (T400):
-// Automatic became Task tracking, System dissolved into Debug (its account rows into General), the short-lived Tabs tab is Chat's section
-var TAB_ALIASES = { automatic: 'tasks', system: 'debug', tabs: 'chat' };
+// Automatic became Task tracking, System dissolved into Debug (its account rows into General), the short-lived Tabs tab is Chat's section,
+// and Appearance is General's section since T404 (the user 2026-09-13): an ask for it lands on General scrolled to that section
+var TAB_ALIASES = { automatic: 'tasks', system: 'debug', tabs: 'chat', appearance: 'general' };
 var SHORTCUT_ROWS =
   '<div class=rs-key id=rs-keys-web hidden><button id=rs-keys-btn type=button>Customize shortcuts…</button>' +
   '<span class=rs-key-desc>view, record and rebind every dashboard shortcut</span></div>' +
@@ -106,10 +107,57 @@ var GEAR_HTML =
   '<span><b>Feed</b>' +
   '<span class=rs-sub>The cards: what needs you, what is in progress, what shipped. Off, the column and its button are gone from this browser; tracking carries on and the other browsers and devices are unaffected.</span>' +
   '</span></label>' +
+  // the Files control (T317, the user 2026-09-10, who recalled a setting for it; a Panes row since T404): the toggle at the bottom of
+  // the dashboard and the Files tab on a phone. OFF by default (T317b, the user the same day: the control is asked for,
+  // not shipped): on shows both; off hides both, closes an open Files pane, and a file link opens over the pane you
+  // clicked (the shell reads this store key and tells the panes: kernel.py
+  // _LANDING_COLLAPSE_JS, render.ts panesAvail). Only the literal true shows it, so the box is unchecked until read.
+  // The key is showFilesControl, a FRESH one (T317b review): the T317-era load() merged its default filesControl: true
+  // into the object and save() wrote the whole object on ANY change, so a profile that touched any setting in that
+  // window carries filesControl: true without ever touching this box; the old key is never read and load() drops it,
+  // so the next save leaves it behind.
+  '<label class=rs-row><input type=checkbox id=rs-filesctl>' +
+  '<span><b>Files control in the dashboard bar</b>' +
+  '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links then open over the pane you clicked.</span>' +
+  '</span></label>' +
+  // APPEARANCE, a section of General since T404 (the user 2026-09-13; a tab of its own before, renamed from Colors 2026-08-28): the
+  // theme, the colormap and the session palette; an older ask or remembered tab named appearance lands here (TAB_ALIASES)
+  "<div class='rs-sec' data-section=appearance>Appearance</div>" +
+  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Theme</b>" +
+  "<span class=rs-sub>The dashboard's overall look, every pane. Classic and Yatharth are dark (they differ in the tab strip: original high-contrast vs the contributed flat-wash); Yatharth light is the warm light theme — inside VS Code it wins over the editor theme, deliberately.</span>" +
+  "<div id=rs-theme style='position:relative;margin-top:5px'></div>" +
+  '</span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>" +
+  '<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>' +
+  "<div id=rs-cmap><button id=rs-cmap-btn type=button aria-label='Pick the recency colormap'></button>" +
+  '<div id=rs-cmap-list hidden></div></div></span></div>' +
+  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>" +
+  '<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>' +
+  "<div id=rs-pal><button id=rs-pal-btn type=button aria-label='Pick the session palette'></button>" +
+  '<div id=rs-pal-list hidden></div></div></span></div>' +
+  // PERMISSIONS (T404): what romp may do on this machine on your behalf
+  '<div class=rs-sec>Permissions</div>' +
+  "<label class='rs-row'><input type=checkbox id=rs-fileedit>" +
+  '<span><b>Allow file editing</b><span class=rs-mixed hidden></span>' +
+  '<span class=rs-sub>Let the file viewer’s Edit save straight to disk on the file’s machine. Off by default; the viewer asks the first time. A session working in the edited folder is told, and a save always refuses when the file changed underneath you. Applies on every connected machine’s kernel.</span>' +
+  '</span></label>' +
+  // THIS MACHINE (T404): the install's own housekeeping, memory and updates
+  '<div class=rs-sec>This machine</div>' +
+  "<label class='rs-row'><input type=checkbox id=rs-conserve>" +
+  '<span><b>Conserve memory</b><span class=rs-mixed hidden></span>' +
+  '<span class=rs-sub>Close the claude process of a session that has FADED (idle over an hour) and is on no open tab (each averages ~340MB). Everything persists — it revives on a tab click, a message, or a scheduled wake. An open tab always keeps its process; off = every session keeps its process for as long as it lives.</span>' +
+  '</span></label>' +
+  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Updates install automatically <span class=rs-mixed hidden></span></b>" +
+  '<span class=rs-sub>romp watches for new tagged releases (every 6 hours) AND new commits on main (origin polled every few minutes, plus a restart offer when updated code sits on disk unbooted) — one banner covers both, and acting on it converges every attached machine. Check and ask (the default) offers the banner with an Update button; Install automatically converges by itself: a change to kernel code restarts it at once (turns in flight are cut and resume with their history); anything else (the UI, the docs, the postal bus) converges in place with the kernel left up; Off never checks. Kernel-side setting.</span>' +
+  "<select id=rs-updates style='display:none'>" +
+  '<option value=ask>Check and ask</option><option value=auto>Install automatically</option><option value=off>Off</option>' +
+  '</select></span></div>' +
+  
   '<div class=rs-sec>Keyboard shortcuts</div>' + SHORTCUT_ROWS +
   '</div>' +
   '<div class=rs-pane data-pane=chat hidden>' +
-  "<div class='rs-sec rs-sec-first'>Transcript</div>" +
+  // DISPLAY (T404, the user 2026-09-13; Transcript before): how the chat shows things, nothing here changes what a session does
+  "<div class='rs-sec rs-sec-first'>Display</div>" +
   '<label class=rs-row><input type=checkbox id=rs-compact>' +
   '<span><b>Compact transcript</b>' +
   '<span class=rs-sub>Collapse each run of tool uses into one line and hide thinking blocks in the chat.</span>' +
@@ -130,40 +178,27 @@ var GEAR_HTML =
   '<span><b>Show git branch</b>' +
   "<span class=rs-sub>Show the session's git branch (when it's in a repo) in the chat bottom bar, beside the directory.</span>" +
   '</span></label>' +
-  "<div class='rs-sec'>Files</div>" +
-  // where a file or folder clicked in the chat opens (render.ts openPath and openBrowse through file-route.ts):
-  // the hidden select is
-  // the value holder, selectPick below dresses it as a house menu like the other selects
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>File links open in</b>" +
-  '<span class=rs-sub>Where a file or folder clicked in the chat opens. While the Files pane is open, both open there. When the pane is closed, this setting decides: over the pane you clicked, or in the Files pane, which then opens and stays open. Needs the Files control below to be on; with it off (the default), links open over the pane you clicked. Browser dashboard only: in VS Code file links open in the editor, and a chat tab opened on its own has no Files pane.</span>' +
-  "<select id=rs-filelink style='display:none'>" +
-  '<option value=chat>The pane you clicked</option><option value=pane>The Files pane</option>' +
-  '</select>' +
-  '</span></div>' +
-  // the Files control itself (T317, the user 2026-09-10, who recalled a setting for it): the toggle at the bottom of
-  // the dashboard and the Files tab on a phone. OFF by default (T317b, the user the same day: the control is asked for,
-  // not shipped): on shows both; off hides both, closes an open Files pane, and a file link set to open in the Files
-  // pane opens over the pane you clicked instead (the shell reads this store key and tells the panes: kernel.py
-  // _LANDING_COLLAPSE_JS, render.ts panesAvail). Only the literal true shows it, so the box is unchecked until read.
-  // The key is showFilesControl, a FRESH one (T317b review): the T317-era load() merged its default filesControl: true
-  // into the object and save() wrote the whole object on ANY change, so a profile that touched any setting in that
-  // window carries filesControl: true without ever touching this box; the old key is never read and load() drops it,
-  // so the next save leaves it behind.
-  '<label class=rs-row><input type=checkbox id=rs-filesctl>' +
-  '<span><b>Files control in the dashboard bar</b>' +
-  '<span class=rs-sub>Adds the Files toggle to the bottom of the dashboard, and the Files tab on a phone. Off (the default) hides them and closes the Files pane if it is open; file links set to open in the Files pane then open over the pane you clicked.</span>' +
-  '</span></label>' +
-  "<div class='rs-sec'>Text and comments</div>" +
   "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Text scheme</b>" +
   "<span class=rs-sub>Chat text colors only. Each option previews its own tiers — prose, the dimmer tool text, code. (Solarized Light is omitted — its tiers are made for a light page and turn muddy here.)</span>" +
   "<div id=rs-chatscheme style='position:relative;margin-top:5px'></div>" +
   '</span></div>' +
-  
+  '<label class=rs-row><input type=checkbox id=rs-striprows checked>' +
+  '<span><b>One tag group per row in the tab strip</b>' +
+  '<span class=rs-sub>With the tabs grouped by tag, each group starts on its own row with its tag at the left edge. Off, the groups follow one another across the strip and wrap as they need, so many tags do not mean many rows.</span>' +
+  '</span></label>' +
+  "<div class='rs-sec'>Comments</div>" +
   "<div class='rs-row rs-jrow'><b>Comment model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model NEW comment threads start on. Same as the session (the default) keeps each thread on the model of the conversation it branches from; pinning one here starts every new thread on it. The comment dialog shows this default and its own pick still wins. Follows to every connected machine's kernel.</span><select id=rs-cmtmodel></select></div>" +
   "<div class='rs-row rs-jrow'><b>Comment effort <span class=rs-mixed hidden></span></b><span class=rs-sub>Thinking effort for new comment threads. Same as the session (the default) inherits the effort of the conversation the thread branches from. Follows to every connected machine's kernel.</span><select id=rs-cmteffort></select></div>" +
   "<label class='rs-row'><input type=checkbox id=rs-cmtfast>" +
   '<span><b>Fast comment threads</b><span class=rs-mixed hidden></span>' +
   "<span class=rs-sub>Start new comment threads in fast mode (Opus-only research preview). If the thread's model can't run it, the thread still opens on that model at normal speed, with a notice. Off = same as the session. Follows to every connected machine's kernel.</span>" +
+  '</span></label>' +
+  // THINKING (T404): asks the API for reasoning summaries on every new session, so it CREATES (tokens the session pays for, and
+  // adaptive thinking turned on where it was off), which is why it sits in Chat and not under Display
+  "<div class='rs-sec'>Thinking</div>" +
+  "<label class='rs-row'><input type=checkbox id=rs-thinksum>" +
+  '<span><b>Thinking summaries</b>' +
+  '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
   '</span></label>' +
   // TAB WIDGETS, a section of the Chat tab (the user's amendment 2026-09-12: not a tab of its own): the strip's gear opens the
   // panel here (data-section is the anchor showSection scrolls the card to), then the strip's own controls follow
@@ -172,11 +207,6 @@ var GEAR_HTML =
   // sliding switch and the widget's own options; every control built once and re-filled in place (click-safe)
   '<div class=rs-hint>What a tab title carries, in this order. Each row shows the widget live.</div>' +
   '<div id=rs-widgets class=rs-widgets></div>' +
-  "<div class='rs-sec'>Strip</div>" +
-  '<label class=rs-row><input type=checkbox id=rs-striprows checked>' +
-  '<span><b>One tag group per row in the tab strip</b>' +
-  '<span class=rs-sub>With the tabs grouped by tag, each group starts on its own row with its tag at the left edge. Off, the groups follow one another across the strip and wrap as they need, so many tags do not mean many rows.</span>' +
-  '</span></label>' +
   '</div>' +
   '<div class=rs-pane data-pane=feed hidden>' +
   "<div class='rs-sec rs-sec-first'>Cards</div>" +
@@ -199,23 +229,10 @@ var GEAR_HTML =
   "<select id=rs-backend style='display:none'>" +
   '<option value=sdk>Claude Code</option><option value=codex>Codex</option>' +
   '</select></span></div>' +
-  "<label class='rs-row'><input type=checkbox id=rs-fileedit>" +
-  '<span><b>File editing</b><span class=rs-mixed hidden></span>' +
-  '<span class=rs-sub>Let the file viewer’s Edit save straight to disk on the file’s machine. Off by default; the viewer asks the first time. A session working in the edited folder is told, and a save always refuses when the file changed underneath you. Applies on every connected machine’s kernel.</span>' +
-  '</span></label>' +
-  '<div class=rs-sec>Sessions pane</div>' +  '<label class=rs-row><input type=checkbox id=rs-activeonly checked>' +
-  '<span><b>Show active sessions only</b>' +
-  '<span class=rs-sub>Only draw lanes for sessions with work in the visible time range, so idle sessions do not take up room. They stay in the chat, and a lane reappears the moment you zoom or pan to a stretch where it did something.</span>' +
-  '</span></label>' +
-  '<label class=rs-row><input type=checkbox id=rs-collapsegaps checked>' +
-  '<span><b>Collapse idle gaps</b>' +
-  '<span class=rs-sub>Squish long idle stretches (no work on any lane — e.g. overnight) into a thin break on the timeline, so the active periods get the width.</span>' +
-  '</span></label>' +
   '</div>' +
-  '<div class=rs-pane data-pane=tasks hidden>' +
-  // TASK TRACKING (T400, the user 2026-09-12: the judges sit under task tracking): what romp does on its own with the sessions
-  // it tracks, and the judges that read them
-  "<div class='rs-sec rs-sec-first'>Sessions</div>" +
+  '<div class=rs-pane data-pane=automation hidden>' +
+  // AUTOMATION (T404, the user 2026-09-13): what romp sends to the sessions on its own
+  "<div class='rs-sec rs-sec-first'>Nudges</div>" +
   "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
   '<span><b>Auto Nudge</b><span class=rs-mixed id=rs-autonudge-split hidden></span>' +
   '<span class=rs-sub id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
@@ -224,15 +241,11 @@ var GEAR_HTML =
   '<span><b>Suggest /compact</b><span class=rs-mixed hidden></span>' +
   '<span class=rs-sub>When a session has been idle over an hour with a lot of context built up (first past 400k tokens, again past 800k), send it ONE suggestion to /compact at a natural boundary — its call, once per fill-up. Never sent to muted sessions or anything mid-turn. Off by default for a fresh install. Applies on every connected machine’s kernel.</span>' +
   '</span></label>' +
-  "<label class='rs-row'><input type=checkbox id=rs-conserve>" +
-  '<span><b>Conserve memory</b><span class=rs-mixed hidden></span>' +
-  '<span class=rs-sub>Close the claude process of a session that has FADED (idle over an hour) and is on no open tab (each averages ~340MB). Everything persists — it revives on a tab click, a message, or a scheduled wake. An open tab always keeps its process; off = every session keeps its process for as long as it lives.</span>' +
-  '</span></label>' +
-  "<label class='rs-row'><input type=checkbox id=rs-thinksum>" +
-  '<span><b>Thinking summaries</b>' +
-  '<span class=rs-sub>For every new Claude Code session, ask the API for reasoning summaries and show them in the chat, folded to two lines (click to expand). Compact transcript still hides them. If thinking was turned off for this install, this turns adaptive thinking on as well. A running session picks the change up at its next reconnect: an effort or billing switch, the first fast-mode opt-in, or a kernel restart. Switching the model applies live and does not reconnect. Off by default; this kernel keeps its own copy.</span>' +
-  '</span></label>' +
-  '<div class=rs-sec>Judges</div>' +
+  '</div>' +
+  '<div class=rs-pane data-pane=tasks hidden>' +
+  // TASK TRACKING (T404, the user 2026-09-13): the judges alone; the nudges went to Automation, Conserve memory to General, Thinking
+  // summaries to Chat. PR 2's master switch goes at the top of this pane.
+  "<div class='rs-sec rs-sec-first'>Judges</div>" +
   "<div class='rs-row rs-jrow'><b>Triage model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model the triage judges use — planner, grouper, closer, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart. A pick here follows to every connected machine's kernel.</span><select id=rs-judgemodel></select>" +
   // Fast mode sits with the model (the user 2026-09-10, who wanted the setting to speak the chat's own words
   // and sit with the model): the chat's statusline badge and docs/reference.md call it fast mode, so this
@@ -250,32 +263,10 @@ var GEAR_HTML =
   "<div class='rs-row rs-jrow'><b>Indexing effort <span class=rs-mixed hidden></span></b><span class=rs-sub>Thinking effort for the indexing judges. Default keeps this high-volume work cheap: effort low on models with adaptive thinking (Fable, Opus 4.6 and later, Sonnet 4.6 and later); Haiku, Sonnet 4.5 and Opus 4.5 have none, so they run with thinking off and no flag. Follows to every connected machine's kernel.</span><select id=rs-indexeffort></select></div>" +
   "<div class='rs-row rs-jrow'><b>Judge concurrency <span class=rs-mixed hidden></span></b><span class=rs-sub>How many judge calls run at once, across every tier. Default is 6, or the ROMP_JUDGE_CONCURRENCY the kernel's service environment sets. Applies on the judges' next pass; no restart. Follows to every connected machine's kernel.</span><select id=rs-judgeconc></select></div>" +
   '</div>' +
-  '<div class=rs-pane data-pane=appearance hidden>' +
-  "<div class='rs-sec rs-sec-first'>Appearance</div>" +   // renamed from Colors (2026-08-28): it owns the overall theme now, not just tints
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto;min-width:0'><b>Theme</b>" +
-  "<span class=rs-sub>The dashboard's overall look, every pane. Classic and Yatharth are dark (they differ in the tab strip: original high-contrast vs the contributed flat-wash); Yatharth light is the warm light theme — inside VS Code it wins over the editor theme, deliberately.</span>" +
-  "<div id=rs-theme style='position:relative;margin-top:5px'></div>" +
-  '</span></div>' +
-  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Colormap</b>" +
-  '<span class=rs-sub>One ramp for the whole dashboard — feed recency, usage, and context bars. Brightest = newest / highest.</span>' +
-  "<div id=rs-cmap><button id=rs-cmap-btn type=button aria-label='Pick the recency colormap'></button>" +
-  '<div id=rs-cmap-list hidden></div></div></span></div>' +
-  "<div class='rs-row rs-sep' style='cursor:default'><span style='flex:1 1 auto'><b>Session colors</b>" +
-  '<span class=rs-sub>The palette sessions draw their identity color from — tabs, cards, lanes. Switching recolors every session to the same slot in the new set.</span>' +
-  "<div id=rs-pal><button id=rs-pal-btn type=button aria-label='Pick the session palette'></button>" +
-  '<div id=rs-pal-list hidden></div></div></span></div>' +
-  '</div>' +
   '<div class=rs-pane data-pane=debug hidden>' +
   // DEBUG (T400, the user 2026-09-12): updates, the judges' debug views, the token usage analytics, the log and the version; the
-  // former System tab dissolved here, its account rows to General
-  "<div class='rs-sec rs-sec-first'>Updates</div>" +
-  "<div class='rs-row' style='cursor:default'><span style='flex:1 1 auto'><b>Automatic updates <span class=rs-mixed hidden></span></b>" +
-  '<span class=rs-sub>romp watches for new tagged releases (every 6 hours) AND new commits on main (origin polled every few minutes, plus a restart offer when updated code sits on disk unbooted) — one banner covers both, and acting on it converges every attached machine. Check and ask (the default) offers the banner with an Update button; Install automatically converges by itself: a change to kernel code restarts it at once (turns in flight are cut and resume with their history); anything else (the UI, the docs, the postal bus) converges in place with the kernel left up; Off never checks. Kernel-side setting.</span>' +
-  "<select id=rs-updates style='display:none'>" +
-  '<option value=ask>Check and ask</option><option value=auto>Install automatically</option><option value=off>Off</option>' +
-  '</select></span></div>' +
-  
-  "<div class='rs-sec'>Judging bands</div>" +   // the two debug views of the judges' activity, from the Feed tab (T400)
+  // former System tab dissolved here, its account rows to General; Updates went to General's This machine section (T404)
+  "<div class='rs-sec rs-sec-first'>Judging bands</div>" +   // the two debug views of the judges' activity, from the Feed tab (T400)
   '<div class=rs-judges>' +
   '<label class=rs-row rs-half><input type=checkbox id=rs-judges-index>' +
   '<span><b>Show indexing judges</b>' +
@@ -339,12 +330,11 @@ function initGear(post, opts) {
     cvm = document.getElementById('rs-conserve'),
     csg = document.getElementById('rs-suggestcompact'),
     dd = document.getElementById('rs-defaultdir'), gb = document.getElementById('rs-branch'), sbg = document.getElementById('rs-badge'),
-    fl = document.getElementById('rs-filelink'), fsc = document.getElementById('rs-filesctl'),
+    fsc = document.getElementById('rs-filesctl'),
     sr = document.getElementById('rs-striprows'),
     dn = document.getElementById('rs-dense'),
     cs = document.getElementById('rs-chatscheme'),
     tt = document.getElementById('rs-theme'),
-    cg = document.getElementById('rs-collapsegaps'), ao = document.getElementById('rs-activeonly'),
     fc = document.getElementById('rs-feedcollapsed'),
     jm = document.getElementById('rs-judgemodel'),
     im = document.getElementById('rs-indexmodel'), je = document.getElementById('rs-judgeeffort'),
@@ -362,7 +352,7 @@ function initGear(post, opts) {
   // Context bar read as on at 50 percent whatever the user had chosen, and a save of ANY setting wrote the empty prefs and
   // rewrote the mirror. A store with no tabWidgets derives the prefs from tabCtx at read time (widgetPrefs, the same
   // derivation settings.ts makes), and only a widget change writes the key (saveWidgets).
-  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', fileLinkPane: 'chat', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
+  function load() { try { var o = Object.assign({ compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }, JSON.parse(localStorage.getItem('romp:settings') || 'null')); delete o.filesControl; return o; } catch (e) { return { compact: true, colormap: 'aurora', subgoals: true, debug: false, backend: 'sdk', defaultDir: '', showBranch: false, showSessionBadge: false, tabCtx: 'over50', showFilesControl: false, stripGroupRows: true, denseChrome: false, collapseGaps: true, activeOnly: true }; } }
   // mirrors settings.ts tabCtxMode (this file can't import the TS module): the gauge shipped for a
   // few hours as a boolean toggle — false was an explicit hide, true the default nobody chose.
   function tabCtxMode(v) { return (v === 'always' || v === 'never') ? v : (v === false ? 'never' : 'over50'); }
@@ -386,7 +376,6 @@ function initGear(post, opts) {
   if (sr) sr.addEventListener('change', function () { var s = load(); s.stripGroupRows = sr.checked; save(s); });
   // compact tabs and agents (off by default): render.ts applies a body class on the save, and the strip and the panel repaint through the cascade
   if (dn) dn.addEventListener('change', function () { var s = load(); s.denseChrome = dn.checked; save(s); });
-  if (fl) fl.addEventListener('change', function () { var s = load(); s.fileLinkPane = fl.value; save(s); });   // webview-local pref read at click time (render.ts openPath)
   if (fsc) fsc.addEventListener('change', function () { var s = load(); s.showFilesControl = fsc.checked; save(s); });   // the shell hears the store change (its storage listener) and hides or shows the control (T317)
   // the optional panes: the whole set is rewritten from the three boxes on every change (a missing key reads
   // as shown everywhere, settings.ts paneSet), and the shell hears the save as a storage event
@@ -752,7 +741,6 @@ function initGear(post, opts) {
   }
   selectPick(upm, 'margin-top:5px');
   selectPick(bk, 'margin-top:5px');
-  selectPick(fl, 'margin-top:5px');
   selectPick(je, 'flex:0 0 auto;width:45%');
   selectPick(ie, 'flex:0 0 auto;width:45%');
   selectPick(jc, 'flex:0 0 auto;width:45%');   // T277: the concurrency select wears the same facade as the effort picks
@@ -760,8 +748,6 @@ function initGear(post, opts) {
   selectPick(cme, 'flex:0 0 auto;width:45%');
   jix.addEventListener('change', function () { var s = load(); s.showIndexJudges = jix.checked; save(s); });
   jtr.addEventListener('change', function () { var s = load(); s.showTriageJudges = jtr.checked; save(s); });
-  if (cg) cg.addEventListener('change', function () { var s = load(); s.collapseGaps = cg.checked; save(s); });
-  if (ao) ao.addEventListener('change', function () { var s = load(); s.activeOnly = ao.checked; save(s); });
   if (fc) fc.addEventListener('change', function () { var s = load(); s.collapsed = fc.checked; save(s); });
   // Every gt-stamped post below mints its stamp through the gesture clock (gesture-clock.js): epoch
   // ms at the click, lifted above the highest stamp this page has seen for that store — fill()
@@ -1529,6 +1515,7 @@ function initGear(post, opts) {
       window.removeEventListener('resize', onRsResize); } }
   function closeSettings() { clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
   function openSettings(tab, section) {
+    if (tab === 'appearance' && !section) section = 'appearance';   // the former Appearance tab is General's section (T404)
     if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); if (section) showSection(section); else clearSectionScroll(); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)
     selectTab(tab);
     // Signal the SHELL first, then measure (the picker's order, adopted 2026-08-09): feedFull posts
@@ -1536,7 +1523,7 @@ function initGear(post, opts) {
     // burned the whole 5-frame retry against a display:none pane, latched rs-pane-gone, and the
     // full-viewport fallback box blacked out every pane behind the modal.
     try { if (window.parent !== window) window.parent.postMessage({ romp: 'logUnseenQuery' }, '*'); } catch (e) { /* no shell to ask */ }   // T290: the Open log count
-    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fl) fl.value = s.fileLinkPane === 'pane' ? 'pane' : 'chat'; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (cg) cg.checked = s.collapseGaps !== false; if (ao) ao.checked = s.activeOnly !== false; if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
+    p.hidden = false; feedFull(true); setModalCls(true); var s = load(); cc.checked = !!s.compact; jix.checked = (s.showIndexJudges !== undefined ? !!s.showIndexJudges : !!s.debug); jtr.checked = (s.showTriageJudges !== undefined ? !!s.showTriageJudges : !!s.debug); if (gb) gb.checked = s.showBranch === true; if (sbg) sbg.checked = s.showSessionBadge === true; if (sr) sr.checked = s.stripGroupRows !== false; if (dn) dn.checked = s.denseChrome === true; if (fsc) fsc.checked = (s.showFilesControl === true); (function (p) { Object.keys(pn).forEach(function (k) { if (pn[k]) pn[k].checked = p[k]; }); })(panesOf(s)); tcPaint(); paintWidgets(); csPaint(); ttPaint(); if (fc) fc.checked = s.collapsed === true; cmBuild(); cmPaint(s.colormap || 'aurora'); if (bk) { bk.value = BN.effectiveDefaultBackend(s.backend); repaintSelectPicks(); } if (dd) dd.value = s.defaultDir || ''; plFill(); fill(); if (section) showSection(section); else clearSectionScroll(); }
   if (g) g.onclick = function (e) { e.stopPropagation(); openSettings(); };   // hidden anchor; hosts open via the message below
   window.addEventListener('message', function (e) { if (e.data && e.data.romp === 'openSettings') openSettings(typeof e.data.tab === 'string' ? e.data.tab : undefined, typeof e.data.section === 'string' ? e.data.section : undefined); });   // the tab and its section ride the ask (T379: the strip's gear opens Chat at Tab widgets)
   // Escape, relayed by the web shell's Escape chain (_LANDING_ESC_JS captures keydown in this same-origin

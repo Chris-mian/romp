@@ -1595,7 +1595,7 @@ document.addEventListener("click", (e) => {
 //     first cut filled the feed pane, and reading a file cost the cards). The bytes come to the
 //     browser over /file, which is the fix for the original break (the user 2026-08-08): the kernel
 //     used to run an opener on ITS machine, the wrong screen entirely from another device.
-//   • Web dashboard, the Files pane on screen, or the gear's "File links open in" naming it → the
+//   • Web dashboard, the Files pane on screen (the one route to it since T404: no setting names a closed pane) → the
 //     open is handed to the SHELL, which brings that pane forward and forwards the click into it
 //     (kernel.py's landing shell; ui/webview/files.ts): the viewer as a column of its own, which stays
 //     up beside the chat and the feed instead of covering either.
@@ -1620,7 +1620,7 @@ function openPath(path: string, sid?: string | null, ev?: MouseEvent | null, fra
   if (!vscodeApi) return;
   if (location.protocol === "http:" || location.protocol === "https:") {
     const to = sid || activeId || null;
-    const route = fileLinkRoute(settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
+    const route = fileLinkRoute(window.parent !== window, panesOn.files === true, panesAvail.files !== false);
     // with its gesture, read first: a Cmd/Ctrl- or middle-click on a PDF takes the browser's own tab wherever
     // the plain click would have landed; a plain click routed to the Files pane is handed to the shell.
     // `frag`: a section to land on (the preview popover's "open" of a path#slug link, T351), through either route
@@ -1654,12 +1654,12 @@ function onMiddleClick(a: HTMLElement, fn: (e: MouseEvent) => void): void {
 // tells the person where Browse files will land, so the two cannot disagree.
 function browseRouteNow(): BrowseRoute {
   const web = location.protocol === "http:" || location.protocol === "https:";
-  return browseRoute(web, settings.fileLinkPane, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
+  return browseRoute(web, window.parent !== window, panesOn.files === true, panesAvail.files !== false);
 }
 // Surface the FILE BROWSER at `path` for the session: the folder shown under the chat, the system context
 // card's Directory row, a tab menu's Browse files, a chat-hosted viewer's directory link. The listing goes
 // where a file link would (the ladder above):
-//   "pane"   the Files pane is on screen, or the gear's "File links open in" names it: the listing opens IN
+//   "pane"   the Files pane is on screen (no setting names a closed one since T404): the listing opens IN
 //            that pane (files.ts hosts the same browser as a column); a closed pane comes forward and stays.
 //            The message names its target and carries the session's IDENTITY (name and colour, looked up the
 //            way openPath's viewFile looks it up, null when neither list names the sid) for the pane, which

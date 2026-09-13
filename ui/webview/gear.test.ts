@@ -243,11 +243,11 @@ test("the /compact suggestion is a real settings checkbox beside Auto Nudge (the
   // T208 shipped the kernel toggle with no UI; the user ruled it must be an ordinary settings
   // checkbox next to Auto Nudge — off by default for new installs, one click to turn on.
   assert.ok(GEAR.includes("id=rs-suggestcompact"), "the checkbox exists in the gear markup");
-  const auto = GEAR.indexOf("data-pane=tasks"), appear = GEAR.indexOf("data-pane=appearance");   // Automatic is Task tracking since T400
-  assert.ok(auto > 0 && appear > 0, "both panes exist (indexOf's -1 would pass every order check below)");
+  const auto = GEAR.indexOf("data-pane=automation"), next = GEAR.indexOf("data-pane=tasks");   // the nudges are the Automation tab since T404 (Task tracking before, Automatic before that)
+  assert.ok(auto > 0 && next > 0, "both panes exist (indexOf's -1 would pass every order check below)");
   const at = GEAR.indexOf("id=rs-suggestcompact");
-  assert.ok(auto < at && at < appear, "…in the Task tracking tab, with its siblings (T379 regrouped the panel into tabs; T400 renamed this one)");
-  assert.ok(GEAR.indexOf("id=rs-autonudge") < at && at < GEAR.indexOf("id=rs-conserve"),
+  assert.ok(auto < at && at < next, "…in the Automation tab, with Auto Nudge (T379 regrouped the panel into tabs; T400 renamed this one; T404 cut Automation)");
+  assert.ok(GEAR.indexOf("id=rs-autonudge") < at && at < next,
     "…directly after Auto Nudge, where the user asked for it");
   assert.ok(/csg\.addEventListener\('change'/.test(GEAR)
     && GEAR.includes("post({ type: 'setCompactSuggest', enabled: csg.checked, gt: gclock.stamp('compact-suggest') })"),
