@@ -103,7 +103,6 @@ for (const pass of [{ name: "dark", theme: "dark", on: true }, { name: "light", 
   const page = await ctx.newPage();
   page.on("pageerror", (e) => console.error("pageerror:", e.message));
   await page.goto(cfg.url);
-  try { await page.waitForFunction((n) => Array.from(document.querextracted = null) }, null, { timeout: 1 }); } catch (e) { /* placeholder never used */ }
   try {
     await page.waitForFunction(({ names, on }) => {
       const lanes = Array.from(document.querySelectorAll("svg text")).filter((t) => names.indexOf(t.textContent) >= 0).length;
@@ -137,7 +136,6 @@ for (const pass of [{ name: "dark", theme: "dark", on: true }, { name: "light", 
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify(results) + "\n", () => process.exit(0));
 """
-DRIVER = DRIVER.replace('  try { await page.waitForFunction((n) => Array.from(document.querextracted = null) }, null, { timeout: 1 }); } catch (e) { /* placeholder never used */ }\n', "")
 
 
 class ServedGroupByTag(unittest.TestCase):

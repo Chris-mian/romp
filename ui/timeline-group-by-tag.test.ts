@@ -150,11 +150,61 @@ test("the Filter menu carries a Group by tag row with the ✓ when on, and its c
   assert.equal(V.tlGroupByTag(), false);
 });
 
+test("a reveal for a session behind a FOLDED section pulses nowhere; a visible one pulses on its first lane's row", async () => {
+  // the fold verifier's MEDIUM 1 (2026-09-13): the pulse fell back to the session's index in the ungrouped visible list
+  // and drew the ring on another row (the backend head) for a session folded away under archived
+  const panel = new V.TimelinePanel(makeNode("div"));
+  panel.svg = makeNode("svg");
+  panel._geom = { top: 8, ml: 130, plotW: 800, winSec: 3600, cT0: 0, compress: null };
+  panel._vis = [S(API, "api"), S(WEB, "web"), S(TESTS, "tests"), S(DOCS, "docs"), S(OLD, "old-notes")];   // old-notes: behind the folded archived head
+  panel._grouped = true;
+  panel._rows = V.tlRows(panel._vis, unions, st(), true);
+  panel._rowOf = Object.create(null); panel._rows.forEach((r: any, i: number) => { if (r.kind === "lane" && !(r.s.id in panel._rowOf)) panel._rowOf[r.s.id] = i; });
+  panel._pulseFocus(OLD, 600, null);
+  assert.equal(panel.svg.children.length, 0, "no visible lane, no ring: it used to land on the visible index's row");
+  panel._pulseFocus(WEB, 600, null);
+  const ring = panel.svg.children[0];
+  assert.ok(ring && ring.tag === "circle", "a visible session pulses a ring");
+  assert.equal(+ring.getAttribute("cy"), 8 + 2 * 26 + 13, "on web's FIRST lane, row 2 under backend");
+});
+
+test("the arrow walk steps the rows the pane shows: section order, copies included, heads skipped, never a hidden lane, no auto-open of one", async () => {
+  // the fold verifier's MEDIUM 2: the walk stepped the ungrouped visible list, hidden lanes included, and auto-opened a
+  // session folded away
+  const panel = new V.TimelinePanel(makeNode("div"));
+  const opened: string[] = [];
+  panel.openChat = (tid: string) => { opened.push(tid); };
+  panel.draw = () => {};
+  panel._vis = [S(API, "api"), S(WEB, "web"), S(TESTS, "tests"), S(DOCS, "docs"), S(OLD, "old-notes")];
+  panel._grouped = true;
+  panel._rows = V.tlRows(panel._vis, unions, st(), true);   // head, api, web, head, web, docs, head(archived folded), trail, tests (a section's lanes keep the visible order)
+  panel.selectedSid = null;
+  const down: string[] = [];
+  for (let k = 0; k < 7; k++) { panel.moveSelection(1); down.push(panel.selectedSid); }
+  assert.deepEqual(down.map((id) => id.slice(-1)), [API, WEB, WEB, DOCS, TESTS, TESTS, TESTS].map((id) => id.slice(-1)),
+    "down: api, web (backend), web (its frontend copy, the next row), docs, tests (the trail), then it stays; old-notes is never reached");
+  panel.selectedSid = null;
+  const up: string[] = [];
+  for (let k = 0; k < 6; k++) { panel.moveSelection(-1); up.push(panel.selectedSid); }
+  assert.deepEqual(up.map((id) => id.slice(-1)), [TESTS, DOCS, WEB, WEB, API, API].map((id) => id.slice(-1)),
+    "up from nothing lands on the LAST visible lane and walks back over the copies");
+  await new Promise((r) => setTimeout(r, 250));                                          // the auto-open debounce (120 ms)
+  assert.ok(!opened.includes(OLD), "a hidden session is never auto-opened: " + JSON.stringify(opened));
+  assert.equal(opened[opened.length - 1], API, "the last landing is what opens");
+  // ungrouped: the walk is the visible list, as before
+  panel._grouped = false; panel._rows = V.tlRows(panel._vis, [], st(), false); panel.selectedSid = null;
+  const flat: string[] = [];
+  for (let k = 0; k < 5; k++) { panel.moveSelection(1); flat.push(panel.selectedSid); }
+  assert.deepEqual(flat, panel._vis.map((s: any) => s.id));
+});
+
 test("source pins: the draw pass lays rows out through tlRows, the focus pulse and the drag read the row model", () => {
   const src = fs.readFileSync(viewPath, "utf8");
   assert.match(src, /const rows = tlRows\(vis, grouped \? viewTagUnion\(this\._curViews\(\)\) : \[\], tabGroupsState\(\), grouped\);/);
   assert.match(src, /this\._rows = rows; this\._rowOf = vidx; this\._grouped = grouped;/);
-  assert.match(src, /const i = \(sid in rowOf\) \? rowOf\[sid\] : \(this\._vis \|\| \[\]\)\.findIndex\(\(s\) => s\.id === sid\);/, "the pulse lands on the first lane row");
+  assert.match(src, /const i = \(sid in rowOf\) \? rowOf\[sid\] : \(this\._grouped \? -1 : \(this\._vis \|\| \[\]\)\.findIndex\(\(s\) => s\.id === sid\)\);/, "the pulse lands on the first lane row, nowhere for a folded-away session");
+  assert.match(src, /const walk = \(this\._grouped && this\._rows\) \? this\._rows\.filter\(\(r\) => r\.kind === 'lane'\)\.map\(\(r\) => r\.s\) : \(this\._vis \|\| \[\]\);/, "the arrow walk steps the rows shown");
+  assert.match(src, /this\._mc\.font = '400 ' \+ fs \+ 'px ' \+ this\._fontFace\(\);/, "the chip's name is measured at the drawn weight");
   assert.match(src, /if \(d\.mode === 'row' && d\.noReorder\) \{ this\._drag = null; return; \}/, "grouped lanes follow the tag order: a vertical drag is a click");
   assert.equal((src.match(/    vis\.forEach\(\(s, i\) => \{\n/g) || []).length, 0, "no lane pass indexes the visible list by position any more");
   assert.match(src, /window\.addEventListener\('storage', \(e\) => \{ if \(e && e\.key === TABGROUPS_KEY\) this\.draw\(\); \}\);/, "a fold or the switch in another window repaints (its own listener: the tab lock's pins on the settings listener stand)");

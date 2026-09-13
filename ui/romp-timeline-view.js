@@ -1741,12 +1741,18 @@ class TimelinePanel {
     else if (e.key === 'Enter') { e.preventDefault(); this.composeSelected(); }    // Enter → cursor into the prompt box
   }
   moveSelection(dir) {
-    const vis = this._vis || [];
-    if (!vis.length) return;
-    let idx = vis.findIndex((s) => s.id === this.selectedSid);
-    if (idx < 0) idx = dir > 0 ? -1 : vis.length;            // first press lands on the first/last lane
-    idx = Math.max(0, Math.min(vis.length - 1, idx + dir));
-    this.selectedSid = vis[idx].id;
+    // the ROWS the pane shows (T399, the fold verifier's second medium: the walk stepped the ungrouped visible list, a lane
+    // folded away included, and auto-opened it): grouped, the visible lanes in section order, a session under two tags
+    // twice, the heads and the divider skipped; ungrouped, the visible lanes as before. The position is a ROW, so a copy
+    // stepped onto is left by the next press instead of snapping back to the session's first lane.
+    const walk = (this._grouped && this._rows) ? this._rows.filter((r) => r.kind === 'lane').map((r) => r.s) : (this._vis || []);
+    if (!walk.length) return;
+    let idx = (this._selRow != null && walk[this._selRow] && walk[this._selRow].id === this.selectedSid)
+      ? this._selRow : walk.findIndex((s) => s.id === this.selectedSid);
+    if (idx < 0) idx = dir > 0 ? -1 : walk.length;           // first press lands on the first/last lane the pane shows
+    idx = Math.max(0, Math.min(walk.length - 1, idx + dir));
+    this._selRow = idx;
+    this.selectedSid = walk[idx].id;
     this.draw();
     // debounce the auto-open so holding/rapid arrows settle on the lane you land on (not every one
     // in between) — preview-only, focus stays on the timeline.
@@ -2464,7 +2470,7 @@ class TimelinePanel {
   }
 
   // set the single selection highlight + redraw only on a real change.
-  _select(sid) { if (sid && this.selectedSid !== sid) { this.selectedSid = sid; this.draw(); } }
+  _select(sid) { if (sid && this.selectedSid !== sid) { this.selectedSid = sid; this._selRow = null; this.draw(); } }   // a click's selection: the walk finds its row afresh
 
   // Reverse hover: a glyph hover tells the host to light the matching feed card + glow the chat turns
   // in [t0,t1] (the host has the receivers; web kernel only — no-op in Obsidian). sid null → clear.
@@ -2843,7 +2849,9 @@ class TimelinePanel {
     // the ROW of the session's first lane (T399: under group-by-tag heads take rows and a session under two tags has two
     // lanes; the connectors and dots land on the first, and so does the pulse), the visible index when nothing is grouped
     const rowOf = this._rowOf || {};
-    const i = (sid in rowOf) ? rowOf[sid] : (this._vis || []).findIndex((s) => s.id === sid);
+    // grouped, a session with no lane row is folded away under its section's head: it pulses NOWHERE (the fold verifier's
+    // first medium: the fallback to the ungrouped visible index drew the ring on another row); ungrouped, the visible index
+    const i = (sid in rowOf) ? rowOf[sid] : (this._grouped ? -1 : (this._vis || []).findIndex((s) => s.id === sid));
     if (i < 0) return;
     const y = g.top + i * LANE_GAP + LANE_GAP * 0.5;
     // The outline goes INTO the live plot group when the last build left one (_tickPlot): the tick translates
@@ -5921,7 +5929,8 @@ class TimelinePanel {
       // radius, at the host's size (the strip's head passes inheritSize; here the host is the lane font, so the chip's own
       // 0.82em of it). Every number comes from TAG_CHIP_GEOM, the parse of the shared pill's bytes.
       const y = laneY(i), G = TAG_CHIP_GEOM, fs = Math.round(12 * G.fontEm * 100) / 100;
-      const tw = this.labelWidth(r.name) * (fs / 12), chipH = Math.round(fs * 1.2) + 2 * G.padY, w = Math.ceil(tw) + 2 * G.padX;
+      this._mc.font = '400 ' + fs + 'px ' + this._fontFace();   // measured at the drawn weight and size (the fold's low 1: a 650 measurement left the name off centre)
+      const tw = this._mc.measureText(r.name).width, chipH = Math.round(fs * 1.2) + 2 * G.padY, w = Math.ceil(tw) + 2 * G.padX;
       const g = el('g', { class: 'tl-group-head' + (r.folded ? ' collapsed' : ''), 'data-group': r.name, 'data-folded': r.folded ? '1' : '0', role: 'button', 'aria-expanded': r.folded ? 'false' : 'true' });
       const hit = el('rect', { x: 0, y: y - LANE_GAP / 2, width: W, height: LANE_GAP, fill: 'transparent' });
       hit.style.cursor = 'pointer';
