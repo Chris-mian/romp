@@ -100,12 +100,27 @@ class TheStore(_Base):
             self._file().write_text("[]")
             self.assertTrue(km._task_tracking_on(), "the wrong shape reads on")
             self.assertEqual(len(said), 2, "…and opens a new episode")
+            for i, bad in enumerate(('{"enabled": null}', '{"enabled": 0}', '{"enabled": "false"}')):   # round four, low 1
+                self._file().write_text(json.dumps({"enabled": True}))
+                self.assertTrue(km._task_tracking_on()); n0 = len(said)
+                self._file().write_text(bad)
+                self.assertTrue(km._task_tracking_on(), bad + ": not true or false reads on")
+                self.assertTrue(km._task_tracking_on())
+                self.assertEqual(len(said), n0 + 1, bad + ": said once for its episode: %r" % said[-1:])
+                self.assertIn("not true or false", said[-1][0])
+            self._file().write_text(json.dumps({"gt": 5}))
+            self.assertTrue(km._task_tracking_on(), "no enabled key: the default, on"); self.assertEqual(len(said), n0 + 1, "…and quiet: the intent is the default, readable")
+            self._file().write_text(json.dumps({"enabled": False}))
+            self.assertFalse(km._task_tracking_on(), "the literal false is the only off"); n1 = len(said)
+            self._file().write_text(json.dumps({"enabled": True}))
+            self.assertTrue(km._task_tracking_on()); self.assertEqual(len(said), n1, "a proved read says nothing")
+            n2 = len(said)
             self._file().unlink(); self._file().mkdir()
             self.assertTrue(km._task_tracking_on(), "a directory in the file's place reads on")
-            self.assertEqual(len(said), 3, "…said once")
-            self.assertTrue(km._task_tracking_on()); self.assertEqual(len(said), 3)
+            self.assertEqual(len(said), n2 + 1, "…said once")
+            self.assertTrue(km._task_tracking_on()); self.assertEqual(len(said), n2 + 1)
             self._file().rmdir()
-            self.assertTrue(km._task_tracking_on()); self.assertEqual(len(said), 3, "absence again is quiet and ends the episode")
+            self.assertTrue(km._task_tracking_on()); self.assertEqual(len(said), n2 + 1, "absence again is quiet and ends the episode")
         finally:
             km._sync_notice = saved
 
@@ -253,13 +268,16 @@ class TheFeedOffFrame(_Base):
         bells.write_text(json.dumps({"*": True, "g-needsyou-1": False, "g-working-1": False}, sort_keys=True))
         before = bells.read_text()
         km._set_task_tracking(False, gt=1)
-        saved = (list(km._built_feed), km._NOTIFY_PREV[0])
-        km._NOTIFY_PREV[0] = {"g-needsyou-1": "needs_input", "g-working-1": "working"}   # the remembered snapshot: both cards known
+        # the FIRST-BOOT road, where the prune lives (round four, medium 1): no remembered snapshot in memory and none on disk (a
+        # fresh state root), so the diff seeds from the frame's cards, and the off frame has none: every non-reserved id is gone
+        saved = (list(km._built_feed), km._NOTIFY_PREV[0], km._NOTIFY_PREV_DISK[0])
+        km._NOTIFY_PREV[0] = None; km._NOTIFY_PREV_DISK[0] = None
+        self.assertFalse(any(p.name.startswith("notify-prev") for p in Path(self._td).iterdir()), "no snapshot file in the fresh root")
         km._built_feed[:] = [None, None, 0, 0]
         try:
             f = km._cached_feed(int(time.time()), {}, "sig-off")
         finally:
-            km._built_feed[:] = saved[0]; km._NOTIFY_PREV[0] = saved[1]
+            km._built_feed[:] = saved[0]; km._NOTIFY_PREV[0] = saved[1]; km._NOTIFY_PREV_DISK[0] = saved[2]
         self.assertTrue(f.get("off"), "the post-build work ran on the off frame")
         self.assertEqual(bells.read_text(), before, "notify-cards.json is unchanged: the stand-in frame fed no writer that prunes by absence")
         km._set_task_tracking(True, gt=2)
@@ -267,6 +285,24 @@ class TheFeedOffFrame(_Base):
         self.assertIs(km._notify_card_effective(cards, "g-working-1", "11111111-2222-3333-4444-555555555555"), False, "back on, the Working card's mute still holds")
         self.assertIs(km._notify_card_effective(cards, "g-needsyou-1", "11111111-2222-3333-4444-555555555555"), False)
         self.assertIn('_fired = _feed_notifications(feed) if not feed.get("off") else []', Path(ROOT, "kernel", "kernel.py").read_text(), "the one-line gate its two siblings have")
+
+    def test_the_off_frame_carries_the_notice_rings_and_the_bells_bits_so_the_error_center_carries_on(self):
+        # round four, the ruling: the error center is not task tracking; a refused write or a failed sync is told while off
+        km._sync_notice("TESTHOST: the machine sync failed (a stub)", ok=False, kind="sync")
+        km._sync_notice("session-flags.json — the change was not saved (a stub)", ok=False, kind="refused")
+        km._sdk_problem("a session that cannot start (a stub)")
+        f = km._feed_off_frame(int(time.time()), {})
+        self.assertTrue(f["off"])
+        self.assertEqual(km._FEED_FRAME_RINGS, ("clearNotices", "sdkNotices", "syncNotices"))
+        for key in km._FEED_FRAME_RINGS:
+            self.assertIsInstance(f[key], list, key)
+        texts = [r["text"] for r in f["syncNotices"]]
+        self.assertTrue(any("machine sync failed" in t for t in texts) and any("was not saved" in t for t in texts), "the sync ring's rows ride the off frame: %r" % texts)
+        self.assertEqual([r["kind"] for r in f["syncNotices"] if "was not saved" in r["text"]], ["refused"], "with their kinds")
+        self.assertTrue(any("cannot start" in r.get("text", "") for r in f["sdkNotices"]), "the SDK ring's rows too: %r" % f["sdkNotices"])
+        self.assertEqual((f["dismissedCount"], f["showDismissed"], f["canUndoClear"]), (0, False, False), "the bell's bits, from the cleared set")
+        self.assertIn('mirrorBadges([], Array.isArray(m.clearNotices) ? m.clearNotices : [], Array.isArray(m.sdkNotices) ? m.sdkNotices : [], Array.isArray(m.syncNotices) ? m.syncNotices : []);',
+                      Path(ROOT, "ui", "webview", "feed.ts").read_text(), "the feed's off branch mirrors the rings to the shell's bell before it returns")
 
     def test_the_pure_feed_builds_nothing_while_off(self):
         km._set_task_tracking(False, gt=1)

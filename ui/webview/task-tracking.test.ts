@@ -58,7 +58,8 @@ test("the panes: the feed frame's off flag shows the kernel's notice in place of
     assert.doesNotMatch(src, /postMessage\(\{ romp: "openSettings", tab: "tasks" \}/, "no hand-rolled relay past gear-host");
   }
   // round two, medium 1: the loader sat over the notice (the outline's to forever, _keepLoader re-asserting it past the failsafe)
-  assert.match(FEED, /if \(m\.off\) \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*document\.getElementById\("pane-spin"\)\?\.classList\.add\("gone"\);\s*\n\s*return;\s*\n\s*\}/);
+  assert.match(FEED, /if \(m\.off\) \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*document\.getElementById\("pane-spin"\)\?\.classList\.add\("gone"\);\s*\n(?:\s*\/\/[^\n]*\n)*\s*mirrorBadges\(\[\], Array\.isArray\(m\.clearNotices\) \? m\.clearNotices : \[\], Array\.isArray\(m\.sdkNotices\) \? m\.sdkNotices : \[\], Array\.isArray\(m\.syncNotices\) \? m\.syncNotices : \[\]\);[\s\S]{0,260}?return;\s*\n\s*\}/,
+    "the feed's off branch drops the loader, mirrors the notice rings to the shell's bell (round four: the error center is not task tracking), and returns");
   assert.match(FLEET, /if \(m\.off\) \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*offNotice = true;\s*\n\s*document\.getElementById\("pane-spin"\)\?\.classList\.add\("gone"\);\s*\n\s*return;\s*\n\s*\}\s*\n\s*offNotice = false;/,
     "the outline says the notice stands in, never that it is loaded (round three, low 2): a later frame with no ledgers brings the loader back");
   assert.match(FLEET, /if \(loaded\) \{ clearInterval\(_keepLoader\); return; \}\s*\n\s*if \(offNotice\) return;/, "_keepLoader stands down while the notice shows and resumes when it goes");

@@ -114,6 +114,22 @@ if (feedF) await feedF.waitForFunction(() => { const sp = document.getElementByI
 await page.waitForTimeout(2500);   // two more _keepLoader ticks: a loader re-asserted would show here
 out.off = { shell: await shell(), gear: await gear(), kernel: await kernel(), feedPane: await feedPane(), feedFrames: await feedFrames(),
             fleetPane: await paneRead(fleetF), feedPaneLoader: await paneRead(feedF), fleetSpinGoneMs };
+// THE ERROR CENTER WHILE OFF (round four, the ruling: the error center is not task tracking). A state file that cannot be read is
+// told while off: the session flags' store becomes a directory, the Sessions pane's next build reads it (a display reader that files
+// one ring row per fault episode), the off frame carries the ring, the hidden feed frame mirrors it to the shell, and the error
+// center shows the row and its unread cue
+const errsBefore = await page.evaluate(() => ({ rows: document.querySelectorAll("#rerr-list .rerr-row").length, cue: ((document.querySelector(".rerr-n") || {}).textContent || "").trim() }));
+fs.mkdirSync(cfg.flagsFile);
+{ const p4 = await ctx.newPage(); await p4.goto(cfg.tlPage); await p4.waitForTimeout(2500); await p4.close(); }   // a fresh Sessions-pane connect builds the lanes, which read the flags: the fault is filed
+await page.waitForFunction((was) => ((document.querySelector(".rerr-n") || {}).textContent || "").trim() !== was, errsBefore.cue, { timeout: 12000 }).catch(() => {});
+await page.waitForTimeout(500);
+const cueAfter = await page.evaluate(() => ((document.querySelector(".rerr-n") || {}).textContent || "").trim());
+await page.evaluate(() => { if (window.__rompOpenErrs) window.__rompOpenErrs(); }); await page.waitForTimeout(300);
+out.errsOff = await page.evaluate(() => { const rows = Array.from(document.querySelectorAll("#rerr-list .rerr-row")).map((r) => r.textContent.trim().slice(0, 240)); const back = document.getElementById("rerr-back");
+  return { rows, count: rows.length, open: !!back && !back.hidden, stillOff: document.body.classList.contains("no-task-tracking") }; });
+out.errsOff.before = errsBefore; out.errsOff.cueAfter = cueAfter;
+await page.evaluate(() => { if (window.__rompCloseErrs) window.__rompCloseErrs(); }); await page.waitForTimeout(150);
+fs.rmdirSync(cfg.flagsFile);
 // THE STANDALONE PAGE (round two, medium 2): /feed on its own, while off, shows the notice; its button has no shell to ask and
 // no gear here, so it goes to the dashboard at Task tracking
 const p2 = await ctx.newPage();
@@ -165,7 +181,8 @@ class ServedTaskTrackingSwitch(QueuedLab):
             with open(cfg, "w") as f:
                 json.dump({"landing": base + "/?token=" + self.token, "version": base + "/version", "perf": base + "/perf?token=" + self.token,
                            "feedPage": base + "/feed?token=" + self.token, "fleetPage": base + "/fleet?token=" + self.token, "sid": SID,
-                           "stateFile": os.path.join(self.state, "task-tracking.json")}, f)
+                           "stateFile": os.path.join(self.state, "task-tracking.json"),
+                           "flagsFile": os.path.join(self.state, "session-flags.json"), "tlPage": base + "/timeline?token=" + self.token}, f)
             driver = os.path.join(self.lab, "driver_tt.mjs")
             with open(driver, "w") as f:
                 f.write(DRIVER)
@@ -273,6 +290,16 @@ class ServedTaskTrackingSwitch(QueuedLab):
         self.assertTrue(r["tasksPane"], "…at the Task tracking tab" + table)
         self.assertNotIn("#settings", r["url"], "the hash was dropped once opened, so a reload does not reopen it" + table)
         self.assertTrue(r["url"].split("?")[0].endswith("/"), "the landing, not the pane" + table)
+
+    def test_off_an_unreadable_state_file_is_told_in_the_shells_error_center(self):
+        # round four, the manager's ruling: the error center is not task tracking; an opt-out of judging is not an opt-out of being
+        # told when the machine fails. Before: the off frame carried no ring and the feed's off branch returned before the mirror
+        e = self._result()["errsOff"]; table = "\n  " + json.dumps(e)[:1600]
+        self.assertTrue(e["stillOff"], "tracking stayed off through the fault" + table)
+        self.assertTrue(e["open"], "the error center opened" + table)
+        self.assertGreater(e["count"], e["before"]["rows"], "a row arrived while off" + table)
+        self.assertTrue(any("session-flags" in r for r in e["rows"]), "the unreadable flags store is the row" + table)
+        self.assertNotEqual(e["cueAfter"], e["before"]["cue"], "the bell's unread cue moved with it" + table)
 
     def test_back_on_restores_the_buttons_the_controls_and_the_panes(self):
         o = self._result()["on"]; table = "\n  " + json.dumps(o)[:1500]

@@ -5972,6 +5972,12 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       // the notice IS this frame's content: the romp loader, whose observer watches the list the off frame leaves empty,
       // would otherwise sit over the notice to its 30 s failsafe (T404 round two, medium 1)
       document.getElementById("pane-spin")?.classList.add("gone");
+      // the error center is not task tracking (round four, the ruling): the off frame carries the notice rings, and the
+      // shell's bell is fed from here as from a built frame, so a failed sync, a refused write or a session that cannot
+      // start is told while off; the frame stays loaded hidden while the shell closes the pane, so this runs
+      mirrorBadges([], Array.isArray(m.clearNotices) ? m.clearNotices : [], Array.isArray(m.sdkNotices) ? m.sdkNotices : [], Array.isArray(m.syncNotices) ? m.syncNotices : []);
+      if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
+      if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
       return;
     }
     // HOVER-FREEZE: a hovered card must not move on screen — queue the payload (newest wins) and

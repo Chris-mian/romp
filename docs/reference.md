@@ -3415,7 +3415,9 @@ An absent file is the quiet default. A file that is present but cannot be read o
 too, and says so once per episode, one kernel log line and one error-center notice (the dashboard's bell) that the task
 tracking switch file could not be read and tracking is running: unlike its siblings' defaults, which withhold a
 capability, this one resumes spending the user may have opted out of. A clean read, or the file's absence, ends the
-episode; the next flip in the gear writes a proved file over the unreadable one.
+episode. The next flip in the gear rewrites the file where the path can be written; a directory in the file's place
+refuses the write, nothing is applied, and the gear says so (the setting's stale toast names the fault), so the directory
+has to be removed by hand.
 The gear's click posts `setTaskTracking` with a gesture stamp; the setter follows the ordering, echo and stale rules every
 gesture-stamped setting uses, and an applied flip is echoed to the socket that made it (a `taskTracking` frame), which is
 when the gear greys its dependents and tells the shell. A refused write (a full disk, a read-only state directory) is
@@ -3432,8 +3434,11 @@ dashboard with `#settings=tasks`), and the goal nudges, which wait, since their 
 flight when the switch flips finishes; the next pass starts nothing. The stores stay on disk; on again resumes from them.
 
 **Off, these carry on:** the chat and the Sessions pane (its judging band is empty), the sessions' working and awaiting
-dots in the chat (derived from the transcripts, outside the feed build), the compaction suggestion, and the reminders
-about unanswered messages from other sessions, which need no judge and follow Auto Nudge's own switch. The producer's
+dots in the chat (derived from the transcripts, outside the feed build), the compaction suggestion, the reminders
+about unanswered messages from other sessions, which need no judge and follow Auto Nudge's own switch, and the error
+center (the dashboard's bell): a failed machine sync, a refused state write or a session that cannot start is told while
+off as before, since the notice rings ride the off frame. An opt-out of judging is not an opt-out of being told when the
+machine fails. The producer's
 episode settle, goals snapshot and evidence frame still run as store bookkeeping, and a rewind's reconcile runs as before.
 
 The shell hides the Outline and Feed buttons and phone tabs (`body.no-task-tracking`) and closes an open pane of theirs

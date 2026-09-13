@@ -7948,8 +7948,12 @@ def _task_tracking_on():
     if not isinstance(d, dict):
         _note_tracking_read_fault(p, "not an object")
         return True
+    v = d.get("enabled", True)
+    if not isinstance(v, bool):   # null, 0, "false": the intent is unreadable, so ON and said (round four, low 1); absence stays quiet
+        _note_tracking_read_fault(p, "enabled is %r, not true or false" % (v,))
+        return True
     _tt_read_fault_said.pop(str(p), None)
-    return d.get("enabled", True) is not False
+    return v
 
 
 def _set_task_tracking(enabled, gt=None):
@@ -38808,37 +38812,6 @@ def _feed_fold_entry(entry, now, cmap, name, asks, working, awaiting, bg_service
 _FEED_FRAME_LISTS = ("items", "asks", "working", "awaiting", "stateUnknown", "order", "sessions", "ledgers", "hosts", "pendingHosts", "pendingDead")
 
 
-def _feed_off_frame(now):
-    """The feed frame while the Task tracking switch is off (T404): no build, the `off` flag the feed and the
-    outline panes read to show their notice, and every list the frame's readers iterate, empty."""
-    f = {"type": "feed", "off": True, "now": now}
-    for key in _FEED_FRAME_LISTS:
-        f[key] = []
-    return f
-
-
-def _chat_dots_off(now, live_map):
-    """The chat's working and awaiting dot names while the feed is not built (the Task tracking switch off, T404 round
-    two, low 9): the off frame's empty lists blanked the peers' dots, against the copy that the chat carries on. The same
-    two signals _feed_session_entry derives, from the same helpers and none of the judges' stores: WORKING when the
-    session's last turn is open (_session_working over the cached, live-merged parse), AWAITING when it is idle and
-    _session_awaiting names a wait. Cache-only parses, as the feed's: a cold session shows no dot until the warm; a
-    failing session is skipped, never the list."""
-    working, awaiting = [], []
-    for s in _alive_sessions(now, live_map):
-        try:
-            ps = _parse_cached(s["path"]) if s.get("path") else None
-            if ps is not None:
-                ps = _merge_live_atoms(ps, s["sid"])
-            if ps is not None and _session_working(ps["turns"]):
-                working.append(s["name"])
-            elif ps is not None and _session_awaiting(s["sid"], s["path"], True):
-                awaiting.append(s["name"])
-        except Exception:
-            sys.stderr.write("chat dots (tracking off): %s\n" % traceback.format_exc())
-    return working, awaiting
-
-
 def build_feed(now, live_map=None):
     """The {type:"feed"} message the tuned feed.js bundle consumes (ui-parity.md: feed = ADAPT).
     Goals map onto the AskItem/AskTreeNode shape the render already speaks: the goal tree IS the
@@ -48918,6 +48891,58 @@ def _row_ids_sig(tasks):
     return tuple(str(t.get("toolUseId") or "") for t in (tasks or ()) if isinstance(t, dict))
 
 
+# The rings the off frame carries with REAL rows (round four, the manager's ruling): the error center is not task tracking
+# and carries on while the switch is off. An opt-out of judging is not an opt-out of being told when the machine fails: a
+# failed machine sync, a refused state write or a session that cannot start rode the feed frame's rings alone, so with the
+# feed unbuilt they were told nowhere, the switch's own unreadable-file notice among them.
+_FEED_FRAME_RINGS = ("clearNotices", "sdkNotices", "syncNotices")
+
+
+def _feed_off_frame(now, live_map=None):
+    """The feed frame while the Task tracking switch is off (T404): no build, the `off` flag the feed and the
+    outline panes read to show their notice, every list the frame's readers iterate, empty, and the three notice
+    rings with their real rows plus the bell's bits (dismissedCount, showDismissed, canUndoClear), so the shell's
+    bell stays fed (round four)."""
+    f = {"type": "feed", "off": True, "now": now}
+    for key in _FEED_FRAME_LISTS:
+        f[key] = []
+    try:
+        alive = _alive_sessions(now, live_map or {})
+    except Exception:
+        alive = []
+    try:
+        cleared = _cleared_ids()
+    except Exception:
+        cleared = set()
+    f["dismissedCount"] = len(cleared); f["showDismissed"] = False; f["canUndoClear"] = len(cleared) > 0
+    f["clearNotices"] = _boundary_clear_notices(alive)
+    f["sdkNotices"] = _sdk_problem_rows()
+    f["syncNotices"] = _sync_notice_rows()
+    return f
+
+
+def _chat_dots_off(now, live_map):
+    """The chat's working and awaiting dot names while the feed is not built (the Task tracking switch off, T404 round
+    two, low 9): the off frame's empty lists blanked the peers' dots, against the copy that the chat carries on. The same
+    two signals _feed_session_entry derives, from the same helpers and none of the judges' stores: WORKING when the
+    session's last turn is open (_session_working over the cached, live-merged parse), AWAITING when it is idle and
+    _session_awaiting names a wait. Cache-only parses, as the feed's: a cold session shows no dot until the warm; a
+    failing session is skipped, never the list."""
+    working, awaiting = [], []
+    for s in _alive_sessions(now, live_map):
+        try:
+            ps = _parse_cached(s["path"]) if s.get("path") else None
+            if ps is not None:
+                ps = _merge_live_atoms(ps, s["sid"])
+            if ps is not None and _session_working(ps["turns"]):
+                working.append(s["name"])
+            elif ps is not None and _session_awaiting(s["sid"], s["path"], True):
+                awaiting.append(s["name"])
+        except Exception:
+            sys.stderr.write("chat dots (tracking off): %s\n" % traceback.format_exc())
+    return working, awaiting
+
+
 def _cached_feed(now, live_map, sig, connect=False):
     # connect (a fresh client) NEVER triggers a rebuild — it serves whatever the pusher has warmed, so startup
     # is instant; the pusher refreshes it within a tick. Else: reuse on an unchanged sig OR a recent rebuild —
@@ -48941,7 +48966,7 @@ def _cached_feed(now, live_map, sig, connect=False):
     bid = _next_feed_build_id()          # claimed BEFORE the read, so an ack issued during this build outranks it
     started = time.time()                # …and the dirty floor for the NEXT check: mutations after this
     _t0 = time.monotonic()
-    feed = build_feed(now, live_map) if _task_tracking_on() else _feed_off_frame(now)   # instant may be invisible to the build below → must rebuild; off (T404): no build
+    feed = build_feed(now, live_map) if _task_tracking_on() else _feed_off_frame(now, live_map)   # instant may be invisible to the build below → must rebuild; off (T404): no build
     _PERF_STATS.build("feed", False, time.monotonic() - _t0)
     feed["buildId"] = bid
     _built_feed[:] = [sig, feed, time.time(), started]
@@ -49077,7 +49102,7 @@ def _pure_feed(now, live_map):
             #                                      that moves during the build busts the next check
         started = time.time()                # the dirty floor for the next GET: a mutation after this may be missed below
         _t0 = time.monotonic()
-        feed = build_feed(now, live_map) if _task_tracking_on() else _feed_off_frame(now)   # off (T404): no build
+        feed = build_feed(now, live_map) if _task_tracking_on() else _feed_off_frame(now, live_map)   # off (T404): no build
         _PERF_STATS.build("feedJson", False, time.monotonic() - _t0)
         feed["buildId"] = bid
         _PURE_FEED = (feed, time.time(), started, sig)
