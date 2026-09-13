@@ -124,6 +124,32 @@ class TheStore(_Base):
         finally:
             km._sync_notice = saved
 
+    def test_the_three_readers_of_the_stored_value_are_one_reader_and_agree_on_every_shape(self):
+        # round five, low 3: the display read, the setter's echo check and the mesh snapshot resolved the value with two rules
+        shapes = ['{"enabled": false, "gt": 1}', '{"enabled": true, "gt": 2}', '{"enabled": null}', '{"enabled": 0}', '{"enabled": "false"}',
+                  '{"enabled": 1}', '{"gt": 5}', '[]', '"junk"', '{not json']
+        saved = km._sync_notice; km._sync_notice = lambda *a, **k: None
+        try:
+            for raw in shapes:
+                self._file().write_text(raw)
+                try:
+                    d = json.loads(raw)
+                except ValueError:
+                    d = None
+                one = km._tracking_value(d)[0]
+                self.assertEqual(km._task_tracking_on(), one, raw + ": the display read is the one reader")
+                self.assertEqual(km._mesh_settings_snapshot()[0]["taskTracking"], one, raw + ": the mesh snapshot too")
+        finally:
+            km._sync_notice = saved
+        self.assertEqual([km._tracking_value(x) for x in ({"enabled": False}, {"enabled": True}, {"gt": 5}, {"enabled": None}, {"enabled": 0}, {"enabled": "false"}, [], None)],
+                         [(False, True), (True, True), (True, True), (True, False), (True, False), (True, False), (True, False), (True, False)],
+                         "proved only for a real boolean or an absent key; everything else on and unproved")
+        ksrc = Path(ROOT, "kernel", "kernel.py").read_text()
+        self.assertIn("prev_on = _tracking_value(prev)[0]", ksrc, "the setter's echo check reads through the one reader")
+        self.assertIn('"taskTracking": _tracking_value(tt)[0]}', ksrc, "the mesh snapshot too")
+        self.assertIn("on, proved = _tracking_value(d)", ksrc, "and the display read")
+        self.assertNotIn('is not False', ksrc[ksrc.index("def _tracking_value("):ksrc.index("def _tracking_value(") + 6000], "no second rule near the reader")
+
     def test_reading_never_creates_the_file(self):
         km._task_tracking_on()
         self.assertFalse(self._file().exists())
@@ -301,8 +327,8 @@ class TheFeedOffFrame(_Base):
         self.assertEqual([r["kind"] for r in f["syncNotices"] if "was not saved" in r["text"]], ["refused"], "with their kinds")
         self.assertTrue(any("cannot start" in r.get("text", "") for r in f["sdkNotices"]), "the SDK ring's rows too: %r" % f["sdkNotices"])
         self.assertEqual((f["dismissedCount"], f["showDismissed"], f["canUndoClear"]), (0, False, False), "the bell's bits, from the cleared set")
-        self.assertIn('mirrorBadges([], Array.isArray(m.clearNotices) ? m.clearNotices : [], Array.isArray(m.sdkNotices) ? m.sdkNotices : [], Array.isArray(m.syncNotices) ? m.syncNotices : []);',
-                      Path(ROOT, "ui", "webview", "feed.ts").read_text(), "the feed's off branch mirrors the rings to the shell's bell before it returns")
+        self.assertIn('mirrorBadges([], Array.isArray(m.clearNotices) ? m.clearNotices : [], Array.isArray(m.sdkNotices) ? m.sdkNotices : [], Array.isArray(m.syncNotices) ? m.syncNotices : [], { cardsUnknown: true });',
+                      Path(ROOT, "ui", "webview", "feed.ts").read_text(), "the feed's off branch mirrors the rings to the shell's bell before it returns, the cards unknown (round five)")
 
     def test_the_pure_feed_builds_nothing_while_off(self):
         km._set_task_tracking(False, gt=1)

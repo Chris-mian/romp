@@ -7910,6 +7910,18 @@ TASK_TRACKING_FILE = "task-tracking.json"
 _tt_read_fault_said = {}   # the switch file's read fault said this episode (path -> text); a clean read or absence ends it
 
 
+def _tracking_value(d):
+    """THE ONE READER of the switch's stored value (round five, low 3: three readers with two rules cannot drift if there is
+    one): (on, proved). A dict whose `enabled` is a real boolean is proved and reads as it says; a dict without the key
+    is the readable default (on, proved); anything else, a non-dict or a non-boolean value, reads on and UNPROVED, which
+    the display read says once per episode and the setter treats as no prior value."""
+    if isinstance(d, dict):
+        v = d.get("enabled", True)
+        if isinstance(v, bool):
+            return v, True
+    return True, False
+
+
 def _note_tracking_read_fault(p, why):
     """The switch's UNPROVED read, loud once per fault episode (round three, low 3): the siblings' unproved default withholds a
     capability, this one resumes spending the user may have opted out of, so it cannot stay silent. One stderr line and one
@@ -7945,15 +7957,12 @@ def _task_tracking_on():
     except ValueError as e:
         _note_tracking_read_fault(p, "not JSON: %s" % e)
         return True
-    if not isinstance(d, dict):
-        _note_tracking_read_fault(p, "not an object")
-        return True
-    v = d.get("enabled", True)
-    if not isinstance(v, bool):   # null, 0, "false": the intent is unreadable, so ON and said (round four, low 1); absence stays quiet
-        _note_tracking_read_fault(p, "enabled is %r, not true or false" % (v,))
+    on, proved = _tracking_value(d)
+    if not proved:   # not an object, or enabled null, 0, "false": the intent is unreadable, so ON and said (round four, low 1)
+        _note_tracking_read_fault(p, "not an object" if not isinstance(d, dict) else "enabled is %r, not true or false" % (d.get("enabled"),))
         return True
     _tt_read_fault_said.pop(str(p), None)
-    return v
+    return on
 
 
 def _set_task_tracking(enabled, gt=None):
@@ -7968,7 +7977,7 @@ def _set_task_tracking(enabled, gt=None):
         except Exception:
             prev = None
         prev_gt = _gt_int(prev.get("gt")) if isinstance(prev, dict) else 0
-        prev_on = (prev.get("enabled", True) is not False) if isinstance(prev, dict) else True
+        prev_on = _tracking_value(prev)[0]           # the one reader (round five, low 3); an unproved prior reads on, as the display does
         if _gesture_echo(gt, prev_gt, prev_on == bool(enabled)):
             return None
         if _setting_stale("task-tracking", gt, prev_gt):
@@ -45956,7 +45965,7 @@ def _mesh_settings_snapshot():
     tt = tt if isinstance(tt, dict) else {}
     values = {"autoNudge": bool(d.get("enabled")), "compactSuggest": bool(d.get("compactSuggestEnabled")),
               "fileEditing": bool(fe.get("enabled")),
-              "taskTracking": tt.get("enabled", True) is not False}   # _task_tracking_on's rule: only the literal false is off
+              "taskTracking": _tracking_value(tt)[0]}   # the one reader: only the literal false is off (round five, low 3)
     stamps = {"auto-nudge": _gt_int(d.get("gt")), "compact-suggest": _gt_int(d.get("compactSuggestGt")),
               "file-editing": _gt_int(fe.get("gt")), "task-tracking": _gt_int(tt.get("gt"))}
     return values, stamps

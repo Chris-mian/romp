@@ -3438,7 +3438,9 @@ dots in the chat (derived from the transcripts, outside the feed build), the com
 about unanswered messages from other sessions, which need no judge and follow Auto Nudge's own switch, and the error
 center (the dashboard's bell): a failed machine sync, a refused state write or a session that cannot start is told while
 off as before, since the notice rings ride the off frame. An opt-out of judging is not an opt-out of being told when the
-machine fails. The producer's
+machine fails. One pre-existing gap stands, tracking on or off: a browser with the Feed pane turned off in the gear's Panes
+section never loads the feed frame, so no ring row reaches that browser's bell; the shell should feed the bell from the
+frame it already receives rather than from the feed frame alone. The producer's
 episode settle, goals snapshot and evidence frame still run as store bookkeeping, and a rewind's reconcile runs as before.
 
 The shell hides the Outline and Feed buttons and phone tabs (`body.no-task-tracking`) and closes an open pane of theirs

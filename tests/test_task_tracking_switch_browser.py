@@ -100,6 +100,9 @@ await setF.evaluate(() => { Array.from(document.querySelectorAll(".rs-stale-toas
 // a gear that flipped its box on the click whatever the kernel did (round one's) leaves it unchecked here while the kernel is on:
 // put it back, so the flip below starts from on on every head and each test fails on its own assertion, not on a garbled sequence
 if (!(await setF.evaluate(() => document.getElementById("rs-tasktrack").checked))) { await setF.click("#rs-tasktrack"); await page.waitForTimeout(600); }
+// the badge mirror's seen set (round five, the medium): card-side marks seeded in the feed frame's store must survive the off
+// frames intact (no card left the payload; the payload was never built); the rings' mark is the rings' own to replace
+if (feedF) await feedF.evaluate(() => localStorage.setItem("romp:cardNotified", JSON.stringify(["n|seed-1", "w|seed-2|1700000000|judge", "sync|seed-3"])));
 // THE FLIP, in the gear: a real click on the switch
 const flipAt = Date.now();
 await setF.click("#rs-tasktrack");
@@ -113,7 +116,8 @@ if (fleetF) { await fleetF.waitForFunction(() => { const o = document.getElement
 if (feedF) await feedF.waitForFunction(() => { const sp = document.getElementById("pane-spin"); return !!sp && sp.classList.contains("gone"); }, null, { timeout: 12000 }).catch(() => {});
 await page.waitForTimeout(2500);   // two more _keepLoader ticks: a loader re-asserted would show here
 out.off = { shell: await shell(), gear: await gear(), kernel: await kernel(), feedPane: await feedPane(), feedFrames: await feedFrames(),
-            fleetPane: await paneRead(fleetF), feedPaneLoader: await paneRead(feedF), fleetSpinGoneMs };
+            fleetPane: await paneRead(fleetF), feedPaneLoader: await paneRead(feedF), fleetSpinGoneMs,
+            seenAfterOff: feedF ? await feedF.evaluate(() => JSON.parse(localStorage.getItem("romp:cardNotified") || "[]")) : null };
 // THE ERROR CENTER WHILE OFF (round four, the ruling: the error center is not task tracking). A state file that cannot be read is
 // told while off: the session flags' store becomes a directory, the Sessions pane's next build reads it (a display reader that files
 // one ring row per fault episode), the off frame carries the ring, the hidden feed frame mirrors it to the shell, and the error
@@ -164,7 +168,8 @@ await setF.click("#rs-tasktrack");
 await page.waitForFunction(() => !document.body.classList.contains("no-task-tracking"), null, { timeout: 10000 }).catch(() => {});
 await page.waitForFunction(async (u) => (await (await fetch(u, { cache: "no-store" })).json()).taskTracking === true, cfg.version, { timeout: 10000 }).catch(() => {});
 if (feedF) await feedF.waitForFunction(() => { const o = document.getElementById("tt-off"); return !!o && o.hidden; }, null, { timeout: 15000 }).catch(() => {});
-out.on = { shell: await shell(), gear: await gear(), kernel: await kernel(), feedPane: await feedPane(), feedFrames: await feedFrames() };
+out.on = { shell: await shell(), gear: await gear(), kernel: await kernel(), feedPane: await feedPane(), feedFrames: await feedFrames(),
+           seenAfterOn: feedF ? await feedF.evaluate(() => JSON.parse(localStorage.getItem("romp:cardNotified") || "[]")) : null };
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify(out) + "\n", () => process.exit(0));
 """
@@ -300,6 +305,17 @@ class ServedTaskTrackingSwitch(QueuedLab):
         self.assertGreater(e["count"], e["before"]["rows"], "a row arrived while off" + table)
         self.assertTrue(any("session-flags" in r for r in e["rows"]), "the unreadable flags store is the row" + table)
         self.assertNotEqual(e["cueAfter"], e["before"]["cue"], "the bell's unread cue moved with it" + table)
+
+    def test_off_frames_keep_the_card_badge_seen_marks_and_the_return_to_on_applies_the_payloads_own_rule(self):
+        # round five, the medium: the off branch handed the mirror no cards, and the mirror stores only the active set, so one off
+        # frame deleted every card mark and every card re-minted its bell row back on
+        r = self._result(); off = r["off"].get("seenAfterOff"); on = r["on"].get("seenAfterOn"); table = "\n  off: " + json.dumps(off) + " on: " + json.dumps(on) + " frames: " + json.dumps(r["off"].get("feedFrames"))
+        self.assertIsNotNone(off, "the feed frame's store was read" + table)
+        self.assertTrue(r["off"].get("feedFrames") and any(f["off"] for f in r["off"]["feedFrames"]), "at least one off frame reached the mirror" + table)
+        self.assertIn("n|seed-1", off, "the follow-up mark survives the off frames" + table)
+        self.assertIn("w|seed-2|1700000000|judge", off, "the warning mark too" + table)
+        self.assertNotIn("sync|seed-3", off, "the rings' half is the frame's own: a stale ring mark leaves" + table)
+        self.assertNotIn("n|seed-1", on or [], "back on, the payload's own rule: a card that is not in the payload takes its marks with it" + table)
 
     def test_back_on_restores_the_buttons_the_controls_and_the_panes(self):
         o = self._result()["on"]; table = "\n  " + json.dumps(o)[:1500]

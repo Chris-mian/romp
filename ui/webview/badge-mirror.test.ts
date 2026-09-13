@@ -6,6 +6,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { badgeNotices, clearBoundaryNotices, type BadgeItem, type ClearNoticeRow } from "./badge-mirror";
+import * as badgeMirror from "./badge-mirror";   // the round-five names through the namespace, so a tree without them fails this test, not the build
 
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
@@ -136,4 +137,17 @@ test("the feed answers revealCard: scroll to the card, pulse it accent, session 
   const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.css"), "utf8");
   assert.match(CSS, /\.reveal-pulse \{ animation: revealPulse 1\.6s ease; \}/);
   assert.match(CSS, /box-shadow: 0 0 0 2px var\(--accent\)/, "accent chrome, not a status colour");
+});
+
+test("keepCardSigs keeps the store's card-side marks and none of the rings' (T404 round five: an off frame carries no cards because none was built)", () => {
+  const keepCardSigs = (badgeMirror as any).keepCardSigs as ((s: Iterable<string>) => string[]) | undefined;
+  assert.equal(typeof keepCardSigs, "function", "the helper exists");
+  const seen = new Set(["n|c1", "w|c2|1700000000|judge", "r|c3|5", "e|c4|500|sl", "sync|9", "sdk|3", "c|s1|7", "x|odd"]);
+  assert.deepEqual(keepCardSigs!(seen).sort(), ["e|c4|500|sl", "n|c1", "r|c3|5", "w|c2|1700000000|judge"], "the four card prefixes, verbatim");
+  assert.deepEqual(keepCardSigs!([]), []);
+  assert.deepEqual((badgeMirror as any).CARD_SIG_PREFIXES, ["w|", "n|", "r|", "e|"], "the prefixes badgeNotices mints, named once");
+  // the mirror's off-frame call keeps them: a source pin on the feed's wrapper
+  const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
+  assert.match(FEED, /const badges = opts\?\.cardsUnknown \? \{ notices: \[\], active: new Set\(keepCardSigs\(seenSet\)\) \} : badgeNotices\(items, seenSet\);/);
+  assert.match(FEED, /mirrorBadges\(\[\], Array\.isArray\(m\.clearNotices\)[^\n]*\{ cardsUnknown: true \}\);/, "the off branch says the cards are unknown");
 });

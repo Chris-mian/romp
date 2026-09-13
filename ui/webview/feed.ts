@@ -27,7 +27,7 @@ import { extHoverMatches } from "./card-key";
 import { provenanceRows, provenanceGroupRows, rootStart, type ProvFmt, type ProvRow } from "./provenance";
 import { ageColorReadable } from "./age-color";
 import { liveNow, liveRefresher, refreshAges, stampAge } from "./feed-age";
-import { badgeNotices, clearBoundaryNotices, sdkProblemNotices, syncNotices,
+import { badgeNotices, clearBoundaryNotices, keepCardSigs, sdkProblemNotices, syncNotices,
   type ClearNoticeRow, type SdkNoticeRow, type SyncNoticeRow } from "./badge-mirror";
 import { initStrip } from "./strip";
 import { installSettingsSync, loadSettings, onExternalSettingsChange } from "./settings";
@@ -5565,11 +5565,14 @@ function pipeBanner(up: boolean, queued: number): void {
 // the {romp:'notify'} post the shell's bell listens for. Storing only the ACTIVE set is what re-arms a
 // cleared badge and keeps the store from growing: a card that left the payload takes its sigs with it.
 const BADGE_SEEN_KEY = "romp:cardNotified";
-function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNoticeRow[], sync: SyncNoticeRow[]): void {
+function mirrorBadges(items: AskItem[], clears: ClearNoticeRow[], sdk: SdkNoticeRow[], sync: SyncNoticeRow[], opts?: { cardsUnknown?: boolean }): void {
   let seen: string[] = [];
   try { seen = JSON.parse(localStorage.getItem(BADGE_SEEN_KEY) || "[]"); } catch { /* fresh */ }
   const seenSet = new Set(seen);
-  const badges = badgeNotices(items, seenSet);
+  // cardsUnknown (the Task tracking switch's off frame, T404 round five): the frame carries no cards because none was built,
+  // not because they left, so the card-side marks already in the store are kept as this write's card half, and no card
+  // notice is minted; the rings' half below is the frame's own. A stand-in frame never feeds a writer that prunes by absence
+  const badges = opts?.cardsUnknown ? { notices: [], active: new Set(keepCardSigs(seenSet)) } : badgeNotices(items, seenSet);
   // /clear boundary settles share the same seen-set + bell (the user 2026-07-27): a clear that
   // dropped open cards logs one durable entry naming them, so the drop is never silent.
   const boundary = clearBoundaryNotices(clears, seenSet);
@@ -5975,7 +5978,7 @@ listenForFrames(perfFrameHandler("feed", (m) => vscodeApi?.postMessage(m), (e: M
       // the error center is not task tracking (round four, the ruling): the off frame carries the notice rings, and the
       // shell's bell is fed from here as from a built frame, so a failed sync, a refused write or a session that cannot
       // start is told while off; the frame stays loaded hidden while the shell closes the pane, so this runs
-      mirrorBadges([], Array.isArray(m.clearNotices) ? m.clearNotices : [], Array.isArray(m.sdkNotices) ? m.sdkNotices : [], Array.isArray(m.syncNotices) ? m.syncNotices : []);
+      mirrorBadges([], Array.isArray(m.clearNotices) ? m.clearNotices : [], Array.isArray(m.sdkNotices) ? m.sdkNotices : [], Array.isArray(m.syncNotices) ? m.syncNotices : [], { cardsUnknown: true });
       if (typeof m.dismissedCount === "number") dismissedCount = m.dismissedCount;
       if (typeof m.canUndoClear === "boolean") canUndoClear = m.canUndoClear;
       return;

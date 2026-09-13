@@ -32,6 +32,18 @@ export interface BadgeNotice { kind: string; text: string; sig: string; sid: str
 
 const cap = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
+/** The CARD-side signature prefixes badgeNotices mints (a judge warning, a failed follow-up, a retry storm, an API-error
+ *  block). The rings (clears, SDK problems, syncs) use others (c|, and the rows' own sigs). */
+export const CARD_SIG_PREFIXES = ["w|", "n|", "r|", "e|"];
+
+/** The card-side signatures already in the persisted seen set, verbatim. For a frame that carries NO cards because none
+ *  was built (the Task tracking switch's off frame, T404 round five): the mirror stores only the ACTIVE set, which re-arms a
+ *  cleared badge because a card that left the payload takes its sigs with it; a payload that was never built is not that,
+ *  so its cards' marks are kept, and every card would otherwise re-mint its bell row on the return to on. */
+export function keepCardSigs(seen: Iterable<string>): string[] {
+  return Array.from(seen).filter((sig) => CARD_SIG_PREFIXES.some((p) => sig.startsWith(p)));
+}
+
 export function badgeNotices(items: BadgeItem[], seen: Set<string>): { notices: BadgeNotice[]; active: Set<string> } {
   const notices: BadgeNotice[] = [];
   const active = new Set<string>();
