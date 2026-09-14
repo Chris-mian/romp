@@ -59763,6 +59763,13 @@ class Handler(BaseHTTPRequestHandler):
                     _send_to_app("chat", {"type": "closed", "id": sid})
                 _push_soon()   # ack-fast (the 2026-08-30 wedge: inline fleet builds piled 53 POST handlers; the pusher coalesces)
                 return self._send(200, json.dumps({"ok": True}), "application/json")
+            if u.path.startswith("/remote/") and (u.path.endswith("/new") or u.path.endswith("/send")):
+                # an attached host's own /new or /send, relayed: an action that LANDS on that machine (a session
+                # spawned THERE, its briefing sent before this kernel's poll has learned its sid). The local auth
+                # gate has run; the peer validates and answers for itself (_remote_control).
+                rest = unquote(u.path[len("/remote/"):])
+                rhost, rop = rest.rsplit("/", 1)
+                return self._remote_control(rhost, rop, raw_body)
             if u.path == "/new":
                 # Headless session creation (`romp new`, 2026-07-25): the WS createSession op as a
                 # one-shot POST, so a terminal can start a session — SDK by default, the recommended
@@ -62048,6 +62055,60 @@ class Handler(BaseHTTPRequestHandler):
                 up.close()                       # ours alone — safe to close fully
             except OSError:
                 pass
+
+    def _remote_control(self, host, op, raw_body):
+        """POST /remote/<host>/new and /remote/<host>/send: relay ONE control call to an attached host's own kernel
+        through this kernel's tunnel, which is how an action LANDS on that machine. The /api-health relay's shape:
+        the local auth gate has run, the remote's own token goes in the forwarded request, a dead tunnel is a 502
+        and a redial, an unknown host a 404. The peer applies its own validation (a name it refuses, a backend it
+        lacks) and its status and JSON verdict are mirrored, so its 400 or 409 arrives as a 400 or 409 with its
+        words, never as "not answering". Two ops only: `new` (a session born THERE; this kernel's by-sid forwarding
+        cannot reach a session that does not exist yet) and `send` to a session that host lists (its briefing,
+        before this kernel's supervisor poll has learned the sid, when POST /send here would route it nowhere).
+        The body must be a JSON object and crosses as the peer's route expects it. Every answer this side writes
+        is JSON {ok, error}, so a caller reads one shape. Why not _remote_forward: it folds every non-200 into
+        None, which would report a peer's refusal as a dead tunnel (the /send arm's own lesson).
+        (the user 2026-09-14: the editor plugin's new-experiment command spawns its managing session on the vault's
+        mirror host; it posted to the tunnel port with the peer token /tunnels used to publish, gone since
+        2026-09-08.)"""
+        if op not in ("new", "send"):
+            return self._send(404, json.dumps({"ok": False, "error": "no such relay op %r" % op}), "application/json")
+        b, berr = _json_object_body(raw_body)
+        if berr:
+            return self._send(400, json.dumps({"ok": False, "error": berr}), "application/json")
+        with _remotes_lock:
+            r = _remotes.get(host)
+            port, rtok = (r or {}).get("local_port") or 0, (r or {}).get("token") or ""
+        if not port:
+            return self._send(404, json.dumps({"ok": False, "error": "no attached host %r" % host}),
+                              "application/json")
+        payload = json.dumps(b or {})
+        hdrs = {"Content-Type": "application/json"}
+        if rtok:
+            hdrs["X-Romp-Token"] = rtok
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=30)
+        try:
+            conn.request("POST", "/" + op, payload, hdrs)
+            resp = conn.getresponse()
+            body = resp.read(1 << 20)
+            status = resp.status
+        except (OSError, http.client.HTTPException) as e:
+            _demand_redial(host, "refused" if isinstance(e, ConnectionRefusedError) else "timeout")
+            return self._send(502, json.dumps({"ok": False, "error":
+                "tunnel to %s is not answering: re-dialing now" % host}), "application/json")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        try:
+            doc = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            doc = None
+        if not isinstance(doc, dict):
+            return self._send(502, json.dumps({"ok": False, "error":
+                "%s answered /%s with HTTP %d and no JSON verdict" % (host, op, status)}), "application/json")
+        return self._send(status, json.dumps(doc), "application/json", cache="no-cache")
 
     def _remote_api_health(self, host):
         """GET /remote/<host>/api-health: relay ONE read of an attached host's API-health signal through this
