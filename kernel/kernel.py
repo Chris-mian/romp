@@ -48623,11 +48623,13 @@ def _push(targets, connect=False, live_map=None):
     # With no feed built since start and a feed pane among the targets, the feed is built and sent to those panes FIRST
     # (_feed_first); the regular feed section below serves the same build from the cache with the ledgers attached, and
     # the send stage's delta path carries only what that added. A warm kernel (a feed already built) takes no extra step.
-    # ANY cold refresh, not the boot's first cycle alone (2026-09-14): the pusher's first cycle runs before a browser has
-    # reconnected (0.6 to 0.9 s after the split of the housekeeping), so a guard on cycle zero never held on a real boot
-    # (a 24 h watch on push.feedFirst saw nothing); the cold state the shortcut is for is "no feed built yet".
-    if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS
-            and any(c["app"] == "feed" for c in targets)):      # no feed built since the boot, a feed pane to serve
+    # The boot's FIRST pusher cycle, and only it (reverted to this on 2026-09-14 after the first browser-attached boot on
+    # the "any cold refresh" guard, 12:06 PM PT: push.feedFirst 106 s and a 131 s first refresh, since the cold feed build
+    # at the front no longer rode the chat builds' parses and six connect pushes were building the same cold work at
+    # once on their handler threads). The first cycle runs before a browser reconnects, so this fires on no real boot;
+    # the shortcut comes back on any cold refresh once builds are single-flight across threads.
+    if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS and _PERF_STATS.pusher.get("cycles", 0) == 0
+            and any(c["app"] == "feed" for c in targets)):      # the boot's first pusher cycle, and only it
         try:
             _feed_first(now, live_map, targets, connect)
         except Exception:
