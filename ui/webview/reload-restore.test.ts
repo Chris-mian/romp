@@ -62,7 +62,7 @@ test("landActive's landing consumes the record for the active tab first, then fa
   const m = RENDER.match(/^function landActive\(content: HTMLElement \| null, v: View\): void \{([\s\S]*?)\n\}/m);
   assert.ok(m, "landActive");
   const body = m![1];
-  assert.match(body, /const rs = takeReloadScroll\(pendingReloadScroll, activeId\);\s*\n\s*if \(rs\) \{\s*\n\s*pendingReloadScroll = null;\s*\n\s*v\.stick = rs\.stick;\s*\n\s*if \(rs\.stick\) writeScroll\(content, content\.scrollHeight, "reload-restore", true\);\s*\n\s*else if \(!\(rs\.anchor && restoreScrollAnchor\(content, v, rs\.anchor\)\)\) \{/);
+  assert.match(body, /const rs = restoreWaits \? null : takeReloadScroll\(pendingReloadScroll, activeId\);\s*\n\s*if \(rs\) \{\s*\n\s*pendingReloadScroll = null;\s*\n\s*v\.stick = rs\.stick;\s*\n\s*if \(rs\.stick\) writeScroll\(content, content\.scrollHeight, "reload-restore", true\);\s*\n\s*else if \(!\(rs\.anchor && restoreScrollAnchor\(content, v, rs\.anchor\)\)\) \{/);
   // the anchor turn outside the fresh window: the raw top is the first guess and the deep-link land finishes it
   assert.match(body, /writeScroll\(content, rs\.top, "reload-restore"\);\s*\n\s*if \(rs\.anchor\) \{\s*\n\s*pendingAnchor = rs\.anchor\.uuid; pendingAnchorKeepY = rs\.anchor\.y;/, "the raw top first, then the deep-link land is armed");
   // …and RUN in the same pass (T374): the pass already made its own attempt before the restore armed anything, and an idle

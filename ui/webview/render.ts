@@ -11348,7 +11348,7 @@ function scrollToAnchor(uuid: string): boolean {
       // a LIVE landing already on the wire is busy (T386 stage 2, low 6: the first stands, the second is refused with a cue; a cancelled one is
       // not busy, round seven)
       const live = liveWindowAsk(activeId);
-      if (live && live.anchor === uuid) { anchorPendingOlder = true; landTrail.push("pointer-fetch-waiting"); return false; }   // the same landing, still on the wire: this pass's re-attempt waits (no cue: the reader clicked once, round ten)
+      if (live && live.anchor === uuid) { anchorPendingOlder = true; landTrail.push("pointer-fetch-waiting"); if (pendingAnchorClick) pulseLandingNotice(); return false; }   // the same landing, still on the wire: this pass's re-attempt waits (no cue: the reader clicked once, round ten); a REAL second click on it re-pulses the notice (round eleven, low b)
       if (live) { landTrail.push("pointer-fetch-busy"); landToast("still going to the earlier message"); return false; }
       // an OLDER fetch in flight is no reason to refuse (round nine, medium 1): a proto-2 frame whose tailLo the kernel could not name leaves
       // the page with no regions and its head asked by loadOlder, and refusing here armed nothing (CI's head-restore road: a loadOlder first,
@@ -13244,7 +13244,7 @@ function landActive(content: HTMLElement | null, v: View): void {
   // unanchorable — so they honest-fail with a toast rather than a clock-nearest guess (which often landed on
   // an unrelated turn anyway — the 'retry'-message bug). The old time tier-2 (scrollToNearestT) is GONE: the
   // last time-based navigation removed, per "no time heuristics". WORK/REPLY intent never had a tier-2 either.
-  pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; pendingAnchorKeepY = null;
+  pendingAnchor = null; pendingAnchorIntent = null; pendingAnchorT = null; pendingAnchorKind = null; pendingAnchorKeepY = null; pendingAnchorClick = false;
   // Diagnostics: log every landing attempt; a deep-link that couldn't resolve announces itself loudly
   // instead of impersonating a successful jump.
   if (att.anchor || att.t != null) {
@@ -13273,7 +13273,10 @@ function landActive(content: HTMLElement | null, v: View): void {
   if (!scrolled) {
     // a page reload's one-shot restore (T265): the tab that was active when the page went down lands where its
     // reader was — the bottom for a follow-mode reader, else their anchor turn, else the raw saved scrollTop
-    const rs = takeReloadScroll(pendingReloadScroll, activeId);
+    const sRestore = activeId ? liveSession(activeId) : null;   // the active tab's live session (the display paths read through liveSession)
+    const restoreWaits = !!(pendingReloadScroll && activeId && pendingReloadScroll.id === activeId && sRestore && sRestore.proto !== 2 && !frameAfterReady.has(activeId));
+    if (restoreWaits) landTrail.push("restore-waits-frame");   // an index frame from before our ready: the kernel re-serves the session for proto 2 next (round eleven)
+    const rs = restoreWaits ? null : takeReloadScroll(pendingReloadScroll, activeId);
     if (rs) {
       pendingReloadScroll = null;
       v.stick = rs.stick;
@@ -13322,6 +13325,15 @@ function landActive(content: HTMLElement | null, v: View): void {
 // one tab on another's position; review find, 2026-09-08) — is taken out the moment the page loads (one reload,
 // one restore) and is consumed by landActive's first show of that tab.
 const RELOAD_SCROLL_KEY = "romp:reloadScroll";
+// The page's `ready` (proto 2) can LOSE the race to the kernel's connect push: the pusher fires from the socket's open, the bundle
+// evaluates later, and a socket before its ready is served an INDEX frame (proto absent, headFrom the tail's start). A reload restore
+// attempted on that frame takes the older wire (fetchOlderForAnchor: a loadOlder, no window ask), which CI's mid-run reload road showed
+// twice (a reload-restore write, then loadOlder, loadAround 0, no regionask row; the verifier reproduced it by delaying ready three
+// seconds at the socket, round eleven). On ready the kernel resets the client's base and re-serves the session for the wire the
+// handshake declared, so the restore waits for the first frame AFTER our ready: proto 2 from this kernel (the window branch), still
+// an index frame from an old kernel (the legacy wire is then right). The event, not a timer.
+let readySent = false;
+const frameAfterReady = new Set<string>();   // sids whose session frame arrived after our ready went out
 let pendingReloadScroll: ReloadScroll | null = (() => {
   try {
     const raw = sessionStorage.getItem(RELOAD_SCROLL_KEY);
@@ -13948,6 +13960,9 @@ function virtualizeToViewport(): void {
 // starts, below the tab strip and the ledger box, so the pill's top follows the strip's bottom by layout
 // alone, whatever the row count and however it changes while the pill shows. Idempotent; no pointer events.
 let landingNoticeEl: HTMLElement | null = null;
+let pendingAnchorClick = false;   // the landing this pass attempts was armed by the reader's click (a focus frame), not by a pass's own re-attempt
+/** A real second click on the anchor a landing is already on the wire for: the notice pulses once (the page has no other feedback for it). */
+function pulseLandingNotice(): void { const n = landingNoticeEl; if (!n || n.style.display === "none") return; n.classList.remove("pulse"); void n.offsetWidth; n.classList.add("pulse"); }
 let landingNoticeSid: string | null = null;
 // the landing's state lives in ONE RECORD PER ASK (WindowAsk, beside requestAround below; round eight): no per-session slot here
 /** The ONE notice (T386 stage 2, the user 2026-09-12): "Going to the message from 7:41 AM, click to stay here", at the pill's old
@@ -18345,7 +18360,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // the relay's own onopen re-shipped correctly. romp:hostRelayUp IS that onopen — the one exact event.
   if (m.type === "hostUp") { refreshSettledPreviews(); healPathImgs(); }
   if (m.type === "tabOrder") noteSkeletonTabOrder(m);   // BEFORE the chain's applyTabOrder below: one repaint, final skeleton set (2026-09-07)
-  if (m.type === "session") upsert(m);
+  if (m.type === "session") { upsert(m); if (readySent) frameAfterReady.add(String(m.id)); }   // a frame after our ready is the kernel's answer to a proto-2 client: proto 2 from this kernel, an index frame from an old one (round eleven)
   else if (m.type === "globalRetryPaused") {
     globalRetryPaused = !!m.value;
     // limit-driven pause → the usage window's reset epoch (seconds); manual pause / unknown → null
@@ -18405,6 +18420,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
         const c = document.getElementById("content"); if (c) writeScroll(c, c.scrollHeight, "focus-live", true);
       });
     } else {
+      pendingAnchorClick = typeof m.anchor === "string";   // a click of the reader's arms this landing (round eleven): the pass after it clears the mark
       pendingAnchorQuote = typeof (m as { anchorQuote?: string }).anchorQuote === "string" ? (m as { anchorQuote?: string }).anchorQuote! : null;   // the supporting span (T218) — consumed by the landing
       setActive(m.id, m.anchor, typeof m.anchorT === "number" ? m.anchorT : undefined, typeof m.anchorKind === "string" ? m.anchorKind : undefined,
                 typeof m.anchorEventT === "number" ? m.anchorEventT : undefined);   // the anchor turn's own moment, when the kernel resolved it (T336)
@@ -20596,4 +20612,4 @@ setFileViewIdentity((id) => {
   const s = sessions.get(id) ?? tabMeta.get(id);
   return s && s.name ? { name: s.name, color: s.color ?? null } : hostStub(id);
 });
-if (vscodeApi) vscodeApi.postMessage({ type: "ready", proto: 2 });   // proto 2: the uuid-anchored chat wire (T323 stage 4b); an older kernel ignores the field and sends index frames
+if (vscodeApi) { vscodeApi.postMessage({ type: "ready", proto: 2 }); readySent = true; }   // …and from here a session frame is the kernel's answer to a proto-2 client (round eleven: the reload restore waits for one)   // proto 2: the uuid-anchored chat wire (T323 stage 4b); an older kernel ignores the field and sends index frames

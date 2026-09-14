@@ -1751,6 +1751,8 @@ body.chat-theme-yatharth .meta-btn.mode-risky, body.chat-theme-yatharth .meta-it
   box-shadow: var(--shadow-toast); border: 1px solid var(--menu-border);
 }
 .tx-landing-notice:hover { border-color: var(--accent); }
+.tx-landing-notice.pulse { animation: tx-notice-pulse 500ms ease-out; }   /* a second click on the same anchor while its window is on the wire: the one cue the page has for it (round eleven) */
+@keyframes tx-notice-pulse { 0% { transform: translateX(-50%) scale(1); } 40% { transform: translateX(-50%) scale(1.08); } 100% { transform: translateX(-50%) scale(1); } }
 /* tool + thinking rows pack tighter than prose turns (the user: ~half the spacing) */
 .turn-tool, .turn-thinking, .turn-toolgroup { padding-top: 4px; padding-bottom: 4px; }
 /* (the compaction boundary is THE notice — compact severity, "COMPACTION · Context compacted · auto · 142k → 38k") */

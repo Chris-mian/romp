@@ -256,10 +256,21 @@ test("round nine fixes each carry a pin (T386 stage 2): an older fetch in flight
 
 test("round ten fixes each carry a pin (T386 stage 2): a re-attempt waits on its own live ask; the not-rendered path names the state it saw", () => {
   const sca = RENDER.slice(RENDER.indexOf("function scrollToAnchor("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function scrollToAnchor(") + 1));
-  assert.match(sca, /const live = liveWindowAsk\(activeId\);\s*\n\s*if \(live && live\.anchor === uuid\) \{ anchorPendingOlder = true; landTrail\.push\("pointer-fetch-waiting"\); return false; \}[^\n]*\n\s*if \(live\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}/, "the same landing's re-attempt waits without a cue; a different anchor while one is live is refused with the cue");
+  assert.match(sca, /const live = liveWindowAsk\(activeId\);\s*\n\s*if \(live && live\.anchor === uuid\) \{ anchorPendingOlder = true; landTrail\.push\("pointer-fetch-waiting"\); if \(pendingAnchorClick\) pulseLandingNotice\(\); return false; \}[^\n]*\n\s*if \(live\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}/, "the same landing's re-attempt waits without a cue (a real second click pulses the notice, round eleven); a different anchor while one is live is refused with the cue");
   assert.match(sca, /scrollDiagRow\("landmiss", \{ sid: activeId, anchor: uuid\.slice\(-12\), proto:[^\n]*noframe: !sm \|\| sm\.proto == null, trail: landTrail\.slice\(-4\) \}\);\s*\n\s*pendingAnchor = uuid; landTrail\.push\("pointer-not-rendered"\); return false;/, "the not-rendered path files the branch state it saw (proto, events, regions, the head, the older wire, whether a frame existed) before it stands the attempt down");
   assert.doesNotMatch(RENDER, /awaitingFrameAnchor|pointer-no-frame|frame-rearm/, "no arm-keeping for a shape that did not reproduce: the reload restore runs only once a frame is on the tab");
   assert.match(RENDER, /\| "unitchange" \| "regionask" \| "landmiss", data: any\): void \{/, "the row kind is budgeted with the other scroll rows");
+});
+
+test("round eleven fixes each carry a pin (T386 stage 2): the reload restore waits for the kernel's answer to ready; a real second click re-pulses the notice", () => {
+  assert.match(RENDER, /vscodeApi\.postMessage\(\{ type: "ready", proto: 2 \}\); readySent = true; \}/, "the page marks its ready as sent");
+  assert.match(RENDER, /if \(m\.type === "session"\) \{ upsert\(m\); if \(readySent\) frameAfterReady\.add\(String\(m\.id\)\); \}/, "a session frame after our ready is the kernel's answer to a proto-2 client");
+  assert.match(RENDER, /const restoreWaits = !!\(pendingReloadScroll && activeId && pendingReloadScroll\.id === activeId && sRestore && sRestore\.proto !== 2 && !frameAfterReady\.has\(activeId\)\);\s*\n\s*if \(restoreWaits\) landTrail\.push\("restore-waits-frame"\);[^\n]*\n\s*const rs = restoreWaits \? null : takeReloadScroll\(pendingReloadScroll, activeId\);/, "the restore holds on an index frame from before our ready and runs on the first frame after it: the event, not a timer");
+  const sca = RENDER.slice(RENDER.indexOf("function scrollToAnchor("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function scrollToAnchor(") + 1));
+  assert.match(sca, /if \(live && live\.anchor === uuid\) \{ anchorPendingOlder = true; landTrail\.push\("pointer-fetch-waiting"\); if \(pendingAnchorClick\) pulseLandingNotice\(\); return false; \}/, "a real second click on the anchor a landing is on the wire for pulses the notice; a pass's re-attempt does not");
+  assert.match(RENDER, /pendingAnchorClick = typeof m\.anchor === "string";/, "the focus frame marks the click");
+  assert.match(RENDER, /pendingAnchorKeepY = null; pendingAnchorClick = false;\s*\n\s*\/\/ Diagnostics: log every landing attempt/, "…and the pass clears it");
+  assert.match(CSS, /\.tx-landing-notice\.pulse \{ animation: tx-notice-pulse 500ms ease-out; \}/, "the pulse is one short animation");
 });
 
 test("the spacer is invisible, non-interactive vertical space", () => {
