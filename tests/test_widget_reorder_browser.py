@@ -103,14 +103,19 @@ const readPanel = (setF) => setF.evaluate(() => {
     id: r.dataset.widget || null, divider: r.dataset.divider || null, role: r.getAttribute("role"), aria: r.getAttribute("aria-label"),
     grip: (() => { const g = r.querySelector(".rs-grip"); return g ? { text: g.textContent, aria: g.getAttribute("aria-label"), title: g.title } : null; })(),
     label: (r.querySelector(".rs-widget-name b") || r.querySelector(".rs-divider-label") || {}).textContent || "",
-    hasSwitch: !!r.querySelector(".rs-switch") }));
+    hasSwitch: !!r.querySelector(".rs-switch"),
+    checked: (() => { const sw = r.querySelector(".rs-switch"); return sw ? sw.getAttribute("aria-checked") : null; })() }));
   const preview = (host) => { const p = document.querySelector(host).nextElementSibling; if (!p || !p.classList.contains("rs-preview")) return null;
     const body = p.querySelector(".rs-preview-body").firstElementChild;
     return { label: p.querySelector(".rs-preview-label").textContent, cls: body ? body.className : null,
              kids: body ? Array.from(body.children).map((c) => c.className + (c.className === "tab-label" || c.className.indexOf("chip") >= 0 ? ":" + c.textContent : "")) : null,
              right: body && body.querySelector(".rs-sl-right") ? Array.from(body.querySelector(".rs-sl-right").children).map((c) => c.className) : null }; };
   const gridCols = getComputedStyle(document.getElementById("rs-widgets")).gridTemplateColumns;
+  const liveEl = document.getElementById("rs-widget-live");
+  const previewFolder = document.querySelector("#rs-swidgets + .rs-preview .status-dir");
   return { tabRows: rows("#rs-widgets"), statusRows: rows("#rs-swidgets"), tabPreview: preview("#rs-widgets"), statusPreview: preview("#rs-swidgets"), gridCols,
+           live: liveEl ? { text: liveEl.textContent, polite: liveEl.getAttribute("aria-live") } : null,
+           previewFolder: previewFolder ? { act: previewFolder.dataset.act || null, cls: previewFolder.className, title: previewFolder.title } : null,
            landed: (document.querySelector("#rsettings .rs-card") || {}).getAttribute ? document.querySelector("#rsettings .rs-card").getAttribute("data-section-landed") : null };
 });
 // a drag by the grip: the pointer down on the grip, moved in steps to the target row's upper half (or the top), released
@@ -173,11 +178,33 @@ out.ctxBefore = { panel: await readPanel(setF), strip: await readStrip(chatF) };
 await setF.focus('#rs-widgets > .rs-widget[data-widget="hotkey"] .rs-grip');
 await page.keyboard.press("ArrowUp"); await setF.waitForTimeout(400);   // the page's keyboard reaches the focused grip inside the frame
 out.keyUp = { panel: await readPanel(setF), strip: await readStrip(chatF), focused: await setF.evaluate(() => (document.activeElement && document.activeElement.getAttribute("aria-label")) || null) };
+// 3b. round two, medium 1: a switch toggled by Space keeps the focus through the paint, and a second Space toggles back
+await setF.focus('#rs-widgets > .rs-widget[data-widget="ctx"] .rs-switch');
+await page.keyboard.press("Space"); await setF.waitForTimeout(400);
+const focusRead = () => setF.evaluate(() => { const a = document.activeElement; const sw = document.querySelector('#rs-widgets > .rs-widget[data-widget="ctx"] .rs-switch');
+  return { active: a ? (a.getAttribute("aria-label") || a.tagName) : null, checked: sw.getAttribute("aria-checked") }; });
+out.spaceOnce = await focusRead();
+await page.keyboard.press("Space"); await setF.waitForTimeout(400);
+out.spaceTwice = await focusRead();
+// 3c. round two, medium 2: the first keyboard activation after a MOUSE drag lands (the drag's click swallow is the release's own)
+await dragRow(page, setF, "#rs-widgets", "hotkey", "dot", "above");   // a real drag first
+const storeBefore = await readStrip(chatF);
+await setF.focus('#rs-widgets > .rs-widget[data-widget="dot"] .rs-switch');
+await page.keyboard.press("Space"); await setF.waitForTimeout(400);
+out.afterDragSpace = { before: storeBefore, after: await readStrip(chatF), panel: await readPanel(setF) };
+await setF.focus('#rs-widgets > .rs-widget[data-widget="dot"] .rs-switch'); await page.keyboard.press("Space"); await setF.waitForTimeout(300);   // the dot back on
 // 4. the Status line section: the branch dragged above the folder
 await page.evaluate(() => window.__rompOpenSettings("chat", "statusline"));
 await setF.waitForSelector('#rsettings .rs-card[data-section-landed="statusline"]', { timeout: 10000 }).catch(() => {});
 await dragRow(page, setF, "#rs-swidgets", "branch", "folder", "above");
 out.branchFirst = { panel: await readPanel(setF), strip: await readStrip(chatF) };
+// 4b. round two, low 3: a status-line row stays in its slot's group: the session name (left) dragged below the folder (right)
+// snaps back and writes nothing; ArrowDown on its grip is refused the same way
+await dragRow(page, setF, "#rs-swidgets", "name", "folder", "below");
+out.nameHeld = { panel: await readPanel(setF), strip: await readStrip(chatF) };
+await setF.focus('#rs-swidgets > .rs-widget[data-widget="name"] .rs-grip');
+await page.keyboard.press("ArrowDown"); await setF.waitForTimeout(400);
+out.nameKeyHeld = { panel: await readPanel(setF), strip: await readStrip(chatF) };
 // screenshots: the Chat tab scrolled to Tab widgets, both sections with their previews in view, dark then light
 await page.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets"));
 await setF.waitForSelector('#rsettings .rs-card[data-section-landed="tabwidgets"]', { timeout: 10000 }).catch(() => {});
@@ -331,7 +358,7 @@ class ServedWidgetReorder(unittest.TestCase):
         self.assertEqual(p["tabPreview"]["kids"], ["tab-dot", "tab-label:web", "tab-ctx", "tab-key"], "the dot before the name, the context bar and the hot key after it, over the demo status")
         self.assertEqual(p["statusPreview"]["cls"], "rs-sl")
         self.assertEqual(p["statusPreview"]["kids"][:1], ["chip rs-sl-chip:Ready"], "no session name by default, the state chip leads")
-        self.assertEqual(p["statusPreview"]["right"], ["status-dir folder-link", "status-branch", "rs-sl-ctl", "rs-sl-batt"], "folder, branch, then the controls and the battery")
+        self.assertEqual(p["statusPreview"]["right"], ["status-dir", "status-branch", "rs-sl-ctl", "rs-sl-batt"], "folder, branch, then the controls and the battery; the preview's folder inert")
 
     def test_dragging_the_context_bar_above_the_divider_puts_it_before_the_name_on_the_strip_live_and_stores_the_order_whole(self):
         c = self.out["ctxBefore"]
@@ -358,12 +385,43 @@ class ServedWidgetReorder(unittest.TestCase):
         tab = k["strip"]["tab"]
         self.assertLess(self._at(tab, "tab-key"), self._at(tab, "tab-label"), "the keycap before the name on the strip: %r" % tab)
 
+    def test_a_switch_toggled_by_space_keeps_its_focus_through_the_paint_and_toggles_back(self):
+        one, two = self.out["spaceOnce"], self.out["spaceTwice"]
+        self.assertEqual((one["active"], one["checked"]), ("Context bar", "false"), "the first Space toggled the bar off and the switch kept the focus: %r" % one)
+        self.assertEqual((two["active"], two["checked"]), ("Context bar", "true"), "the second Space toggled it back: %r" % two)
+
+    def test_the_first_keyboard_activation_after_a_mouse_drag_lands(self):
+        a = self.out["afterDragSpace"]
+        dot_before = a["before"]["tab"]; dot_after = a["after"]["tab"]
+        self.assertTrue(any(c.startswith("tab-dot") for c in dot_before), "the dot was on the strip before: %r" % dot_before)
+        self.assertFalse(any(c.startswith("tab-dot") for c in dot_after), "Space on the dot's switch right after a drag switched it off: the swallow took no keyboard click: %r" % dot_after)
+        self.assertEqual([r["checked"] for r in a["panel"]["tabRows"] if r["id"] == "dot"], ["false"])
+
+    def test_a_status_line_row_stays_in_its_slot_a_drag_or_a_key_across_is_refused(self):
+        h = self.out["nameHeld"]
+        self.assertEqual(self._ids(h["panel"]["statusRows"]), ["name", "branch", "folder", "host"], "the name row snapped back above the right slot's rows")
+        self.assertEqual(h["strip"]["store"]["statusOrder"], ["name", "branch", "folder", "host"], "nothing new written")
+        k = self.out["nameKeyHeld"]
+        self.assertEqual(self._ids(k["panel"]["statusRows"]), ["name", "branch", "folder", "host"], "ArrowDown at the slot's edge is refused")
+        self.assertEqual(k["strip"]["store"]["statusOrder"], ["name", "branch", "folder", "host"])
+
+    def test_every_move_speaks_through_the_live_region_and_the_previews_are_inert(self):
+        c = self.out["ctxBefore"]["panel"]
+        self.assertEqual(c["live"], {"text": "Context bar moved to position 1 of 3, before the session name", "polite": "polite"}, "the drag's move announced: %r" % c["live"])
+        k = self.out["keyUp"]["panel"]
+        self.assertEqual(k["live"]["text"], "Hot key moved to position 3 of 3, before the session name", "the key's move announced: %r" % k["live"])
+        b = self.out["branchFirst"]["panel"]
+        self.assertEqual(b["live"]["text"], "Git branch moved to position 2 of 4", "the status line's move, no side to name: %r" % b["live"])
+        pf = self.out["panel0"]["previewFolder"]
+        self.assertEqual((pf["act"], pf["cls"]), (None, "status-dir"), "the preview's folder carries no click act and no link dress: %r" % pf)
+        self.assertIn("notes-api", pf["title"])
+
     def test_dragging_the_branch_above_the_folder_reorders_the_line_live_and_the_preview_with_it(self):
         b = self.out["branchFirst"]
         self.assertEqual(self._ids(b["panel"]["statusRows"]), ["name", "branch", "folder", "host"])
         self.assertEqual(b["strip"]["store"]["statusOrder"], ["name", "branch", "folder", "host"])
         self.assertEqual(b["strip"]["right"][:3], ["status-branch", "status-dir folder-link", "spinner-meta"], "the branch leads the line's right cluster now: %r" % b["strip"]["right"])
-        self.assertEqual(b["panel"]["statusPreview"]["right"][:2], ["status-branch", "status-dir folder-link"])
+        self.assertEqual(b["panel"]["statusPreview"]["right"][:2], ["status-branch", "status-dir"])
 
     def test_a_store_from_before_the_reorder_renders_registration_order_until_the_user_drags(self):
         L = self.out["legacy"]

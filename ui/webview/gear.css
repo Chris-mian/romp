@@ -307,3 +307,8 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-sl .status-dir-icon svg { display: block; }
 #rsettings .rs-sl .chip-session { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: black; background: var(--menu-border); }
 #rsettings .rs-sl-batt { border: 1px solid var(--menu-border); border-radius: 4px; padding: 0 5px; font-size: 10px; color: var(--text-muted); }
+/* a move refused (a status-line row held in its slot's group): a brief sideways nudge; the live region every move speaks through */
+@keyframes rs-nudge { 0% { transform: translateX(0); } 30% { transform: translateX(-5px); } 60% { transform: translateX(5px); } 100% { transform: translateX(0); } }
+#rsettings .rs-widget.rs-nudge { animation: rs-nudge 0.3s ease; }
+@media (prefers-reduced-motion: reduce) { #rsettings .rs-widget.rs-nudge { animation: none; outline: 1px solid var(--accent); outline-offset: -1px; } }
+#rsettings .rs-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

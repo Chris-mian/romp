@@ -233,7 +233,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.match(GEAR, /save: function \(prefs\) \{ var s = load\(\); s\.statusWidgets = prefs; var m = SW\.legacyOfStatusPrefs\(prefs\); s\.showBranch = m\.showBranch; s\.showSessionBadge = m\.showSessionBadge; save\(s\); paintWidgets\(\); \},/);
   assert.match(GEAR, /demo: function \(w, prefs\) \{ return SW\.renderStatusWidgetDemo\(w, prefs\); \},/, "the status demo is the widget alone, as the line draws it");
   assert.match(GEAR, /function paintWidgets\(\) \{ tabSection\.paint\(\); statusSection\.paint\(\); \}/, "one repaint covers both sections");
-  assert.equal((GEAR.match(/s\.statusWidgets = /g) || []).length, 1, "one writer of the status key: the section's save");
+  assert.equal((GEAR.match(/s\.statusWidgets = /g) || []).length, 2, "the section's save, and save() normalizing a key the store already carries (round two; still no injection)");
   assert.doesNotMatch(GEAR.slice(GEAR.indexOf("function load() {"), GEAR.indexOf("function save(s) {")), /statusWidgets|showBranch|showSessionBadge/, "load() neither defaults nor touches the status key or its mirrors (the fresh-key rule)");
   // round one, HIGH: NO injected default for tabWidgets. An empty object in load()'s defaults won over a pre-widgets store's
   // tabCtx (the derivation runs only with no object), and a save of any setting wrote it and rewrote the mirror. The prefs
@@ -241,7 +241,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.doesNotMatch(GEAR, /tabWidgets: \{ on: \{\}, order: \[\], opts: \{\} \}/);
   assert.doesNotMatch(GEAR.slice(GEAR.indexOf("function load() {"), GEAR.indexOf("function save(s) {")), /tabWidgets/, "load() neither defaults nor touches the key");
   assert.match(GEAR, /function widgetPrefs\(s\) \{ return TW\.tabWidgetPrefs\(s\.tabWidgets, s\.tabCtx\); \}/, "read-time derivation from the mirror when the store has no prefs");
-  assert.equal((GEAR.match(/s\.tabWidgets = /g) || []).length, 1, "one writer of the key: saveWidgets");
+  assert.equal((GEAR.match(/s\.tabWidgets = /g) || []).length, 2, "two assignments: the section's save, and save() normalizing a key the store already carries (T409 round two; still no injection)");
   assert.match(GEAR, /d\.className = 'rs-sub'; d\.textContent = w\.description;/, "the description is the row's hover popover, the panel's idiom (round one, LOW 2)");
   assert.match(GEAR_CSS, /#rsettings \.rs-switch\.on::after \{ left: 18px;/, "the knob slides");
   assert.match(GEAR_CSS, /#rsettings \.rs-widgets \{ display: grid; grid-template-columns: 18px 96px 1fr auto auto; column-gap: 10px; \}[^\n]*\n#rsettings \.rs-widget \{ display: grid; grid-template-columns: subgrid; grid-column: 1 \/ -1;/, "one grid across the rows (the grip's column leads since the reorder, T409), each row a subgrid of it (round one, LOW 2)");

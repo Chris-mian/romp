@@ -107,9 +107,26 @@ export function composeStatusWidgets(host: HTMLElement, slot: StatusSlot, rec: S
   return out;
 }
 
-/** A settings row's live rendering: the widget over its demo record, as the line would draw it. */
+/** The settings rows' visual order: the left slot's widgets, then the right slot's, each in composition order. The
+ *  line has no divider row (the user's word: its slots stay the registry's), so a drag or an arrow key moves a row
+ *  within its slot's group only (gear.js holds it there with a cue); this is the list it reorders and stores back. */
+export function statusListOrder(prefs: StatusWidgetPrefs): string[] {
+  return [...orderedStatusWidgets(prefs, "left").map((w) => w.id), ...orderedStatusWidgets(prefs, "right").map((w) => w.id)];
+}
+
+/** A rendering made INERT for a demo or a preview: the folder's click act and its link dress go (review round two: in the
+ *  VS Code chat panel the gear mounts in the delegate's own document, and a demo's act posted a real openFolder for the
+ *  demo path). The title stays, so the path still reads on hover. */
+export function makeInert<T extends HTMLElement>(node: T): T {
+  const strip = (n: HTMLElement) => { n.removeAttribute("data-act"); n.removeAttribute("data-cwd"); n.removeAttribute("data-id"); n.classList.remove("folder-link"); };
+  strip(node);
+  if (typeof node.querySelectorAll === "function") node.querySelectorAll<HTMLElement>("[data-act]").forEach(strip);
+  return node;
+}
+
+/** A settings row's live rendering: the widget over its demo record, as the line would draw it, made inert. */
 export function renderStatusWidgetDemo(w: StatusWidget, prefs: StatusWidgetPrefs): HTMLElement | null {
-  try { return w.render(w.demo, widgetOpts(prefs, w)); } catch { return null; }
+  try { const n = w.render(w.demo, widgetOpts(prefs, w)); return n ? makeInert(n) : null; } catch { return null; }
 }
 
 // ── the folder's pieces, shared with render.ts (they lived there until T409) ──────────────────────────────────────

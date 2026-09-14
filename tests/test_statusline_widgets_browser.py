@@ -322,7 +322,7 @@ class ServedStatusLineWidgets(unittest.TestCase):
         self.assertEqual([r["sw"]["checked"] for r in rows], ["false", "true", "true", "false"], "the user's defaults")
         self.assertTrue(all(r["sw"]["role"] == "switch" and r["desc"] for r in rows))
         by = {r["id"]: r for r in rows}
-        self.assertEqual((by["folder"]["demo"]["cls"], by["folder"]["demo"]["text"], by["folder"]["demo"]["hasSvg"]), ("status-dir folder-link", " notes-api", True))
+        self.assertEqual((by["folder"]["demo"]["cls"], by["folder"]["demo"]["text"], by["folder"]["demo"]["hasSvg"]), ("status-dir", " notes-api", True))
         self.assertEqual((by["branch"]["demo"]["cls"], by["branch"]["demo"]["text"]), ("status-branch", "⎇ search-module"))
         self.assertEqual((by["name"]["demo"]["cls"], by["name"]["demo"]["text"]), ("chip chip-session", "web"))
         self.assertEqual((by["host"]["demo"]["cls"], by["host"]["demo"]["text"]), ("status-branch status-host", "@ TESTHOST"), "the demo record is a remote session")

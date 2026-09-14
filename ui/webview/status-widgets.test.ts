@@ -8,14 +8,14 @@ import * as assert from "node:assert/strict";
 import type { StatusRecord, StatusWidgetPrefs } from "./status-widgets";
 
 type El = { tag: string; className: string; textContent: string; title: string; innerHTML: string; attrs: Record<string, string>; dataset: Record<string, string>;
-            children: El[]; style: Record<string, string>; classList: { add: (c: string) => void; contains: (c: string) => boolean; toggle: (c: string, on?: boolean) => void };
+            children: El[]; style: Record<string, string>; classList: { add: (c: string) => void; remove: (c: string) => void; contains: (c: string) => boolean; toggle: (c: string, on?: boolean) => void };
             appendChild: (c: El) => El; setAttribute: (k: string, v: string) => void; getAttribute: (k: string) => string | null; removeAttribute: (k: string) => void };
 function mkEl(tag: string): El {
   const e: El = { tag, className: "", textContent: "", title: "", innerHTML: "", attrs: {}, dataset: {}, children: [], style: {},
-    classList: { add: (c) => { if (!e.classList.contains(c)) e.className = (e.className + " " + c).trim(); }, contains: (c) => e.className.split(/\s+/).includes(c),
+    classList: { add: (c) => { if (!e.classList.contains(c)) e.className = (e.className + " " + c).trim(); }, remove: (c) => { e.className = e.className.split(/\s+/).filter((x) => x && x !== c).join(" "); }, contains: (c) => e.className.split(/\s+/).includes(c),
                  toggle: (c, on) => { const has = e.classList.contains(c); if (on === undefined ? has : !on) e.className = e.className.split(/\s+/).filter((x) => x !== c).join(" "); else e.classList.add(c); } },
     appendChild: (c) => { e.children.push(c); if (c.tag === "#text") e.textContent += c.textContent; return c; },
-    setAttribute: (k, v) => { e.attrs[k] = v; }, getAttribute: (k) => (k in e.attrs ? e.attrs[k] : null), removeAttribute: (k) => { delete e.attrs[k]; } };
+    setAttribute: (k, v) => { e.attrs[k] = v; }, getAttribute: (k) => (k in e.attrs ? e.attrs[k] : null), removeAttribute: (k) => { delete e.attrs[k]; if (k.indexOf("data-") === 0) delete e.dataset[k.slice(5).replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase())]; } };   // the DOM's dataset mirrors data-* attributes
   return e;
 }
 const store = new Map<string, string>();
@@ -106,7 +106,7 @@ test("order: the stored order first for the ids it names, the rest in registrati
 
 test("the settings row's demo renders the widget over its demo record through the same render", () => {
   const d = W.renderStatusWidgetDemo(W.statusWidget("folder")!, P()) as unknown as El;
-  assert.deepEqual(classes(d), ["status-dir", "folder-link"]);
+  assert.deepEqual(classes(d), ["status-dir"], "the demo is inert: no link dress (round two)");
   assert.equal(d.textContent, " notes-api");
   assert.equal((W.renderStatusWidgetDemo(W.statusWidget("host")!, P()) as unknown as El).textContent, "@ TESTHOST", "the demo record is a remote session, so the row shows the host");
   assert.equal((W.renderStatusWidgetDemo(W.statusWidget("name")!, P()) as unknown as El).textContent, "web");
@@ -157,4 +157,18 @@ test("statusWidgetPrefs sanitizes the order: duplicates once, unknown ids gone; 
   assert.deepEqual(saved.statusWidgets.order, ["host"]);
   assert.deepEqual(JSON.parse(store.get("romp:settings")!).statusWidgets.order, ["host"]);
   store.clear();
+});
+
+test("statusListOrder: the left slot's rows, then the right slot's, each in composition order (the list a drag reorders within a slot)", () => {
+  assert.deepEqual(W.statusListOrder(P()).filter((x) => x !== "boom"), ["name", "folder", "branch", "host"]);
+  assert.deepEqual(W.statusListOrder(P({ order: ["host", "name"] })).filter((x) => x !== "boom"), ["name", "host", "folder", "branch"], "the stored order reorders within each slot's group");
+});
+
+test("makeInert: a demo or preview node carries no folder act and no link dress; the title stays", () => {
+  const d = W.renderStatusWidgetDemo(W.statusWidget("folder")!, P()) as unknown as El;
+  assert.deepEqual(classes(d), ["status-dir"], "no folder-link class on the demo");
+  assert.equal(d.dataset.act, undefined); assert.equal(d.dataset.cwd, undefined); assert.equal(d.dataset.id, undefined);
+  assert.match(d.title, /notes-api/, "the path still reads on hover");
+  const live = compose("right", REC)[0];
+  assert.equal(live.dataset.act, "openFolder", "the line's own folder keeps its act");
 });
