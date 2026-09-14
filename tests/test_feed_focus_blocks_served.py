@@ -50,7 +50,9 @@ the page's own frame path, with page.mouse for every drag, and walks these roads
       drag ends with the chip blurred and the arrows back with the card cursor, Tab rings, a pointerdown on a clipped chip
       scrolls the list by nothing;
   (u) (v) (w) provenance: an order pinned by DRAG survives a key that lands on the fallback (row; row then single column;
-      single column then row), and a board drag leaves the pinned section alone.
+      single column then row), and a board drag leaves the pinned section alone;
+  (x) (y) (z) round three: key out, a click, key back stores nothing; a one-pixel slip is a click (focus kept, the arrow
+      then moves the block); key out, a board there-and-back drag, key back stores nothing; a right press arms no drag.
 Screenshots with FEED_FOCUS_BLOCKS_SHOTS=<path-prefix>: -1-label-dark/-light (unfolded, the label above the blocks),
 -2-folded-dark/-light, -3-completed-collapsed-dark/-light, -4-working-widened-dark/-light, -5-reordered-dark/-light,
 -6-label-vs-colhead-dark (a clip with the label and a board column head together), -7-empty-row-dark/-light (a focused
@@ -560,6 +562,66 @@ await page.focus("#feed-focus .col-needsInput .feed-col-head .fcol-chip");
 await page.keyboard.press("ArrowRight");       // [completed, needsInput, asks]? no: Blocked one slot right = [completed, needsInput, asks]
 await frame(); await park();
 out.rowKeyAfterStackedPin = await survey();
+// (x) key out, a plain CLICK on a chip, key back: the click must not drop the keys' provenance (round three, medium 1)
+await boot(T347_BLOB);
+await page.focus("#feed-focus .col-asks .feed-col-head .fcol-chip");
+await page.keyboard.press("ArrowRight");
+await frame(); await park();
+await page.click("#feed-focus .col-completed .feed-col-head .fcol-chip");
+await frame(); await park();
+await page.focus("#feed-focus .col-asks .feed-col-head .fcol-chip");
+await page.keyboard.press("ArrowLeft");
+await frame(); await park();
+out.keyClickKey = await survey();
+// (y) a one-pixel slip on a press is a click, not a drag: the chip keeps focus and ArrowRight then moves the block (medium 2)
+await boot(T347_BLOB);
+const sc = await page.locator("#feed-focus .col-asks .feed-col-head .fcol-chip").boundingBox();
+await page.mouse.move(sc.x + sc.width / 2, sc.y + sc.height / 2);
+await page.mouse.down();
+await page.mouse.move(sc.x + sc.width / 2 + 1, sc.y + sc.height / 2, { steps: 1 });
+await page.mouse.up();
+await frame();
+out.slipFocus = await focusProbe();
+await page.keyboard.press("ArrowRight");
+await frame(); await park();
+out.slipArrow = await survey();
+// (z) key out, a BOARD there-and-back drag (Completed to the first slot and back to its own), key back: stores nothing
+await boot(T347_BLOB);
+await page.focus("#feed-focus .col-asks .feed-col-head .fcol-chip");
+await page.keyboard.press("ArrowRight");
+await frame(); await park();
+out.zMinted = await survey();
+const bw2 = await page.locator("#feed-cols .col-asks").boundingBox();
+const bcols = await page.locator("#feed-cols").boundingBox();
+const bcc = await page.locator("#feed-cols .col-completed .feed-col-head .fcol-chip").boundingBox();
+const bcx = bcc.x + bcc.width / 2, bcy = bcc.y + bcc.height / 2;
+await page.mouse.move(bcx, bcy);
+await page.mouse.down();
+await page.mouse.move(bw2.x + 30, bcy, { steps: 16 });    // past Working's midpoint: Completed first
+await page.waitForTimeout(200);
+await page.mouse.move(bcols.x + bcols.width - 30, bcy, { steps: 16 });   // and back past the last column's midpoint: its own slot again
+await page.waitForTimeout(200);
+await page.mouse.up();
+await page.waitForTimeout(300); await park();
+out.boardThereAndBack = await survey();
+await page.focus("#feed-focus .col-asks .feed-col-head .fcol-chip");
+out.zBeforeKey = await focusProbe();
+await page.keyboard.press("ArrowLeft");
+out.zRightAfter = await page.evaluate(() => ({ stored: JSON.parse(localStorage.getItem("romp:feedview") || "null"), active: document.activeElement ? document.activeElement.className + "|" + document.activeElement.textContent : null,
+  vars: Array.from(document.querySelectorAll("#feed-focus .feed-col")).map((c) => c.className.match(/col-(asks|needsInput|completed)/)[1] + ":" + c.style.getPropertyValue("--col-order")) }));
+await frame(); await park();
+out.keyAfterBoardBack = await survey();
+// a RIGHT press arms no drag: the block stays where it is
+await boot(T347_BLOB);
+const rc = await page.locator("#feed-focus .col-needsInput .feed-col-head .fcol-chip").boundingBox();
+const rw = await page.locator("#feed-focus .col-asks").boundingBox();
+await page.mouse.move(rc.x + rc.width / 2, rc.y + rc.height / 2);
+await page.mouse.down({ button: "right" });
+await page.mouse.move(rw.x + 30, rc.y + rc.height / 2, { steps: 12 });
+await page.mouse.up({ button: "right" });
+await page.keyboard.press("Escape");   // any context menu
+await frame(); await park();
+out.rightPress = await survey();
 out.errors = errors;
 fs.writeFileSync(cfg.out, JSON.stringify(out));   // a file, not stdout: the survey record is past the size one pipe write carries whole
 await browser.close();
@@ -803,6 +865,15 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         # ── (p) a click on the chip focuses it; the arrow keys then work without a Tab (review, low 2) ──
         self.assertEqual(r["clickFocused"], "feed-col-name fcol-chip|Blocked", "the clicked chip holds focus: %r" % r["clickFocused"])
         self.assertEqual(r["clickArrow"]["stored"]["focusOrder"], ["asks", "completed", "needsInput"], "ArrowRight right after the click moves Blocked one slot on: %r" % r["clickArrow"]["stored"])
+        # ── (x) (y) (z) round three: a click and a there-and-back drag keep a key-minted order walkable; a slip is a click ──
+        self.assertEqual(r["keyClickKey"]["stored"]["focusOrder"], [], "key out, click, key back: the section FOLLOWS again, nothing stored (a click changed no order, so the keys' provenance stands): %r" % r["keyClickKey"]["stored"])
+        self.assertEqual(r["slipFocus"]["active"], "feed-col-name fcol-chip|Working", "a one-pixel slip is a click: the chip keeps its focus: %r" % r["slipFocus"])
+        self.assertEqual(r["slipArrow"]["stored"]["focusOrder"], ["needsInput", "asks", "completed"], "…and ArrowRight then moves the block: %r" % r["slipArrow"]["stored"])
+        self.assertEqual(r["zMinted"]["stored"]["focusOrder"], ["needsInput", "asks", "completed"], "(z) the key out minted: %r" % r["zMinted"]["stored"])
+        self.assertEqual(r["boardThereAndBack"]["stored"]["order"], [], "the board drag ended where it started: no board order stored: %r" % r["boardThereAndBack"]["stored"])
+        self.assertEqual(r["boardThereAndBack"]["stored"]["focusOrder"], ["needsInput", "asks", "completed"], "…and the section's own order stood through it: %r / on screen %r / board %r" % (r["boardThereAndBack"]["stored"], r["boardThereAndBack"]["secOrder"], r["boardThereAndBack"]["boardOrder"]))
+        self.assertEqual(r["keyAfterBoardBack"]["stored"]["focusOrder"], [], "key out, a board there-and-back, key back: nothing stored (the board changed no order): %r; before the key %r; right after %r" % (r["keyAfterBoardBack"]["stored"], r["zBeforeKey"], r["zRightAfter"]))
+        self.assertEqual((r["rightPress"]["stored"]["focusOrder"], r["rightPress"]["secOrder"]), ([], ["asks", "needsInput", "completed"]), "a right press arms no drag: %r" % r["rightPress"]["stored"])
         # ── (u) (v) (w) provenance (review round two, medium 1): a drag-pinned order survives a key that lands on the fallback ──
         pb = r["pinnedByDrag"]
         self.assertEqual(pb["stored"]["focusOrder"], ["needsInput", "asks", "completed"], "pinned by drag: %r" % pb["stored"])

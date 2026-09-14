@@ -72,7 +72,7 @@ test("the chip drags in BOTH layouts — grab affordance, live provisional movem
   // a no-op drag leaves no trace: ending on the layout's own default with no pre-existing custom
   // order resets to [] — an explicit order would silently re-arrange the OTHER layout (review 2026-08-24)
   assert.match(FEED, /if \(!hadCustom && cur\.length === 3 && cur\.join\(\) === fallback\.join\(\)\) slots\.set\(\[\]\);/);
-  assert.match(FEED, /set: \(o\) => \{ colOrder = o; focusOrderByKeys = false; applyColStack\(\); \},/, "BOARD_SLOTS writes colOrder and repaints the board");
+  assert.match(FEED, /set: \(o\) => \{ colOrder = o; applyColStack\(\); \},/, "BOARD_SLOTS writes colOrder and repaints the board");
   // the keyboard card cursor walks the VISUAL order — the effective column `order`, var resolved
   assert.match(FEED, /slot\.set\(e, col \? parseInt\(getComputedStyle\(col\)\.order \|\| "0", 10\) \|\| 0 : 0\);/);
   assert.match(FEED, /\.sort\(\(a, b\) => a\.s - b\.s \|\| a\.i - b\.i\)/, "column slot first, DOM order within");
