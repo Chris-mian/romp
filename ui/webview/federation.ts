@@ -909,6 +909,9 @@ export class FederationManager {
   // false until the first /tunnels answer is absorbed (poll): before it, hostSeq is the local host alone and says
   // nothing about which remote hosts exist, so a merged frame built then is flagged hostsUnread (T404 round nine)
   private hostsRead = false;
+  // a /tunnels poll that fails leaves hostsRead standing and the pane's absence-driven writers standing down; that
+  // spell is filed once (a hostconn crumb) and its end once, so a browser whose prunes never resume says why
+  private pollFailing = false;
   private downHosts = new Set<string>(); // attached, but its tunnel isn't up: what's on screen is a memory
   private dialingHosts = new Set<string>(); // the kernel is dialing or health-checking these right now (the row's `dialing`)
   // each host's recovery counter as last seen (/tunnels upSeq, T291b): the kernel bumps it when a row that had
@@ -1527,9 +1530,21 @@ export class FederationManager {
     let tunnels: any[] = [];
     try {
       const r = await fetch("/tunnels", { cache: "no-store" });
+      // a non-ok answer is not the list (a proxy in JSON-error mode returns a 5xx whose body parses, and it used to
+      // read as "the list in hand, no hosts", pruning every remote host's marks on the first frame): it throws,
+      // so the catch returns with hostsRead still false and the next poll, 4 s on, tries again
+      if (!r.ok) throw new Error("/tunnels answered HTTP " + r.status);
       tunnels = (await r.json()).tunnels || [];
     } catch (e) {
+      if (!this.pollFailing) {
+        this.pollFailing = true;
+        this.diag("hostconn", { host: "", ev: "tunnels-poll-failing", why: String((e && (e as any).message) || e).slice(0, 200), unread: !this.hostsRead });
+      }
       return;
+    }
+    if (this.pollFailing) {
+      this.pollFailing = false;
+      this.diag("hostconn", { host: "", ev: "tunnels-poll-recovered", unread: !this.hostsRead });
     }
     // `hasToken`, never the token: the kernel publishes whether a remote's credential EXISTS, and the
     // relay it dials through (/remote/<host>/ws, _remote_ws) injects that credential itself — so the
