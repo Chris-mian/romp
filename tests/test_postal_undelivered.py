@@ -145,6 +145,22 @@ class RefusedNotesKeepTheMail(unittest.TestCase):
     def _said(self):
         return len([m for m in self.logged if "kept for the next pass" in m])
 
+    def test_the_tidy_keeps_a_box_whose_inbox_cannot_be_read(self):
+        """The orphan sweep's tidy removed a mailbox it read as empty; an unsearchable new/ dropped out of the emptiness check
+        (is_dir() False there on 3.14) and the box, mail and all, went under rmtree. Unknown is never empty."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        self._live([{"id": SENDER, "name": "alice", "state": "idle"}])          # bob is dead → an orphan
+        mid = pm.deliver(RECIP, "alice", SENDER, "please review my PR")
+        box = pm.MAILROOT / RECIP
+        os.chmod(box / "new", 0)
+        try:
+            pm._sweep_orphans()
+        finally:
+            os.chmod(box / "new", 0o755)
+        self.assertTrue((box / "cur").is_dir() and (box / "tmp").is_dir(), "the box stands whole: nothing was tidied away")
+        self.assertTrue((box / "new" / mid).exists(), "the mail stands")
+
     def test_the_sweep_keeps_an_orphan_whose_bounce_note_was_refused(self):
         self._live([{"id": SENDER, "name": "alice", "state": "idle"}])          # bob is dead → an orphan
         mid = pm.deliver(RECIP, "alice", SENDER, "please review my PR")
