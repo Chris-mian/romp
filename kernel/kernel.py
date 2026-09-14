@@ -33772,8 +33772,9 @@ def _merge_tx_sets(session, sid, t_floor=None):
     no assistant row is ever built; the sets are equal to the every-atom road's by construction (the uuids and the
     text-bearing uuids came from the scalars). The memo entry records the floor its texts cover; a caller asking for an
     older floor misses and rebuilds. memos.chatMergeSets carries floorAgeMaxS (the newest atom's time over every turn,
-    live tail included, minus the floor; a zero floor is skipped) and builtAboveFloor (pre-cut user rows BUILT above a
-    floor), the two numbers the question of a dropped echo holding the floor is decided on."""
+    live tail included, minus the floor; a zero floor is skipped, and a floor newer than every atom contributes zero) and
+    builtAboveFloor (the pre-cut user rows THIS derivation built above a floor: never another road's builds and never the
+    rows it read already built), the two numbers the question of a dropped echo holding the floor is decided on."""
     ent = _merge_sets_memo.get(sid)
     if ent is not None and ent[0] is session and (t_floor is None or ent[2] <= t_floor):
         _chat_memo_bump(_merge_sets_stats, "hit")
@@ -33818,10 +33819,11 @@ def _merge_tx_sets(session, sid, t_floor=None):
                 tx_text_t[t] = max(tx_text_t.get(t, 0), float(a.get("t") or 0))
     if t_floor and newest:                        # the two questions the next design line asks (on this miss's return): how far
         age = max(0.0, newest - float(t_floor))   #  back the oldest live echo holds the floor (the newest atom's time over every
-        _merge_sets_stats["floorAgeMaxS"] = max(_merge_sets_stats.get("floorAgeMaxS", 0.0), age)   # turn minus the floor; a zero
-        #                                          floor, an echo with no send time, is skipped), and how many pre-cut user rows that
-        #                                          floor made the derivation BUILD
-    _merge_sets_stats["builtAboveFloor"] = _merge_sets_stats.get("builtAboveFloor", 0) + built_above
+        with _chat_fold_lock:                     #  turn minus the floor; a zero floor, an echo with no send time, is skipped; a
+            _merge_sets_stats["floorAgeMaxS"] = max(_merge_sets_stats.get("floorAgeMaxS", 0.0), age)   # floor newer than every
+        #                                          atom contributes zero), and how many pre-cut user rows THIS derivation built
+    if built_above:                               # under the fold lock like hit and miss: the pusher, the WS handlers and the backends
+        _chat_memo_bump(_merge_sets_stats, "builtAboveFloor", built_above)   # all derive, and a bare += from two threads loses counts
     sets = (frozenset(tx_uuids), frozenset(tx_text_uuids), frozenset(tx_texts), tx_text_t, _human_turn_floor(session))
     _merge_sets_memo.pop(sid, None)
     while len(_merge_sets_memo) >= _MERGE_SETS_MAX:

@@ -9,6 +9,7 @@ check reads (the cold oracle); the floor's semantics are untouched. Synthetic fi
 import json
 import os
 import sys
+import threading
 import unittest
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
@@ -180,6 +181,31 @@ class TheShapesTheFloorStresses(TA.Harness):
         km._merge_sets_stats["floorAgeMaxS"] = 0.0
         self._run(tree, 0.0)
         self.assertEqual(km._merge_sets_stats["floorAgeMaxS"], 0.0, "a zero floor (an echo with no send time) records no age")
+
+    def test_the_two_counters_bump_under_the_fold_lock_like_hit_and_miss(self):
+        """Round three's medium: both counters bumped with a bare read-modify-write while hit and miss go through _chat_memo_bump
+        under _chat_fold_lock (8 concurrent misses gave miss 8 and builtAboveFloor 1). Pinned by source, and exercised: six
+        threads over distinct trees under a tight switch interval lose no increment."""
+        import inspect, sys
+        src = inspect.getsource(km._merge_tx_sets)
+        self.assertIn('_chat_memo_bump(_merge_sets_stats, "builtAboveFloor", built_above)', src)
+        i_lock = src.index("with _chat_fold_lock:"); i_max = src.index('_merge_sets_stats["floorAgeMaxS"] = max(')
+        self.assertLess(i_lock, i_max, "the max runs under the fold lock")
+        trees = [self._tree([("user", 1000 + k, True, None)], 1000 + k) for k in range(6)]
+        b0 = km._merge_sets_stats.get("builtAboveFloor", 0); m0 = km._merge_sets_stats["miss"]
+        prev = sys.getswitchinterval(); sys.setswitchinterval(1e-6)
+        try:
+            def run(k):
+                for _ in range(200):                                              # bounded: 200 forced misses a thread
+                    km._merge_sets_memo.pop(SID + str(k), None)
+                    km._merge_tx_sets(trees[k][0], SID + str(k), 900)
+            ths = [threading.Thread(target=run, args=(k,)) for k in range(6)]
+            for th in ths: th.start()
+            for th in ths: th.join(60)
+        finally:
+            sys.setswitchinterval(prev)
+        self.assertEqual(km._merge_sets_stats["miss"] - m0, 1200, "every miss counted")
+        self.assertEqual(km._merge_sets_stats.get("builtAboveFloor", 0) - b0, 6, "one build per tree, none lost, none double-counted")
 
     def test_a_turn_below_the_floor_is_skipped_whole(self):
         tree, _ = self._tree([("user", 1000, True, {"ir": False})], 1000)

@@ -2348,8 +2348,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   a miss records (T401 (5b)): `floorAgeMaxS`, the largest distance from the
   newest atom's time over every turn, live tail included, back to the
   oldest live echo's send that floors the derivation (a zero floor, an echo
-  with no send time, is skipped), and `builtAboveFloor`, the restored
-  pre-cut user rows built above such a floor since boot; a restored session's
+  with no send time, is skipped, and a floor newer than every atom
+  contributes zero), and `builtAboveFloor`, the restored pre-cut user rows
+  the derivation itself built above such a floor since boot (never another
+  road's builds, never the rows it read already built); a restored session's
   pre-cut turns above the floor are read through the index's light facts,
   building only the user rows that carry text, so the two say whether a
   dropped echo days back should hold the floor at all. `chatPostal` is
