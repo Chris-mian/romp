@@ -213,6 +213,33 @@ for (const old of ["automatic", "system", "tabs", "appearance"]) {
   out.mapping[old] = setF ? await readPanel(setF) : { open: false };
   await page.close(); await ctx.close();
 }
+// 3. the Token usage panel's close returns to the card (the T409 tidy's read, a pre-existing gap): before, its close button,
+// its backdrop and its Escape only hid the analytics layer while the card stayed hidden and nothing posted settings off, so
+// the shell's transparent full-window frame kept covering the page: Escape dead (the shell asks the page, which answers
+// no on a hidden card), every click landing on the invisible frame, only the palette or a reload recovering
+{
+  const { ctx, page, setF } = await openPanel(null, "debug");   // the Diagnostics section with the Token usage button is on the Debug pane
+  let chatF = page.frames().find((f) => f.url().includes("/chat"));
+  const shellRead = () => page.evaluate(() => { const f = document.getElementById("f-chat").getBoundingClientRect(); const el = document.elementFromPoint(f.left + f.width / 2, f.top + f.height / 2);
+    return { settingsOpen: document.body.classList.contains("settings-open"), hit: el ? el.tagName + "#" + el.id : null }; });
+  const frameRead = () => setF.evaluate(() => ({ cardHidden: document.getElementById("rsettings").hidden, backShown: !document.getElementById("ranalytics-back").hidden }));
+  await setF.click("#ra-open");
+  await setF.waitForFunction(() => !document.getElementById("ranalytics-back").hidden, null, { timeout: 5000 });
+  await setF.waitForTimeout(200);
+  const mid = { frame: await frameRead(), shell: await shellRead() };
+  await setF.click("#ra-close"); await setF.waitForTimeout(250);
+  const afterClose = { frame: await frameRead(), shell: await shellRead() };
+  await page.keyboard.press("Escape"); await page.waitForTimeout(300);
+  const afterEsc = { frame: await frameRead(), shell: await shellRead() };
+  // a click that must land: another tab in the chat frame's strip becomes the active one
+  const tgt = await chatF.evaluate(() => { const tabs = Array.from(document.querySelectorAll("#tabs .tab[data-id]")); const t = tabs.find((x) => !x.classList.contains("active")) || tabs[0];
+    const b = t.getBoundingClientRect(); return { id: t.dataset.id, x: b.left + b.width / 2, y: b.top + b.height / 2, activeBefore: (document.querySelector("#tabs .tab.active") || {}).dataset ? document.querySelector("#tabs .tab.active").dataset.id : null }; });
+  const fr = await page.evaluate(() => { const f = document.getElementById("f-chat").getBoundingClientRect(); return { x: f.left, y: f.top }; });
+  await page.mouse.click(fr.x + tgt.x, fr.y + tgt.y); await page.waitForTimeout(500);
+  const activeAfter = await chatF.evaluate(() => { const a = document.querySelector("#tabs .tab.active"); return a ? a.dataset.id : null; });
+  out.tokenUsageClose = { mid, afterClose, afterEsc, click: { target: tgt.id, activeBefore: tgt.activeBefore, activeAfter, shell: await shellRead() } };
+  await page.close(); await ctx.close();
+}
 fs.writeFileSync(cfg.out, JSON.stringify(out));
 console.log("RESULT: ok");
 await browser.close();
@@ -338,6 +365,16 @@ class ServedSettingsTabs(unittest.TestCase):
         if os.environ.get("SETTINGS_TABS_DUMP"):
             Path(os.environ["SETTINGS_TABS_DUMP"]).write_text(json.dumps(result, indent=1) + "\n")
         return result
+
+    def test_the_token_usage_panels_close_returns_to_the_card_so_escape_closes_the_settings_and_the_next_click_lands(self):
+        r = self._run()["tokenUsageClose"]; t = "\n  " + json.dumps(r)
+        self.assertEqual((r["mid"]["frame"]["cardHidden"], r["mid"]["frame"]["backShown"], r["mid"]["shell"]["settingsOpen"]), (True, True, True), "the Token usage panel up over the hidden card, the shell's overlay lifted" + t)
+        self.assertEqual((r["afterClose"]["frame"]["cardHidden"], r["afterClose"]["frame"]["backShown"]), (False, False), "its close returns to the card: the card shows, the analytics layer is down" + t)
+        self.assertTrue(r["afterClose"]["shell"]["settingsOpen"], "the overlay legitimately stays while the card shows" + t)
+        self.assertFalse(r["afterEsc"]["shell"]["settingsOpen"], "Escape then closes the settings by the normal road: the shell released the overlay" + t)
+        self.assertEqual(r["afterEsc"]["shell"]["hit"], "IFRAME#f-chat", "the chat frame is what a pointer meets at the page's centre, not the settings frame" + t)
+        self.assertEqual(r["click"]["activeAfter"], r["click"]["target"], "the next click landed: the tab it hit is the active one" + t)
+        self.assertNotEqual(r["click"]["activeAfter"], r["click"]["activeBefore"], "and it was a change" + t)
 
     def test_the_pills_read_general_chat_feed_sessions_automation_task_tracking_debug_in_that_order(self):
         # T404 (the user 2026-09-13): Automation is new, Appearance folded into General

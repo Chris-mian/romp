@@ -265,3 +265,13 @@ test("the strip's gear glyph opens the Chat tab at its Tab widgets section throu
   assert.match(KERNEL, /var msg=\{romp:'openSettings'\};if\(typeof tab==='string'&&tab\)msg\.tab=tab;if\(typeof section==='string'&&section\)msg\.section=section;\s*\n\s*var open=function\(\)\{try\{f\.contentWindow&&f\.contentWindow\.postMessage\(msg,'\*'\);\}catch\(e\)\{\}\};/, "the shell forwards the tab and the section into the settings iframe; a bare ask stays bare");
   assert.match(KERNEL, /if\(m\.romp==='openSettings'\)window\.__rompOpenSettings\(m\.tab,m\.section\);/, "a pane's ask carries its tab and section through");
 });
+
+test("the Token usage panel's every close returns to the settings card (the T409 tidy's read): one function, three callers, no bare hide of the layer", () => {
+  // a bare hide left the card hidden with the shell's transparent full-window frame still over the page; the served settings lab
+  // presses the close, then Escape, then a click that must land
+  assert.match(GEAR, /function raHide\(e\) \{ if \(e && e\.stopPropagation\) e\.stopPropagation\(\); raBack\.hidden = true; p\.hidden = false; \}/, "the close's click stops before the card's click-outside listener, which would close the settings outright");
+  assert.match(GEAR, /if \(raClose\) raClose\.onclick = raHide;/);
+  assert.match(GEAR, /if \(e\.target === raBack\) raHide\(e\); \}\);/, "the backdrop");
+  assert.match(GEAR, /if \(e\.key === 'Escape' && raBack && !raBack\.hidden\) raHide\(\); \}\);/, "the panel's Escape");
+  assert.equal((GEAR.match(/raBack\.hidden = true/g) || []).length, 1, "the one hide of the layer is raHide's");
+});

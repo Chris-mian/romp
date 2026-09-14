@@ -1894,15 +1894,22 @@ function initGear(post, opts) {
   function raFetch() { raState.loading = true; raRender();
     fetch(ku('/analytics?window=' + raState.window), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { raState.loading = false; raState.data = d; raRender(); }).catch(function () { raState.loading = false; raChart.innerHTML = '<div class=ra-empty>analytics unavailable</div>'; raLegend.innerHTML = ''; raNote.textContent = ''; }); }
   if (raOpen) raOpen.onclick = function (e) { e.stopPropagation(); endDrags(); raBack.hidden = false; p.hidden = true; raFetch(); };   // the card hides here too: a drag in flight ends first (the migration read's low 2)
-  if (raClose) raClose.onclick = function () { raBack.hidden = true; };
-  if (raBack) raBack.addEventListener('click', function (e) { if (e.target === raBack) raBack.hidden = true; });
+  // the panel's every close returns to the CARD it was opened from (the T409 tidy's read found the gap): a bare hide of the layer
+  // left the card hidden too, and with nothing posting settings off the shell kept its transparent full-window frame over the
+  // page (Escape dead, since the shell asks this page and a hidden card answers no; every click on the invisible frame; only the
+  // palette or a reload recovered). From the card, Escape and the backdrop close the settings by the normal road. The close's
+  // own click stops here: bubbling on to the document, it would meet the card's click-outside listener with the card just
+  // shown and close the settings outright (the lab saw the card hidden again a moment after the close).
+  function raHide(e) { if (e && e.stopPropagation) e.stopPropagation(); raBack.hidden = true; p.hidden = false; }
+  if (raClose) raClose.onclick = raHide;
+  if (raBack) raBack.addEventListener('click', function (e) { if (e.target === raBack) raHide(e); });
   Array.prototype.forEach.call(document.querySelectorAll('.ra-periods button'), function (btn) { btn.onclick = function () { raState.window = +btn.getAttribute('data-w'); raState.periodLabel = btn.textContent;
     Array.prototype.forEach.call(document.querySelectorAll('.ra-periods button'), function (b2) { b2.className = (b2 === btn) ? 'on' : ''; }); raFetch(); }; });
   Array.prototype.forEach.call(document.querySelectorAll('.ra-group button'), function (btn) { btn.onclick = function () { raState.group = btn.getAttribute('data-g');
     Array.prototype.forEach.call(document.querySelectorAll('.ra-group button'), function (b2) { b2.className = (b2 === btn) ? 'on' : ''; }); raRender(); }; });
   Array.prototype.forEach.call(document.querySelectorAll('.ra-metric button'), function (btn) { btn.onclick = function () { raState.metric = btn.getAttribute('data-m');
     Array.prototype.forEach.call(document.querySelectorAll('.ra-metric button'), function (b2) { b2.className = (b2 === btn) ? 'on' : ''; }); raRender(); }; });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && raBack && !raBack.hidden) raBack.hidden = true; });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && raBack && !raBack.hidden) raHide(); });
 }
 
 module.exports = { initGear };
