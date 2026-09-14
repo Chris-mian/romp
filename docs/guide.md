@@ -179,7 +179,12 @@ is idle, waiting on background work or still working, so the sessions that need 
 in the strip without a click through each of them; a working session keeps its gold dot inside
 the ring. The ring follows the feed, one refresh behind it at most, and goes when the card
 does: answer it, resolve it or clear it and the tab is plain again. A red ring outranks the
-yellow one; the amber ring of a session retrying an API error on its own gives way to it. With
+yellow one; the amber ring of a session retrying an API error on its own gives way to it. The
+three rings are rows of **Settings**, **Chat**, **Tab widgets** (**Needs you**, **Waiting on
+you**, **Retrying**), each with its own switch, listed in that order because a tab wears one
+ring at a time and the first that applies wins: red over yellow over amber. A ring switched off
+leaves the tab with its dot; the small dot on a folded group's header and the phone's picker
+follow the same switches. With
 notifications on, the card entering Blocked is also what notifies you (see [Notifications on
 your phone](#notifications-on-your-phone)): the ring is that card, shown in the strip, and it
 stays as long as the card does, including across a kernel restart, which announces nothing. On
@@ -218,7 +223,7 @@ of its own; a section folded in either place is folded in both, and while groupe
 follow the tag order (dragging a lane pans, it does not reorder). A session reached from a card or the chat while its section is folded unfolds that section, in the strip too, and the arrow keys walk the rows on screen. The gear at the strip's right end, the same gear as the one at the bottom right of every romp page, opens a small menu: **Lock the tabs in place** freezes every tab move (a drag, a Move to, the Sessions pane's lanes) until you turn it off, and **Tab widgets…** opens the settings on the Chat tab's widget rows. The strip's tag button, at the other end of the controls from the gear, shows no chips of its own: the tags show in the strip's sections when the tabs are grouped, and the button wears the accent while a filter is on. Every group starts on its own row; turning off
 the gear's **One tag group per row in the tab strip** lets the groups follow one another across the
 strip and wrap as they need, with the untagged sessions behind a thin divider, so a strip with many
-tags stays short. The **Status line** section, next to Tab widgets in the same Chat tab, does the same for the line above the composer: the folder and the git branch are on by default, the session's name and the host of a remote session are there to switch on, and in both sections the rows reorder by dragging a row's grip or with the arrow keys on it, each section previewing the result below its rows; in Tab widgets a line marking the session name's place divides the list, and a row dragged above or below it renders on that side of the name.
+tags stays short. The **Status line** section, next to Tab widgets in the same Chat tab, does the same for the line above the composer: the folder and the git branch are on by default, the session's name and the host of a remote session are there to switch on, and in both sections the rows reorder by dragging a row's grip or with the arrow keys on it, each section previewing the result below its rows; in Tab widgets a line marking the session name's place divides the list, and a row dragged above or below it renders on that side of the name; the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name.
 
 **A section at a glance.** Clicking a header also shows the section in the transcript's place: one
 row per session, with its color, a dot for its state (yellow working, red stopped on a prompt or an

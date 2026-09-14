@@ -287,7 +287,13 @@ body.theme-light {
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
   --st-5xx-bg: #A21CAF; --st-5xx-fg: #ffffff;   /* the 5xx magenta in the light palette: 5.3:1 on the card, white on it 6.7:1 */
   --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;   /* the retrying amber in the light palette: 4.86:1 on the card, white on it 6.18:1 */
-  --st-ask-bg: #7a6400; --st-ask-fg: #ffffff;   /* the ask yellow in the light palette: 4.82:1 on the page, white on it 5.75:1 */
+  /* the ask yellow in the light palette (2026-09-14): a dark olive at OKLCH lightness 0.38, hue 94, because the light
+     palette's convention (the same hue darkened to lightness 0.5 for 3:1 on cream) would put a second yellow on the
+     working gold (#8B6914), and hue alone does not survive a red-green deficiency against the gold or the retrying
+     amber (#9C4A0C); lightness is the axis left. 8.40:1 on the page, white on it 10.01:1; OKLab distance x100 from the
+     other rings and dots, full colour / under a deficiency: working 16.4 / 15.3, retrying 15.4 / 8.3, awaiting 22.7 /
+     8.6, blocked 30.7 / 16.1, await-green 33.6 / 30.3 (theme-parity.test.ts pins every pair, both themes). */
+  --st-ask-bg: #504100; --st-ask-fg: #ffffff;
   --radius-menu: 6px;
   --shadow-menu: 0 4px 12px rgba(31, 26, 20, 0.16);
   --menu-bg: #FBF6EF;

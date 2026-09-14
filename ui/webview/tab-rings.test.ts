@@ -112,6 +112,11 @@ test("the guide says what the yellow ring means, when it shows (idle, waiting or
   assert.match(GUIDE, prose("A red ring outranks the yellow one; the amber ring of a session retrying an API error on its own gives way to it."));
   assert.match(GUIDE, prose("With notifications on, the card entering Blocked is also what notifies you"));
   assert.match(GUIDE, prose("the session picker marks the same sessions with a yellow bar at the row's left edge"), "the phone's picker carries the mark too");
+  // the rings as widgets (2026-09-14): the three rows, their switches, the one-at-a-time rule and what a switched-off ring leaves
+  assert.match(GUIDE, prose("each with its own switch, listed in that order because a tab wears one ring at a time and the first that applies wins: red over yellow over amber."));
+  assert.match(GUIDE, /\*\*Tab widgets\*\* \(\*\*Needs you\*\*, \*\*Waiting on\s+you\*\*, \*\*Retrying\*\*\)/, "the rows by their labels, in precedence order");
+  assert.match(GUIDE, prose("A ring switched off leaves the tab with its dot; the small dot on a folded group's header and the phone's picker follow the same switches."));
+  assert.match(GUIDE, prose("the three rings around a tab are listed below those rows without a place in the order, since a ring has no side of the name"), "the strip paragraph's Tab widgets sentence");
 });
 
 test("the phone's session picker scrapes the yellow ring's class off the desktop strip and paints it on the row and the current-session chip, so it follows the ring's switch for free", () => {
