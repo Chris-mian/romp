@@ -320,7 +320,7 @@ test("droppedRowsNote: the sub-panel names the peer rows the kernel left out, in
 test("loadHosts routes both outcomes through fillHostSelect — no innerHTML host rendering remains in strip.ts", () => {
   const ROOT = path.resolve(process.cwd(), "..");
   const src = fs.readFileSync(path.join(ROOT, "ui", "webview", "strip.ts"), "utf8");
-  assert.match(src, /fillHostSelect\(sel, d && d\.hosts, "\(no ~\/\.ssh\/config hosts\)"\)/);
+  assert.match(src, /fillHostSelect\(sel, lastHosts, "\(no ~\/\.ssh\/config hosts\)"\)/);   // the list read, kept across a failed refresh
   assert.match(src, /fillHostSelect\(sel, \[\], "\(kernel unreachable\)"\)/);
   assert.doesNotMatch(src, /<option value="\$\{h\}">/, "the template that rendered an alias as markup");
 });

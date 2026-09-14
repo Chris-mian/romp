@@ -55753,7 +55753,7 @@ window.__rompNotifyTurnsPaint=function(on){turnsOn=!!on;paint();};
 // a few times (5 s apart) before the page gives up; a later toggle still repaints through the shell's WS.
 function readSwitch(url,apply,tries){fetch(url).then(function(r){if(!r.ok)throw new Error(url+' answered HTTP '+r.status);return r.json();})
 .then(function(d){apply(!!(d&&d.on));paint();}).catch(function(e){if(tries>0)setTimeout(function(){readSwitch(url,apply,tries-1);},5000);
-else{try{console.error('romp: '+url+' could not be read after four tries; the bell shows its default, not the kernel\'s state',e);}catch(_){}}});}
+else{try{console.error('romp: '+url+' could not be read after four tries; the bell shows its default, not what the kernel holds',e);}catch(_){}}});}
 readSwitch('/notify-all',function(on){isOn=on;},3);
 readSwitch('/notify-turns',function(on){turnsOn=on;},3);
 function sub(){if(!canPush)return Promise.resolve(null);
