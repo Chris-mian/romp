@@ -53,9 +53,13 @@ test("a session carries cwd, shown on the statusline just left of the mode/model
   assert.match(RENDER, /cwd: msg\.cwd \?\? \(prev \? prev\.cwd : ""\)/);
   // a status-dir element (basename; full path on hover + click-to-open via asFolderLink), appended BEFORE
   // #spinner-meta (the controls cluster)
-  assert.match(RENDER, /el\("span", "status-dir"\)/);
-  assert.match(RENDER, /asFolderLink\(dir, s\.cwd, activeId \|\| undefined\)/);
-  assert.match(RENDER, /right\.appendChild\(dir\);[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
+  // the folder is the status line's FOLDER WIDGET since T409 (status-widgets.ts); the renderer composes the right slot
+  // ahead of the controls
+  const SW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-widgets.ts"), "utf8");
+  assert.match(SW, /el\("span", opts\.show === "path" \? "status-dir status-dir-full" : "status-dir"\)/);
+  assert.match(SW, /folderLink\(dir, rec\.cwd, rec\.id\);/);
+  assert.match(RENDER, /cwd: s\.cwd \|\| ""/, "the record slice carries the session's cwd");
+  assert.match(RENDER, /composeStatusWidgets\(right, "right", rec, settings\.statusWidgets\);[\s\S]*?const meta = el\("span", "spinner-meta"\)/);
   // and NOT on the tab anymore (the user 2026-06-23)
   assert.doesNotMatch(RENDER, /tab-dir/);
 });

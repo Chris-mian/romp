@@ -30,6 +30,7 @@ import { lensVisible, surfaceLens } from "./tag-lens";
 import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS, openRowsMenu } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
+import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
 import { senderKind, SenderKind } from "./sender-identity";
@@ -88,7 +89,6 @@ import type { MentionCandidate, MentionQuery } from "./composer-mention";
 import { defaultCommentName, defaultBreakoutName, defaultForkName, nameToSend } from "./comment-name";
 import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, reshowStick } from "./scroll-keep";
 import { phParts } from "./composer-placeholder";   // the resting placeholder names the session (2026-09-09)
-import { badgeSpec } from "./session-badge";   // the statusline badge names the session (2026-09-09)
 import { retainLiveOmitted } from "./tab-order";
 import { localStrip, readCloseAckMs } from "./tab-order";
 import { userTurnShows } from "./user-turn-content";
@@ -4060,33 +4060,14 @@ function prettyModel(id: string): string {
 // of treating a remote path as local (a silent no-op, since that path doesn't exist here). This pane stays
 // host-BLIND as designed (see federation.ts) — sid is just echoed back opaquely, never parsed here.
 function asFolderLink(elem: HTMLElement, cwd: string, sid?: string): void {
-  if (!cwd) return;
-  // On the web a click BROWSES the folder in the dashboard (the user 2026-08-14) — the affordance
-  // that works from every device, where OS-open acted on the KERNEL's machine (the wrong-machine
-  // class the 📎 picker and file links were cured of). WHERE the listing opens is decided at the
-  // click, not here (openBrowse: the Files pane while it is on screen or the gear names it, else over
-  // this chat). OS-open survives on the row's right-click menu for the genuinely-local case (the
-  // contextmenu delegate below). In VS Code the browser overlay doesn't exist, so the click keeps
-  // opening the folder host-side.
-  const web = location.protocol === "http:" || location.protocol === "https:";
-  elem.dataset.act = web ? "browseFiles" : "openFolder";   // the act names the intent; openBrowse routes it
-  elem.dataset.cwd = cwd;
-  if (sid) elem.dataset.id = sid;
-  elem.classList.add("folder-link");
-  elem.title = cwd + (elem.dataset.act === "browseFiles"
-    ? "  ·  click to browse this folder" : "  ·  click to open this folder");
+  folderLink(elem, cwd, sid);   // the rule itself lives beside the folder widget (status-widgets.ts folderLink) since T409; kept here for the other folder locations
 }
 
 // Small inline-SVG folder in the romp line-icon style (matches ctxIcon: 16-unit viewBox, currentColor, so it
 // inherits the dim statusline tint / brightens on the folder-link hover) — the monochrome replacement for the
 // 📁 emoji beside the statusline directory (the user 2026-07-15). Trusted constant markup.
 function folderIcon(): HTMLElement {
-  const span = el("span", "status-dir-icon");
-  span.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" '
-    + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="M2 12.6 a1 1 0 0 1-1-1 V4.4 a1 1 0 0 1 1-1 H5.9 a1 1 0 0 1 0.7 0.3 L7.8 5 '
-    + 'H13 a1 1 0 0 1 1 1 V11.6 a1 1 0 0 1-1 1 Z"/></svg>';
-  return span;
+  return folderIconNode();   // the markup lives beside the folder widget (status-widgets.ts FOLDER_ICON_SVG) since T409
 }
 
 function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
@@ -15817,16 +15798,13 @@ function updateStatusline() {
     sl.appendChild(ro);
     return;
   }
-  // The session's own badge FIRST (the user 2026-09-09): its name on its identity colour — the colour its
-  // tab label and timeline lane wear — with the name in black, so the line reads "<session> · Working" and a
-  // glance at any chat column says which session it is. Built from the same record as the chips beside it.
-  const bs = settings.showSessionBadge === true ? badgeSpec(s) : null;   // an opt-in (Settings → Chat → Show session badge; off by default, the maintainers 2026-09-10): the composer's placeholder names the session already
-  if (bs) {
-    const b = el("span", "chip chip-session"); b.textContent = bs.text;
-    if (bs.bg) b.style.background = bs.bg;
-    b.title = bs.text;   // the full name when the chip clips a long one
-    sl.appendChild(b);
-  }
+  // The line's WIDGETS (T409, the user 2026-09-13): the configured set in its order, from the registry the settings rows
+  // render from (status-widgets.ts, the Chat tab's Status line section). The LEFT slot leads the line (the session's
+  // name on its identity colour, off by default: the tab above already names it); the RIGHT slot leads the right
+  // cluster below (the folder and the branch by default, the host of a remote session on request), ahead of the
+  // controls that are always there. A widget that renders nothing adds nothing.
+  const rec = statusRecordOf(s, activeId || "");
+  composeStatusWidgets(sl, "left", rec, settings.statusWidgets);
   // Left: the state chip — WORKING gets a sine color-pulse + elapsed timer; idle
   // states get the plain chip (no timer). Right: model + effort · ctx%, always.
   if (s.status.state === "working") {
@@ -15893,32 +15871,12 @@ function updateStatusline() {
   // at the LEFT edge (justify only reaches the row holding the auto margin) — the user 2026-08-10, on a
   // phone, wanted the wrapped controls to stay clustered on the right.
   const right = el("span", "sl-right");
-  // The session's working directory (the current one — a tab-menu move changes it), leading the right-side
-  // cluster — just left of the mode/model/effort controls (the user 2026-06-23). Basename only; full path
-  // on hover. Empty (rare, no cwd) it's a zero-width spacer.
-  const dir = el("span", "status-dir");
-  if (s.cwd) {
-    dir.appendChild(folderIcon());
-    dir.appendChild(document.createTextNode(" " + (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd)));
-    // Click → run the configured folder opener for this dir (default: the OS opener — Finder / xdg-open —
-    // overridable via ROMP_OPEN_FOLDER or ~/.config/romp/open-folder, e.g. open in Ghostty). asFolderLink wires
-    // the data-act caught by the document-level openFolder delegate, so the per-push rebuild can't drop it.
-    // activeId rides along so a REMOTE session's click SSHes out instead of no-op'ing on a local path (2026-07-03).
-    asFolderLink(dir, s.cwd, activeId || undefined);
-  }
-  right.appendChild(dir);
-  // The session's git branch, just right of the dir — only when known and only if the user has OPTED IN
-  // (Settings → Chat → "Show git branch"; off by default — the user 2026-08-10, trimming the statusline
-  // for narrow panes; it shipped on by default 2026-06-23). Read from the TOP-LEVEL session field,
-  // never the head system event: that event is windowed out of the wire tail on any >250-event session, which
-  // used to blank the branch on most sessions (the user 2026-06-30).
-  if (loadSettings().showBranch === true && ((s.workTree && s.workTree.branch) || s.gitBranch)) {
-    const br = el("span", "status-branch");
-    const liveBr = (s.workTree && s.workTree.branch) || s.gitBranch;
-    br.textContent = "⎇ " + liveBr;
-    br.title = s.workTree ? `worktree ${s.workTree.dir} — git branch: ${liveBr}` : "git branch: " + liveBr;
-    right.appendChild(br);
-  }
+  // The right slot's widgets lead the cluster (T409): the working directory (the current one; a tab-menu move changes
+  // it), by name with the full path on hover and a click that opens it, then the git branch when known (the worktree's
+  // when the session runs in one; read from the TOP-LEVEL session fields, never the head system event, which is
+  // windowed out of the wire tail on any long session), then, on request, the host of a remote session. Each is a row
+  // in the settings; the folder's row carries the Full path option.
+  composeStatusWidgets(right, "right", rec, settings.statusWidgets);
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";
   syncMetaControls(meta, s.status);
@@ -15936,6 +15894,12 @@ function updateStatusline() {
       || s.status.state === "retrying" || s.status.state === "blocked") right.appendChild(stopButton(s.status.state));
   sl.appendChild(right);
   pruneTip();   // a rebuilt statusline tears tip anchors (the stop button) out mid-hover — drop the orphan (PR #763 item 8; the feed's render does the same)
+}
+
+/** The slice of a session's record the status-line widgets read (status-widgets.ts): the top-level fields the wire
+ *  carries on every push, and the host a remote session's id names (hostOf), "" for a local one. */
+function statusRecordOf(s: Session, id: string): StatusRecord {
+  return { id, name: s.name, color: s.color, cwd: s.cwd || "", gitBranch: s.gitBranch || "", workTree: s.workTree || null, host: hostOf(id) };
 }
 
 // Unsent composer text, per session — a draft belongs to the tab it was typed
@@ -19902,7 +19866,7 @@ function setupSettings(): void {
   applyChatScheme(settings);   // the persisted pick applies at startup — it survives reloads
   // renderTabs too: the tab strip reads settings (the context gauge toggle) but rerenderAll only
   // rebuilds the transcript views, so without it a gear change waited for the next kernel push.
-  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); rerenderAll(); refillOpenCommentPop(); });
+  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); updateStatusline(); rerenderAll(); refillOpenCommentPop(); });   // updateStatusline: the line's widgets follow a gear switch live (T409), as the strip's do
 }
 
 // The feed's click echo (feed.ts focusEcho — the user 2026-08-24, "clicking into a not-shown
