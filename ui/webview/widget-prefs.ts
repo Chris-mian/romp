@@ -14,6 +14,19 @@ export interface WidgetLike { id: string; defaultOn: boolean; options?: WidgetOp
 
 export function emptyWidgetPrefs(): WidgetPrefs { return { on: {}, order: [], opts: {} }; }
 
+/** A stored order made sane: each id once (its first place kept) and, given the registry's test, only ids it knows,
+ *  so a malformed store is rewritten clean by its next save rather than carried forever (review round one of the
+ *  status line's widgets). A registry's own normalizer supplies `known`; a widget registered after the store was read
+ *  (none today: every widget registers at import) would lose its stored place, which is the price of a clean store. */
+export function dedupe(ids: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const id of ids) if (!out.includes(id)) out.push(id);
+  return out;
+}
+export function sanitizeOrder(order: readonly string[], known: (id: string) => boolean): string[] {
+  return dedupe(order.filter(known));
+}
+
 /** A stored object normalized: every field present, junk dropped. Null when the store holds no object at all, so the
  *  caller can derive from the keys its widgets replaced (the tab widgets from tabCtx, the status line's from
  *  showBranch and showSessionBadge). */
@@ -23,7 +36,7 @@ export function normalizeWidgetPrefs(v: unknown): WidgetPrefs | null {
   const out = emptyWidgetPrefs();
   const on = (o.on && typeof o.on === "object" ? o.on : {}) as Record<string, unknown>;
   for (const k of Object.keys(on)) if (typeof on[k] === "boolean") out.on[k] = on[k] as boolean;
-  if (Array.isArray(o.order)) out.order = o.order.filter((x): x is string => typeof x === "string");
+  if (Array.isArray(o.order)) out.order = dedupe(o.order.filter((x): x is string => typeof x === "string"));
   const opts = (o.opts && typeof o.opts === "object" ? o.opts : {}) as Record<string, unknown>;
   for (const k of Object.keys(opts)) {
     const w = opts[k];
@@ -60,4 +73,17 @@ export function orderWidgets<W extends WidgetLike>(prefs: WidgetPrefs, registry:
   for (const id of prefs.order) { const w = byId.get(id); if (w && !out.includes(w)) out.push(w); }
   for (const w of registry) if (!out.includes(w)) out.push(w);
   return out;
+}
+
+/** A row moved within a list of ids (the settings rows' visual order, dividers included): the id taken out and put
+ *  back at `to`, an index into the list WITHOUT the id; an unknown id or an out-of-range index leaves the list as it
+ *  was. Pure, so the drag and the keyboard road (and their tests) share one rule. */
+export function moveId(list: readonly string[], id: string, to: number): string[] {
+  const i = list.indexOf(id);
+  if (i < 0) return list.slice();
+  const rest = list.filter((x) => x !== id);
+  const at = Math.max(0, Math.min(rest.length, Math.floor(to)));
+  if (!Number.isFinite(to)) return list.slice();
+  rest.splice(at, 0, id);
+  return rest;
 }

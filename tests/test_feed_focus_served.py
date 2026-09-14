@@ -15,16 +15,21 @@ path (a MessageEvent, exactly what the socket shim dispatches), then walks the w
   (a) the switch off (the default): no #feed-focus anywhere;
   (b) an activeChat frame for `web` with the switch off: still no section;
   (c) the View menu's "Show focused session" row clicked: the section is #feed-list's first child, right above
-      #feed-cols, headed `web`, its three columns holding exactly web's cards (the same titles per column as web's
-      cards on the board), the divider under it, every board card still where it was, the row aria-checked;
+      #feed-cols, headed by the label "Current session: web" (T410: the label is the section's fold control, its
+      caret ▾ open; the small cap "focused" is gone), its three columns holding exactly web's cards (the same titles
+      per column as web's cards on the board), one fold caret per block, the divider under it, every board card
+      still where it was, the row aria-checked;
   (d) an activeChat frame for `api`: the section rebuilds with api's one card, read one animation frame after the
       dispatch (no timer to wait out);
   (e) an activeChat frame with a null id: the one quiet line "No session is focused in the chat"; a frame for `tests`,
       a session with no cards: "tests has no cards";
   (f) a reload keeps the switch on (romp:feedview carries `"focused":true`) — the section is back with the no-focus line
       (the sid is not persisted; a reloaded feed is told again) — and a fresh frame restores web's cards;
-  (g) both themes: the divider and the quiet line take their colours from the theme's tokens, so the light theme
-      (the classes the feed's theme switch sets) recolours them.
+  (g) both themes: the divider (T410: 2px in --rule-strong, 0.22 alpha in each theme) and the quiet line take
+      their colours from the theme's tokens, so the light theme (the classes the feed's theme switch sets)
+      recolours them.
+The section's own block layout (grip drag, gutter resize, per-block collapse, the label's fold) is
+tests/test_feed_focus_blocks_served.py's lab.
 Screenshots with FEED_FOCUS_SHOTS=<path-prefix>: -off-dark, -off-light, -on-dark, -on-light (the "on" pair with web
 focused). Skips LOUDLY without the extension deps or a Playwright browser (CI's Python jobs install none;
 ROMP_SERVED_TESTS_REQUIRE=1 turns the skips red where the browser is installed). The CI-safe source pins ride
@@ -129,12 +134,13 @@ const survey = () => page.evaluate(() => {
     first: list && list.firstElementChild ? (list.firstElementChild.id || list.firstElementChild.className) : null,
     aboveBoard: sec ? sec.nextElementSibling === board : null,
     kids: sec ? Array.from(sec.children).map((c) => c.tagName.toLowerCase() + "." + c.className.split(" ").join(".")) : [],
-    headShown: shown(q(".feed-focus-head")), headName: q(".feed-focus-head .fname")?.textContent ?? null, cap: q(".feed-focus-cap")?.textContent ?? null,
+    headShown: shown(q(".feed-focus-head")), headName: q(".feed-focus-head .fname")?.textContent ?? null,
+    labelText: q(".feed-focus-fold")?.textContent ?? null, labelCaret: q(".feed-focus-caret")?.textContent ?? null,   // T410: the label and its caret
     emptyShown: shown(q(".feed-focus-empty")), emptyText: q(".feed-focus-empty")?.textContent ?? null,
     colsShown: shown(q(".feed-focus-cols")),
     chips: sec ? Array.from(sec.querySelectorAll(".feed-focus-cols .feed-col-head .fcol-chip")).map((c) => c.textContent) : [],
     counts: sec ? Object.fromEntries(COLS.map((k) => [k, q(".feed-focus-cols .col-" + k + " .feed-col-count")?.textContent ?? null])) : {},
-    folds: sec ? sec.querySelectorAll(".fcol-fold").length : 0,
+    folds: sec ? sec.querySelectorAll(".feed-focus-cols .fcol-fold").length : 0,   // one per block (T410)
     divider: !!q("hr.feed-focus-divider"),
     secCards: cards(sec), boardCards: cards(board),
     hovered: !!document.querySelector(".fitem:hover"),
@@ -147,10 +153,10 @@ const light = async (on) => {   // LIGHT theme: the classes the feed's theme swi
 };
 const theme = () => page.evaluate(() => {
   const d = document.querySelector("#feed-focus .feed-focus-divider"), e = document.querySelector("#feed-focus .feed-focus-empty"),
-        n = document.querySelector("#feed-focus .feed-focus-head .fname"), c = document.querySelector("#feed-focus .feed-focus-cap");
+        n = document.querySelector("#feed-focus .feed-focus-head .fname"), c = document.querySelector("#feed-focus .feed-focus-fold");
   if (!d || !e || !n || !c) return null;
-  return { divider: getComputedStyle(d).borderTopColor, empty: getComputedStyle(e).color, cap: getComputedStyle(c).color,
-           emptySize: getComputedStyle(e).fontSize, headSize: getComputedStyle(n).fontSize, capSize: getComputedStyle(c).fontSize };
+  return { divider: getComputedStyle(d).borderTopColor, dividerWidth: getComputedStyle(d).borderTopWidth, empty: getComputedStyle(e).color, label: getComputedStyle(c).color,
+           emptySize: getComputedStyle(e).fontSize, headSize: getComputedStyle(n).fontSize, labelSize: getComputedStyle(c).fontSize };
 });
 // (a) the default: the switch off, no section
 const off = await survey();
@@ -334,15 +340,16 @@ class ServedFocusedSessionSection(unittest.TestCase):
         self.assertEqual(on["label"], "the chat's focused session")
         self.assertEqual(on["kids"], ["div.feed-focus-head", "div.feed-focus-empty", "div.feed-cols.feed-focus-cols", "hr.feed-focus-divider"], "head, quiet line, columns, rule: %r" % on["kids"])
         self.assertTrue(on["divider"], "the rule under the section")
-        # headed by the session's name, with the one word saying why it sits on top
+        # headed by the LABEL (T410): "Current session:" then the session's name, the caret open; the cap is gone
         self.assertTrue(on["headShown"], "the head shows for a focused session")
+        self.assertEqual(on["labelText"], "Current session:", "the label text: %r" % on["labelText"])
         self.assertEqual(on["headName"], "web", "the head names the focused session: %r" % on["headName"])
-        self.assertEqual(on["cap"], "focused")
+        self.assertEqual(on["labelCaret"], "\u25be", "the label's caret reads open (the block carets' vocabulary)")
         self.assertFalse(on["emptyShown"], "no quiet line while the session has cards: %r" % on["emptyText"])
         self.assertTrue(on["colsShown"])
-        # the board's three columns, the board's chips, no fold caret; each column counts its one card
+        # the board's three columns, the board's chips, one fold caret per block (T410); each column counts its one card
         self.assertEqual(on["chips"], ["Working", "Blocked", "Completed"], "the same column chips as the board: %r" % on["chips"])
-        self.assertEqual(on["folds"], 0, "the section's heads carry no fold caret")
+        self.assertEqual(on["folds"], 3, "one fold caret per block (T410), the label's caret aside")
         self.assertEqual(on["counts"], {"asks": "1", "needsInput": "1", "completed": "1"}, "one card per column: %r" % on["counts"])
         # exactly web's cards, per column the same titles as web's cards on the board, under the section's own keys
         self.assertEqual(sorted(c["key"] for c in on["secCards"]), sorted(WEB_KEYS), "the section holds web's three cards under f: keys: %r" % on["secCards"])
@@ -356,10 +363,12 @@ class ServedFocusedSessionSection(unittest.TestCase):
         # (g) both themes: the rule and the quiet line read the theme's tokens, so the light theme recolours them
         dark, lit = r["dark"], r["light"]
         self.assertIsNotNone(dark, "the theme probe found the section's parts")
-        self.assertEqual(dark["divider"], "rgba(255, 255, 255, 0.12)", "dark: the menus' hairline (--menu-border): %r" % dark)
-        self.assertEqual(lit["divider"], "rgba(0, 0, 0, 0.12)", "light: the light theme's hairline: %r" % lit)
+        self.assertEqual(dark["divider"], "rgba(255, 255, 255, 0.22)", "dark: the 2px rule in --rule-strong (T410): %r" % dark)
+        self.assertEqual(lit["divider"], "rgba(0, 0, 0, 0.22)", "light: the light theme's --rule-strong: %r" % lit)
+        self.assertEqual((dark["dividerWidth"], lit["dividerWidth"]), ("2px", "2px"), "a 2px rule in both themes (T410)")
         self.assertNotEqual(dark["empty"], lit["empty"], "the quiet line's colour follows --dim across themes: %r vs %r" % (dark, lit))
-        self.assertNotEqual(dark["cap"], lit["cap"], "…and so does the 'focused' word's")
+        self.assertNotEqual(dark["label"], lit["label"], "…and so does the label text's")
+        self.assertEqual(lit["labelSize"], dark["labelSize"], "geometry is not theme: the label's size holds across themes")
         self.assertEqual(lit["headSize"], dark["headSize"], "geometry is not theme: the head's size holds across themes")
         # (d) the chat focuses api: the section rebuilt on the frame — api's one card in Working, web's copies gone
         api = r["api"]

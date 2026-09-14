@@ -21,7 +21,7 @@
 import { tabDotClass, tabDotTitle } from "./tab-state";
 import { ctxFallbackColor, pickTone } from "./ctx-color";
 import { effectiveChord, loadOverrides, resolveChord } from "./keybindings";
-import { type WidgetChoice, type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets,
+import { type WidgetChoice, type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets, sanitizeOrder,
          widgetOn as prefOn, widgetOpts as prefOpts } from "./widget-prefs";
 
 export type { WidgetChoice, WidgetOption };
@@ -57,7 +57,7 @@ export function tabWidget(id: string): TabWidget | undefined { return REGISTRY.f
  *  derive from the older tabCtx mode (the mirror), so a store from before the widgets keeps its gauge setting. */
 export function tabWidgetPrefs(v: unknown, tabCtx?: unknown): TabWidgetPrefs {
   const o = normalizeWidgetPrefs(v);
-  if (o) return o;
+  if (o) { o.order = sanitizeOrder(o.order, (id) => id === NAME_DIVIDER || REGISTRY.some((w) => w.id === id)); return o; }   // the divider's id is an order entry too
   const out = emptyWidgetPrefs();
   if (tabCtx === "never") out.on.ctx = false;
   else if (tabCtx === "always") out.opts.ctx = { show: "always" };
@@ -76,11 +76,30 @@ export function widgetOn(prefs: TabWidgetPrefs, w: TabWidget): boolean { return 
 /** A widget's options as it reads them: every key present, an unknown stored value falls to the option's default. */
 export function widgetOpts(prefs: TabWidgetPrefs, w: TabWidget): Record<string, string> { return prefOpts(prefs, w); }
 
+/** The DIVIDER (the user's addition to T409): the session NAME's place in the Tab widgets list, a fixed row the widget
+ *  rows are dragged above or below. In the stored order it is this id, and a widget's slot is its side of it: before
+ *  the divider renders before the name, after it after. A store with no order, or an order without the divider, or a
+ *  widget the order does not name, renders the widget's registered slot, so nothing moves until the user drags. */
+export const NAME_DIVIDER = "name";
+export function widgetSlot(prefs: TabWidgetPrefs, w: TabWidget): WidgetSlot {
+  const at = prefs.order.indexOf(NAME_DIVIDER), i = prefs.order.indexOf(w.id);
+  if (at < 0 || i < 0) return w.slot;
+  return i < at ? "before" : "after";
+}
+
 /** The registered widgets in composition order: the stored order first for the ids it names, then the rest in
- *  registration order; an id the registry does not know is not drawn. Filtered to one slot when asked. */
+ *  registration order; an id the registry does not know is not drawn. Filtered to one slot when asked, the slot being
+ *  the widget's side of the divider (widgetSlot). */
 export function orderedWidgets(prefs: TabWidgetPrefs, slot?: WidgetSlot): TabWidget[] {
   const out = orderWidgets(prefs, REGISTRY);
-  return slot ? out.filter((w) => w.slot === slot) : out;
+  return slot ? out.filter((w) => widgetSlot(prefs, w) === slot) : out;
+}
+
+/** The settings rows' visual order: every registered widget's id and the divider, the before-side widgets, the divider,
+ *  the after-side widgets, each side in composition order. This is the list a drag or an arrow key reorders (moveId)
+ *  and stores back as the order, divider included, so every slot is explicit from the first drag on. */
+export function tabListOrder(prefs: TabWidgetPrefs): string[] {
+  return [...orderedWidgets(prefs, "before").map((w) => w.id), NAME_DIVIDER, ...orderedWidgets(prefs, "after").map((w) => w.id)];
 }
 
 /** Compose one slot onto a tab: every enabled widget of the slot, in order, appended when it renders something.

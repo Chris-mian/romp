@@ -227,8 +227,9 @@ error center says so under the `refused` kind.
 
 ### Folder click, in your terminal or editor
 
-The chat statusline shows the session's working directory; clicking it opens
-that folder. The default is the OS opener (`open` / `xdg-open`). To open it
+The chat statusline shows the session's working directory by default (a widget
+of the Status line section under Settings, Chat, beside the git branch, on by
+default too); clicking it opens that folder. The default is the OS opener (`open` / `xdg-open`). To open it
 elsewhere, set a command via the env var `ROMP_OPEN_FOLDER` or the first
 non-comment line of `~/.config/romp/open-folder`; `{dir}` is replaced with
 the clicked path (omitted, the path is appended). The command runs on the
@@ -943,11 +944,14 @@ in the vault, and everywhere within the TTL.
 
 `romp down` stops the kernel and keeps it stopped until `romp up`. The manager
 is supervised (`Restart=always` under systemd, `KeepAlive` under launchd), so a
-kernel or manager that merely exits is back within seconds, and Ctrl+C is not
+kernel or manager that merely exits is back within seconds (on macOS, within a
+minute when the manager had run for less than a minute before it exited: the
+throttle that bounds a crash loop delays a manager's own refresh exit in that
+window too), and Ctrl+C is not
 available to a manager the service runs. `romp down` instead stops the login
 service itself (`systemctl --user stop romp-manager.service`; on macOS
 `launchctl bootout` of the agent), which nothing respawns, and then probes the
-processes themselves rather than trusting the exit code of `romp-service stop`.
+processes themselves rather than trusting the exit code of `romp-service stop`. A manager that dies as soon as it starts is another matter: launchd's `ThrottleInterval` in the agent is 60 seconds, so such a manager is retried once a minute rather than every ten seconds (a manager that ran longer than that before exiting, its own refresh, is respawned at once), and `romp-service status` reads the job's record rather than its mere presence, so it says `loaded but not running` with the last exit code instead of `running`, which is also what `install.sh` keys its skip-the-reinstall shortcut on. Under systemd, `Restart=always` keeps the unit's default start limit (five starts within ten seconds and the unit stops), and `systemctl --user status romp-manager.service` tells the two apart.
 
 Before stopping, `romp down` gives the turns in flight `--wait` seconds
 (default 5, up to 600) to reach a turn boundary. It asks the kernel to quiesce
@@ -1929,7 +1933,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   come from: `materialized` atoms built from the document's rows since boot,
   `materializedBy` (per consumer), `materializedByStage` (the same builds
   under the calling thread's stage mark beside the consumer, as
-  `hydratedByStage` does for bodies: `push`, `connect`, `jobs.<job>`,
+  `hydratedByStage` does for bodies: `push`, `connect`, `push.session`
+  (the backend's targeted one-session push, on a thread of the
+  backend's own at a session's connect handshake; the mark is the
+  thread's default, so a backend calling the push synchronously under
+  a request keeps the request's route), `jobs.<job>`,
   `judge.<tier>` for a tier thread and every worker of the pools it
   submits to (the mark rides the submit, as the pass frame does, since a
   thread-local does not cross into a pool worker), `http.<METHOD>.<route>`
@@ -1940,9 +1948,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `remote-ws`, `federation.push`, `federation.pull`, `federation.ask`,
   `ask-poll`; `none` means the build ran on a thread with no mark, which
   should not happen: the kernel's thread census (every Thread, Timer and
-  pool construction site in the kernel and the judge, walked by the ast)
-  holds every thread marked or listed as a pure I/O helper, and a `none`
-  row on a live `/perf` names a thread the census missed), `resident` (the
+  pool construction site in the kernel, the judge and the two session
+  backends, walked by the ast, and every kernel callback the backends are
+  handed, since a backend runs those on threads of its own) holds every
+  thread marked or listed as a pure I/O helper and every handed callback
+  marked or listed, and a `none` row on a live `/perf` names a thread or a
+  callback the census missed), `resident` (the
   process-wide LRU, `cap` atoms across every session: the machine's memory
   over 32 KiB, never under 500,000; eviction drops the memo, never a field in
   place), `evictions`, and `restoredTurns`.
