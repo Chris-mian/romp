@@ -739,6 +739,16 @@ not change what the kernel runs at its next restart. On a machine that runs
 romp as a service, pin it anyway: `ROMP_PYTHON=/usr/bin/python3.12` in
 `service.env` makes the choice explicit and holds if the venv is deleted or
 rebuilt. Pin the versioned path, not `python3`, which an upgrade repoints.
+Whatever the pick, 3.10 is the floor: `bin/romp-serve` reads the picked
+interpreter's version (the last line of its probe's output, so a site
+customization that prints first cannot hide it) and refuses to start the kernel
+below 3.10, naming the interpreter, its version and the install commands, with
+an exit code of its own (2); `bin/romp-serve --print-python` prints the pick
+with that floor applied and starts nothing, which is what `install.sh`'s
+preflight runs, claiming a Python cause on that code alone and passing the
+script's other refusals (the two port spellings disagreeing, a kernel binary
+that is not there, an unrunnable pin) through with their own line and a plain
+stop.
 
 Moving romp to another Python, whether another version or the free-threaded
 build of the same one, takes four steps, and skipping any one of them leaves a

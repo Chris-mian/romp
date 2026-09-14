@@ -5,7 +5,7 @@
 # and supervises the resulting PID. We map those onto the Python kernel's env and
 # `exec` it, so the manager keeps supervising the same PID and the kernel self-builds
 # its UI bundles if stale.
-#   romp-serve [--port N] [--host H]
+#   romp-serve [--port N] [--host H] [--print-python]
 # Host precedence: --host > local-only. The kernel stays bound to 127.0.0.1;
 # tailnet/phone reach goes through `tailscale serve` proxying to loopback
 # (docs/guide.md#from-your-phone), so there is no persisted off-loopback opt-in
@@ -201,12 +201,17 @@ PY="$(pick_python)"
 # reading below the floor is refused with the install command, before the exec. An interpreter that
 # cannot report a version at all (the test suites' shell stand-ins) is left to the exec as before: the
 # pick already checked it is an executable file, and a version nobody can read is not a version below the
-# floor. `--print-python` (install.sh's preflight) prints the pick and stops here, floor applied.
+# floor. `--print-python` (install.sh's preflight) prints the pick and stops here, floor applied. The version is
+# the LAST line of the probe's output: a chatty site customization that prints before the interpreter runs the
+# program would otherwise hide the number and let a 3.9 through. The floor exits 2, a code of its own, so
+# install.sh can tell "the python is too old" from this script's other refusals (the two port spellings
+# disagreeing, a kernel binary that is not there, an unrunnable ROMP_PYTHON pin), which stay at 1.
 _pyver="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+_pyver="${_pyver##*$'\n'}"
 if [[ "$_pyver" =~ ^([0-9]+)\.([0-9]+)$ ]] && (( BASH_REMATCH[1] < 3 || (BASH_REMATCH[1] == 3 && BASH_REMATCH[2] < 10) )); then
     echo "romp: $PY is python $_pyver; the kernel and the Agent SDK need 3.10 or newer, so the kernel is not started on it." >&2
     echo "  macOS:  brew install python@3.13    or:  uv python install 3.13    (or pin one: ROMP_PYTHON=/path/to/python3.13 in service.env)" >&2
-    exit 1
+    exit 2
 fi
 if [[ -n "$print_python" ]]; then echo "$PY"; exit 0; fi
 

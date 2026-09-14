@@ -599,6 +599,48 @@ EOF
     [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]              # nothing was wired
 }
 
+# round two of issue 1600: romp-serve exits 1 for three reasons that are NOT the python (the two port spellings
+# disagreeing, a kernel binary that is not there, an unrunnable pin) and the preflight blamed the python for every
+# non-zero exit; the floor has its own code (2) and the rest pass through with romp-serve's own line and a plain stop
+@test "install.sh: a port disagreement in the environment is not a python problem: romp-serve's line, a plain stop, the python unnamed" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    export ROMP_SERVE_PORT=1 ROMP_KERNEL_PORT=2                     # the two spellings of one port, disagreeing
+    PATH="$(bare_path)" run "$ROMP_DIR/install.sh"                  # the host's python3 (at or above the floor) is the pick
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ROMP_SERVE_PORT=1 and ROMP_KERNEL_PORT=2 disagree"* ]]
+    [[ "$output" == *"romp-serve --print-python stopped"* ]]
+    [[ "$output" != *"need 3.10 or newer"* ]]                        # the python is not the reason and is not named
+    [[ "$output" != *"below the floor"* ]]
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]                      # a plain stop: nothing wired
+}
+
+@test "install.sh: a kernel binary that is not there is not a python problem either" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    PATH="$(bare_path)" ROMP_KERNEL_BIN="$TEST_DIR/no-such-kernel" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"kernel not found"* ]]
+    [[ "$output" == *"romp-serve --print-python stopped"* ]]
+    [[ "$output" != *"need 3.10 or newer"* ]]
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]
+}
+
+# round two, low 1: the re-aim above took the suite's only positive pins on the banner with it; the case that still
+# produces it is a python at the floor whose venv build fails (no ensurepip, get-pip opted out): the install exits 0,
+# the banner says CANNOT START SESSIONS, and the failure is not filed under the optional pieces
+@test "install.sh: a missing SDK backend for a reason other than the python is a BANNER, not an optional-pieces footnote" {
+    _pipless_python
+    export ROMP_STATE_DIR="$TEST_DIR/state"
+    mkdir -p "$ROMP_STATE_DIR"
+    echo "TESTTOKEN123" > "$ROMP_STATE_DIR/serve-token"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    PATH="$(bare_path)" ROMP_NO_SDK= ROMP_NO_GET_PIP=1 ROMP_PYTHON="$STUB/python3.12" \
+      run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CANNOT START SESSIONS"* ]]
+    [[ "$output" != *"Some optional pieces aren't set up:"*"Agent SDK"* ]]
+    [[ "$output" != *"need 3.10 or newer"* ]]                        # the floor was passed: 3.12
+}
+
 @test "install.sh: a python at the floor passes the preflight (ROMP_NO_SDK=1 still skips only the venv build)" {
     printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
     cat > "$STUB/newpython" <<'EOF'

@@ -43,9 +43,20 @@ if [[ -z "${ROMP_SKIP_PREFLIGHT:-}" ]]; then
     # so a fresh install on a machine whose python3 is 3.9 finished, and the manager then crash-looped
     # the kernel on it. The interpreter checked is the one the kernel will run (bin/romp-serve's pick:
     # ROMP_PYTHON, then the SDK venv's, then the newest python3.X), and romp-serve says which and why.
-    elif ! "$ROMP_DIR/bin/romp-serve" --print-python >/dev/null; then
-        echo "install.sh: no python romp can run on — the kernel and the Agent SDK need 3.10 or newer (the line above names the one found)." >&2
-        preflight_missing=1
+    else
+        # romp-serve exits 2 for the floor alone; its other refusals (the two port spellings disagreeing, a kernel
+        # binary that is not there, an unrunnable ROMP_PYTHON pin) exit 1 with their own line, and are passed
+        # through as what they are: the kernel would not start on this machine as configured, but the python is
+        # not the reason (round two of issue 1600: every non-zero exit used to be blamed on the python).
+        _py_rc=0
+        "$ROMP_DIR/bin/romp-serve" --print-python >/dev/null || _py_rc=$?
+        if [[ "$_py_rc" -eq 2 ]]; then
+            echo "install.sh: the python romp would run is below the floor (the line above names it, its version and the install command); the kernel and the Agent SDK need 3.10 or newer." >&2
+            preflight_missing=1
+        elif [[ "$_py_rc" -ne 0 ]]; then
+            echo "install.sh: bin/romp-serve --print-python stopped (the line above says why); the kernel would not start on this machine as configured, so nothing is installed." >&2
+            preflight_missing=1
+        fi
     fi
     [[ "$preflight_missing" -eq 0 ]] || exit 1
 fi

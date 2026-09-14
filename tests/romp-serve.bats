@@ -142,7 +142,7 @@ exec bash "$@"
 OLD
     chmod +x "$TEST_DIR/old-python"
     ROMP_PYTHON="$TEST_DIR/old-python" run "$ROMP_SERVE" --port 29999
-    [ "$status" -eq 1 ]
+    [ "$status" -eq 2 ]                                      # the floor's own code (round two: install.sh tells it from the other refusals)
     [[ "$output" == *"python 3.9"* ]]
     [[ "$output" == *"need 3.10 or newer"* ]]
     [[ "$output" == *"brew install python@3.13"* ]]
@@ -160,8 +160,37 @@ exit 0
 OLD
     chmod +x "$TEST_DIR/old-python"
     ROMP_PYTHON="$TEST_DIR/old-python" run "$ROMP_SERVE" --print-python
-    [ "$status" -eq 1 ]
+    [ "$status" -eq 2 ]
     [[ "$output" == *"python 3.8"* ]]
+    # the usage line names the flag
+    grep -q 'romp-serve \[--port N\] \[--host H\] \[--print-python\]' "$ROMP_SERVE"
+}
+
+@test "romp-serve: the floor reads the LAST line of the probe's output, so a chatty site customization cannot hide a 3.9" {
+    cat > "$TEST_DIR/chatty-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *'print("%d.%d"'*) echo "sitecustomize: hello from a chatty site"; echo "3.9"; exit 0 ;;
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/chatty-python"
+    ROMP_PYTHON="$TEST_DIR/chatty-python" run "$ROMP_SERVE" --port 29997
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"python 3.9"* ]]
+    [[ "$output" != *"PORT="* ]]
+}
+
+@test "romp-serve: the other refusals keep exit 1, so install.sh can tell them from the floor" {
+    ROMP_SERVE_PORT=29855 ROMP_KERNEL_PORT=29856 run "$ROMP_SERVE"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"disagree"* ]]
+    ROMP_KERNEL_BIN="$TEST_DIR/no-such-kernel" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"kernel not found"* ]]
+    ROMP_PYTHON="$TEST_DIR/no-such/python3.12" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not an executable interpreter"* ]]
 }
 
 @test "romp-serve: an interpreter that reports no version is left to the exec as before (the suites' shell stand-in)" {
