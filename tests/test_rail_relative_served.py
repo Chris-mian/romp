@@ -485,10 +485,17 @@ class ServedRailRelative(unittest.TestCase):
         self.assertTrue(q["attached"], "no conclusive reading in %d attempts: the transcript was rebuilt under the probe every minute: %r" % (q["attempts"], q))
         if os.environ.get("RT_INJECT_REBUILD"):
             self.assertGreaterEqual(q["attempts"], 2, "the injected rebuild made the first reading inconclusive and the probe re-armed: %r" % q)
-        self.assertEqual(q["selBefore"], "2 hours\nago", "the selection is the two-hour stamp's own text, nothing beyond it: %r" % q)
         self.assertEqual(q["scroll"][0], q["scroll"][1], "a programmatic selection does not scroll the pane: %r" % q["scroll"])
-        self.assertEqual(q["records"], {"0": [], "1": []}, "an unchanged label is not rewritten by the tick (text node, class, title, data-hm): %r" % q)
-        self.assertEqual((q["ranges"], q["sel"]), (1, q["selBefore"]), "a selection inside an untouched stamp survives the tick (it collapses to the empty string when the text node is replaced): %r" % q)
+        if all_today:
+            self.assertEqual(q["selBefore"], "2 hours\nago", "the selection is the two-hour stamp's own text, nothing beyond it: %r" % q)
+            self.assertEqual(q["records"], {"0": [], "1": []}, "an unchanged label is not rewritten by the tick (text node, class, title, data-hm): %r" % q)
+            self.assertEqual((q["ranges"], q["sel"]), (1, q["selBefore"]), "a selection inside an untouched stamp survives the tick (it collapses to the empty string when the text node is replaced): %r" % q)
+        else:
+            # within ~two hours after local midnight the two-hour and one-hour rows are yesterday's and wear day labels, so the
+            # probe's first two relative rows are today rows whose labels DO change at the tick ("1 min ago" at 00:03, "5 min
+            # ago" at 00:30, as the runs that hit this read): the quiet reading says nothing about the painter here, like the
+            # label expectations above. Said, not asserted.
+            print("DIAG quiet: skipped — within two hours after local midnight the probed rows are not the two-hour and one-hour rows (selBefore %r)" % q["selBefore"], file=sys.stderr)
         # the sticky over a today turn scrolled past the top line wears the same two-line label as the stamp it stands in for
         st = r["web"]["stickyRun"]
         tracked = st["markers"][1]
