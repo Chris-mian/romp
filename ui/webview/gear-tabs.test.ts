@@ -258,7 +258,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.equal((GEAR.match(/s\.tabWidgets = /g) || []).length, 2, "two assignments: the section's save, and save() normalizing a key the store already carries (T409 round two; still no injection)");
   assert.match(GEAR, /d\.className = 'rs-sub'; d\.textContent = w\.description;/, "the description is the row's hover popover, the panel's idiom (round one, LOW 2)");
   assert.match(GEAR_CSS, /#rsettings \.rs-switch\.on::after \{ left: 18px;/, "the knob slides");
-  assert.match(GEAR_CSS, /#rsettings \.rs-widgets \{ display: grid; grid-template-columns: 18px 96px 1fr auto auto; column-gap: 10px; \}[^\n]*\n#rsettings \.rs-widget \{ display: grid; grid-template-columns: subgrid; grid-column: 1 \/ -1;/, "one grid across the rows (the grip's column leads since the reorder, T409), each row a subgrid of it (round one, LOW 2)");
+  assert.match(GEAR_CSS, /#rsettings \.rs-widgets \{ display: grid; grid-template-columns: 18px 168px 1fr auto auto; column-gap: 10px; \}[^\n]*\n#rsettings \.rs-widget \{ display: grid; grid-template-columns: subgrid; grid-column: 1 \/ -1;/, "one grid across the rows (the grip's column leads since the reorder, T409), each row a subgrid of it (round one, LOW 2)");
   assert.match(GEAR_CSS, /#rsettings \.rs-row:hover \.rs-sub, #rsettings \.rs-widget:hover \.rs-sub \{ display: block; position: absolute;/, "the widget rows share the panel's hover popover rule");
   assert.doesNotMatch(GEAR_CSS, /#rsettings \.rs-widget-name span \{/, "no always-painted description rule");
   // round two, LOW 3: grid-template-columns: subgrid needs Chromium 117 and the stylesheet's oklch(from) 119; the extension's declared

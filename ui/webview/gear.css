@@ -251,7 +251,7 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 /* a WIDGET ROW: the live demo (a miniature tab), the name (its one-line description behind the panel's hover popover, .rs-sub), the sliding switch, the options */
 /* ONE grid across every row (round one, LOW 2: each row was its own grid, so the switches did not line up): the host holds
    the columns, each row spans them through a subgrid, so the demos, the switches and the options align down the list */
-#rsettings .rs-widgets { display: grid; grid-template-columns: 18px 96px 1fr auto auto; column-gap: 10px; }   /* the grip's column leads (T409: the rows reorder by drag) */
+#rsettings .rs-widgets { display: grid; grid-template-columns: 18px 168px 1fr auto auto; column-gap: 10px; }   /* the grip's column leads (T409: the rows reorder by drag); the demo column holds the placeholder session_name with a widget either side (T415 part two: 96px fit the old three-letter demo and let the wider tab spill over the grip) */
 #rsettings .rs-widget { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; padding: 7px 0; position: relative;
   border-bottom: 1px solid var(--menu-border, rgba(255, 255, 255, 0.08)); }
 #rsettings .rs-widget:last-child { border-bottom: 0; }

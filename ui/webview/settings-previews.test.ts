@@ -1,6 +1,6 @@
 // THE SETTINGS CARD'S PREVIEWS ARE THE SURFACES' OWN (T415 part two, the user 2026-09-14, through romp_feature-review): (3) the
-// demo tab in the Tab widgets preview and in every row wears the demo record's NAME in its identity colour, the way a real tab does,
-// from one source (status-widgets.ts DEMO_RECORD); (4) the word Preview never sits inside the previewed thing: a title above the
+// demo tab in the Tab widgets preview and in every row wears the demo record's NAME, the placeholder session_name the user asked for, in
+// its identity colour, the way a real tab does, from one source (status-widgets.ts DEMO_RECORD); (4) the word Preview never sits inside the previewed thing: a title above the
 // box, for the widget previews and the status line's alike; (5) the status line preview draws its controls and its battery through
 // the line's own renderer (status-controls.ts, extracted from render.ts, the chat keeping only its live hooks) over a demo status
 // whose tints follow the kernel's rank rule on the selected colormap, and the settings sheet dresses them declaration for
@@ -42,12 +42,12 @@ test("(4) the Preview caption is a title ABOVE the box, in both sections, never 
 test("(3) the demo tab reads the demo record's name in its identity colour, the way a real tab does, from one source, in the preview and in every row", () => {
   assert.match(GEAR, /function demoTab\(\) \{ var tab = document\.createElement\('span'\); tab\.className = 'tab colored'; tab\.style\.setProperty\('--chip-bg', SW\.DEMO_RECORD\.color\.bg\); return tab; \}/, "the tab: coloured, the record's colour as its --chip-bg (the strip's own variable)");
   assert.match(GEAR, /function demoLabel\(\) \{ var label = document\.createElement\('span'\); label\.className = 'tab-label'; label\.textContent = SW\.DEMO_RECORD\.name; return label; \}/, "the label: the record's name");
-  assert.doesNotMatch(GEAR, /textContent = 'web'/, "no second copy of the name");
+  assert.doesNotMatch(GEAR, /textContent = 'web'|textContent = 'session_name'/, "no second copy of the name: the record is the one source");
   assert.equal((TAB_SECTION.match(/demoTab\(\)/g) || []).length, 3, "the preview, the widget rows' demos and the ring rows' demos build the same tab");
   assert.equal((TAB_SECTION.match(/demoLabel\(\)/g) || []).length, 3, "…and the same label");
   const real = rule(CSS, ".tab.colored .tab-label", "styles.css");
   assert.equal(rule(GEAR_CSS, "#rsettings .rs-widget-demo .tab.colored .tab-label, #rsettings .rs-preview .tab.colored .tab-label", "gear.css"), real, "the card's sheet mirrors the strip's label rule");
-  assert.match(fs.readFileSync(path.join(UI, "status-widgets.ts"), "utf8"), /export const DEMO_RECORD: StatusRecord = \{\s*\n\s*id: "demo", name: "web", color: \{ bg: "#9cd2ff" \}/, "the one demo record: web, in the accent");
+  assert.match(fs.readFileSync(path.join(UI, "status-widgets.ts"), "utf8"), /export const DEMO_RECORD: StatusRecord = \{\s*\n\s*id: "demo", name: "session_name", color: \{ bg: "#9cd2ff" \}/, "the one demo record: the placeholder session_name (the user's copy), in the accent; the demo sid kept");
 });
 
 test("(5) the status line preview draws its controls and battery through the line's own renderer over a demo status", () => {

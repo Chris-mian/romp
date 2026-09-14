@@ -3,8 +3,8 @@
 dashboard: a hermetic kernel serves three synthetic notes-api sessions (web, api and tests, TESTHOST, Opus 5 at high, auto) whose
 persisted context fills are 20, 62 and 95 percent; the chat frame's line above the composer shows each one's controls and battery
 as the active tab changes, and the Chat tab's Tab widgets and Status line sections (reached through the shell's relay) show their
-previews. (3) The demo tab in the Tab widgets preview and in every row reads the session name web in its identity colour, as a
-real tab does. (4) The word Preview is a title above each preview box, never inside it. (5) The status line preview draws its
+previews. (3) The demo tab in the Tab widgets preview and in every row reads the placeholder session_name (the user's copy) in its
+identity colour, as a real tab reads its name. (4) The word Preview is a title above each preview box, never inside it. (5) The status line preview draws its
 mode, model and effort badges and its battery through the line's own renderer over a demo status (Opus 5 at high, 62 percent):
 the same classes, the same tints as the real line for the same values (the model and effort labels' colours and the battery's
 fill at 62 percent equal the api session's, in the dark theme and the light), the battery coloured by its percentage (the three
@@ -125,7 +125,8 @@ const readPreviews = (f) => f.evaluate(() => {
              body: okBox ? box.querySelector(".rs-preview-body").firstElementChild : null }; };
   const tabOf = (el) => el ? { cls: el.className, chipBg: el.style.getPropertyValue("--chip-bg"), label: (() => { const l = el.querySelector(".tab-label"); return l ? { text: l.textContent, color: getComputedStyle(l).color, weight: getComputedStyle(l).fontWeight } : null; })() } : null;
   const tabSec = sec("#rs-widgets"), stSec = sec("#rs-swidgets");
-  const rowDemos = Array.from(document.querySelectorAll("#rs-widgets .rs-widget:not(.rs-divider) .rs-widget-demo")).map((d) => tabOf(d.firstElementChild));
+  const rowDemos = Array.from(document.querySelectorAll("#rs-widgets .rs-widget:not(.rs-divider) .rs-widget-demo")).map((d) => { const t = tabOf(d.firstElementChild);
+    if (t) { const c = d.getBoundingClientRect(), r = d.firstElementChild.getBoundingClientRect(); t.fits = r.left >= c.left - 0.5 && r.right <= c.right + 0.5; t.cellW = Math.round(c.width); t.tabW = Math.round(r.width); } return t; });
   const line = stSec.body; const meta = line ? line.querySelector(".spinner-meta") : null; const bar = line ? line.querySelector(".ctx-bar") : null;
   const btns = meta ? Array.from(meta.querySelectorAll(".meta-btn")).map((b) => { const l = b.querySelector(".meta-label"); return { kind: b.dataset.kind, text: l ? l.textContent : "", color: l ? getComputedStyle(l).color : null, cursor: getComputedStyle(b).cursor, tip: b._tipText || null, title: b.title || "", top: Math.round(b.getBoundingClientRect().top) }; }) : null;
   const fill = bar ? bar.querySelector(".ctx-fill") : null, txt = bar ? bar.querySelector(".ctx-text") : null;
@@ -287,16 +288,19 @@ class ServedSettingsPreviews(unittest.TestCase):
             self.assertNotIn("Preview", s["box"]["text"], name + ": the word never inside the previewed thing" + t)
             self.assertFalse(s["box"]["hasLabel"], t)
 
-    def test_the_demo_tab_reads_the_session_name_web_in_its_identity_colour_in_the_preview_and_every_row(self):
+    def test_the_demo_tab_reads_the_placeholder_session_name_in_its_identity_colour_in_the_preview_and_every_row(self):
         p = self._p()["tab"]; t = "\n  " + json.dumps({"preview": p["preview"], "rows": p["rowDemos"]})
         tabs = [p["preview"]] + [r for r in p["rowDemos"] if r is not None]
         self.assertGreaterEqual(len(tabs), 3, "the preview and the rows' demo tabs" + t)
         for tab in tabs:
             self.assertIn("colored", tab["cls"].split(), "the tab wears the identity colour class" + t)
             self.assertEqual(tab["chipBg"], "#9cd2ff", "the demo record's colour as the tab's --chip-bg" + t)
-            self.assertEqual(tab["label"]["text"], "web", "the session name, from the demo record" + t)
+            self.assertEqual(tab["label"]["text"], "session_name", "the placeholder session_name (the user's copy), from the demo record" + t)
             self.assertEqual(tab["label"]["color"], "rgb(156, 210, 255)", "the label painted in it, as a real tab's is" + t)
             self.assertEqual(tab["label"]["weight"], "600", t)
+        for tab in p["rowDemos"]:
+            if tab is not None:
+                self.assertTrue(tab["fits"], "the row's demo tab fits its cell (the placeholder is wider than the old name; a spill covered the grip)" + t)
 
     def test_the_status_line_preview_draws_the_controls_and_the_battery_through_the_lines_renderer_inert(self):
         s = self._p()["status"]; t = "\n  " + json.dumps(s)

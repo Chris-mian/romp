@@ -441,7 +441,7 @@ class ServedWidgetReorder(unittest.TestCase):
         p = self.out["panel0"]
         self.assertEqual(p["tabPreview"]["label"], "Preview"); self.assertEqual(p["statusPreview"]["label"], "Preview")
         self.assertEqual(p["tabPreview"]["cls"], "tab colored", "the demo tab wears the identity colour class, as a real tab does (T415 part two)")
-        self.assertEqual(p["tabPreview"]["kids"], ["tab-dot", "tab-label:web", "tab-ctx", "tab-key"], "the dot before the name, the context bar and the hot key after it, over the demo status")
+        self.assertEqual(p["tabPreview"]["kids"], ["tab-dot", "tab-label:session_name", "tab-ctx", "tab-key"], "the dot before the name, the context bar and the hot key after it, over the demo status")
         self.assertEqual(p["statusPreview"]["cls"], "rs-sl")
         self.assertEqual(p["statusPreview"]["kids"][:1], ["chip rs-sl-chip:Ready"], "no session name by default, the state chip leads")
         self.assertEqual(p["statusPreview"]["right"], ["status-dir", "status-branch", "spinner-meta", "ctx-bar"], "folder, branch, then the controls and the battery; the preview's folder inert")
@@ -453,7 +453,7 @@ class ServedWidgetReorder(unittest.TestCase):
         tab = c["strip"]["tab"]
         self.assertLess(self._at(tab, "tab-ctx"), self._at(tab, "tab-dot"), "the context bar leads the before side on the chat frame's strip: %r" % tab)
         self.assertLess(self._at(tab, "tab-dot"), self._at(tab, "tab-label"), "...the dot still before the name, its own side unchanged: %r" % tab)
-        self.assertEqual(c["panel"]["tabPreview"]["kids"], ["tab-ctx", "tab-dot", "tab-label:web", "tab-key"], "the preview follows")
+        self.assertEqual(c["panel"]["tabPreview"]["kids"], ["tab-ctx", "tab-dot", "tab-label:session_name", "tab-key"], "the preview follows")
 
     def test_escape_during_a_drag_restores_the_rows_and_writes_nothing(self):
         e = self.out["escAfter"]
