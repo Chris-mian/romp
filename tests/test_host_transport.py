@@ -442,6 +442,42 @@ class BackendHostRules(unittest.TestCase):
         be._on_host_hello(s2, {"host": {"pid": 1, "start": "a"}, "cli": {}, "journal": {"next": 0}, "parked": [], "inflight": 0})
         self.assertEqual((s2.inflight, fired), (1, [1]), "a lower count never lowers ours; a spawn's hello leaves the slot to the init record")
 
+    def test_the_hello_decides_the_fresh_cli_by_identity_and_tolerates_older_shapes(self):
+        """The fresh-CLI decision at the hello (the connect loop's pins drive it through the loop; this one drives the handler):
+        the hello's cli.pid:cli.start against the reg's spawnedAtCli. Equal: nothing. Different with a spawn time: the block
+        with the host's value and the launch login from cli.login (the options' login when the hello lacks it). Different
+        without a spawn time (older host code): the identity recorded, nothing else. No identity at all: nothing stamped,
+        a log line, never a raise."""
+        d, be = self._be()
+        sb.write_reg(Path(d), SID, {"sid": SID, "name": "web", "cwd": d, "spawnedAt": 1700000000, "spawnedAtCli": "2:b"})
+        s = sb.SdkSession(be, sb.read_reg(Path(d), SID)); s._launched_login = "kept"
+        base = {"host": {"pid": 1, "start": "a"}, "journal": {"next": 0}, "parked": [], "inflight": 0}
+        def reg():
+            r = sb.read_reg(Path(d), SID)
+            return (r.get("spawnedAt"), r.get("spawnedAtCli"), s._launched_login)
+        for c in (None, {}, {"fsid": SID}, {"pid": 5}, {"start": "x"}, "not a dict"):
+            h = dict(base)
+            if c is not None:
+                h["cli"] = c
+            be._on_host_hello(s, h)
+        self.assertEqual(reg(), (1700000000, "2:b", "kept"), "no identity: nothing moves")
+        self.assertEqual(sum("names no CLI identity" in m for m in be._test_logs), 6)
+        be._on_host_hello(s, dict(base, cli={"pid": 2, "start": "b", "spawnedAt": 1700009999, "login": "other"}))
+        self.assertEqual(reg(), (1700000000, "2:b", "kept"), "the CLI the reg names: nothing, whatever the hello says")
+        be._on_host_hello(s, dict(base, cli={"pid": 3, "start": "c"}))
+        self.assertEqual(reg(), (1700000000, "3:c", "kept"), "older host code: the identity recorded, the epoch and login stand")
+        self.assertTrue(any("recorded, nothing stamped" in m for m in be._test_logs))
+        be._on_host_hello(s, dict(base, cli={"pid": 4, "start": "d", "spawnedAt": 1700005000, "login": "launch-login"}))
+        self.assertEqual(reg(), (1700005000, "4:d", "launch-login"), "a fresh CLI: the host's spawn time and the launch's login")
+        self.assertEqual(sb.read_reg(Path(d), SID).get("launchedLogin"), "launch-login")
+        s._options_login = "opts-login"
+        be._on_host_hello(s, dict(base, cli={"pid": 5, "start": "e", "spawnedAt": 1700006000}))
+        self.assertEqual(reg(), (1700006000, "5:e", "opts-login"), "a hello without cli.login: the options' login")
+        be._on_host_hello(s, dict(base, cli={"pid": 6, "start": "f", "spawnedAt": True, "login": "x"}))
+        self.assertEqual(reg(), (1700006000, "6:f", "opts-login"), "a bool spawn time reads as absent")
+        be._on_host_hello(s, dict(base, cli={"pid": 7, "start": "g", "spawnedAt": "1700007000", "login": "x"}))
+        self.assertEqual(reg(), (1700006000, "7:g", "opts-login"), "a string spawn time reads as absent")
+
     def test_a_hosted_comment_thread_attaches_at_boot_and_gets_no_dead_life_notices(self):
         d, be = self._be()
         tsid = "33333333-2222-3333-4444-0000000000b3"

@@ -333,6 +333,24 @@ class HostProcess(unittest.TestCase):
     def _user(self, text):
         return json.dumps({"type": "user", "message": {"role": "user", "content": text}})
 
+    def test_the_lease_and_the_hello_carry_the_clis_spawn_time_once_and_the_specs_login(self):
+        """The host is the authority for when ITS CLI spawned: the lease's spawnedAt is stamped once at the spawn and stands
+        across the beats (before 2026-09-14 every beat rewrote it with the beat's time, so a kernel copying it would have
+        moved the CLI's epoch at every attach), the hello's cli carries the same value, and cli.login echoes the spec's login
+        identifier, so the kernel that first sees the CLI stamps its epoch and the login its launch billed."""
+        host, sock, spec = self._start(login="login-rec-1")
+        lease = self._lease()
+        self.assertIsInstance(lease.get("spawnedAt"), int)
+        k, hello = self._attach(sock)
+        self.assertEqual((hello["cli"]["spawnedAt"], hello["cli"]["login"], hello["cli"]["pid"]),
+                         (lease["spawnedAt"], "login-rec-1", lease["pid"]))
+        deadline = time.time() + 3 * sh.LEASE_HEARTBEAT_S
+        while time.time() < deadline and self._lease().get("t") == lease["t"]:   # loop-ok: a bounded wait on the next beat
+            time.sleep(0.1)
+        later = self._lease()
+        self.assertNotEqual(later["t"], lease["t"], "a beat rewrote the lease")
+        self.assertEqual(later["spawnedAt"], lease["spawnedAt"], "the spawn time stands across the beat")
+
     def test_a_turn_flows_through_the_host_and_is_journaled_under_a_host_held_lease(self):
         host, sock, spec = self._start()
         lease = self._lease()

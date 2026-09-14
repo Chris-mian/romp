@@ -501,10 +501,10 @@ class _Backend(unittest.TestCase):
 
 class StoredLoginPick(_Backend):
     def _launch_options(self, s):
-        """The options build for a LAUNCH, followed by the launch-login stamp the connect loop makes once the SDK has spawned
-        (the stamp moved out of _options to the transport's outcome, 2026-09-14: an attach to a surviving CLI keeps the
-        restored evidence and login whatever the lease pre-read said); the two together are what a launch's options build
-        used to do here."""
+        """The options build for a LAUNCH, followed by the launch-login stamp the connect loop makes for a kernel child at the
+        connect (the stamp moved out of _options, 2026-09-14: it is made once per CLI, at a kernel child's connect or at a
+        host's hello for a CLI the reg does not name, so an attach to a surviving CLI keeps the restored evidence and login);
+        the two together are what a launch's options build used to do here."""
         kw = self.be._options(s, dict)
         self.be._stamp_launch_login(s)
         return kw
@@ -820,47 +820,52 @@ class StoredLoginPick(_Backend):
         self.be._log = lambda m, problem=False: None
         sid = self.be.spawn("n", "/tmp", auth="login:" + rec["id"])
         s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
-        # the connect loop's order: the lease pre-read, then the options build; no host, no lease: a launch, stamped
-        self.assertFalse(self.be._connect_would_attach(s), "no lease: a launch")
-        kw = self._launch_options(s); self.be._stamp_launch_login(s)   # the connect loop's launch stamp, at the outcome
+        # a kernel child's launch: the options build, then the connect's stamp from them
+        self._launch_options(s)
         self.assertEqual((s._options_login, s._launched_login, s.auth_login_live), (rec["id"], rec["id"], None))
         self.be._note_auth_source(s, "apiKeyHelper")
         reg = sb.read_reg(self.be.state_dir, sid)
         self.assertEqual((reg["launchedLogin"], reg["authLoginLive"]), (rec["id"], rec["id"]))
-        # the kernel restarts while the host keeps the CLI running: a live host lease names this session
-        me = os.getpid()
-        sb.write_lease(self.be.state_dir, {"sid": sid, "fsid": sid, "pid": me, "start": sb.proc_start(me),
-                                           "holder": {"pid": me, "start": sb.proc_start(me), "kind": "host"},
-                                           "version": "", "t": time.time()})
-        s2 = sb.SdkSession(self.be, reg)
+        # the kernel restarts while a host keeps the CLI running; the reg names that CLI (the identity the hello's decision
+        # compares against), and the new kernel's session restores the evidence from the row
+        self.be._update_reg(sid, spawnedAt=1700000000, spawnedAtCli="4242:a1")
+        s2 = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
         self.assertEqual((s2._launched_login, s2.auth_login_live), (rec["id"], rec["id"]), "restored from the row")
-        self.assertTrue(self.be._connect_would_attach(s2), "the lease reads attach")
         # meanwhile another session got the record refused: TODAY's availability would carry no login at all
         lg.mark_refused(self.be.state_dir, rec["id"], "refused elsewhere")
-        s2._connect_attach = self.be._connect_would_attach(s2)
         self.be._options(s2, dict)
         self.assertEqual(s2._options_login, "", "the options would fall to the key")
+        # the host's hello names the CLI the reg already names: nothing is stamped
+        base = {"host": {"pid": 7, "start": "h"}, "journal": {"next": 0}, "parked": [], "inflight": 0}
+        self.be._on_host_hello(s2, dict(base, cli={"pid": 4242, "start": "a1", "fsid": sid, "spawnedAt": 1700000000, "login": ""}))
         self.assertEqual((s2._launched_login, s2.auth_login_live), (rec["id"], rec["id"]),
                          "an attach replays no init: the evidence about the running CLI stands, and its login is not recomputed")
         reg2 = sb.read_reg(self.be.state_dir, sid)
-        self.assertEqual((reg2["launchedLogin"], reg2["authLoginLive"]), (rec["id"], rec["id"]), "the row keeps it for the next restart")
+        self.assertEqual((reg2["launchedLogin"], reg2["authLoginLive"], reg2["spawnedAt"]), (rec["id"], rec["id"], 1700000000),
+                         "the row keeps it for the next restart")
         # so the feed's gate still speaks for the login, and a served reply on it still clears
         row = {"authLogin": rec["id"], "authLabel": "Work", "authLoginLive": s2.snapshot()["authLoginLive"]}
         self.assertEqual(km._login_refusal_label(row, {"authErr": True, "text": "invalid x-api-key"}), "Work")
         import types
         s2._ah_note_assistant(types.SimpleNamespace(model="claude-opus-5", message_id="m4", parent_tool_use_id=None, error=None))
         self.assertNotIn("refused", lg.read_record(self.be.state_dir, rec["id"]))
-        # the pre-read outrun: the host died between the lease read and the host road, which launches after all; the
-        # stamp is the connect loop's, at the outcome (the hosts file off, so the road ends at a kernel child)
+        # a hello naming a FRESH CLI (a host spawned for this session, whose handshake may have failed before this attach):
+        # the launch login is the one the spawn's spec carried (cli.login), not the one today's options would pick, and the
+        # init evidence resets to none
+        self.be._on_host_hello(s2, dict(base, cli={"pid": 4343, "start": "b1", "fsid": sid, "spawnedAt": 1700005000, "login": rec["id"]}))
+        self.assertEqual((s2._launched_login, s2.auth_login_live), (rec["id"], None), "the login the launch used; the evidence reset")
+        reg3 = sb.read_reg(self.be.state_dir, sid)
+        self.assertEqual((reg3["launchedLogin"], reg3["authLoginLive"], reg3["spawnedAt"], reg3["spawnedAtCli"]),
+                         (rec["id"], None, 1700005000, "4343:b1"))
+        # a kernel child after all (the hosts file off, no lease): the host road ends at a kernel child, and the connect's
+        # stamp is from the options built for this connect
         import asyncio
-        sb.lease_path(self.be.state_dir, sid).unlink()
         (Path(self.be.state_dir) / "session-hosts").write_text("off\n")
         self.assertIsNone(asyncio.run(self.be._host_transport_for(s2, {}, ())), "the host road ends at a kernel child")
-        self.be._stamp_launch_login(s2)          # the connect loop's act at that outcome (a launch): the stamp, made once the
-        #                                           SDK has spawned, from the transport's answer, never from the pre-read
+        self.be._stamp_launch_login(s2)
         self.assertEqual((s2._launched_login, s2.auth_login_live), ("", None), "launched after all: stamped from the options")
-        reg3 = sb.read_reg(self.be.state_dir, sid)
-        self.assertEqual((reg3["launchedLogin"], reg3["authLoginLive"]), ("", None))
+        reg4 = sb.read_reg(self.be.state_dir, sid)
+        self.assertEqual((reg4["launchedLogin"], reg4["authLoginLive"]), ("", None))
 
     def test_the_once_flag_resets_on_a_new_pick_and_on_a_helper_answered_init(self):
         rec = _rec(self.be.state_dir, "Work")

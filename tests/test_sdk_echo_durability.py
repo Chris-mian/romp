@@ -396,9 +396,11 @@ class DroppedSendsAnnounceThemselves(unittest.TestCase):
         def calls_of(name):
             fn = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
             return [n.func.attr for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
-        # the spawn half moved into _fresh_cli_stamp (2026-09-14: a connect that ATTACHES to a live host keeps the CLI's epoch,
-        # its awaiting and its held sends, so the whole fresh-CLI block runs on a spawn only); _run calls it, it calls the marking
-        self.assertIn("_fresh_cli_stamp", calls_of("_amain"), "the connect loop no longer runs the fresh-CLI block at the transport's outcome")
+        # the spawn half moved into _fresh_cli_stamp (2026-09-14: the whole fresh-CLI block runs once per CLI, never for the CLI
+        # the reg already names); the connect loop calls it for a kernel child, the hello's decision for a CLI under a host, and
+        # it calls the marking
+        self.assertIn("_fresh_cli_stamp", calls_of("_amain"), "the connect loop no longer runs the fresh-CLI block for a kernel child")
+        self.assertIn("_fresh_cli_stamp", calls_of("_fresh_cli_decision"), "the hello's decision no longer runs the fresh-CLI block")
         self.assertIn("_mark_dropped_echoes", calls_of("_fresh_cli_stamp"),
                       "the fresh-CLI block no longer marks orphaned echoes when a fresh CLI spawns")
 
