@@ -86,8 +86,8 @@ const readStrip = () => chatF.evaluate(([sidWeb]) => {
     key: (() => { const k = t.querySelector(".tab-key"); return k ? { text: k.textContent, title: k.title, w: k.getBoundingClientRect().width } : null; })(),
     ctx: !!t.querySelector(".tab-ctx"),
   }));
-  const gear = document.querySelector("#tabs .tab-gearbox .tab-widgets-gear");   // T405: the gear in a box of its own at the strip's right
-  const box = document.querySelector("#tabs .tab-gearbox");
+  const gear = document.querySelector("#tabs .tab-strip-end .tab-widgets-gear");   // T412: the gear a bare glyph in the strip's right-end wrapper, beside the tags button
+  const box = document.querySelector("#tabs .tab-strip-end");
   const s = JSON.parse(localStorage.getItem("romp:settings") || "{}");
   return { tabs, web: tabs.find((t) => t.id === sidWeb), gear: gear ? { title: gear.title, aria: gear.getAttribute("aria-label"), svg: !!gear.querySelector("svg"), rect: rect(gear), inBox: gear.parentElement === box, boxH: box.getBoundingClientRect().height } : null,
            store: { tabWidgets: s.tabWidgets || null, tabCtx: s.tabCtx || null } };
@@ -97,7 +97,7 @@ out.strip0 = await readStrip();
 // the glyph opens the settings frame on the Chat tab, scrolled to its Tab widgets section, through the shell
 const settingsOpen = () => page.evaluate(() => document.body.classList.contains("settings-open"));
 if (out.strip0.gear) {   // T405: the gear opens its menu; the "Tab widgets…" row is the T379 ask
-  await chatF.click("#tabs .tab-gearbox .tab-widgets-gear");
+  await chatF.click("#tabs .tab-strip-end .tab-widgets-gear");
   await chatF.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 });
   out.menuRoles = await chatF.evaluate(() => Array.from(document.querySelectorAll('[data-rows-menu="1"] > div')).map((r) => [r.getAttribute("role"), r.hasAttribute("aria-checked")]));
   await chatF.click('[data-rows-menu="1"] [role="menuitem"]:nth-child(2)');   // the Tab widgets row is an ACTION (role menuitem, no checked state); a role drift fails here, on the selector that did not match

@@ -114,7 +114,7 @@ const ctx = await browser.newContext({ viewport: { width: 1440, height: 800 }, d
 const { page, chatF } = await openShell(ctx);
 out.line0 = await readLine(chatF);
 out.chatGear = await chatF.evaluate(() => ({ onLine: !!document.querySelector("#statusline button.tab-widgets-gear, #statusline .rs-gear"),
-  stripRows: (() => { const g = document.querySelector("#tabs .tab-gearbox .tab-widgets-gear"); return g ? g.title : null; })() }));
+  stripRows: (() => { const g = document.querySelector("#tabs .tab-strip-end .tab-widgets-gear"); return g ? g.title : null; })() }));
 await page.evaluate(() => window.__rompOpenSettings("chat", "statusline"));
 const setF = await settingsFrame(page);
 if (!setF) { console.error("no settings frame"); process.exit(1); }
