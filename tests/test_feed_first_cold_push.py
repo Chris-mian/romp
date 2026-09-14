@@ -12,10 +12,10 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from romp_load import load_source   # noqa: E402
 _tmp_state = tempfile.mkdtemp()
 os.environ["XDG_STATE_HOME"] = _tmp_state
 os.environ["ROMP_STATE_DIR"] = os.path.join(_tmp_state, "romp")
-from romp_load import load_source   # noqa: E402
 
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 km = load_source("romp_kernel_feed_first", os.path.join(BIN, "romp-kernel"))
