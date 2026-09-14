@@ -5,7 +5,7 @@ the gap where the target will be, the loading glyph in the empty space; the land
 ONLY cancel: the target and the notice go, the reply still inserts its run in place, and the view does not move. Served, on the
 window lab's hermetic kernel (a synthetic transcript longer than the wire tail: the deep target is in the head gap at boot).
 
-Roads, eight fresh pages (the socket death first, then the notice roads, then the answered-question anchor, the cancel-then-click road, the fault road, and three roads on the per-ask records: two cancels, a cancelled origin, a lost cancelled frame): the deep link landing with the notice (the words, the pre-jump write, the window ask, the landing, the notice
+Roads, ten fresh pages (the socket death first, then the notice roads, then the answered-question anchor, the cancel-then-click road, the fault road, three roads on the per-ask records: two cancels, a cancelled origin, a lost cancelled frame, then an older fetch in flight and the pipe's down edge): the deep link landing with the notice (the words, the pre-jump write, the window ask, the landing, the notice
 gone); then a second deep link with its ask HELD at the socket, the notice clicked (a locateDiag row filed as cancelled, the notice
 gone, the view still), the ask released (the run inserts, the view still where the reader was).
 
@@ -32,6 +32,9 @@ await installShim();
 // …the page's own reload restore (sessionStorage "romp:reloadScroll", written at unload, read at boot) would walk the held history back
 // in and fill the head; an init script drops the record before the page reads it, so each reload boots the tail alone
 await page.addInitScript(() => { try { sessionStorage.removeItem("romp:reloadScroll"); } catch (e) { /* none */ } });
+// the boot frame of every page life, captured before the page's own scripts run (the evaluate-time shim installs after the boot, so after a
+// reload its capture stays null): a road that re-posts the boot frame reads it from here
+await page.addInitScript(() => { window.__bootFrame = null; window.addEventListener("message", (e) => { const m = e.data; if (m && m.type === "session" && Array.isArray(m.events) && m.events.length && !window.__bootFrame) window.__bootFrame = m; }); });
 const reboot = async () => {
   await page.reload();
   await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
@@ -342,7 +345,61 @@ await painted();
 const reask12 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "loadAround").length, sentAt12);
 const target12 = await onScreen(deepA12);
 const trail12 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "locateDiag").map((m) => ({ ok: m.ok, trail: (m.trail || []).slice(-4) })), sentAt12);
-process.stdout.write("RESULT:" + JSON.stringify({ inGap6, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
+// ROAD 13 (round nine, medium 1; a fresh page): a proto-2 frame whose tailLo the kernel could not name (the boot frame re-posted with tailLo
+// null, headKnown false) leaves the page with no regions and its head asked by loadOlder; with that fetch HELD on the wire, a card click
+// must not be refused as busy: the fetch is re-pointed onto the anchor and, once the older page is released, the target lands.
+await reboot();
+// the kernel would answer the page's own full-frame ask (a tail delta missing its anchor asks needFull) with a frame that names tailLo and
+// rebuilds the regions within a frame or two, so that ask is parked too: the fallback must stand while the road runs
+await page.evaluate(() => { window.__hold.add("needFull"); window.__hold.add("loadOlder"); window.__hold.add("loadTurns"); });
+// …and the kernel's own session frames are parked at the page too (a capturing listener runs before the page's; the lab's re-post is let
+// through by its mark): the first try showed the regions rebuilt within a frame of the re-post by a fresh frame from the kernel
+await page.evaluate(() => { window.__holdIn = new Set(["session"]); window.__heldIn = []; if (!window.__inHook) { window.__inHook = true; window.addEventListener("message", (e) => { const m = e.data; if (m && m.type && window.__holdIn && window.__holdIn.has(m.type) && !m.__lab) { window.__heldIn.push(m.type + ":" + (m.tailLo === undefined ? "?" : String(m.tailLo))); e.stopImmediatePropagation(); } }, true); } });
+const frame13 = await page.evaluate(() => window.__bootFrame ? Object.assign({}, window.__bootFrame, { tailLo: null, headKnown: false, __lab: true }) : null);
+const hadFrame13 = !!frame13;
+await page.evaluate((f) => { if (f) window.postMessage(f, "*"); }, frame13);
+await painted();
+const regions13 = await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null));
+const heldIn13a = await page.evaluate(() => (window.__heldIn || []).slice());
+await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });   // the top edge: the head asked by loadOlder (the fallback), parked
+await page.waitForFunction(() => (window.__heldRaw || []).some((d) => { try { return JSON.parse(d).type === "loadOlder"; } catch (e) { return false; } }), null, { timeout: 8000 }).catch(() => {});
+const heldOlder13 = await page.evaluate(() => (window.__heldRaw || []).filter((d) => { try { return JSON.parse(d).type === "loadOlder"; } catch (e) { return false; } }).length);
+const askState13 = await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid);
+const sentAt13 = await page.evaluate(() => window.__sent.length);
+const deep13 = "11111111-2222-3333-4444-" + pad(2 * 100);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep13, anchorT: cfg.base + 2 * 100 });
+await painted();
+const trail13 = await page.evaluate(() => (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail() : null));
+const toast13 = await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; });
+const heldIn13 = await page.evaluate(() => { const h = (window.__heldIn || []).slice(); window.__holdIn = new Set(); return h; });   // the kernel's frames flow again
+await page.evaluate(() => { window.__hold.delete("loadOlder"); window.__hold.delete("needFull"); window.__hold.delete("loadTurns"); window.__release(); });   // the parked asks go out: the older page (and any full frame) arrives
+await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deep13, { timeout: 20000 }).catch(() => {});
+await page.waitForFunction((u) => { const t = document.querySelector(`#content .turn[data-uuid="${u}"]`); if (!t) return false; const c = document.getElementById("content").getBoundingClientRect(), r = t.getBoundingClientRect(); return r.bottom > c.top && r.top < c.bottom; }, deep13, { timeout: 15000 }).catch(() => {});
+await painted();
+const target13 = await onScreen(deep13);
+const asks13 = await page.evaluate((n) => ({ loadOlder: window.__sent.slice(n).filter((m) => m.type === "loadOlder").length, loadAround: window.__sent.slice(n).filter((m) => m.type === "loadAround").length, busy: window.__sent.slice(n).filter((m) => m.type === "locateDiag").flatMap((m) => m.trail || []).filter((w) => w === "pointer-fetch-busy").length }), sentAt13);
+// ROAD 14 (round nine, medium 2; a fresh page): the VS Code pane's down edge is the pipeState frame; a landing in flight (its ask held) then
+// pipeState down must clear the ask's record, the notice and the busy meaning, and pipeState up must leave the next card click free to ask.
+await reboot();
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+const deep14 = "11111111-2222-3333-4444-" + pad(2 * 60);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep14, anchorT: cfg.base + 2 * 60 });
+await page.waitForFunction(() => (window.__heldRaw || []).length >= 1, null, { timeout: 8000 }).catch(() => {});
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
+const before14 = { notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid) };
+await page.evaluate(() => { window.__heldRaw = []; window.postMessage({ type: "pipeState", up: false, queued: 0 }, "*"); });   // the pipe goes down with the ask lost
+await painted();
+const down14 = { notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid), toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }) };
+await page.evaluate(() => { window.postMessage({ type: "pipeState", up: true, queued: 0 }, "*"); });
+await painted();
+await page.evaluate(() => { window.__hold.delete("loadAround"); });
+const sentAt14 = await page.evaluate(() => window.__sent.length);
+await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep14, anchorT: cfg.base + 2 * 60 });
+await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deep14, { timeout: 15000 }).catch(() => {});
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
+await painted();
+const after14 = { asked: await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "loadAround").length, sentAt14), busy: await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "locateDiag").flatMap((m) => m.trail || []).filter((w) => w === "pointer-fetch-busy").length, sentAt14), target: await onScreen(deep14) };
+process.stdout.write("RESULT:" + JSON.stringify({ inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 190, bootTop: boot.top }) + "\n");
@@ -522,6 +579,35 @@ class ServedLandingNotice(WindowLab):
         self.assertEqual(r["askedA12"], 1, "A asked (held), then its frame was dropped")
         self.assertGreaterEqual(r["reask12"], 1, "the second click on the same card asked again (a fresh ask supersedes the cancelled twin): %r" % r["reask12"])
         self.assertIsNotNone(r["target12"]); self.assertTrue(r["target12"]["visible"], "…and landed on screen: %r (rows %r)" % (r["target12"], r["trail12"]))
+
+    def test_an_older_fetch_in_flight_does_not_refuse_a_landing_the_anchor_lands_when_the_older_page_arrives(self):
+        # round nine, medium 1: the boot frame re-posted with tailLo null (no regions; the head asked by loadOlder), that fetch held, a card click
+        r = self._result()
+        self.assertTrue(r["hadFrame13"], "the boot frame was captured for the re-post (an init script, before the page's scripts)")
+        self.assertIn(r["regions13"], (None, []), "the tailLo-null frame left the page with no regions: %r" % r["regions13"])
+        self.assertGreaterEqual(r["heldOlder13"], 1, "the head was asked by loadOlder (the fallback) and the ask is parked: %r" % r["heldOlder13"])
+        self.assertTrue(r["askState13"]["loadingOlder"], "…so an older fetch is in flight when the card is clicked: %r" % r["askState13"])
+        self.assertNotIn("pointer-fetch-busy", r["trail13"] or [], "the click was not refused as busy: %r" % r["trail13"])
+        self.assertIn("pointer-fetch-older", r["trail13"] or [], "the in-flight fetch was re-pointed onto the anchor: %r" % r["trail13"])
+        self.assertNotEqual(r["toast13"], "still going to the earlier message", "no untrue busy toast: %r" % r["toast13"])
+        self.assertEqual(r["asks13"]["busy"], 0, "no busy row filed: %r" % r["asks13"])
+        self.assertIsNotNone(r["target13"]); self.assertTrue(r["target13"]["visible"], "the target landed on screen once the older page arrived (asks after the click %r): %r" % (r["asks13"], r["target13"]))
+
+    def test_the_panes_pipe_down_edge_clears_the_landing_like_the_sockets_death(self):
+        # round nine, medium 2: pipeState down with a landing in flight, then up; the next click asks
+        r = self._result()
+        b = r["before14"]
+        self.assertTrue(b["notice"], "a landing was in flight (its notice up): %r" % b)
+        self.assertGreaterEqual(len(b["ask"]["asks"]), 1, "…with a live record: %r" % b["ask"])
+        d = r["down14"]
+        self.assertFalse(d["notice"], "pipeState down brought the notice down: %r" % d)
+        self.assertEqual(d["ask"]["asks"], [], "…and cleared the ask's record: %r" % d["ask"])
+        self.assertEqual((d["ask"]["landingGaps"], d["ask"]["gapLoading"], d["ask"]["loadingOlder"]), (0, 0, False), "the three-set cleared: %r" % d["ask"])
+        self.assertIsNotNone(d["toast"]); self.assertIn("connection dropped", d["toast"], "the reader was told the jump was lost: %r" % d["toast"])
+        a = r["after14"]
+        self.assertEqual(a["asked"], 1, "after pipeState up the next card click asked: %r" % a)
+        self.assertEqual(a["busy"], 0, "…and was not refused as busy: %r" % a)
+        self.assertIsNotNone(a["target"]); self.assertTrue(a["target"]["visible"], "…and landed: %r" % a["target"])
 
     def test_a_span_less_window_from_an_older_host_tells_the_reader_and_is_not_dropped_silently(self):
         # T386 stage 2, medium 2: a chatWindow with events but no span is an older host's pre-regions reply
