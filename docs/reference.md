@@ -2200,18 +2200,40 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   exists and cannot be read or parsed is answered empty, marks the running
   judge stage incomplete, and is not memoized, so the next call reads the file
   again. `plannerSkip` is the planner's inner change gate (`skipped`,
-  `planned`, `recorded`). The planner runs behind two gates. The outer gate is
+  `planned`, `recorded`, and since T401 (5c) `restored`, `refused`,
+  `persisted`: the gate's memo of "the key of the last pass that had
+  nothing to do", one row per session, persists across boots in
+  `STATE/planner-seen.json` (version 1, the tick-seen shape: a row is never
+  an answer on its own, the key is recomputed at the pass and compared, a
+  malformed row is refused, rows are dropped with the sessions, the write
+  is atomic under a per-writer temporary and re-armed on a failed replace).
+  The key holds every file the plan tier's inventory names (the parse, the
+  store trio, the episode log, the leaf's task store, the reg file's stat,
+  the captions file, the death marker, `cleared.jsonl`, the stall slice,
+  and each running background launch's deadline bit under the pass clock);
+  the file carries a derivation pair (the planner's derivation version and
+  `PLACEMENTS_V`), and a file written under another pair is refused whole,
+  so the first pass after such a change plans every session once and
+  rewrites the rows. `restored` counts the rows a boot loaded, `refused`
+  the rows it would not trust (a torn, empty or other-shaped file counts
+  once; another derivation counts every row), `persisted` the rows on disk
+  after the last write. Before it every boot re-planned every session
+  (`planned` 20 and `skipped` 0 on the 2026-09-14 read boots); the first
+  boot after the change has no rows and re-plans everything while its
+  passes record and persist, and the boot after that is the one to read.
+  The planner runs behind two gates. The outer gate is
   the judge's evidence gate around `_plan_session` (`docs/judges.md`, "Ops and
   knobs"): a session whose signature equals the one the planner stamped after
   its last complete run is skipped before it is submitted. It keys on the
-  inner gate's inputs, the reg by its `spawnedAt` and backend values rather
-  than by identity, plus `cleared.jsonl`, the death marker and the session's
-  stall records. The inner gate
+  same files as the inner gate by identity, plus derived values the inner
+  key does not read (the reg's `spawnedAt` and backend, the stall slice's
+  value, the task-store fingerprint). The inner gate
   sits inside `_plan_session` and sees only the sessions the outer gate ran: a
   session whose parse, store, journal, archive, episode log, its leaf's task
-  store, captions file and reg have not moved since a pass that had nothing to
-  do, and none of whose running background launches has crossed its deadline,
-  is not planned again. The inner gate records a pass only when it placed
+  store, captions file, reg file, death marker, `cleared.jsonl` and stall
+  slice file have not moved since a pass that had nothing to do, and none of
+  whose running background launches has crossed its deadline, is not planned
+  again. The inner gate records a pass only when it placed
   nothing, left the store's key where it was, and ran to completion; a
   deferral without a write, or a side file that exists and did not read,
   marks the run incomplete, and that session is planned again next pass. So

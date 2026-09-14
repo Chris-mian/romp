@@ -235,9 +235,9 @@ class TickJobsKeyOnAChange(unittest.TestCase):
         cost the other two. A source pin: each persist in its own try, the failure logged by name."""
         import inspect
         src = inspect.getsource(km._drain_and_exit)
-        for name in ("tick-seen", "interrupt-marks", "spend-tree"):
+        for name in ("tick-seen", "interrupt-marks", "spend-tree", "planner-seen"):
             self.assertIn('_exit_log("romp-kernel: the %s memo was not persisted at exit' % name, src, name)
-        self.assertEqual(src.count('    except Exception as _e:\n        _exit_log("romp-kernel: the '), 3, "each persist in its own try")
+        self.assertEqual(src.count('    except Exception as _e:\n        _exit_log("romp-kernel: the '), 4, "each persist in its own try")
         self.assertNotIn("        _persist_tick_seen(force=True)\n        _persist_intr_marks(force=True)", src, "no shared try")
 
     def test_the_memo_persists_and_the_next_kernel_starts_from_it(self):
