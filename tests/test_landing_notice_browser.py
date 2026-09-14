@@ -48,6 +48,9 @@ const trace = () => page.evaluate(() => ({ sent: window.__sent.slice(-14).map((m
 const writes = (writer) => page.evaluate((w) => window.__sent.filter((m) => m.what === "scrollwrite" && m.data && m.data.writer === w).map((m) => [m.data.before, m.data.after]), writer);
 const locateRows = () => page.evaluate(() => window.__sent.filter((m) => m.type === "locateDiag").map((m) => ({ ok: m.ok, cancelled: m.cancelled === true, anchor: m.anchor, trail: m.trail, kind: m.kind === undefined ? null : m.kind, error: m.error === undefined ? null : m.error })));
 const painted = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
+// the page's sends quiet across two frames: a pre-jump's or a cancel's DEFERRED scroll write posts its row when it runs, and a road that moves
+// the reader before it has run is moved back by it (road 6 read scrollTop 8 for a scroll to 60% of the gap once the dead waits were gone)
+const quiet = () => page.waitForFunction(() => new Promise((res) => { const n = window.__sent.length; requestAnimationFrame(() => requestAnimationFrame(() => res(window.__sent.length === n))); }), null, { timeout: 8000 }).catch(() => {});
 const rowAtTop = () => page.evaluate(() => {
   const c = document.getElementById("content"); const cTop = c.getBoundingClientRect().top;
   for (const t of Array.from(document.querySelectorAll("#content .turn[data-uuid]"))) { const r = t.getBoundingClientRect(); if (r.bottom > cTop + 1) return { uuid: t.dataset.uuid, y: Math.round(r.top - cTop) }; }
@@ -65,6 +68,7 @@ const winBefore5 = await page.evaluate(() => window.__recv.filter((x) => x.start
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep5, anchorT: cfg.base + 2 * 25 });
 await page.waitForFunction(() => !!document.querySelector(".tx-landing-notice") && getComputedStyle(document.querySelector(".tx-landing-notice")).display !== "none", null, { timeout: 8000 }).catch(() => {});
 const askBefore5 = await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid);   // the landing in flight: its gap held
+await page.waitForFunction(() => (window.__heldRaw || []).some((d) => JSON.parse(d).type === "loadAround"), null, { timeout: 10000 }).catch(() => {});   // the ask parked at the socket (a bounded wait, not a paint)
 const heldRaw5 = await page.evaluate(() => (window.__heldRaw || []).length);   // the ask parked at the socket: lost for good when it dies
 const sentAtDeath5 = await page.evaluate(() => window.__sent.length);
 const recvBefore5 = await page.evaluate(() => window.__recv.filter((x) => x.startsWith("session")).length);
@@ -90,6 +94,7 @@ await page.waitForFunction(() => { const n = document.querySelector(".tx-landing
 const reask5 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "loadAround").length, sentAtDeath5);
 const landed5 = await page.evaluate((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deep5);
 await reboot();   // the roads after need the head gap whole again
+await page.evaluate(() => { window.__hold.add("loadTurns"); });   // the head gap's page asks are parked for this page life: a kernel frame's rebuild re-observes the gap under a reader a pre-jump parked at its top and it asks its first page (CI 2026-09-14, thirty-three events), which reshapes the gap every later road on the page assumes whole; a road that wants a fill releases its own ask alone
 // ROAD 3 (T386 stage 2, medium 2): an OLDER host speaks the pre-regions window protocol — its chatWindow carries events but NO span.
 // A deep link into a gap, the ask held, then a span-less reply injected: the pre-jump moved the reader, so the notice comes down and
 // the reader is told the host is older, never dropped silently where the pre-jump left them.
@@ -97,7 +102,7 @@ const deep3 = "11111111-2222-3333-4444-" + pad(2 * 40);
 await page.evaluate(() => { window.__hold.add("loadAround"); });
 const aroundBefore3 = await sentOf("loadAround"); const toastBefore3 = await page.evaluate(() => !!document.querySelector(".locate-toast"));
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep3, anchorT: cfg.base + 2 * 40 });
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore3, { timeout: 10000 }).catch(() => {});
+await page.waitForFunction((ty) => (window.__heldRaw || []).some((d) => JSON.parse(d).type === ty), "loadAround", { timeout: 10000 }).catch(() => {});   // the HELD ask, where it lands (a parked frame never reaches __sent: the wait this replaces burned its timeout on every run)
 const asked3 = await state();
 await page.evaluate(([sid, anchor]) => window.postMessage({ type: "chatWindow", id: sid, anchor, events: [{ uuid: anchor, kind: "user", md: "an older host's window, no span" }], moreBefore: false, moreAfter: false }, "*"), [cfg.sid, deep3]);
 await page.waitForFunction(() => { const tt = document.querySelector(".locate-toast"); return !!tt && /older version/.test(tt.textContent || ""); }, null, { timeout: 5000 }).catch(() => {});
@@ -116,17 +121,18 @@ await painted();
 await page.evaluate(() => { window.__hold.add("loadAround"); });
 const around6 = await sentOf("loadAround");
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: "11111111-2222-3333-4444-" + pad(2 * 60), anchorT: cfg.base + 2 * 60 });   // turn 60: its window (about turns 0 to 123) STRADDLES the reader, who stands near turn 117 of the head gap
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, around6, { timeout: 8000 }).catch(() => {});
+await page.waitForFunction((ty) => (window.__heldRaw || []).some((d) => JSON.parse(d).type === ty), "loadAround", { timeout: 10000 }).catch(() => {});   // the HELD ask, where it lands (a parked frame never reaches __sent: the wait this replaces burned its timeout on every run)
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
 const heldAsk6 = await page.evaluate(() => (window.__heldRaw || []).length);
 await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });   // the notice clicked away: the reply will fill in place
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
+await quiet();   // the cancel's and the pre-jump's deferred writes have run: the road's own scroll below is not moved back by one
 await page.evaluate(() => { const c = document.getElementById("content"); const g = document.querySelector("#content .tx-gap"); const gTop = g ? g.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop : 0; c.scrollTop = Math.round(gTop + (g ? g.offsetHeight : 9000) * 0.6); });   // about turn 117 of 195, deep into the head gap, no row on screen
 await painted();
 const inGap6 = await page.evaluate(() => { const c = document.getElementById("content"); const cr = c.getBoundingClientRect(); const rows = Array.from(c.querySelectorAll(".turn[data-uuid]")).filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > cr.top && r.top < cr.bottom; }).length; const rs = typeof window.__rompRegions === "function" ? window.__rompRegions() : null; const g = rs && rs.find((r) => r.kind === "gap"); return { top: c.scrollTop, rowsOnScreen: rows, gap: g ? { lo: g.lo, hi: g.hi } : null }; });
 const point6Before = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
 const regionsBefore6 = await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null));
-await page.evaluate(() => { window.__hold.delete("loadAround"); window.__release(); });
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = (window.__heldRaw || []).filter((d) => JSON.parse(d).type === "loadAround"); window.__release(); window.__hold.add("loadAround"); });   // the window alone goes out; parked page asks are dropped; the hold stays for the roads after
 await page.waitForFunction((n0) => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.filter((r) => r.kind === "run").length > n0; }, (regionsBefore6 || []).filter((r) => r.kind === "run").length, { timeout: 10000 }).catch(() => {});
 await painted();
 const point6After = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
@@ -139,12 +145,13 @@ await painted();
 await page.evaluate(() => { window.__hold.add("loadAround"); });
 const aroundBefore1 = await sentOf("loadAround");
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: ("11111111-2222-3333-4444-" + pad(2 * 125)), anchorT: (cfg.base + 2 * 125) });
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore1, { timeout: 10000 }).catch(() => {});
+await page.waitForFunction((ty) => (window.__heldRaw || []).some((d) => JSON.parse(d).type === ty), "loadAround", { timeout: 10000 }).catch(() => {});   // the HELD ask, where it lands (a parked frame never reaches __sent: the wait this replaces burned its timeout on every run)
+await page.waitForFunction(() => document.querySelectorAll("#content .tx-gap-loading").length >= 1, null, { timeout: 5000 }).catch(() => {});   // the glyph paints on the pre-jump's re-window, a frame after the ask
 const asked1 = await state();   // sampled while the ask is on the wire: the notice up, the view inside the gap
 const heldAsk1 = await page.evaluate(() => (window.__heldRaw || []).length);   // the ask parked at the socket (a held frame never reaches the send log); sampled HERE: the fresh pages after this road reset that log
 const trace1 = await trace();
 const guess1 = await writes("land-guess");
-await page.evaluate(() => { window.__hold.delete("loadAround"); });
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = (window.__heldRaw || []).filter((d) => JSON.parse(d).type === "loadAround"); });
 const released1 = await page.evaluate(() => window.__release());
 await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), ("11111111-2222-3333-4444-" + pad(2 * 125)), { timeout: 15000 }).catch(() => {});
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
@@ -158,7 +165,7 @@ const deep2 = "11111111-2222-3333-4444-" + pad(2 * 190);   // turn 190: inside t
 await page.evaluate(() => { window.__hold.add("loadAround"); });
 const aroundBefore2 = await sentOf("loadAround"); const locBefore2 = rows1.length;
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep2, anchorT: cfg.base + 2 * 190 });
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, aroundBefore2, { timeout: 10000 }).catch(() => {});
+await page.waitForFunction((ty) => (window.__heldRaw || []).some((d) => JSON.parse(d).type === ty), "loadAround", { timeout: 10000 }).catch(() => {});   // the HELD ask, where it lands (a parked frame never reaches __sent: the wait this replaces burned its timeout on every run)
 const asked2 = await state();
 const trace2 = await trace();
 // the ONLY cancel, clicked as a real user does: hit-tested at the notice's centre (a synthetic n.click() would pass even if the notice
@@ -168,7 +175,7 @@ if (noticeHit) await page.mouse.click(noticeHit.x, noticeHit.y);
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
 const clicked2 = await state(); const rowClicked2 = await rowAtTop(); const regionsClicked = await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null));
 const rows2 = (await locateRows()).slice(locBefore2);
-await page.evaluate(() => { window.__hold.delete("loadAround"); });
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = (window.__heldRaw || []).filter((d) => JSON.parse(d).type === "loadAround"); });
 const released2 = await page.evaluate(() => window.__release());
 await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`) || window.__sent.some((m) => m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill"), deep2, { timeout: 15000 }).catch(() => {});
 await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
@@ -178,7 +185,7 @@ const target2 = await onScreen(deep2);
 // no row on screen) a held gap-scroll ask, then the release: the head page fills and its first turn sits at the top, scrollTop still ~0.
 await page.evaluate(() => { window.__hold.add("loadTurns"); });
 await page.evaluate(() => { const c = document.getElementById("content"); c.scrollTop = 0; });
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadTurns").length > n, await sentOf("loadTurns"), { timeout: 8000 }).catch(() => {});
+await page.waitForFunction((ty) => (window.__heldRaw || []).some((d) => JSON.parse(d).type === ty), "loadTurns", { timeout: 10000 }).catch(() => {});   // the HELD ask, where it lands (a parked frame never reaches __sent: the wait this replaces burned its timeout on every run)
 const head4 = await page.evaluate(() => { const c = document.getElementById("content"); return { top: c.scrollTop, rows: c.querySelectorAll("#content .turn[data-uuid]").length }; });
 await page.evaluate(() => { window.__hold.delete("loadTurns"); const n = window.__release(); return n; });
 await page.waitForFunction(() => { const rs = (typeof window.__rompRegions === "function" && window.__rompRegions()) || []; return rs.length > 0 && rs[0].kind === "run" && rs[0].lo === 0; }, null, { timeout: 10000 }).catch(() => {});
@@ -189,6 +196,10 @@ const filled4 = await page.evaluate(() => { const c = document.getElementById("c
 // notice clicked away, the window released) must keep that row at its offset and name the point under the viewport top as a turn:
 // the row names its own turn (data-turn), the fill reads it, and looks nothing up by uuid.
 await reboot();
+// the head gap's own page asks are parked for the whole road (CI, 2026-09-14, twice: with the reader at the gap's top a rebuild re-observed the
+// gap and it asked its FIRST page, turns 0 to 16, which the kernel filled, 33 events; turn 10 was then a rendered row and the second focus
+// landed on it exactly, asking no window: held 0, no fill, nothing moved). Parked, the gap stays [0, 39) and turn 10 stays inside it.
+await page.evaluate(() => { window.__hold.add("loadTurns"); });
 const auqUser7 = "11111111-2222-3333-4444-" + pad(2 * 100), auqAnswer7 = "66666666-7777-8888-9999-" + pad(2 * 100);
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: auqUser7, anchorT: cfg.base + 2 * 100 });   // turn 100: its window (about turns 40 to 160) leaves the head gap above it
 await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), auqAnswer7, { timeout: 15000 }).catch(() => {});
@@ -199,26 +210,34 @@ await toTop7(); await painted();
 const top7 = await rowAtTop();
 const turnAttr7 = await page.evaluate((u) => { const t = document.querySelector(`#content .turn[data-uuid="${u}"]`); return t ? (t.dataset.turn === undefined ? null : t.dataset.turn) : "absent"; }, auqAnswer7);
 const sentAt7 = await page.evaluate(() => window.__sent.length);
+// the first landing settled before the fill's ask is made: its record taken, no ask in flight, the socket open (a held ask is parked at the
+// socket only once the shim's send runs; while the socket is down the shim queues and flushes on the redial). CI read 0 here twice on
+// 2026-09-14 (PR 1640's merge ref, PR 1643) with the road's wait below on the wrong predicate (a HELD ask never reaches __sent, so it
+// burned its timeout every run): the fill's ask is now waited for where it lands, the socket, and the payload names what stood if not.
+await page.waitForFunction((sid) => { const a = window.__rompAskState(sid); return a.asks.length === 0 && !a.loadingOlder && !!window.__ws && window.__ws.readyState === 1; }, cfg.sid, { timeout: 15000 }).catch(() => {});   // (a parked page ask may stand: it cannot land)
+const settled7 = await page.evaluate((sid) => ({ ask: window.__rompAskState(sid), socket: window.__ws ? window.__ws.readyState : null }), cfg.sid);
 await page.evaluate(() => { window.__hold.add("loadAround"); });
-const around7 = await sentOf("loadAround");
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: "11111111-2222-3333-4444-" + pad(2 * 10), anchorT: cfg.base + 2 * 10 });   // turn 10: in the head gap above the landed window
-await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "loadAround").length > n, around7, { timeout: 8000 }).catch(() => {});
+await page.waitForFunction(() => (window.__heldRaw || []).some((d) => JSON.parse(d).type === "loadAround"), null, { timeout: 15000 }).catch(() => {});   // the fill's window ask, parked at the socket
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
-const held7 = await page.evaluate(() => (window.__heldRaw || []).length);
+const held7 = await page.evaluate(() => (window.__heldRaw || []).filter((d) => JSON.parse(d).type === "loadAround").length);
+const askState7 = await page.evaluate((sid) => ({ ask: window.__rompAskState(sid), socket: window.__ws ? window.__ws.readyState : null, trail: (typeof window.__rompLandTrail === "function" ? window.__rompLandTrail().slice(-6) : null),
+  held: (window.__heldRaw || []).map((d) => JSON.parse(d).type), recv: window.__recv.slice(-6) }), cfg.sid);   // what stood at the read, for the assertion's message
 await page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); if (n) { const r = n.getBoundingClientRect(); n.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); } });
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 5000 }).catch(() => {});
-await toTop7(); await painted();   // the click's pre-jump moved the view; the row back to the top before the fill
+await quiet(); await toTop7(); await painted();   // the click's pre-jump moved the view (its deferred write has run: quiet); the row back to the top before the fill
 const top7Held = await rowAtTop();
 const point7Before = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
 const runN7 = () => page.evaluate(() => ((typeof window.__rompRegions === "function" && window.__rompRegions()) || []).filter((r) => r.kind === "run").reduce((a, r) => a + r.n, 0));
 const runNBefore7 = await runN7();
-await page.evaluate(() => { window.__hold.delete("loadAround"); window.__release(); });
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__heldRaw = (window.__heldRaw || []).filter((d) => JSON.parse(d).type === "loadAround"); window.__release(); });   // the fill's window alone goes out; a parked page ask is dropped
 await page.waitForFunction((n0) => ((typeof window.__rompRegions === "function" && window.__rompRegions()) || []).filter((r) => r.kind === "run").reduce((a, r) => a + r.n, 0) > n0, runNBefore7, { timeout: 15000 }).catch(() => {});
 await painted();
 const top7After = await rowAtTop();
 const point7After = await page.evaluate(() => (typeof window.__rompTurnUnderTop === "function" ? window.__rompTurnUnderTop() : null));
 const fillWrites7 = await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "clientDiag" && m.what === "scrollwrite" && m.data && m.data.writer === "gap-fill").map((m) => ({ b: m.data.before, a: m.data.after })), sentAt7);
 const runNAfter7 = await runN7();
+await page.evaluate(() => { window.__hold.delete("loadTurns"); window.__heldRaw = []; });
 // ROAD 8 (round seven, medium 3; a fresh page): the notice's click cancels a landing whose ask is still on the wire; the reader's NEXT
 // card click must ask, not be refused as "still going to the earlier message" (a cancelled landing is not busy). Two deep links into two
 // gaps, both held: A's notice clicked away, then B asked; both released: A's window fills in place under the cancelled mark, B lands.
@@ -385,7 +404,7 @@ const asks13 = await page.evaluate((n) => ({ loadOlder: window.__sent.slice(n).f
 // ROAD 14 (round nine, medium 2; a fresh page): the VS Code pane's down edge is the pipeState frame; a landing in flight (its ask held) then
 // pipeState down must clear the ask's record, the notice and the busy meaning, and pipeState up must leave the next card click free to ask.
 await reboot();
-await page.evaluate(() => { window.__hold.add("loadAround"); });
+await page.evaluate(() => { window.__hold.add("loadAround"); window.__hold.add("loadTurns"); });   // the gap's own page asks are parked too: a page ask the road produces is read at the socket, never answered under the read
 const deep14 = "11111111-2222-3333-4444-" + pad(2 * 60);
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep14, anchorT: cfg.base + 2 * 60 });
 await page.waitForFunction(() => (window.__heldRaw || []).length >= 1, null, { timeout: 8000 }).catch(() => {});
@@ -393,17 +412,24 @@ await page.waitForFunction(() => { const n = document.querySelector(".tx-landing
 const before14 = { notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid) };
 await page.evaluate(() => { window.__heldRaw = []; window.postMessage({ type: "pipeState", up: false, queued: 0 }, "*"); });   // the pipe goes down with the ask lost
 await painted();
-const down14 = { notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid), toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }) };
-await page.evaluate(() => { window.postMessage({ type: "pipeState", up: true, queued: 0 }, "*"); });
+// CI's order (main red at e7729438): a kernel frame's rebuild lands between the clear and the read. The rebuild re-creates the gap element
+// under the reader and the observer's first delivery finds the gap with NO ask on it (the landing's record, which had stood in for the gap's
+// own ask, went with the clear), so the gap asks for the page at the edge the reader stands on, its first (turns 0 to 16). The boot frame
+// re-posted is that rebuild; the page ask is parked at the socket (loadTurns held), so what stands after is read, not raced.
+await page.evaluate(() => { if (window.__bootFrame) window.postMessage(window.__bootFrame, "*"); });
 await painted();
-await page.evaluate(() => { window.__hold.delete("loadAround"); });
+const heldDown14 = await page.evaluate(() => (window.__heldRaw || []).map((d) => { const m = JSON.parse(d); return m.type + ":" + (m.lo ?? "") + "-" + (m.hi ?? ""); }));
+const down14 = { held: heldDown14, notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid), toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }) };
+await page.evaluate(() => { window.__heldRaw = []; window.postMessage({ type: "pipeState", up: true, queued: 0 }, "*"); });   // the parked page ask dropped with the down pipe; the pipe comes back
+await painted();
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__hold.delete("loadTurns"); });
 const sentAt14 = await page.evaluate(() => window.__sent.length);
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep14, anchorT: cfg.base + 2 * 60 });
 await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deep14, { timeout: 15000 }).catch(() => {});
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
 await painted();
 const after14 = { asked: await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "loadAround").length, sentAt14), busy: await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "locateDiag").flatMap((m) => m.trail || []).filter((w) => w === "pointer-fetch-busy").length, sentAt14), target: await onScreen(deep14) };
-process.stdout.write("RESULT:" + JSON.stringify({ inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
+process.stdout.write("RESULT:" + JSON.stringify({ settled7, askState7, inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 190, bootTop: boot.top }) + "\n");
@@ -420,7 +446,10 @@ class ServedLandingNotice(WindowLab):
     def _result(self):
         if self._r is None:
             type(self)._r = self._drive(DRIVER, "notice")
-            print("NOTICE:", json.dumps(self._r), file=sys.stderr)
+        # printed on EVERY test's call, not the first alone: pytest shows a test's captured stderr only when THAT test fails, so a
+        # payload printed once under the first (passing) road never reached CI's log for a later road's red (main at e7729438, road 14:
+        # the log carried the assertion's dict and nothing else). One line per test is the price of an explainable CI-only red.
+        print("NOTICE:", json.dumps(self._r), file=sys.stderr)
         return self._r
 
     def test_a_deep_link_shows_the_one_notice_with_the_targets_time_jumps_into_the_gap_and_lands(self):
@@ -491,7 +520,9 @@ class ServedLandingNotice(WindowLab):
         self.assertEqual(r["top7"]["uuid"], answer, "the row under the viewport top is the answered question, anchored on its answer's uuid (a fixture fact): %r" % r["top7"])
         self.assertTrue(isinstance(r["turnAttr7"], str) and r["turnAttr7"].isdigit(), "the row names its own turn (data-turn), so the fill reads it by position, never a uuid lookup: %r" % r["turnAttr7"])
         self.assertEqual(int(r["turnAttr7"]), 100, "…the answered question's turn: %r" % r["turnAttr7"])
-        self.assertGreaterEqual(r["held7"], 1, "the fill's window ask was held at the socket")
+        s7 = r["settled7"]
+        self.assertEqual((s7["ask"]["asks"], s7["socket"]), ([], 1), "the first landing settled before the fill's ask: no window ask in flight, the socket open: %r" % s7)
+        self.assertEqual(r["held7"], 1, "the fill's window ask was held at the socket (CI read 0 twice on 2026-09-14 with the wait on the wrong predicate): %r" % r["askState7"])
         self.assertGreater(r["runNAfter7"], r["runNBefore7"], "the released window inserted its run above the reader: %r -> %r" % (r["runNBefore7"], r["runNAfter7"]))
         self.assertGreaterEqual(len(r["fillWrites7"]), 1, "the fill wrote the scroll once in place (gap-fill): %r" % r["fillWrites7"])
         self.assertEqual(r["top7Held"]["uuid"], answer, "the answered question was the row under the viewport top when the fill came: %r" % r["top7Held"])
@@ -606,7 +637,14 @@ class ServedLandingNotice(WindowLab):
         d = r["down14"]
         self.assertFalse(d["notice"], "pipeState down brought the notice down: %r" % d)
         self.assertEqual(d["ask"]["asks"], [], "…and cleared the ask's record: %r" % d["ask"])
-        self.assertEqual((d["ask"]["landingGaps"], d["ask"]["gapLoading"], d["ask"]["loadingOlder"]), (0, 0, False), "the three-set cleared: %r" % d["ask"])
+        self.assertEqual((d["ask"]["landingGaps"], d["ask"]["loadingOlder"]), (0, False), "the landing's gap and the older ask cleared: %r" % d["ask"])
+        # main red at e7729438 (CI, this road): the three-set read gapLoading 1 with the key of the head gap's FIRST page after the down edge.
+        # The clear owes the asks that were in flight, and every one of those is gone (none of the keys from before the down edge stands);
+        # a key standing after it is the gap under the reader asking anew once a rebuild re-observed it with the landing's record gone,
+        # which the road now forces (the boot frame re-posted) and reads at the socket: one fresh page ask, the gap's first page, parked.
+        self.assertTrue(set(d["ask"]["gapKeys"]).isdisjoint(b["ask"]["gapKeys"]), "no page ask from before the down edge stands: %r vs %r" % (d["ask"]["gapKeys"], b["ask"]["gapKeys"]))
+        self.assertEqual([k.split(":", 1)[1] for k in d["ask"]["gapKeys"]], ["0:16"], "the gap under the reader (at the head gap's top after the pre-jump) asked anew for its first page: %r" % d["ask"])
+        self.assertEqual([h for h in d["held"] if h.startswith("loadTurns")], ["loadTurns:0-16"], "…parked at the socket, one ask: %r" % d["held"])
         self.assertIsNotNone(d["toast"]); self.assertIn("connection dropped", d["toast"], "the reader was told the jump was lost: %r" % d["toast"])
         a = r["after14"]
         self.assertEqual(a["asked"], 1, "after pipeState up the next card click asked: %r" % a)
