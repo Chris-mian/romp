@@ -85,7 +85,7 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
     "a non-ok /tunnels answer throws, with its status on the error, instead of reading as an empty host list");
   // the popover's refresh says which failure it had, as the host picker does: a status for a non-ok answer, unreachable for a rejected fetch, a console line for both
   assert.ok(src.includes('console.error("romp: /tunnels could not be read", err)'), "the popover's refresh says its failure in the console");
-  assert.ok(src.includes("err && err.httpStatus ? `The kernel answered HTTP ${err.httpStatus} to /tunnels; retrying…`"), "a non-ok answer is named by its status, not called an unreachable kernel");
+  assert.ok(src.includes("if (err && err.httpStatus) return `The kernel answered HTTP ${err.httpStatus} to /tunnels; retrying…`;"), "a non-ok answer is named by its status, not called an unreachable kernel (tunnelsFailureLine, executed below)");
   // the host picker's /ssh-hosts read has the same rule and keeps the last list it read on a failure
   assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: FetchFault = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
     "a non-ok /ssh-hosts answer throws, with its status on the error, instead of painting no hosts");
