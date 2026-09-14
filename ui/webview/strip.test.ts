@@ -90,7 +90,12 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
   assert.ok(src.includes('.then((r) => { if (!r.ok) { const e: any = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
     "a non-ok /ssh-hosts answer throws, with its status on the error, instead of painting no hosts");
   assert.ok(src.includes("const keep = !!lastHosts && !(err && err.network);"), "a non-ok or unparseable answer keeps the last good list; a rejected fetch does not");
-  assert.ok(src.includes('.catch((e: any) => { e = e || new Error("fetch rejected"); e.network = true; throw e; })'), "a rejected fetch is marked before the status check");
+  assert.equal(src.split('.catch((e: any) => { e = e instanceof Error ? e : new Error(String(e)); (e as any).network = true; throw e; })').length - 1, 2,
+    "both /ssh-hosts and /tunnels mark a rejected fetch before the status check, wrapping a reason that is not an object");
+  assert.ok(src.includes("lastHosts = null;"), "nothing kept means the list is forgotten too, so a stale list never repaints after the unreachable signal");
+  assert.ok(src.includes('else if (err && err.httpStatus) fillHostSelect(sel, [], `(the kernel answered HTTP ${err.httpStatus})`)'), "a first load's 500 names the status, not an unreachable kernel");
+  assert.ok(src.includes(": err && err.network ? `Couldn't reach the kernel ("), "the popover's refresh calls only a rejected fetch unreachable");
+  assert.ok(src.includes(": `The kernel's answer to /tunnels could not be read; retrying…`"), "a 200 whose body will not parse is named as such");
   assert.ok(src.includes('else fillHostSelect(sel, [], "(kernel unreachable)")'), "a rejected fetch keeps the kernel-unreachable signal, whatever was read before");
   assert.ok(src.includes('console.error("romp: ssh hosts could not be read"'), "every failure shape says so in the console");
   assert.ok(src.includes('{ type: "openPane", pane: p.key }'), "quick-opens post openPane to the host");

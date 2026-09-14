@@ -816,8 +816,11 @@ line works for a manager launchd started. The value rule is the same in both
 readers: `0`, `false`, `no` and `off` (in any case) are off, any other non-empty
 value is on (`disabled` and `none` included: only those four words turn it off),
 and the last assignment in the file wins. The copy is probed under a ten-second
-bound (`ROMP_NODE_PROBE_BOUND`, never below one second nor above an hour: seven
-digits or more read as 3600), and a probe that hangs is
+bound (`ROMP_NODE_PROBE_BOUND`, in whole seconds, read the same way by both
+scripts: a value with no digits, or a digit among other characters, is the default
+ten; leading zeros are dropped; zero is one second; a value of seven digits or more
+after that folds to 3600; anything from 1 to 999999 is taken as given), and a probe
+that hangs is
 killed with everything under it, TERM then KILL, so a version manager's shim that
 runs `node` without replacing itself leaks nothing.
 

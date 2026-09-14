@@ -237,10 +237,13 @@ fi
 _pyrm() { [[ -n "$_pyout_file" ]] && rm -f "$_pyout_file" 2>/dev/null; return 0; }
 _pyread() {   # $1 the probe file: its bytes into _pyout with NULs dropped; a missing or unreadable file leaves _pyout empty
     # one read per NUL, capped at 64 chunks: an output stuffed with NULs (200k added 1.7 s to a launch) is read no
-    # further, and what came after the cap is the no-version leg; a version is never more than a few NULs in
+    # further. An output that reaches the cap is NOT read as no version (that leg started a 3.9 hidden behind 64 NULs
+    # where the old cat refused it): _pycapped is set, and the caller refuses the interpreter, saying why. A 65th
+    # chunk is the evidence: 63 NULs before the sentinel read as 64 chunks and the version; 64 NULs make 65
     local _chunk _n=0
-    _pyout=""
-    { while [[ $_n -lt 64 ]] && { IFS= read -r -d '' _chunk || [[ -n "$_chunk" ]]; }; do _pyout+="$_chunk"; _chunk=""; _n=$((_n + 1)); done < "$1"; } 2>/dev/null || true
+    _pyout="" _pycapped=""
+    { while [[ $_n -lt 65 ]] && { IFS= read -r -d '' _chunk || [[ -n "$_chunk" ]]; }; do _pyout+="$_chunk"; _chunk=""; _n=$((_n + 1)); done < "$1"; } 2>/dev/null || true
+    [[ $_n -lt 65 ]] || _pycapped=1
     return 0
 }
 trap '_pyrm' EXIT
@@ -273,6 +276,10 @@ else
     fi
 fi
 _pyrm; trap - EXIT TERM INT HUP
+if [[ -n "${_pycapped:-}" ]]; then
+    echo "romp: the version probe of $PY printed more than 64 NUL-separated chunks, so its output was not read (a site customization writing NUL bytes ahead of the program); the kernel is not started on it." >&2
+    exit 1
+fi
 if [[ -n "$_pybounded" && ( "$_prc" -eq 124 || "$_prc" -eq 137 ) ]]; then
     echo "romp: $PY did not answer its version probe within 5 s, or exited with the bound's own code (exit $_prc): unresponsive (a stalled network mount, a site customization reaching for the network), or an interpreter that exits 124 or 137 of its own accord reads the same; the kernel is not started on it." >&2
     exit 1

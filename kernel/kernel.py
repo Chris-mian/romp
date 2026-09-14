@@ -54985,11 +54985,11 @@ if(cut){var mo=document.createElement('option');mo.value=mo.textContent='\\u2026
 // a REJECTED fetch, the kernel gone, empties the suggestions instead, so a dead kernel is never hidden behind a stale
 // list once one was read; the console says which, and names the kept list only when there is one (the strip's rule)
 var _cfgRead=false;
-function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){e=e||new Error('fetch rejected');e.network=true;throw e;})
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){e=(e instanceof Error)?e:new Error(String(e));e.network=true;throw e;})
 .then(function(r){if(!r.ok){var e=new Error('/ssh-hosts answered HTTP '+r.status);e.httpStatus=r.status;throw e;}return r.json();}).then(function(d){
 _cfg=(d&&d.hosts)||[];_cfgRead=true;fillHosts();}).catch(function(e){var keep=_cfgRead&&!(e&&e.network);
 try{console.error('romp: ssh hosts could not be read'+(keep?'; keeping the last list':''),e);}catch(_){}
-if(!keep){_cfg=[];fillHosts();}});}
+if(!keep){_cfg=[];_cfgRead=false;fillHosts();}});}   // the flag goes with the list: the next failure cannot claim to keep one
 // Every string a PEER chose is rendered as TEXT: esc() before it meets innerHTML. That is a host it named
 // (a checked-in peer names itself), its status word, its build, the rows it reports for its own connections
 // (/tunnels/of — whitelisted by the kernel too), and the bus gossip below (tiers, relay hosts, holds).
