@@ -63,11 +63,11 @@ class PlannerSeenMemo(unittest.TestCase):
         lock = getattr(jd, "_PLANNER_SEEN_LOCK", None) or threading.Lock()
         with lock:
             jd._PLANNER_SEEN.clear()
-            for flag in ("_PLANNER_SEEN_DIRTY", "_PLANNER_SEEN_LOADED"):
+            for flag in ("_PLANNER_SEEN_DIRTY", "_PLANNER_SEEN_LOADED", "_PLANNER_SEEN_READ_FAULT"):
                 if hasattr(jd, flag):
                     getattr(jd, flag)[0] = False
         for k in jd._PLANNER_STATS:
-            jd._PLANNER_STATS[k] = 0
+            jd._PLANNER_STATS[k] = {} if k == "mismatchByTerm" else 0
 
     def setUp(self):
         self.saved = jd.STATE; self.root = Path(tempfile.mkdtemp()); jd._rebind_state(self.root)
@@ -119,10 +119,11 @@ class PlannerSeenMemo(unittest.TestCase):
         p.write_text(json.dumps({"v": 0, "derivation": [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V], "rows": {FSID: good}}))
         self.assertEqual(jd._load_planner_seen(), 0, "another version: nothing trusted")
         jd._PLANNER_SEEN_LOADED[0] = False
+        jd._PLANNER_SEEN_READ_FAULT[0] = False
         p.write_text("{torn"); self.assertEqual(jd._load_planner_seen(), 0, "a torn file: an empty memo, no raise")
         self.assertEqual(jd._PLANNER_STATS["refused"], 4, "the other version and the torn file each counted once (round two, low 1)")
         for bad in ("", "null", "[]"):
-            jd._PLANNER_SEEN_LOADED[0] = False; before = jd._PLANNER_STATS["refused"]
+            jd._PLANNER_SEEN_LOADED[0] = False; jd._PLANNER_SEEN_READ_FAULT[0] = False; before = jd._PLANNER_STATS["refused"]
             p.write_text(bad); self.assertEqual(jd._load_planner_seen(), 0)
             self.assertEqual(jd._PLANNER_STATS["refused"], before + 1, "%r: one refusal" % bad)
         jd._PLANNER_SEEN_LOADED[0] = False; before = jd._PLANNER_STATS["refused"]; p.unlink()
@@ -227,7 +228,7 @@ class PlannerSeenMemo(unittest.TestCase):
         (self.root / jd._PLANNER_SEEN_FILE).write_bytes(b"\xff\xfe{\"v\": 1")
         jd.run_plan(now=1_700_000_500)                                 # the whole pass, over an empty root: must not raise
         self.assertEqual(jd._PLANNER_STATS["refused"], 1, "one refusal for the undecodable file")
-        self.assertTrue(jd._PLANNER_SEEN_LOADED[0])
+        self.assertFalse(jd._PLANNER_SEEN_LOADED[0], "unlatched on a fault since the 5c follow-up: the next pass retries the read")
 
     def test_a_rebound_root_clears_the_load_latch_with_the_table(self):
         """Round three, low 2: a rebind after a load must load the new root's rows on the next pass, and a forced persist before
@@ -245,7 +246,7 @@ class PlannerSeenMemo(unittest.TestCase):
         finally:
             jd._rebind_state(self.root)
 
-    PLAN_SESSION_TOKENS_SHA16 = "b3ce93e3421bd728"
+    PLAN_SESSION_TOKENS_SHA16 = "169d37751d9f879d"   # v2: the skip check counts mismatches by term (the derivation bumped with it)
 
     def test_a_change_to_the_plan_session_bumps_the_derivation_or_this_pin(self):
         """Round three, low 3: the derivation bump rule made mechanical. A persisted row asserts the planner had nothing to do
@@ -263,8 +264,53 @@ class PlannerSeenMemo(unittest.TestCase):
                          "_plan_session changed (token sha16 %s): bump _PLANNER_SEEN_DERIVATION_V in kernel/judge.py if a pass that had "
                          "nothing to do under the old code could have something under the new, else set PLAN_SESSION_TOKENS_SHA16 to %s" % (h, h))
 
+    def test_an_unreadable_memo_file_leaves_the_load_unlatched_and_the_forced_drain_write_declines(self):
+        """The 5c follow-up (a): the latch was set before the read, so a present-but-unreadable file (EACCES, a transient EIO)
+        latched an empty table and a kernel exiting before any pass emptied the file through the drain. Cross-process: a fresh
+        judge module over a root whose memo file is unreadable, forced."""
+        jd._planner_seen_set(FSID, ["a"]); jd._planner_seen_set(FSID2, ["b"]); self.assertTrue(jd.persist_planner_seen())
+        p = self.root / jd._PLANNER_SEEN_FILE
+        os.chmod(p, 0)
+        self.addCleanup(os.chmod, p, 0o644)
+        if os.access(p, os.R_OK):
+            self.skipTest("optional: this user reads a mode-000 file (root); the unreadable-file case cannot be staged here")
+        code = ("import os, sys; sys.path.insert(0, %r); from romp_load import load_source; "
+                "jd = load_source('romp_judge_exit_drain_fault', %r); n = jd._load_planner_seen(); "
+                "print(n, jd._PLANNER_SEEN_LOADED[0], jd._PLANNER_STATS['refused'], jd.persist_planner_seen(force=True))"
+                % (HERE, os.path.join(BIN, "romp-judge")))
+        env = dict(os.environ, ROMP_STATE_DIR=str(self.root), ROMP_KERNEL_NO_OPEN="1")
+        env.pop("XDG_STATE_HOME", None)
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr[-800:])
+        self.assertEqual(out.stdout.split(), ["0", "False", "1", "False"],
+                         "nothing loaded, the latch unset, one refusal, the forced write declined: %r" % out.stdout)
+        os.chmod(p, 0o644)
+        self.assertEqual(sorted(json.loads(p.read_text())["rows"]), sorted([FSID, FSID2]), "the previous kernel's rows survive")
+
+    def test_a_read_fault_counts_one_refusal_per_fault_spell_and_a_successful_load_re_arms_it(self):
+        """The refinement on (a): with the latch left unset on a fault every pass retries the read, so a file that stays unreadable
+        counts ONE refusal per fault spell (a flag re-armed by a successful load), not one per pass."""
+        p = self.root / jd._PLANNER_SEEN_FILE
+        p.write_bytes(b"\xff\xfe torn")
+        for _ in range(3):
+            self.assertEqual(jd._load_planner_seen(), 0)
+            self.assertFalse(jd._PLANNER_SEEN_LOADED[0], "unlatched on a fault: the next pass retries")
+        self.assertEqual(jd._PLANNER_STATS["refused"], 1, "three faulting passes, one refusal")
+        self.assertFalse(jd.persist_planner_seen(force=True), "the forced write declines while nothing loaded")
+        self.assertEqual(p.read_bytes(), b"\xff\xfe torn", "the file untouched")
+        p.write_text(json.dumps({"v": 1, "derivation": [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V], "rows": {FSID: ["a"]}}))
+        self.assertEqual(jd._load_planner_seen(), 1, "the fault over: loaded and latched")
+        self.assertTrue(jd._PLANNER_SEEN_LOADED[0]); self.assertFalse(jd._PLANNER_SEEN_READ_FAULT[0], "re-armed by the successful load")
+        jd._PLANNER_SEEN_LOADED[0] = False; p.write_bytes(b"{torn")
+        self.assertEqual(jd._load_planner_seen(), 0); self.assertEqual(jd._PLANNER_STATS["refused"], 2, "a new fault spell counts again")
+        p.unlink(); jd._PLANNER_SEEN_LOADED[0] = False
+        self.assertEqual(jd._load_planner_seen(), 0); self.assertTrue(jd._PLANNER_SEEN_LOADED[0], "a missing file is a successful empty load: latched")
+        self.assertEqual(jd._PLANNER_STATS["refused"], 2, "and no refusal")
+
     def test_the_perf_row_carries_the_three_new_counters(self):
-        self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted"})
+        self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted", "mismatchByTerm"})
+        s = jd.planner_skip_stats(); s["mismatchByTerm"]["9"] = 5
+        self.assertEqual(jd.planner_skip_stats()["mismatchByTerm"], {}, "the histogram is copied, not shared")
 
 
 if __name__ == "__main__":
