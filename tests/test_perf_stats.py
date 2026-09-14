@@ -240,6 +240,40 @@ class Collector(unittest.TestCase):
         self.assertAlmostEqual(p["cycle_ms_ring_max"], 299.0, msg="the window's max: the ring's largest")
         self.assertAlmostEqual(p["cycle_ms_max"], 5000.0, msg="the lifetime max keeps the boot cycle")
 
+    def test_the_per_session_chat_build_timer_keeps_first_last_and_max_and_leaves_with_its_session(self):
+        """The process split's measure (2026-09-14): beside the aggregate, a row per session with the FIRST build after the
+        boot (set once per process life), the last, the max, the counts and the leaf's bytes; sorted by max under
+        builds.chat.bySession; a row leaves with its session at the death sweep's tick; the aggregate is unchanged."""
+        A, B, C = "aaaaaaaa-2222-4333-8444-0000000000a1", "bbbbbbbb-2222-4333-8444-0000000000b2", "cccccccc-2222-4333-8444-0000000000c3"
+        self.st.build_chat(False, 0.100, active=True, sid=A, nbytes=1000)    # A: first 100 ms
+        self.st.build_chat(False, 0.050, sid=A, nbytes=1200)                  # A: last 50, max stays 100
+        self.st.build_chat(False, 0.020, sid=B, nbytes=50)                    # B: first 20
+        self.st.build_chat(False, 0.300, sid=B, nbytes=60)                    # B: last 300, max 300
+        self.st.build_chat(True, sid=C)                                       # C: cached only, never built
+        self.st.build_chat(True, sid=A)
+        self.st.build_chat(False, 0.010)                                      # no sid: the aggregate alone
+        snap = self.st.snapshot()
+        chat = snap["builds"]["chat"]
+        self.assertEqual((chat["built"], chat["cached"]), (5, 2), "the aggregate counts every build as before")
+        rows = {r["sid"]: r for r in chat["bySession"]}
+        self.assertEqual([r["sid"] for r in chat["bySession"]], [B, A, C], "sorted by max, the largest first")
+        self.assertEqual(rows[A], {"sid": A, "first": 100.0, "last": 50.0, "max": 100.0, "n": 2, "cached": 1, "bytes": 1200})
+        self.assertEqual(rows[B], {"sid": B, "first": 20.0, "last": 300.0, "max": 300.0, "n": 2, "cached": 0, "bytes": 60})
+        self.assertEqual(rows[C], {"sid": C, "first": None, "last": None, "max": 0.0, "n": 0, "cached": 1, "bytes": None})
+        self.st.build_chat(False, 0.400, sid=A)
+        rows = {r["sid"]: r for r in self.st.snapshot()["builds"]["chat"]["bySession"]}
+        self.assertEqual((rows[A]["first"], rows[A]["last"], rows[A]["max"]), (100.0, 400.0, 400.0), "first is set once; last and max move")
+        self.st.chat_rows_keep({A, C})                                        # B's session left the live map
+        self.assertEqual(sorted(r["sid"] for r in self.st.snapshot()["builds"]["chat"]["bySession"]), sorted([A, C]))
+        self.st.chat_rows_keep(set())                                         # an empty alive set (a hiccup) drops nothing
+        self.assertEqual(len(self.st.snapshot()["builds"]["chat"]["bySession"]), 2)
+        import inspect
+        self.assertIn("_PERF_STATS.chat_rows_keep(cur)", inspect.getsource(km._death_sweep_tick), "the death sweep's tick bounds the rows")
+        src = Path(os.path.join(BIN, "romp-kernel")).read_text()          # the two call sites live in the chat push
+        self.assertEqual(src.count('_PERF_STATS.build_chat(True, sid=str(s["sid"]))'), 1, "the cached call site hands the sid")
+        self.assertEqual(src.count('_PERF_STATS.build_chat(False, _dt, active=is_active, miss=_miss, sid=str(s["sid"]), nbytes=_nbytes)'), 1,
+                         "the built call site hands the sid and the leaf's bytes")
+
     def test_stages_builds_judge(self):
         self.st.stage("push.chat", 0.5); self.st.stage("push.chat", 0.25); self.st.stage("jobs", 0.1)
         self.st.build("chat", True); self.st.build("chat", False, 0.040); self.st.build("feed", False, 1.0)
@@ -250,7 +284,8 @@ class Collector(unittest.TestCase):
         # chat also carries the watched/background split and the per-component attribution (2026-09-09); the
         # plain writer counts the build and attributes nothing
         self.assertEqual(snap["builds"]["chat"], {"cached": 1, "built": 1, "ms": 40.0, "active_built": 0, "bg_built": 0,
-                                                  "moved": 0, "bg_miss": {k: 0 for k in km._PerfStats.CHAT_MISS}})
+                                                  "moved": 0, "bg_miss": {k: 0 for k in km._PerfStats.CHAT_MISS},
+                                                  "bySession": []})                   # the per-session timer (2026-09-14): no sid handed in, no row
         self.assertEqual(snap["builds"]["feed"]["built"], 1)
         self.assertEqual(snap["builds"]["timeline"], {"cached": 0, "built": 0, "ms": 0.0})
         self.assertEqual(snap["judge"]["passes"], 2)

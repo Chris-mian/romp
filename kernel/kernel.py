@@ -382,6 +382,9 @@ class _PerfStats:
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
             self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0,
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
+            self.chat_by_session = {}                 # sid -> {first, last, max, n, cached, bytes}: the per-session chat build
+            #                                           timer (2026-09-14); bounded by the alive set (chat_rows_keep), reset
+            #                                           with the process, sids only, perf_counter deltas only
             self.sends = {k: {} for k in self.SEND_KINDS}
             self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0}   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
             # cold event-model parses this kernel ran (T323 stage 1): the kernel's own _parse misses, per session
@@ -635,22 +638,42 @@ class _PerfStats:
                 b["built"] += 1
                 b["ms"] += dt * 1000.0
 
-    def build_chat(self, cached, dt=0.0, active=False, miss=()):
+    def build_chat(self, cached, dt=0.0, active=False, miss=(), sid=None, nbytes=None):
         """The chat builder's record: build("chat", ...) plus who paid and why. A rebuild counts under
         active_built (the watched tab) or bg_built (a background tab whose signature moved), and a
         background rebuild adds one to bg_miss[label] for EVERY labelled _chat_build_sig component that
         differed from the cached signature (`miss`, from _chat_sig_miss), so the sum over bg_miss can
         exceed bg_built when several inputs moved together. `cold` is a tab with no cached build, `nosig`
         one whose signature could not be taken (no transcript path). Before this the counter said how
-        many chat builds ran and not which tab or which input drove them."""
+        many chat builds ran and not which tab or which input drove them.
+        `sid` (2026-09-14, the process split's measure): beside the aggregate, a per-session row keeps the
+        FIRST build's ms after the boot (set once per process life per sid: the cold build the split keeps
+        asking for), the last, the max (a later rebuild under contention), the build and cached counts, and
+        the leaf's bytes at the last build (`nbytes`), so the largest live transcript's first chat build is a
+        read from /perf, not a claim. The aggregate is untouched."""
         ms = dt * 1000.0
         with self.lock:
             b = self.builds["chat"]
+            row = None
+            if sid:
+                row = self.chat_by_session.get(sid)
+                if row is None:
+                    row = self.chat_by_session[sid] = {"first": None, "last": None, "max": 0.0, "n": 0, "cached": 0, "bytes": None}
+                if nbytes is not None:
+                    row["bytes"] = int(nbytes)
             if cached:
                 b["cached"] += 1
+                if row is not None:
+                    row["cached"] += 1
                 return
             b["built"] += 1
             b["ms"] += ms
+            if row is not None:
+                row["n"] += 1
+                row["last"] = ms
+                row["max"] = max(row["max"], ms)
+                if row["first"] is None:
+                    row["first"] = ms
             if active:
                 b["active_built"] += 1
                 return
@@ -658,6 +681,18 @@ class _PerfStats:
             bm = b["bg_miss"]
             for lab in miss:
                 bm[lab] = bm.get(lab, 0) + 1
+
+    def chat_rows_keep(self, alive):
+        """The per-session chat rows are bounded by the ALIVE set: a row whose session left the live map is dropped
+        at the death sweep's tick that saw it leave (event-keyed, no literal cap; the alive set is sized to the
+        machine's sessions). An empty alive set drops nothing: the sweep's own stand-down already keeps an
+        unreadable registry from emptying the map, and a table emptied by a hiccup would lose the boot's first builds."""
+        alive = set(alive or ())
+        if not alive:
+            return
+        with self.lock:
+            for sid in [s for s in self.chat_by_session if s not in alive]:
+                del self.chat_by_session[sid]
 
     def build_chat_moved(self):
         """A chat build whose signature moved while it ran (the post-build signature differs from the
@@ -744,6 +779,9 @@ class _PerfStats:
             stages = dict(self.stages)
             builds = {k: dict(v) for k, v in self.builds.items()}
             builds["chat"]["bg_miss"] = dict(self.builds["chat"]["bg_miss"])   # the nested map: a copy too
+            builds["chat"]["bySession"] = sorted(              # the per-session timer, sids only, the largest max first
+                ({"sid": sid, **row} for sid, row in self.chat_by_session.items()),
+                key=lambda r: -(r["max"] or 0.0))
             parses = {"kernel": self.parses["kernel"], "hits": self.parses["hits"], "bytes": self.parses["bytes"],
                       "bySid": dict(self.parses["bySid"])}
             sends = {k: {sl: {"count": e[0], "bytes": e[1]} for sl, e in d.items()}
@@ -25528,6 +25566,7 @@ def _death_sweep_tick(now, live_map):
     cur = set(live_map or {})
     prev = _prev_live_sids[0]
     _prev_live_sids[0] = cur
+    _PERF_STATS.chat_rows_keep(cur)                       # the per-session chat build rows leave with their sessions (2026-09-14)
     if prev is None:
         return
     cx = _codex()
@@ -48724,7 +48763,7 @@ def _push(targets, connect=False, live_map=None):
                     m, ms, served = hit[1], hit[2], True   # unchanged → reuse, no reshape/serialize
                     _VIEW_STATS["chatServeActive" if is_active else "chatServeBg"] += 1
                     _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
-                    _PERF_STATS.build_chat(True)
+                    _PERF_STATS.build_chat(True, sid=str(s["sid"]))
                 else:
                     _VIEW_STATS["chatBuildActive" if is_active else "chatBuildBg"] += 1
                     _t0 = time.monotonic()
@@ -48766,7 +48805,11 @@ def _push(targets, connect=False, live_map=None):
                     # against the cached signature, so /perf can say which input drives the rebuilds; the
                     # watched tab's rebuilds are counted under active_built and not attributed
                     _miss = _chat_sig_miss(hit[0] if hit is not None else None, sig)
-                    _PERF_STATS.build_chat(False, _dt, active=is_active, miss=_miss)
+                    try:
+                        _nbytes = os.path.getsize(s["path"]) if s.get("path") else None   # the leaf's size beside its build time
+                    except OSError:
+                        _nbytes = None
+                    _PERF_STATS.build_chat(False, _dt, active=is_active, miss=_miss, sid=str(s["sid"]), nbytes=_nbytes)
                     if _PERF:                            # the keyword values below cost lookups; skip them when off
                         _perf("chatbuild", sid=str(s["sid"])[:8], cached=0, active=int(is_active),
                               ms=round(_dt * 1000, 1), miss=",".join(_miss),
