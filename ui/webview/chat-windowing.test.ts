@@ -144,7 +144,7 @@ test("round two/three code fixes each carry a pin (T386 stage 2, low 1)", () => 
   const win = RENDER.slice(winStart, RENDER.indexOf("\nfunction ", winStart + 1));
   const cTurns = RENDER.slice(RENDER.indexOf("function chatTurns(msg: any)"), RENDER.indexOf("function chatHead(msg: any)") >= 0 ? RENDER.indexOf("function chatHead(msg: any)") : winStart);
   // the socket death clears every in-flight ask's state, not the glyph alone (medium 1)
-  assert.match(RENDER, /function onWireDown\(\): void \{[\s\S]*?gapLoading\.clear\(\); windowAsks\.clear\(\); loadingOlder\.clear\(\);[\s\S]*?hideLandingNotice\(\);/, "wsdown clears the landing's gap, the older-ask set and the notice");
+  assert.match(RENDER, /function onWireDown\(\): void \{[\s\S]*?gapLoading\.clear\(\); windowAsks\.clear\(\); loadingOlder\.clear\(\);[\s\S]*?hideLandingNotice\(\);/, "the wire's down edge (the socket's or the pane's) clears the page asks, every ask record, the older-ask set and the notice");
   // sizeSpacers does not average the gap element (medium 3, round one)
   const pxBlock = RENDER.slice(RENDER.indexOf("if (v.pxPerTurn == null) {"), RENDER.indexOf("if (h > 0 && turns > 0) v.pxPerTurn = h / turns;"));
   assert.match(pxBlock, /if \(c\.classList\.contains\("tx-spacer"\) \|\| c\.classList\.contains\("tx-gap"\) \|\| !c\.classList\.contains\("turn"\)\) continue;/, "the px-per-turn measure skips the gap element and every non-turn child (pinned inside its own block; round four low 3, round five)");
@@ -155,7 +155,7 @@ test("round two/three code fixes each carry a pin (T386 stage 2, low 1)", () => 
   assert.doesNotMatch(cTurns, /v\.winEnd = 0; v\.avgTurnH = undefined;/, "…without clearing the measured average (the fill keeps it, low 1)");
   assert.doesNotMatch(win, /v\.winEnd = 0; v\.avgTurnH = undefined;/, "chatWindow's fill keeps the measured average too (low 1)");
   // a second deep link while one is on the wire is refused with a cue, not silently repointed (low 6, low 4)
-  assert.match(RENDER, /if \(liveWindowAsk\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}/, "the busy refusal toasts a cue");
+  assert.match(RENDER, /if \(live\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}/, "the busy refusal toasts a cue");
   // the cancelled mark is read once before any early return (low 2)
   assert.ok(win.indexOf("const rec = takeWindowAsk(msg.id,") >= 0 && win.indexOf("const rec = takeWindowAsk(msg.id,") < win.indexOf("!Array.isArray(msg.span)"), "the cancelled mark is read before the missing/span-less return");
   // a mid-transcript gap keeps headTotal null (low 7)
@@ -221,7 +221,7 @@ test("round seven fixes each carry a pin (T386 stage 2): a fault has its own wor
   const cancel = RENDER.slice(RENDER.indexOf("function cancelLanding(): void {"), RENDER.indexOf("\n/**", RENDER.indexOf("function cancelLanding(): void {")));
   assert.match(cancel, /const rec = liveWindowAsk\(sid\);[\s\S]*?if \(rec\) \{ rec\.cancelled = true; rec\.origin = null; rec\.gap = null; \}/, "the cancel marks the live ask's record and consumes its origin and gap, nothing else's");
   assert.match(cancel, /for \(const g of Array\.from\(gv\.el\.querySelectorAll\("\.tx-gap\.tx-gap-loading"\)\) as HTMLElement\[\]\) \{ if \(!gapHasAsk\(sid, \{ lo: Number\(g\.dataset\.lo\), hi: Number\(g\.dataset\.hi\) \}\)\) g\.classList\.remove\("tx-gap-loading"\); \}/, "…and every gap no ask names any more sheds its glyph (the truth, not a held record)");
-  assert.match(RENDER, /if \(liveWindowAsk\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\);/, "the busy gate reads an older fetch or a LIVE window ask (a cancelled one is not busy)");
+  assert.match(RENDER, /if \(live\) \{ landTrail\.push\("pointer-fetch-busy"\);/, "the busy gate reads a LIVE window ask on another anchor alone; a cancelled ask, an older fetch in flight, or this landing's own re-attempt is not busy");
   // round eight: one record per ask, resolved only by its own reply, superseded only by a newer ask on its anchor, expired by the socket death
   assert.match(RENDER, /^interface WindowAsk \{ anchor: string; nav: boolean; named: boolean; t: number \| null; kind: string \| null; origin: number \| null; gap: \{ lo: number; hi: number \} \| null; cancelled: boolean; \}$/m, "the record carries every mark an ask writes");
   assert.match(RENDER, /const i = anchor == null \? 0 : a\.findIndex\(\(r\) => r\.anchor === anchor\);\s*\n\s*if \(i < 0\) return null;\s*\n\s*const \[rec\] = a\.splice\(i, 1\);/, "a reply takes the OLDEST record on its anchor, or the oldest of all when it names none, and never another's");
@@ -246,12 +246,21 @@ test("round seven fixes each carry a pin (T386 stage 2): a fault has its own wor
 
 test("round nine fixes each carry a pin (T386 stage 2): an older fetch in flight re-points, only a live ask is busy; the pipe's down edge clears like the socket's", () => {
   const sca = RENDER.slice(RENDER.indexOf("function scrollToAnchor("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function scrollToAnchor(") + 1));
-  assert.match(sca, /if \(liveWindowAsk\(activeId\)\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}\s*\n(\s*\/\/[^\n]*\n)*\s*if \(loadingOlder\.has\(activeId\)\) \{ pendingOlderAnchor\.set\(activeId, uuid\); pendingOlderKeepY\.delete\(activeId\); pendingAnchor = uuid; anchorPendingOlder = true; landTrail\.push\("pointer-fetch-older"\); return false; \}/, "only a live window ask is busy; an older fetch in flight is re-pointed onto the anchor and arms the landing for chatHead's arrival");
+  assert.match(sca, /if \(live\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}\s*\n(\s*\/\/[^\n]*\n)*\s*if \(loadingOlder\.has\(activeId\)\) \{ pendingOlderAnchor\.set\(activeId, uuid\); pendingOlderKeepY\.delete\(activeId\); pendingAnchor = uuid; anchorPendingOlder = true; landTrail\.push\("pointer-fetch-older"\); return false; \}/, "only a live window ask is busy; an older fetch in flight is re-pointed onto the anchor and arms the landing for chatHead's arrival");
   assert.doesNotMatch(sca, /loadingOlder\.has\(activeId\) \|\| liveWindowAsk\(activeId\)/, "the unconditional refusal is gone");
   assert.match(RENDER, /if \(landedNow \|\| !anchorPendingOlder\) \{ pendingAnchor = null; pendingAnchorKeepY = null; \}/, "the reload restore's caller keeps its arm while an older fetch is pointed at the anchor");
   assert.match(RENDER, /^window\.addEventListener\("romp:wsdown", \(\) => onWireDown\(\)\);$/m, "the socket's down edge runs the one clear");
   assert.match(RENDER, /if \(m\.type === "pipeState"\) \{ if \(!m\.up\) \{ markPendingLost\("connection"\); onWireDown\(\); \} pipeBanner\(!!m\.up, Number\(m\.queued\) \|\| 0\); return; \}/, "…and so does the VS Code pane's pipe-down edge");
   assert.match(RENDER, /function onWireDown\(\): void \{[\s\S]*?gapLoading\.clear\(\); windowAsks\.clear\(\); loadingOlder\.clear\(\);[\s\S]*?hideLandingNotice\(\);[\s\S]*?pendingAnchor = null; anchorPendingOlder = false;/, "the clear: page asks, every ask record, the older-ask set, the glyphs, the notice, the arm");
+});
+
+test("round ten fixes each carry a pin (T386 stage 2): a re-attempt waits on its own live ask, a landing before the frame is kept for it, the not-rendered path names its state", () => {
+  const sca = RENDER.slice(RENDER.indexOf("function scrollToAnchor("), RENDER.indexOf("\nfunction ", RENDER.indexOf("function scrollToAnchor(") + 1));
+  assert.match(sca, /const live = liveWindowAsk\(activeId\);\s*\n\s*if \(live && live\.anchor === uuid\) \{ anchorPendingOlder = true; landTrail\.push\("pointer-fetch-waiting"\); return false; \}[^\n]*\n\s*if \(live\) \{ landTrail\.push\("pointer-fetch-busy"\); landToast\("still going to the earlier message"\); return false; \}/, "the same landing's re-attempt waits without a cue; a different anchor while one is live is refused with the cue");
+  assert.match(sca, /const noframe = !sm \|\| sm\.proto == null;\s*\n\s*scrollDiagRow\("landmiss", \{ sid: activeId, anchor: uuid\.slice\(-12\), proto:[^\n]*noframe, trail: landTrail\.slice\(-4\) \}\);\s*\n\s*if \(noframe && activeId\) \{ awaitingFrameAnchor = \{ sid: activeId, uuid, keepY: pendingAnchorKeepY \}; anchorPendingOlder = true; \}\s*\n\s*pendingAnchor = uuid; landTrail\.push\(noframe \? "pointer-no-frame" : "pointer-not-rendered"\); return false;/, "the not-rendered path files the branch state it saw and, with no proto-2 frame yet, keeps the landing for that frame");
+  assert.match(RENDER, /if \(m\.type === "session"\) \{\s*\n\s*upsert\(m\);\s*\n\s*const w = awaitingFrameAnchor;\s*\n\s*if \(w && w\.sid === String\(m\.id\) && sessions\.get\(w\.sid\)\?\.proto === 2\) \{ awaitingFrameAnchor = null; if \(!pendingAnchor\) \{ pendingAnchor = w\.uuid; pendingAnchorKeepY = w\.keepY; \} landTrail\.push\("frame-rearm"\); \}/, "the frame that makes the session proto 2 re-arms the waiting landing");
+  assert.match(RENDER, /if \(landedNow \|\| !anchorPendingOlder\) \{ pendingAnchor = null; pendingAnchorKeepY = null; \}/, "the restore's caller keeps its arm while the attempt waits on a fetch or a frame (anchorPendingOlder covers both)");
+  assert.match(RENDER, /\| "unitchange" \| "regionask" \| "landmiss", data: any\): void \{/, "the row kind is budgeted with the other scroll rows");
 });
 
 test("the spacer is invisible, non-interactive vertical space", () => {

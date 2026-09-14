@@ -74,7 +74,7 @@ test("render.ts asks for older history only on an upward move, marks each window
   assert.ok(keep.includes("relandAsk = true;\n  let landed = false;\n  try { landed = scrollToAnchor(keep.uuid); } finally { relandAsk = false; }"), "the re-land's own flag is set only around its landing (the reload restore shares the keep offset and must land)");
   assert.equal((RENDER.match(/relandAsk = true;/g) || []).length, 1, "nothing else raises the flag");
   assert.ok(around.includes('scrollDiagRow("regionask", { sid, why: "landing",'), "…and files a diagnostic row under the scroll rows' per-minute budget: the report's rows had the landing but not the ask (the T366 window-ask row, regionask since the regions)");
-  assert.ok(RENDER.includes('| "unitchange" | "regionask", data: any): void {'), "the budgeted row kinds include it, and the window-ask kind is gone");
+  assert.ok(RENDER.includes('| "unitchange" | "regionask" | "landmiss", data: any): void {'), "the budgeted row kinds include it, and the window-ask kind is gone");
   assert.ok(around.indexOf("const rec: WindowAsk = { anchor: uuid, nav,") < around.indexOf('type: "loadAround"'), "the mark is set before the ask goes out");
   // a second full ask while one is in flight is dropped before it can overwrite the pending reason (kept for the reconnect's diagnostics:
   // every full frame merges into the held runs since T386 stage 2, so no reason decides a merge or a replace any more)
