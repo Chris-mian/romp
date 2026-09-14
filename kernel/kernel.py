@@ -52333,6 +52333,7 @@ function key(o){return o?o.reason+':'+(o.detail||''):'';}
 function fire(){if(fired)return;fired=true;persist();
 try{location.reload();}catch(e){fired=false;refusedFor=key(owed);R.waiting='refused';if(R.refused)R.refused(owed);return;}
 try{sessionStorage.setItem('romp:reloaded',JSON.stringify({reason:owed.reason,detail:owed.detail||'',from:LOADED,path:location.pathname,t:Date.now()}));}catch(e){}
+try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,t:Date.now()}));}catch(e){}   /* kept for the panes' first dial (the chat diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces */
 try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
@@ -52425,6 +52426,14 @@ var COL=new URLSearchParams(location.search).get("col")||"";if(COL==="1")COL="";
 // (Handler._ws → _resolve_reconnect: the redial diet, for a fresh page that has a hint). false everywhere else: the
 // first column, a standalone page and every non-chat pane dial exactly as today.
 var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
+// The RESTART DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
+// until shown): a main chat pane whose page was just reloaded by a kernel RESTART dials its first socket as a skeleton client, the later
+// column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab, and the
+// page's idle prefetch fills the rest. The reason is the reload core's durable record (romp:reloadReason; the announce record is consumed
+// before this shim dials), CONSUMED here on the read that acts on it, as the announce record is by announce() (round two, medium 1: a
+// plain reload two seconds after a restart reload dialed the diet on the same record); a build reload, a column, a fresh open and every
+// redial dial as before. Emitted for the chat app alone (round two, medium 2): every other pane's shim carries the false alone.
+%s
 // This PAGE's instance id — minted once per load, never stored: every connect of this page carries it, so the
 // kernel retires this page's previous socket on a reconnect, and never another page's (a duplicated tab copies
 // sessionStorage, and with it wid; it must not copy this).
@@ -52578,7 +52587,7 @@ function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;   // on
 if(returnAt)returnRedialed=true;   // a dial inside a return window (whatever path led here) → the return-fresh row says so
 connT=Date.now();var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
-ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+(SKEL?"&skeleton=1":""));   // skeleton=1: a later chat column, served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
+ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after a kernel restart's reload (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
 // onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
 // the kernel's next push, and the banner offers a full reload for anything a live push doesn't cover. This
 // replaced the old silent location.reload() (the user 2026-07-05: don't foist a reload; let me click). Narrowed by
@@ -52767,7 +52776,14 @@ pendingWhy="foreground";freshPending=true;   // the reconnect's arm reads "foreg
 if(ws&&ws.readyState===1)abandon();else{try{if(ws&&ws.readyState===0)ws.close();}catch(e){}}   // OPEN-but-quiet → abandoned + redialed below, now; stuck-CONNECTING → aborted, onclose retries
 if(!ws||ws.readyState===3)connect();
 returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial so it queues for the new socket instead of vanishing into the dead one
-""" % (_reload_core(v), app, int(v), "true" if no_stale else "false", app, app)
+""" % (_reload_core(v), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, int(v), "true" if no_stale else "false", app, app)
+
+
+# The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
+# ONCE, consumes it whatever it says (the next reload then decides afresh), and dials the diet only when it named a kernel restart. A
+# column (col=N) and a skeleton view (skeleton=1) leave the record alone: their dials are the shell's statement, not this page's.
+_RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||\"null\");"
+                    "if(rr){sessionStorage.removeItem('romp:reloadReason');RESTART_DIET=(rr.reason==='restart');}}catch(e){}}")
 
 
 def _shim_core_js(app="test", v=0):
@@ -62259,7 +62275,7 @@ class Handler(BaseHTTPRequestHandler):
         iid = (q.get("iid") or [""])[0]         # which page INSTANCE: a reconnect carrying it retires its old socket
         active = (q.get("active") or [""])[0]   # the tab this client is looking at → _push builds it FIRST
         reconnect = (q.get("reconnect") or [""])[0] == "1"   # the shim's own statement: this page opened a socket before and its bundle has said ready, with no ready waiting in its queue
-        skeleton = (q.get("skeleton") or [""])[0] == "1"     # the shell's statement (the chat split, 2026-09-11): a later column, a VIEW of the one session its active hint names
+        skeleton = (q.get("skeleton") or [""])[0] == "1" and app == "chat"   # the shell's statement (the chat split, 2026-09-11): a later column, a VIEW of the one session its active hint names; a chat socket's alone (round two of PR 1661: the term is meaningless for a feed or a timeline client)
         col = (q.get("col") or [""])[0]         # which chat COLUMN of that dashboard (split screen, 2026-09-08) — for the logs;
         #                                         the columns arbitrate a dashboard-aimed focus among themselves (render.ts focusIsOurs)
         self.send_response(101)
