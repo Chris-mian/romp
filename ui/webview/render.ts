@@ -6525,9 +6525,10 @@ function paintTabRowLines(bar: HTMLElement): void {
   }
 }
 let tabRowObserver: ResizeObserver | null = null;
+let stripFit: (() => void) | null = null;   // the last strip paint's fit of the chip run (fitStripChips), re-run on the strip's resize (T413 round two)
 function ensureTabRowObserver(bar: HTMLElement): void {
   if (tabRowObserver) return;
-  tabRowObserver = new ResizeObserver(() => paintTabRowLines(bar));
+  tabRowObserver = new ResizeObserver(() => { stripFit?.(); paintTabRowLines(bar); });   // the fit first: its verdict can change the rows the lines follow
   tabRowObserver.observe(bar);
 }
 
@@ -6828,7 +6829,12 @@ function renderTabs() {
   // flush under the row above (the user 2026-08-25); the box makes every line the controls form
   // as tall as a line the + is on, wherever the strip wraps them
   const tagBox = el("span", "tab-tagbox");
-  tagBox.appendChild(tagBtn);
+  // T413 (the user 2026-09-14): when the strip is not sectioned by tag (the group switch off, or no tag holding a visible tab)
+  // the selected tags show as chips just LEFT of the button (the shared sync builds them, bounded to three and a "+N more" chip;
+  // the none pick draws none, T405 standing); sectioned, the headings carry the tags and the host is fed nothing (the plan's
+  // own reading, no second store read). fitStripChips below hides a run that alone would add a row.
+  const tagChipsHost = el("span", "tab-tagchips");
+  tagBox.append(tagChipsHost, tagBtn);
   // THE BUTTON CONVENTION (the user 2026-08-25): gray alone at rest; accent + the chips of
   // everything selected when narrowed — the shared renderer, identical on every mount
   // T405 (the user 2026-09-13): the strip's control no longer DISPLAYS what it filters to, no "(no tags)" and no tag chips
@@ -6862,10 +6868,14 @@ function renderTabs() {
   bar.appendChild(end);
   {
     const v = effViews();
-    syncTagFilter(tagBtn, null, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
+    // the run is the fit's to feed (round two): three chips, then fewer where the row is short (fitStripChips); the button's own
+    // state syncs in the same call, host or none
+    const feed = (limit: number) => syncTagFilter(tagBtn, plan.sectioned ? null : tagChipsHost, surfaceLens(v, "chat"), unions, (l) => {   // sectioned: the headings carry the tags, no host; else the chips
       postLens({ actives: Object.assign({}, (v || {}).actives, { chat: l }) });
-    });
+    }, "inline", { limit, tagsOnly: true });
+    stripFit = () => fitStripChips(end, tagChipsHost, feed);
   }
+  stripFit();
   // T161 (the user 2026-08-28, Android: no tag control on mobile): the phone chat page hides the whole
   // #tabs strip — and the mount above with it. The kernel's mobile header carries an empty #mtag-slot
   // (left of +); mount the SAME shared button + chips into it ONCE — the slot is kernel-built and never
@@ -6916,6 +6926,28 @@ function renderTabs() {
  *  its working note), and the all-hidden blank. All are idempotent, and all read live state a skipped
  *  rebuild must not leave behind: the active view is built lazily, so it can appear between two renders
  *  whose strips are equal. */
+// the run of selected tags yields rather than add a row (T413): the right end's row is read with the host out of the flow
+// ([hidden], its own display rule in styles.css) and with the run fed at each count from the full three down to one, and the
+// first that keeps the right end on that row with no chip clipped stands; a run that cannot is hidden. The button's accent still
+// says the strip is narrowed. Round two (the manager's read, 2026-09-14): the attribute alone proved inert against the host's
+// author display, so the run added a row at narrow widths and never shrank; and the verdict now follows a resize (the strip's
+// ResizeObserver re-runs stripFit), where before it stood until some other input rebuilt the strip.
+const STRIP_CHIP_LIMIT = 3;
+function fitStripChips(end: HTMLElement, host: HTMLElement, feed: (limit: number) => void): void {
+  if (!end.isConnected) return;   // a paint the observer outlived
+  feed(STRIP_CHIP_LIMIT);
+  if (!host.childElementCount) { host.hidden = false; return; }
+  host.hidden = true;
+  const without = end.offsetTop;
+  host.hidden = false;
+  const fits = () => end.offsetTop === without && host.scrollWidth <= host.clientWidth + 1;
+  if (fits()) return;
+  for (let limit = STRIP_CHIP_LIMIT - 1; limit >= 1; limit--) {
+    feed(limit);
+    if (fits()) return;
+  }
+  host.hidden = true;
+}
 function stripAftermath(visibleIds: readonly string[], ids: readonly string[]): void {
   syncNoSessionsPlaceholder(visibleIds.length, ids.length, ids.filter(heldHere).length);   // …and how many this column holds (the chat split's copy)
   // the section view follows the push (renderTabs runs on every one): a no-op when nothing a row shows has
@@ -7676,7 +7708,7 @@ window.addEventListener("romp:hostDial", () => { syncHostOfflineFoot(); repaintE
 // this pane is a same-origin iframe of the shell and the filter lives on the SHELL's URL (only-filter.ts reads
 // window.top), so the listener binds to the window onlyTag reads: the shell's there, this pane's own on a top-level
 // page or under a cross-origin top (the review: the pane's own hash never changes on the dashboard)
-const onOnlyHashChange = (): void => renderTabs();
+const onOnlyHashChange = (): void => { renderTabs(); schedulePrebuild(); };   // a reveal is a strip change that shows tabs: the idle prefetch re-arms for the skeletons it now shows (round two of PR 1661, medium 3: the repaint alone left them skeletons until an unrelated push)
 const onlyHashWindow = onlyWindow();
 onlyHashWindow.addEventListener("hashchange", onOnlyHashChange);
 // a closed split column: the shell removes this pane's iframe, and a listener left on the shell's window would hold the
@@ -12650,7 +12682,10 @@ function runPrebuild(deadline: IdleDeadline): void {
   // is already in flight (a 1 MB full ahead of the active tab's 2 KB tail on a slow link delays that tail;
   // one at a time bounds it). The upsert that lands it calls schedulePrebuild, so the chain re-arms itself
   // one tab per idle until the set is empty. A click always wins: same message, awaitingFull dedups.
-  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), tabInView);
+  // …and never a tab the strip does not SHOW (the user 2026-09-14: hidden tabs are not built until shown): stripShows is the one predicate
+  // the strip itself lists by (it begins with tabInView, the views and another column's holds, and adds the #only= filter on top); a tab
+  // the filter reveals later is prefetched when the reveal re-arms this chain (onOnlyHashChange), or loads on the switch that shows it
+  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), (id) => stripShows(id));
   if (next) requestFullSession(next, "prefetch");
   const viewState = (id: string): ViewState | null => {
     if (skeletonTabs.ids.has(id)) return null;   // a skeleton's stale session must never get its DOM pre-built

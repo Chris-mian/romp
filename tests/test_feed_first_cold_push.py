@@ -12,10 +12,10 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from romp_load import load_source   # noqa: E402
 _tmp_state = tempfile.mkdtemp()
 os.environ["XDG_STATE_HOME"] = _tmp_state
 os.environ["ROMP_STATE_DIR"] = os.path.join(_tmp_state, "romp")
-from romp_load import load_source   # noqa: E402
 
 BIN = os.path.join(os.path.dirname(HERE), "bin")
 km = load_source("romp_kernel_feed_first", os.path.join(BIN, "romp-kernel"))
@@ -111,24 +111,14 @@ class FeedFirstColdPush(unittest.TestCase):
         self.assertEqual(km._wire_stats["feed_first"], 0, "no early pass on a warm kernel")
         self.assertIn(("feed", "feed"), self.seq, "the regular feed section still serves the pane: %r" % self.seq)
 
-    def test_a_later_cycle_with_no_feed_built_yet_still_sends_the_feed_first(self):
-        # 2026-09-14: the pusher's first cycle runs before a browser has reconnected (0.6 to 0.9 s after the housekeeping
-        # split), so a guard on cycle zero never held on a real boot (a 24 h watch on push.feedFirst saw nothing); the cold
-        # state the shortcut is for is "no feed built yet", whatever the cycle count
+    def test_a_later_cycle_takes_no_extra_step(self):
+        # Reverted to the boot's first cycle on 2026-09-14: on any later cold refresh the shortcut built the feed cold ahead
+        # of everything while every redialing pane's connect push built the same cold work at once (push.feedFirst 106 s,
+        # a 131 s first refresh at the 12:06 PM PT boot). Back once builds are single-flight across threads.
         with km._PERF_STATS.lock:
-            km._PERF_STATS.pusher["cycles"] = 7
+            km._PERF_STATS.pusher["cycles"] = 1
         km._push([self._client("feed"), self._client("chat")])
-        self.assertEqual(km._wire_stats["feed_first"], 1, "a cold kernel sends the feed first on any cycle")
-        kinds = list(self.seq)
-        self.assertLess(kinds.index(("feed", "feed")), kinds.index(("build", S1)), "before the first chat build: %r" % kinds)
-
-    def test_a_connect_push_on_a_later_cycle_of_a_cold_kernel_sends_the_feed_first(self):
-        # the realistic boot: the browser reconnects a few seconds in, after the pusher's first cycles ran with no client
-        with km._PERF_STATS.lock:
-            km._PERF_STATS.pusher["cycles"] = 12
-        km._push([self._client("feed")], connect=True)
-        self.assertEqual(km._wire_stats["feed_first"], 1)
-        self.assertEqual(self.feed_calls[0], False, "and it built, rather than serving a warmed build a cold kernel has not got")
+        self.assertEqual(km._wire_stats["feed_first"], 0, "only the boot's first cycle sends the feed first")
 
     def test_no_feed_pane_means_no_early_pass(self):
         chat_c = self._client("chat")

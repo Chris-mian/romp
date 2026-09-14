@@ -1,17 +1,18 @@
 """Dead-owner sweep of the suite's `romp-tests-*` temp roots (2026-09-10).
 
-tests/conftest.py mints one private temp root per run and removes it at run end, but a run that dies
-without reaching that removal — pytest-timeout's os._exit, a kernel restart cutting the tool shell,
-the cut-turn reaper's kill — leaves the whole root standing. On a shared machine those roots piled
-into millions of files, and the next boot's /tmp cleanup spent 39 minutes deleting them while ssh
-and every service waited behind it. Nothing in the dead run can clean up, so two pieces outside it
-do: conftest writes an OWNER MARKER (the run's pid) into the root at mint time, and the kernel's boot
-reconcile sweeps roots under the system temp dir whose marker names a dead pid.
+The tests package (tests/__init__.py; tests/conftest.py until 2026-09-14) mints one private temp root
+per run and removes it at run end, but a run that dies without reaching that removal —
+pytest-timeout's os._exit, a kernel restart cutting the tool shell, the cut-turn reaper's kill —
+leaves the whole root standing. On a shared machine those roots piled into millions of files, and
+the next boot's /tmp cleanup spent 39 minutes deleting them while ssh and every service waited
+behind it. Nothing in the dead run can clean up, so two pieces outside it do: the package writes an
+OWNER MARKER (the run's pid) into the root at mint time, and the kernel's boot reconcile sweeps roots
+under the system temp dir whose marker names a dead pid.
 
 Pinned: a root whose owner is dead goes; a root whose owner is alive stays (this process is the
 owner); a root with no marker, an unreadable marker or a foreign name stays — refusing is the safe
 direction; the running suite's own root carries a marker naming this process; the marker file name
-agrees between conftest and the kernel; the chmod retry re-modes only directories of the tombstone's
+agrees between the package and the kernel; the chmod retry re-modes only directories of the tombstone's
 own tree (never its parent, never a symlink's target, never a hard-linked file); and _boot_reconcile
 calls the sweep.
 Everything is built under this test's own temp dir (itself inside the run's root), never in the
@@ -244,10 +245,17 @@ class DeadOwnerSweep(unittest.TestCase):
         self.assertEqual(sb.sweep_dead_test_roots(self.tmp, log=logs.append), 3)
 
 
-@unittest.skipUnless(os.environ.get("ROMP_TESTS_SYSTEM_TMPDIR"), "conftest not loaded (bare unittest run)")
+@unittest.skipUnless(os.environ.get("ROMP_TESTS_SYSTEM_TMPDIR"),
+                     "the tests package's temp root is not in play (a `cd tests && python -m unittest` run never "
+                     "imports the package; a direct script run does, through romp_load, since 2026-09-14)")
 class RunningSuiteIsMarked(unittest.TestCase):
+    """Under pytest, under `python -m unittest tests.test_test_root_sweep` and under a direct
+    `python3 tests/test_test_root_sweep.py` alike (this module's romp_load import brings the package in
+    under the last): the package mints the root and writes the marker under all three (since 2026-09-14;
+    before that only a pytest run had them)."""
+
     def test_this_runs_root_carries_a_marker_naming_this_process(self):
-        # Under xdist each worker minted its own root (it imported conftest), so TMPDIR is this
+        # Under xdist each worker minted its own root (it imported the package), so TMPDIR is this
         # process's root either way, and the marker's pid is ours.
         root = os.environ["TMPDIR"]
         self.assertTrue(os.path.basename(root).startswith(sb.TEST_ROOT_PREFIX), root)
@@ -259,10 +267,16 @@ class RunningSuiteIsMarked(unittest.TestCase):
         # (test_live_owner_root_stays pins that in a private arena; the real temp dir is never swept here).
         self.assertTrue(sb._pid_alive(m["pid"]))
 
-    def test_marker_name_agrees_with_conftest(self):
+    def test_marker_name_agrees_with_the_tests_package(self):
+        pkg = sys.modules.get("tests")
+        self.assertIsNotNone(pkg, "the tests package, which mints the root and writes the marker")
+        self.assertEqual(pkg.TEST_ROOT_OWNER_MARKER, sb.TEST_ROOT_OWNER_MARKER)
+        root = os.environ["TMPDIR"]
+        self.assertEqual(os.path.realpath(root), os.path.realpath(pkg.TMP_ROOT), root)
         conftest = sys.modules.get("tests.conftest") or sys.modules.get("conftest")
-        self.assertIsNotNone(conftest, "the loaded tests/conftest.py module")
-        self.assertEqual(conftest.TEST_ROOT_OWNER_MARKER, sb.TEST_ROOT_OWNER_MARKER)
+        if conftest is not None:                     # under pytest: conftest's name is the package's, re-exported
+            self.assertEqual(conftest.TEST_ROOT_OWNER_MARKER, pkg.TEST_ROOT_OWNER_MARKER)
+            self.assertEqual(conftest._TMP_ROOT, pkg.TMP_ROOT, "one root per process, the package's")
 
 
 class BootReconcileCallsIt(unittest.TestCase):

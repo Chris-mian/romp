@@ -2500,7 +2500,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 TEST_ROOT_PREFIX = "romp-tests-"
-TEST_ROOT_OWNER_MARKER = "romp-tests-owner.json"    # tests/conftest.py writes it at mint time
+TEST_ROOT_OWNER_MARKER = "romp-tests-owner.json"    # tests/__init__.py writes it at mint time (conftest.py did until 2026-09-14)
 TEST_ROOT_TOMBSTONE = ".sweeping"                   # a root renamed to <name>.sweeping is ours to finish deleting
 TEST_ROOT_SWEEP_BUDGET_S = 30.0                     # per boot; the rest waits for the next boot's sweep
 
@@ -2539,9 +2539,10 @@ def _rmtree_stubborn(root: str) -> None:
 
 def sweep_dead_test_roots(tmpdir: str, log=None, budget_s: float = TEST_ROOT_SWEEP_BUDGET_S) -> int:
     """Remove the test suite's `romp-tests-*` temp roots under `tmpdir` whose OWNER IS DEAD; return the
-    count removed. tests/conftest.py mints one root per run, redirects TMPDIR into it and removes it
-    at run end — but a run that dies without reaching that removal (pytest-timeout's os._exit, a kernel
-    restart cutting the tool shell, the cut-turn reaper's kill) leaves the whole root standing, and on
+    count removed. The tests package (tests/__init__.py; conftest.py until 2026-09-14) mints one root
+    per run, redirects TMPDIR into it and removes it at exit — but a run that dies without reaching
+    that removal (pytest-timeout's os._exit, a kernel restart cutting the tool shell, the cut-turn
+    reaper's kill) leaves the whole root standing, and on
     a shared machine those roots piled into millions of files that the next boot's /tmp cleanup spent
     39 minutes deleting (2026-09-10). Nothing in the dead run can clean up, so the kernel does, from
     boot reconcile — AFTER the session pass and on its own thread (a dead pile is minutes of rmtree;

@@ -30533,6 +30533,7 @@ def _chat_push_scopes_close():
     for k in getattr(_live_scope, "chat_push_owned", None) or ():
         setattr(_live_scope, k, None)
     _live_scope.chat_push_owned = None
+    _chat_inflight_release_all()                      # ...and the chat tab claims a raise left on this thread (single-flight)
 
 
 def _claudemd_key(cwd):
@@ -48623,11 +48624,13 @@ def _push(targets, connect=False, live_map=None):
     # With no feed built since start and a feed pane among the targets, the feed is built and sent to those panes FIRST
     # (_feed_first); the regular feed section below serves the same build from the cache with the ledgers attached, and
     # the send stage's delta path carries only what that added. A warm kernel (a feed already built) takes no extra step.
-    # ANY cold refresh, not the boot's first cycle alone (2026-09-14): the pusher's first cycle runs before a browser has
-    # reconnected (0.6 to 0.9 s after the split of the housekeeping), so a guard on cycle zero never held on a real boot
-    # (a 24 h watch on push.feedFirst saw nothing); the cold state the shortcut is for is "no feed built yet".
-    if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS
-            and any(c["app"] == "feed" for c in targets)):      # no feed built since the boot, a feed pane to serve
+    # The boot's FIRST pusher cycle, and only it (reverted to this on 2026-09-14 after the first browser-attached boot on
+    # the "any cold refresh" guard, 12:06 PM PT: push.feedFirst 106 s and a 131 s first refresh, since the cold feed build
+    # at the front no longer rode the chat builds' parses and six connect pushes were building the same cold work at
+    # once on their handler threads). The first cycle runs before a browser reconnects, so this fires on no real boot;
+    # the shortcut comes back on any cold refresh once builds are single-flight across threads.
+    if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS and _PERF_STATS.pusher.get("cycles", 0) == 0
+            and any(c["app"] == "feed" for c in targets)):      # the boot's first pusher cycle, and only it
         try:
             _feed_first(now, live_map, targets, connect)
         except Exception:
@@ -48697,8 +48700,26 @@ def _push(targets, connect=False, live_map=None):
                     _chat_sig_fault(s, e)                # once per fault episode: stderr and a bell row
                     sig = None                           # an input that cannot be keyed: build, never cache
                 hit = _built_chat.get(s["sid"])
+                _claimed = False
+                if not (hit is not None and sig is not None and hit[0] == sig):
+                    _ev = _chat_inflight_claim(s["sid"])            # single-flight (2026-09-14): another thread building this tab?
+                    if _ev is not None:
+                        _ev.wait(CHAT_INFLIGHT_WAIT_S)              # wait for it, then re-read what it stored
+                        hit = _built_chat.get(s["sid"])
+                        if hit is not None and sig is not None and hit[0] == sig:
+                            _VIEW_STATS["chatWaited"] += 1
+                        else:
+                            _claimed = _chat_inflight_claim(s["sid"]) is None   # nothing usable stored: build, as before
+                    else:
+                        _claimed = True
+                    if _claimed:
+                        hit = _built_chat.get(s["sid"])             # re-read under the claim (round two, low c): a builder that
+                        #                                             stored between the first read and the claim is served, as
+                        #                                             _cached_feed re-checks under its lock
                 post, served, _rec = None, False, None
                 if hit is not None and sig is not None and hit[0] == sig:
+                    if _claimed:
+                        _chat_inflight_done(s["sid"])                # the re-read's road: claimed, then found stored
                     m, ms, served = hit[1], hit[2], True   # unchanged → reuse, no reshape/serialize
                     _VIEW_STATS["chatServeActive" if is_active else "chatServeBg"] += 1
                     _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
@@ -48717,6 +48738,8 @@ def _push(targets, connect=False, live_map=None):
                         # that stopped updating is not a silent degrade (review find, 2026-09-08).
                         _chat_build_fault(s, e)
                         _chat_dep_scope.deps = None      # the failed build's record is nobody's
+                        if _claimed:
+                            _chat_inflight_done(s["sid"])   # the waiters build their own, as before this change
                         continue
                     _chat_build_ok(s["sid"])             # a build that succeeds ends its fault episode
                     # The full serialization is LAZY (the 2026-08-10 CPU fix, round two): steady state
@@ -48751,6 +48774,8 @@ def _push(targets, connect=False, live_map=None):
                               prefix=_chat_fold_last_info().get("prefix", 0),   # events reused from the sealed prefix
                               why=_chat_fold_last_info().get("why", ""))         # the demote reason on a full build
                 if not m:
+                    if _claimed:
+                        _chat_inflight_done(s["sid"])
                     continue
                 if _empty_build_regresses(m, _prev_chat_events.get(m["id"])):
                     # a failed read, not a conversation that emptied (see _empty_build_regresses): the last cached
@@ -48758,6 +48783,8 @@ def _push(targets, connect=False, live_map=None):
                     # cached, this cycle sends nothing for the sid; the file's return busts the stat key and rebuilds
                     _note_empty_build(s["sid"], s.get("path"), len(_prev_chat_events.get(m["id"]) or ()))
                     if hit is None:
+                        if _claimed:
+                            _chat_inflight_done(s["sid"])
                         continue
                     m, ms, _rec = hit[1], hit[2], hit[3]   # the stand-in payload keeps its own dependency record
                 else:
@@ -48805,6 +48832,8 @@ def _push(targets, connect=False, live_map=None):
                         if _PERF:
                             _perf("chatsig", sid=str(s["sid"])[:8],
                                   moved=",".join(l for l in _chat_sig_miss(sig, post) if l not in _CHAT_SIG_DEPS))
+                if _claimed:
+                    _chat_inflight_done(s["sid"])        # stored (or not cacheable): the waiters re-read the cache now
             shown_sids = {s["sid"] for s in chat_list}
             for sid in list(_built_chat):                # drop cache for tabs no longer shown (closed/×-hidden)
                 if sid not in shown_sids:
@@ -48941,6 +48970,10 @@ def _push(targets, connect=False, live_map=None):
             tl_clients = [c for c in targets if c["app"] == "timeline"]
             live_first = connect and _built_timeline[1] is None     # cold start, nothing warmed yet → live only
             if live_first:
+                # Outside any lock (round two, medium 2): this is the pane's FIRST frame, the cheap live-only partial, and
+                # holding the full build's lock across it serialised two cold connects and blocked the pusher's whole
+                # timeline stage (the cards for every pane behind it). The single-flight lock covers the FULL build alone
+                # (_cached_timeline); a connect racing it still gets its partial at once and the full on the next cycle.
                 skel = build_timeline(now, live_map, with_bars=False, live_only=True)
                 for c in tl_clients:
                     _send_client(c, ("timeline",), {"type": "data", "data": skel})
@@ -49336,12 +49369,69 @@ def _producer_sig(browser):
 # dashboard re-does it every tick. Cache each payload, keyed on a fleet fingerprint; an UNCHANGED fleet (a
 # reload, an idle tick) reuses the last build instead of rebuilding.
 _built_feed = [None, None, 0.0, 0.0]              # [fleet_sig, payload, built_at, build_started_at]
+# SINGLE-FLIGHT BUILDS (2026-09-14). The first browser-attached boot on the cards-first code (12:06 PM PT): every pane's
+# socket redialed after the outage and each connect push built its own copy of the same cold work on its handler thread
+# while the pusher built it too: five to seven cold builders of one feed, one timeline and the same 27 chat tabs on one
+# interpreter, each five to seven times slower for it (push.feedFirst 106 s; connect pushes 109 to 130 s each; cards at
+# 131 s against 72 s the day before). A build in flight is the build every later caller wants: the feed and the timeline
+# take one lock each around their build, and a caller that finds the lock held waits for the builder and serves its
+# result; a chat tab in flight on another thread is waited for the same way (_chat_inflight_*), and the waiter re-reads
+# the cache the builder stored. The review's item (review-push 7): three threads under one interpreter lock gain little
+# from concurrency; ordering and de-duplication do. Counted under _VIEW_STATS feedWaited / tlWaited / chatWaited.
+_FEED_BUILD_LOCK = threading.RLock()
+_TL_BUILD_LOCK = threading.RLock()
+_CHAT_INFLIGHT = {}                                # sid -> (Event set when that sid's build and its cache store ended, claimed at)
+_CHAT_INFLIGHT_LOCK = threading.Lock()
+CHAT_INFLIGHT_WAIT_S = 30.0                        # a waiter's bound, near the per-tab worst case (about 2.4 s a tab cold, 66 s for
+#                                                    27 on the measured day): the waiter is the pusher, and its fallback, building its
+#                                                    own copy, is the behaviour before this change (round two, medium 1)
+
+
+def _chat_inflight_claim(sid):
+    """Claim `sid`'s build for this thread. Returns None when claimed, else the Event of the thread already building it.
+    The claim is recorded on THIS thread's scope (_live_scope.chat_claims) so _chat_push_scopes_close, the push's and the
+    cycle's finally, releases whatever a raise left claimed: the same handler, for the same reason, as the chat scopes
+    (round two, medium 1: a raise between the claim and the store left the Event unset for the kernel's life, and every
+    later rebuild of that tab waited the whole bound). An entry older than the bound is stale by definition (its builder
+    would have released it); a new claim replaces it and releases anyone waiting on it."""
+    with _CHAT_INFLIGHT_LOCK:
+        ent = _CHAT_INFLIGHT.get(sid)
+        if ent is not None and time.monotonic() - ent[1] <= CHAT_INFLIGHT_WAIT_S:
+            return ent[0]
+        stale = ent
+        _CHAT_INFLIGHT[sid] = (threading.Event(), time.monotonic())
+    if stale is not None:
+        stale[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims is None:
+        claims = _live_scope.chat_claims = []
+    claims.append(sid)
+    return None
+
+
+def _chat_inflight_done(sid):
+    """The claimed build ended (stored, faulted or skipped): release the waiters and forget the claim on this thread."""
+    with _CHAT_INFLIGHT_LOCK:
+        ent = _CHAT_INFLIGHT.pop(sid, None)
+    if ent is not None:
+        ent[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims and sid in claims:
+        claims.remove(sid)
+
+
+def _chat_inflight_release_all():
+    """Every claim this thread still holds, released: the push's and the cycle's finally (via _chat_push_scopes_close)."""
+    for sid in list(getattr(_live_scope, "chat_claims", None) or ()):
+        _chat_inflight_done(sid)
+    _live_scope.chat_claims = None
 # How often each view is REBUILT vs SERVED from its cache — the pusher's cost, as numbers (2026-09-03).
 # Exposed on the version route beside the parse counters, so "the kernel is pegged" can be read as
 # "the timeline rebuilt 900 times in 30 min with 12 sessions idle" instead of inferred from top. A
 # rebuild is justified only by a changed input; a rising build count on a quiet board is a bug signature.
 _VIEW_STATS = {"feedBuild": 0, "feedServe": 0, "tlBuild": 0, "tlServe": 0,
                "chatBuildActive": 0, "chatBuildBg": 0, "chatServeActive": 0, "chatServeBg": 0,
+               "feedWaited": 0, "tlWaited": 0, "chatWaited": 0,   # served a build another thread had in flight (single-flight)
                # GET /feed.json's reads (_pure_feed), apart: a poller's builds under the pusher's numbers
                # would forge the bug signature above, or bury a pusher regression (review find, 2026-09-08)
                "feedJsonBuild": 0, "feedJsonServe": 0}
@@ -49531,6 +49621,22 @@ def _cached_feed(now, live_map, sig, connect=False):
     # is instant; the pusher refreshes it within a tick. Else: reuse on an unchanged sig OR a recent rebuild —
     # UNLESS an optimistic kernel-side mutation postdates the build (_views_dirty): that state is invisible
     # to the sig AND must not wait out REBUILD_MIN_S, or the push meant to show it serves the stale payload.
+    if _feed_servable(sig, connect):
+        _VIEW_STATS["feedServe"] += 1
+        _PERF_STATS.build("feed", True)
+        return _built_feed[1]
+    with _FEED_BUILD_LOCK:                                # single-flight: a build in flight on another thread is the one we want
+        if _feed_servable(sig, connect):                  # ...and it landed while we waited for the lock
+            _VIEW_STATS["feedServe"] += 1
+            _VIEW_STATS["feedWaited"] += 1
+            _PERF_STATS.build("feed", True)
+            return _built_feed[1]
+        return _build_feed_locked(now, live_map, sig)
+
+
+def _feed_servable(sig, connect):
+    """Whether the built feed stands for this caller: a connect serves any warmed build (never rebuilds); the pusher
+    serves it while the view signature holds or within REBUILD_MIN_S, and never past a dirty mark newer than its start."""
     e = _built_feed
     # The dirty mark compares against build START, not finish (the user 2026-07-28): a build takes
     # ~1-1.6s and reads the stores one session at a time, so a mutation landing MID-build may or may
@@ -49540,11 +49646,13 @@ def _cached_feed(now, live_map, sig, connect=False):
     # until the next sig bust — the window a client fallback needs to bounce a just-replied card
     # back to Completed. REBUILD_MIN_S stays keyed on the FINISH (e[2]): it rate-limits build COST,
     # so back-to-back starts must not shrink its window.
-    dirty = not connect and _views_dirty[0] > e[3]        # connect still serves the warmed build (never rebuilds)
-    if e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
-        _VIEW_STATS["feedServe"] += 1
-        _PERF_STATS.build("feed", True)
-        return e[1]
+    dirty = not connect and _views_dirty[0] > e[3]
+    return e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S)
+
+
+def _build_feed_locked(now, live_map, sig):
+    """The feed build proper, under _FEED_BUILD_LOCK (the caller holds it): the build, the cache store, the needs-you set,
+    the bells."""
     _VIEW_STATS["feedBuild"] += 1
     bid = _next_feed_build_id()          # claimed BEFORE the read, so an ack issued during this build outranks it
     started = time.time()                # …and the dirty floor for the NEXT check: mutations after this
@@ -51445,13 +51553,20 @@ def _cached_timeline(now, live_map, sig, connect=False):
         _VIEW_STATS["tlServe"] += 1
         _PERF_STATS.build("timeline", True)
         return built
-    _VIEW_STATS["tlBuild"] += 1
-    started = time.time()
-    _t0 = time.monotonic()
-    tl = build_timeline(now, live_map)
-    _PERF_STATS.build("timeline", False, time.monotonic() - _t0)
-    _built_timeline[:] = [sig, tl, time.time(), started]
-    return tl
+    with _TL_BUILD_LOCK:                                  # single-flight: a build in flight on another thread is the one we want
+        built = _built_timeline[1]
+        if built is not None and (connect or _timeline_cache_fresh(sig)):   # ...and it landed while we waited for the lock
+            _VIEW_STATS["tlServe"] += 1
+            _VIEW_STATS["tlWaited"] += 1
+            _PERF_STATS.build("timeline", True)
+            return built
+        _VIEW_STATS["tlBuild"] += 1
+        started = time.time()
+        _t0 = time.monotonic()
+        tl = build_timeline(now, live_map)
+        _PERF_STATS.build("timeline", False, time.monotonic() - _t0)
+        _built_timeline[:] = [sig, tl, time.time(), started]
+        return tl
 
 
 def _timeline_cache_fresh(sig):
@@ -52015,6 +52130,7 @@ function key(o){return o?o.reason+':'+(o.detail||''):'';}
 function fire(){if(fired)return;fired=true;persist();
 try{location.reload();}catch(e){fired=false;refusedFor=key(owed);R.waiting='refused';if(R.refused)R.refused(owed);return;}
 try{sessionStorage.setItem('romp:reloaded',JSON.stringify({reason:owed.reason,detail:owed.detail||'',from:LOADED,path:location.pathname,t:Date.now()}));}catch(e){}
+try{sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,t:Date.now()}));}catch(e){}   /* kept for the panes' first dial (the chat diet): announce() removes the record above before a pane dials, and a pane inside the shell never announces */
 try{document.body.classList.remove('settings-open','picker-open');}catch(e){}}
 var heldFor=null;
 function tryFire(){if(!owed||fired)return;if(refusedFor!==null&&refusedFor===key(owed))return;var b=busy();
@@ -52107,6 +52223,14 @@ var COL=new URLSearchParams(location.search).get("col")||"";if(COL==="1")COL="";
 // (Handler._ws → _resolve_reconnect: the redial diet, for a fresh page that has a hint). false everywhere else: the
 // first column, a standalone page and every non-chat pane dial exactly as today.
 var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
+// The RESTART DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
+// until shown): a main chat pane whose page was just reloaded by a kernel RESTART dials its first socket as a skeleton client, the later
+// column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab, and the
+// page's idle prefetch fills the rest. The reason is the reload core's durable record (romp:reloadReason; the announce record is consumed
+// before this shim dials), CONSUMED here on the read that acts on it, as the announce record is by announce() (round two, medium 1: a
+// plain reload two seconds after a restart reload dialed the diet on the same record); a build reload, a column, a fresh open and every
+// redial dial as before. Emitted for the chat app alone (round two, medium 2): every other pane's shim carries the false alone.
+%s
 // This PAGE's instance id — minted once per load, never stored: every connect of this page carries it, so the
 // kernel retires this page's previous socket on a reconnect, and never another page's (a duplicated tab copies
 // sessionStorage, and with it wid; it must not copy this).
@@ -52260,7 +52384,7 @@ function connect(){if(ws&&(ws.readyState===0||ws.readyState===1))return;   // on
 if(returnAt)returnRedialed=true;   // a dial inside a return window (whatever path led here) → the return-fresh row says so
 connT=Date.now();var proto=location.protocol==="https:"?"wss://":"ws://";
 var active="";try{var st0=JSON.parse(localStorage.getItem(SK)||"null");active=(st0&&st0.activeId)||"";}catch(e){}
-ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+(SKEL?"&skeleton=1":""));   // skeleton=1: a later chat column, served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
+ws=new WebSocket(proto+location.host+"/ws?app=%s&delta=1&iid="+encodeURIComponent(IID)+(wid?"&wid="+encodeURIComponent(wid):"")+(active?"&active="+encodeURIComponent(active):"")+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")+(COL?"&col="+encodeURIComponent(COL):"")+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":""));   // skeleton=1: a later chat column, or the main pane's FIRST dial after a kernel restart's reload (RESTART_DIET), served as a view of the session its ?active= names (above). reconnect=1: this page has held a socket before AND its bundle has said ready AND the kernel's caps frame has answered that ready AND the ready is not still waiting in the queue for this open, so it holds the sessions the kernel served it; the kernel skeletons the tabs it is not looking at (2026-09-07). A socket that opened and died before the bundle said ready held nothing for the page, and neither did one whose bundle said ready only after it died (the ready queued, and flushes onto this socket as the bundle's own); a ready that left on an open socket the kernel never answered (the socket died before its caps frame came back) served the page nothing either: all three redials dial as a fresh page, the last for the page's life, since the bundle posts ready once and no later socket carries one for a caps frame to answer (2026-09-10)
 // onopen: flush the queue; a RECONNECT (after a drop) also PROMPTS a reload — the fresh socket resyncs live via
 // the kernel's next push, and the banner offers a full reload for anything a live push doesn't cover. This
 // replaced the old silent location.reload() (the user 2026-07-05: don't foist a reload; let me click). Narrowed by
@@ -52449,7 +52573,14 @@ pendingWhy="foreground";freshPending=true;   // the reconnect's arm reads "foreg
 if(ws&&ws.readyState===1)abandon();else{try{if(ws&&ws.readyState===0)ws.close();}catch(e){}}   // OPEN-but-quiet → abandoned + redialed below, now; stuck-CONNECTING → aborted, onclose retries
 if(!ws||ws.readyState===3)connect();
 returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial so it queues for the new socket instead of vanishing into the dead one
-""" % (_reload_core(v), app, int(v), "true" if no_stale else "false", app, app)
+""" % (_reload_core(v), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, int(v), "true" if no_stale else "false", app, app)
+
+
+# The chat shim's restart-diet read (the user 2026-09-14; round two of PR 1661): the main chat pane reads the reload core's durable record
+# ONCE, consumes it whatever it says (the next reload then decides afresh), and dials the diet only when it named a kernel restart. A
+# column (col=N) and a skeleton view (skeleton=1) leave the record alone: their dials are the shell's statement, not this page's.
+_RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||\"null\");"
+                    "if(rr){sessionStorage.removeItem('romp:reloadReason');RESTART_DIET=(rr.reason==='restart');}}catch(e){}}")
 
 
 def _shim_core_js(app="test", v=0):
@@ -55045,11 +55176,14 @@ if(cut){var mo=document.createElement('option');mo.value=mo.textContent='\\u2026
 // a REJECTED fetch, the kernel gone, empties the suggestions instead, so a dead kernel is never hidden behind a stale
 // list once one was read; the console says which, and names the kept list only when there is one (the strip's rule)
 var _cfgRead=false;
-function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){e=e||new Error('fetch rejected');e.network=true;throw e;})
+// a rejection's reason as an Error: an Error as it is, an object by its message or its JSON (the old wrap flattened
+// it to [object Object]), null as fetch rejected, anything else by its string; the caller marks it as a network fault
+function asErr(e){if(e instanceof Error)return e;if(e&&typeof e==='object'){var m=(typeof e.message==='string'&&e.message)?e.message:'';if(!m){try{m=JSON.stringify(e);}catch(_){m=String(e);}}return new Error(m);}return new Error(e==null?'fetch rejected':String(e));}
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){var x=asErr(e);x.network=true;throw x;})
 .then(function(r){if(!r.ok){var e=new Error('/ssh-hosts answered HTTP '+r.status);e.httpStatus=r.status;throw e;}return r.json();}).then(function(d){
 _cfg=(d&&d.hosts)||[];_cfgRead=true;fillHosts();}).catch(function(e){var keep=_cfgRead&&!(e&&e.network);
 try{console.error('romp: ssh hosts could not be read'+(keep?'; keeping the last list':''),e);}catch(_){}
-if(!keep){_cfg=[];fillHosts();}});}
+if(!keep){_cfg=[];_cfgRead=false;fillHosts();}});}   // the flag goes with the list: the next failure cannot claim to keep one
 // Every string a PEER chose is rendered as TEXT: esc() before it meets innerHTML. That is a host it named
 // (a checked-in peer names itself), its status word, its build, the rows it reports for its own connections
 // (/tunnels/of — whitelisted by the kernel too), and the bus gossip below (tiers, relay hosts, holds).
@@ -61938,7 +62072,7 @@ class Handler(BaseHTTPRequestHandler):
         iid = (q.get("iid") or [""])[0]         # which page INSTANCE: a reconnect carrying it retires its old socket
         active = (q.get("active") or [""])[0]   # the tab this client is looking at → _push builds it FIRST
         reconnect = (q.get("reconnect") or [""])[0] == "1"   # the shim's own statement: this page opened a socket before and its bundle has said ready, with no ready waiting in its queue
-        skeleton = (q.get("skeleton") or [""])[0] == "1"     # the shell's statement (the chat split, 2026-09-11): a later column, a VIEW of the one session its active hint names
+        skeleton = (q.get("skeleton") or [""])[0] == "1" and app == "chat"   # the shell's statement (the chat split, 2026-09-11): a later column, a VIEW of the one session its active hint names; a chat socket's alone (round two of PR 1661: the term is meaningless for a feed or a timeline client)
         col = (q.get("col") or [""])[0]         # which chat COLUMN of that dashboard (split screen, 2026-09-08) — for the logs;
         #                                         the columns arbitrate a dashboard-aimed focus among themselves (render.ts focusIsOurs)
         self.send_response(101)

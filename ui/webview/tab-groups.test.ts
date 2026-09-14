@@ -384,7 +384,8 @@ test("the switch lives at the foot of the chat tag-lens menu beside Configure ta
     "✓-marked when on; flips and repaints in place like the tag rows");
   assert.ok(MENU.indexOf("if (opts.groupToggle)") < MENU.indexOf('row("Configure tags…"'), "beside — above — Configure tags…");
   assert.match(RENDER, /groupToggle: \{ label: "Group tabs by tag", on: \(\) => readTabGroups\(\)\.on,/);
-  const mobile = RENDER.slice(RENDER.indexOf('const mslot = document.getElementById("mtag-slot")'), RENDER.indexOf("paintTabRowLines(bar);"));
+  const mobileAt = RENDER.indexOf('const mslot = document.getElementById("mtag-slot")');
+  const mobile = RENDER.slice(mobileAt, RENDER.indexOf("paintTabRowLines(bar);", mobileAt));   // the paint after the mount (the strip's observer paints earlier in the file, T413 round two)
   assert.ok(!mobile.includes("groupToggle"), "the phone page hides the strip itself, so its mount offers no switch");
 });
 

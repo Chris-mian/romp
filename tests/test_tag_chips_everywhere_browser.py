@@ -112,17 +112,17 @@ const strip = await page.evaluate((lookSrc) => {
 }, look.toString());
 // the tag-lens menu from the strip's filter button: its unselected rows wear the off chip the picker must match
 await page.click('#tabs button[title="filter these tabs by tag"]');
-await page.waitForSelector('[data-tag-menu] span[aria-pressed="false"]', { timeout: 10000 });
+await page.waitForSelector('[data-tag-menu] [role="menuitemcheckbox"][aria-checked="false"] > span[style*="border:1px solid"]:not([data-check])', { timeout: 10000 });   // T413: the row is the checkbox; the chip inside it is the look
 // the same tags' chips in the lens menu, read with the strip's own look: the group row's chip and the menu's are one rendering (the strip's
 // filter chips, the comparison's other half until T405, are gone)
 strip.menuChips = await page.evaluate((lookSrc) => {
   const look = eval("(" + lookSrc + ")");
-  return Array.from(document.querySelectorAll("[data-tag-menu] span[aria-pressed]")).map(look);
+  return Array.from(document.querySelectorAll('[data-tag-menu] [role="menuitemcheckbox"][aria-checked] > span[style*="border:1px solid"]:not([data-check])')).map(look);
 }, look.toString());
 const lensMenu = await page.evaluate(() => {
   const read = (e) => { const cs = getComputedStyle(e); return { text: e.textContent, cls: e.getAttribute("class") || "", opacity: cs.opacity, after: getComputedStyle(e, "::after").content }; };
-  return { off: Array.from(document.querySelectorAll('[data-tag-menu] span[aria-pressed="false"]')).map(read),
-           on: Array.from(document.querySelectorAll('[data-tag-menu] span[aria-pressed="true"]')).map(read) };
+  return { off: Array.from(document.querySelectorAll('[data-tag-menu] [role="menuitemcheckbox"][aria-checked="false"] > span[style*="border:1px solid"]:not([data-check])')).map(read),
+           on: Array.from(document.querySelectorAll('[data-tag-menu] [role="menuitemcheckbox"][aria-checked="true"] > span[style*="border:1px solid"]:not([data-check])')).map(read) };
 });
 // close it before the picker opens: Escape, else the strip's own filter button toggles it shut; the wait is not swallowed
 await page.keyboard.press("Escape");
