@@ -273,7 +273,15 @@ if [[ -z "${ROMP_NO_SERVICE:-}" ]]; then
             echo "  romp-manager already running — leaving it up (a webview deploy needs no restart)"
         else
             echo "  Installing the romp login service (romp-manager)..."
-            if ! "$_svc" install; then
+            _svc_rc=0
+            "$_svc" install || _svc_rc=$?
+            if [[ "$_svc_rc" -eq 3 ]]; then
+                # romp-service's own code for one state: the agent is installed but its manager exited at once because a
+                # manager already serves on the control port outside the service (a hand-run romp up). The dashboard is UP
+                # on that manager; saying it would be dead was wrong. Still non-zero: the service is not the one running.
+                echo "install.sh: the login service is installed, but a manager already serving outside it holds the control port (the line above); the dashboard is up on that manager. The service retries once a minute and takes over when it stops; to hand over now, stop it (Ctrl+C in its terminal, or romp down then romp up) and re-run this install to verify." >&2
+                exit 1
+            elif [[ "$_svc_rc" -ne 0 ]]; then
                 echo "install.sh: romp-service install FAILED — romp-manager is NOT running; the dashboard will be dead on :29855." >&2
                 echo "  Retry by hand:  $_svc install" >&2
                 exit 1

@@ -251,6 +251,17 @@ _darwin_loaded() { _darwin_print >/dev/null; }
 # on its match (p;q) rather than piping into head -1, which under set -e plus pipefail left sed with SIGPIPE once its
 # output passed the pipe buffer and made the assignment, and the script, exit 141 with no status line (executed at
 # 3000 matching lines). The last exit code is captured whole, so "(signal: 6)" reads as itself and not as "(signal:".
+# Does a manager already answer on the control port? The agent's own manager exits 1 at once when another holds it
+# (bin/romp-manager refuses to start a second one), the throttle keeps the respawn out of the verification window,
+# and the install used to end saying the dashboard would be dead while that other manager, a hand-run `romp up` most
+# often, was serving it. Probed the way the manager probes itself, GET /status on the control port; ROMP_MANAGER_PROBE
+# is the test seam (a command given the port; exit 0 when something answers).
+_manager_answers() {
+    local port="${ROMP_MANAGER_PORT:-7432}"
+    if [[ -n "${ROMP_MANAGER_PROBE:-}" ]]; then "$ROMP_MANAGER_PROBE" "$port"; return; fi
+    if command -v curl >/dev/null 2>&1; then curl -fsS -m 2 "http://127.0.0.1:$port/status" >/dev/null 2>&1; return; fi
+    ( exec 3<>"/dev/tcp/127.0.0.1/$port" ) 2>/dev/null
+}
 _darwin_record() { _darwin_print || true; }
 _darwin_pid() { _darwin_record | sed -nE '/^[[:space:]]*pid = [0-9]+/{s/^[[:space:]]*pid = ([0-9]+).*$/\1/p;q;}'; }
 _darwin_running() { [[ -n "$(_darwin_pid)" ]]; }
@@ -416,6 +427,13 @@ case "${1:-status}" in
             done
             if [[ -z "$running" ]]; then
                 _le="$(_darwin_last_exit)"
+                if _manager_answers; then
+                    echo "romp-service: the agent's manager exited at once (last exit code: ${_le:-unknown}) because a manager is ALREADY serving on :${ROMP_MANAGER_PORT:-7432} outside the login service (a hand-run romp up, most likely); the dashboard is up on that one." >&2
+                    # KeepAlive with the 60 s throttle above: the agent retries once a minute, so it takes over on its own once
+                    # that manager stops. A romp down boots the agent out too (a deliberate stop), so romp up is what follows it.
+                    echo "  Leave it and the agent, retrying once a minute, takes over when that manager stops; or stop it now (Ctrl+C in its terminal, or romp down followed by romp up) and re-run this install to verify." >&2
+                    exit 3
+                fi
                 echo "romp-service: agent loaded but is NOT running (last exit code: ${_le:-unknown}) — check $LOG" >&2
                 exit 1
             fi

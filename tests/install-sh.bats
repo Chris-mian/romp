@@ -298,7 +298,8 @@ echo "$1" >> "$ROMP_SVC_LOG"
 case "$1" in
   status) echo "installed: /tmp/plist"; [[ -n "${ROMP_SVC_RUNNING:-}" ]] && echo "running"
           [[ -n "${ROMP_SVC_DYING:-}" ]] && echo "loaded but not running (last exit code: 134); launchd keeps respawning it — check /tmp/manager.log" ;;
-  install) [[ -n "${ROMP_SVC_FAIL:-}" ]] && { echo "romp-service: bootstrap lost the drain-race" >&2; exit 1; } ;;
+  install) [[ -n "${ROMP_SVC_FAIL:-}" ]] && { echo "romp-service: bootstrap lost the drain-race" >&2; exit 1; }
+           [[ -n "${ROMP_SVC_HELD:-}" ]] && { echo "romp-service: the agent's manager exited at once because a manager is ALREADY serving on :7432 outside the login service" >&2; exit 3; } ;;
 esac
 exit 0
 SH
@@ -335,6 +336,18 @@ SH
     export ROMP_SVC_LOG="$TEST_DIR/svc.log"   # ROMP_SVC_RUNNING unset -> not running
     ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
+    grep -qx install "$TEST_DIR/svc.log"
+}
+
+@test "install.sh: a manager already serving outside the service is named as such, not as a dead dashboard (romp-service exit 3)" {
+    unset ROMP_NO_SERVICE
+    _svc_stub "$TEST_DIR/romp-service"
+    export ROMP_SVC_LOG="$TEST_DIR/svc.log" ROMP_SVC_HELD=1
+    ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    [ "$status" -ne 0 ]                                            # the service is still not the one running
+    [[ "$output" == *"a manager already serving outside it holds the control port"* ]]
+    [[ "$output" == *"the dashboard is up on that manager"* ]]
+    [[ "$output" != *"dashboard will be dead"* ]]
     grep -qx install "$TEST_DIR/svc.log"
 }
 
