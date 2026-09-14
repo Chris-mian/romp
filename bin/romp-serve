@@ -209,22 +209,46 @@ PY="$(pick_python)"
 # there, an unrunnable ROMP_PYTHON pin), which stay at 1.
 #
 # This is the FIRST execution of the picked interpreter (pick_python checks a pin's file and the walk uses
-# command -v), and install.sh's preflight runs it, so it is bounded the way _runs_as bounds its own: timeout 5
-# where coreutils provides it (a bare test PATH, and a stock mac, do not), since an interpreter that blocks (a
-# stalled network mount, a site customization reaching for the network) would otherwise hang the install with no
-# output. Running out the clock is NOT the no-version leg: the interpreter is refused as unresponsive, exit 1.
-_pyprobe=("$PY")
-if command -v timeout >/dev/null 2>&1; then _pyprobe=(timeout 5 "$PY"); fi
+# command -v), and install.sh's preflight runs it, so it is bounded: `timeout -k 1 5` where coreutils provides it
+# (the KILL a second after the TERM covers an interpreter that ignores TERM), and where it does not (a stock mac) a
+# watchdog of the launcher's shape: the interpreter in a wrapper's background, the wrapper trapping TERM to kill it
+# and exiting with a code, a sleep-and-kill subshell behind it, every subshell ended by an exit so the shell prints
+# no job-status line. Running out the clock is NOT the no-version leg: the interpreter is refused as unresponsive,
+# exit 1 (install.sh passes that through). The probe writes to a FILE, stdin from /dev/null, and the file is read
+# afterwards: a command substitution reads until every writer closes the pipe, so a site customization that left a
+# helper holding stdout made a prompt interpreter hang the read for the helper's lifetime (round four of issue 1600).
+# The interpreter's own exit code is told from the bound's: 124 counts as the bound only when the bound's time has
+# passed; an interpreter that itself exits 124 at once is reported with its code and left to the no-version leg.
+# The version rides a SENTINEL line, "romp-pyver X.Y", so chatter that happens to be a bare number (a 2.7 printed
+# by a site customization before the program) cannot pass for the version, and a decorated version cannot hide.
+_pyprog='import sys; print("romp-pyver %d.%d" % sys.version_info[:2])'
+_pyout_file="$(mktemp "${TMPDIR:-/tmp}/romp-pyver.XXXXXX")"
 _prc=0
-_pyout="$("${_pyprobe[@]}" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" || _prc=$?
-if [[ "$_prc" -eq 124 ]]; then
+_pyt0=$SECONDS
+if command -v timeout >/dev/null 2>&1; then
+    # --foreground: without it GNU timeout signals its whole process group, itself included, so the KILL a second
+    # after the TERM took timeout down by SIGKILL (137 to this shell, and a "Killed" job line) instead of the 124 that
+    # names the bound; with it the signals reach the interpreter alone and timeout exits 124 as documented
+    timeout --foreground -k 1 5 "$PY" -c "$_pyprog" </dev/null >"$_pyout_file" 2>/dev/null || _prc=$?
+else
+    ( trap 'kill "$n" 2>/dev/null; sleep 1; kill -9 "$n" 2>/dev/null; exit 124' TERM; "$PY" -c "$_pyprog" </dev/null >"$_pyout_file" 2>/dev/null & n=$!; wait "$n"; exit $? ) 2>/dev/null &
+    _pypp=$!
+    ( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep 5 & s=$!; wait "$s"; kill "$_pypp" 2>/dev/null ) >/dev/null 2>&1 &
+    _pywd=$!
+    wait "$_pypp" || _prc=$?
+    kill "$_pywd" 2>/dev/null || true; wait "$_pywd" 2>/dev/null || true
+fi
+_pyout="$(cat "$_pyout_file" 2>/dev/null || true)"; rm -f "$_pyout_file"
+if [[ ( "$_prc" -eq 124 || "$_prc" -eq 137 ) && $(( SECONDS - _pyt0 )) -ge 4 ]]; then   # 137: a timeout that had to KILL, on a coreutils without --foreground
     echo "romp: $PY did not answer its version probe within 5 s (unresponsive: a stalled network mount, a site customization reaching for the network); the kernel is not started on it." >&2
     exit 1
+elif [[ "$_prc" -eq 124 ]]; then
+    echo "romp: the version probe of $PY exited 124 (the interpreter's own code, not the bound); its version is unknown, and it is started as before." >&2
 fi
 _pyver=""
 while IFS= read -r _pyline; do
     _pyline="${_pyline%$'\r'}"
-    if [[ "$_pyline" =~ ^[0-9]+\.[0-9]+$ ]]; then _pyver="$_pyline"; break; fi
+    if [[ "$_pyline" =~ ^romp-pyver\ ([0-9]+)\.([0-9]+)$ ]]; then _pyver="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"; break; fi
 done <<< "$_pyout"
 if [[ "$_pyver" =~ ^([0-9]+)\.([0-9]+)$ ]] && (( BASH_REMATCH[1] < 3 || (BASH_REMATCH[1] == 3 && BASH_REMATCH[2] < 10) )); then
     echo "romp: $PY is python $_pyver; the kernel and the Agent SDK need 3.10 or newer, so the kernel is not started on it." >&2

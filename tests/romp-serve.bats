@@ -136,7 +136,7 @@ teardown() { rm -rf "$TEST_DIR"; }
     cat > "$TEST_DIR/old-python" << 'OLD'
 #!/usr/bin/env bash
 case "$*" in
-  *'print("%d.%d"'*) echo "3.9"; exit 0 ;;
+  *romp-pyver*) echo "romp-pyver 3.9"; exit 0 ;;
 esac
 exec bash "$@"
 OLD
@@ -155,7 +155,7 @@ OLD
     [ "$output" = "$ROMP_PYTHON" ]                           # the pin, verbatim, as the pick returns it
     cat > "$TEST_DIR/old-python" << 'OLD'
 #!/usr/bin/env bash
-case "$*" in *'print("%d.%d"'*) echo "3.8"; exit 0 ;; esac
+case "$*" in *romp-pyver*) echo "romp-pyver 3.8"; exit 0 ;; esac
 exit 0
 OLD
     chmod +x "$TEST_DIR/old-python"
@@ -170,7 +170,7 @@ OLD
     cat > "$TEST_DIR/chatty-python" << 'OLD'
 #!/usr/bin/env bash
 case "$*" in
-  *'print("%d.%d"'*) echo "sitecustomize: hello from a chatty site"; echo "3.9"; exit 0 ;;
+  *romp-pyver*) echo "sitecustomize: hello from a chatty site"; echo "2.7"; echo "romp-pyver 3.9"; exit 0 ;;   # a bare 2.7 in the chatter is not the version
 esac
 exec bash "$@"
 OLD
@@ -184,32 +184,93 @@ OLD
 @test "romp-serve: an interpreter that blocks on its version probe is refused as unresponsive within the bound, not exec'd and not hung" {
     # round three of issue 1600: the probe is the picked interpreter's FIRST execution and was unbounded, so a blocking one
     # (a stalled network mount, a site customization reaching for the network) hung install.sh with no output
-    command -v timeout >/dev/null 2>&1 || skip "the bound needs coreutils timeout (a stock mac has none: there the probe is unbounded, as _runs_as is)"
     cat > "$TEST_DIR/blocking-python" << 'OLD'
 #!/usr/bin/env bash
 case "$*" in
-  *'print("%d.%d"'*) sleep 60 ;;      # blocks on the version probe alone
+  *-c*) sleep 60 ;;      # blocks on any -c probe (the base's probe program has no sentinel, and must hang too)
 esac
 exec bash "$@"
 OLD
     chmod +x "$TEST_DIR/blocking-python"
-    ROMP_PYTHON="$TEST_DIR/blocking-python" run timeout 40 "$ROMP_SERVE" --print-python
+    # bounded from outside where timeout exists (a regression that hung would be a clean red); the probe's own bound is what is tested
+    local tmo; tmo="$(command -v timeout || true)"
+    ROMP_PYTHON="$TEST_DIR/blocking-python" run ${tmo:+"$tmo" 40} "$ROMP_SERVE" --print-python
     [ "$status" -eq 1 ]                                      # its own refusal, exit 1: install.sh's pass-through
     [[ "$output" == *"did not answer its version probe"* ]]
     [[ "$output" == *"blocking-python"* ]]
     [[ "$output" != *"PORT="* ]]
 }
 
+@test "romp-serve: the probe's bound holds without coreutils timeout (the watchdog fallback, a stock mac's road) and against an interpreter that ignores TERM" {
+    # round four of issue 1600: the bound existed only where timeout did, and timeout carried no -k, so a TERM-ignoring
+    # interpreter hung past it. A bare PATH without timeout takes the watchdog; the stand-in ignores TERM.
+    cat > "$TEST_DIR/deaf-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *-c*) trap '' TERM; exec sleep 60 ;;      # becomes its sleep: the KILL after the ignored TERM leaves no stray child
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/deaf-python"
+    local bare="$TEST_DIR/bare"; mkdir -p "$bare"
+    local t; for t in bash sh sleep cat rm mktemp date dirname readlink; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    local tmo; tmo="$(command -v timeout || true)"
+    local t0=$SECONDS
+    PATH="$bare" ROMP_PYTHON="$TEST_DIR/deaf-python" run ${tmo:+"$tmo" 40} "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [ $((SECONDS - t0)) -lt 15 ]                             # the bound, not the outer one: five seconds plus the kill
+    # …and with timeout on PATH the same deaf interpreter is killed at the bound too (-k)
+    [ -n "$tmo" ] || skip "the timeout branch needs coreutils timeout"
+    t0=$SECONDS
+    ROMP_PYTHON="$TEST_DIR/deaf-python" run "$tmo" 40 "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [ $((SECONDS - t0)) -lt 15 ]
+}
+
+@test "romp-serve: a helper the interpreter leaves holding its stdout cannot hold the version read; the probe returns at once" {
+    # round four, medium 2: the substitution read until every writer closed the pipe, so a prompt interpreter whose site
+    # customization spawned a helper made the read last the helper's life (8 s here); the version is read from a file
+    cat > "$TEST_DIR/helper-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *-c*) ( sleep 8 ) & echo "romp-pyver 3.12"; exit 0 ;;   # a child keeps the stdout pipe; the interpreter exits at once (any -c probe: the base's too)
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/helper-python"
+    local t0=$SECONDS
+    ROMP_PYTHON="$TEST_DIR/helper-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 0 ]
+    [ "$output" = "$TEST_DIR/helper-python" ]
+    [ $((SECONDS - t0)) -lt 5 ]                              # not the helper's 8 seconds
+}
+
+@test "romp-serve: an interpreter that itself exits 124 at once is not called unresponsive; its own code is reported and it is started" {
+    cat > "$TEST_DIR/oddexit-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) exit 124 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/oddexit-python"
+    ROMP_PYTHON="$TEST_DIR/oddexit-python" run "$ROMP_SERVE" --port 29994
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"exited 124 (the interpreter's own code, not the bound)"* ]]
+    [[ "$output" != *"did not answer"* ]]
+    [[ "$output" == *"PORT=29994"* ]]
+}
+
 @test "romp-serve: a line printed AFTER the version, or a CRLF line ending, cannot hide a 3.9" {
     # round three, low 1: the last-line read let a 3.9 through when an atexit hook printed after it or the output was CRLF
     cat > "$TEST_DIR/atexit-python" << 'OLD'
 #!/usr/bin/env bash
-case "$*" in *'print("%d.%d"'*) echo "3.9"; echo "atexit: goodbye from a chatty hook"; exit 0 ;; esac
+case "$*" in *romp-pyver*) echo "romp-pyver 3.9"; echo "atexit: goodbye from a chatty hook"; exit 0 ;; esac
 exec bash "$@"
 OLD
     cat > "$TEST_DIR/crlf-python" << 'OLD'
 #!/usr/bin/env bash
-case "$*" in *'print("%d.%d"'*) printf '3.9\r\n'; exit 0 ;; esac
+case "$*" in *romp-pyver*) printf 'romp-pyver 3.9\r\n'; exit 0 ;; esac
 exec bash "$@"
 OLD
     chmod +x "$TEST_DIR/atexit-python" "$TEST_DIR/crlf-python"
@@ -221,6 +282,16 @@ OLD
     [ "$status" -eq 2 ]
     [[ "$output" == *"python 3.9"* ]]
     [[ "$output" != *"PORT="* ]]
+    # round four, low 2: chatter that is a bare 2.7 before a good 3.12 does not refuse the 3.12 (the sentinel is what is read)
+    cat > "$TEST_DIR/mixed-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) echo "2.7"; echo "romp-pyver 3.12"; exit 0 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/mixed-python"
+    ROMP_PYTHON="$TEST_DIR/mixed-python" run "$ROMP_SERVE" --port 29993
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PORT=29993"* ]]
 }
 
 @test "romp-serve: the other refusals keep exit 1, so install.sh can tell them from the floor" {

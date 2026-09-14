@@ -574,6 +574,7 @@ _old_python() {   # a python that reports 3.9 to every version probe the scripts
 #!/usr/bin/env bash
 case "$*" in
   *"version_info >= (3, 10)"*) exit 1 ;;
+  *romp-pyver*)                echo "romp-pyver 3.9"; exit 0 ;;   # romp-serve's sentinel probe (round four)
   *'print("%d.%d"'*)           echo "3.9"; exit 0 ;;
 esac
 exit 0
@@ -643,18 +644,19 @@ EOF
 
 # round three of issue 1600: the probe is the pin's first execution and install.sh's preflight runs it
 @test "install.sh: a pinned interpreter that blocks on its version probe stops the install within the bound with romp-serve's line, hung on nothing" {
-    command -v timeout >/dev/null 2>&1 || skip "the bound needs coreutils timeout"
-    ln -s "$(command -v timeout)" "$BAREBIN/timeout"                  # the bound's tool, on the bare PATH the install runs with
+    # with timeout present it rides the bare PATH (the timeout branch); without it the probe's watchdog is the bound (round four)
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] && ln -s "$tmo" "$BAREBIN/timeout"
     printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
     cat > "$STUB/blockpython" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  *'print("%d.%d"'*) sleep 60 ;;
+  *-c*) sleep 60 ;;                                                # any -c probe: the base's, without the sentinel, must hang too
 esac
 exit 0
 EOF
     chmod +x "$STUB/blockpython"
-    PATH="$(bare_path)" ROMP_PYTHON="$STUB/blockpython" run timeout 40 "$ROMP_DIR/install.sh"
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/blockpython" run ${tmo:+"$tmo" 40} "$ROMP_DIR/install.sh"
     [ "$status" -eq 1 ]
     [[ "$output" == *"did not answer its version probe"* ]]
     [[ "$output" == *"romp-serve --print-python stopped"* ]]
@@ -673,12 +675,28 @@ EOF
     [[ "$output" == *"need 3.10 or newer"* ]]
 }
 
+# round four, medium 1: with a valid pin and no python3 on PATH the preflight passed and the hook block's bare python3 then
+# failed under set -e with the hooks half wired; every python the install runs after the preflight is the pick now
+@test "install.sh: a pinned interpreter with no python3 on PATH carries the whole install: settings.json written, rc 0" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    local realpy; realpy="$(readlink -f "$BAREBIN/python3")"          # a real interpreter, by absolute path, off the PATH
+    rm -f "$BAREBIN/python3"
+    PATH="$(bare_path)" ROMP_PYTHON="$realpy" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"python3 not found"* ]]
+    [[ "$output" != *"command not found"* ]]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
+    [ -f "$HOME/.claude/settings.json" ]                             # the hook block ran on the pin
+    "$realpy" -c 'import json,sys; json.load(open(sys.argv[1]))' "$HOME/.claude/settings.json"
+}
+
 @test "install.sh: a python at the floor passes the preflight (ROMP_NO_SDK=1 still skips only the venv build)" {
     printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
     cat > "$STUB/newpython" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *"version_info >= (3, 10)"*) exit 0 ;;
+  *romp-pyver*)                echo "romp-pyver 3.10"; exit 0 ;;
   *'print("%d.%d"'*)           echo "3.10"; exit 0 ;;
 esac
 exit 0

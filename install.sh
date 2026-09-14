@@ -52,7 +52,10 @@ if [[ -z "${ROMP_SKIP_PREFLIGHT:-}" ]]; then
         # through as what they are: the kernel would not start on this machine as configured, but the python is
         # not the reason (round two of issue 1600: every non-zero exit used to be blamed on the python).
         _py_rc=0
-        "$ROMP_DIR/bin/romp-serve" --print-python >/dev/null || _py_rc=$?
+        # The pick is CAPTURED, not just checked (round four of issue 1600): every python this script runs after the
+        # preflight is this interpreter, so a pinned interpreter with no python3 on PATH carries the install through,
+        # where a bare python3 in the hook block failed under set -e with the hooks half wired.
+        ROMP_INSTALL_PY="$("$ROMP_DIR/bin/romp-serve" --print-python)" || _py_rc=$?
         if [[ "$_py_rc" -eq 2 ]]; then
             echo "install.sh: the python romp would run is below the floor (the line above names it, its version and the install command); the kernel and the Agent SDK need 3.10 or newer." >&2
             preflight_missing=1
@@ -135,7 +138,7 @@ fi
 # other hooks you have registered. Retired romp hooks (RETIRED below) are
 # de-registered on the way, so an upgrade never leaves Claude Code calling a
 # path this repo no longer ships.
-python3 - <<'PYEOF'
+"${ROMP_INSTALL_PY:-python3}" - <<'PYEOF'
 import json, os
 
 SETTINGS = os.path.expanduser("~/.claude/settings.json")

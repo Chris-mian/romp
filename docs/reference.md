@@ -748,13 +748,18 @@ start the kernel below 3.10, naming the interpreter, its version and the install
 commands, with an exit code of its own (2). An interpreter that reports no
 readable version is started on purpose (the pick already checked it is an
 executable file, and a version nobody can read is not a version below the
-floor); one that does not answer the probe within the bound is refused as
-unresponsive. `bin/romp-serve --print-python` prints the pick
-with that floor applied and starts nothing, which is what `install.sh`'s
-preflight runs, claiming a Python cause on that code alone and passing the
-script's other refusals (the two port spellings disagreeing, a kernel binary
-that is not there, an unrunnable pin) through with their own line and a plain
-stop.
+floor); one that does not answer the probe within the bound (five seconds,
+enforced where `timeout` exists and by a watchdog where it does not, so on a
+stock mac too) is refused as unresponsive with exit code 1, the fourth of the
+refusals below. The version rides a sentinel line the probe prints, read from a
+file the probe writes, so a site customization's chatter or a helper it left
+holding the output cannot pass for the version or hold the read.
+`bin/romp-serve --print-python` prints the pick with that floor applied and
+starts nothing, which is what `install.sh`'s preflight runs, claiming a Python
+cause on that code alone and passing the script's other refusals (the two port
+spellings disagreeing, a kernel binary that is not there, an unrunnable pin, an
+unresponsive interpreter) through with their own line and a plain stop; every
+python the install runs afterwards is that same interpreter.
 
 Moving romp to another Python, whether another version or the free-threaded
 build of the same one, takes four steps, and skipping any one of them leaves a
