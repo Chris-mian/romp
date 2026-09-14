@@ -39,7 +39,8 @@ the page's own frame path, with page.mouse for every drag, and walks these roads
   (j) the single-column layout (a 520 px viewport stacks the columns): a focused block whose category has no cards hides
       whole, chip and all (api has one Working card: Blocked and Completed vanish), and a card arriving for Blocked
       brings the block back; the row layout keeps every head;
-  (k) (l) (m) the slot math over HIDDEN blocks (review round two): a jiggle on the one visible chip stores nothing; a one-slot
+  (k) (l) (m) the slot math over HIDDEN blocks (review round two): a jiggle on the one visible chip (Completed, first in the
+      stacked order, the hidden blocks after it) stores nothing; a one-slot
       drag of Completed past Blocked with Working hidden lands right behind Blocked, Working keeping its place; ArrowDown
       on the last visible block (Completed, the hidden Working below it) and ArrowUp on the first move nothing;
   (n) the label's clamp, MEASURED at 520 and 420 px with an 80-character session name: the caret on the name's line to its
@@ -388,13 +389,16 @@ withBlocked.asks.push(ask(cfg.ids.apiBlocked, cfg.api, "api", "needs_input", "no
 await deliver(withBlocked);
 await frame(); await park();
 out.stackedArrived = await survey();
-// (k) stacked, the section following the board (no order of its own): api has one Working card, so Working is the only
-// visible block; a 14 px jiggle on its chip must store NOTHING (the hidden blocks' zero rects used to read as slots)
+// (k) stacked, the section following the board (no order of its own): api's one card sits in Completed, the FIRST block
+// of the stacked order, so Completed is the only visible block with the two hidden ones after it; a 14 px jiggle on its
+// chip must store NOTHING (the hidden blocks' zero rects used to read as slots past the pointer, and the old math stored
+// needsInput, asks, completed: an order the user never chose)
 await boot(T347_BLOB);
 await page.setViewportSize({ width: 520, height: 760 });
+await deliver(payloadOf("completed"));
 await deliver({ type: "activeChat", id: cfg.api });
 await frame(); await park();
-const jw = await page.locator("#feed-focus .col-asks .feed-col-head .fcol-chip").boundingBox();
+const jw = await page.locator("#feed-focus .col-completed .feed-col-head .fcol-chip").boundingBox();
 await page.mouse.move(jw.x + jw.width / 2, jw.y + jw.height / 2);
 await page.mouse.down();
 await page.mouse.move(jw.x + jw.width / 2, jw.y + jw.height / 2 + 14, { steps: 4 });
@@ -658,7 +662,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         # ── (k) stacked, one visible block: a jiggle stores nothing (review round two, medium 1) ──
         sj = r["stackedJiggle"]
         self.assertEqual(sj["stored"]["focusOrder"], [], "a 14 px jiggle on the one visible chip stores no order (the hidden blocks are no slots): %r" % sj["stored"])
-        self.assertEqual({k: v["shown"] for k, v in sj["chips"].items()}, {"asks": True, "needsInput": False, "completed": False})
+        self.assertEqual({k: v["shown"] for k, v in sj["chips"].items()}, {"asks": False, "needsInput": False, "completed": True}, "Completed the only visible block: %r" % sj["chips"])
         # ── (l) stacked, Working hidden: a one-slot drag of Completed past Blocked lands right behind Blocked ──
         st2 = r["stackedTwo"]
         self.assertEqual({k: v["shown"] for k, v in st2["chips"].items()}, {"asks": False, "needsInput": True, "completed": True}, "Working hidden, Blocked and Completed shown: %r" % st2["chips"])
