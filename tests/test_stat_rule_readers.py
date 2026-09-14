@@ -78,12 +78,50 @@ class UnknownIsNeverEmpty(unittest.TestCase):
         finally:
             os.chmod(base / "f", 0o755)
 
-    def test_the_pending_marker_block_keeps_the_marker_on_an_unknown_inbox(self):
-        import inspect
-        src = inspect.getsource(pm._retry_pending)
-        self.assertIn("empty = _dir_empty(newd)", src); self.assertIn("if empty is None:", src)
-        self.assertLess(src.index("if empty is None:"), src.index("_mark_pending(sid)                 # stale marker -> clear it"),
-                        "the unknown answer is read before the clear")
+    def _box_with_unread_mail(self, sid):
+        newd = pm.MAILROOT / sid / "new"; newd.mkdir(parents=True, exist_ok=True)
+        (pm.MAILROOT / sid / "cur").mkdir(exist_ok=True); (pm.MAILROOT / sid / "tmp").mkdir(exist_ok=True)
+        (newd / "m1").write_text("From: alice\n\nhi\n")
+        return newd
+
+    def test_an_unsearchable_inbox_with_unread_mail_keeps_its_marker_through_every_writer(self):
+        """The medium of round two's read: _mark_pending read an unlistable new/ as no mail and UNLINKED the marker the retry
+        arm had just kept, and serve() drives _reconcile_markers over every box at each bus start; the unread mail stranded
+        with no wake. Executed on the real fault: the marker stands after _mark_pending, _reconcile_markers and _retry_pending."""
+        if ROOT_ONLY:
+            self.skipTest("root reads through chmod 000")
+        sid = "33333333-2222-4333-8444-0000000000e3"
+        newd = self._box_with_unread_mail(sid)
+        pm._mark_pending(sid)
+        self.assertTrue((pm.MAILPENDING / sid).exists(), "unread mail: the marker stands")
+        os.chmod(newd, 0)
+        try:
+            pm._mark_pending(sid)
+            self.assertTrue((pm.MAILPENDING / sid).exists(), "unknown inbox: the marker stands after _mark_pending")
+            pm._reconcile_markers()
+            self.assertTrue((pm.MAILPENDING / sid).exists(), "and after the bus start's reconcile")
+            pm._retry_pending()
+            self.assertTrue((pm.MAILPENDING / sid).exists(), "and after the retry arm")
+        finally:
+            os.chmod(newd, 0o755)
+        pm._mark_pending(sid)
+        self.assertTrue((pm.MAILPENDING / sid).exists(), "readable again with mail: still standing")
+        (newd / "m1").unlink(); pm._mark_pending(sid)
+        self.assertFalse((pm.MAILPENDING / sid).exists(), "drained: the marker goes")
+
+    def test_an_unsearchable_inbox_without_a_marker_gets_none(self):
+        """The absent arm: unknown keeps the marker as it stands, so no marker is minted on an inbox that cannot be read."""
+        if ROOT_ONLY:
+            self.skipTest("root reads through chmod 000")
+        sid = "44444444-2222-4333-8444-0000000000e4"
+        newd = self._box_with_unread_mail(sid)
+        (pm.MAILPENDING / sid).unlink(missing_ok=True)
+        os.chmod(newd, 0)
+        try:
+            pm._mark_pending(sid); pm._reconcile_markers()
+            self.assertFalse((pm.MAILPENDING / sid).exists(), "absent stays absent on an unknown inbox")
+        finally:
+            os.chmod(newd, 0o755)
 
 
 class TaskPlanLoudOnUnreadable(unittest.TestCase):
@@ -100,6 +138,12 @@ class TaskPlanLoudOnUnreadable(unittest.TestCase):
                     km._task_plan_cached(SID)                    # exists but unreadable: loud, never "no plan"
             finally:
                 os.chmod(d, 0o755)
+            os.chmod(d.parent, 0)                                # the PARENT tasks/ unsearchable: the child's own stat fails
+            try:                                                 #  with EACCES, and is_dir() read False there on 3.14 (a quiet
+                with self.assertRaises(OSError):                 #  "no plan" at 1cfbae7d); by errno it is loud on every interpreter
+                    km._task_plan_cached(SID)
+            finally:
+                os.chmod(d.parent, 0o755)
         finally:
             if saved is None:
                 os.environ.pop("CLAUDE_CONFIG_DIR", None)

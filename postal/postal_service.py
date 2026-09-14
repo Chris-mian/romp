@@ -401,16 +401,22 @@ def _mark_pending(sid):
         return
     m = MAILPENDING / sid
     newd = MAILROOT / sid / "new"
+    empty = _dir_empty(newd)                       # True, False, or None for a new/ that cannot be read
+    if empty is None:
+        # UNKNOWN keeps the marker as it stands, present or absent, never an unlink: a box whose new/ cannot be listed
+        # read as "no mail" here and lost the marker the retry arm had just kept, and the unread mail stranded with no
+        # wake and no line (the review of the exists() fix, 2026-09-14; serve() reconciles every box at each start)
+        _log("mail-pending marker for %s left as it stands: its inbox cannot be read" % sid)
+        return
     try:
-        has = newd.is_dir() and any(newd.iterdir())
-    except Exception:
-        has = False
-    try:
-        if has:
+        if not empty:
             MAILPENDING.mkdir(parents=True, exist_ok=True)
             m.touch()
-        elif m.exists():
-            m.unlink()
+        else:
+            try:
+                m.unlink()
+            except FileNotFoundError:
+                pass
     except Exception:
         pass
 
