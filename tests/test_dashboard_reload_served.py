@@ -10,7 +10,7 @@ driver opens it, scrolls the chat transcript to mid-history, and
      while the button was held (the reload is armed, waiting on the pointer);
   2. releases the button and asserts the page reloaded, landed the chat tab on the reader's saved position
      (not the bottom), and left one "Reloaded onto build …" line in the notification center;
-  3. kills the kernel and relaunches it on the same port — a socket reopen against a NEW boot id of the SAME build —
+  3. kills the kernel and relaunches it on the same port, a socket reopen against a NEW boot id of the SAME build,
      and asserts NO reload (invisible restarts, the user 2026-09-14): the board stays on screen, the reader's place
      holds, the pane's redial lands its fresh frame, and the notification center gains no line. (A changed build's
      restart reloads once the reconnected pane has its first frame: the node leg, test_dashboard_auto_reload.py.)
