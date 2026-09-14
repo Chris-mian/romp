@@ -22,6 +22,7 @@ function sample(): FeedViewState {
     threads: [],   // the card-prune tests below assert on CARD state; the thread exemption has its own
     cols: ["completed"], order: ["asks", "completed", "needsInput"],
     focused: false,
+    focusOrder: [], focusW: {}, focusCols: [],   // the focused section's own block layout (T410), at its defaults
   };
 }
 
@@ -62,7 +63,7 @@ test("an itemId containing a colon is not mis-attributed by the prune", () => {
   // its FIRST colon would read this card as "blocked" and prune state that is very much live.
   const s: FeedViewState = {
     v: 1, sec: { "blocked:sess-7": "bg" }, tree: ["blocked:sess-7:n1"], nodes: [], logs: [], asks: [],
-    threads: [], cols: [], order: [], focused: false,
+    threads: [], cols: [], order: [], focused: false, focusOrder: [], focusW: {}, focusCols: [],
   };
   const pruned = pruneViewState(s, new Set(["blocked:sess-7"]));
   assert.deepEqual(pruned.sec, { "blocked:sess-7": "bg" }, "the colon-bearing id survives");
@@ -93,7 +94,7 @@ test("the cap is a backstop that trims cheap state first and section choices las
     nodes: Array.from({ length: 10 }, (_, i) => `a:n${i}`),
     logs: Array.from({ length: 10 }, (_, i) => `a:l${i}`),
     asks: ["a"],
-    threads: ["sid-1"], cols: [], order: [], focused: false,
+    threads: ["sid-1"], cols: [], order: [], focused: false, focusOrder: [], focusW: {}, focusCols: [],
   };
   const capped = capViewState(big, 20);
   assert.equal(viewStateSize(capped), 20);
@@ -109,7 +110,7 @@ test("a folded thread SURVIVES the card prune — that is the whole point of it"
   // card would silently re-expand the thread and the next card would arrive unfolded.
   const s: FeedViewState = {
     v: 1, sec: { "card-a": "bg" }, tree: [], nodes: [], logs: [], asks: [], threads: ["sid-quiet"], cols: [], order: [],
-    focused: false,
+    focused: false, focusOrder: [], focusW: {}, focusCols: [],
   };
   const pruned = pruneViewState(s, new Set<string>());   // no live cards at all
   assert.deepEqual(pruned.threads, ["sid-quiet"]);

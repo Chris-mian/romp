@@ -48,6 +48,7 @@
   --menu-bg: var(--vscode-menu-background, #252526);   /* the menu SKIN tokens (T226) — mirror styles.css */
   --menu-fg: var(--vscode-menu-foreground, #cccccc);
   --menu-border: rgba(255, 255, 255, 0.12);
+  --rule-strong: rgba(255, 255, 255, 0.22);   /* a rule a step up from the hairline: the focused section's divider (T410) */
   --menu-hover: rgba(255, 255, 255, 0.09);
   --menu-ring: #fff;
   --check-ring: rgba(30, 161, 235, 0.55);
@@ -174,6 +175,7 @@ body.theme-light {
   --menu-bg: #FBF6EF;
   --menu-fg: #1F1E1D;
   --menu-border: rgba(0, 0, 0, 0.12);
+  --rule-strong: rgba(0, 0, 0, 0.22);
   --menu-hover: rgba(0, 0, 0, 0.06);
   --menu-ring: #1F1E1D;
   --check-ring: rgba(194, 65, 12, 0.55);
@@ -400,15 +402,18 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
     background: transparent; border: 0; font: inherit; font-size: 1.389em; font-weight: 400;
     line-height: 1; cursor: pointer; transition: color 0.12s ease; }
   .fcol-fold:hover, .fcol-fold:focus-visible { color: var(--fg); }
+  /* stacked, the focused section's blocks are full width: nothing to trade width with, so no gutter (T410) */
+  .focus-gutter { display: none; }
 }
 
 /* ---------- the FOCUSED SESSION section (T347, the user 2026-09-11, who wanted the focused session's cards on top) ----------
    When a tab has focus in the chat pane, the feed puts that session's cards ABOVE the board — its name as the
    head, the board's three column chips, a horizontal rule under it — and the board below stays exactly as it
    is (feed.ts renderFocusSection). The section's columns carry .feed-cols / .feed-col, so the row layout, the
-   stacked container query above and the dragged --col-order all reach them unchanged; what differs is here:
-   no sticky heads (a miniature is short), no grab cursor (nothing to drag there), and the rule. Both themes
-   read through the variables; the one literal is a var() fallback. */
+   stacked container query above and the --col-order var all reach them unchanged; what differs is here: no
+   sticky heads (a miniature is short), the chip inert (the GRIP drags here, T410), the block furniture the
+   board has not got — grip, an always-on fold caret, a resize gutter — and the rule. Both themes read
+   through the variables. */
 #feed-focus { display: flex; flex-direction: column; gap: 8px; }
 /* the head wears the session headers' typography (.feed-sess-head): 600, the name at the card titles' size */
 .feed-focus-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 3px 0; font-weight: 600; }
@@ -416,11 +421,41 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
 /* "focused", after the name — why this session sits on top. The fold count's own dress (.feed-sess-foldn):
    the column head's 0.72em, weight 400, dim; no new size */
 .feed-focus-cap { flex: none; font-weight: 400; font-size: 0.72em; color: var(--dim); }
+.feed-focus-cols { align-items: stretch; }   /* the blocks share the row's height, so a gutter spans the row */
+.feed-focus-cols .feed-col { position: relative; }   /* the gutter's positioned ancestor */
 .feed-focus-cols .feed-col-head { position: static; }
 .feed-focus-cols .feed-col-head .fcol-chip { cursor: default; }
-/* the rule under the section: the menus' hairline token, so each theme draws it in its own ink. The margin
-   shorthand zeroes the <hr>'s auto inline margins, which would otherwise keep a flex item from stretching. */
-.feed-focus-divider { border: 0; border-top: 1px solid var(--menu-border, rgba(255, 255, 255, 0.12)); margin: 6px 0 2px; }
+/* the GRIP (T410): six dots left of the chip, the section's drag handle — the chip stays inert here, because
+   the board's chip drag would carry a block across the divider. Dim and half-faded at rest, full on the head's
+   hover, grab cursor. The glyph rides the fold caret's size compensation (1.389em against the head's 0.72em),
+   so it paints at the feed's base size rather than shrinking with the label. */
+.drag-grip { flex: none; color: var(--dim); opacity: 0.55; cursor: grab; touch-action: none; user-select: none;
+  font-size: 1.389em; line-height: 1; transition: opacity 0.12s ease; }
+.feed-col-head:hover .drag-grip, .feed-col.col-dragging .drag-grip { opacity: 1; }
+.feed-col.col-dragging .drag-grip { cursor: grabbing; }
+/* the fold caret shows in the section in BOTH layouts (the stacked rule's dress, copied; this selector outranks
+   the base `display: none`): folding is how a block gives its room back, since height is never resized */
+.feed-focus-cols .fcol-fold { display: inline-block; flex: none; padding: 0 5px; margin-left: -2px; color: var(--dim);
+  background: transparent; border: 0; font: inherit; font-size: 1.389em; font-weight: 400;
+  line-height: 1; cursor: pointer; transition: color 0.12s ease; }
+.feed-focus-cols .fcol-fold:hover, .feed-focus-cols .fcol-fold:focus-visible { color: var(--fg); }
+/* a collapsed block: its list hidden, the block shrunk to its head (the others take the room), its gutter gone */
+.feed-focus-cols .feed-col.col-collapsed { flex: 0 0 auto; }
+.feed-focus-cols .feed-col.col-collapsed .feed-col-list { display: none; }
+/* the GUTTER (T410): an 8px hit zone centred in the 12px gap on a block's right edge, drawing a 2px line in the
+   menus' hairline that brightens on hover and while dragging; column-resize cursor. WIDTH only — the section
+   grows with its content, there is no height to trade. feed.ts hides it on the last block and on a collapsed
+   one; the [hidden] rule is explicit because an author `display` would otherwise outrank the UA's. */
+.focus-gutter { position: absolute; top: 0; bottom: 0; right: -10px; width: 8px; cursor: col-resize;
+  touch-action: none; z-index: 2; }
+.focus-gutter::before { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px;
+  background: var(--menu-border); transition: background 0.12s ease; }
+.focus-gutter:hover::before, .focus-gutter.active::before { background: var(--dim); }
+.focus-gutter[hidden] { display: none; }
+/* the rule under the section (T410): a 2px line in --rule-strong, a step up from the menus' hairline, with more
+   air above it than below. The margin shorthand zeroes the <hr>'s auto inline margins, which would otherwise
+   keep a flex item from stretching. */
+.feed-focus-divider { border: 0; border-top: 2px solid var(--rule-strong); margin: 8px 0 4px; }
 /* "No session is focused in the chat" / "<name> has no cards" — one quiet line, the menus' sub-line size */
 .feed-focus-empty { color: var(--dim); font-size: 0.82em; }
 

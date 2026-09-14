@@ -56,8 +56,9 @@ test("the chip drags in BOTH layouts — grab affordance, live provisional movem
   assert.doesNotMatch(FEED, /fcol-grip/, "the grip is gone");
   assert.match(FEED, /const vertical = getComputedStyle\(colsEl\)\.flexDirection === "column";/,
     "the layout picks the drag AXIS now — never a capture refusal (the 2026-08-16 exclusion is reversed)");
-  assert.match(FEED, /const fallback = vertical \? STACK_DEFAULT : ROW_DEFAULT;/,
-    "each layout's own default order seeds the drag until a custom order exists");
+  assert.match(FEED, /const fallback = slots\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);/,
+    "each layout's own default order seeds the drag until a custom order exists (the board's spec passes it through; T410)");
+  assert.match(FEED, /fallback: \(d\) => d,/, "BOARD_SLOTS: the layout default as is");
   assert.match(FEED, /const ROW_DEFAULT = \["asks", "needsInput", "completed"\];/);
   assert.match(FEED, /else col\.style\.removeProperty\("--col-order"\);/,
     "no custom order → the var comes OFF and each layout keeps its own default");
@@ -70,7 +71,8 @@ test("the chip drags in BOTH layouts — grab affordance, live provisional movem
   assert.match(FEED, /chip\.addEventListener\("pointercancel", up\);/, "a cancelled drag still settles + persists");
   // a no-op drag leaves no trace: ending on the layout's own default with no pre-existing custom
   // order resets to [] — an explicit order would silently re-arrange the OTHER layout (review 2026-08-24)
-  assert.match(FEED, /if \(!hadCustom && colOrder\.length === 3 && colOrder\.join\(\) === fallback\.join\(\)\) \{/);
+  assert.match(FEED, /if \(!hadCustom && cur\.length === 3 && cur\.join\(\) === fallback\.join\(\)\) slots\.set\(\[\]\);/);
+  assert.match(FEED, /set: \(o\) => \{ colOrder = o; applyColStack\(\); \},/, "BOARD_SLOTS writes colOrder and repaints the board");
   // the keyboard card cursor walks the VISUAL order — the effective column `order`, var resolved
   assert.match(FEED, /slot\.set\(e, col \? parseInt\(getComputedStyle\(col\)\.order \|\| "0", 10\) \|\| 0 : 0\);/);
   assert.match(FEED, /\.sort\(\(a, b\) => a\.s - b\.s \|\| a\.i - b\.i\)/, "column slot first, DOM order within");

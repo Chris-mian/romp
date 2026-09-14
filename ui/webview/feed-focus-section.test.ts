@@ -28,7 +28,8 @@ test("the fourth row reads 'Show focused session', a ✓ row after Group by sess
 test("the switch is the feed's own view state under `focused`: OFF unless a blob saved it on", () => {
   assert.match(FEED, /let showFocused = false;/);
   assert.match(FEED, /showFocused = st\.focused;/, "hydrated with the rest of the view state");
-  assert.match(FEED, /order: colOrder\.slice\(\), focused: showFocused \};/, "currentViewState carries it, so persistViewState writes it");
+  assert.match(FEED, /order: colOrder\.slice\(\), focused: showFocused,\s*\n\s*focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\] \};/,
+    "currentViewState carries it (and the section's own block layout, T410), so persistViewState writes it");
 });
 
 // ── the event: the kernel's activeChat frame ─────────────────────────────────────────────────────────
@@ -61,8 +62,18 @@ test("#feed-focus sits directly before #feed-cols: head, empty line, the three c
                       'el("div", "feed-cols feed-focus-cols")', 'el("hr", "feed-focus-divider")']) {
     assert.ok(FEED.includes(mint), "builds " + mint);
   }
-  assert.match(FEED, /el\("span", "feed-col-name fcol-chip fcol-chip-" \+ chip\); name\.textContent = label;\s*\n\s*const count = el\("span", "feed-col-count"\);\s*\n\s*h\.append\(name, count\);/,
-    "the board's chips and count, NO fold caret and NO drag on the section's heads");
+  // T410: the section's heads carry their OWN furniture — a grip left of the chip (the section's drag handle; the
+  // chip itself stays inert), a fold caret, the count — and each block a resize gutter; all section-bound
+  assert.match(FEED, /const grip = el\("span", "drag-grip"\); grip\.textContent = "⠿"; grip\.setAttribute\("aria-hidden", "true"\);/,
+    "the six-dot grip, decorative to assistive tech (the caret is the keyboard control)");
+  assert.match(FEED, /el\("span", "feed-col-name fcol-chip fcol-chip-" \+ chip\); name\.textContent = label;\s*\n\s*const fold = el\("button", "fcol-fold"\); fold\.dataset\.label = label;/,
+    "the board's chip, then the section's own fold caret");
+  assert.match(FEED, /h\.append\(grip, name, fold, count\);\s*\n\s*wireColDrag\(grip, col, key, FOCUS_SLOTS\);/,
+    "grip, chip, caret, count; the grip drags with the board's mechanics, bound to the section's container");
+  assert.match(FEED, /const gutter = el\("div", "focus-gutter"\);[^\n]*\n\s*wireFocusGutter\(gutter, key\);\s*\n\s*col\.append\(h, body, gutter\);/,
+    "the resize gutter rides the block, outside the card list the reconcile owns");
+  assert.match(FEED, /if \(collapsedFocusCols\.has\(key\)\) collapsedFocusCols\.delete\(key\); else collapsedFocusCols\.add\(key\);\s*\n\s*applyFocusLayout\(\);\s*\n\s*persistViewState\(\);/,
+    "the caret folds the section's block under its own state, persisted");
   // in render(): the pick is taken before grouping (a folded thread below must not empty the section), the
   // section is painted before the board's reconcile, and the board's own reconcile is what it always was
   const pickAt = FEED.indexOf("const focusBuckets = showFocused ? focusedEntries(buckets, focusedSid, entrySid) : null;");
@@ -96,8 +107,9 @@ test("the board's own column lookups are scoped to #feed-cols now that the secti
   assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ key\)/, "applyColStack folds the board's column");
   assert.match(FEED, /const twin = document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ key\);/, "…and writes the dragged order to the section's twin column too");
   assert.match(FEED, /else col\.style\.removeProperty\("--col-order"\);/, "the board's own statement stands as feed-col-fold.test.ts pins it");
-  assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ k\)/, "the drag's FLIP reads the board");
-  assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ other\)/);
+  assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ k\)/, "the board drag's element lookup reads the board (BOARD_SLOTS.col)");
+  assert.match(FEED, /const oc = slots\.col\(other\);/, "the drag walks its OWN container's elements: the board's for a chip, the section's for a grip (T410)");
+  assert.match(FEED, /col: \(k\) => document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ k\),/, "FOCUS_SLOTS reads the section");
   assert.match(FEED, /put\(document\.querySelector\("#feed-cols \.feed-col\.col-" \+ key \+ " \.feed-col-head"\), d\.cols\[key\]\);/, "the freeze badges land on the board's heads");
   assert.doesNotMatch(FEED, /querySelector<HTMLElement>\("\.feed-col\.col-"/, "no bare column query survives to land on the section's copy first");
   // a copy's key reads as the card's own identity for the hover-freeze heal (a hovered copy holds the gate)
@@ -165,7 +177,9 @@ test("feed.css: #feed-focus, the head, the caption, the rule and the empty line 
   assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: inherit; \}/, "the name at the card titles' size, as .feed-sess-head does");
   assert.match(CSS, /\.feed-focus-cap \{[^}]*font-size: 0\.72em;[^}]*color: var\(--dim\);[^}]*\}/, "the column head's 0.72em, dim — no new size");
   assert.match(CSS, /\.feed-focus-cols \.feed-col-head \.fcol-chip \{ cursor: default; \}/, "no grab cursor where nothing drags");
-  assert.match(CSS, /\.feed-focus-divider \{ border: 0; border-top: 1px solid var\(--menu-border, rgba\(255, 255, 255, 0\.12\)\); margin: 6px 0 2px; \}/);
+  assert.match(CSS, /\.feed-focus-divider \{ border: 0; border-top: 2px solid var\(--rule-strong\); margin: 8px 0 4px; \}/,
+    "T410: a 2px rule in --rule-strong, a step up from the hairline");
+  assert.ok(/--rule-strong:\s*rgba\(255, 255, 255, 0\.22\)/.test(CSS) && /--rule-strong:\s*rgba\(0, 0, 0, 0\.22\)/.test(CSS), "the token is defined in both themes");
   assert.match(CSS, /\.feed-focus-empty \{ color: var\(--dim\); font-size: 0\.82em; \}/);
   // every colour in the section's declarations is a var(); the one literal is that var()'s fallback
   const block = CSS.slice(CSS.indexOf("#feed-focus {"), CSS.indexOf(".feed-focus-empty {") + ".feed-focus-empty { color: var(--dim); font-size: 0.82em; }".length);
