@@ -55047,7 +55047,10 @@ if(cut){var mo=document.createElement('option');mo.value=mo.textContent='\\u2026
 // a REJECTED fetch, the kernel gone, empties the suggestions instead, so a dead kernel is never hidden behind a stale
 // list once one was read; the console says which, and names the kept list only when there is one (the strip's rule)
 var _cfgRead=false;
-function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){e=(e instanceof Error)?e:new Error(String(e));e.network=true;throw e;})
+// a rejection's reason as an Error: an Error as it is, an object by its message or its JSON (the old wrap flattened
+// it to [object Object]), null as fetch rejected, anything else by its string; the caller marks it as a network fault
+function asErr(e){if(e instanceof Error)return e;if(e&&typeof e==='object'){var m=(typeof e.message==='string'&&e.message)?e.message:'';if(!m){try{m=JSON.stringify(e);}catch(_){m=String(e);}}return new Error(m);}return new Error(e==null?'fetch rejected':String(e));}
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){var x=asErr(e);x.network=true;throw x;})
 .then(function(r){if(!r.ok){var e=new Error('/ssh-hosts answered HTTP '+r.status);e.httpStatus=r.status;throw e;}return r.json();}).then(function(d){
 _cfg=(d&&d.hosts)||[];_cfgRead=true;fillHosts();}).catch(function(e){var keep=_cfgRead&&!(e&&e.network);
 try{console.error('romp: ssh hosts could not be read'+(keep?'; keeping the last list':''),e);}catch(_){}
