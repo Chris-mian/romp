@@ -35993,9 +35993,10 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # under needs_input — a judge-filed block (the session asked something, a decision is
                   # pending), a stalled card, a held peer message, a live prompt — False when none, None
                   # before the first feed build since start. The tab wears a dashed yellow ring for it in
-                  # every live state, working included (the user 2026-09-13: a session with something
-                  # waiting on them should grab attention without a click, even while it goes on working
-                  # in the background; the red ring stays the live prompt's and outranks it). The same
+                  # every live state, working included (the ask ring, 2026-09-13: a session with something
+                  # waiting on you should grab attention without a click, even while it goes on working
+                  # in the background; the red ring stays the live prompt's and outranks it; since
+                  # 2026-09-14 each ring is a widget with its own switch in the settings). The same
                   # set the ledger's needsInput reads, so the strip, the section rows and the feed agree;
                   # on the status rather than the ledger so a SKELETON tab, which gets only status frames,
                   # wears it too. The chat signature's `needs` component brings a flip forward, and the

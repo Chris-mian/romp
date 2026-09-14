@@ -206,10 +206,12 @@ body.scheme-solarized-dark {
   /* amber-orange — the API is backing off and retrying (the tab ring, the chip, the chat's retry notices); the
      hue sat RAW in seven rules until 2026-09-08 (5.38:1 on the chat's card surface) */
   --st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;
-  /* the ASK yellow (the user 2026-09-13): something of a session's is waiting on you — a card of the session's
+  /* the ASK yellow (the ask ring, 2026-09-13): something of a session's is waiting on you — a card of the session's
      in the feed's needs-you column — while the session may be idle, awaiting or still working. A clear lemon, not
      Working's mustard gold (#e0b020) and not the retrying amber, so the dashed ring and the folded header's
-     pip read as their own state; 11.3:1 on the page (theme-parity.test.ts pins the pair and the ring). */
+     pip read as their own state; 11.3:1 on the page (theme-parity.test.ts pins the pair, the ring on the page and
+     every pair of ring hues per theme: 9.5 from the gold to full-colour readers, a known pair, the dot and the
+     ring differing in shape and position; 9.2 under a red-green deficiency; every other pair well clear). */
   --st-ask-bg: #f5d33f; --st-ask-fg: #332600;
 
   /* the assistant's READING face (.assistant): the UI face in dark, mono in light (the light block re-points it).
