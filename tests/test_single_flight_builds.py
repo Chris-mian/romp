@@ -4,8 +4,9 @@ socket redialed after the outage and each connect push built its own copy of the
 the pusher built it too: five to seven cold builders of one feed, one timeline and the same chat tabs on one interpreter,
 each five to seven times slower for it (push.feedFirst 106 s, connect pushes 109 to 130 s, cards at 131 s). Now a feed or
 timeline build in flight on one thread is the build every later caller serves (one lock each), the connect path's live-only
-timeline waits for a full build in flight instead of parsing beside it, and a chat tab in flight on another thread is waited
-for and re-read from the cache. Hermetic: the builders are stubbed to sleep and count; two threads race each call."""
+timeline runs outside any lock (a pane's first frame is never behind another pane's build), and a chat tab in flight on another
+thread is waited for and re-read from the cache, the claim released by the thread's scope close whatever raised. Hermetic: the
+builders are stubbed to sleep and count; two threads race each call."""
 import inspect
 import json
 import os
@@ -120,8 +121,109 @@ class FeedAndTimelineSingleFlight(unittest.TestCase):
         self.assertIn("with _FEED_BUILD_LOCK:", src)
         self.assertIn("with _TL_BUILD_LOCK:", inspect.getsource(km._cached_timeline))
         push = inspect.getsource(km._push)
-        self.assertIn("with _TL_BUILD_LOCK:", push, "the connect path's live-only timeline waits for a full build in flight")
-        self.assertLess(push.index("with _TL_BUILD_LOCK:"), push.index("if not live_first:"))
+        self.assertNotIn("with _TL_BUILD_LOCK:", push, "the connect path's live-only timeline runs outside any lock (round two, medium 2)")
+        self.assertIn("_chat_inflight_release_all()", inspect.getsource(km._chat_push_scopes_close),
+                      "the thread's scope close releases the claims a raise left (round two, medium 1)")
+
+    def test_two_cold_connect_timeline_pushes_run_side_by_side(self):
+        """Round two, medium 2: the first cut held the full build's lock across the connect path's live-only builds, so the second
+        pane's first frame waited for the first pane's, and a connect that won the lock blocked the pusher's timeline stage."""
+        now = int(time.time())
+        frames = {0: [], 1: []}
+        def client(i):
+            return {"app": "timeline", "alive": True, "sent": {}, "send": lambda s, i=i: frames[i].append(time.monotonic())}
+        saved = (km._live_map, km._cached_feed, km._chat_tab_sessions, list(km._clients))
+        km._live_map = lambda: {}; km._cached_feed = lambda *a, **k: None; km._chat_tab_sessions = lambda now, live_map: []
+        try:
+            cs = [client(0), client(1)]
+            km._clients[:] = cs
+            t0 = time.monotonic()
+            _race(lambda: None, n=1)
+            out = [None, None]; go = threading.Event()
+            def run(i):
+                go.wait(); km._push([cs[i]], connect=True)
+            ths = [threading.Thread(target=run, args=(i,)) for i in range(2)]
+            for th in ths: th.start()
+            go.set()
+            for th in ths: th.join(20)
+        finally:
+            km._live_map, km._cached_feed, km._chat_tab_sessions, clients = saved
+            del km._clients[:]; km._clients.extend(clients)
+        firsts = [min(frames[i]) - t0 for i in range(2)]
+        self.assertLess(max(firsts), 0.3 + 0.35, "both first frames within one live-only build (0.3 s), not one behind the other: %r" % firsts)
+        self.assertEqual(self.builds.count("tl:live"), 4, "the two partial builds per connect, as before the change: %r" % self.builds)
+
+
+class ChatClaimRelease(unittest.TestCase):
+    """Round two, medium 1: a raise between the claim and the store must not leave the tab claimed for the kernel's life."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.paths = {}
+        for sid in (S1, S2):
+            p = os.path.join(self.tmp, sid + ".jsonl"); open(p, "w").write("x" * 100); self.paths[sid] = p
+        self._saved = (km._chat_tab_sessions, km._live_map, km._cached_feed, km.build_session, km._comments_frame,
+                       km._push_subagents, km.NAMES, km.jd.STATE, list(km._clients), km._send_chat_or_status)
+        km._chat_tab_sessions = lambda now, live_map: [{"sid": s, "name": NAMES[s], "path": self.paths[s], "anchor": s} for s in (S1, S2)]
+        km._live_map = lambda: {}
+        km._cached_feed = lambda *a, **k: None
+        self.builds = []
+        def build(sid, now, live_map=None, **kw):
+            self.builds.append(sid)
+            return {"type": "session", "id": sid, "name": NAMES[sid],
+                    "events": [{"kind": "assistant", "uuid": "u1", "md": "m1"}], "status": {"state": "working", "sinceEpoch": None}, "ledger": None}
+        km.build_session = build
+        km._comments_frame = lambda sid, live_map: None
+        km._push_subagents = lambda clients, now, live_map: None
+        km.NAMES = Path(self.tmp) / "names"; km.NAMES.mkdir()
+        km.jd.STATE = Path(self.tmp) / "state"; km.jd.STATE.mkdir(parents=True, exist_ok=True)
+        km._built_chat.clear(); km._prev_chat_events.clear(); km._prev_chat_ledger.clear()
+        del km._clients[:]
+        km._CHAT_INFLIGHT.clear()
+
+    def tearDown(self):
+        (km._chat_tab_sessions, km._live_map, km._cached_feed, km.build_session, km._comments_frame, km._push_subagents,
+         km.NAMES, km.jd.STATE, clients, km._send_chat_or_status) = self._saved
+        del km._clients[:]; km._clients.extend(clients)
+        km._built_chat.clear(); km._prev_chat_events.clear(); km._prev_chat_ledger.clear()
+        km._CHAT_INFLIGHT.clear()
+
+    def _client(self):
+        return {"app": "chat", "alive": True, "sent": {}, "send": lambda s: None, "ready": True, "proto": 2, "active": S1}
+
+    def test_a_raise_after_the_build_releases_the_claim_and_the_next_push_builds_at_once(self):
+        c = self._client(); km._clients[:] = [c]
+        n = [0]
+        real = km._send_chat_or_status
+        def boom(cl, m, ms, change_from, led_changed):
+            n[0] += 1
+            if n[0] == 1:
+                raise RuntimeError("wire gone")            # a post-build step in the claimed span raises
+            return real(cl, m, ms, change_from, led_changed)
+        km._send_chat_or_status = boom
+        with mock.patch.object(km.sys, "stderr", mock.Mock()):
+            km._push([c])                                    # the cycle's catch swallows it; the scope close releases the claim
+        self.assertEqual(km._CHAT_INFLIGHT, {}, "no claim survives the raise")
+        del self.builds[:]
+        km._built_chat.clear()
+        with mock.patch.object(km, "CHAT_INFLIGHT_WAIT_S", 2.0):
+            t0 = time.monotonic(); km._push([c]); dt = time.monotonic() - t0
+        self.assertEqual(sorted(self.builds), [S1, S2], "the next push builds")
+        self.assertLess(dt, 1.0, "at once, not after the bound: %.2f s" % dt)
+
+    def test_a_stale_claim_is_replaced_and_its_waiters_released(self):
+        c = self._client(); km._clients[:] = [c]
+        stale = threading.Event()
+        with mock.patch.object(km, "CHAT_INFLIGHT_WAIT_S", 0.5):
+            km._CHAT_INFLIGHT[S1] = (stale, time.monotonic() - 5.0)   # an entry older than the bound: its builder is gone
+            t0 = time.monotonic(); km._push([c]); dt = time.monotonic() - t0
+        self.assertIn(S1, self.builds, "built")
+        self.assertLess(dt, 0.4, "without waiting the bound: %.2f s" % dt)
+        self.assertTrue(stale.is_set(), "whoever waited on the stale entry was released")
+        self.assertEqual(km._CHAT_INFLIGHT, {})
+
+    def test_the_bound_is_near_the_per_tab_worst_case(self):
+        self.assertEqual(km.CHAT_INFLIGHT_WAIT_S, 30.0)
 
 
 class ChatTabSingleFlight(unittest.TestCase):

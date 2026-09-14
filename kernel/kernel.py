@@ -30533,6 +30533,7 @@ def _chat_push_scopes_close():
     for k in getattr(_live_scope, "chat_push_owned", None) or ():
         setattr(_live_scope, k, None)
     _live_scope.chat_push_owned = None
+    _chat_inflight_release_all()                      # ...and the chat tab claims a raise left on this thread (single-flight)
 
 
 def _claudemd_key(cwd):
@@ -48709,10 +48710,14 @@ def _push(targets, connect=False, live_map=None):
                             _claimed = _chat_inflight_claim(s["sid"]) is None   # nothing usable stored: build, as before
                     else:
                         _claimed = True
+                    if _claimed:
+                        hit = _built_chat.get(s["sid"])             # re-read under the claim (round two, low c): a builder that
+                        #                                             stored between the first read and the claim is served, as
+                        #                                             _cached_feed re-checks under its lock
                 post, served, _rec = None, False, None
                 if hit is not None and sig is not None and hit[0] == sig:
                     if _claimed:
-                        _chat_inflight_done(s["sid"])
+                        _chat_inflight_done(s["sid"])                # the re-read's road: claimed, then found stored
                     m, ms, served = hit[1], hit[2], True   # unchanged → reuse, no reshape/serialize
                     _VIEW_STATS["chatServeActive" if is_active else "chatServeBg"] += 1
                     _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
@@ -48963,18 +48968,18 @@ def _push(targets, connect=False, live_map=None):
             tl_clients = [c for c in targets if c["app"] == "timeline"]
             live_first = connect and _built_timeline[1] is None     # cold start, nothing warmed yet → live only
             if live_first:
-                with _TL_BUILD_LOCK:                                # single-flight with the pusher's full build (2026-09-14): a full
-                    if _built_timeline[1] is not None:              #  build in flight is worth more than a duplicate live-only parse
-                        live_first = False                          #  on this thread, so wait for it and serve it below
-                    else:
-                        skel = build_timeline(now, live_map, with_bars=False, live_only=True)
-                        for c in tl_clients:
-                            _send_client(c, ("timeline",), {"type": "data", "data": skel})
-                        timeline = build_timeline(now, live_map, with_bars=True, live_only=True)   # live bars now (no dead reads)
-                        tl_warming = True                           # this is the PARTIAL cold build — the client keeps its loader up
-                        _producer_wake.set()                        # ...if it lands empty (SDK/federation not yet merged), rather than flashing
-                        #                                             "no activity"; a later warmed push (tl_warming False) settles it (the user 2026-07-03)
-            if not live_first:
+                # Outside any lock (round two, medium 2): this is the pane's FIRST frame, the cheap live-only partial, and
+                # holding the full build's lock across it serialised two cold connects and blocked the pusher's whole
+                # timeline stage (the cards for every pane behind it). The single-flight lock covers the FULL build alone
+                # (_cached_timeline); a connect racing it still gets its partial at once and the full on the next cycle.
+                skel = build_timeline(now, live_map, with_bars=False, live_only=True)
+                for c in tl_clients:
+                    _send_client(c, ("timeline",), {"type": "data", "data": skel})
+                timeline = build_timeline(now, live_map, with_bars=True, live_only=True)   # live bars now (no dead reads)
+                tl_warming = True                                   # this is the PARTIAL cold build — the client keeps its loader up
+                _producer_wake.set()                                # ...if it lands empty (SDK/federation not yet merged), rather than flashing
+                #                                                     "no activity"; a later warmed push (tl_warming False) settles it (the user 2026-07-03)
+            else:
                 timeline = _cached_timeline(now, live_map, fsig, connect)
                 if connect:
                     if _timeline_cache_fresh(fsig):
@@ -49373,27 +49378,51 @@ _built_feed = [None, None, 0.0, 0.0]              # [fleet_sig, payload, built_a
 # from concurrency; ordering and de-duplication do. Counted under _VIEW_STATS feedWaited / tlWaited / chatWaited.
 _FEED_BUILD_LOCK = threading.RLock()
 _TL_BUILD_LOCK = threading.RLock()
-_CHAT_INFLIGHT = {}                                # sid -> threading.Event set when that sid's build (and its cache store) ended
+_CHAT_INFLIGHT = {}                                # sid -> (Event set when that sid's build and its cache store ended, claimed at)
 _CHAT_INFLIGHT_LOCK = threading.Lock()
-CHAT_INFLIGHT_WAIT_S = 120.0                       # a waiter's bound: a builder that never signals (a raise past the marks) is not
-#                                                    waited on forever; the waiter then builds its own copy, as before this change
+CHAT_INFLIGHT_WAIT_S = 30.0                        # a waiter's bound, near the per-tab worst case (about 2.4 s a tab cold, 66 s for
+#                                                    27 on the measured day): the waiter is the pusher, and its fallback, building its
+#                                                    own copy, is the behaviour before this change (round two, medium 1)
 
 
 def _chat_inflight_claim(sid):
-    """Claim `sid`'s build for this thread. Returns None when claimed, else the Event of the thread already building it."""
+    """Claim `sid`'s build for this thread. Returns None when claimed, else the Event of the thread already building it.
+    The claim is recorded on THIS thread's scope (_live_scope.chat_claims) so _chat_push_scopes_close, the push's and the
+    cycle's finally, releases whatever a raise left claimed: the same handler, for the same reason, as the chat scopes
+    (round two, medium 1: a raise between the claim and the store left the Event unset for the kernel's life, and every
+    later rebuild of that tab waited the whole bound). An entry older than the bound is stale by definition (its builder
+    would have released it); a new claim replaces it and releases anyone waiting on it."""
     with _CHAT_INFLIGHT_LOCK:
-        ev = _CHAT_INFLIGHT.get(sid)
-        if ev is None:
-            _CHAT_INFLIGHT[sid] = threading.Event()
-        return ev
+        ent = _CHAT_INFLIGHT.get(sid)
+        if ent is not None and time.monotonic() - ent[1] <= CHAT_INFLIGHT_WAIT_S:
+            return ent[0]
+        stale = ent
+        _CHAT_INFLIGHT[sid] = (threading.Event(), time.monotonic())
+    if stale is not None:
+        stale[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims is None:
+        claims = _live_scope.chat_claims = []
+    claims.append(sid)
+    return None
 
 
 def _chat_inflight_done(sid):
-    """The claimed build ended (stored, faulted or skipped): release the waiters."""
+    """The claimed build ended (stored, faulted or skipped): release the waiters and forget the claim on this thread."""
     with _CHAT_INFLIGHT_LOCK:
-        ev = _CHAT_INFLIGHT.pop(sid, None)
-    if ev is not None:
-        ev.set()
+        ent = _CHAT_INFLIGHT.pop(sid, None)
+    if ent is not None:
+        ent[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims and sid in claims:
+        claims.remove(sid)
+
+
+def _chat_inflight_release_all():
+    """Every claim this thread still holds, released: the push's and the cycle's finally (via _chat_push_scopes_close)."""
+    for sid in list(getattr(_live_scope, "chat_claims", None) or ()):
+        _chat_inflight_done(sid)
+    _live_scope.chat_claims = None
 # How often each view is REBUILT vs SERVED from its cache — the pusher's cost, as numbers (2026-09-03).
 # Exposed on the version route beside the parse counters, so "the kernel is pegged" can be read as
 # "the timeline rebuilt 900 times in 30 min with 12 sessions idle" instead of inferred from top. A
