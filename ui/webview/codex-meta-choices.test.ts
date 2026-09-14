@@ -267,25 +267,27 @@ function liftMenu(opts: { thread?: { th: unknown; status: any } } = {}) {
   const win = { innerWidth: 1000, innerHeight: 800 };
   const js = transpile([
     "let activeId = null;",
-    // metaChoices, as render.ts routes a Codex session: its own lists (the SDK lists are not lifted)
-    "const metaChoices = (kind, st) => st.backend === 'codex' ? (kind === 'model' ? CODEX_MODEL_CHOICES : kind === 'effort' ? CODEX_EFFORT_CHOICES : []) : [];",
+    // metaChoices, as render.ts routes a session: a Codex session's own lists, else the SDK lists (both
+    // lifted with the loader below); the mode and fast lists are not lifted
+    "const metaChoices = (kind, st) => st.backend === 'codex' ? (kind === 'model' ? CODEX_MODEL_CHOICES : kind === 'effort' ? CODEX_EFFORT_CHOICES : []) : (kind === 'model' ? MODEL_CHOICES : kind === 'effort' ? EFFORT_CHOICES : []);",
     slice("function el(tag: string, cls?: string): HTMLElement {"),
+    slice("function isCurrentMeta(kind: MetaKind, st: Status, value: string): boolean {"),   // the real ✓ rule (by value): a row order the tests move must never lose it
     slice("function metaDots(): HTMLElement {"),
     slice("const MODEL_CHOICES: {", "function loadModelChoices(): void {"),
     slice("function metaButton(kind: MetaKind, text: string, forSid?: string | null): HTMLElement {"),
     slice("let metaMenuEl: HTMLElement | null = null;", "function toggleMetaMenu(kind: MetaKind, btn: HTMLElement, forSid?: string | null) {"),
-    "return { metaButton, toggleMetaMenu, closeMetaMenu, loadModelChoices, CODEX_MODEL_CHOICES,",
+    "return { metaButton, toggleMetaMenu, closeMetaMenu, loadModelChoices, CODEX_MODEL_CHOICES, EFFORT_CHOICES, CODEX_EFFORT_CHOICES,",
     "  get menu() { return metaMenuEl; }, set active(id) { activeId = id; }, get error() { return CODEX_MODELS_ERROR; } };",
   ].join("\n"));
   const stub = fetchStub();
   const sessions = new Map<string, any>();
   const fn = new Function("document", "window", "kernelUrl", "fetch", "adoptCommentDefaults", "sessions",
-    "openCommentThread", "threadMetaStatus", "metaCurrent", "metaPending", "vscodeApi", "isCurrentMeta",
+    "openCommentThread", "threadMetaStatus", "metaCurrent", "metaPending", "vscodeApi",
     "modeIconSvg", "riskyMode", "nonClassicChoiceTone", "setTip", "liveSession", js);
   const api = fn(doc, win, (p: string) => p, stub.fetch, () => {}, sessions,
     () => (opts.thread ? { th: opts.thread.th } : null),
     () => { if (!opts.thread) throw new Error("no thread here"); return opts.thread.status; },
-    () => "", new Map(), null, () => false, () => "", () => false, () => undefined, () => {},
+    () => "", new Map(), null, () => "", () => false, () => undefined, () => {},
     (id: string) => sessions.get(id));
   return { api, sessions, body: BODY, win, pending: stub.pending, failing: stub.failing, rectReads };
 }
@@ -604,4 +606,68 @@ test("executed: a menu closed before the read lands stays closed, and a failure 
   assert.equal(body.querySelectorAll(".meta-menu").length, 0);
   assert.equal(rectReads.length, reads2, "nothing was positioned on the landing");
   assert.deepEqual(api.CODEX_MODEL_CHOICES, [{ value: "gpt-5-test", label: "GPT-5 Test" }], "the list itself is held for the next open");
+});
+
+// The effort menu lists the ladder TOP-DOWN (the user 2026-09-14): the highest effort first, the lowest
+// last, the way the model menu already leads with the most capable family. The kernel serves /models
+// `efforts` low→high — its rank ramp (position → colour) and the gear's settings selects read that
+// order, and neither moves — so the display order is derived at the client's load site, once, for every
+// menu the arrays feed (the statusline, a thread's popover, the comment-create chips). EXECUTED over the
+// real loader and the real menu, for the SDK list and the Codex list: the rows come out highest first,
+// each row still carries the colour the kernel ranked it with, and the ✓ still sits on the session's
+// current effort.
+const LADDER = ["low", "medium", "high", "xhigh", "max", "ultracode"];   // the wire order: the kernel's EFFORT_CHOICES
+const effortRows = (values: string[]) => values.map((v, i) => ({ value: v, label: v, color: [i, i, i] }));
+test("executed: the effort menu lists efforts highest first, colours riding their rows and the ✓ on the current one", async () => {
+  // an SDK session on high
+  {
+    const { api, sessions, body, pending } = liftMenu();
+    sessions.set(SID, { status: { state: "ready", sinceEpoch: null, backend: "sdk", model: "Fable", effort: "high" } }); api.active = SID;
+    api.loadModelChoices();
+    pending[0]({ rev: 3, models: [], efforts: effortRows(LADDER), codex: { models: [], efforts: [], error: null } });
+    await tick(); await tick();
+    assert.deepEqual(api.EFFORT_CHOICES.map((c: any) => c.value), [...LADDER].reverse(), "the display list is the wire list, top-down");
+    assert.deepEqual(api.EFFORT_CHOICES.map((c: any) => c.color[0]), [5, 4, 3, 2, 1, 0], "rows move whole: each keeps the colour the kernel ranked it");
+    const sl = statusline(api, 700, 760);
+    body.appendChild(sl.sl);
+    api.toggleMetaMenu("effort", sl.effortBtn, null);
+    const menu = api.menu as FakeEl;
+    assert.deepEqual(rows(menu), ["ultracode", "max", "xhigh", "high", "medium", "low"]);
+    assert.deepEqual(menu.querySelectorAll(".meta-item.current").map((r) => r.textContent), ["high"], "the ✓ follows its row");
+  }
+  // a Codex session on medium: its four efforts, the same way up
+  {
+    const { api, sessions, body, pending } = liftMenu();
+    sessions.set(SID, { status: CODEX_READY }); api.active = SID;
+    api.loadModelChoices();
+    pending[0]({ rev: 3, models: [], efforts: [], codex: { models: [{ value: "gpt-5-test", label: "GPT-5 Test" }], efforts: effortRows(["low", "medium", "high", "xhigh"]), error: null } });
+    await tick(); await tick();
+    const sl = statusline(api, 700, 760);
+    body.appendChild(sl.sl);
+    api.toggleMetaMenu("effort", sl.effortBtn, null);
+    const menu = api.menu as FakeEl;
+    assert.deepEqual(rows(menu), ["xhigh", "high", "medium", "low"]);
+    assert.deepEqual(menu.querySelectorAll(".meta-item.current").map((r) => r.textContent), ["medium"]);
+  }
+});
+
+// The timeline's lane picker is the chat menu's twin (its own loader and arrays, over the Obsidian DOM):
+// its loader derives the same display order, and _openMetaMenu walks the array as it stands.
+test("executed: the timeline's loader fills its effort arrays highest first, and the lane menu walks them as they stand", async () => {
+  const view = requireCjs(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"));
+  const realFetch = (globalThis as any).fetch;
+  const pending: Array<(d: any) => void> = [];
+  (globalThis as any).fetch = () => new Promise<any>((res) => pending.push((d: any) => res({ ok: true, status: 200, json: async () => d })));
+  try {
+    const p = view.loadModelChoices();
+    pending[0]({ rev: 3, models: [], efforts: effortRows(LADDER), codex: { models: [], efforts: effortRows(["low", "medium", "high", "xhigh"]), error: null } });
+    await p;
+    assert.deepEqual(view.EFFORT_CHOICES.map((c: any) => c.value), [...LADDER].reverse());
+    assert.deepEqual(view.EFFORT_CHOICES.map((c: any) => c.color[0]), [5, 4, 3, 2, 1, 0]);
+    assert.deepEqual(view.CODEX_EFFORT_CHOICES.map((c: any) => c.value), ["xhigh", "high", "medium", "low"]);
+  } finally {
+    (globalThis as any).fetch = realFetch;
+  }
+  // the menu takes the array's order: no sort and no second reversal between the loader and the rows
+  assert.match(TIMELINE, /: \(kind === 'model' \? MODEL_CHOICES : EFFORT_CHOICES\);\n\s+for \(const c of choices\) \{/);
 });
