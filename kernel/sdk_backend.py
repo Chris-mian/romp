@@ -13730,7 +13730,14 @@ class SdkBackend:
         with self._reg_lock:
             reg = read_reg(self.state_dir, sid)
             if reg is None:
-                if _reg_path(self.state_dir, sid).exists():
+                try:                                               # an explicit stat tells unreadable from absent; Path.exists()
+                    _reg_path(self.state_dir, sid).stat()          #  answers False on EACCES on CPython 3.14 (2026-09-14), and
+                    present = True                                 #  the write below would have gutted a reg it could not read
+                except FileNotFoundError:
+                    present = False
+                except OSError:
+                    present = True
+                if present:
                     sys.stderr.write("update_reg: %s unreadable — skipping a %s write rather than "
                                      "gutting the reg\n" % (sid[:8], "/".join(sorted(fields) + list(drop))))
                     return

@@ -12703,7 +12703,13 @@ def _codex_records_blind(cx):
     a Codex session, so every death writer stands down on it (loudly, counted) instead of stamping dead
     history over a session it merely cannot see (decision (d) of the tmux backend's removal, 2026-09-11)."""
     if cx is None:
-        return (jd.STATE / "codex" / "registry.json").exists()
+        try:
+            (jd.STATE / "codex" / "registry.json").stat()   # an explicit stat: a codex/ this kernel cannot read is
+            return True                                      #  blindness too (Path.exists() answers False there on 3.14)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
     return bool(getattr(cx, "_registry_unreadable", False))
 
 
@@ -19204,10 +19210,14 @@ _VANISHED_SAID = set()                         # sids whose reg vanished by hand
 
 def _sdk_reg_exists(sid):
     """True / False for the SDK reg file's presence; None when the check itself cannot be made (an
-    unlistable sdk/ makes Path.exists RAISE EACCES rather than answer), which every death writer reads
-    as blindness, never as absence."""
+    unlistable sdk/: EACCES on the stat), which every death writer reads as blindness, never as absence.
+    An explicit stat, never Path.exists(): on CPython 3.14 exists() answers False on EACCES where 3.10 to
+    3.13 raised, and an unlistable sdk/ would have read as every session absent (2026-09-14)."""
     try:
-        return (jd.SDKDIR / (str(sid) + ".json")).exists()
+        (jd.SDKDIR / (str(sid) + ".json")).stat()
+        return True
+    except FileNotFoundError:
+        return False
     except OSError:
         return None
 

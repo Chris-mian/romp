@@ -12,6 +12,7 @@ Two layers:
 """
 import asyncio
 import inspect
+import contextlib
 import io
 import os
 import json
@@ -4911,6 +4912,28 @@ class RegListCache(unittest.TestCase):
         sb.list_regs(self.sd)              # warm
         (self.sd / "sdk" / "bbbb.json").unlink()
         self.assertEqual([r["sid"] for r in sb.list_regs(self.sd)], ["aaaa"])
+
+
+class UpdateRegDroppingUnreadable(unittest.TestCase):
+    """_update_reg_dropping tells an unreadable reg from an absent one by an explicit stat (2026-09-14): under a mode-000 sdk/
+    CPython 3.14's Path.exists() answered False, so the guard read absent and the write below it would have gutted a reg the
+    backend could not read. The real fault staged, never a stub of the call that would raise."""
+
+    SID = "11111111-2222-3333-4444-555555555577"
+
+    def test_a_reg_under_an_unlistable_directory_refuses_the_write_and_says_so(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "cwdPending": True})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0); self.addCleanup(os.chmod, d, 0o755)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            be._update_reg_dropping(self.SID, drop=("cwdPending",), cwd="/tmp/x")
+        os.chmod(d, 0o755)
+        self.assertIn("unreadable", err.getvalue(), "the refusal is said: %r" % err.getvalue())
+        self.assertEqual(sb.read_reg(root, self.SID), {"sid": self.SID, "name": "web", "cwdPending": True}, "the reg untouched, never gutted")
 
 
 class PushSessionCallback(unittest.TestCase):

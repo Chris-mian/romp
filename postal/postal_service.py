@@ -1255,8 +1255,11 @@ def _thread_of(sid):
     try:
         # the stat sits INSIDE the try (the review's medium): a directory that cannot be read (EACCES, EIO) raised
         # out of every reader — read_box, the sender gate, resolve_recipient, the /agents filter — a crash, not a
-        # closed door; here it is the closed door
-        if not p.exists():
+        # closed door; here it is the closed door. An EXPLICIT stat, never Path.exists(): on CPython 3.14 exists()
+        # answers False on EACCES where 3.10 to 3.13 raised, and the door read "not a thread" (2026-09-14)
+        try:
+            p.stat()
+        except FileNotFoundError:
             return ""
         d = json.loads(p.read_text())
         return str(d.get("threadOf") or "") if isinstance(d, dict) else THREAD_REG_UNREADABLE

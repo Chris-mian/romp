@@ -177,6 +177,28 @@ class RegistryDirectoryGone(_Root):
         self.assertFalse((jd.STATE / "states" / (SID + ".jsonl")).exists(), "no idle row either")
         self.assertIn("death-sweep: the SDK registry directory cannot be read", self.err.getvalue())
 
+    def test_an_unlistable_registry_directory_is_blindness_not_absence(self):
+        """The real fault staged, not a stub (2026-09-14: the suite stayed green under CPython 3.14 because no test made sdk/
+        unlistable): a mode-000 sdk/ makes the reg's stat raise EACCES; _sdk_reg_exists answers None (blindness) on every
+        interpreter (3.14's Path.exists() answers False there, which read as every session absent), and the death sweep
+        stamps nothing while it stands."""
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        rows = self._seed()
+        km._death_sweep_tick(NOW, rows)              # arms the set-diff trigger
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True)
+        (jd.SDKDIR / (SID + ".json")).write_text(json.dumps({"sid": SID, "name": "web", "alive": True}))
+        self.assertTrue(km._sdk_reg_exists(SID), "the reg is there while sdk/ can be listed")
+        os.chmod(jd.SDKDIR, 0)
+        try:                                          # restored here, not in a cleanup: tearDown removes the root before cleanups run
+            self.assertIsNone(km._sdk_reg_exists(SID), "an unlistable sdk/: None, the writers' blindness, never False")
+            with contextlib.redirect_stderr(self.err):
+                km._death_sweep_tick(NOW + 1, {})    # every sid "departed" at once
+        finally:
+            os.chmod(jd.SDKDIR, 0o755)
+        self.assertIsNone(_marker(SID)); self.assertIsNone(_marker(SID2))
+        self.assertFalse((jd.STATE / "states" / (SID + ".jsonl")).exists(), "no idle row either")
+
     def test_dead_wait_corroboration_stands_down_and_is_tallied_once_per_pass(self):
         self._seed()
         os.rename(jd.SDKDIR, jd.SDKDIR.with_name("sdk.aside"))
