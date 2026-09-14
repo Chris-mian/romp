@@ -105,7 +105,7 @@ test("the strip dresses the peek: .tab-peek on the tab, ghost treatment in CSS, 
 
 test("CASCADE: the peek outline is declared BEFORE the state outlines, so a real state wins at equal specificity", () => {
   const peekAt = CSS.indexOf(".tab.tab-peek {");
-  const stateAt = CSS.indexOf(".tab.tab-awaiting, .tab.tab-blocked, .tab.tab-retrying { outline:");
+  const stateAt = CSS.indexOf(".tab.ring-needs-you, .tab.ring-retrying { outline:");   // the rings are widgets since 2026-09-14: the outline keys on the ring class the strip composes
   assert.ok(peekAt >= 0 && stateAt >= 0, "both rules present");
   assert.ok(peekAt < stateAt, "peek before states — order IS the tiebreak (competing `outline` at equal specificity)");
 });

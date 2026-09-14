@@ -33,7 +33,7 @@ test("the box: one DASHED outline in the needs-you red — the tab strip's idiom
   assert.match(rule, /pointer-events: none/, "hover and click land on the marks beneath");
   // the idiom it borrows: a session tab that waits on you
   assert.match(CSS, /\.tab\.tab-awaiting \{ --state: var\(--st-awaiting-bg\); \}/);
-  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed var\(--state\);/);
+  assert.match(CSS, /\.tab\.ring-needs-you, \.tab\.ring-retrying \{ outline: 2px dashed var\(--state\);/);   // the rings are widgets since 2026-09-14: the outline keys on the ring class the strip composes
   // the token is the same red in both themes, and theme-parity holds it to 3:1 against the page: it is a LINE now
   const dark = CSS.split("body.theme-light {")[0];
   const light = CSS.split("body.theme-light {")[1].split("\n}")[0];

@@ -140,6 +140,30 @@ const readPanel = () => setF.evaluate(() => {
   return { open: true, pills, panes, rows, remembered: localStorage.getItem("romp:settingsTab"), section };
 });
 out.panel0 = await readPanel();
+// THE RINGS (2026-09-14): the three ring widgets' rows under the title rows and their preview, no grip, each demo a
+// miniature tab wearing its ring; the ring colours read off the demos' computed outline against the theme's own tokens
+const readRings = () => setF.evaluate(() => {
+  const probe = document.createElement("span"); document.body.appendChild(probe);
+  const tokens = {};
+  // the expressions gear.css itself reads: feed.css's :root holds a subset of the strip's tokens (the awaiting red is light-only there), so the demo resolves the fallback where the token is absent, and so does this probe
+  for (const [id, expr] of [["ring-needs-you", "var(--st-awaiting-bg, #c0392b)"], ["ring-waiting-on-you", "var(--st-ask-bg, #f5d33f)"], ["ring-retrying", "var(--st-retrying-bg, #e67e22)"]]) { probe.style.color = expr; tokens[id] = getComputedStyle(probe).color; }
+  probe.remove();
+  const rows = Array.from(document.querySelectorAll("#rs-rings .rs-widget[data-widget]")).map((r) => {
+    const sw = r.querySelector(".rs-switch"); const demo = r.querySelector(".rs-widget-demo .tab"); const cs = demo ? getComputedStyle(demo) : null;
+    return { id: r.dataset.widget, label: r.querySelector(".rs-widget-name b").textContent, desc: (r.querySelector(".rs-widget-name .rs-sub") || {}).textContent || "",
+             grip: !!r.querySelector(".rs-grip"), gripCell: !!r.querySelector(".rs-grip-none"), swLeft: sw.getBoundingClientRect().left,
+             sw: { role: sw.getAttribute("role"), checked: sw.getAttribute("aria-checked"), on: sw.classList.contains("on") }, off: r.classList.contains("rs-widget-off"),
+             demo: demo ? { cls: demo.className, outlineStyle: cs.outlineStyle, outlineColor: cs.outlineColor, outlineWidth: cs.outlineWidth } : null };
+  });
+  const titleIds = Array.from(document.querySelectorAll("#rs-widgets [data-widget], #rs-widgets [data-divider]")).map((r) => r.dataset.widget || r.dataset.divider);
+  const titleSw = Array.from(document.querySelectorAll("#rs-widgets .rs-widget[data-widget] .rs-switch")).map((b) => b.getBoundingClientRect().left);
+  const host = document.getElementById("rs-rings"); const hintEl = host && host.previousElementSibling;
+  const preview = document.querySelector("#rsettings .rs-preview");
+  return { rows, tokens, titleIds, titleSw, hint: hintEl && hintEl.classList.contains("rs-hint") ? hintEl.textContent : null,
+           previewBeforeRings: !!(preview && host && (preview.compareDocumentPosition(host) & Node.DOCUMENT_POSITION_FOLLOWING)),
+           theme: document.body.classList.contains("theme-light") ? "light" : "dark" };
+});
+out.rings0 = await readRings();
 // the Context bar's switch off: the store's prefs and mirror, the chat's strip on the storage event
 const flip = async (id) => { await setF.click('#rs-widgets .rs-widget[data-widget="' + id + '"] .rs-switch'); await setF.waitForTimeout(400); };
 await flip("ctx");
@@ -162,6 +186,12 @@ out.afterGrey = { panel: await readPanel(), strip: await readStrip() };
 await flip("hotkey");
 out.afterKeyOff = { strip: await readStrip() };
 await flip("hotkey");
+// a RING's switch (2026-09-14): the Waiting-on-you ring off writes the same tabWidgets prefs, its demo goes plain, the title rows stand
+const flipRing = async (id) => { await setF.click('#rs-rings .rs-widget[data-widget="' + id + '"] .rs-switch'); await setF.waitForTimeout(400); };
+await flipRing("ring-waiting-on-you");
+out.afterYellowOff = { rings: await readRings(), store: (await readStrip()).store, panel: await readPanel() };
+await flipRing("ring-waiting-on-you");
+out.afterYellowOn = { rings: await readRings(), store: (await readStrip()).store };
 // the pills: Feed hides Chat; Escape closes; the next open remembers the tab
 await setF.click('#rsettings .rs-tab[data-tab="feed"]'); await setF.waitForTimeout(150);
 out.feedPane = await readPanel();
@@ -178,6 +208,7 @@ const shot = async (theme) => {
   await chatF.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
   await setF.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme);
   await page.waitForTimeout(200);
+  out.ringsByTheme = out.ringsByTheme || {}; out.ringsByTheme[theme] = await readRings();   // the ring demos' colours per theme (2026-09-14)
   if (!cfg.shots) return;
   const card = await setF.evaluate(() => { const b = document.querySelector("#rsettings .rs-card").getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; });   // the whole card: the scrolled Tab widgets section sits in its lower part
   const fr = await page.evaluate(() => { const f = document.getElementById("f-settings").getBoundingClientRect(); return { x: f.left, y: f.top }; });
@@ -578,6 +609,54 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertEqual(len({round(r["swLeft"]) for r in rows}), 1, "the switches line up down the list" + table)
         self.assertEqual([r["descDisplay"] for r in rows], ["none"] * 3, "the descriptions are hover popovers at rest, the panel's idiom" + table)
 
+    def test_the_ring_rows_list_the_three_rings_in_precedence_order_with_a_switch_and_a_live_demo_each_and_no_grip(self):
+        # THE RINGS (2026-09-14): the three dashed rings are widgets with a switch each, their rows under the title rows and
+        # their preview in the same Tab widgets section; no grip (the order is the precedence, red over yellow over amber);
+        # each demo is a miniature tab wearing its ring in the theme's own token, dark and light
+        r = self._run()
+        g = r["rings0"]
+        table = "\n  " + json.dumps(g)[:2500]
+        self.assertEqual([x["id"] for x in g["rows"]], ["ring-needs-you", "ring-waiting-on-you", "ring-retrying"], "precedence order" + table)
+        self.assertEqual([x["label"] for x in g["rows"]], ["Needs you", "Waiting on you", "Retrying"], table)
+        for x in g["rows"]:
+            self.assertEqual((x["sw"]["role"], x["sw"]["checked"], x["sw"]["on"], x["off"]), ("switch", "true", True, False), x["id"] + " is on by default" + table)
+            self.assertFalse(x["grip"], "no grip: nothing to drag" + table)
+            self.assertTrue(x["gripCell"], "an empty cell keeps the grid's columns" + table)
+            self.assertTrue(x["desc"], "a one-line description" + table)
+            self.assertIn(x["id"], x["demo"]["cls"].split(), "the demo wears the ring's class" + table)
+            self.assertEqual((x["demo"]["outlineStyle"], x["demo"]["outlineWidth"]), ("dashed", "2px"), x["id"] + "'s demo wears the dashed ring" + table)
+        self.assertEqual(g["hint"], "Rings around the tab. One at a time: the first that applies wins, in this order.", table)
+        self.assertTrue(g["previewBeforeRings"], "the title rows' preview sits above the rings' rows" + table)
+        self.assertFalse(any(i.startswith("ring-") for i in g["titleIds"]), "the title rows and the divider list carry no ring" + table)
+        # one grid per group, so the switches line up down each list (the two grids' auto columns differ: the title rows carry
+        # option pickers to the right of the switch and the ring rows carry none, so the groups' switch columns need not align)
+        self.assertEqual(len({round(x["swLeft"]) for x in g["rows"]}), 1, "the ring rows' switches line up down the list" + table)
+        self.assertEqual(len({round(v) for v in g["titleSw"]}), 1, "…as the title rows' do" + table)
+        for theme in ("dark", "light"):
+            t = r["ringsByTheme"][theme]
+            tt = "\n  " + json.dumps(t)[:2500]
+            self.assertEqual(t["theme"], theme, tt)
+            for x in t["rows"]:
+                self.assertEqual(x["demo"]["outlineColor"], t["tokens"][x["id"]], theme + ": " + x["id"] + "'s ring is its status token" + tt)
+            self.assertEqual(len(set(t["tokens"].values())), 3, theme + ": three distinct ring colours" + tt)
+        self.assertNotEqual(r["ringsByTheme"]["dark"]["tokens"]["ring-waiting-on-you"], r["ringsByTheme"]["light"]["tokens"]["ring-waiting-on-you"], "the yellow is re-inked for the light theme")
+
+    def test_a_ring_switch_writes_the_shared_prefs_and_its_demo_goes_plain(self):
+        r = self._run()
+        a = r["afterYellowOff"]
+        table = "\n  " + json.dumps(a)[:2500]
+        row = next(x for x in a["rings"]["rows"] if x["id"] == "ring-waiting-on-you")
+        self.assertEqual((row["sw"]["checked"], row["sw"]["on"], row["off"]), ("false", False, True), "the Waiting-on-you switch is off" + table)
+        self.assertEqual(row["demo"]["outlineStyle"], "none", "switched off: a plain demo tab" + table)
+        self.assertNotIn("ring-waiting-on-you", row["demo"]["cls"].split(), table)
+        for x in a["rings"]["rows"]:
+            if x["id"] != "ring-waiting-on-you":
+                self.assertEqual((x["sw"]["checked"], x["demo"]["outlineStyle"]), ("true", "dashed"), x["id"] + " stands" + table)
+        self.assertIs(a["store"]["tabWidgets"]["on"].get("ring-waiting-on-you"), False, "the store: the same tabWidgets prefs, the ring's own flag" + table)
+        self.assertEqual([x["sw"]["checked"] for x in a["panel"]["rows"]], ["true", "true", "true"], "the title rows untouched" + table)
+        self.assertIs(r["afterYellowOn"]["store"]["tabWidgets"]["on"].get("ring-waiting-on-you"), True, "…and back on: " + json.dumps(r["afterYellowOn"]["store"]))
+        self.assertEqual(next(x for x in r["afterYellowOn"]["rings"]["rows"] if x["id"] == "ring-waiting-on-you")["demo"]["outlineStyle"], "dashed")
+
     def test_a_store_from_before_the_widgets_reads_its_gauge_setting_and_an_unrelated_save_leaves_it_alone(self):
         # round one, HIGH: an injected default for tabWidgets won over tabCtx (the row read on at 50 percent whatever the user had
         # chosen) and a save of ANY setting wrote the empty prefs and rewrote the mirror
@@ -661,7 +740,11 @@ class ServedTabWidgets(unittest.TestCase):
             sc = t[k]; table = "\n  " + k + ": " + json.dumps(sc)
             self.assertTrue(sc["landed"], k + ": the ask re-landed after the resize" + table)
             self.assertLess(abs(sc["sec"]["top"] - (sc["sec"]["cardTop"] + sc["sec"]["pad"])), 3, k + ": the head under the padding again" + table)
-            self.assertGreater(sc["sec"]["room"], 0, k + ": re-roomed" + table)
+            # the room is added only when the pane's content below the head is shorter than the card's cap; since the ring rows
+            # (2026-09-14) the shorter window's pane fills its cap on its own, so "re-roomed" reads: the resize re-ran the landing
+            # (the mark above) and the room is there exactly when the pane needed it (a landing with no room leaves the card
+            # able to scroll at least to the head: overflow at or past scrollTop)
+            self.assertTrue(sc["sec"]["room"] > 0 or sc["sec"]["overflow"] >= sc["sec"]["scrollTop"], k + ": re-roomed, or the pane filled the cap on its own" + table)
         self.assertLess(t["shorter"]["sec"]["viewportH"], t["taller"]["sec"]["viewportH"], json.dumps([t["shorter"]["sec"]["viewportH"], t["taller"]["sec"]["viewportH"]]))
         w = t["wheel"]; table = "\n  wheel: " + json.dumps(w)
         self.assertGreaterEqual(abs(w["afterWheel"]["top"] - (w["afterWheel"]["cardTop"] + w["afterWheel"]["pad"])), 3, "the wheel moved the head off the top" + table)

@@ -35875,6 +35875,11 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     recent_tops = sorted(_live_roots + _archive_roots(sid), key=lambda r: r["t"] or 0, reverse=True)[:5]
     if _session_flag(sid, "hideFromFeed"):       # muted → out of task tracking: the ledger shows no goal tree / current task
         tree, current, recent_tops = [], None, []
+    # the FEED's per-session needs-you verdict, read ONCE for this build: the ledger (needsInput, the section
+    # rows' word) and the status (needsYou, the tab's ask ring) both carry it, and two reads could straddle a
+    # concurrent pusher's swap of the set (a connect-thread build races the cycle) — a row saying "needs you"
+    # beside a tab with no ring, in the same frame (review find, 2026-09-13)
+    needs_you = _feed_needs_input_of(sid)
     ledger = {"summary": arch.get("headline", ""), "tree": tree[:80],
               "current": current, "recent": recent_tops,
               # the postal working note (set_working: the session's claim to a branch and files, written for
@@ -35890,7 +35895,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
               # builds AFTER the chat sessions in a push, so this trails the feed by one push cycle (the chat
               # signature's `needs` component brings the change forward on the next one). A muted session has
               # no cards, so it reads False.
-              "needsInput": _feed_needs_input_of(sid)}
+              "needsInput": needs_you}
     # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
     # value showed ~494,000h — the user's "400,000 hours" bug): the current open turn's start while
     # working, else the last activity; None when unknown (render then shows no timer).
@@ -35983,6 +35988,21 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # retry re-sends the same prompt and manufactures the same refusal (12/12 in the
                   # audited storm) — rewrite the ask or drop the thread (the user 2026-08-15)
                   "apiRefusal": bool(aerr and aerr.get("refusal")),
+                  # the FEED's per-session needs-you verdict, on the STATUS so the tab strip's rule reads it
+                  # (tab-state.ts RING_TEST, the Waiting-on-you ring widget): True when the last feed build filed a card of this session
+                  # under needs_input — a judge-filed block (the session asked something, a decision is
+                  # pending), a stalled card, a held peer message, a live prompt — False when none, None
+                  # before the first feed build since start. The tab wears a dashed yellow ring for it in
+                  # every live state, working included (the ask ring, 2026-09-13: a session with something
+                  # waiting on you should grab attention without a click, even while it goes on working
+                  # in the background; the red ring stays the live prompt's and outranks it; since
+                  # 2026-09-14 each ring is a widget with its own switch in the settings). The same
+                  # set the ledger's needsInput reads, so the strip, the section rows and the feed agree;
+                  # on the status rather than the ledger so a SKELETON tab, which gets only status frames,
+                  # wears it too. The chat signature's `needs` component brings a flip forward, and the
+                  # feed build that moves the set wakes the pusher (_cached_feed), so the ring trails the
+                  # card by one build, not a backstop tick.
+                  "needsYou": needs_you,
                   # user interrupted this thread's retry/API-error storm → romp's auto-retry stays OFF for it
                   # until a successful turn re-arms (the user 2026-07-06); the card + retry loop read this
                   "retrySuppressed": _session_retry_suppressed(sid),
@@ -49512,7 +49532,17 @@ def _cached_feed(now, live_map, sig, connect=False):
     _PERF_STATS.build("feed", False, time.monotonic() - _t0)
     feed["buildId"] = bid
     _built_feed[:] = [sig, feed, time.time(), started]
-    _feed_needs_input[0] = _needs_input_sids(feed)        # the per-session needs-you the session ledgers read
+    _needs_now = _needs_input_sids(feed)                  # the per-session needs-you the session ledgers read
+    if _needs_now != _feed_needs_input[0]:
+        # A push builds the chat sessions BEFORE the feed, so the ledger's needsInput and the status's needsYou
+        # (the tab's ask ring) shipped this cycle carry the PREVIOUS build's set; the change lands on the next
+        # cycle, whose chat signatures (`needs`) rebuild the sessions whose verdict moved. Make that cycle now —
+        # the _mark_views_dirty pattern — so the ring and the section row trail the card by one build, not by
+        # up to a backstop tick (review find, 2026-09-13: a ring a full tick late is a ring that can be stale
+        # when the user is faster than the tick). Only on a CHANGE: an unchanged set wakes nothing, so a
+        # rebuild that moves no verdict cannot chain cycles.
+        _pusher_wake.set()
+    _feed_needs_input[0] = _needs_now
     _badge = _needs_you_count(feed)
     _fired = _feed_notifications(feed) if not feed.get("off") else []   # armed bells: fresh builds are the transition event; a
     #                                                       stand-in frame (off, empty) never feeds a writer that prunes by absence: the
@@ -52448,6 +52478,10 @@ _CHAT_MOBILE_CSS = (
     "#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     "#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}"   # green when idle-waiting-on-bg-work
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
+    # something of the current session's is waiting on you (the desktop tab's dashed yellow ring, the class ring-waiting-on-you):
+    # the chip's border takes the ring — dashed, in the ask yellow — over the identity color (declared after
+    # #mcur.colored so it wins at equal specificity)
+    "#mcur.ask{border-color:var(--st-ask-bg,#f5d33f);border-style:dashed}"
     "#mtag-slot{flex:0 0 auto;display:flex;align-items:center;gap:5px}"   # T161: the tag control's slot, sized by the shared button's own inline metrics
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
     "background:var(--btn-bg,#2a2a2a);color:#bbbbbb;border:1px solid var(--hairline,#3a3a3a);border-radius:6px;font-size:16px;line-height:1}"
@@ -52481,6 +52515,9 @@ _CHAT_MOBILE_CSS = (
     ".mrow .mclose{flex:0 0 auto;margin-left:8px;padding:0 6px;color:#8a8a8a;font-size:20px;line-height:1}"
     ".mrow .mclose:active{color:#e5484d}"
     ".mrow.active{background:#0d3a5c}"
+    # a row whose session has something waiting on you: a yellow bar at its left edge — the desktop tab's
+    # dashed ring (ring-waiting-on-you), in the one ask token, on a list row where a ring would fight the hairlines
+    ".mrow.ask{border-left:3px solid var(--st-ask-bg,#f5d33f);padding-left:9px}"
     # The page must never grow WIDER than the phone (the user 2026-07-11, who reported the whole chat screen taking up
     # more space than is available, about 20 percent too wide, with the controls not all fitting). Measured
     # at 390px: the STATUSLINE row (model/effort/mode/branch chips + the context bar) is flex/no-wrap with
@@ -52520,7 +52557,7 @@ function read(){return [].map.call(tabs.querySelectorAll('.tab[data-id]'),functi
 var lab=t.querySelector('.tab-label');
 return {id:t.getAttribute('data-id'),name:(lab?lab.textContent:t.getAttribute('data-id')),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
-working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),active:t.classList.contains('active'),
+working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),ask:t.classList.contains('ring-waiting-on-you'),active:t.classList.contains('active'),
 ph:t.classList.contains('tab-placeholder')};});}
 // A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
 // federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
@@ -52540,6 +52577,7 @@ function rowUpdate(row,s){row.classList.toggle('active',!!s.active);
 // who tapped a remote session on the phone and nothing happened)
 row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
 row.classList.toggle('pending',pendingId===s.id);
+row.classList.toggle('ask',!!s.ask);   // the desktop tab's yellow ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): something of this session's is waiting on you
 var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
 wd.classList.toggle('await',!s.working&&!!s.awaitbg);}
@@ -52562,6 +52600,7 @@ if(!act&&ts.length)act=ts[0];
 var nm=cur.querySelector('.nm');
 var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg))?'':'none';   // gold working / green awaiting dot, matching desktop
 wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working));
+cur.classList.toggle('ask',!!(act&&act.ask));   // the current chip wears the yellow ring too
 if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}

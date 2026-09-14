@@ -23,7 +23,7 @@ test("chat: 'retrying' is a ChipState with an 'API retrying…' label, an amber 
   assert.match(CSS, /\.chip-retrying \{ background: var\(--st-retrying-bg\); color: var\(--st-retrying-fg\); \}/);
   // amber dashed tab ring (same dashed treatment as awaiting, but amber, no fill)
   assert.match(CSS, /\.tab\.tab-retrying \{ --state: var\(--st-retrying-bg\); \}/);
-  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed/);
+  assert.match(CSS, /\.tab\.ring-needs-you, \.tab\.ring-retrying \{ outline: 2px dashed/);   // the amber ring keys on the ring class the strip composes (widgets since 2026-09-14)
 });
 
 test("timeline: a retrying lane shows an amber Retrying badge (its own BADGE kind, not red attention)", () => {
