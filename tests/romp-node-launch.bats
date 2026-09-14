@@ -402,6 +402,41 @@ _hang_asserts() {   # the fallback happened at the bound, and nothing of the pro
     fi
 }
 
+@test "the watchdog path: a sleep on PATH that ignores TERM is KILLed after a bounded check, so a fast probe does not wait out the bound" {
+    # the second tidy: the watchdog trap was kill then an unbounded wait, so a TERM-ignoring sleep held the launcher for the
+    # sleep's remaining duration (the whole bound); the sleep is ended the way the wrapper ends the node, with a KILL after
+    # up to a second of checks, and the session is empty when the launcher has exec'd
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    local bare="$TEST_DIR/bare-deaf"; mkdir -p "$bare"
+    local t; for t in sh cmp cp chmod mv mkdir rm ps pgrep setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    local real; real="$(command -v sleep)"
+    printf '#!/bin/sh\ntrap "" TERM\nexec "%s" "$@"\n' "$real" > "$bare/sleep"; chmod +x "$bare/sleep"   # every sleep ignores TERM
+    ln -s "$BIN/node" "$bare/node"
+    local t0=$SECONDS
+    PATH="$bare" ROMP_NODE_PROBE_BOUND=8 run "$tmo" 30 setsid -w sh -c 'printf "%s\n" "$$" > "$1"; exec "$2" "$3" up' _ "$TEST_DIR/pgid" "$LAUNCH" "$MANAGER"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [ $((SECONDS - t0)) -lt 5 ]                                 # not the bound's eight seconds: the KILL landed within about a second
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+
+@test "a huge ROMP_NODE_PROBE_BOUND is the hour cap, with no integer diagnostic on stderr and no one-second clamp" {
+    # the second tidy: twenty digits passed the digit check, failed the -ge test with 'integer expression expected' on
+    # stderr and clamped to ONE second, the opposite of the intent; seven digits or more read as an hour now
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    ROMP_NODE_PROBE_BOUND=99999999999999999999 run "$tmo" 20 "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [[ "$output" != *"integer expression expected"* ]]   # bash's test, when sh is bash
+    [[ "$output" != *"Illegal number"* ]]                 # dash's test, when sh is dash (the devbox's)
+    [[ "$output" != *"cannot run here"* ]]
+}
+
 @test "ROMP_NODE_PROBE_BOUND=0 is clamped to one second: a good copy runs the manager on the watchdog path, and a hung copy on the timeout path falls back at once" {
     # the tidy of the fresh-install set: 0 was accepted, and timeout -k 1 0 means NO bound while the watchdog's sleep 0 failed a
     # good copy at once

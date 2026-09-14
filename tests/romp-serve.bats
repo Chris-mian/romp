@@ -311,6 +311,20 @@ OLD
     [ "$output" = "$TEST_DIR/unlinking-python" ]
 }
 
+@test "romp-serve: a NUL byte ahead of the sentinel does not hide the version: a 3.9 behind a leading NUL is refused" {
+    # the second tidy: read -d '' stops at a NUL, so a site customization writing one before the program's line read as
+    # no version and STARTED the 3.9 (the old cat dropped the NUL with a warning); the chunks between NULs are joined now
+    cat > "$TEST_DIR/nul-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) printf '\0romp-pyver 3.9\n'; exit 0 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/nul-python"
+    ROMP_PYTHON="$TEST_DIR/nul-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"python 3.9"* ]]
+}
+
 @test "romp-serve: a TERM mid-probe leaves no probe file behind" {
     # round five of issue 1600: the probe file was removed after the read alone, so a romp-serve stopped during the probe
     # (a manager restart mid-launch) left one romp-pyver.* per stop in TMPDIR
