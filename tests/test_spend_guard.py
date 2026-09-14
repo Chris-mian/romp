@@ -539,7 +539,7 @@ class Guard(unittest.TestCase):
 
     def test_the_pusher_runs_the_guard_every_cycle_after_the_spend_pause_check(self):
         import inspect
-        src = inspect.getsource(km._pusher_cycle_jobs)
+        src = inspect.getsource(km._jobs_pass)                          # the jobs thread's list (the housekeeping split, 2026-09-13)
         i, j = src.index("_auto_pause_on_spend_limit(now, live_map)"), src.index("_spend_guard_tick(now, live_map)")
         self.assertLess(i, j, "the guard runs in the tick jobs, after the spend-cap pause decision")
         self.assertIn('sys.stderr.write("spend-guard: %s\\n" % traceback.format_exc())', src, "guarded like every job")

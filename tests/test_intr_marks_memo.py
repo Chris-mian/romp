@@ -29,6 +29,11 @@ def _stats():
     return d
 
 
+def _rows(rows):
+    """A synthetic document's atom rows as the v6 document stores them: pre-serialized JSON strings (T401 (4))."""
+    return [json.dumps(r, separators=(",", ":")) for r in rows]
+
+
 def _turns(*atoms):
     return [{"id": "t1", "t": 1000, "atoms": list(atoms)}]
 
@@ -307,7 +312,7 @@ class RowTallyEqualsAtomTally(TA.Harness):
             elif lz:
                 row["lz"] = dict(lz, k="user", h="00000000", nt=True); row["i"] = i
             rows.append(row)
-        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
+        index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
         self.assertTrue(index.user_facts(1).get("_build"), "the inline-body row is flagged for the build")
         self.assertIsNone(index.user_facts(0).get("_build")); self.assertIsNone(index.user_facts(2).get("_build"))
         atoms = em.LazyAtoms(index, range(len(rows)))
@@ -315,6 +320,34 @@ class RowTallyEqualsAtomTally(TA.Harness):
         users = km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}])
         self.assertEqual(em._ASM_INDEX_STATS["materialized"] - m0, 1, "that row alone is built")
         self.assertEqual(km._interrupt_marks_atoms(users, 0.0, ""), (1100, 1200), "the inline interrupt counts as the stop")
+
+    def test_a_new_index_joins_the_live_set_under_the_lock_the_gauge_sums_under(self):
+        """1597 low 1: LazyIndex.__init__ added itself to the live set without _MAT_LOCK while asm_index_stats summed the set under
+        it, so a /perf read beside a parse could raise "set changed size during iteration" and answer 500. The add takes the
+        lock: a recording lock sees an acquisition during construction, and a sum racing 200 constructions never raises."""
+        import threading
+        enters = []
+        real = em._MAT_LOCK
+        class Recording:
+            def __enter__(self): enters.append(1); return real.__enter__()
+            def __exit__(self, *a): return real.__exit__(*a)
+        recs = [["r0", None, "u", None, 0, 1000, 0, None, None, None]]
+        rows = [{"r": 0, "s": {"type": "user", "author": "human", "t": 1000}, "seq": 0}]
+        with mock.patch.object(em, "_MAT_LOCK", Recording()):
+            em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "w.jsonl")
+        self.assertGreaterEqual(len(enters), 1, "the add to the live set took the lock")
+        keep = []
+        def maker():
+            for _ in range(200):                                                   # bounded: 200 constructions, then done
+                keep.append(em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "w.jsonl"))
+        prev = sys.getswitchinterval(); sys.setswitchinterval(1e-6)                    # the race made likely (1603 low 2): at the
+        try:                                                                           #  default interval the base never failed here
+            th = threading.Thread(target=maker); th.start()
+            sums = [em.asm_index_stats()["userFacts"] for _ in range(200)]          # bounded: 200 reports beside the maker
+            th.join(10)
+        finally:
+            sys.setswitchinterval(prev)
+        self.assertEqual(len(keep), 200); self.assertTrue(all(isinstance(x, int) for x in sums), "no report raised")
 
     def test_the_user_facts_gauge_counts_the_live_indexes_and_falls_when_one_is_dropped(self):
         """Round three medium: asmIndex.userFacts is a GAUGE of the light facts resident across the live indexes, summed at report
@@ -324,7 +357,7 @@ class RowTallyEqualsAtomTally(TA.Harness):
         n = 50
         recs = [["r%d" % i, None, "u", None, i, 1000 + i, 0, None, None, None] for i in range(n)]
         rows = [{"r": i, "s": {"type": "user", "author": "human", "t": 1000 + i}, "seq": i} for i in range(n)]
-        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "z.jsonl")
+        index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "z.jsonl")
         atoms = em.LazyAtoms(index, range(n))
         users = km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}])
         self.assertEqual(len(users), n)
@@ -334,6 +367,53 @@ class RowTallyEqualsAtomTally(TA.Harness):
         del index, atoms, users; gc.collect()
         self.assertEqual(em.asm_index_stats()["userFacts"], g0, "the dropped index took its cache with it")
         self.assertNotIn("userFacts", em._ASM_INDEX_STATS, "no running counter beside the gauge")
+
+    def test_a_stop_free_transcript_builds_no_romp_row_and_one_stop_builds_the_notice_the_scan_reaches(self):
+        """T401 (3b): the facts builder built every romp-authored row (the deploy boot's cold pass: 3,220 atoms hydrated from
+        disk) although the classifier reads a romp body only inside _machine_cut_cause's forward scan from a stop record.
+        On the real document road (write, parse, document, restore): a transcript with three romp notices and one stop
+        followed by a restart notice builds exactly ONE atom, the notice the scan reaches, and the tally equals the cold
+        parse's; a synthetic index with romp rows and no stop builds nothing."""
+        G = TA.G; T0 = G.T0
+        def with_a_cut():
+            return [G.uline(T0, "refactor the ledger", "u1", ps="typed"),
+                    G.aline(T0 + 20, "Reading it.", "a1", "u1", stop="end_turn"),
+                    G.uline(T0 + 30, "Status?\n\n<!-- romp-injected -->", "n0", "a1", ps="sdk"),          # a nudge before the stop
+                    G.aline(T0 + 40, "Still reading.", "a2", "n0", stop="end_turn"),
+                    G.uline(T0 + 60, "[Request interrupted by user]", "s1", "a2", ps="typed"),          # the stop record
+                    G.uline(T0 + 61, "%s\n\n<!-- romp-injected -->" % km.INTR_RESTART_SIG, "n1", "s1", ps="sdk"),   # the notice
+                    G.aline(T0 + 80, "Resuming.", "a3", "n1", stop="end_turn"),
+                    G.uline(T0 + 100, "carry on then", "u2", "a3", ps="typed"),                           # the human ends the scan
+                    G.uline(T0 + 120, "Status?\n\n<!-- romp-injected -->", "n2", "u2", ps="sdk"),          # a nudge past it
+                    G.aline(T0 + 140, "Done.", "a4", "n2", stop="end_turn")]
+        path = self.write("variant-cut", TA.compacting_variant(with_a_cut(), "cut"))
+        whole = self.cold(path)
+        atoms_all = [a for t in whole["turns"] for a in (t.get("atoms") or [])]
+        self.assertEqual(sum(1 for a in atoms_all if a.get("author") == "romp"), 3, "three romp rows in the cold parse")
+        users_cold = [a for a in atoms_all if a.get("type") == "user"]
+        i_stop = next(i for i, a in enumerate(users_cold) if em.is_interrupt_record(a))
+        self.assertEqual(km._machine_cut_cause(users_cold, i_stop, 0.0, ""), "restart", "the cold classifier names the cut")
+        want = km._interrupt_marks_atoms(atoms_all, 0.0, "")
+        self.fresh(); self.parse(path); self.assertTrue(self.doc(path)); self.fresh(); modes = []; tree = self.parse(path, modes)
+        self.assertEqual(modes, ["restore"])
+        m0 = em._ASM_INDEX_STATS["materialized"]
+        got = km._interrupt_marks_atoms(km._interrupt_marks_facts(tree["turns"]), 0.0, "")
+        self.assertEqual(got, want, "the row tally equals the atom tally")
+        self.assertEqual(want[0], 0, "a machine cut is not a user stop")
+        self.assertEqual(em._ASM_INDEX_STATS["materialized"] - m0, 1, "exactly the notice the scan reached is built, not the three romp rows")
+        # a synthetic index with romp rows and no stop record: nothing built, the tally right
+        recs = [["r%d" % i, None, "u", None, i, 1000 + i, 0, None, None, None] for i in range(6)]
+        rows = []
+        for i in range(6):
+            author = "romp" if i % 2 else "human"
+            rows.append({"r": i, "s": {"type": "user", "author": author, "t": 1000 + i}, "seq": i,
+                         "lz": {"k": "user", "h": "00000000", "nt": True, "ir": False}, "i": i})
+        index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "nostop.jsonl")
+        atoms = em.LazyAtoms(index, range(6))
+        m1 = em._ASM_INDEX_STATS["materialized"]
+        users = km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}])
+        self.assertEqual(km._interrupt_marks_atoms(users, 0.0, ""), (0, 1004), "the newest human prompt; no stop")
+        self.assertEqual(em._ASM_INDEX_STATS["materialized"] - m1, 0, "a stop-free transcript builds nothing")
 
     def test_a_stop_between_a_queued_prompts_send_and_its_landing_agrees(self):
         """The shape medium 1 named: an absorbed queued prompt carries its LANDING time in the scalars and its SEND time in the
@@ -347,7 +427,7 @@ class RowTallyEqualsAtomTally(TA.Harness):
             row = {"r": i, "s": dict(sc), "seq": i}
             if lz: row["lz"] = dict(lz, k="user", h="00000000", nt=True); row["i"] = i   # a lazy row names its body's index
             rows.append(row)
-        index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "x.jsonl")
+        index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "x.jsonl")
         atoms = em.LazyAtoms(index, range(len(rows)))
         facts = km._interrupt_marks_atoms(km._interrupt_marks_facts([{"id": "t1", "t": 1000, "atoms": atoms}]), 0.0, "")
         built = km._interrupt_marks_atoms([atoms[i] for i in range(len(rows))], 0.0, "")
@@ -355,20 +435,26 @@ class RowTallyEqualsAtomTally(TA.Harness):
         self.assertLess(built[0], built[1], "the landing time outranks the stop, so a reader finds the stop older than the last prompt")
 
     def test_the_cold_tally_over_the_lazy_road_is_linear_in_the_rows_and_builds_nothing(self):
-        """Round two, low 2: the linearity test drove plain dicts; a restored LazyIndex is the road the change is about."""
+        """Round two, low 2: the linearity test drove plain dicts; a restored LazyIndex is the road the change is about.
+        Linearity is asserted by COUNTS, not by a wall-clock ratio: under a full suite's heap the collector made the 16,000-row
+        tally read 18 to 28 times the 4,000-row one on two machines (1610 round two's suite and CI), a time-based bound being
+        the wrong instrument. Each row is decoded exactly once per tally (rowDecodes grows by n), no atom is built, the
+        maxima are exact."""
         def lazy(n):
             recs = [[("u%d" % i), None, "u" if i % 2 == 0 else "a", None, i, 1000 + i, 0, None, None, None] for i in range(n)]
             rows = [{"r": i, "s": {"type": "user" if i % 2 == 0 else "assistant", "author": "human" if i % 2 == 0 else None, "t": 1000 + i}, "seq": i}
                     for i in range(n)]
-            index = em.LazyIndex({"atoms": rows, "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
+            index = em.LazyIndex({"atoms": _rows(rows), "records": recs, "fsids": []}, SID, self.td / "y.jsonl")
             return [{"id": "t1", "t": 1000, "atoms": em.LazyAtoms(index, range(n))}]
         m0 = em._ASM_INDEX_STATS["materialized"]
-        t0 = time.perf_counter(); r1 = km._interrupt_marks_atoms(km._interrupt_marks_facts(lazy(4000)), 0.0, ""); dt1 = time.perf_counter() - t0
-        t0 = time.perf_counter(); r4 = km._interrupt_marks_atoms(km._interrupt_marks_facts(lazy(16000)), 0.0, ""); dt4 = time.perf_counter() - t0
+        d0 = em._ASM_INDEX_STATS["rowDecodes"]
+        r1 = km._interrupt_marks_atoms(km._interrupt_marks_facts(lazy(4000)), 0.0, "")
+        d1 = em._ASM_INDEX_STATS["rowDecodes"] - d0
+        r4 = km._interrupt_marks_atoms(km._interrupt_marks_facts(lazy(16000)), 0.0, "")
+        d4 = em._ASM_INDEX_STATS["rowDecodes"] - d0 - d1
         self.assertEqual(em._ASM_INDEX_STATS["materialized"], m0, "no atom built over 20,000 lazy rows")
         self.assertEqual((r1, r4), ((0, 4998), (0, 16998)))
-        self.assertLess(dt4 / max(dt1, 1e-6), 8.0, "four times the rows under eight times the time on the lazy road (%.3f vs %.3f s)" % (dt1, dt4))
-        self.assertLess(dt4, 2.0)
+        self.assertEqual((d1, d4), (4000, 16000), "one decode per row, four times the rows four times the decodes: linear by count")
 
 
 if __name__ == "__main__":

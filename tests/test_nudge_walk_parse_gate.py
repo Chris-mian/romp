@@ -524,7 +524,11 @@ class NudgeWalkParseGate(unittest.TestCase):
         #                                    the goal store through its own API, the store, its journal and its archive being keyed
         #                                    files 3 to 5, and the override replay inside load_goals reads the clears log (keyed file 7,
         #                                    which is why the interrupt key keeps that position real); _intr_paused_only is a pure
-        #                                    reader of the loaded store; INTERRUPT_BLOCK_WHY a constant
+        #                                    reader of the loaded store; INTERRUPT_BLOCK_WHY a constant. rollup_status is on the list
+        #                                    because the arms call it; it reads the nudge ledger (stalled_facts) for a stall WARNING
+        #                                    only, never a status input. _set_intr_blocked, the third arm writer with its own fresh
+        #                                    ledger read, is OFF the interrupt-block road by design (the road's twelve members are
+        #                                    pinned in test_boot_parse_gating) (1595 low 3)
         EM_ALLOW = {"hydrate", "atom_text", "_atom_text", "is_interrupt_record",   # pure readers of a record or an atom
                     "LazyAtoms"}   # the pre-cut turn's container: its user_facts reads the document's rows, the transcript's own records
         stat_src = inspect.getsource(km._session_files_stat)

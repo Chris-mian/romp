@@ -105,8 +105,9 @@ test("the Context bar widget's option rides the same builder (the Context-gauge 
   // widget's option in the Chat tab's Tab widgets section, a house picker per option, and the older tabCtx key is written from the prefs on every
   // widget save so older readers keep their meaning (tab-widgets.ts tabCtxOfPrefs).
   assert.doesNotMatch(GEAR, /id=rs-tabctx\b/, "the old Context gauge row and its hidden select are gone");
-  assert.match(GEAR, /var drop = housePick\(wrap, 'wopt-' \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/);
-  assert.match(GEAR, /function saveWidgets\(prefs\) \{ var s = load\(\); s\.tabWidgets = prefs; s\.tabCtx = TW\.tabCtxOfPrefs\(prefs\); save\(s\); paintWidgets\(\); \}/,
+  assert.match(GEAR, /var drop = housePick\(wrap, cfg\.pickPrefix \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/);   // one builder for both widget sections since T409; the tab section's prefix stays wopt-
+  assert.match(GEAR, /pickPrefix: 'wopt-',/);
+  assert.match(GEAR, /save: function \(prefs\) \{ var s = load\(\); s\.tabWidgets = prefs; s\.tabCtx = TW\.tabCtxOfPrefs\(prefs\); save\(s\); paintWidgets\(\); \},/,
     "a widget change writes the prefs and the mirror, then repaints the rows in place");
   assert.match(GEAR, /tcPaint\(\); paintWidgets\(\);/, "openSettings repaints the widget rows from the store");
 });

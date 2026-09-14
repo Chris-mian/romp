@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
+import { GEAR_GLYPH, ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -27,9 +27,10 @@ import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./sub
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS, openRowsMenu } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
+import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
 import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
 import { senderKind, SenderKind } from "./sender-identity";
@@ -88,7 +89,6 @@ import type { MentionCandidate, MentionQuery } from "./composer-mention";
 import { defaultCommentName, defaultBreakoutName, defaultForkName, nameToSend } from "./comment-name";
 import { followReader, keepPlaceAcrossShow, followTail, atBottomDist, followBoxBelow, followTailShrink, reshowStick } from "./scroll-keep";
 import { phParts } from "./composer-placeholder";   // the resting placeholder names the session (2026-09-09)
-import { badgeSpec } from "./session-badge";   // the statusline badge names the session (2026-09-09)
 import { retainLiveOmitted } from "./tab-order";
 import { localStrip, readCloseAckMs } from "./tab-order";
 import { userTurnShows } from "./user-turn-content";
@@ -313,8 +313,12 @@ interface TodoTask { id: string; subject: string; activeForm?: string; status: s
 type PeerIdent = { name: string; host?: string; sid?: string; color?: { bg: string; fg: string } | null };   // a named peer behind a peer-kind wait (kernel _peer_identity, 2026-08-26)
 // which billing sides this box can bill, and why not for the other (kernel _auth_avail, 2026-09-08): the
 // Billing submenu lists both and greys the unavailable one with the reason in its hover
-interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
-interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
+// one login a host offers a session (T346): the machine's own (machine: true, value "login") or a stored one (value
+// "login:<id>"); `label` is its display (email · organisation · kind for the machine's, the user's label plus what
+// the add flow could read for a stored one), `why` the reason it is greyed when `available` is false
+interface AuthLogin { id?: string; value?: string; label?: string; machine?: boolean; available?: boolean; why?: string; expiresSoon?: boolean }
+interface AuthAvail { login?: boolean; key?: boolean; loginWhy?: string; keyWhy?: string; acct?: string; default?: string; defaultExplicit?: boolean; logins?: AuthLogin[] }   // defaultExplicit: set in the Billing flyout's Default group, else the helper rule (T380)
+interface Status { state: ChipState; sinceEpoch: number | null; awaitingWhy?: string | null; awaitingKind?: string | null; awaitingPeers?: PeerIdent[] | null; awaitingTasks?: string[]; awaitingTaskIds?: string[]; bgServiceIds?: string[]; awaitingCount?: number | null; awaitingItems?: AwaitRow[]; effort?: string; model?: string; modelPending?: boolean; effortPending?: boolean; mode?: string; fast?: string; auth?: string; authLive?: string; authPending?: boolean; authBoth?: boolean; authAvail?: AuthAvail; authPickUnavailable?: string; authPickFell?: string; authAcct?: string; authLogin?: string; authLabel?: string; authLoginLive?: string | null; ctx?: string; ctxOver?: boolean; ctxColor?: number[]; modelColor?: number[]; effortColor?: number[]; modelTone?: number[]; effortTone?: number[]; ctxTone?: number[]; faded?: boolean; backend?: string; apiTooLong?: boolean; apiSpendLimit?: boolean; apiModelLimit?: boolean; apiAuthErr?: boolean; apiRefusal?: boolean; retrySuppressed?: boolean; retryNextAt?: number | null; retryTries?: number | null; }   // awaitingWhy/awaitingTasks = what an awaitingBg session is waiting on (kernel _session_awaiting's phrasing + the live awaited task descriptions) — the #bg-tasks box renders it as the header of the in-flight rows (renderBgTasks; the user 2026-08-13, who moved it out of the statusline the same day PR #350 put it there)   // retrySuppressed = the user interrupted this thread's API-error storm → romp's auto-retry stays OFF for it until a successful turn re-arms (the user 2026-07-06). backend = "sdk" | "codex"; apiTooLong = the "blocked" is a "prompt is too long" error (on you → red tab) vs a transient API error (amber/retrying); apiSpendLimit = a monthly spend cap (on you → raise it; NEVER auto-retried — retrying can't fix it, the user 2026-07-14); apiModelLimit = this session's MODEL is out of allowance (on you → switch model or add credits; not auto-retried either, the user 2026-08-01); apiRefusal = the model's safeguards refused the prompt itself (on you → rewrite it or drop the thread; never auto-retried — a refusal is deterministic on the same input, so a retry just manufactures the same refusal, the user 2026-08-15); ctxColor = the GLOBAL colormap's RGB for the context%, computed server-side; modelColor/effortColor = the same map's RGB tint for the model name + effort (by capability/effort rank), server-computed; modelPending = a /model switch is resolving → the badge shows switching-dots until the new name lands (server-driven, event-based, the user 2026-07-03); fast = the CLI's fast-mode state ("on"/"off"/"cooldown", from the SDK init's fast_mode_state; absent = unknown/unavailable → no fast badge)
 
 // The side a pick this box cannot bill actually fell to ("login" | "key"), "" when nothing did: the kernel's
 // authPickFell (the launch's own decision, 2026-09-09). An older kernel without the field is read the way the
@@ -325,6 +329,26 @@ function authFellTo(st: Status): string {
   const other = st.auth === "key" ? "login" : "key";
   const avail: AuthAvail = st.authAvail || { login: true, key: true };
   return avail[other] ? other : "";
+}
+// The name beside 'Login' for a session billing a login (T346): the kernel's authLabel (a stored login's display,
+// else the machine's own as email · organisation · kind), falling back to the account name an older kernel sends.
+function loginName(st: Status): string { return st.authLabel || st.authAcct || ""; }
+// The Billing choices a kernel offers (T346): every login it knows (the machine's own first, then the stored ones)
+// plus the API key, each with the reason it is greyed or "". Called only when the kernel sent `logins`; an older
+// kernel's caller keeps its two-entry list.
+function authLoginChoices(avail: AuthAvail): { label: string; value: string; why: string }[] {
+  const out = (avail.logins || []).map((l) => ({
+    label: l.label ? `Login (${l.label})` : "Login",
+    value: l.value || (l.id ? `login:${l.id}` : "login"),
+    why: l.available === false ? (l.why || (l.machine ? (avail.loginWhy || "no Claude login signed in on this machine") : "this login is unavailable")) : "" }));
+  out.push({ label: "API key", value: "key", why: avail.key ? "" : (avail.keyWhy || "no apiKeyHelper configured") });
+  return out;
+}
+// Whether a Billing choice IS the session's current pick: the key, or a login by WHICH login (st.authLogin names a
+// stored one, "" the machine's own).
+function authChoiceCurrent(st: Status, value: string): boolean {
+  if (value === "key") return st.auth === "key";
+  return st.auth === "login" && ("login" + (st.authLogin ? `:${st.authLogin}` : "")) === value;
 }
 interface Color { bg: string; fg: string; }
 // A run_in_background task surfaced in the #bg-tasks box (the kernel's _bg_tasks): a one-line summary +
@@ -4036,33 +4060,14 @@ function prettyModel(id: string): string {
 // of treating a remote path as local (a silent no-op, since that path doesn't exist here). This pane stays
 // host-BLIND as designed (see federation.ts) — sid is just echoed back opaquely, never parsed here.
 function asFolderLink(elem: HTMLElement, cwd: string, sid?: string): void {
-  if (!cwd) return;
-  // On the web a click BROWSES the folder in the dashboard (the user 2026-08-14) — the affordance
-  // that works from every device, where OS-open acted on the KERNEL's machine (the wrong-machine
-  // class the 📎 picker and file links were cured of). WHERE the listing opens is decided at the
-  // click, not here (openBrowse: the Files pane while it is on screen or the gear names it, else over
-  // this chat). OS-open survives on the row's right-click menu for the genuinely-local case (the
-  // contextmenu delegate below). In VS Code the browser overlay doesn't exist, so the click keeps
-  // opening the folder host-side.
-  const web = location.protocol === "http:" || location.protocol === "https:";
-  elem.dataset.act = web ? "browseFiles" : "openFolder";   // the act names the intent; openBrowse routes it
-  elem.dataset.cwd = cwd;
-  if (sid) elem.dataset.id = sid;
-  elem.classList.add("folder-link");
-  elem.title = cwd + (elem.dataset.act === "browseFiles"
-    ? "  ·  click to browse this folder" : "  ·  click to open this folder");
+  folderLink(elem, cwd, sid);   // the rule itself lives beside the folder widget (status-widgets.ts folderLink) since T409; kept here for the other folder locations
 }
 
 // Small inline-SVG folder in the romp line-icon style (matches ctxIcon: 16-unit viewBox, currentColor, so it
 // inherits the dim statusline tint / brightens on the folder-link hover) — the monochrome replacement for the
 // 📁 emoji beside the statusline directory (the user 2026-07-15). Trusted constant markup.
 function folderIcon(): HTMLElement {
-  const span = el("span", "status-dir-icon");
-  span.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" '
-    + 'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="M2 12.6 a1 1 0 0 1-1-1 V4.4 a1 1 0 0 1 1-1 H5.9 a1 1 0 0 1 0.7 0.3 L7.8 5 '
-    + 'H13 a1 1 0 0 1 1 1 V11.6 a1 1 0 0 1-1 1 Z"/></svg>';
-  return span;
+  return folderIconNode();   // the markup lives beside the folder widget (status-widgets.ts FOLDER_ICON_SVG) since T409
 }
 
 function renderSystem(ev: Extract<ChatEvent, { kind: "system" }>): HTMLElement {
@@ -5929,6 +5934,10 @@ function showTabTip(tab: HTMLElement, s: Session): void {
   if (s.status.auth) rows.push(["Billing",
     s.status.authPending
       ? (s.status.auth === "key" ? "API key" : "Login") + " (applying — not confirmed yet)"
+      // a STORED login picked, but the init's evidence says the CLI never used its helper and signed in with the
+      // machine's own login (T346): the wrong account, said as such, never shown as the pick applied
+      : (s.status.auth === "login" && s.status.authLogin && s.status.authLoginLive === "")
+        ? `⚠ Login (${loginName(s.status)}) picked, but the CLI signed in with another credential: this session bills that`
       // the pick names a side this box cannot bill (the kernel's authPickUnavailable, with the reason
       // in authAvail): the launch went to the other side, and the row says so (the user 2026-09-08)
       : s.status.authPickUnavailable === s.status.auth
@@ -5941,7 +5950,7 @@ function showTabTip(tab: HTMLElement, s: Session): void {
         ? `⚠ ${s.status.auth === "key" ? "API key" : "Login"} picked, but the CLI reports `
           + `${s.status.authLive === "key" ? "the API key" : "the login"} — this session bills that`
         : s.status.auth === "key" ? "API key"
-          : (s.status.authAcct ? `Login (${s.status.authAcct})` : "Login")]);
+          : (loginName(s.status) ? `Login (${loginName(s.status)})` : "Login")]);
   for (const [k, v, color] of rows) {
     const r = el("div", "tab-tip-row");
     const ke = el("span", "tab-tip-k"); ke.textContent = k;
@@ -6651,7 +6660,7 @@ function renderTabs() {
   // the active tab. Captured before the tab rule below, which keeps its pinned two-line shape.
   const focusedEl = document.activeElement as HTMLElement | null;
   const focusedGroup = (focusedEl?.closest(".tab-group-head") as HTMLElement | null)?.dataset.group;
-  const focusedLock = !!focusedEl?.closest(".tab-lock");   // a keyboard press on the lock rebuilt the strip: the lock keeps the focus (T395 round one)
+  const focusedGear = !!focusedEl?.closest(".tab-widgets-gear");   // the gear held the keyboard when a push rebuilt the strip (a lock toggle's rebuild finds the focus on the menu's row, and the menu's own Escape refocuses the live gear): the gear keeps the focus, not the active tab (T395 round one, moved by T405; round two, low 6)
   const refocusTab = bar.contains(document.activeElement);
   bar.replaceChildren();
   // A session under several tags has a COPY in each group (T264b, the user 2026-09-08: tags are
@@ -6760,23 +6769,8 @@ function renderTabs() {
   add.title = titleWithKey("Open a session", "session.new");
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
-  // THE TAB LOCK (T395, the user 2026-09-12): right after the + tab and before the tags box, in a little rounded box like
-  // the tags box (the user says the position may move later): the padlock the Sessions pane shows at its bottom (icons.ts,
-  // one drawing). A press freezes every tab move until the next press (setTabsLocked); locked, the box wears the menu
-  // vocabulary's current dress, the accent on the glyph and its outline, never a fill. The state is in the strip's
-  // signature, so the toggle repaints through it; the click is the node's own, click-safe because the strip is rebuilt
-  // only when its signature changes.
-  const lockBox = el("span", "tab-lockbox");
-  const lock = el("button", "tab-lock" + (settings.tabsLocked ? " on" : "")) as HTMLButtonElement;
-  lock.type = "button";
-  lock.innerHTML = settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN;
-  lock.title = settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again";
-  lock.setAttribute("aria-label", "Lock tabs");
-  lock.style.setProperty("--tab-lock-border", TAG_BTN_BORDER_CSS);   // the tag button's border, from its one source (tag-menu.ts): the themed token, so the two boxes match in every theme
-  lock.setAttribute("aria-pressed", settings.tabsLocked ? "true" : "false");
-  lock.addEventListener("click", (e) => { e.stopPropagation(); setTabsLocked(!settings.tabsLocked); });
-  lockBox.appendChild(lock);
-  bar.appendChild(lockBox);
+  // (THE TAB LOCK's button left the strip 2026-09-13, T405, the user: the lock is a row inside the strip's gear below; its
+  // state, its drag rules and its saveSettings road are unchanged, only where it is toggled moved.)
   // the shared TAG-ICON filter (the user 2026-08-25): identical across surfaces, opening the one
   // multi-select lens menu — this instance governs the TAB STRIP (actives.chat)
   const tagBtn = tagMenuButton("filter these tabs by tag", (btn) => {
@@ -6803,30 +6797,45 @@ function renderTabs() {
   tagBox.appendChild(tagBtn);
   // THE BUTTON CONVENTION (the user 2026-08-25): gray alone at rest; accent + the chips of
   // everything selected when narrowed — the shared renderer, identical on every mount
-  const tagChipsHost = el("span", "tab-tagchips");
-  tagChipsHost.setAttribute("style", "display:inline-flex;gap:5px;align-items:center;margin-left:2px;");
-  tagBox.appendChild(tagChipsHost);
-  // THE TAB-WIDGETS GEAR (T379, the user 2026-09-12): one glyph at the strip's right end, inside the tag box so it
-  // takes no extra height, opening the settings on the Chat tab scrolled to its Tab widgets section (the widget rows;
-  // the user's amendment 2026-09-12: no tab of their own). The ask rides the openSettings
-  // message every opener uses, with the tab named: to the shell when this pane sits in one (the kernel's
-  // __rompOpenSettings relays it into the settings iframe), else to this window (the VS Code chat hosts its own
-  // gear). A standalone /chat with neither has no gear to open, so it shows no glyph (an honest absence, never a
-  // dead control). Built once per strip paint like the tag button beside it; the click is its own, click-safe
-  // because the strip is rebuilt only when its signature changes.
-  if ((window as any).__rompShowStrip || inRompShell()) {
+  // T405 (the user 2026-09-13): the strip's control no longer DISPLAYS what it filters to, no "(no tags)" and no tag chips
+  // beside the button: with Group tabs by tag on the tags show in the strip's sections anyway, and otherwise whoever is
+  // interested clicks the button, which still wears the accent while narrowed. The filter itself is unchanged; the shared
+  // sync runs with no chips host, so it builds no chip (round two, low 3: two chips were built and dropped per paint)
+  bar.appendChild(tagBox);
+  // THE STRIP'S GEAR (T379, the user 2026-09-12; T405, the user 2026-09-13): ONE glyph, the shell's own settings gear
+  // (icons.ts GEAR_GLYPH, the character the rail wears at the bottom right of every romp page, read by the kernel from the
+  // same file), in a box of its own appended LAST and pushed to the strip's farthest right (styles.css .tab-gearbox,
+  // margin-left auto on the last flex line). It opens a small menu in the house vocabulary (tag-menu.ts openRowsMenu):
+  // "Lock the tabs in place", the tab lock's toggle row with the two titles the strip's button wore (T395: the state,
+  // its drag rules and its saveSettings road are unchanged); and "Tab widgets…", the settings on the Chat tab scrolled to
+  // its Tab widgets section (T379's ask, through the shell or this window's own gear as before), that row only where a
+  // settings gear can be reached (an honest absence elsewhere); the strip's gear itself is everywhere the strip is, since
+  // the lock's button was. Built once per strip paint; the click is its own, click-safe because the strip is rebuilt
+  // only when its signature changes; a keyboard press on the gear then on the row keeps the focus on the row.
+  {
+    const settingsReachable = !!((window as any).__rompShowStrip || inRompShell());
+    const gearBox = el("span", "tab-gearbox");
     const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
     gear.type = "button";
-    gear.title = "Tab widgets…";
-    gear.setAttribute("aria-label", "Tab widgets");
-    gear.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
-    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("chat", "tabwidgets"); });
-    tagBox.appendChild(gear);
+    gear.title = settingsReachable ? "Tab strip: lock, widgets…" : "Tab strip: lock";   // no widgets row where no settings gear can be reached, and the title says so (round two, low 1)
+    gear.setAttribute("aria-label", "Tab strip settings");
+    gear.setAttribute("aria-haspopup", "menu");
+    gear.textContent = GEAR_GLYPH;
+    gear.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRowsMenu(gear, () => [
+        { label: "Lock the tabs in place", current: settings.tabsLocked, glyph: settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN,
+          title: settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again",
+          press: () => { setTabsLocked(!settings.tabsLocked); return false; } },
+        ...(settingsReachable ? [{ label: "Tab widgets…", dim: true, press: () => { openSettingsOn("chat", "tabwidgets"); } }] : []),
+      ]);
+    });
+    gearBox.appendChild(gear);
+    bar.appendChild(gearBox);
   }
-  bar.appendChild(tagBox);
   {
     const v = effViews();
-    syncTagFilter(tagBtn, tagChipsHost, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
+    syncTagFilter(tagBtn, null, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {
       postLens({ actives: Object.assign({}, (v || {}).actives, { chat: l }) });
     });
   }
@@ -6855,7 +6864,7 @@ function renderTabs() {
       mslot.append(mBtn, mChips);
     }
     const mv2 = effViews();
-    syncTagFilter(mslot.children[0] as HTMLElement, mslot.children[1] as HTMLElement,
+    syncTagFilter(mslot.children[0] as HTMLElement, phoneLayout() ? (mslot.children[1] as HTMLElement) : null,   // the chips only where the mount shows (the T405 read): the button's state syncs either way
       surfaceLens(mv2, "chat"), viewTagUnion(mv2), (l) => {
         postLens({ actives: Object.assign({}, (mv2 || {}).actives, { chat: l }) });
       });
@@ -6867,7 +6876,7 @@ function renderTabs() {
     const h = Array.from(bar.querySelectorAll<HTMLElement>(".tab-group-head")).find((x) => x.dataset.group === focusedGroup);
     // the group gone, or now holding the active tab (no stop): the old rule
     if (h && h.tabIndex >= 0) h.focus(); else focusActiveTab();
-  } else if (focusedLock) (bar.querySelector(".tab-lock") as HTMLElement | null)?.focus();   // not the active tab: Enter again would drop the caret into the composer
+  } else if (focusedGear) (bar.querySelector(".tab-widgets-gear") as HTMLElement | null)?.focus();   // not the active tab: Enter again would drop the caret into the composer
   else if (refocusTab) focusActiveTab();
   stripAftermath(visibleIds, ids);
   // (The Fleet toggle that briefly lived here as a tab-bar pill was removed 2026-06-24: Fleet/Chat are now
@@ -7013,9 +7022,12 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
 // The Billing flyout's ENTRY LIST (T387): one function for the session's picks and the machine-default submenu, so the
 // two menus can never list different billings. Each entry: its label (Login named by the machine's account when known,
 // the key plainly "API key", no fragment of it anywhere), the setAuth value, and why it is greyed here (a side this box
-// cannot bill, the kernel's reason) or "". When stored logins arrive (the several-logins branch) this is the function
-// that grows, and the default submenu lists them with the picks.
+// cannot bill, the kernel's reason) or "". The stored logins (T346) arrive here: the list grows with them; the default
+// submenu lists the machine's own login and the key only until the kernel takes a stored login as a machine default.
 function billingChoices(st: Status, avail: AuthAvail): Array<{ label: string; value: string; why: string }> {
+  // every login this host knows plus the key (T346, authLoginChoices: the machine's own first, then the stored ones); an
+  // older kernel sends no `logins` and keeps the two-entry list below, the machine's login named by its account
+  if (avail.logins && avail.logins.length) return authLoginChoices(avail);
   return [{ label: st.authAcct ? `Login (${st.authAcct})` : "Login", value: "login", why: avail.login ? "" : (avail.loginWhy || "no Claude login signed in on this machine") },
           { label: "API key", value: "key", why: avail.key ? "" : (avail.keyWhy || "no apiKeyHelper configured") }];
 }
@@ -7290,7 +7302,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
             row.appendChild(bodyE);
             // the tab lock (T395): a move row is a tab move, so it reads held (the label dims, the row answers nothing); the + beside
             // it still tags (adding is not a move), so it keeps its strength and says so itself (round one, LOW 1)
-            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock in the tab strip"; }
+            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock is in the tab strip's gear menu"; }
             const plus = el("button", "ctx-tag-x ctx-tag-plus") as HTMLButtonElement;
             plus.type = "button"; plus.textContent = "+";
             plus.title = "add this tag too (the session keeps its other tags)" + (settings.tabsLocked ? ": adding is not a move, so the lock does not hold it" : "");
@@ -7475,12 +7487,14 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     const l = el("span", "ctx-item-label"); l.textContent = "Billing"; bodyEl.appendChild(l);
     const sb = el("span", "ctx-item-sub");
     sb.textContent = st.authPending ? "applying…"
+      : (st.auth === "login" && st.authLogin && st.authLoginLive === "")
+        ? "⚠ CLI used another credential"   // the stored login's helper was not used (T346): the init's evidence
       : st.authPickUnavailable === st.auth
         // the pick names a side this box cannot bill — the launch went to the other one when it exists
         ? `⚠ ${wordOf(st.auth)} unavailable` + (authFellTo(st) ? `, billing ${wordOf(authFellTo(st))}` : "")
       : st.authLive && st.authLive !== st.auth
         ? `⚠ CLI reports ${st.authLive === "key" ? "API key" : "login"}`   // the pick did not take — say so where the switch lives (T124)
-        : (st.auth === "key" ? "API key" : (st.authAcct ? `Login (${st.authAcct})` : "Login"));
+        : (st.auth === "key" ? "API key" : (loginName(st) ? `Login (${loginName(st)})` : "Login"));
     bodyEl.appendChild(sb);
     item.appendChild(bodyEl);
     const caret = el("span", "ctx-caret"); caret.textContent = "▸"; item.appendChild(caret);
@@ -7491,7 +7505,8 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
       const sub = el("div", "ctx-menu ctx-sub ctx-sub-billing");
       const choices = billingChoices(st, avail);                  // the ONE list both menus below draw from (T387)
       for (const c of choices) {
-        const opt = el("div", "ctx-item" + (st.auth === c.value ? " current" : "") + (c.why ? " disabled" : ""));
+        const cur = authChoiceCurrent(st, c.value);   // the key, or a login by WHICH login (st.authLogin)
+        const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
         opt.textContent = c.label;
         if (c.why) {   // unavailable here: greyed, the reason on hover, inert (the user 2026-09-08)
           opt.title = c.why;
@@ -7501,7 +7516,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
           ev2.stopPropagation();
           if (c.why) return;                                       // a disabled option posts nothing, and the menu stays
           dismissTabMenu();
-          if (st.auth !== c.value && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value });
+          if (!cur && vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value: c.value });
         });
         sub.appendChild(opt);
       }
@@ -7523,7 +7538,10 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
           const explicit = !!avail.defaultExplicit;
           const d = el("div", "ctx-menu ctx-sub ctx-sub-default");
           const post = (value: string) => { dismissTabMenu(); if (vscodeApi) vscodeApi.postMessage({ type: "setAuth", id, value, scope: "machine" }); };
-          for (const c of choices) {
+          // the machine's own login and the key only (T346 beside T380 and T387): a stored login as the machine's default is
+          // not taken by the kernel yet (its scoped arm refuses the value by name), so the flyout does not offer it
+          const defaultChoices = choices.filter((c) => c.value === "login" || c.value === "key");
+          for (const c of defaultChoices) {
             const cur = explicit && avail.default === c.value;   // the check sits on the EXPLICIT default only; automatic marks nothing
             const opt = el("div", "ctx-item" + (cur ? " current" : "") + (c.why ? " disabled" : ""));
             opt.textContent = c.label;
@@ -8434,8 +8452,15 @@ function syncPickerAuth(): void {
   if (!wrap) return;
   const a = pickerAuthAvail;
   const show = !pickMode && !!(a && (a.login || a.key)) && pickerBackendChoice() === "sdk";
-  wrap.style.display = show ? "" : "none";
-  if (!show) return;
+  // …or a STORED login this host can bill (T346), when its own login and key are both away
+  const stored = (a && a.logins ? a.logins : []).filter((l) => !l.machine);
+  const showStored = !pickMode && stored.some((l) => l.available !== false) && pickerBackendChoice() === "sdk";
+  wrap.style.display = show || showStored ? "" : "none";
+  if (!show && !showStored) return;
+  if (stored.length) { syncPickerAuthMany(wrap, a!); return; }
+  // back to the two-option row: a many-login host's rebuilt options and dropdown go, the two buttons return
+  wrap.querySelectorAll(".picker-be-opt[data-many]").forEach((x) => x.remove());
+  pickerAuthDropSelect(wrap);
   const both = !!(a!.login && a!.key);
   wrap.querySelectorAll(".picker-be-opt").forEach((x) => ((x as HTMLElement).style.display = both ? "" : "none"));
   const fixed = wrap.querySelector(".picker-auth-fixed") as HTMLElement | null;
@@ -8458,12 +8483,73 @@ function syncPickerAuth(): void {
   }
 }
 
+// The Billing row with SEVERAL logins (T346): one option per login the host knows (the machine's own first, then
+// the stored ones) plus API key, rebuilt from each reply. Up to three choices wear the segmented buttons (shrinking
+// with an ellipsis, the whole label in the hover; an unavailable one greyed and inert with its reason); beyond three
+// the row is one dropdown in the menu vocabulary, rebuilt only when the choice set changes so an open list survives
+// a re-sync. The pick is kept by VALUE across rebuilds; the host's default seeds it, else the first usable choice.
+// One usable choice is written out, as the two-option row does.
+function syncPickerAuthMany(wrap: HTMLElement, a: AuthAvail): void {
+  const choices = authLoginChoices(a);
+  const usable = choices.filter((c) => !c.why);
+  const fixed = wrap.querySelector(".picker-auth-fixed") as HTMLElement | null;
+  wrap.querySelectorAll<HTMLElement>(".picker-be-opt:not([data-many])").forEach((x) => (x.style.display = "none"));
+  const held = pickerAuthChoice();
+  const prev = (held && choices.some((c) => c.value === held && !c.why)) ? held
+    : (a.default && choices.some((c) => c.value === a.default && !c.why)) ? a.default
+    : (usable[0] ? usable[0].value : "");
+  wrap.querySelectorAll(".picker-be-opt[data-many]").forEach((x) => x.remove());
+  if (usable.length <= 1) {
+    pickerAuthDropSelect(wrap);
+    if (fixed) {
+      fixed.style.display = "";
+      fixed.textContent = usable[0] ? usable[0].label : "Login";
+      fixed.title = choices.filter((c) => c.why).map((c) => `${c.label} unavailable: ${c.why}`).join("\n");
+    }
+    return;
+  }
+  if (fixed) { fixed.style.display = "none"; fixed.textContent = ""; fixed.title = ""; }
+  if (choices.length <= 3) {
+    pickerAuthDropSelect(wrap);
+    for (const c of choices) {
+      const b = el("button", "picker-be-opt" + (c.value === prev ? " sel" : "")) as HTMLButtonElement;
+      b.type = "button"; b.textContent = c.label; b.dataset.auth = c.value; b.dataset.many = "1";
+      b.title = c.why ? `${c.label} unavailable: ${c.why}` : `Bill this session to ${c.label}.`;
+      if (c.why) b.disabled = true;
+      b.addEventListener("click", () => wrap.querySelectorAll(".picker-be-opt").forEach((x) => x.classList.toggle("sel", x === b)));
+      wrap.insertBefore(b, fixed);
+    }
+    return;
+  }
+  const sig = choices.map((c) => c.value + "|" + c.label + "|" + c.why).join("\n");
+  let dd = wrap.querySelector("select.picker-auth-select") as HTMLSelectElement | null;
+  if (!dd || dd.dataset.sig !== sig) {
+    if (dd) dd.remove();
+    dd = el("select", "picker-auth-select") as HTMLSelectElement;
+    dd.dataset.sig = sig;
+    dd.title = "Which account this session bills";
+    for (const c of choices) {
+      const o = document.createElement("option");
+      o.value = c.value; o.textContent = c.label + (c.why ? ` (unavailable: ${c.why})` : ""); o.disabled = !!c.why;
+      dd.appendChild(o);
+    }
+    dd.value = prev;
+    wrap.insertBefore(dd, fixed);
+  }
+}
+// the two-option row has no dropdown: drop one a many-login host left behind
+function pickerAuthDropSelect(wrap: HTMLElement): void {
+  wrap.querySelectorAll("select.picker-auth-select").forEach((x) => x.remove());
+}
+
 // the picked billing for the create payload — "" when the row is hidden or written-out (one real
 // choice: the kernel default IS that choice, and a stale .sel from a previously-selected both-offering
 // host must not ride along)
 function pickerAuthChoice(): string {
   const wrap = document.querySelector("#picker .picker-auth") as HTMLElement | null;
   if (!wrap || wrap.style.display === "none") return "";
+  const dd = wrap.querySelector("select.picker-auth-select") as HTMLSelectElement | null;   // several logins (T346)
+  if (dd) return dd.value || "";
   const sel = wrap.querySelector(".picker-be-opt.sel") as HTMLElement | null;
   if (!sel || sel.style.display === "none") return "";
   return sel.dataset.auth || "";
@@ -15712,16 +15798,13 @@ function updateStatusline() {
     sl.appendChild(ro);
     return;
   }
-  // The session's own badge FIRST (the user 2026-09-09): its name on its identity colour — the colour its
-  // tab label and timeline lane wear — with the name in black, so the line reads "<session> · Working" and a
-  // glance at any chat column says which session it is. Built from the same record as the chips beside it.
-  const bs = settings.showSessionBadge === true ? badgeSpec(s) : null;   // an opt-in (Settings → Chat → Show session badge; off by default, the maintainers 2026-09-10): the composer's placeholder names the session already
-  if (bs) {
-    const b = el("span", "chip chip-session"); b.textContent = bs.text;
-    if (bs.bg) b.style.background = bs.bg;
-    b.title = bs.text;   // the full name when the chip clips a long one
-    sl.appendChild(b);
-  }
+  // The line's WIDGETS (T409, the user 2026-09-13): the configured set in its order, from the registry the settings rows
+  // render from (status-widgets.ts, the Chat tab's Status line section). The LEFT slot leads the line (the session's
+  // name on its identity colour, off by default: the tab above already names it); the RIGHT slot leads the right
+  // cluster below (the folder and the branch by default, the host of a remote session on request), ahead of the
+  // controls that are always there. A widget that renders nothing adds nothing.
+  const rec = statusRecordOf(s, activeId || "");
+  composeStatusWidgets(sl, "left", rec, settings.statusWidgets);
   // Left: the state chip — WORKING gets a sine color-pulse + elapsed timer; idle
   // states get the plain chip (no timer). Right: model + effort · ctx%, always.
   if (s.status.state === "working") {
@@ -15788,32 +15871,12 @@ function updateStatusline() {
   // at the LEFT edge (justify only reaches the row holding the auto margin) — the user 2026-08-10, on a
   // phone, wanted the wrapped controls to stay clustered on the right.
   const right = el("span", "sl-right");
-  // The session's working directory (the current one — a tab-menu move changes it), leading the right-side
-  // cluster — just left of the mode/model/effort controls (the user 2026-06-23). Basename only; full path
-  // on hover. Empty (rare, no cwd) it's a zero-width spacer.
-  const dir = el("span", "status-dir");
-  if (s.cwd) {
-    dir.appendChild(folderIcon());
-    dir.appendChild(document.createTextNode(" " + (s.cwd.replace(/\/+$/, "").split("/").pop() || s.cwd)));
-    // Click → run the configured folder opener for this dir (default: the OS opener — Finder / xdg-open —
-    // overridable via ROMP_OPEN_FOLDER or ~/.config/romp/open-folder, e.g. open in Ghostty). asFolderLink wires
-    // the data-act caught by the document-level openFolder delegate, so the per-push rebuild can't drop it.
-    // activeId rides along so a REMOTE session's click SSHes out instead of no-op'ing on a local path (2026-07-03).
-    asFolderLink(dir, s.cwd, activeId || undefined);
-  }
-  right.appendChild(dir);
-  // The session's git branch, just right of the dir — only when known and only if the user has OPTED IN
-  // (Settings → Chat → "Show git branch"; off by default — the user 2026-08-10, trimming the statusline
-  // for narrow panes; it shipped on by default 2026-06-23). Read from the TOP-LEVEL session field,
-  // never the head system event: that event is windowed out of the wire tail on any >250-event session, which
-  // used to blank the branch on most sessions (the user 2026-06-30).
-  if (loadSettings().showBranch === true && ((s.workTree && s.workTree.branch) || s.gitBranch)) {
-    const br = el("span", "status-branch");
-    const liveBr = (s.workTree && s.workTree.branch) || s.gitBranch;
-    br.textContent = "⎇ " + liveBr;
-    br.title = s.workTree ? `worktree ${s.workTree.dir} — git branch: ${liveBr}` : "git branch: " + liveBr;
-    right.appendChild(br);
-  }
+  // The right slot's widgets lead the cluster (T409): the working directory (the current one; a tab-menu move changes
+  // it), by name with the full path on hover and a click that opens it, then the git branch when known (the worktree's
+  // when the session runs in one; read from the TOP-LEVEL session fields, never the head system event, which is
+  // windowed out of the wire tail on any long session), then, on request, the host of a remote session. Each is a row
+  // in the settings; the folder's row carries the Full path option.
+  composeStatusWidgets(right, "right", rec, settings.statusWidgets);
   const meta = el("span", "spinner-meta");
   meta.id = "spinner-meta";
   syncMetaControls(meta, s.status);
@@ -15831,6 +15894,12 @@ function updateStatusline() {
       || s.status.state === "retrying" || s.status.state === "blocked") right.appendChild(stopButton(s.status.state));
   sl.appendChild(right);
   pruneTip();   // a rebuilt statusline tears tip anchors (the stop button) out mid-hover — drop the orphan (PR #763 item 8; the feed's render does the same)
+}
+
+/** The slice of a session's record the status-line widgets read (status-widgets.ts): the top-level fields the wire
+ *  carries on every push, and the host a remote session's id names (hostOf), "" for a local one. */
+function statusRecordOf(s: Session, id: string): StatusRecord {
+  return { id, name: s.name, color: s.color, cwd: s.cwd || "", gitBranch: s.gitBranch || "", workTree: s.workTree || null, host: hostOf(id) };
 }
 
 // Unsent composer text, per session — a draft belongs to the tab it was typed
@@ -19797,7 +19866,7 @@ function setupSettings(): void {
   applyChatScheme(settings);   // the persisted pick applies at startup — it survives reloads
   // renderTabs too: the tab strip reads settings (the context gauge toggle) but rerenderAll only
   // rebuilds the transcript views, so without it a gear change waited for the next kernel push.
-  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); rerenderAll(); refillOpenCommentPop(); });
+  onExternalSettingsChange((s) => { settings = s; applyChatScheme(s); renderTabs(); updateStatusline(); rerenderAll(); refillOpenCommentPop(); });   // updateStatusline: the line's widgets follow a gear switch live (T409), as the strip's do
 }
 
 // The feed's click echo (feed.ts focusEcho — the user 2026-08-24, "clicking into a not-shown

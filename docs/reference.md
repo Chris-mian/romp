@@ -48,6 +48,7 @@ These are for scripting and for agents rather than daily use:
 | `romp move <session> <dir>` | Move a session's working directory to `<dir>` (the folder must already exist); the conversation, name, mail and history stay with the session. Quiet session → moves now; open turn → queued, fires when the turn ends. See [Moving a session to another folder](#moving-a-session-to-another-folder) |
 | `romp checkin <host>` / `romp checkout <host>` | Publish this machine to an attached hub, or withdraw it. The hub files this machine under the name it declares only when that name is a machine name (letters, digits, dots, hyphens or underscores, starting with a letter or digit, at most 128 characters). Any other declared name is refused with a 400 that states the rule and echoes nothing, is recorded nowhere, and is said once on both machines: on the hub, one stderr line and one Log entry under the `refused` kind, naming the value as a clipped repr; on this machine, one stderr line, one dial-log record and one Log entry carrying the hub's reason, after which the same name is not re-sent until it, or the hub's kernel, changes. A hub's `POST /tunnels/trust` for a host it has never seen (the remembered-hosts entry that tiers relayed mail by origin) holds the wider rule that registry's writers share, a machine name or an ssh alias (letters, digits, dots, hyphens, underscores, at-signs, colons or square brackets, not starting with a hyphen, at most 255 characters), because a hub keys an attached peer by its ssh alias and carries that alias when you set trust between two of your machines; anything else is refused the same way, on the hub, with nothing recorded. `ROMP_HOST_NAME` (the kernel) and `ROMP_POSTAL_HOST` (the postal bus) override the declared name only when they clear the same rule; an unusable value (a space, an at-sign, a trailing newline) is set aside once, on stderr or in the bus log, and the derived name (the short hostname, else the platform's machine name, else a minted id) is used |
 | `romp default-dir [PATH]` | The default working directory for new sessions; no argument prints it, `""` clears it |
+| `romp login add <label> --cmd '<shell line>'`, `romp login list`, `romp login remove <label>` | The stored Claude logins a session can be billed to beside the machine's own (see [Several Claude logins](#several-claude-logins)): `add` records the command that prints the login's setup-token on demand (`--op` is the 1Password shorthand for `op read`); `list` and `remove` print labels only, never a token |
 | `romp debug [on\|off\|status]` | Judge debug mode, where rejection rows carry the full input and reply |
 | `romp refresh --quiet` | Refresh at the next quiet window instead — waits for sessions to finish their turns (15-min backstop). The ONLY door to the quiet window: a deploy (a peer's `romp update`, a release self-update, an automatic converge) restarts immediately, by the user's 2026-09-08 decision |
 | `romp down --wait <s>`, `romp down --now` | How long `romp down` waits for turns in flight to finish (0 to 600 seconds; default 5), or no wait at all |
@@ -446,6 +447,154 @@ the size of the number carries its explanation. A result that carries no
 per-model usage map is counted from the main loop alone, and the error center
 says so once: once per session when the CLI left the map out, once per kernel
 run when the Agent SDK the kernel imported has no field for it.
+
+### Several Claude logins
+
+A machine holds one Claude login at a time: Claude Code keeps the signed-in
+account in its own configuration directory, and `/login` replaces it. The
+user (2026-09-11) has a personal and an enterprise account under one email and
+wants a session billed to either, the way the Billing row offers Login vs API
+key. Romp therefore keeps a registry of STORED logins beside the machine's
+own: one record per login under `STATE/logins/<id>.json`, holding the label
+the user gave it, the email, organisation and kind word (`personal` for a Pro
+or Max subscription, `enterprise` for a Team or Enterprise one, read from
+Claude Code's own record when the add flow could, never guessed from an
+organisation's presence), and the COMMAND that prints the credential. The
+credential itself is a `claude setup-token` bearer (a one-year token) and
+lives wherever the user keeps it, nowhere in romp: no file under romp's state
+directory holds it, and it never rides romp's environment or a log line. Romp
+assumes nothing about where it is kept; it only runs the recorded command
+(a secret manager's read command, a private file's `cat`: the choice, and the
+setup that puts the token there, are the user's own, outside romp).
+
+A session billed to a stored login reaches the token the way a key-billed
+session reaches the key today, through Claude Code's `apiKeyHelper` contract:
+its per-session settings layer (the file the SDK hands the CLI as
+`--settings`, the same layer a login pick uses to write `"apiKeyHelper": ""`)
+names `bin/romp-login-helper <id> <state dir>` as the helper, and that script
+runs the record's token command and passes its output into the CLI's pipe, per
+request, refreshed on the CLI's own helper interval. The machine's own login
+tokens are stripped from such a launch, since a bearer in the environment
+outranks the helper. This helper road rests on one fact the user verifies on a
+machine with a login (the devbox has none): a request the CLI authenticates
+with a setup-token through the helper is accepted and billed to the
+subscription, not refused as a bad API key and not billed as API dollars. That
+check runs in a plain terminal outside any recorded session or agent
+transcript: minting a setup-token prints it, and a token in a transcript is a
+compromised token (the gear flow of the second change removes the handling).
+Should the check fail, the fallback is the environment road: the launch runs
+the token command itself and puts the token in that one session's process
+environment as `CLAUDE_CODE_OAUTH_TOKEN`, exactly where the machine's own
+login tokens ride today, readable by processes of the same user as those are.
+
+The command runs the way the kernel runs the box's own key helper: under a
+whitelisted environment (`PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`,
+`LC_ALL`, `TERM`, `CLAUDE_CONFIG_DIR` and the `LC_*` and `XDG_*` names), never
+the kernel's whole environment, whose serve token is full control of every
+session; with its standard input closed; and with its standard error
+discarded, since a secret manager's diagnostics can quote the value it read
+and the CLI's standard error is kept in the session's registry row and the
+kernel log. Anything the tool needs beyond that, the command provides itself:
+on a headless machine a secret manager's CLI needs its own session or service
+credential, so the command sources that from a private file (mode 0600) before
+the read, while a desktop's unlocked app serves as is. The login records themselves are written
+at mode 0600 in a 0700 directory.
+
+A failing command is loud, never a quiet fall onto another account. The
+session's first request fails with an auth error the card names by the login's
+label. When the CLI never used the helper and signed in with something else
+(the machine's own login from its credentials file, a managed key, a key found
+in a settings file), the init's own report is the evidence: its source word is
+anything but the helper's. The problem ring names what the CLI used, the tab
+hover reads `picked, but the CLI signed in with another credential`, the
+submenu's sub-line `CLI used another credential`, the record is marked refused
+so every menu greys it with that reason, and the session is reconnected so its
+next launch takes the same fall a dead machine login takes (the API key when a
+helper is configured, else the machine's own login, said in the Billing row as
+a fall). The session is not ended, since that would drop the conversation: it
+keeps running on the fallback side, flagged, and the Billing menu switches it
+elsewhere on a click. The reconnect is asked once per session, and only when
+the machine has a side to fall to (a helper, or a signed-in machine login);
+with neither, a relaunch would carry the same failing helper and land wrong
+again, so the session stays where it landed, flagged. The API-health bucket and
+the spend rows follow the credential that actually answered, never the pick,
+and an API auth error marks a stored login refused only on a session whose
+launch carried that login's helper and whose CLI used it. That evidence is
+per process: a relaunch that no longer carries the helper (the login went
+unavailable, then a model or effort change) starts with none, and it is kept
+on the session's registry row so a session re-attached to its running CLI
+after a kernel restart keeps it through the turn: an attach launches nothing
+and resets nothing. A served reply on
+a session whose helper did answer is the deciding event the other way and
+clears the refusal; a judge call never clears one (its envelope does not say
+which login answered), and the judges of a session on a refused login take the
+same fallback, said once in the kernel log. The helper bounds the command at fifteen seconds (the kernel's own helper
+bound; `ROMP_LOGIN_HELPER_TIMEOUT_S` overrides it). A command whose text
+carries a credential-shaped run (a setup-token's prefix, forty or more token
+characters outside a path, or a JWT-shaped bearer of three dot-joined
+segments) is refused at add time: it would ride the shell's argument list on
+every refresh, readable to every process of the same user, and the refusal
+says a value typed there is already exposed through the shell's history and
+should be rotated. Dotted names pass (a secret manager's key path, a host, a
+file), a forty-digit hex run inside a `gpg` command or right after
+`--recipient` is a key fingerprint and passes, and the rule is applied at add
+time only: a stored record is never re-read against it.
+
+A machine or session with no stored login works exactly as today: the ordinary
+Claude Code login and the API key path are untouched, and the stored logins
+are an addition beside them. The user's own shape is the case the tests pin:
+the personal account on the ordinary login as now, and the enterprise account
+as a stored login whose command reads a setup-token from the user's secret manager.
+
+Three things to know plainly. The judges bill the SAME account as the session
+they judge: a session billed to a stored login has its planner, closer and
+distiller calls carry that login's helper too, so its analysis is subscription
+usage on that login; a session on the machine default is unchanged. A pasted
+token's label is the user's word: romp cannot read an account or an
+organisation out of a token it never sees, so a login added from the command
+line carries only the label typed for it. And the tool the command calls must
+work non-interactively for the user who runs romp (a signed-in secret manager
+CLI, for example), as the machine's key helper already must.
+
+One door adds a login. `romp login add <label> --cmd '<shell line>'` records
+the command that prints the token; romp never reads, prints or stores the
+token. Minting the token and putting it in a store is the user's own setup,
+outside romp (a script of their own that runs `claude setup-token` under a
+scratch configuration directory, hands the printed token to their store, and
+ends by calling this command). `romp login list`
+prints the labels, `romp login remove <label>` forgets a record (a label two
+records share is refused; name the id instead); the token stays wherever it
+was kept.
+
+Every surface that offers a billing pick lists every login the machine knows
+plus the API key: the new-session picker's Billing row (segmented buttons up
+to three choices, one dropdown beyond; an unavailable choice greyed with its
+reason), the tab menu's Billing submenu (the session's current login
+check-marked, an unavailable one greyed with the reason in its hover), the tab
+hover's Billing row and the submenu's sub-line (`Login (name@example.com ·
+Org · enterprise)` for the machine's own login, `Login (<label> · Org ·
+kind)` for a stored one, each piece only when known), and the gear's Account
+section, which lists the stored logins with a Remove each. The pick reaches
+the kernel as `login` (the machine's own), `key` or `login:<id>`; the
+registry's `auth` stays `login` | `key`, and a new `authLogin` field names the
+stored login, so every older reader keeps its meaning. A fork bills the same
+login as its parent. The API-health signal gives a stored login its own
+bucket, labelled `login:<salted digest of the record id>`, and the card names
+such a bucket by the login's label when several share a model family.
+
+Failures are loud. An API refusal of a stored login's credential names the
+login by label on the session's card (`the <label> login was refused`) and
+marks the record refused: every menu greys it with that reason until it is
+removed or added again, and `setAuth` refuses it with the same sentence. A
+stored login's one-year life is warned from eleven months in the gear and the
+menus, and an expired one reads as unavailable. The machine's own login
+signing out leaves a session billed to a stored login untouched (its helper
+is its own; only the machine-login option greys). A single-login machine with
+no stored logins behaves exactly as before.
+
+The Billing surfaces that list the logins, name the enterprise one and switch a
+session's pick ship with the registry and the credential road; the gear's
+guided add flow is the second change.
 
 ### Self-scheduled work wakes an idle session
 
@@ -1509,6 +1658,19 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
 - `process`: `rss_kb` (resident set size in KB: the current size on Linux,
   read from `/proc`; the peak, `ru_maxrss`, on macOS, which has no `/proc`),
   `threads`, `cpu_s`, `pid`.
+- `jobs`: the jobs thread, which runs the housekeeping (the sweeps, the
+  reminder walk, the interrupt tick, the persists, the pause and retry
+  family) off the pusher since 2026-09-13, so no browser frame waits on a
+  cold read: `passes`, `pass_ms_sum`, `pass_ms_max`, `pass_ms_last`,
+  `pass_cpu_ms_sum`, `pass_ms_p50`, `pass_ms_p90`, `pass_ms_ring_max`,
+  `ring_n`, `passFailed` (a pass that raised out of the loop and was
+  skipped), `splitFailed`, `firstPass` (the boot's first pass's stage split,
+  the shape of `pusher.firstCycle`) and `stageRing`. The pass's container
+  stage is `jobsPass`, its opening `jobs.prelude`; each job is still its
+  `jobs.<job>` stage, so a stage name says which thread ran it by the list
+  in `_pusher_cycle_jobs` (the pusher's: the checkpoint cycle, pending ops,
+  turn notify, the checkpoint persist and converge, the boot row backstop,
+  the kernel sample, the API health frame) against `_jobs_pass`.
 - `pusher`: `cycles`, `wakes` (every wake call; a burst of wakes runs one
   cycle), `wakes_event` and `wakes_backstop` (how the loop's wait ended),
   `cycle_ms_sum`, `cycle_ms_max` (since start), `cycle_ms_last`,
@@ -1551,7 +1713,15 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   until a clean cycle, so a cycle that woke the pusher itself before raising
   cannot spin the loop. The restart ledger's boot-health row carries
   the first cycle's `stages` beside `firstCycleS`, so a slow boot names its
-  stage without the kernel alive, and `parse`, the assembly's road counters at
+  stage without the kernel alive. Since the housekeeping moved to the jobs
+  thread the row carries two firsts: `firstCycleS` and `slow` are the
+  pusher's first cycle, the browser's own wait, the meaning every earlier
+  row had; `jobsFirstPassS` and `jobsSlow` are the jobs thread's first pass,
+  where the boot's cold reads now sit. The row is written by whichever loop
+  finishes its first LAST, so `stages` carries both splits (a key both own,
+  `jobs.other`, is summed); a jobs pass still open ten minutes after the
+  pusher's first cycle closed has the row written without it, marked
+  `jobsFirstPassPending`. The row also carries `parse`, the assembly's road counters at
   the first cycle's end (T398): `serve`, `fold`, `restore` (with
   `restore:afterDemote`, the restores taken over an entry the gates demoted
   instead of a whole parse, and `restore:chainRefused`, a document that stood
@@ -1608,7 +1778,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   boot's nudge walk `skipped` on its memo, those it `parsed` (at most forty
   each), and how many it `deferred` to a later pass.
   `firstCycleStacks` is the pusher's stack sampled through the first cycle
-  only, once a second for the first thirty samples and every five seconds
+  only (and `firstPassStacks` the jobs thread's through its first pass, the
+  same shape, with `firstPassStacksFailed`), once a second for the first thirty samples and every five seconds
   after, so the sixty-row cap covers three minutes and a long cycle shows
   where it ended (each row the seconds into the cycle, the stage mark and
   the eight innermost frames as "function (file:line)", the /perf sample's
@@ -1693,7 +1864,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `judge-index`, `judge-triage` and the other tiers' pool workers, `pool`
   for an unprefixed pool worker, `thread` for a default name with no target,
   `pusher`, `producer`, `index`, `triage`, `parse-warm`, `boot-warm`,
-  `sdk-boot`, `first-cycle-sampler`, `main`; never a session's name, sid, host or path (the ident
+  `sdk-boot`, `first-cycle-sampler`, `jobs` (the housekeeping loop split off the pusher), `main`; never a
+  session's name, sid, host or path (the ident
   keeps two workers sharing a kind apart). Each row has `self` (the thread building the
   sample), `stage` (the thread's current stage mark: the pusher's
   `jobs.<job>` or `push`, a handler's `connect`, `null` outside one) and
@@ -1716,7 +1888,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   browser reload or reconnect), `none` outside those (T401), and `asmCheckpoint.hydratedByStage`
   does the same for the hydration rows.
 - `asmCheckpoint`: the assembly documents since boot: `written`, `restored`,
-  `fallbacks` per reason (`version`, `session`, `inputs`, `lineage`, `shrunk`,
+  `fallbacks` per reason (`version`, `rows` (a version-6 document whose atom
+  row fails its shape check at load, or fails its decode at the first read
+  by any accessor of the index: the document is refused to the whole parse,
+  at load or at that first read, counted once),
+  `session`, `inputs`, `lineage`, `shrunk`,
   `rewrite`, `guard`, `identity`, `corrupt`, `restore`), `skipped` per reason
   (`noEntry`, `restored`, `written`, `noBoundary`, `unsplittable`,
   `reconstruction`, `oversize`, `unencodable`, `offsets`, `stat`, `write`;
@@ -1732,14 +1908,43 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   place at equal length plus an append passes the 64-byte guard, like a
   same-size same-mtime rewrite),
   `hydratedAtoms` and `hydratedBytes` (bodies read on demand for atoms before
-  a cut), `hydratedBy` (those bytes per calling function), and `converge`: the
+  a cut), `hydratedBy` (those bytes per calling function), `restoreMs`, the
+  restore's parts since boot in milliseconds to three decimals, each added on the
+  return it names (`load`: the document read, decompressed, decoded and its
+  file checks; `verify`: the turns section's identity and coverage, or the
+  atoms-only form's rows built and its identity proven; `index`: the lazy
+  index over the rows and the pre-cut turns; `seed`: the adapter's pre-cut
+  graph facts; `total`: the whole restore, entry to return, so the unnamed
+  remainder, the tail's parse through the seeded adapter, is `total` minus
+  the four), so a boot read names the mover; since document version 6 the
+  atom rows are stored as pre-serialized JSON strings, so the decode builds
+  strings, not dicts, and the index takes each row's bytes with no re-encode
+  (the deploy boot of that version refuses every standing document as
+  `version` and the settle rewrites it: that boot is the migration, the boot
+  after is the read), and `converge`: the
   pass's writes of idle leaves' documents from the boot's own parse
   (`candidates`, `writes`, `bytes`, `deferred`, `skipped` per the writer's
   reason).
 - `asmIndex`: the lazy index (T323 stage 4c) a restored session's pre-cut turns
   come from: `materialized` atoms built from the document's rows since boot,
-  `materializedBy` (per consumer), `resident` (the process-wide LRU, `cap`
-  20000 atoms across every session; eviction drops the memo, never a field in
+  `materializedBy` (per consumer), `materializedByStage` (the same builds
+  under the calling thread's stage mark beside the consumer, as
+  `hydratedByStage` does for bodies: `push`, `connect`, `jobs.<job>`,
+  `judge.<tier>` for a tier thread and every worker of the pools it
+  submits to (the mark rides the submit, as the pass frame does, since a
+  thread-local does not cross into a pool worker), `http.<METHOD>.<route>`
+  for every request and the socket a GET becomes (the route is the path's
+  first segment, or its first two under `/push`, `/tunnels` and `/usage`,
+  whose roads differ by the second), `warm.parse`, `warm.boot`,
+  `producer`, `revive`, `rewind.migration`, `rewind.holds`, `move`,
+  `remote-ws`, `federation.push`, `federation.pull`, `federation.ask`,
+  `ask-poll`; `none` means the build ran on a thread with no mark, which
+  should not happen: the kernel's thread census (every Thread, Timer and
+  pool construction site in the kernel and the judge, walked by the ast)
+  holds every thread marked or listed as a pure I/O helper, and a `none`
+  row on a live `/perf` names a thread the census missed), `resident` (the
+  process-wide LRU, `cap` atoms across every session: the machine's memory
+  over 32 KiB, never under 500,000; eviction drops the memo, never a field in
   place), `evictions`, and `restoredTurns`.
 - `skillLoadIndex`: the judge's skill-load boot pass (the tops older stores minted from
   the harness's own skill load): `filesRead` and `bytesRead` (transcripts read raw this
@@ -2082,7 +2287,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   parse on a matched key that a clock leg refused to serve: a flip due, a
   None flip, the closer toggle off), and `missBy[file]`, which counts, per
   miss, each key position that differed from the recorded one so a boot read
-  can name what moved; the positions in order are `transcript`, `states`
+  can name what moved (the counts overlap: one miss counts under every
+  position that moved, so their sum can exceed `misses`; read them beside
+  `misses`); the positions in order are `transcript`, `states`
   (the state log), `store` (the goal store), `overrides` (its journal),
   `archive`, `episode`, `cleared`, `messages` (the postal log), `downtime`,
   `ledger` (the nudge ledger, one file for the box), then `askerRow` for the
@@ -2101,9 +2308,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   interrupt block (the quiet boot read of 2026-09-13 counted 125 interrupt
   block misses: messages 50, the ledger 50, cleared 25, and no episode
   row; the two constant positions and the ledger row answer 100 of them).
-  `statesOverlay` is the
-  awaiting overlay's read of the
-  states log through the shared append-incremental reader, one carried answer
+  `statesOverlay` is the awaiting overlay's read of the states log through
+  the shared append-incremental reader, one carried answer
   per states file (`hit`: the records were the cached ones and no row was
   stepped; `append`: only the appended rows were stepped; `refold`: every row
   was stepped again, after a rewrite or a shrink or on the file's first read;
@@ -2137,8 +2343,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   uuids and user texts the transcript already holds, and the newest human
   turn's time), one entry per session keyed on the parsed session object's
   identity and shared by the chat, feed and timeline builds of one cycle:
-  `hit` and `miss` (merges served against derived) and the gauge `entries`
-  (a session neither shown as a tab nor alive is dropped). `chatPostal` is
+  `hit` and `miss` (merges served against derived), the gauge `entries`
+  (a session neither shown as a tab nor alive is dropped), and two numbers
+  a miss records (T401 (5b)): `floorAgeMaxS`, the largest distance from the
+  newest atom's time over every turn, live tail included, back to the
+  oldest live echo's send that floors the derivation (a zero floor, an echo
+  with no send time, is skipped, and a floor newer than every atom
+  contributes zero), and `builtAboveFloor`, the restored pre-cut user rows
+  the derivation itself built above such a floor since boot (never another
+  road's builds, never the rows it read already built); a restored session's
+  pre-cut turns above the floor are read through the index's light facts,
+  building only the user rows that carry text, so the two say whether a
+  dropped echo days back should hold the floor at all. `chatPostal` is
   the chat fold's memo of a tab's sealed postal cards, keyed on the values
   the cards embed from outside the transcript (the message log's identity
   and, per card, its caption and its peer's name and colour): `gate` (gate
@@ -2588,7 +2804,12 @@ bucket. A login is labelled by a salted digest of the account digest the usage
 bars stamp, so the same login gives the same label within one install, and
 nothing about the credential itself is in any label. The salt lives at
 `STATE/api-health-salt`, minted once at 0600; an empty file makes a login's
-label the account digest itself, so a bucket can be matched to the log.
+label the account digest itself, so a bucket can be matched to the log. A
+session billed to a stored login (see [Several Claude
+logins](#several-claude-logins)) hands its record id as the material instead,
+so that login is its own bucket, `login:<salted digest of the id>`, and the
+bucket carries the login's display label in `label` (empty for every other
+bucket), which the dashboard's card uses to name it.
 
 ### Top-level fields
 
@@ -2752,6 +2973,9 @@ own model and are exact.
   (connection-level failures) and `other`. Additive: the field arrived after
   the document's other fields and `schema` stayed `1`; a reader that ignores it
   sees the document it always saw.
+- `label`: the display label of the stored login this bucket's auth label
+  names (see [Several Claude logins](#several-claude-logins)), `""` for every
+  other bucket. Additive like `series`.
 
 ### On the dashboard
 

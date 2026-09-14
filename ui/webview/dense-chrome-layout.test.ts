@@ -32,6 +32,7 @@ const html = `<body style="margin:0;width:900px">
   ${tab("t3", "tests")}
   <div class="tab tab-add" id="add">+</div>
   <span class="tab-tagbox" id="tagbox">${TAGBTN}<span class="tab-tagchips" style="display:inline-flex;gap:5px;align-items:center;margin-left:2px;"></span></span>
+  <span class="tab-gearbox" id="gearbox"><button type="button" class="tab-widgets-gear" id="gear">\u26ED</button></span>
 </div></div>
 <div id="bg-tasks">
   <div class="bg-fold-head open" id="bar"><span class="bg-caret">▾</span><span class="bg-dot"></span><span class="bg-fold-label">In the background · 5 agents · 1 command</span></div>
@@ -47,7 +48,7 @@ const html = `<body style="margin:0;width:900px">
 </body>`;
 
 type Snap = {
-  tab: number; tabPrefixed: number; head: number; add: number; tagbox: number; sepW: number; sepLine: number;
+  tab: number; tabPrefixed: number; head: number; add: number; tagbox: number; gearbox: number; gear: number; sepW: number; sepLine: number;
   hostPrefixFs: number; closeFs: number; countFs: number;
   panel: number; bar: number; list: number; listMax: string;
   rowArrow: number; rowFlat: number; arrow: number;
@@ -78,7 +79,7 @@ const out = await page.evaluate(() => {
     const status = {};
     for (const id of ["running", "armed", "completed", "failed", "timer"]) status[id] = cs(q("#" + id + " .bg-status"), "display");
     return {
-      tab: h(q("#t1")), tabPrefixed: h(q("#t2")), head: h(q("#gh")), add: h(q("#add")), tagbox: h(q("#tagbox")),
+      tab: h(q("#t1")), tabPrefixed: h(q("#t2")), head: h(q("#gh")), add: h(q("#add")), tagbox: h(q("#tagbox")), gearbox: h(q("#gearbox")), gear: h(q("#gear")),
       sepW: sep.getBoundingClientRect().width, sepLine: h(sep) - parseFloat(cs(sep, "paddingTop")) - parseFloat(cs(sep, "paddingBottom")),
       hostPrefixFs: fs(q("#hp")), closeFs: fs(q("#t1 .tab-close")), countFs: fs(q("#gh .tab-group-count")),
       panel: h(q("#bg-tasks")), bar: h(q("#bar")), list: h(q("#list")), listMax: cs(q("#list"), "maxHeight"),
@@ -137,6 +138,11 @@ test("a tab is about 25px tall under the setting (32px by default); the + tab an
   near(on.tab, 25, "the dense tab"); near(on.tabPrefixed, 25, "a federated tab");
   near(on.add, 25, "the + tab (its 18px line + 2 x 3px + 1px border)");
   near(on.tagbox, 25, "the tag control's floor is the + tab's height, so its row stands no taller than the tabs' rows");
+  // the gear (T405 round two, the medium): its button stood 26px in the 25px row, and #tabs stretched every dense tab to 26
+  near(on.gearbox, on.tab, "the gear box stands no taller than the tabs' rows", 0.6);
+  assert.ok(on.gear <= on.tab + 0.01, "the gear button stands inside the dense row: " + on.gear.toFixed(2) + "px in a " + on.tab.toFixed(2) + "px row");
+  near(on.gear, 24, "the dense gear button: an 18px line, 2 x 2px padding, the border", 0.6);
+  assert.ok(off.gear <= off.tab + 0.01, "default: the gear button stands inside the row too: " + off.gear.toFixed(2) + " in " + off.tab.toFixed(2));
 });
 
 test("a group header stretches to its row's tabs, so it is the tab's height in both states", { skip }, () => {

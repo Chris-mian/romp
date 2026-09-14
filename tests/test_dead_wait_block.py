@@ -134,6 +134,16 @@ class _HermeticDeadWait(unittest.TestCase):
             p.unlink()
 
 
+class DeadWaitReportKeys(unittest.TestCase):
+    def test_the_perf_row_carries_the_eight_documented_keys(self):
+        """memos.deadWait on /perf is a copy of _DEAD_WAIT_STATS: its key set pinned (1591 low 1), so a counter added or renamed
+        moves the reference and the boot read with it."""
+        self.assertEqual(set(km._DEAD_WAIT_STATS), {"passes", "candidates", "sharedLoads", "sharedFallback", "loadFaults",
+                                                   "mutableLoads", "healed", "blocks"})
+        src = open(km.__file__, encoding="utf-8").read()
+        self.assertIn('("deadWait", lambda: dict(_DEAD_WAIT_STATS))', src, "the /perf row is the counters, whole")
+
+
 class DeadWaitBlock(_HermeticDeadWait):
     def test_dormant_stamped_card_converts_to_a_recognized_procedural_block(self):
         _seed_store()

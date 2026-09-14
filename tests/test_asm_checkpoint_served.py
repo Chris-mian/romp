@@ -265,7 +265,7 @@ class RestartOverACheckpointedSession(unittest.TestCase):
             sys.stderr.write("t323s4a served: the restored kernel's whole-read rows %s; first frame %.2fs against the first kernel's %.2fs "
                              "(a printed figure, not a bound; the bound of %.1fs stood at 15.4s on CI, 2026-09-13)\n"
                              % (json.dumps(whole_rows, sort_keys=True), dt2, dt1, max(15.0, 2.5 * dt1)))
-            n_lazy = sum(1 for row in doc["atoms"] if row.get("lz") is not None)   # the atoms with a body to read (not a boundary)
+            n_lazy = sum(1 for row in doc["atoms"] if json.loads(row).get("lz") is not None)   # the atoms with a body to read (not a boundary)
             self.assertGreater(asm["hydratedAtoms"], 0, "the frame hydrated the pre-cut atoms it rendered")
             self.assertEqual(asm["hydratedAtoms"], n_lazy, "each pre-cut atom with a body read once, at its offset, whoever asked first: %s"
                              % asm["hydratedBy"])
