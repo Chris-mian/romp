@@ -100,6 +100,20 @@ test("render.ts: the keycap is the T379 widget's, its chord is in the strip's re
   assert.match(RENDER, /window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === KEYS_EVENT\) renderTabs\(\); \}\);\n\s*window\.addEventListener\(KEYS_EVENT, \(\) => renderTabs\(\)\);/);
 });
 
+test("render.ts + styles.css: the bell command's word on the new state is a quiet NOTE toast, never a warning (review 2026-09-14: the warn border is the error colour, so a routine confirmation read as a failure)", () => {
+  // the helper beside ephemeralWarnToast: the same dismissible toast (the ✕, Esc, the fade, the reload-skip mark), dressed .note
+  assert.match(RENDER, /^function ephemeralNoteToast\(msg: string\): void \{ const t = warnToast\(msg\); t\.classList\.add\("note"\); t\.dataset\.ephemeral = "1"; \}/m);
+  assert.match(RENDER, /setSessionFlag\(activeId, "notify", on\);\s*ephemeralNoteToast\(\(on \? "Notifications enabled for " : "Notifications disabled for "\) \+ \(s\.name \|\| activeId\.slice\(0, 8\)\)\);/,
+    "the bell's confirmation, its wording kept");
+  assert.equal((RENDER.match(/ephemeralNoteToast\(/g) || []).length, 2, "the definition and the bell: a refusal stays a warning");
+  // the dress: the standard hairline every quiet notice wears (the seek note, the jump chip), no error or warning tint
+  const at = CSS.indexOf(".warn-toast.note {");
+  assert.ok(at > CSS.indexOf(".warn-toast {"), "declared after the base rule it overrides");
+  const rule = CSS.slice(at, CSS.indexOf("}", at));
+  assert.match(rule, /border-color: var\(--menu-border\);/);
+  assert.doesNotMatch(rule, /errorForeground|--warn\b|#f48771/);
+});
+
 test("render.ts: the tab menu's one row asks the shell to record a hot key; a bound one reads Update and the recorder removes too", () => {
   const i = RENDER.indexOf('l.textContent = cur ? "Update hot key…" : "Hot key…"');
   assert.ok(i > 0);

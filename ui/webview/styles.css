@@ -3313,6 +3313,10 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 }
 .warn-toast-x:hover { color: var(--fg); background: rgba(255, 255, 255, 0.08); }
 .warn-toast.fade { opacity: 0; }
+/* the same toast as a CONFIRMATION (render.ts ephemeralNoteToast; review 2026-09-14): the error-red border above
+   made the bell command's "Notifications enabled" read as a failure. The standard hairline the quiet notices wear
+   (the seek note, the jump chip), no error or warning tint; two classes, so it wins the base rule's border. */
+.warn-toast.note { border-color: var(--menu-border); }
 
 /* INTERRUPTING… chip (the user 2026-07-02): the stop is in flight — busy-yellow like working (it still
    is, briefly) but dimmed and static (no pulse, no timer); clears to READY on its own when the stop lands. */

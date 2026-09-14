@@ -11685,6 +11685,11 @@ function ensureToastBox(): HTMLElement {
 // as before: the nack (the attachment was not saved, the held message not sent), the dismissal and the other-tab ack
 // (the held message not sent).
 function ephemeralWarnToast(msg: string): void { warnToast(msg).dataset.ephemeral = "1"; }
+// The same toast for a CONFIRMATION (review 2026-09-14): the warn toast's border is the error colour, so a routine
+// "done" on it read as a failure. Dressed .note (styles.css: the standard hairline, no tint), otherwise the warn toast's
+// mechanics, the ✕, Esc, the fade and the reload-skip mark, since what it confirms is a state the fresh page reads
+// for itself. For an act that succeeded, never a refusal: those stay warnings.
+function ephemeralNoteToast(msg: string): void { const t = warnToast(msg); t.classList.add("note"); t.dataset.ephemeral = "1"; }
 
 // Tail-windowing (see the View comment): a fresh/rewound view renders only the
 // last WINDOW_TAIL events; scrolling within EXPAND_TRIGGER_PX of the top reveals
@@ -18053,13 +18058,14 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // the shell's palette, or a chord bound to it: flip the ACTIVE session's bell — the same per-session override the
   // tab menu's bell row writes (setSessionFlag "notify"), so the kernel's next push repaints the row; a toast names
   // the new state, since the icon in that menu is the flip's only other witness (the user 2026-09-11, who wanted the
-  // bell on a key). A placeholder tab has no session to flag yet; nothing happens.
+  // bell on a key). A quiet note, not a warning: it confirms (review 2026-09-14). A placeholder tab has no session to
+  // flag yet; nothing happens.
   if (m.romp === "notifyToggle") {
     const s = activeId && !isProvisionalId(activeId) ? liveSession(activeId) : undefined;   // a skeleton's copy is stale: no flag blind
     if (s && activeId) {
       const on = !s.notify;
       setSessionFlag(activeId, "notify", on);
-      ephemeralWarnToast((on ? "Notifications enabled for " : "Notifications disabled for ") + (s.name || activeId.slice(0, 8)));
+      ephemeralNoteToast((on ? "Notifications enabled for " : "Notifications disabled for ") + (s.name || activeId.slice(0, 8)));
     }
     return;
   }

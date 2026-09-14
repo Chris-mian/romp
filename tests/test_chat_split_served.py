@@ -92,6 +92,17 @@ DRAFT = "a half-typed note for the api session, kept across the move"
 ORPHAN_DRAFT = "a note for the web session, left in a column blob from before the partition"
 
 
+def _rgb(c):
+    """A CSS colour, hex (#RRGGBB) or rgb()/rgba(), as an (r, g, b) tuple: a computed style says rgb(), :root says hex."""
+    c = (c or "").strip()
+    m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+)", c)
+    if m:
+        return tuple(int(x) for x in m.groups())
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", c):
+        return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+    return c
+
+
 def _free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -438,6 +449,9 @@ const runPalette = async (fid, query) => {   // the chord from inside a column's
   await waitFn(() => { const b = document.getElementById("rpal-back"); return !!b && b.hidden; }, null, "the palette never closed on Enter");
 };
 const toasts = (fid) => page.evaluate((fid) => Array.from(document.getElementById(fid).contentDocument.querySelectorAll(".warn-toast-msg")).map((t) => t.textContent), fid);
+// the dress of the toast that said it (review 2026-09-14: a confirmation wears the quiet .note, never the warn's error border)
+const toastDress = (fid, word) => page.evaluate(([fid, word]) => Array.from(document.getElementById(fid).contentDocument.querySelectorAll(".warn-toast"))
+  .filter((t) => (t.textContent || "").includes(word)).map((t) => ({ note: t.classList.contains("note"), border: getComputedStyle(t).borderTopColor })), [fid, word]);
 // the other window: a second page in its own browser context (its own storage: nothing but the kernel can carry the flag), A on its first column
 const page2 = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 await page2.goto(cfg.url);
@@ -450,6 +464,8 @@ out.bell = { before: await bellLabelIn(page, "f-chat", cfg.sidA), beforeOther: a
 await runPalette("f-chat", "toggle notif");
 await waitFn((fid) => Array.from(document.getElementById(fid).contentDocument.querySelectorAll(".warn-toast-msg")).some((t) => /Notifications enabled for/.test(t.textContent || "")), "f-chat", "no toast said the bell went on");
 out.bell.toastOn = await toasts("f-chat");
+out.bell.toastOnDress = await toastDress("f-chat", "Notifications enabled for");
+out.bell.errorColor = await page.evaluate((fid) => { const d = document.getElementById(fid).contentDocument; return getComputedStyle(d.documentElement).getPropertyValue("--vscode-errorForeground").trim(); }, "f-chat");
 out.bell.afterOn = await bellLabelIn(page, "f-chat", cfg.sidA);                                            // this column: at once
 out.bell.otherAfterOn = await bellReadsIn(page2, "f-chat", cfg.sidA, "Stop notifying", "the other window never learned the bell went on");   // the other window: from the kernel
 await page2.close();
@@ -1148,6 +1164,12 @@ class ServedChatSplit(unittest.TestCase):
         b = self._r()["bell"]
         self.assertEqual((b["before"], b["beforeOther"]), ("Notify me", "Notify me"), "off to begin with: the lab's master is off and the session has no override")
         self.assertTrue(any(t == "Notifications enabled for web" for t in b["toastOn"]), "the toast names the session and the new state: %r" % b["toastOn"])
+        # review 2026-09-14: a confirmation on the warn toast's error-red border read as a failure; it wears the quiet .note
+        # (the standard hairline), and the computed border is NOT the theme's error colour
+        self.assertTrue(b["toastOnDress"] and all(d["note"] for d in b["toastOnDress"]), "the confirmation wears .note: %r" % b["toastOnDress"])
+        self.assertTrue(b["errorColor"], "the theme defines an error colour to compare against")
+        for d in b["toastOnDress"]:
+            self.assertNotEqual(_rgb(d["border"]), _rgb(b["errorColor"]), "the confirmation's border is not the error colour: %r vs %r" % (d["border"], b["errorColor"]))
         self.assertEqual(b["afterOn"], "Stop notifying", "the tab menu reads the other way at once")
         self.assertEqual(b["otherAfterOn"], "Stop notifying", "…and in another window, from the kernel's push: the flag reached the kernel and rode back out")
         self.assertTrue(any(t == "Notifications disabled for web" for t in b["toastOff"]), b["toastOff"])
