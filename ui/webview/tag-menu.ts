@@ -60,8 +60,9 @@ export function installMenuEcho(): void {
 
 let openMenu: HTMLElement | null = null;
 export function closeTagMenu(): void {
-  openMenu?.remove();
-  openMenu = null;
+  const m = openMenu;
+  openMenu = null;   // cleared BEFORE the removal: removing a menu with a focused row fires focusout, whose closer must find nothing left to close (round two of the strip tidy)
+  m?.remove();
 }
 // module-level closers, guarded: the model half of this module (and its constants) is importable
 // from non-DOM contexts (the node test runner) — only a real document wires the listeners
@@ -91,9 +92,11 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
     "border:1px solid var(--menu-border, rgba(255,255,255,0.12));border-radius:var(--radius-menu, 6px);box-shadow:var(--shadow-menu, 0 4px 12px rgba(0,0,0,0.35));" +
     "font-size:12px;line-height:1.4;color:var(--menu-fg, #cccccc);user-select:none;");
   menu.addEventListener("click", (e) => e.stopPropagation());
-  menuKeys(menu, anchor);   // the house rows grammar (T413 round two): Escape back to the button, the arrows walking the rows
+  const rebuilding = { on: false };   // a toggle's repaint removes the focused row, and Chromium fires focusout for it: the closer stands down meanwhile
+  menuKeys(menu, anchor, rebuilding);   // the house rows grammar (T413 round two): Escape back to the button, the arrows walking the rows, Tab out closing
   const build = () => {
     const focusAt = Array.prototype.indexOf.call(menu.children, document.activeElement);   // the focused row's place, kept across the repaint a toggle causes
+    rebuilding.on = true;
     menu.textContent = "";
     const lens = opts.lens();
     // (the scope caption retired 2026-08-25 — the user: the button tooltip already names the
@@ -143,11 +146,13 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
       menu.appendChild(s);
     }
     if (opts.groupToggle)
-      row(opts.groupToggle.label, opts.groupToggle.on(), true).addEventListener("click", () => { opts.groupToggle!.toggle(); build(); });
+      row(opts.groupToggle.label, opts.groupToggle.on(), true, true).addEventListener("click", () => { opts.groupToggle!.toggle(); build(); });   // a switch: the checkbox row with its state (the strip tidy after T413 round two)
     if (opts.onConfigure)
       row("Configure tags…", false, true).addEventListener("click", () => { closeTagMenu(); opts.onConfigure!(); });
     const back = menu.children[focusAt] as HTMLElement | undefined;   // the same place after the repaint: the rows rebuild in one order
-    if (back && back.tabIndex >= 0) back.focus();
+    if (back && back.getAttribute("role")) back.focus();
+    else { const first = menuRows(menu)[0]; if (first) first.tabIndex = 0; }   // no focus in the menu: the first row is the one tab stop
+    rebuilding.on = false;
   };
   build();
   document.body.appendChild(menu);
@@ -162,7 +167,10 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
   if (mh <= below || below >= above) { menu.style.top = Math.round(r.bottom + 4) + "px"; menu.style.maxHeight = Math.max(120, Math.floor(below)) + "px"; }
   else { const h = Math.min(mh, Math.max(120, Math.floor(above))); menu.style.top = Math.max(8, Math.round(r.top) - h - 4) + "px"; menu.style.maxHeight = h + "px"; }
   menu.style.overflowY = "auto";
-  (menu.children[0] as HTMLElement | undefined)?.focus();   // the first row takes the focus on open (the house rows menu's rule); the button's press prevents its own focus, so nothing fights it
+  // the focus moves to the first row on a KEYBOARD open only, when the button held it (Enter, Space or ArrowDown on the focused button);
+  // a pointer open leaves the focus where it was, the composer's (round one's rule, back after round two moved it): the press prevents
+  // the button's own focus, so the button never holds it then. Either way the first row is the menu's one tab stop (the strip tidy).
+  if ((anchor.ownerDocument || document).activeElement === anchor) menuRows(menu)[0]?.focus();   // the anchor's own document: the one whose focus the button can hold
   openMenu = menu;
 }
 
@@ -175,9 +183,10 @@ export function chipRun<T>(items: T[], limit: number): { shown: T[]; more: numbe
 /** The menus' mark, stated once (the tag menu and the rows menu): the house ✓-in-circle from --check-bg when on; off, an empty
  *  ring in the menu's hairline, so a CHECKBOX row reads in both states (T413, the user 2026-09-14). An exclusive pick (All) or
  *  an action row shows the ✓ alone when current and nothing otherwise. `data-check` carries the state for a reader of the DOM. */
-function checkMark(on: boolean): HTMLElement {
+export function checkMark(on: boolean): HTMLElement {
   const c = document.createElement("span");
   c.setAttribute("data-check", on ? "true" : "false");
+  c.setAttribute("aria-hidden", "true");   // decoration: the row's name is its label and its state is aria-checked, never the glyph (the strip tidy, round two)
   c.textContent = on ? "✓" : "";
   c.setAttribute("style", "position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;"
     + "display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:9px;font-weight:900;"
@@ -196,13 +205,25 @@ function liveAnchorOf(anchor: HTMLElement): HTMLElement | null {
   const all = Array.from(document.querySelectorAll(anchor.tagName.toLowerCase() + cls)) as HTMLElement[];
   return all.find((x) => x.getClientRects().length > 0) || all[0] || null;
 }
+/** the menu's rows: its children that carry a role (the separator carries none) */
+function menuRows(menu: HTMLElement): HTMLElement[] { return (Array.from(menu.children) as HTMLElement[]).filter((c) => !!c.getAttribute("role")); }
 /** The house rows grammar for a menu's keys (T405's rows menu; the tags menu since T413 round two): Escape closes the menu and hands
- *  the focus back to the anchor; ArrowDown and ArrowUp walk the focusable rows, Home and End jump to the ends, neither end wraps. */
-function menuKeys(menu: HTMLElement, anchor: HTMLElement): void {
+ *  the focus back to the anchor; ArrowDown and ArrowUp walk the rows, Home and End jump to the ends, neither end wraps. */
+function menuKeys(menu: HTMLElement, anchor: HTMLElement, rebuilding: { on: boolean }): void {
+  // Tab (or Shift+Tab) out of the menu closes it, the one-tab-stop pattern's other half (round two of the tidy: the menu stood open with
+  // the focus on the body); a focus moving between the rows keeps it, a focus leaving the WINDOW (relatedTarget null, the document no
+  // longer focused) is not a Tab and keeps it too, and the repaint a toggle causes (the focused row removed and rebuilt) is masked
+  menu.addEventListener("focusout", (e) => {
+    if (rebuilding.on) return;
+    const to = (e as FocusEvent).relatedTarget as Node | null;
+    if (to && menu.contains(to)) return;
+    if (!to && typeof document.hasFocus === "function" && !document.hasFocus()) return;
+    if (openMenu === menu) closeTagMenu();
+  });
   menu.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.stopPropagation(); closeTagMenu(); liveAnchorOf(anchor)?.focus(); return; }
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
-    const rows = (Array.from(menu.children) as HTMLElement[]).filter((c) => c.tabIndex >= 0);
+    const rows = menuRows(menu);
     if (!rows.length) return;
     e.preventDefault(); e.stopPropagation();
     const at = rows.indexOf(document.activeElement as HTMLElement);
@@ -210,12 +231,17 @@ function menuKeys(menu: HTMLElement, anchor: HTMLElement): void {
     rows[to].focus();
   });
 }
-/** A row that takes the focus and the keys (the same grammar): tabindex 0, the hover wash while focused, Enter and Space pressing
- *  it as a click would (the row's click listeners are the press). */
+/** A row that takes the focus and the keys (the same grammar): the hover wash while focused, Enter and Space pressing it as a click
+ *  would (the row's click listeners are the press). ONE TAB STOP (the ARIA menu pattern, the strip tidy after T413 round two): every
+ *  row starts at tabindex -1 and the focused row alone holds 0, roving with the focus (an arrow's or a click's), so Tab leaves the menu
+ *  instead of walking its thirty-odd rows; the arrows walk them. */
 function focusableRow(r: HTMLElement): void {
-  r.tabIndex = 0;
+  r.tabIndex = -1;
   r.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); r.click(); } });
-  r.addEventListener("focus", () => { r.style.background = "var(--menu-hover, rgba(255,255,255,0.09))"; });
+  r.addEventListener("focus", () => {
+    r.style.background = "var(--menu-hover, rgba(255,255,255,0.09))";
+    if (r.parentElement) for (const x of menuRows(r.parentElement)) x.tabIndex = x === r ? 0 : -1;   // the tab stop follows the focus
+  });
   r.addEventListener("blur", () => { r.style.background = "transparent"; });
 }
 
