@@ -265,6 +265,15 @@ no session is ever shown twice. The arrangement, each column's sessions and widt
 remembered per browser across reloads. Four columns at most; the phone shows one pane at a time
 and never splits.
 
+A tab can have a **hot key**: right-click it, pick **Hot key…**, press a combination, and the
+combination shows on the tab after its name; pressing it switches to that session, in the column that holds it. Once one is set the row reads
+**Update hot key…**: press a new combination to change it, or Backspace or its **Remove**
+button to take it away. **Focus the next chat column** and
+**Focus the previous chat column** in **Keyboard shortcuts** take a hot key too, and cycle the
+focus between the columns; **Toggle notifications for this session** flips the bell of the
+session you are looking at (the tab menu's **Notify me**) and flashes "Notifications enabled
+for web" or "disabled"; once it has a key, the menu's row shows it.
+
 ### The feed
 
 The feed is Romp's task-management layer: a card for each task. Romp's

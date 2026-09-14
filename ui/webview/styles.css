@@ -712,6 +712,10 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
 /* right-click context menu on a tab — themed like VS Code's own menus */
 .ctx-menu {
   position: fixed; z-index: 100; min-width: 110px; padding: 4px;
+  /* a menu taller than the window scrolls instead of losing its bottom rows (CI find 2026-09-13: in a 300px-tall window the
+     tab menu's Billing and Browse files rows sat below the edge, unreachable; one more row made the Billing lab's click
+     miss). The flyouts it hosts are fixed-positioned children: an overflow here never clips them */
+  max-height: calc(100vh - 8px); overflow-y: auto; overscroll-behavior: contain;
   background: var(--menu-bg);   /* the reference spec reads the menu tokens it names (T226); the token
                                    composes the VS Code menu colour this rule always followed */
   color: var(--menu-fg);
@@ -3332,6 +3336,10 @@ body.picker-lifted > #picker.kb-tight { align-items: flex-start; padding: 12px 1
 }
 .warn-toast-x:hover { color: var(--fg); background: rgba(255, 255, 255, 0.08); }
 .warn-toast.fade { opacity: 0; }
+/* the same toast as a CONFIRMATION (render.ts ephemeralNoteToast; review 2026-09-14): the error-red border above
+   made the bell command's "Notifications enabled" read as a failure. The standard hairline the quiet notices wear
+   (the seek note, the jump chip), no error or warning tint; two classes, so it wins the base rule's border. */
+.warn-toast.note { border-color: var(--menu-border); }
 
 /* INTERRUPTING… chip (the user 2026-07-02): the stop is in flight — busy-yellow like working (it still
    is, briefly) but dimmed and static (no pulse, no timer); clears to READY on its own when the stop lands. */

@@ -181,8 +181,9 @@ registerTabWidget({
 
 // The HOT KEY keycap (the user 2026-09-12, amending T379): the chord that switches to this tab, at its shortest, after
 // the name. The per-tab hot keys live under romp:tabkeys (a set of sids) with a keybinding override per sid under
-// session.hotkey.<sid>; nothing in this tree writes them yet, so the keycap composes the day an assignment ships, and
-// renders nothing until a hot key is assigned. No options.
+// session.hotkey.<sid>; the tab menu's Hot key… row assigns one (render.ts, through the shell's shortcuts recorder) and
+// palette-main.ts registers the "Switch to <name>" command per sid from the set (tab-keys.ts owns the set's rules); the
+// keycap renders nothing until a hot key is assigned. No options.
 export const TABKEYS_KEY = "romp:tabkeys";
 export const HOTKEY_PREFIX = "session.hotkey.";
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test((navigator as { platform?: string }).platform || "");
