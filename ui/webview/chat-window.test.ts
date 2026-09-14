@@ -76,8 +76,8 @@ test("render.ts asks for older history only on an upward move, marks each window
   assert.ok(around.includes('scrollDiagRow("regionask", { sid, why: "landing",'), "…and files a diagnostic row under the scroll rows' per-minute budget: the report's rows had the landing but not the ask (the T366 window-ask row, regionask since the regions)");
   assert.ok(RENDER.includes('| "unitchange" | "regionask", data: any): void {'), "the budgeted row kinds include it, and the window-ask kind is gone");
   assert.ok(around.indexOf("const rec: WindowAsk = { anchor: uuid, nav,") < around.indexOf('type: "loadAround"'), "the mark is set before the ask goes out");
-  // a refused window leaves the kernel's base on the window until the re-attach lands; a tail pushed meanwhile misses its
-  // anchor and asks for a full frame as a gap, which must not overwrite the pending reattach reason (a replace, not a merge)
+  // a second full ask while one is in flight is dropped before it can overwrite the pending reason (kept for the reconnect's diagnostics:
+  // every full frame merges into the held runs since T386 stage 2, so no reason decides a merge or a replace any more)
   const full = RENDER.slice(RENDER.indexOf("function requestFullSession(id: string, why: NeedFullWhy): void {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function requestFullSession(id: string, why: NeedFullWhy): void {")));
   assert.ok(full.indexOf("if (!id || awaitingFull.has(id)) return;") < full.indexOf("pendingFullWhy.set(id, why);"), "a second full ask while one is in flight is dropped before it can overwrite the pending reason");
 });

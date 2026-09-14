@@ -11259,7 +11259,14 @@ function scrollToAnchor(uuid: string): boolean {
                 || v.el.querySelector(`.turn[data-uuids~="${cssEscape(uuid)}"]`)) as HTMLElement | null;
     } else if (s && s.proto === 2 && (olderOnServer(s) || (s.regions && s.regions.some((r) => r.kind === "gap")))) {
       // proto 2 (T323 stage 4b): the anchor is outside the resident run — ONE window around it (chatWindow lands it)
-      if (loadingOlder.has(activeId) || liveWindowAsk(activeId)) { landTrail.push("pointer-fetch-busy"); landToast("still going to the earlier message"); return false; }   // a LIVE landing is already on the wire (T386 stage 2, low 6; a cancelled one is not busy, round seven): the first stands, the second is refused with a cue (low 4), not silently repointed
+      // a LIVE landing already on the wire is busy (T386 stage 2, low 6: the first stands, the second is refused with a cue; a cancelled one is
+      // not busy, round seven)
+      if (liveWindowAsk(activeId)) { landTrail.push("pointer-fetch-busy"); landToast("still going to the earlier message"); return false; }
+      // an OLDER fetch in flight is no reason to refuse (round nine, medium 1): a proto-2 frame whose tailLo the kernel could not name leaves
+      // the page with no regions and its head asked by loadOlder, and refusing here armed nothing (the reload restore's caller then dropped
+      // its arm and the landing never happened, even after the older page arrived). The fetch is re-pointed onto this anchor, as the index
+      // wire's is below, and chatHead lands it when the page arrives, or re-attempts, which asks the window then.
+      if (loadingOlder.has(activeId)) { pendingOlderAnchor.set(activeId, uuid); pendingOlderKeepY.delete(activeId); pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-older"); return false; }
       if (requestAround(activeId, uuid)) {   // the ask's record holds the anchor (round eight); the older wire's marks below are chatHead's alone
         pendingAnchor = uuid; anchorPendingOlder = true; landTrail.push("pointer-fetch-window"); return false;
       }
@@ -17290,7 +17297,11 @@ let skeletonDiagArmed = true;
 // event, which fires at onopen while the dead socket's last frames may still be draining from the FIFO)
 // A send still unconfirmed at the socket's down edge may never have reached the kernel: say so on its bubble
 window.addEventListener("romp:wsdown", () => markPendingLost("connection"));
-window.addEventListener("romp:wsdown", () => {
+window.addEventListener("romp:wsdown", () => onWireDown());
+/** The wire went down with asks in flight: the browser's socket (romp:wsdown) or the VS Code pane's pipe (the pipeState frame's down edge;
+ *  the pane never sees romp:wsdown, and a kernel restart mid-landing left its live record, its notice and every later click refused for the
+ *  pane's life, round nine). One clear for both. */
+function onWireDown(): void {
   // the socket died with asks in flight (a blip, the watchdog's abandon, a tunnel flap): their replies come on no socket, so clear EVERY
   // in-flight ask's state (T386 stage 2, medium 1), not the glyph alone, or a landing's gap stays unable to ask for the page's life and its
   // notice stands forever. gapLoading and its glyphs, the landing's held gap, the older-ask set, and the notice all go; a landing in flight
@@ -17301,7 +17312,7 @@ window.addEventListener("romp:wsdown", () => {
   hideLandingNotice();
   pendingAnchor = null; anchorPendingOlder = false;
   if (liveLanding) { landTrail.push("wsdown-lost"); landToast("the connection dropped before the jump; scroll to it again"); }
-});
+}
 
 function chatTail(msg: any) {
   // A tail for a tab held as SKELETON (2026-09-07) violates the contract — the kernel sends such a tab status
@@ -18237,7 +18248,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   }
   // the pipe's down edge is the VS Code twin of the shim's romp:wsdown: unconfirmed sends say so (markPendingLost)
   if (m.type === "pipeState" && m.up) reaskWaitingSubagents();   // the extension's reconnect-class event (it never sees romp:wsup), T355
-  if (m.type === "pipeState") { if (!m.up) markPendingLost("connection"); pipeBanner(!!m.up, Number(m.queued) || 0); return; }
+  if (m.type === "pipeState") { if (!m.up) { markPendingLost("connection"); onWireDown(); } pipeBanner(!!m.up, Number(m.queued) || 0); return; }   // the pane's down edge clears the in-flight asks as the socket's does (round nine, medium 2)
   // any kernel message proves the kernel is reachable again — heal previews whose fetch died in a
   // restart window (preview.ts retryFailedPreviews; a no-op when nothing failed). federation's
   // tunnel poll rides this same path: it dispatches {type:"hostUp"} on a host's down→up transition,
