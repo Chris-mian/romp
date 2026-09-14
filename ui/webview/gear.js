@@ -25,8 +25,8 @@ var gclock = require('./gesture-clock.js');   // every `gt` below is minted here
 var BN = require('./backend-names.ts');   // the backends' user-facing names and the offer rule (T288)
 var WP = require('./widget-prefs.ts');   // the order arithmetic both widget sections' drags share (moveId)
 var SW = require('./status-widgets.ts');   // the status line's widgets (T409): the Status line section's rows render from its registry, as the line does
-var TW = require('./tab-widgets.ts');
-var SC = require('./status-controls.ts');   // the status line's controls (T415 part two): the preview draws them through the line's own renderer, over a demo status   // the tab-title widgets (T379): the registry the Tab widgets section's rows render from, the strip's own module
+var TW = require('./tab-widgets.ts');   // the tab-title widgets (T379): the registry the Tab widgets section's rows render from, the strip's own module
+var SC = require('./status-controls.ts');   // the status line's controls (T415 part two): the preview draws them through the line's own renderer, over a demo status
 var LS = require('./landing-settle.ts');   // gestureEvidence: the chat's rule for telling the user's scroll from the browser's own (the section ask ends only on input, T379 follow-up)
 function kb() { return (typeof window !== 'undefined' && window.__rompKernelBase) || ''; }
 function ku(path) {
@@ -945,7 +945,7 @@ function initGear(post, opts) {
       // selected colormap, the battery filled and coloured by its percentage; no hooks, so nothing opens and nothing compacts
       var st = SC.demoStatus(cmStops(load().colormap));
       var meta = document.createElement('span'); meta.className = 'spinner-meta'; SC.syncMetaControls(meta, st, null, {}); right.appendChild(meta);
-      var bar = SC.ctxBar(); SC.setCtxBar(bar, st.ctx, false, st.ctxColor, false); right.appendChild(bar);
+      var bar = SC.ctxBar(); SC.setCtxBar(bar, st.ctx, false, SC.pickTone(st.ctxColor, st.ctxTone), false); right.appendChild(bar);   // the tone on the yatharth themes, as the line picks it
       line.appendChild(right);
       return SW.makeInert(line);   // a preview never carries the folder's click act (review round two, low 4)
     },
@@ -954,9 +954,13 @@ function initGear(post, opts) {
     demo: function (w, prefs) { return SW.renderStatusWidgetDemo(w, prefs); },
   });
   function paintWidgets() { tabSection.paint(); ringSection.paint(); statusSection.paint(); }
-  // the previews' tints follow the theme (T415 part two): the light theme re-encodes the badges' colours at paint (ctx-color's
-  // readableRgb reads the body's class), so a theme flip repaints the previews, as the chat's line repaints on its own tick
+  // the previews' tints follow the theme and the colormap (T415 part two): the light theme re-encodes the badges' colours at paint
+  // (ctx-color's readableRgb reads the body's class) and the demo's tints sample the selected map, so a theme flip (the body's class,
+  // applyTheme) and every settings write (the same-document signal save() raises, the storage event from another frame) repaint the
+  // previews, as the chat's line repaints on its own tick
   if (typeof MutationObserver === 'function') new MutationObserver(function () { paintWidgets(); }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  window.addEventListener('romp:settings', function () { paintWidgets(); });
+  window.addEventListener('storage', function (e) { if (e.key === 'romp:settings') paintWidgets(); });
   // The remaining native selects sweep onto the same builder (the user 2026-08-27, closing the
   // 3-house/3-native split the gauge migration left): a generic adapter over ANY hidden select —
   // options snapshot from sel.options (so the effort selects, whose options arrive from /models

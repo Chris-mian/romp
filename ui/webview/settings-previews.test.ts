@@ -54,7 +54,9 @@ test("(5) the status line preview draws its controls and battery through the lin
   assert.match(GEAR, /var SC = require\('\.\/status-controls\.ts'\);/, "the shared module rides the card");
   assert.match(STATUS_SECTION, /var st = SC\.demoStatus\(cmStops\(load\(\)\.colormap\)\);/, "the demo status on the SELECTED colormap");
   assert.match(STATUS_SECTION, /var meta = document\.createElement\('span'\); meta\.className = 'spinner-meta'; SC\.syncMetaControls\(meta, st, null, \{\}\); right\.appendChild\(meta\);/, "the badges, no hooks: inert");
-  assert.match(STATUS_SECTION, /var bar = SC\.ctxBar\(\); SC\.setCtxBar\(bar, st\.ctx, false, st\.ctxColor, false\); right\.appendChild\(bar\);/, "the battery, filled and coloured by its percentage");
+  assert.match(STATUS_SECTION, /var bar = SC\.ctxBar\(\); SC\.setCtxBar\(bar, st\.ctx, false, SC\.pickTone\(st\.ctxColor, st\.ctxTone\), false\); right\.appendChild\(bar\);/, "the battery, filled and coloured by its percentage, the tone on the yatharth themes as the line picks it (round three)");
+  assert.match(GEAR, /var TW = require\('\.\/tab-widgets\.ts'\);   \/\/ the tab-title widgets \(T379\)/, "the tab-widgets require keeps its comment (round three, low c)");
+  assert.match(GEAR, /var SC = require\('\.\/status-controls\.ts'\);   \/\/ the status line's controls \(T415 part two\)[^\n]*\n/, "…and the status-controls require its own, on its own line");
   assert.doesNotMatch(GEAR, /rs-sl-ctl|rs-sl-batt|Auto · Opus 5 · high|textContent = '62%'/, "no words and no boxed number standing in for the controls");
   assert.doesNotMatch(GEAR_CSS, /rs-sl-ctl|rs-sl-batt/, "…and no rules for them");
   assert.match(GEAR, /function cmStops\(name\) \{ return CMAPS\[\(name \|\| ''\)\.toLowerCase\(\)\] \|\| CMAPS\.aurora; \}/, "the card's stops by name, aurora the default as in the chat");
@@ -65,7 +67,8 @@ test("(5) the renderer is one module: render.ts imports it and keeps only the ch
   for (const sig of ["export type MetaKind = \"mode\" | \"model\" | \"effort\" | \"fast\";", "export function metaButton(kind: MetaKind, text: string, forSid: string | null | undefined, hooks: MetaHooks): HTMLElement {",
     "export function syncMetaControls(meta: HTMLElement, st: MetaStatus, forSid: string | null | undefined, hooks: MetaHooks): void {", "export function metaColor(kind: MetaKind, st: MetaStatus): string {",
     "export function ctxBar(onClick?: (bar: HTMLElement) => void): HTMLElement {", "export function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[] | null, ctxOver = false, sweep?: (scan: HTMLElement, fresh: boolean) => void): void {",
-    "export function rampOn(v: number, stops: ReadonlyArray<readonly [number, number, number]>): [number, number, number] {", "export function demoStatus(stops: ReadonlyArray<readonly [number, number, number]>): DemoStatus {"])
+    "export function rampOn(v: number, stops: ReadonlyArray<readonly [number, number, number]>): [number, number, number] {", "export function demoStatus(stops: ReadonlyArray<readonly [number, number, number]>): DemoStatus {",
+    "export function roundHalfEven(x: number): number {", "export function toneRgb(family: ToneFamily, v: number): [number, number, number] {", "export function contextRgb(pct: number): [number, number, number] {", "export { pickTone };"])
     assert.ok(MODULE.includes(sig), "the module exports: " + sig);
   assert.match(RENDER, /^import \{[^}]*\bsyncMetaControls as syncMetaControlsWith\b[^}]*\} from "\.\/status-controls";/m, "the chat imports the renderer");
   for (const gone of [/^const MODE_ICONS: Record<string, string> = \{/m, /^function modeIconSvg\(/m, /^function riskyMode\(/m, /^function metaColor\(/m, /^function prettyMode\(/m, /^function prettyFast\(/m, /^function fastAvailable\(/m, /^function metaCurrent\(/m, /^function metaDots\(/m, /^type MetaKind = /m])
@@ -90,14 +93,15 @@ test("(5) the demo's tints follow the kernel's rank rule: the module's family an
   assert.match(KERNEL, /_MODEL_RANK = _ramp_ranks\(MODEL_CHOICES, ascending=False\)/); assert.match(KERNEL, /_EFFORT_RANK = dict\(_ramp_ranks\(EFFORT_CHOICES, ascending=True\)\)/);
   assert.match(MODULE, /export function modelRank\(model: string\): number \| null \{/, "a family's rank: the first family word the model name contains, as the kernel's _model_color reads it");
   assert.match(MODULE, /export function effortRank\(effort: string\): number \| null \{/);
-  assert.match(MODULE, /mode: "auto", model: "Opus 5", effort: "high", ctx: "62%"/, "the demo: what the card's words said, now drawn");
+  assert.match(MODULE, /const modelV = modelRank\("Opus 5"\), effortV = effortRank\("high"\), ctxPct = 62;\s*\n\s*return \{ mode: "auto", model: "Opus 5", effort: "high", ctx: ctxPct \+ "%",/, "the demo: what the card's words said, now drawn, its tones beside its colours (round three)");
+  assert.match(MODULE, /modelTone: modelV === null \? null : toneRgb\("model", modelV\), effortTone: effortV === null \? null : toneRgb\("effort", effortV\), ctxTone: contextRgb\(ctxPct\)/, "the kernel's tone pairs, so the yatharth themes read the tones as the line does");
 });
 
 test("(5) the settings sheet dresses the preview's controls as the chat's sheet dresses the line, declaration for declaration", () => {
   for (const sel of [".spinner-meta", ".meta-btn", ".meta-caret", ".meta-ico", ".meta-ico svg", ".ctx-bar", ".ctx-fill", ".ctx-text"])
     assert.equal(rule(GEAR_CSS, "#rsettings .rs-sl " + sel, "gear.css"), rule(CSS, sel, "styles.css"), sel + ": the same declarations on the card");
   assert.match(GEAR_CSS, /\n#rsettings \.rs-sl \.ctx-scan \{ display: none; \}/, "the compaction scan never shows in a preview");
-  assert.match(GEAR_CSS, /\n#rsettings \.rs-sl \.meta-btn, #rsettings \.rs-sl \.ctx-bar \{ cursor: default; \}\n#rsettings \.rs-sl \.spinner-meta \{ flex-wrap: nowrap; margin-left: 0; \}\n#rsettings \.rs-sl-right \{ flex: 0 0 auto; \}\n#rsettings \.rs-sl \{ flex-wrap: wrap; row-gap: 6px; \}/,
-    "the departures, after the copies: nothing here opens or compacts; the badges never wrap in the card's width; no lead-in margin; the cluster keeps its width and drops below as one row when the card is too narrow");
+  assert.match(GEAR_CSS, /\n#rsettings \.rs-sl \.meta-btn, #rsettings \.rs-sl \.ctx-bar \{ cursor: default; \}\n#rsettings \.rs-sl \.spinner-meta \{ flex-wrap: nowrap; margin-left: 0; \}\n#rsettings \.rs-sl-right \{ flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; max-width: 100%; row-gap: 6px; \}\n#rsettings \.rs-sl \{ flex-wrap: wrap; row-gap: 6px; \}/,
+    "the departures, after the copies: nothing here opens or compacts; the badges never wrap in the card's width; no lead-in margin; the cluster keeps its width, drops below as one row when the card is too narrow, and under 440 px wraps its battery under the badges rather than leave the card (round three, low e)");
   assert.doesNotMatch(GEAR_CSS, /#rsettings \.rs-sl \.meta-btn:hover/, "no hover lift on an inert badge");
 });

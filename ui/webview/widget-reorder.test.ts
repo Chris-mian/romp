@@ -131,7 +131,7 @@ test("the previews are drawn by the surfaces' own composers over the demo record
   assert.match(GEAR, /SW\.composeStatusWidgets\(line, 'left', SW\.DEMO_RECORD, prefs\);/);
   assert.match(GEAR, /chip\.className = 'chip rs-sl-chip'; chip\.textContent = 'Ready';/);
   assert.match(GEAR, /SW\.composeStatusWidgets\(right, 'right', SW\.DEMO_RECORD, prefs\);/);
-  assert.match(GEAR, /SC\.syncMetaControls\(meta, st, null, \{\}\); right\.appendChild\(meta\);\s*\n\s*var bar = SC\.ctxBar\(\); SC\.setCtxBar\(bar, st\.ctx, false, st\.ctxColor, false\); right\.appendChild\(bar\);/, "the fixed controls, drawn by the line's own renderer over the demo status (T415 part two)");
+  assert.match(GEAR, /SC\.syncMetaControls\(meta, st, null, \{\}\); right\.appendChild\(meta\);\s*\n\s*var bar = SC\.ctxBar\(\); SC\.setCtxBar\(bar, st\.ctx, false, SC\.pickTone\(st\.ctxColor, st\.ctxTone\), false\); right\.appendChild\(bar\);/, "the fixed controls, drawn by the line's own renderer over the demo status, the battery's tone picked by theme (T415 part two, round three)");
   assert.match(GEAR_CSS, /#rsettings \.rs-preview-title \{[^}]*text-transform: uppercase;/);
 });
 

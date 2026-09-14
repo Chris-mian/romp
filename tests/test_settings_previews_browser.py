@@ -86,15 +86,36 @@ const readLine = (f) => f.evaluate(() => {
   return { btns, bar: bar ? { display: getComputedStyle(bar).display, w: Math.round(bar.getBoundingClientRect().width), h: Math.round(bar.getBoundingClientRect().height), fillW: fill ? fill.style.width : null,
                               fillBg: fill ? getComputedStyle(fill).backgroundColor : null, text: txt ? txt.textContent : null } : null };
 });
-const setTheme = async (frames, theme) => { for (const f of frames) await f.evaluate((t) => document.body.classList.toggle("theme-light", t === "light"), theme).catch(() => {}); await page.waitForTimeout(500); };
+// the theme the PRODUCT's way (round three): the store's theme key ("classic", "yatharth", "yatharth-light") and the same-document signal in the
+// shell page; every frame applies it through applyTheme on the storage event (theme.ts: chat-theme-yatharth for both yatharth themes,
+// theme-light for yatharth-light only). Never a body class toggled by hand, a combination the product cannot produce.
+const THEMES = { dark: "classic", yatharth: "yatharth", light: "yatharth-light" };
+const setTheme = async (frames, theme) => {
+  await page.evaluate((name) => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); s.theme = name; localStorage.setItem("romp:settings", JSON.stringify(s)); window.dispatchEvent(new Event("romp:settings")); }, THEMES[theme]);
+  for (const f of frames) await f.evaluate(() => window.dispatchEvent(new Event("romp:settings"))).catch(() => {});   // the same-document signal in each frame too (a frame may miss a storage event it raised itself)
+  await page.waitForTimeout(600);
+};
+// the colormap the PRODUCT's way: the card's own picker (cmPick saves the store and posts setColormap to the kernel, which colours the
+// line from its persisted map); the line's fill is awaited, since the kernel recolours on its next push
+const setColormap = async (setF, name, fillBefore) => {
+  await page.evaluate(() => window.__rompOpenSettings("general", "appearance"));   // the picker is the General tab's Appearance section
+  await setF.waitForSelector("#rs-cmap-btn", { state: "visible", timeout: 10000 });
+  await setF.click("#rs-cmap-btn"); await setF.waitForTimeout(150);
+  await setF.click('#rs-cmap-list [data-cmap="' + name + '"]');
+  await chatF.waitForFunction((was) => { const f = document.querySelector("#statusline #ctx-bar .ctx-fill"); return f && getComputedStyle(f).backgroundColor !== was; }, fillBefore, { timeout: 15000 });
+  await page.evaluate(() => window.__rompOpenSettings("chat", "statusline"));   // back to the Status line section, where the preview is read
+  await setF.waitForSelector("#rs-swidgets .rs-widget", { state: "visible", timeout: 10000 });
+  await page.waitForTimeout(500);
+};
 const lineClip = async () => {
   const box = await chatF.evaluate(() => { const b = document.getElementById("statusline").getBoundingClientRect(); return { top: b.top, height: b.height }; });
   const fr = await page.evaluate(() => { const f = document.getElementById("f-chat").getBoundingClientRect(); return { x: f.left, y: f.top, w: f.width }; });
   return { x: fr.x, y: fr.y + box.top - 8, width: Math.min(fr.w, 1100), height: box.height + 16 };
 };
-const clips = { dark: {}, light: {} };
-out.lines = { dark: {}, light: {} };
-for (const theme of ["dark", "light"]) {
+const clips = { dark: {}, yatharth: {}, light: {} };
+out.lines = { dark: {}, yatharth: {}, light: {} };
+for (const theme of ["dark", "yatharth", "light"]) {
+  out.bodyClasses = out.bodyClasses || {}; 
   await setTheme([page, chatF], theme);
   for (const name of cfg.names) {
     await chatF.click('#tabs .tab[data-id="' + cfg.sids[name] + '"]');
@@ -104,6 +125,7 @@ for (const theme of ["dark", "light"]) {
     out.lines[theme][name] = await readLine(chatF);
     if (cfg.shots) { const c = await lineClip(); clips[theme][name] = await page.screenshot({ clip: c }); fs.writeFileSync(cfg.shots + "-line-" + cfg.ctx[name] + "-" + theme + ".png", clips[theme][name]); }
   }
+  out.bodyClasses[theme] = { chat: await chatF.evaluate(() => document.body.className) };
 }
 await setTheme([page, chatF], "dark");
 await chatF.click('#tabs .tab[data-id="' + cfg.sids.api + '"]'); await page.waitForTimeout(300);
@@ -143,11 +165,12 @@ const readPreviews = (f) => f.evaluate(() => {
                      font: line ? getComputedStyle(line).fontFamily.slice(0, 40) + " " + getComputedStyle(line).fontSize : null,
                      rightOrder: line && line.querySelector(".rs-sl-right") ? Array.from(line.querySelector(".rs-sl-right").children).map((c) => c.className) : null } };
 });
-out.previews = { dark: null, light: null };
+out.previews = { dark: null, yatharth: null, light: null };
 const previewClips = {};
-for (const theme of ["dark", "light"]) {
+for (const theme of ["dark", "yatharth", "light"]) {
   await setTheme([page, chatF, setF], theme);
   await page.mouse.move(5, 5); await page.waitForTimeout(400);
+  out.bodyClasses[theme].settings = await setF.evaluate(() => document.body.className);
   out.previews[theme] = await readPreviews(setF);
   if (cfg.shots) {
     for (const section of ["tabwidgets", "statusline"]) {
@@ -161,10 +184,20 @@ for (const theme of ["dark", "light"]) {
     }
   }
 }
+// the viridis map (round three, low a): the kernel rounds half to even, so the preview's arithmetic must too; the 62 percent fill on viridis is a tie
+await setTheme([page, chatF, setF], "dark");
+const auroraFill = (await readLine(chatF)).bar.fillBg;
+await setColormap(setF, "viridis", auroraFill);
+out.viridis = { preview: await readPreviews(setF), line: await readLine(chatF) };
+await setColormap(setF, "aurora", out.viridis.line.bar.fillBg);
+// a narrow card (round three, low e): at 430 px the right cluster wraps its battery under the badges rather than leave the card
+await page.setViewportSize({ width: 430, height: 900 }); await page.waitForTimeout(700);
+out.narrow = await readPreviews(setF);
+await page.setViewportSize({ width: 1440, height: 900 }); await page.waitForTimeout(500);
 // the composite: the three real lines over the preview, one image per theme (the settings frame covers the chat, so the two never share a viewport)
 if (cfg.shots) {
   const comp = await ctx.newPage();
-  for (const theme of ["dark", "light"]) {
+  for (const theme of ["dark", "yatharth", "light"]) {
     const img = (buf, cap) => '<figure style="margin:0 0 10px"><figcaption style="font:12px sans-serif;color:#888;margin:0 0 3px">' + cap + '</figcaption><img style="display:block;max-width:100%" src="data:image/png;base64,' + buf.toString("base64") + '"></figure>';
     const html = '<body style="margin:12px;background:' + (theme === "light" ? "#f4efe6" : "#1a1a1b") + ';width:1120px">'
       + cfg.names.map((n) => img(clips[theme][n], "the real line, session " + n + " at " + cfg.ctx[n] + " percent")).join("") + img(previewClips[theme], "the settings card's status line preview (Opus 5 at high, 62 percent)") + "</body>";
@@ -314,6 +347,7 @@ class ServedSettingsPreviews(unittest.TestCase):
         for b in s["btns"]:
             self.assertEqual((b["cursor"], b["tip"], b["title"]), ("default", None, ""), b["kind"] + ": inert, no pointer, no tooltip" + t)
         self.assertEqual(s["bar"]["cursor"], "default", "the battery too" + t)
+        self.assertEqual(s["bar"]["title"], "", "an inert battery carries no click-to-compact tooltip (round three, low b)" + t)
         self.assertEqual(len({b["top"] for b in s["btns"]}), 1, "the three badges share one row in the card's width: the preview never wraps a badge under another" + t)
         self.assertLessEqual(s["bar"]["right"], s["boxRight"] - 8, "the battery ends inside the box, never clipped by its border (the line wraps its cluster below when the card is too narrow)" + t)
         for theme in ("dark", "light"):
@@ -322,18 +356,35 @@ class ServedSettingsPreviews(unittest.TestCase):
             self.assertLessEqual(p["lineDemand"], p["lineRoom"] - 8, theme + ": with room to spare" + tt)
 
     def test_the_preview_matches_the_real_line_for_the_same_values_and_the_battery_colours_by_percentage(self):
-        for theme in ("dark", "light"):
+        bc = self.out["bodyClasses"]; tb = "\n  " + json.dumps(bc)
+        self.assertNotIn("chat-theme-yatharth", bc["dark"]["chat"], "classic: the body bare" + tb)
+        self.assertIn("chat-theme-yatharth", bc["yatharth"]["chat"], "yatharth: the theme class, no light" + tb); self.assertNotIn("theme-light", bc["yatharth"]["chat"], tb)
+        self.assertIn("chat-theme-yatharth theme-light", " ".join(sorted(bc["light"]["chat"].split(), key=lambda c: c != "chat-theme-yatharth")), "yatharth-light: both classes, the product's only light theme" + tb)
+        self.assertIn("chat-theme-yatharth", bc["light"]["settings"], "the settings page carries the theme class too (settings-page.ts applyTheme)" + tb)
+        for theme in ("dark", "yatharth", "light"):
             s = self._p(theme)["status"]; api = self.out["lines"][theme]["api"]; t = "\n  " + theme + " preview=" + json.dumps(s) + "\n  api line=" + json.dumps(api)
             self.assertIsNotNone(s["btns"], t); self.assertIsNotNone(api["btns"], "the real line at 62 percent" + t)
             real = {b["kind"]: b for b in api["btns"]}
             for b in s["btns"]:
                 self.assertEqual(b["text"], real[b["kind"]]["text"], b["kind"] + ": the same word" + t)
-                self.assertEqual(b["color"], real[b["kind"]]["color"], b["kind"] + ": the same tint (the kernel's rank on the selected colormap, re-encoded on the light theme as the line's is)" + t)
+                self.assertEqual(b["color"], real[b["kind"]]["color"], b["kind"] + ": the same tint (classic: the kernel's rank on the selected colormap; yatharth: the tone; yatharth-light: the tone re-encoded readable, as the line's is)" + t)
             self.assertEqual((s["bar"]["fillBg"], s["bar"]["text"], s["bar"]["w"], s["bar"]["h"]), (api["bar"]["fillBg"], api["bar"]["text"], api["bar"]["w"], api["bar"]["h"]), "the battery: the same fill colour, number and box" + t)
             fills = {n: self.out["lines"][theme][n]["bar"]["fillBg"] for n in ("web", "api", "tests")}
             self.assertEqual(len(set(fills.values())), 3, "three percentages, three colours on the real line: the fill is coloured by its percentage\n  " + json.dumps(fills))
             self.assertEqual([self.out["lines"][theme][n]["bar"]["text"] for n in ("web", "api", "tests")], ["20%", "62%", "95%"], theme)
         self.assertEqual(self.out["errors"], [], "no page errors")
+
+    def test_on_viridis_the_preview_fill_equals_the_kernels_rounding_at_the_tie(self):
+        v = self.out["viridis"]; t = "\n  preview=" + json.dumps(v["preview"]["status"]["bar"]) + "\n  line=" + json.dumps(v["line"]["bar"])
+        self.assertEqual(v["preview"]["status"]["bar"]["fillBg"], v["line"]["bar"]["fillBg"], "viridis at 62 percent is a rounding tie (172.5): the preview rounds half to even as the kernel does (round three, low a)" + t)
+        self.assertEqual(v["line"]["bar"]["fillBg"], "rgb(44, 172, 128)", "the kernel's value" + t)
+        for b in v["preview"]["status"]["btns"]:
+            self.assertEqual(b["color"], {x["kind"]: x for x in v["line"]["btns"]}[b["kind"]]["color"], b["kind"] + " on viridis" + t)
+
+    def test_a_narrow_card_wraps_the_battery_under_the_badges_rather_than_leave_the_card(self):
+        n = self.out["narrow"]["status"]; t = "\n  " + json.dumps({k: n[k] for k in ("bar", "boxRight", "lineRoom", "lineDemand", "rightParts")})
+        self.assertLessEqual(n["bar"]["right"], n["boxRight"] - 8, "at 430 px the battery ends inside the box (round three, low e: it sat 101 px outside the card)" + t)
+        self.assertEqual(len({b["top"] for b in n["btns"]}), 1, "the badges still share one row" + t)
         self.assertEqual([u for u in self.out["notFound"] if "/dist/" in u], [], "every file of ours the pages ask for is served: " + json.dumps(self.out["notFound"]))
 
 

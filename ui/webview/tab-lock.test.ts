@@ -1,9 +1,10 @@
-// THE TAB LOCK (T395, the user 2026-09-12): a padlock button in the chat tab strip, right after the + tab and before
-// the tags box, that freezes every way a tab moves (the drag reorder, a drag into another column or the split's edge,
-// the tab menu's Move to rows) until pressed again. Per browser like the gear's settings, fanned out the same way. The
-// drawing is the Sessions pane's lock-to-now glyph, stated once in icons.ts (the timeline is served raw and states the
-// same numbers). Pinned at the source here; tests/test_tab_lock_browser.py drives the served strip (a drag with the lock
-// on moves nothing, the same drag with it off moves the tab; the box's place and dress; screenshots).
+// THE TAB LOCK (T395, the user 2026-09-12; T405: off the strip; T415: a switch in the settings card's Tab strip section): one
+// setting freezes every way a tab moves (the drag reorder, a drag into another column or the split's edge, the tab menu's Move
+// to rows) until it is cleared. Per browser like the gear's other settings, written by the card's switch and fanned out the
+// gear's way (the same-document signal, the host relay). The strip's padlock button and its icons.ts drawing left with T415;
+// the Sessions pane's lock-to-now toggle draws the one padlock now. Pinned at the source here; tests/test_tab_lock_browser.py
+// drives the served dashboard (a drag with the lock on moves nothing, the same drag with it off moves the tab; the gear's jump
+// to the section; screenshots).
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";

@@ -357,11 +357,13 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-sl .ctx-scan { display: none; }
 /* the preview's departures, after the copies: nothing here opens or compacts; the badges never wrap between themselves (the line's own
    rule at a narrow width), because the card is narrower than the chat and a badge dropped to a second row would read as the renderer's
-   fault rather than the room's; the cluster drops the line's 12px lead-in (the card's right cluster carries its own 10px gap); and when
-   the card is too narrow for the whole line, the right cluster drops below the widgets as ONE row (the line wraps), never a clipped battery. */
+   fault rather than the room's; the cluster drops the line's 12px lead-in (the card's right cluster carries its own gap); when the card
+   is too narrow for the whole line, the right cluster drops below the widgets as ONE row (the line wraps); and narrower still (under
+   about 440px, a phone's card) the cluster wraps its battery under the badges rather than leave the card (round three, low e: at 430px
+   the battery sat 101px outside). */
 #rsettings .rs-sl .meta-btn, #rsettings .rs-sl .ctx-bar { cursor: default; }
 #rsettings .rs-sl .spinner-meta { flex-wrap: nowrap; margin-left: 0; }
-#rsettings .rs-sl-right { flex: 0 0 auto; }
+#rsettings .rs-sl-right { flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; max-width: 100%; row-gap: 6px; }
 #rsettings .rs-sl { flex-wrap: wrap; row-gap: 6px; }
 /* a move refused (a status-line row held in its slot's group): a brief sideways nudge; the live region every move speaks through */
 @keyframes rs-nudge { 0% { transform: translateX(0); } 30% { transform: translateX(-5px); } 60% { transform: translateX(5px); } 100% { transform: translateX(0); } }

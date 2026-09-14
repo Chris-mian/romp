@@ -9,8 +9,9 @@
 // the kernel's rank rule for the demo's tints (MODEL_FAMILIES / EFFORT_LEVELS, pinned to kernel.py's choice lists in
 // settings-previews.test.ts) live here too, so the demo's Opus 5 at high and 62% wear exactly the colours a real session with those
 // values gets on the selected map. The bodies below moved from render.ts unchanged but for the hooks; their tests moved with them.
-import { pickTone, readableRgb, ctxFallbackColor } from "./ctx-color";
+import { pickTone, readableRgb, ctxFallbackColor, CTX_WARN, CTX_DANGER } from "./ctx-color";
 import { setTip } from "./tip";
+export { pickTone };   // the theme pick (the tone on a yatharth theme, else the classic colour), for a caller drawing a status of its own
 
 export type MetaKind = "mode" | "model" | "effort" | "fast";
 /** the slice of a session's status the controls read (render.ts's Status satisfies it structurally; so does the demo status below) */
@@ -202,7 +203,10 @@ export function ctxBar(onClick?: (bar: HTMLElement) => void): HTMLElement {
   bar.appendChild(el("span", "ctx-fill"));
   bar.appendChild(el("span", "ctx-text"));
   bar.appendChild(el("span", "ctx-scan"));   // compacting: teal rectangle whose right edge compresses leftward (as on the timeline)
-  if (onClick) bar.addEventListener("click", () => onClick(bar));   // the chat's /compact; a preview's battery does nothing
+  if (onClick) {   // the chat's /compact; a preview's battery does nothing, and says nothing about clicking (setCtxBar reads the mark)
+    bar.dataset.compacts = "1";
+    bar.addEventListener("click", () => onClick(bar));
+  }
   return bar;
 }
 export function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacting = false, ctxColor?: number[] | null, ctxOver = false, sweep?: (scan: HTMLElement, fresh: boolean) => void): void {
@@ -243,21 +247,65 @@ export function setCtxBar(bar: HTMLElement, ctxStr: string | undefined, compacti
   // CURRENT model's window (a 1M→200k model switch does this instantly). Say so: a silent 100% right
   // after picking a smaller model reads as a broken gauge (the user 2026-09-02).
   if (txt) txt.textContent = ctxOver ? "100%+" : pct + "%";
-  bar.title = ctxOver
+  if (bar.dataset.compacts) bar.title = ctxOver   // the click-to-compact tooltip belongs to a bar that compacts (the chat's); an inert one keeps none (round three)
     ? "context exceeds this model's window — the next turn compacts or trims; click to /compact now"
     : `context ${pct}% used — click to /compact`;
+  else bar.removeAttribute("title");
 }
 
 // ── the colormap arithmetic and the kernel's rank rule, for a status drawn without a kernel (the settings card's demo) ──
 
+/** Python's round: the nearest integer, a tie (an exact .5) to the even neighbour. The kernel rounds every channel this way, and
+ *  Math.round rounds ties up, so 11 of 777 samples differed by one unit (viridis at 0.62: 173 for the kernel's 172; round three, low a).
+ *  Exact on doubles: the fraction is read off the floor, never through floor(x + 0.5). */
+export function roundHalfEven(x: number): number {
+  const f = Math.floor(x), d = x - f;
+  if (d > 0.5) return f + 1;
+  if (d < 0.5) return f;
+  return f % 2 === 0 ? f : f + 1;
+}
 /** v in [0,1] → the interpolated RGB across `stops` (v=0 the first, dark; v=1 the last, bright): bin/romp_colormap.py ramp, byte for
- *  byte in arithmetic, so a client-side sample equals the kernel's for the same map (render.ts ramp calls this over the selected map). */
+ *  byte, the rounding included, so a client-side sample equals the kernel's for the same map (render.ts ramp calls this over the selected map). */
 export function rampOn(v: number, stops: ReadonlyArray<readonly [number, number, number]>): [number, number, number] {
   v = Math.max(0, Math.min(1, v));
   const x = v * (stops.length - 1), i = Math.floor(x), fr = x - i;
   if (i >= stops.length - 1) return [stops[stops.length - 1][0], stops[stops.length - 1][1], stops[stops.length - 1][2]];
   const a = stops[i], b = stops[i + 1];
-  return [Math.round(a[0] + (b[0] - a[0]) * fr), Math.round(a[1] + (b[1] - a[1]) * fr), Math.round(a[2] + (b[2] - a[2]) * fr)];
+  return [roundHalfEven(a[0] + (b[0] - a[0]) * fr), roundHalfEven(a[1] + (b[1] - a[1]) * fr), roundHalfEven(a[2] + (b[2] - a[2]) * fr)];
+}
+// THE TONES (bin/romp_colormap.py tone_rgb / context_rgb, the user 2026-08-27): each quantity owns one hue, saturation and lightness
+// carrying the rank (more reads as more vivid); the kernel ships them beside the classic colours and the yatharth themes pick them
+// (ctx-color.ts pickTone). Mirrored here, arithmetic and rounding included, so the card's demo carries the tones a real session's status
+// carries and the preview follows the page's theme as the line does (round three: it equalled the line on classic only).
+export type ToneFamily = "model" | "effort" | "context";
+const TONE_HUES: Record<ToneFamily, number> = { model: 28, effort: 258, context: 200 };
+const TONE_L: Record<ToneFamily, [number, number]> = { model: [0.52, 0.16], effort: [0.66, 0.12], context: [0.52, 0.16] };
+/** the kernel's _hsl_to_rgb: hue in degrees, saturation and lightness in [0,1], each channel rounded half to even */
+export function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  h = ((h % 360) + 360) % 360 / 360;
+  if (s <= 0) { const v = roundHalfEven(l * 255); return [v, v, v]; }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const ch = (t: number): number => {
+    t = ((t % 1) + 1) % 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return [roundHalfEven(ch(h + 1 / 3) * 255), roundHalfEven(ch(h) * 255), roundHalfEven(ch(h - 1 / 3) * 255)];
+}
+/** tone_rgb(family, v): v in [0,1] → the family's hue at saturation 0.42 + 0.48 v and lightness l0 + l1 v */
+export function toneRgb(family: ToneFamily, v: number): [number, number, number] {
+  v = Math.max(0, Math.min(1, v));
+  const [l0, l1] = TONE_L[family];
+  return hslToRgb(TONE_HUES[family], 0.42 + 0.48 * v, l0 + l1 * v);
+}
+/** context_rgb(pct): the calm teal tone by fullness until the warn line, then the shared amber, then the shared red */
+export function contextRgb(pct: number): [number, number, number] {
+  const p = Math.max(0, Math.min(100, pct || 0));
+  if (p >= CTX_DANGER) return [192, 57, 43];
+  if (p >= CTX_WARN) return [215, 162, 58];
+  return toneRgb("context", p / 100);
 }
 // kernel.py MODEL_CHOICES (values) and EFFORT_CHOICES, in their order: _ramp_ranks spreads them evenly on [0,1], the models DESCENDING
 // (the most capable family brightest, fable 1.0 … haiku 0.0) and the efforts ASCENDING (low 0.0 … the last 1.0). Pinned to kernel.py
@@ -275,13 +323,15 @@ export function effortRank(effort: string): number | null {
   const i = EFFORT_LEVELS.indexOf((effort || "").trim().toLowerCase());
   return i < 0 ? null : i / Math.max(1, EFFORT_LEVELS.length - 1);
 }
-export interface DemoStatus extends MetaStatus { ctx: string; ctxColor: number[] }
+export interface DemoStatus extends MetaStatus { ctx: string; ctxColor: number[]; ctxTone: number[] }
 /** The status the settings card's preview draws (T415 part two): the words the card used to print, now a status the shared renderer
- *  takes, its tints the kernel's rule on the given map (the card passes the selected colormap's stops), so the preview equals the
- *  chat's line for a session at these values. Classic colours only: the tones are the kernel's (no client-side tone ramp), and the
- *  settings page carries no chat theme class, so pickTone reads classic there. */
+ *  takes, its tints the kernel's rule on the given map (the card passes the selected colormap's stops) AND the kernel's tones (the
+ *  same pairs a real status ships, round three), so the preview equals the chat's line for a session at these values on every theme:
+ *  classic reads the colours, the yatharth themes the tones, yatharth-light the tones re-encoded readable, all through pickTone. */
 export function demoStatus(stops: ReadonlyArray<readonly [number, number, number]>): DemoStatus {
   const rankColor = (v: number | null) => (v === null ? null : rampOn(v, stops));
-  return { mode: "auto", model: "Opus 5", effort: "high", ctx: "62%",
-           modelColor: rankColor(modelRank("Opus 5")), effortColor: rankColor(effortRank("high")), ctxColor: rampOn(0.62, stops) };
+  const modelV = modelRank("Opus 5"), effortV = effortRank("high"), ctxPct = 62;
+  return { mode: "auto", model: "Opus 5", effort: "high", ctx: ctxPct + "%",
+           modelColor: rankColor(modelV), effortColor: rankColor(effortV), ctxColor: rampOn(ctxPct / 100, stops),
+           modelTone: modelV === null ? null : toneRgb("model", modelV), effortTone: effortV === null ? null : toneRgb("effort", effortV), ctxTone: contextRgb(ctxPct) };
 }
