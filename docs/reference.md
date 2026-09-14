@@ -2059,7 +2059,9 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the retry state, the live background-task rows, the watches, the awaiting
   stamp, the shared files, the cwd's branch and repository, the instruction
   files, and the files and postal values the last build embedded). `chat`
-  also carries `active_built` and `bg_built` (rebuilds of the watched tab
+  also carries `coldSkipped` (tabs not built by the cold-tab gate: no build since the boot,
+  and every connected chat page held the tab as a skeleton, so the page's click or prefetch
+  asks for it, 2026-09-14), `active_built` and `bg_built` (rebuilds of the watched tab
   against rebuilds of a background tab), `moved` (builds not cached because
   an input moved while they ran; the next cycle builds them again) and
   `bg_miss`, a map from each labelled component of that signature

@@ -484,6 +484,7 @@ class SkeletonReconnect(unittest.TestCase):
 
         self.assertEqual(owners('"skeleton"') | owners('"skeletonOrder"'),
                          {"_client_reset_chat_base", "_release_skeleton_locked", "_resolve_reconnect",
+                          "_held_as_skeleton_by_all",   # the cold-tab gate's reader (2026-09-14), under the lock
                           "_tab_order_frame", "_send_chat_or_status", "_send_tab_order",
                           # the two READERS of the connect query's skeleton=1 term (a later chat column's dial,
                           # 2026-09-11): _ws sets the client's `reconnect` and `skeletonOnReady` flags from it, and

@@ -377,7 +377,7 @@ class _PerfStats:
             self._owners = {}                         # owner kind -> the thread ident whose stages that owner's split records
             self._cycle_state = {k: {"stages": {}, "mark": None} for k in self.OWNERS}   # per owner: the open split, the byte mark
             self.builds = {k: {"cached": 0, "built": 0, "ms": 0.0} for k in self.BUILDS}
-            self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0,
+            self.builds["chat"].update({"active_built": 0, "bg_built": 0, "moved": 0, "coldSkipped": 0,   # coldSkipped: see build_chat_cold_skip
                                         "bg_miss": {k: 0 for k in self.CHAT_MISS}})   # see build_chat
             self.sends = {k: {} for k in self.SEND_KINDS}
             self.judge = {"passes": 0, "ms_sum": 0.0, "ms_last": 0.0, "cpu_ms_sum": 0.0, "tierStarts": 0}   # tierStarts: judge tier threads started (T404: 0 while tracking is off)
@@ -642,6 +642,13 @@ class _PerfStats:
             bm = b["bg_miss"]
             for lab in miss:
                 bm[lab] = bm.get(lab, 0) + 1
+
+    def build_chat_cold_skip(self):
+        """A cold tab (no build since the boot) that every connected chat page holds as a skeleton was not built (the
+        cold-tab gate in _push and _push_session_now, 2026-09-14): the user's ruling that tabs nobody is looking at are
+        built last, on the page's click or its idle prefetch, never in the boot's first refresh."""
+        with self.lock:
+            self.builds["chat"]["coldSkipped"] += 1
 
     def build_chat_moved(self):
         """A chat build whose signature moved while it ran (the post-build signature differs from the
@@ -44813,6 +44820,39 @@ def _release_skeleton(c, sid):
         return _release_skeleton_locked(c, sid)
 
 
+def _light_status(sid, tm, now):
+    """A skeleton tab's status without a build, from the backend's live row alone: the chip state the live row can
+    state on its own (the row's live prompt, retrying and working states are what _session_chip reads from it; the
+    transcript-derived legs, an open turn, an awaited task, an api error, need the parse and wait for the build),
+    the row's since as the timer base, and the backend, model, effort and mode the row carries. `provisional` says
+    so to a reader; the built status replaces it on the tab's first build. None with no live row: the gate then
+    builds, as before, rather than send a status the kernel cannot state."""
+    if not tm or not isinstance(tm, dict):
+        return None
+    st = tm.get("state", "") or ""
+    chip = ("needsInput" if st in _NEEDS_INPUT_STATES else "retrying" if st == "retrying"
+            else "working" if st == "working" else "ready")
+    since = tm.get("since")
+    return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "faded": False, "provisional": True,
+            "backend": _session_backend(sid, tm), "model": tm.get("model", ""), "effort": tm.get("effort", ""),
+            "mode": tm.get("mode", "")}
+
+
+def _held_as_skeleton_by_all(sid, clients):
+    """Whether EVERY chat client in `clients` holds `sid` as a skeleton tab (each set read under its own slot lock), and
+    there is at least one. The cold-tab gate's question (2026-09-14): a tab no connected page is looking at, on a kernel
+    that has not built it since the boot, is not built by the pusher's loop or the per-session push; the page's click
+    (activeTab) or idle prefetch (needFull) releases the skeleton first, and the very next push builds it. The user's
+    ruling: the selected tab first, tabs present in the strip next over later refreshes, hidden tabs never until shown."""
+    if not clients:
+        return False
+    for c in clients:
+        with _client_lock(c):
+            if sid not in (c.get("skeleton") or ()):
+                return False
+    return True
+
+
 def _skeleton_for(c, act, chat_list):
     """The sids a reconnecting client is NOT looking at, ascending by transcript size — a free stat, the byte
     proxy the kernel has before building anything (the tail length ties at WIRE_TAIL for every busy session,
@@ -48648,7 +48688,27 @@ def _push(targets, connect=False, live_map=None):
             _live_scope.chat_floor0 = _chat_floor0_of(_all_chat)
             for s in build_order:
                 is_active = s["sid"] in active           # the watched tab(s): served like any tab while the key holds
+                # THE COLD-TAB GATE (2026-09-14; the user, after the boot review): on the 3:58 PM PT restart the first
+                # refresh with a browser built the chat of all 27 tabs (54.6 s of a 72.4 s refresh) before the cards
+                # and the timeline left, for one tab on screen. A tab with a transcript that this kernel has not built
+                # since the boot, that no watching client names active, and that EVERY connected chat page holds as a
+                # skeleton (the restart reload dials the skeleton diet since the client half of this change) is not
+                # built here: the page's click or its idle prefetch releases the skeleton, and that push builds it.
+                # A warm tab (a cached build) is served and status-framed as before; a Sessions pane needs every
+                # session's ledger slice, so with one connected nothing is skipped; a page that declared no diet holds
+                # no set and is served whole, as today.
                 _tm = live_map.get(s["sid"])
+                _light = None
+                if (not is_active and not want_fleet and s["sid"] not in _built_chat and os.path.exists(s["path"])
+                        and _held_as_skeleton_by_all(s["sid"], chat_clients)):
+                    _light = _light_status(s["sid"], _tm, now)   # no live row: no status to state, so build as before
+                if _light is not None:
+                    for c in chat_clients:               # a status per skeleton tab still goes (the diet's contract),
+                        with _client_lock(c):            #  the live row's word until the tab's first build
+                            _send_client(c, ("status", s["sid"]), {"type": "status", "id": s["sid"], "status": _light})
+                    _VIEW_STATS["chatSkipCold"] += 1
+                    _PERF_STATS.build_chat_cold_skip()
+                    continue
                 try:
                     sig = _chat_build_sig(s, _tm, now, live_map=live_map)
                     _chat_sig_ok(s["sid"])               # a signature that was taken ends its fault episode
@@ -49151,6 +49211,20 @@ def _push_session_now(sid):
             return                                   # hidden / raced a teardown — the periodic pusher owns the rest
         tab_order = [s["sid"] for s in chat_list]
         tab_meta = [{"id": s["sid"], "name": s.get("name", ""), "color": _name_color(s["sid"])} for s in chat_list]
+        # The cold-tab gate (2026-09-14; see _held_as_skeleton_by_all): at a boot with a browser connected, each of the
+        # 27 attach handshakes ran this push, a cold build per session, for tabs the page holds as skeletons; a full
+        # here would also release the skeleton and hand the page a tab it did not ask for. Not built: the click or the
+        # prefetch releases first and asks again. A tab some page holds whole, or a transcript-less one, builds as before.
+        _path = next((s.get("path") or "" for s in chat_list if s["sid"] == sid), "")
+        _light = (_light_status(sid, live_map.get(sid), now) if sid not in _built_chat and _path and os.path.exists(_path)
+                  and _held_as_skeleton_by_all(sid, targets) else None)
+        if _light is not None:
+            for c in targets:                            # the live row's status, so the chip this push exists for still flips
+                with _client_lock(c):
+                    _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": _light})
+            _VIEW_STATS["chatSkipCold"] += 1
+            _PERF_STATS.build_chat_cold_skip()
+            return
         try:
             m = build_session(sid, now, live_map)
         finally:
@@ -49300,7 +49374,7 @@ _built_feed = [None, None, 0.0, 0.0]              # [fleet_sig, payload, built_a
 # "the timeline rebuilt 900 times in 30 min with 12 sessions idle" instead of inferred from top. A
 # rebuild is justified only by a changed input; a rising build count on a quiet board is a bug signature.
 _VIEW_STATS = {"feedBuild": 0, "feedServe": 0, "tlBuild": 0, "tlServe": 0,
-               "chatBuildActive": 0, "chatBuildBg": 0, "chatServeActive": 0, "chatServeBg": 0,
+               "chatBuildActive": 0, "chatBuildBg": 0, "chatServeActive": 0, "chatServeBg": 0, "chatSkipCold": 0,
                # GET /feed.json's reads (_pure_feed), apart: a poller's builds under the pusher's numbers
                # would forge the bug signature above, or bury a pusher regression (review find, 2026-09-08)
                "feedJsonBuild": 0, "feedJsonServe": 0}
