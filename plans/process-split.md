@@ -54,9 +54,9 @@ Measurement: the interpreter-seconds of the pusher and the request thread during
 
 What the browser receives is already bytes (a 1.8 MB cards frame, 9.5 MB of timeline bars). Builder processes could produce the wire bytes and the kernel relay them, but only once documents are the shared cheap form (stage one) and each builder would hold its own memory. Decided after stages two and three are measured, not before.
 
-## Beside the stages: the free-threaded build, gated
+## Beside the stages: the free-threaded build, measured and closed
 
-The free-threaded Python build removes the interpreter lock at a 10 to 40 percent single-thread cost. A gated measurement (the hermetic served boot test under both interpreters on the devbox, then one boot) decides whether it is worth carrying; it is not a substitute for the stages, since the transfer costs and the duplicated work are the same under both.
+Measured on 2026-09-14 (a hermetic benchmark: twelve synthetic 6.6 MB transcripts parsed cold by the real event model, a fresh set per configuration, under a resource cap on the devbox; CPython 3.13.14 standard against 3.13.14 free-threaded). Standard: 1.08 s on one thread, 1.27 s on three, 1.51 s on six, 1.17 s on one again: no speedup from threads, as expected under the lock. Free-threaded: 1.40 s on one thread (30 percent slower), 6.35 s wall and 12.0 s of CPU on three threads, 4.64 s wall and 13.6 s of CPU on six, and 15.7 s on one thread afterwards. The event model's module-level caches and locks contend on per-object locking without the interpreter lock, and the parallel runs are four to six times SLOWER than the serial one, not faster; the degraded final run says the shared structures do not recover. The free-threaded build is closed for this program: the seams above are the way, and the measurement is kept here so the question is not reopened without a changed event model.
 
 ## Rules every stage keeps
 
