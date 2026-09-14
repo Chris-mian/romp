@@ -3,11 +3,12 @@
 boots in the tick-seen shape, so a boot's first planner pass skips every session whose key stands instead of re-planning all of
 them (the 5a read boot: plannerSkip planned 20, skipped 0, and 149,696 atoms built under judge.triage). A row is never an answer
 on its own: the key is recomputed at the pass and compared, JSON-normalized on both sides; a malformed row is refused; rows are
-dropped with the fleet; the write is atomic under a per-writer tmp, the tmp unlinked and the flag re-armed on a failed replace,
+dropped with the sessions the pass discovered; the write is atomic under a per-writer tmp, the tmp unlinked and the flag re-armed on a failed replace,
 the failure said once per episode. Hermetic: the judge against a temp state root; synthetic transcripts only."""
 import ast
 import hashlib
 import inspect
+import re
 import io
 import json
 import os
@@ -169,7 +170,7 @@ class PlannerSeenMemo(unittest.TestCase):
         self.assertIsNone(jd._planner_key_norm(("/p", object())), "a _file_key sentinel cannot be persisted or matched")
         self.assertEqual(jd._planner_key_norm(("/p", (1, 2), 3.5)), ["/p", [1, 2], 3.5], "tuples become lists, numbers stay")
 
-    def test_rows_are_dropped_with_the_fleet(self):
+    def test_rows_are_dropped_with_the_sessions_this_pass_discovered(self):
         jd._planner_seen_set(FSID, ["a"]); jd._planner_seen_set(FSID2, ["b"]); jd.persist_planner_seen()
         jd._planner_seen_drop({FSID})
         self.assertEqual(list(jd._PLANNER_SEEN), [FSID]); self.assertTrue(jd._PLANNER_SEEN_DIRTY[0], "the drop dirties: written next")
@@ -194,7 +195,7 @@ class PlannerSeenMemo(unittest.TestCase):
         import inspect
         src = inspect.getsource(jd.run_plan)
         self.assertIn("_load_planner_seen()", src); self.assertIn("persist_planner_seen()", src)
-        self.assertIn("_planner_seen_drop({s[0] for s in fleet})", src, "dropped with the fleet, before the pass")
+        self.assertIn("_planner_seen_drop({s[0] for s in fleet})", src, "dropped with the sessions this pass discovered, before the pass")
         ksrc = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
         self.assertIn("jd.persist_planner_seen(force=True)", ksrc, "the exit drain persists it in its own try")
 
@@ -256,7 +257,7 @@ class PlannerSeenMemo(unittest.TestCase):
         seg = textwrap.dedent(inspect.getsource(jd._plan_session))
         skip = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENCODING, tokenize.ENDMARKER}
         toks = [t.string for t in tokenize.generate_tokens(io.StringIO(seg).readline) if t.type not in skip]
-        self.assertFalse(any(t.startswith(("f\"", "f'")) or t in ("FSTRING_START",) for t in toks), "no f-string in _plan_session: the token stream stays one across minors")
+        self.assertFalse(any(re.match(r"(?i:f|rf|fr)[\"']", t) for t in toks), "no f-string in _plan_session (any of the f, F, rf, fr, Rf prefixes): the token stream stays one across minors")
         h = hashlib.sha256(" ".join(toks).encode()).hexdigest()[:16]
         self.assertEqual(h, self.PLAN_SESSION_TOKENS_SHA16,
                          "_plan_session changed (token sha16 %s): bump _PLANNER_SEEN_DERIVATION_V in kernel/judge.py if a pass that had "

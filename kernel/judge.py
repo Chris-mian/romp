@@ -3230,7 +3230,7 @@ def _planner_seen_pop(fsid):
 
 
 def _planner_seen_drop(alive):
-    """Drop every row whose fsid is not in `alive` (the sessions this pass discovered): bounded by the fleet."""
+    """Drop every row whose fsid is not in `alive`: bounded by the sessions this pass discovered."""
     with _PLANNER_SEEN_LOCK:
         for gone in [f for f in _PLANNER_SEEN if f not in alive]:
             _PLANNER_SEEN.pop(gone, None); _PLANNER_SEEN_DIRTY[0] = True
