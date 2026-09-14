@@ -284,6 +284,7 @@ installMenuEcho();
     if (keys.isOpen()) return;
     for (const sid of unboundTabKeys(loadTabKeys(localStorage), loadOverrides(), mac)) unregisterTabHotkey(sid);
   }
+  keys.onClose(pruneUnboundHotkeys);   // the full dialog's exit too (review 2026-09-14): an unbind made there fired KEYS_EVENT while it was open, which the prune above stands down for, and nothing ran it after
   // A tab's menu asks for a hot key: the session joins the set, its command exists, the dialog opens on it
   // recording. When the dialog goes — a chord set, or Esc — the focus returns to the pane that asked (its
   // composer: the shell document is nowhere to type), and a session left with no chord leaves the set.

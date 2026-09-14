@@ -1,8 +1,9 @@
 // Per-tab hot keys (the user 2026-09-10): a key combination that switches to a session, set from the tab's
 // menu and shown minified on the tab; and the commands that cycle the focus between chat columns. The pure
 // rules (tab-keys.ts) are executed; the shell's registration and dispatch (palette-main.ts), the dialog's
-// solo recording mode (shortcuts-modal.ts), and the pane's badge, menu and repaint (render.ts) are pinned at
-// source — the repo's convention where there is no DOM. Synthetic sids and names only.
+// solo recording mode (shortcuts-modal.ts), and the pane's menu row, set bookkeeping and repaint (render.ts; the
+// keycap on the tab is tab-widgets.ts's) are pinned at source — the repo's convention where there is no DOM.
+// Synthetic sids and names only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -102,7 +103,7 @@ test("render.ts: the keycap is the T379 widget's, its chord is in the strip's re
 test("render.ts: the tab menu's one row asks the shell to record a hot key; a bound one reads Update and the recorder removes too", () => {
   const i = RENDER.indexOf('l.textContent = cur ? "Update hot key…" : "Hot key…"');
   assert.ok(i > 0);
-  const block = RENDER.slice(RENDER.lastIndexOf("if (inRompShell()", i), RENDER.indexOf("// Colors join Rename", i));
+  const block = RENDER.slice(RENDER.lastIndexOf("if (inRompShell()", i), RENDER.indexOf("// The colour swatches close the section with Rename", i));
   assert.match(block, /typeof \(window\.parent as any\)\.__rompHotkeyConfigure === "function"/, "shell-hosted only: the shell owns the recorder");
   assert.match(block, /window\.parent\.postMessage\(\{ romp: "hotkeyConfigure", sid: id, name: sessions\.get\(id\)\?\.name \|\| "" \}, "\*"\)/);
   // one row (the user 2026-09-11): no separate Remove row — the recorder it opens re-records or removes (Backspace, or
@@ -140,11 +141,11 @@ test("shortcuts-modal.ts: openFor is a solo recording — one row, recording at 
   assert.match(MODAL, /heading\.textContent = solo \? "Hot key for \\u201c" \+ solo\.title\.replace\(\/\^Switch to \/, ""\) \+ "\\u201d" : "Keyboard shortcuts";/);
   assert.match(MODAL, /input\.hidden = !!solo;[^\n]*\n\s*fixed\.hidden = !!solo;/, "the built-in section is out of the way too: the dialog is that row alone");
   // both exits go through leaveSolo: hide first, THEN the caller's onClose (so the focus it hands back is not stolen by a shown card)
-  assert.match(MODAL, /function leaveSolo\(\): void \{\n\s*const done = soloDone;\n\s*soloId = null; soloDone = null;\n\s*if \(back\) back\.hidden = true;\n\s*if \(done\) done\(\);\n\s*\}/);
+  assert.match(MODAL, /function leaveSolo\(\): void \{\n\s*const done = soloDone;\n\s*soloId = null; soloDone = null;\n\s*if \(back\) back\.hidden = true;\n\s*for \(const fn of closers\) fn\(\);\n\s*if \(done\) done\(\);\n\s*\}/);
   assert.match(MODAL, /function commit\(id: string, chord: string\): void \{\n\s*saveOverride\(id, chord\);[\s\S]*?if \(soloId\) \{ leaveSolo\(\); return; \}/);
   assert.match(MODAL, /function cancelRecord\(\): void \{[\s\S]*?if \(soloId\) \{ leaveSolo\(\); return; \}/);
   assert.match(MODAL, /panel\.tabIndex = -1;/, "the card takes focus so the captured keydown reaches the recorder with the filter box hidden");
-  assert.match(MODAL, /return \{ open, openFor, close, isOpen, feed \};/);
+  assert.match(MODAL, /return \{ open, openFor, close, isOpen, feed, onClose \};/);
   // the chord lands wherever the focus was: the shell's dispatcher hands a pane's keydown to the recorder while the dialog is open
   assert.match(MODAL, /function feed\(e: KeyboardEvent\): boolean \{\n\s*if \(!isOpen\(\) \|\| !recId \|\| e\.key === "Escape"\) return false;[\s\S]*?onRecordKey\(e\);\n\s*return true;/);
   assert.match(MAIN, /if \(keys\.isOpen\(\)\) \{ keys\.feed\(e\); return; \}/);
@@ -153,8 +154,9 @@ test("shortcuts-modal.ts: openFor is a solo recording — one row, recording at 
   assert.match(MODAL, /\} else if \(refused\) \{\n\s*hint\.className = "rkeys-conflict";\n\s*hint\.textContent = refused;/);
 });
 
-test("styles.css: the badge is a small keycap at the strip's small size (the group header's), compensated for the tab's own em — not a new size", () => {
-  assert.match(CSS, /\.tab-key \{ flex: 0 0 auto; font: 600 calc\(0\.82em \/ 0\.92\) ui-monospace, SFMono-Regular, Menlo, monospace; color: var\(--dim\);/);
-  assert.match(CSS, /\.tab-group-head \{[^}]*font-size: 0\.82em;/, "the size it borrows");
-  assert.match(CSS, /\.tab \{[\s\S]*?padding: 6px 7px; font-size: 0\.92em;/, "the em it compensates for");
+test("the full dialog's exit prunes too: an unbind made there fires while the dialog is up, and the close is what runs the prune", () => {
+  assert.match(MODAL, /onClose\(fn: \(\) => void\): void;/, "the API");
+  assert.match(MODAL, /function close\(\): boolean \{\n\s*if \(!back \|\| back\.hidden\) return false;\n\s*if \(recId\) \{ cancelRecord\(\); return true; \}[^\n]*\n\s*back\.hidden = true;\n\s*for \(const fn of closers\) fn\(\);/, "the regular exit runs the listeners (never the one-Escape-level cancel, which stays open)");
+  assert.match(MODAL, /function leaveSolo\(\): void \{\n\s*const done = soloDone;\n\s*soloId = null; soloDone = null;\n\s*if \(back\) back\.hidden = true;\n\s*for \(const fn of closers\) fn\(\);\n\s*if \(done\) done\(\);/, "the solo exit too, before its own onClose");
+  assert.match(MAIN, /keys\.onClose\(pruneUnboundHotkeys\);/, "the shell prunes the set on every close");
 });

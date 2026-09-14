@@ -59,6 +59,11 @@ export type ShortcutsModal = {
   // it consumed the press — the shell's Escape chain (_LANDING_ESC_JS) calls this FIRST.
   close(): boolean;
   isOpen(): boolean;
+  // Runs after EVERY exit of the dialog — the regular close (Esc, the dim, __rompKeysClose) as well as the solo
+  // flow's — so the shell's bookkeeping that must not run while the dialog is up (pruning hot-key sessions left with
+  // no chord: an unbind made in the full dialog fired KEYS_EVENT while it was open, and nothing ran it after; review
+  // 2026-09-14) has its moment.
+  onClose(fn: () => void): void;
 };
 
 export function initShortcutsModal(mac: boolean, doc: Document = document): ShortcutsModal {
@@ -71,6 +76,7 @@ export function initShortcutsModal(mac: boolean, doc: Document = document): Shor
   let pendOther: string | null = null;
   let soloId: string | null = null;   // openFor's command: the dialog is that one row, and a commit or a cancel closes it
   let soloDone: (() => void) | null = null;   // …and what runs once it has closed
+  const closers: Array<() => void> = [];      // onClose's listeners: after every exit, solo or not
   let refused: string | null = null;  // the last key the recorder would not take, and why — said in the row, never a silent wait
   let heading: HTMLElement;
   let fixed: HTMLElement;
@@ -149,6 +155,7 @@ export function initShortcutsModal(mac: boolean, doc: Document = document): Shor
     const done = soloDone;
     soloId = null; soloDone = null;
     if (back) back.hidden = true;
+    for (const fn of closers) fn();
     if (done) done();
   }
   function cancelRecord(): void {
@@ -315,8 +322,10 @@ export function initShortcutsModal(mac: boolean, doc: Document = document): Shor
     if (!back || back.hidden) return false;
     if (recId) { cancelRecord(); return true; }   // one Escape level: leave recording, stay open
     back.hidden = true;
+    for (const fn of closers) fn();
     return true;
   }
+  function onClose(fn: () => void): void { closers.push(fn); }
   function isOpen(): boolean { return !!back && !back.hidden; }
   function feed(e: KeyboardEvent): boolean {
     if (!isOpen() || !recId || e.key === "Escape") return false;   // Escape stays the shell chain's (close → cancel)
@@ -324,5 +333,5 @@ export function initShortcutsModal(mac: boolean, doc: Document = document): Shor
     return true;
   }
 
-  return { open, openFor, close, isOpen, feed };
+  return { open, openFor, close, isOpen, feed, onClose };
 }
