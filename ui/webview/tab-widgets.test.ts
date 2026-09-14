@@ -226,3 +226,76 @@ test("tabWidgetPrefs sanitizes the order: duplicates once, unknown ids gone, the
   assert.deepEqual(JSON.parse(store.get("romp:settings")!).tabWidgets.order, ["hotkey"]);
   store.clear();
 });
+
+// THE RING SLOT (the rings-as-widgets change, 2026-09-14): a widget of slot "ring" carries the CLASS the tab wears and a
+// PREDICATE; the strip removes every registered ring class, then adds the first switched-on ring's whose predicate holds,
+// so one ring paints at a time and the precedence is the registration order. Rings have no position: neither side of the
+// divider, never in the stored order, never in the rows' drag list. Executed on synthetic rings registered here (the
+// built-in rings register in a later step); the "mark" and "boom" widgets earlier tests registered stay in the registry.
+const ring = (id: string, on: (s: WidgetStatus) => boolean, defaultOn = true) =>
+  ({ id, label: id, description: "a synthetic ring", defaultOn, slot: "ring" as const, ring: "r-" + id, on: (_sid: string, s: WidgetStatus) => on(s), render: () => null });
+const RINGS_HERE = ["rr", "ry", "ra"];
+const noRings = (ids: string[]) => noMark(ids).filter((x) => !RINGS_HERE.includes(x));
+const hereRings = () => W.ringWidgets().filter((w) => RINGS_HERE.includes(w.id));
+// the registry's own rings (registered at import) switched off, so the synthetic rings alone decide in these tests
+const BUILTIN_OFF: Record<string, boolean> = Object.fromEntries(W.ringWidgets().map((w) => [w.id, false]));
+const PR = (p: Partial<TabWidgetPrefs> = {}): TabWidgetPrefs => P({ ...p, on: { ...BUILTIN_OFF, ...(p.on || {}) } });
+const tabOf = (cls: string) => { const t = mkEl("div"); t.className = cls; (t as any).classList = {
+  add: (c: string) => { if (!classes(t).includes(c)) t.className = (t.className + " " + c).trim(); },
+  remove: (c: string) => { t.className = classes(t).filter((x) => x !== c).join(" "); } }; return t; };
+
+test("ring: a ring widget registers with its class and predicate; ringWidgets lists rings alone in registration order; titleWidgets never lists one", () => {
+  W.registerTabWidget(ring("rr", (s) => s.state === "needsInput"));
+  W.registerTabWidget(ring("ry", (s) => s.needsYou === true && s.state !== "closed"));
+  W.registerTabWidget(ring("ra", (s) => s.state === "retrying"));
+  assert.deepEqual(hereRings().map((w) => [w.id, w.ring]), [["rr", "r-rr"], ["ry", "r-ry"], ["ra", "r-ra"]]);
+  assert.ok(W.titleWidgets().every((w) => w.slot !== "ring"), "the title's widgets exclude the rings");
+  assert.deepEqual(noMark(W.titleWidgets().map((w) => w.id)), ["dot", "ctx", "hotkey"]);
+  assert.ok(RINGS_HERE.every((id) => W.tabWidgets().some((w) => w.id === id)), "…while tabWidgets lists every registration");
+});
+
+test("ring: composeTabRing paints ONE class, the first switched-on ring whose predicate holds; every ring class comes off first", () => {
+  const status: WidgetStatus = { state: "needsInput", needsYou: true };
+  const tab = tabOf("tab r-ra stale-other");
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", status, PR()), "r-rr", "the first ring wins with everything on");
+  assert.deepEqual(classes(tab), ["tab", "stale-other", "r-rr"], "the stale ring class is gone, an unrelated class stays, one ring on");
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", status, PR({ on: { rr: false } })), "r-ry", "the red switch off: the next ring whose predicate holds");
+  assert.deepEqual(classes(tab), ["tab", "stale-other", "r-ry"]);
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", status, PR({ on: { rr: false, ry: false } })), null, "…and with that off too, nothing (the amber's predicate is false here)");
+  assert.deepEqual(classes(tab), ["tab", "stale-other"]);
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "retrying", needsYou: true }, PR()), "r-ry", "yellow over amber: registration order is the precedence");
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "retrying" }, PR()), "r-ra");
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "closed", needsYou: true }, PR()), null, "a closed tab with a stale card wears nothing");
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "working", needsYou: false }, PR()), null);
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "working", needsYou: null }, PR()), null);
+  assert.equal(W.tabRing("s", { state: "retrying" }, PR({ on: { ra: false } })), null, "tabRing: the switched-off ring is not the winner");
+  assert.equal(W.tabRing("s", { state: "retrying" }, PR())!.id, "ra");
+  W.registerTabWidget({ ...ring("rboom", () => { throw new Error("no"); }), ring: "r-boom" });
+  assert.equal(W.composeTabRing(tab as unknown as HTMLElement, "s", { state: "retrying" }, PR()), "r-ra", "a throwing predicate reads false, the next ring still paints");
+  W.registerTabWidget(ring("rboom", () => false, false));   // quiet again for the tests below
+});
+
+test("ring: rings have no position — widgetSlot says ring whatever the order, the before and after lists and tabListOrder never carry one, and a stored order naming one is sanitized", () => {
+  const rr = W.tabWidget("rr")!;
+  assert.equal(W.widgetSlot(P(), rr), "ring");
+  assert.equal(W.widgetSlot(P({ order: ["rr", W.NAME_DIVIDER, "dot"] }), rr), "ring", "even a stored order that puts it before the divider");
+  const stored = P({ order: ["rr", "ctx", W.NAME_DIVIDER, "ry", "dot", "ra"] });
+  assert.ok(!W.orderedWidgets(stored, "before").some((w) => w.slot === "ring") && !W.orderedWidgets(stored, "after").some((w) => w.slot === "ring"));
+  assert.deepEqual(noRings(W.tabListOrder(stored)), ["ctx", W.NAME_DIVIDER, "dot", "hotkey"]);
+  assert.ok(!W.tabListOrder(stored).some((id) => RINGS_HERE.includes(id)), "the drag list never names a ring");
+  assert.deepEqual(W.orderedWidgets(stored, "ring").map((w) => w.id).filter((id) => RINGS_HERE.includes(id)), RINGS_HERE, "the ring list is the registration order, not the stored one");
+  assert.deepEqual(W.tabWidgetPrefs({ order: ["rr", "ctx", W.NAME_DIVIDER, "ry", "dot"] }).order, ["ctx", W.NAME_DIVIDER, "dot"], "a stored order never keeps a ring id");
+  assert.deepEqual(compose("before", { state: "needsInput" }, P()).map(classes), [["tab-dot", "none"]], "composing a title slot appends no ring node");
+});
+
+test("ring: ringDemoClass lights on the ring's own demo status and is null when switched off; ringSwitch reads the switches by id", () => {
+  W.registerTabWidget({ ...ring("ry", (s) => s.needsYou === true && s.state !== "closed"), demo: { state: "working", needsYou: true } });
+  assert.equal(W.ringDemoClass(W.tabWidget("ry")!, PR()), "r-ry");
+  assert.equal(W.ringDemoClass(W.tabWidget("ry")!, PR({ on: { ry: false } })), null, "switched off: a plain demo tab");
+  assert.equal(W.ringDemoClass(W.tabWidget("rr")!, PR()), null, "the default demo status (a working session) lights no prompt ring");
+  assert.equal(W.ringDemoClass(W.tabWidget("dot")!, PR()), null, "not a ring: null");
+  const sw = W.ringSwitch(P({ on: { ry: false } }));
+  assert.deepEqual([sw("rr"), sw("ry"), sw("ra"), sw("nosuch")], [true, false, true, true], "an unknown id reads on, so a pure caller's own order decides");
+  for (const id of [...RINGS_HERE, "rboom"]) W.registerTabWidget({ ...ring(id, () => false, false), slot: "after" });   // out of the ring list for any later test
+  assert.deepEqual(hereRings(), []);
+});
