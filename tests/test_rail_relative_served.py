@@ -349,6 +349,12 @@ class ServedRailRelative(unittest.TestCase):
         # ONE epoch for the fixture and the page's clock, 25s past a clock-minute boundary: the driver's measurements
         # (a few seconds of flowing fake time) stay inside that minute, so "now" is still now when read
         cls.now = int(time.time()) // 60 * 60 + 25
+        lt = time.localtime(cls.now)
+        if lt.tm_hour * 60 + lt.tm_min < 130:   # under 130 minutes past LOCAL midnight the oldest today row (125 minutes back) would fall
+            cls.now -= 131 * 60                 # on the other day: anchor the fixture's now before midnight, so every today row and the
+            #                                     page's today (its clock is installed at this same epoch) land on one local day, the
+            #                                     rows stay in the kernel's past and the yesterday rows derive from the same now
+            #                                     (2026-09-14: red at 00:17 UTC on every head, '5 min ago' != '2 hours\\nago')
         for sid, name, shift, colour in ((SID_A, "web", 0, ("#9cd2ff", "#0c1a2e")), (SID_B, "api", 1, ("#ffd29c", "#2e1a0c"))):
             cwd = os.path.join(cls.lab, "proj-" + name)
             os.makedirs(cwd, exist_ok=True)
