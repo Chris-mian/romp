@@ -195,7 +195,10 @@ def _rebind_state(path):
     _CHAIN_MEMO.clear()     # the write-moment chain memo keys on paths under STATESDIR; a new root is a new world
     parse_cache_clear()      # the parses belong to the old root too
     _COURIER_SEEN.clear()   # the courier gate keys on the old root's files
-    _PLANNER_SEEN.clear()   # ...and the planner gate
+    _PLANNER_SEEN.clear(); _PLANNER_SEEN_LOADED[0] = False; _PLANNER_SEEN_DIRTY[0] = False   # ...and the planner gate, its load latch
+    #                                                                                          with it: the new root's rows load on
+    #                                                                                          the next pass, and a forced persist
+    #                                                                                          before that writes nothing (T401 (5c) round three)
     _BACKREF_MEMO["slot"] = None   # ...and so does the sender-board walk's map
     _CAPTIONS_MEMO.clear(); _GOALARCH_MEMO.clear()   # ...and the per-file read memos
     _episode_memo.clear()   # ...and so are the episode-log reads
@@ -3130,16 +3133,18 @@ _COURIER_SEEN = {}         # fsid -> the scan key of its last pass that found no
 # the leaf fsid's directory, which a /clear forks away from an SDK session's sid), the reg file's key, the
 # captions file's key (the floor-title heal reads it), each running background launch with whether it has
 # crossed its deadline under the pass clock (the settle's one input no file records; see _bg_expiry_key),
-# and the transcript path. Recorded only when the pass did nothing, the store's key after the pass
+# the transcript path, and (T401 (5c) round two) the death marker's key (_cli_epoch), cleared.jsonl's key
+# (plan_units through _live_anchor_gone) and auto-nudge.json's key (rollup_status): every file the plan
+# tier's inventory (_sig_inputs) names, held by a completeness pin. Recorded only when the pass did nothing, the store's key after the pass
 # equals the one before it (a heal, a mint, a retirement or a rollup change moves it), and the pass was
 # COMPLETE by the evidence gate's bit (_judge_ctx.stage_incomplete, reset by _gated before the run: a
 # deferral without a write or a side file that exists and did not read sets it); a pass with units,
 # placements, a moved store or that bit is planned again next pass whatever the key says. A parse the cache
 # does not hold is never keyed, nor is an expiry view that cannot be computed. Pruned to the sessions the
 # pass discovered; a rebound root clears. This gate sits INSIDE _plan_session; the evidence gate
-# (GATED_TIERS, _gate_check and _gated in run_plan) sits around it and keys on a superset of these inputs
-# (cleared.jsonl, the death marker, the reg's spawnedAt value and the stall slice as well), so most skips
-# happen there and this table sees the sessions it let through.
+# (GATED_TIERS, _gate_check and _gated in run_plan) sits around it and keys on the same files by identity
+# plus derived VALUES this key does not read (the reg's spawnedAt and backend, the stall slice's value, the
+# task-store fingerprint), so most skips happen there and this table sees the sessions it let through.
 _PLANNER_SEEN = {}         # fsid -> the plan key of its last pass that had nothing to do (JSON-normalized: lists, not tuples)
 _PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0, "restored": 0, "refused": 0, "persisted": 0}
 #                            restored: rows a boot loaded (served only when their key stands); refused: rows the load would not
@@ -3183,16 +3188,16 @@ def _load_planner_seen():
         return 0
     _PLANNER_SEEN_LOADED[0] = True
     try:
-        text = (STATE / _PLANNER_SEEN_FILE).read_text(encoding="utf-8")
+        raw = (STATE / _PLANNER_SEEN_FILE).read_bytes()
     except FileNotFoundError:
         return 0                                                       # a fresh root: nothing to refuse
     except OSError:
         _PLANNER_STATS["refused"] += 1                                 # a file that exists and cannot be read: one refusal
         return 0
     try:
-        d = json.loads(text)
-    except ValueError:
-        _PLANNER_STATS["refused"] += 1                                 # torn: one refusal (round two, low 1)
+        d = json.loads(raw.decode("utf-8"))                            # the decode under the parse try: a UnicodeDecodeError is a
+    except ValueError:                                                 #  ValueError, and round two's read_text let it out of run_plan
+        _PLANNER_STATS["refused"] += 1                                 #  (round three, medium 2); torn or not UTF-8: one refusal
         return 0
     rows = d.get("rows") if isinstance(d, dict) and d.get("v") == _PLANNER_SEEN_V else None
     if not isinstance(rows, dict):
@@ -3238,6 +3243,11 @@ def persist_planner_seen(force=False):
     with _PLANNER_SEEN_LOCK:
         if not (_PLANNER_SEEN_DIRTY[0] or force):
             return False
+        if not _PLANNER_SEEN_DIRTY[0] and not _PLANNER_SEEN and not _PLANNER_SEEN_LOADED[0]:
+            return False                                               # a forced write over a memo NO pass has loaded (a kernel that
+        #                                                                took SIGTERM before its first planner pass) would replace the
+        #                                                                previous kernel's rows with an empty document (T401 (5c) round
+        #                                                                three, medium 1: 3 rows to 0, the next boot restored 0)
         snap = {"v": _PLANNER_SEEN_V, "derivation": [_PLANNER_SEEN_DERIVATION_V, PLACEMENTS_V], "rows": {k: v for k, v in _PLANNER_SEEN.items()}}
         try:
             body = json.dumps(snap)                                        # every row went through _planner_key_norm: JSON-native;

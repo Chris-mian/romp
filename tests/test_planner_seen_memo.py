@@ -5,10 +5,16 @@ them (the 5a read boot: plannerSkip planned 20, skipped 0, and 149,696 atoms bui
 on its own: the key is recomputed at the pass and compared, JSON-normalized on both sides; a malformed row is refused; rows are
 dropped with the fleet; the write is atomic under a per-writer tmp, the tmp unlinked and the flag re-armed on a failed replace,
 the failure said once per episode. Hermetic: the judge against a temp state root; synthetic transcripts only."""
+import ast
+import hashlib
+import inspect
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 import threading
 import unittest
 from pathlib import Path
@@ -190,6 +196,65 @@ class PlannerSeenMemo(unittest.TestCase):
         self.assertIn("_planner_seen_drop({s[0] for s in fleet})", src, "dropped with the fleet, before the pass")
         ksrc = open(os.path.join(BIN, "romp-kernel"), encoding="utf-8").read()
         self.assertIn("jd.persist_planner_seen(force=True)", ksrc, "the exit drain persists it in its own try")
+
+    def test_a_forced_persist_before_any_pass_loaded_the_memo_leaves_the_previous_kernels_rows_alone(self):
+        """Round three, medium 1: a kernel that takes SIGTERM before its first planner pass (no session attached yet, or a retry
+        pause) never calls run_plan and never loads the memo; its exit drain's forced persist must not replace the previous
+        kernel's rows with an empty document. Cross-process: a fresh judge module over the same root, never loaded, forced."""
+        jd._planner_seen_set(FSID, ["a"]); jd._planner_seen_set(FSID2, ["b"]); self.assertTrue(jd.persist_planner_seen())
+        code = ("import os, sys; sys.path.insert(0, %r); from romp_load import load_source; "
+                "jd = load_source('romp_judge_exit_drain', %r); print(jd.persist_planner_seen(force=True))"
+                % (HERE, os.path.join(BIN, "romp-judge")))
+        env = dict(os.environ, ROMP_STATE_DIR=str(self.root), ROMP_KERNEL_NO_OPEN="1")
+        env.pop("XDG_STATE_HOME", None)
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr[-800:])
+        self.assertEqual(out.stdout.strip(), "False", "nothing loaded and nothing to say: the forced write declines")
+        d = json.loads((self.root / jd._PLANNER_SEEN_FILE).read_text())
+        self.assertEqual(sorted(d["rows"]), sorted([FSID, FSID2]), "the previous kernel's rows survive the exit of a kernel that never planned")
+        jd._PLANNER_SEEN_LOADED[0] = False
+        with jd._PLANNER_SEEN_LOCK:
+            jd._PLANNER_SEEN.clear()
+        self.assertEqual(jd._load_planner_seen(), 2, "and the next boot restores them")
+        jd._planner_seen_drop(set()); self.assertTrue(jd.persist_planner_seen(force=True), "a loaded memo emptied by the drop writes its empty rows: a change")
+        self.assertEqual(json.loads((self.root / jd._PLANNER_SEEN_FILE).read_text())["rows"], {})
+
+    def test_a_memo_file_that_is_not_utf8_is_one_refusal_and_the_pass_runs(self):
+        """Round three, medium 2: read_text raised UnicodeDecodeError (a ValueError, not an OSError) out of _load_planner_seen and
+        out of run_plan, aborting the boot's whole first triage pass; the decode runs under the parse try now."""
+        (self.root / jd._PLANNER_SEEN_FILE).write_bytes(b"\xff\xfe{\"v\": 1")
+        jd.run_plan(now=1_700_000_500)                                 # the whole pass, over an empty root: must not raise
+        self.assertEqual(jd._PLANNER_STATS["refused"], 1, "one refusal for the undecodable file")
+        self.assertTrue(jd._PLANNER_SEEN_LOADED[0])
+
+    def test_a_rebound_root_clears_the_load_latch_with_the_table(self):
+        """Round three, low 2: a rebind after a load must load the new root's rows on the next pass, and a forced persist before
+        that must not wipe the new root's file."""
+        jd._planner_seen_set(FSID, ["a"]); jd.persist_planner_seen()
+        self.assertEqual(jd._load_planner_seen(), 1, "this boot's load"); self.assertEqual(jd._load_planner_seen(), 0, "latched: once per boot")
+        other = Path(tempfile.mkdtemp()); (other / jd._PLANNER_SEEN_FILE).write_text(json.dumps(
+            {"v": 1, "derivation": [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V], "rows": {FSID2: ["b"]}}))
+        jd._rebind_state(other)
+        try:
+            self.assertFalse(jd._PLANNER_SEEN_LOADED[0], "the latch cleared with the table")
+            self.assertFalse(jd.persist_planner_seen(force=True), "nothing loaded under the new root: the forced write declines")
+            self.assertEqual(json.loads((other / jd._PLANNER_SEEN_FILE).read_text())["rows"], {FSID2: ["b"]}, "the new root's file stands")
+            self.assertEqual(jd._load_planner_seen(), 1, "the new root's rows load")
+        finally:
+            jd._rebind_state(self.root)
+
+    PLAN_SESSION_AST_SHA16 = "750172566b088da2"
+
+    def test_a_change_to_the_plan_session_bumps_the_derivation_or_this_pin(self):
+        """Round three, low 3: the derivation bump rule made mechanical. A persisted row asserts the planner had nothing to do
+        under the code that wrote it, so a change to _plan_session's body must either bump _PLANNER_SEEN_DERIVATION_V (when a pass
+        that had nothing to do under the old code could have something under the new: a heal, a unit shape, a retire rule) or,
+        when it cannot move a verdict, update this pin's hash. The hash is of the function's ast (comments and formatting free)."""
+        fn = ast.parse(textwrap.dedent(inspect.getsource(jd._plan_session))).body[0]
+        h = hashlib.sha256(ast.dump(fn, include_attributes=False).encode()).hexdigest()[:16]
+        self.assertEqual(h, self.PLAN_SESSION_AST_SHA16,
+                         "_plan_session changed (ast sha16 %s): bump _PLANNER_SEEN_DERIVATION_V in kernel/judge.py if a pass that had "
+                         "nothing to do under the old code could have something under the new, else set PLAN_SESSION_AST_SHA16 to %s" % (h, h))
 
     def test_the_perf_row_carries_the_three_new_counters(self):
         self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted"})

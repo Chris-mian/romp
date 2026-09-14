@@ -2221,14 +2221,15 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the judge's evidence gate around `_plan_session` (`docs/judges.md`, "Ops and
   knobs"): a session whose signature equals the one the planner stamped after
   its last complete run is skipped before it is submitted. It keys on the
-  inner gate's inputs, the reg by its `spawnedAt` and backend values rather
-  than by identity, plus `cleared.jsonl`, the death marker and the session's
-  stall records. The inner gate
+  same files as the inner gate by identity, plus derived values the inner
+  key does not read (the reg's `spawnedAt` and backend, the stall slice's
+  value, the task-store fingerprint). The inner gate
   sits inside `_plan_session` and sees only the sessions the outer gate ran: a
   session whose parse, store, journal, archive, episode log, its leaf's task
-  store, captions file and reg have not moved since a pass that had nothing to
-  do, and none of whose running background launches has crossed its deadline,
-  is not planned again. The inner gate records a pass only when it placed
+  store, captions file, reg file, death marker, `cleared.jsonl` and stall
+  slice file have not moved since a pass that had nothing to do, and none of
+  whose running background launches has crossed its deadline, is not planned
+  again. The inner gate records a pass only when it placed
   nothing, left the store's key where it was, and ran to completion; a
   deferral without a write, or a side file that exists and did not read,
   marks the run incomplete, and that session is planned again next pass. So
