@@ -136,11 +136,18 @@ class WindowSpans(Harness):
         with mock.patch.object(km, "_client_diag_append", lambda fp, line: rows.append((fp.name, json.loads(line)))):
             km._send_chat_locked(fresh, m, None, 0, False)
             km._send_chat_locked(fresh, m, None, 0, False)                          # a second push while the handshake is still out
+            self.assertEqual(rows, [], "the routine pre-ready race files nothing while the socket is open (the tidy after PR 1642, low 1): %r" % rows)
+            self.assertEqual(fresh["withheld"], 2, "…the withheld frames are counted on the record")
+            # the permanent case: the socket closes without its handshake: ONE row, with the count, at the close
+            gone = dict(fresh, sock=None, t0=km._ws_clock() - 30.0)
+            self.assertTrue(km._note_chat_withheld_at_close(gone), "a socket closing unhandshaken with frames withheld files the row")
+            self.assertEqual([(n, r["what"], r["surface"], r["data"]["frames"]) for n, r in rows], [("client-diag.jsonl", "chatWithheld", "kernel", 2)], "one row, the frames counted: %r" % rows)
+            self.assertGreaterEqual(rows[0][1]["data"]["ageS"], 29.0, "…and the socket's age: %r" % rows[0][1]["data"])
+            # the routine case at its close: the handshake came, so nothing is filed however many frames were withheld before it
+            self.assertFalse(km._note_chat_withheld_at_close(dict(fresh, handshake=True)), "a socket whose handshake came files no row at its close")
+            self.assertEqual(len(rows), 1)
         self.assertEqual(sent, [], "a socket before its ready gets no chat frame: %r" % [f.get("type") for f in sent])
         self.assertNotIn(SID, fresh["echat"], "…and the kernel believes it holds nothing")
-        # the follow-up after PR 1584, low 2: what the kernel withholds is said ONCE per socket, in the client diagnostics file
-        self.assertEqual([(n, r["what"], r["surface"], r["data"]["sid"]) for n, r in rows], [("client-diag.jsonl", "chatWithheld", "kernel", SID)],
-                         "one row for the socket, not one per withheld frame: %r" % rows)
         fresh["proto"] = 2; fresh["handshake"] = True                               # the handshake declares the uuid wire
         km._send_chat_locked(fresh, m, None, 0, False)
         self.assertEqual([f.get("type") for f in sent], ["session"], "the first frame after the handshake is the session")
