@@ -35989,7 +35989,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # audited storm) — rewrite the ask or drop the thread (the user 2026-08-15)
                   "apiRefusal": bool(aerr and aerr.get("refusal")),
                   # the FEED's per-session needs-you verdict, on the STATUS so the tab strip's rule reads it
-                  # (tab-state.ts tabAskClass): True when the last feed build filed a card of this session
+                  # (tab-state.ts RING_TEST, the Waiting-on-you ring widget): True when the last feed build filed a card of this session
                   # under needs_input — a judge-filed block (the session asked something, a decision is
                   # pending), a stalled card, a held peer message, a live prompt — False when none, None
                   # before the first feed build since start. The tab wears a dashed yellow ring for it in
@@ -52468,7 +52468,7 @@ _CHAT_MOBILE_CSS = (
     "#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     "#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}"   # green when idle-waiting-on-bg-work
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
-    # something of the current session's is waiting on you (the desktop tab's dashed yellow ring, tab-ask):
+    # something of the current session's is waiting on you (the desktop tab's dashed yellow ring, the class ring-waiting-on-you):
     # the chip's border takes the ring — dashed, in the ask yellow — over the identity color (declared after
     # #mcur.colored so it wins at equal specificity)
     "#mcur.ask{border-color:var(--st-ask-bg,#f5d33f);border-style:dashed}"
@@ -52506,7 +52506,7 @@ _CHAT_MOBILE_CSS = (
     ".mrow .mclose:active{color:#e5484d}"
     ".mrow.active{background:#0d3a5c}"
     # a row whose session has something waiting on you: a yellow bar at its left edge — the desktop tab's
-    # dashed ring (tab-ask), in the one ask token, on a list row where a ring would fight the hairlines
+    # dashed ring (ring-waiting-on-you), in the one ask token, on a list row where a ring would fight the hairlines
     ".mrow.ask{border-left:3px solid var(--st-ask-bg,#f5d33f);padding-left:9px}"
     # The page must never grow WIDER than the phone (the user 2026-07-11, who reported the whole chat screen taking up
     # more space than is available, about 20 percent too wide, with the controls not all fitting). Measured
@@ -52547,7 +52547,7 @@ function read(){return [].map.call(tabs.querySelectorAll('.tab[data-id]'),functi
 var lab=t.querySelector('.tab-label');
 return {id:t.getAttribute('data-id'),name:(lab?lab.textContent:t.getAttribute('data-id')),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
-working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),ask:t.classList.contains('tab-ask'),active:t.classList.contains('active'),
+working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),ask:t.classList.contains('ring-waiting-on-you'),active:t.classList.contains('active'),
 ph:t.classList.contains('tab-placeholder')};});}
 // A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
 // federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
@@ -52567,7 +52567,7 @@ function rowUpdate(row,s){row.classList.toggle('active',!!s.active);
 // who tapped a remote session on the phone and nothing happened)
 row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
 row.classList.toggle('pending',pendingId===s.id);
-row.classList.toggle('ask',!!s.ask);   // the desktop tab's yellow ring (tab-ask): something of this session's is waiting on you
+row.classList.toggle('ask',!!s.ask);   // the desktop tab's yellow ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): something of this session's is waiting on you
 var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
 wd.classList.toggle('await',!s.working&&!!s.awaitbg);}

@@ -33,42 +33,55 @@ export function tabStateClass(s: TabStateLike | null | undefined): string {
   return "";
 }
 
-/** THE ASK RING (the user 2026-09-13): "tab-ask" when the feed files a card of this session under needs-you —
- *  it asked something, a decision is pending, a peer's message waits for a say, a stall needs eyes — and the
- *  tab is not already red or dead; else "". A SECOND class beside the state class, not a state of its own:
- *  the session may be idle, awaiting background work or still WORKING while the card waits, and the ring
- *  must show in every one of those (a session with something waiting on you should grab attention without a
- *  click, even while it goes on working in the background), so it composes with the working dot rather than
- *  replacing it. The red ring — a LIVE prompt (tab-awaiting) or an API stop only you can clear (tab-blocked)
- *  — already says "needs you now" and outranks it; a closed tab is past tense and wears nothing. It does
- *  outrank the amber retrying ring: a transient API retry needs no attention, the ask does (styles.css orders
- *  the outline rules to match). Reads status.needsYou: the kernel's per-session read of the feed's needs_input
- *  column (build_session), the same verdict the section-at-a-glance row's chip and the feed's Blocked list
- *  speak, so the three can never disagree; null (no feed build yet) and false are the same nothing. */
-export function tabAskClass(s: TabStateLike | null | undefined): string {
-  if (s?.needsYou !== true) return "";
-  const st = tabStateClass(s);
-  return st === "tab-awaiting" || st === "tab-blocked" || st === "tab-closed" ? "" : "tab-ask";
-}
-
-/** Every class a tab wears for its status: the state class, then the ask ring (either may be absent). */
-export function tabClasses(s: TabStateLike | null | undefined): string[] {
-  return [tabStateClass(s), tabAskClass(s)].filter(Boolean);
+/** THE RINGS a tab can wear, in PRECEDENCE order (the rings-as-widgets change, 2026-09-14): each is a widget of the
+ *  tab-widget registry (tab-widgets.ts, slot "ring") with its own switch in the settings' Tab widgets section, and a
+ *  tab wears ONE at a time, the first in this order whose switch is on and whose test holds. Red over yellow over
+ *  amber: a live prompt or an API stop only you can clear says "needs you now"; a card of the session's under
+ *  needs-you says something is waiting on you, whatever else the session is doing; a transient API retry needs no
+ *  attention at all. This is the pure, DOM-free twin of the registry's composition (composeTabRing), read by the
+ *  folded header's pip below, so the strip and the pip cannot disagree; tab-widgets.test.ts pins the two equal over
+ *  every synthetic status and every switch set. */
+export type RingId = "ring-needs-you" | "ring-waiting-on-you" | "ring-retrying";
+export const RING_ORDER: readonly RingId[] = ["ring-needs-you", "ring-waiting-on-you", "ring-retrying"];
+export const RING_TEST: Record<RingId, (s: TabStateLike | null | undefined) => boolean> = {
+  // the RED ring: a LIVE prompt (a permission or picker prompt, tab-awaiting), or an API stop only you can clear
+  // (tab-blocked: prompt too long, a spend cap, a spent model allowance, an auth failure, a refusal)
+  "ring-needs-you": (s) => { const c = tabStateClass(s); return c === "tab-awaiting" || c === "tab-blocked"; },
+  // the YELLOW ring (the ask ring, 2026-09-13): the feed filed a card of this session under needs-you (status.needsYou,
+  // the kernel's per-session read of the feed's needs_input column in build_session, the same verdict the
+  // section-at-a-glance row's chip and the feed's Blocked list speak, so the three can never disagree) and the tab is
+  // not dead. The session may be idle, awaiting background work or still WORKING while the card waits, and the ring
+  // shows in every one of those, composed with the working dot rather than replacing it: a session with something
+  // waiting on you should grab attention without a click, even while it goes on working. Only TRUE is a verdict: null
+  // (no feed build yet) and false are the same nothing, as is an older kernel's absent field. The test itself no
+  // longer stands down under the red states; the composition's first-on-ring rule does, so with the red ring switched
+  // off a stopped session with a card wears the yellow, which is true of that tab.
+  "ring-waiting-on-you": (s) => s?.needsYou === true && tabStateClass(s) !== "tab-closed",
+  // the AMBER ring: the state retrying, or blocked with none of the on-you flags (the API is backing off and retrying
+  // on its own)
+  "ring-retrying": (s) => tabStateClass(s) === "tab-retrying",
+};
+/** The ring a tab wears for a status: the first of RING_ORDER whose switch (`on`; every ring on by default) is on and
+ *  whose test holds; null for none. */
+export function tabRingId(s: TabStateLike | null | undefined, on: (id: RingId) => boolean = () => true): RingId | null {
+  for (const id of RING_ORDER) if (on(id) && RING_TEST[id](s)) return id;
+  return null;
 }
 
 export type SectionPip = "blocked" | "ask" | "retrying" | "working";
 
-/** A folded header's ONE pip for its members' states, in the tab's own colours and by the tab's own
- *  rule: red when a member is blocked on you or waiting for you; else yellow when one has something
- *  waiting on you (the ask ring, whatever else it is doing); else gold when one is working; else
- *  amber when one is stalled on an API error that is auto-retrying (shown only when nothing in the
- *  group is making progress — it is not on you); null when nothing is happening. */
-export function sectionPip(states: ReadonlyArray<TabStateLike | null | undefined>): SectionPip | null {
-  const cls = states.flatMap(tabClasses);
-  if (cls.some((c) => c === "tab-blocked" || c === "tab-awaiting")) return "blocked";
-  if (cls.includes("tab-ask")) return "ask";
-  if (cls.includes("tab-working")) return "working";
-  if (cls.includes("tab-retrying")) return "retrying";
+/** A folded header's ONE pip for its members' states, in the tab's own colours and by the tab's own rule, under the
+ *  same ring switches (`on`) the members' tabs wear, so a fold never shows a colour no unfolded tab would: red when a
+ *  member wears the red ring (blocked on you or waiting for you); else yellow when one wears the yellow ring (something
+ *  waiting on you, whatever else it is doing); else gold when one is working; else amber when one wears the amber ring
+ *  (stalled on an API error that is auto-retrying: shown only when nothing in the group is making progress, since it
+ *  is not on you); null when nothing is happening. */
+export function sectionPip(states: ReadonlyArray<TabStateLike | null | undefined>, on: (id: RingId) => boolean = () => true): SectionPip | null {
+  const rings = states.map((s) => tabRingId(s, on));
+  if (rings.includes("ring-needs-you")) return "blocked";
+  if (rings.includes("ring-waiting-on-you")) return "ask";
+  if (states.some((s) => tabStateClass(s) === "tab-working")) return "working";
+  if (rings.includes("ring-retrying")) return "retrying";
   return null;
 }
 
@@ -89,17 +102,17 @@ export const SECTION_PIP_TITLE_MANY: Record<SectionPip, (n: number) => string> =
   retrying: (n) => `${n} sessions in this group hit an API error and are retrying on their own`,
 };
 
-const PIP_CLASSES: Record<SectionPip, readonly string[]> = {
-  blocked: ["tab-blocked", "tab-awaiting"], ask: ["tab-ask"], working: ["tab-working"], retrying: ["tab-retrying"],
-};
+/** The ring each pip kind names (the working pip is the state's, not a ring's). */
+const PIP_RING: Record<Exclude<SectionPip, "working">, RingId> = { blocked: "ring-needs-you", ask: "ring-waiting-on-you", retrying: "ring-retrying" };
 
 export interface TabMemberLike { name?: string; status?: TabStateLike | null }
 
-/** The members whose own tab wears the pip's color — the sessions its tooltip names, in strip order. A tab
- *  wears up to two classes (the state and the ask ring), so a member matches on any of them. */
-export function sectionPipMembers(kind: SectionPip, members: ReadonlyArray<TabMemberLike | null | undefined>): string[] {
+/** The members whose own tab wears the pip's colour, under the same switches: the sessions its tooltip names, in
+ *  strip order. A working session that also wears a ring is named under both kinds. */
+export function sectionPipMembers(kind: SectionPip, members: ReadonlyArray<TabMemberLike | null | undefined>, on: (id: RingId) => boolean = () => true): string[] {
   const names: string[] = [];
-  for (const m of members) if (m && tabClasses(m.status).some((c) => PIP_CLASSES[kind].includes(c))) names.push(String(m.name || "").trim() || "(unnamed)");
+  const wears = (s: TabStateLike | null | undefined) => kind === "working" ? tabStateClass(s) === "tab-working" : tabRingId(s, on) === PIP_RING[kind];
+  for (const m of members) if (m && wears(m.status)) names.push(String(m.name || "").trim() || "(unnamed)");
   return names;
 }
 

@@ -18,7 +18,8 @@
 // cut composes in registration order: dot, context bar, hot key).
 // The store's shape and rules (normalize, the switch, the options, the order) live in widget-prefs.ts since T409, shared
 // with the status line's widgets; the names below stay as this module's, re-exported, so callers and pins stand.
-import { tabDotClass, tabDotTitle, type TabStateLike } from "./tab-state";
+import { tabDotClass, tabDotTitle } from "./tab-state";
+import { RING_ORDER, RING_TEST, type RingId, type TabStateLike } from "./tab-state";   // the rings' pure twin (2026-09-14): the precedence, the predicates and the status shape they read
 import { ctxFallbackColor, pickTone } from "./ctx-color";
 import { effectiveChord, loadOverrides, resolveChord } from "./keybindings";
 import { type WidgetChoice, type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets, sanitizeOrder,
@@ -260,3 +261,22 @@ registerTabWidget({
     return k;
   },
 });
+
+// THE RINGS (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear are widgets of slot "ring",
+// each with its own switch in the settings' Tab widgets section, registered in PRECEDENCE order, red over yellow over
+// amber (composeTabRing paints the first that is switched on and applies; a stored order never moves a ring). The
+// predicates are tab-state.ts's RING_TEST, the pure twin the folded header's pip reads, so the strip and the pip cannot
+// disagree. The colours are the tokens the tab already wears (styles.css: the red and the amber rings read the state's
+// --state, the yellow its own --st-ask-bg); the rows' demos wear the same classes through gear.css. No options.
+const RING_ROWS: Record<RingId, { label: string; description: string; demo: WidgetStatus }> = {
+  "ring-needs-you": { label: "Needs you", demo: { state: "awaiting" },
+                      description: "a dashed red ring while the session is stopped on a prompt, or on an API error only you can clear" },
+  "ring-waiting-on-you": { label: "Waiting on you", demo: { state: "working", needsYou: true },
+                           description: "a dashed yellow ring while something of the session's is waiting on you, even as it goes on working; a red ring outranks it" },
+  "ring-retrying": { label: "Retrying", demo: { state: "retrying" },
+                     description: "a dashed amber ring while the session retries an API error on its own; a red or yellow ring outranks it" },
+};
+for (const id of RING_ORDER) {
+  registerTabWidget({ id, label: RING_ROWS[id].label, description: RING_ROWS[id].description, defaultOn: true, slot: "ring", ring: id,
+                      on: (_sid, status) => RING_TEST[id](status), render: () => null, demo: RING_ROWS[id].demo });
+}

@@ -90,7 +90,7 @@ test("focusing a tab (after ⏎-send) draws NO white UA focus ring around its co
   // default focus outline doesn't draw a redundant white ring around the identity-colored border.
   assert.match(CSS, /\.tab \{[^}]*outline: none;[^}]*\}/);
   // the dashed STATE outlines stay (higher specificity than the base .tab rule, so outline:none can't kill them)
-  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{ outline: 2px dashed/);
+  assert.match(CSS, /\.tab\.ring-needs-you, \.tab\.ring-retrying \{ outline: 2px dashed/);   // the ring class the strip composes (widgets since 2026-09-14), still above the base .tab rule's specificity
 });
 
 test("a staged chip clips IN BOUNDS with an ellipsis and expands on click (the user 2026-08-15)", () => {

@@ -521,23 +521,31 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 /* BLOCKED (API error): the SAME dashed ring as awaiting but in the alarm-red blocked color, PLUS a faint
    red fill so a stopped session is highlighted (not just outlined). It isn't working, so it has NO dot
    (the user 2026-06-16). */
-.tab.tab-blocked { --state: var(--st-blocked-bg); background: rgba(229, 72, 77, 0.30); }   /* translucent red fill so a hard-blocked tab reads at a glance, atop the dashed ring (the user 2026-06-18) */
+.tab.tab-blocked { --state: var(--st-blocked-bg); }
+/* The FILL rides the red RING (the rings-as-widgets change, 2026-09-14): the ring is a widget with a switch in the
+   settings (tab-widgets.ts, the class ring-needs-you the strip composes), and with it switched off a stopped session
+   is a plain tab: its state's dot slot and hover title, no ring and no fill. */
+.tab.tab-blocked.ring-needs-you { background: rgba(229, 72, 77, 0.30); }   /* translucent red fill so a hard-blocked tab reads at a glance, atop the dashed ring (the user 2026-06-18) */
 /* the red fill must out-specify .tab.active (white, equal specificity but LATER in source) and :hover, so
    the FOCUSED/hovered blocked tab still reads red — without this the active blocked tab showed white (the user 2026-06-18) */
-.tab.tab-blocked:hover { background: rgba(229, 72, 77, 0.38); }
+.tab.tab-blocked.ring-needs-you:hover { background: rgba(229, 72, 77, 0.38); }
 /* SELECTED + blocked (the user 2026-07-24): the FILL has to carry both facts at once, since a blocked tab
    can't fall back to the plain white selection background without losing the red. So layer them literally —
    the normal selection white OVER the red — and the selected tab reads as a lighter, brighter red than its
    unselected neighbours while staying unmistakably red. A hybrid, rather than one state replacing the other. */
-.tab.tab-blocked.active {
+.tab.tab-blocked.ring-needs-you.active {
   background: linear-gradient(rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.14)), rgba(229, 72, 77, 0.42);
 }
 /* (The identity stand-down while blocked — the user 2026-07-24 — is structural now: every identity
    TINT rule carries :not(.tab-blocked), so the red fill wins by construction. The old box-shadow:none
    override died with the ring it overrode, 2026-08-26.) */
-/* STATE ring on all four sides, no layout jitter. WORKING shows a gold dot
-   (.tab-dot) instead; the dashed YELLOW ring below is the ASK ring (a card of the
-   session's under needs-you), which rides beside any state; COMPACTING intentionally gets NO outline (the user: it's
+/* THE RINGS on all four sides, no layout jitter: WIDGETS since 2026-09-14 (tab-widgets.ts), one per row of the
+   settings' Tab widgets section with a switch each, and a tab wears ONE at a time (composeTabRing: the first
+   switched-on ring in precedence order, red over yellow over amber). The rules below key on the RING class the strip
+   composes, never on the state class, so a ring switched off leaves the tab with its state's dot and hover title
+   alone, and no :not chain or specificity game decides which ring shows. WORKING shows a gold dot (.tab-dot)
+   instead; the dashed YELLOW ring is the ASK ring (a card of the session's under needs-you, 2026-09-13), which rides
+   beside any live state, working included; COMPACTING intentionally gets NO outline (the user: it's
    transient plumbing, not something to flag — the statusline's scan bar is the
    compacting cue); a selected compacting tab keeps its normal active styling.
    BLOCKED/awaiting gets a DASHED red ring (the user: dashed with long dashes +
@@ -555,18 +563,15 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    label survives a state overlap either way. */
 .tab.tab-peek { outline: 1.5px dashed rgba(255, 255, 255, 0.35); outline-offset: -2px; }
 .tab.tab-peek .tab-label { font-style: italic; opacity: 0.85; }
-.tab.tab-awaiting, .tab.tab-blocked, .tab.tab-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }
-/* THE ASK RING (the user 2026-09-13): the same dashed ring in the ask YELLOW when the feed files a card of this
-   session under needs-you — it asked something, a decision is pending, a peer's message waits for a say — so the
-   sessions that need you stand out in the strip without a click. A second class beside the state class, never a
-   state: the session may be idle, awaiting or still WORKING while the card waits, and the ring shows in all of
-   them, composed with the working dot. The :not chain does two jobs: it stands the ring down under the two red
-   rings by construction — a live prompt or an API stop only you can clear already says "needs you now"
-   (tab-state.ts tabAskClass excludes them too) — and it lifts the rule's specificity (four class-level parts)
-   above the state outlines' two, so the ask ring wins `outline` over the amber retrying ring wherever the rule
-   sits in the sheet (a transient API retry needs no attention; the ask does). Kept beside the state outlines
-   for reading, not for the cascade (tab-ask-ring.test.ts pins the exclusions and the specificity). */
-.tab.tab-ask:not(.tab-awaiting):not(.tab-blocked) { outline: 2px dashed var(--st-ask-bg); outline-offset: -2px; }
+.tab.ring-needs-you, .tab.ring-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }   /* the red (--state from .tab-awaiting / .tab-blocked) and the amber (from .tab-retrying) */
+/* THE ASK RING (2026-09-13): the same dashed ring in the ask YELLOW when the feed files a card of this session under
+   needs-you — it asked something, a decision is pending, a peer's message waits for a say — so the sessions that need
+   you stand out in the strip without a click. It rides beside any live state: the session may be idle, awaiting or
+   still WORKING while the card waits, composed with the working dot. Which ring shows is the composition's call
+   (tab-widgets.ts composeTabRing, red over yellow over amber, one class at a time), so this rule needs no :not chain
+   and no specificity above the red and amber rule's; a stopped session with the red ring switched off wears this one
+   when it has a card, which is true of that tab. tab-rings.test.ts pins the rules and the tokens. */
+.tab.ring-waiting-on-you { outline: 2px dashed var(--st-ask-bg); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
 .tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the await-green chip (the user 2026-07-13) */

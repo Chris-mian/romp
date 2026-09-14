@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import { planStrip, parseTabGroups, headWords } from "./tab-groups";
-import { tabStateClass, tabAskClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
+import { tabStateClass, tabRingId, RING_ORDER, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
 import { newSkeletonState, renderKind } from "./skeleton-tabs";
 import type { TagUnion } from "./session-views";
 
@@ -64,7 +64,7 @@ type Hooks = {
   phone: boolean;             // the phone layout: the plan is the flat strip there
   heads: HeadCall[];          // every group header the paint minted, in order
   planStrip: typeof planStrip; parseTabGroups: typeof parseTabGroups; headWords: typeof headWords;
-  tabStateClass: typeof tabStateClass; tabAskClass: typeof tabAskClass; tabDotClass: typeof tabDotClass; tabDotTitle: typeof tabDotTitle; sectionPip: typeof sectionPip; sectionPipMembers: typeof sectionPipMembers; sectionPipTitle: typeof sectionPipTitle;
+  tabStateClass: typeof tabStateClass; tabRingId: typeof tabRingId; RING_ORDER: typeof RING_ORDER; tabDotClass: typeof tabDotClass; tabDotTitle: typeof tabDotTitle; sectionPip: typeof sectionPip; sectionPipMembers: typeof sectionPipMembers; sectionPipTitle: typeof sectionPipTitle;
   newSkeletonState: typeof newSkeletonState; renderKind: typeof renderKind;   // the skeleton strip (2026-09-07): empty here, so every listed id is a loaded tab or a placeholder
   skeletons: number;          // skeleton tabs minted (none expected: the set stays empty in these worlds)
   timers: Array<() => void>;  // the deferred checks renderTabs schedules (setTimeout 0), fired by the test when it chooses
@@ -134,7 +134,12 @@ function lift(): (hooks: Hooks) => Api {
     const readTabGroups = (u) => H.parseTabGroups(H.groupsRaw, u);
     const tabGroups = () => readTabGroups(H.unions); const writeTabGroups = () => {};
     const phoneLayout = () => H.phone;
-    const tabStateClass = H.tabStateClass, tabAskClass = H.tabAskClass, tabDotClass = H.tabDotClass, tabDotTitle = H.tabDotTitle, sectionPip = H.sectionPip, sectionPipMembers = H.sectionPipMembers, sectionPipTitle = H.sectionPipTitle;   // tabAskClass: the ask ring (2026-09-13); tabDotClass: the state-dot slot every tab carries (the tab-strip fix, 2026-09-08); tabDotTitle: what the slot says on hover
+    const tabStateClass = H.tabStateClass, tabDotClass = H.tabDotClass, tabDotTitle = H.tabDotTitle, sectionPip = H.sectionPip, sectionPipMembers = H.sectionPipMembers, sectionPipTitle = H.sectionPipTitle;   // tabDotClass: the state-dot slot every tab carries (the tab-strip fix, 2026-09-08); tabDotTitle: what the slot says on hover
+    // the RINGS (widgets since 2026-09-14): a faithful stand-in for tab-widgets.ts composeTabRing over the real tab-state rule — every
+    // ring class off, then the first switched-on ring whose test holds (settings.tabWidgets.on, every ring on by default) — and the
+    // switch predicate the folded header's pip reads
+    const ringSwitch = (prefs) => (id) => !(prefs && prefs.on && prefs.on[id] === false);
+    const composeTabRing = (tab, sid, status, prefs) => { for (const id of H.RING_ORDER) tab.classList.remove(id); const r = H.tabRingId(status, ringSwitch(prefs)); if (r) tab.classList.add(r); return r; };
     const mentionRosterChanged = () => {};   // the @-mention roster hook at the top of renderTabs: not the strip's (composer-mention-pane.test.ts)
     function makeGroupHead(sec, folded, active, hidden) {
       const h = el("div", "tab-group-head" + (folded ? " collapsed" : ""));
@@ -182,7 +187,7 @@ function world(): { H: Hooks; api: Api; sessions: Map<string, any>; tabMeta: Map
   const H: Hooks = { FakeEl, bar: new FakeEl("div"), mslot: null, only: "", hidden: new Set(), down: new Set(), notes: {},
                      keyHint: "Open a session (K)", lens: { all: true }, unions: [], tips: [], aftermaths: [], rowPaints: 0, tagSyncs: 0, placeholders: 0,
                      groupsRaw: null, phone: false, heads: [],
-                     planStrip, parseTabGroups, headWords, tabStateClass, tabAskClass, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
+                     planStrip, parseTabGroups, headWords, tabStateClass, tabRingId, RING_ORDER, tabDotClass, tabDotTitle, sectionPip, sectionPipMembers, sectionPipTitle,
                      newSkeletonState, renderKind, skeletons: 0, timers: [], activated: [] };
   const api = lift()(H);
   const sessions = new Map<string, any>([["a", session("web", "ready")], ["b", session("api", "working")]]);
@@ -319,34 +324,63 @@ test("the paint wears the shared state → class rule (tab-state.ts), and the si
   assert.ok(tab2.has("tab-retrying") && !tab2.has("tab-blocked"), "a transient API error auto-retries: amber");
 });
 
-test("the ASK RING rides beside the state class — a working tab wears both — and its flip alone repaints the strip once (2026-09-13)", () => {
-  const { H, api, sessions } = world();
+test("the RINGS ride beside the state class as one class at a time — a working tab wears the yellow with its dot — the yellow's flip alone repaints once, and a switch off takes the ring away (2026-09-13, widgets since 2026-09-14)", () => {
+  const { H, api, sessions, settings } = world();
   api.renderTabs();
   assert.equal(H.bar.wipes, 1);
   // the feed files a card of the WORKING session under needs-you: the tab keeps its working class and gains the ring
   sessions.get("b").status = { state: "working", needsYou: true };
   api.renderTabs();
-  assert.equal(H.bar.wipes, 2, "the verdict alone is a repaint: the signature reads tabAskClass");
+  assert.equal(H.bar.wipes, 2, "the verdict alone is a repaint: the signature reads needsYou");
   const b = H.bar.tabs().find((t) => t.dataset.id === "b")!;
-  assert.ok(b.has("tab-working") && b.has("tab-ask"), "gold dot AND yellow ring: the ask does not replace the state");
+  assert.ok(b.has("tab-working") && b.has("ring-waiting-on-you"), "gold dot AND yellow ring: the ring does not replace the state");
   api.renderTabs();
   assert.equal(H.bar.wipes, 2, "unchanged: no rebuild");
+  // the yellow ring switched off in the settings: one repaint (settings.tabWidgets is in the signature), the class gone, the state kept
+  api.set({ settings: { ...settings, tabWidgets: { on: { "ring-waiting-on-you": false }, order: [], opts: {} } } });
+  api.renderTabs();
+  assert.equal(H.bar.wipes, 3, "the switch alone is a repaint");
+  const bOff = H.bar.tabs().find((t) => t.dataset.id === "b")!;
+  assert.ok(bOff.has("tab-working") && !bOff.has("ring-waiting-on-you"), "switched off: the dot stays, the ring goes");
+  api.set({ settings });
+  api.renderTabs();
+  assert.equal(H.bar.wipes, 4);
+  assert.ok(H.bar.tabs().find((t) => t.dataset.id === "b")!.has("ring-waiting-on-you"), "…and back on");
   // the card leaves the column (answered, cleared): the ring goes, the working class stays
   sessions.get("b").status = { state: "working", needsYou: false };
   api.renderTabs();
-  assert.equal(H.bar.wipes, 3);
+  assert.equal(H.bar.wipes, 5);
   const b2 = H.bar.tabs().find((t) => t.dataset.id === "b")!;
-  assert.ok(b2.has("tab-working") && !b2.has("tab-ask"));
+  assert.ok(b2.has("tab-working") && !b2.has("ring-waiting-on-you"));
   // an idle session that asked: the ring alone (the common case the state rule never sees)
   sessions.get("a").status = { state: "ready", needsYou: true };
   api.renderTabs();
   const a = H.bar.tabs().find((t) => t.dataset.id === "a")!;
-  assert.ok(a.has("tab-ask") && !a.has("tab-working") && !a.has("tab-awaiting"));
+  assert.ok(a.has("ring-waiting-on-you") && !a.has("tab-working") && !a.has("tab-awaiting"));
   // a live prompt on the same session: the red ring alone — never two rings
   sessions.get("a").status = { state: "needsInput", needsYou: true };
   api.renderTabs();
   const a2 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
-  assert.ok(a2.has("tab-awaiting") && !a2.has("tab-ask"), "red outranks yellow");
+  assert.ok(a2.has("tab-awaiting") && a2.has("ring-needs-you") && !a2.has("ring-waiting-on-you"), "red outranks yellow: one ring class");
+  // the red ring switched off: the same tab wears the yellow (a card of its IS waiting on you), the state class untouched
+  api.set({ settings: { ...settings, tabWidgets: { on: { "ring-needs-you": false }, order: [], opts: {} } } });
+  api.renderTabs();
+  const a3 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
+  assert.ok(a3.has("tab-awaiting") && a3.has("ring-waiting-on-you") && !a3.has("ring-needs-you"), "the next ring whose test holds");
+  // …and with no card, a plain awaiting tab: the state's hover title and dot slot, no ring
+  sessions.get("a").status = { state: "needsInput" };
+  api.renderTabs();
+  const a4 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
+  assert.ok(a4.has("tab-awaiting") && !a4.className.includes("ring-"), "no ring at all");
+  api.set({ settings });
+  // an API retry: the amber ring; a card on it: the yellow outranks the amber
+  sessions.get("a").status = { state: "retrying" };
+  api.renderTabs();
+  assert.ok(H.bar.tabs().find((t) => t.dataset.id === "a")!.has("ring-retrying"));
+  sessions.get("a").status = { state: "retrying", needsYou: true };
+  api.renderTabs();
+  const a5 = H.bar.tabs().find((t) => t.dataset.id === "a")!;
+  assert.ok(a5.has("tab-retrying") && a5.has("ring-waiting-on-you") && !a5.has("ring-retrying"), "yellow over amber");
 });
 
 test("the dot slot explains its state on hover: a visible dot carries the feed's phrase for that state, the hidden slot says nothing", () => {

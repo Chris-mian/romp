@@ -314,9 +314,9 @@ test("a folded section renders its header alone with the folded-away count and o
   // the pip is the MEMBERS' (a hidden one blocked/waiting/working/retrying), never the header's own status
   // (the user 2026-09-06: no session-tab affordances on a header — but a fold must still say a hidden
   // member needs you); over the hidden members, after the count
-  assert.match(head, /const kind = sectionPip\(hidden\.map\(\(id\) => sessions\.get\(id\)\?\.status\)\);/,
-    "one summary pip, classified by tab-state.ts — the same rule the tab itself wears (tab-state.test)");
-  assert.match(head, /pip\.title = sectionPipTitle\(kind, sectionPipMembers\(kind, hidden\.map\(\(id\) => sessions\.get\(id\)\)\)\);/, "the tooltip names the sessions");
+  assert.match(head, /const kind = sectionPip\(hidden\.map\(\(id\) => sessions\.get\(id\)\?\.status\), ringSwitch\(settings\.tabWidgets\)\);/,
+    "one summary pip, classified by tab-state.ts — the same rule the tab itself wears (tab-state.test), under the same ring switches (the rings are widgets since 2026-09-14)");
+  assert.match(head, /pip\.title = sectionPipTitle\(kind, sectionPipMembers\(kind, hidden\.map\(\(id\) => sessions\.get\(id\)\), ringSwitch\(settings\.tabWidgets\)\)\);/, "the tooltip names the sessions");
   assert.ok(head.indexOf('el("span", "tab-group-count")') < head.indexOf("sectionPip("), "after the count (the row's last child when folded, T284)");
   assert.ok(!head.includes("tabStateClass("), "the header itself wears no state class");
   assert.ok(!head.includes('"tab-dot"'), "never a .tab-dot — the kernel's mobile scrape keys on the tab pips' vocabulary");

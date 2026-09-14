@@ -204,6 +204,11 @@ var GEAR_HTML =
   // sliding switch and the widget's own options; every control built once and re-filled in place (click-safe)
   '<div class=rs-hint>What a tab title carries, in this order. Each row shows the widget live.</div>' +
   '<div id=rs-widgets class=rs-widgets></div>' +
+  // THE RINGS (the rings-as-widgets change, 2026-09-14): the three dashed rings a tab can wear are widgets too, each with
+  // its own switch, listed as their own group under the title's rows and their preview (the preview box lands between
+  // the two hosts at build). No grip: their order is the precedence, red over yellow over amber, and is the registry's
+  '<div class=rs-hint>Rings around the tab. One at a time: the first that applies wins, in this order.</div>' +
+  '<div id=rs-rings class=rs-widgets></div>' +
   // STATUS LINE (T409, the user 2026-09-13): the items the line above the composer carries besides its fixed parts, one
   // row per registered widget (status-widgets.ts); the rows are the whole entry point (the user: no gear on the line,
   // no new menu row). The same builder as the Tab widgets rows; the demo is the widget alone, as the line draws it.
@@ -691,7 +696,8 @@ function initGear(post, opts) {
   function widgetOptRowHTML(o) { return '<span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--menu-fg, #ccc)">' + o.name + '</span>'; }
   function widgetSection(cfg) {   // cfg: host, list(), order(prefs) -> ids in visual order (a divider's id among them), divider {id, label} or null,
                                   //      group(id) -> a key rows may not leave (null: none), prefs(store), save(prefs), on(prefs, w), opts(prefs, w),
-                                  //      demo(w, prefs) -> node or null, preview(prefs) -> node, pickPrefix
+                                  //      demo(w, prefs) -> node or null, preview(prefs) -> node, pickPrefix,
+                                  //      reorder: false -> no grip and no drag (the rings, 2026-09-14: the order is the precedence and the registry's)
     var rows = {}, dividerRow = null, previewBody = null;
     // REORDER (the user's addition to T409): the rows drag by their grip (pointer events on the document for the drag's life,
     // one drag per pointer, each ended when the card hides; Escape cancels) and move by the arrow keys on the focused grip; the order is the render order on
@@ -812,6 +818,7 @@ function initGear(post, opts) {
         var row = document.createElement('div'); row.className = 'rs-widget'; row.setAttribute('data-widget', w.id);
         var grip = document.createElement('button'); grip.type = 'button'; grip.className = 'rs-grip'; grip.textContent = '⠿';   // the six-dot grip glyph
         grip.setAttribute('aria-label', 'Drag to reorder: ' + w.label); grip.title = 'Drag to reorder, or press the arrow keys';
+        if (cfg.reorder === false) { grip = document.createElement('span'); grip.className = 'rs-grip-none'; }   // a section that does not reorder: an empty cell in the grip's column keeps the grid's columns aligned
         var demo = document.createElement('span'); demo.className = 'rs-widget-demo';
         var name = document.createElement('span'); name.className = 'rs-widget-name';
         var b = document.createElement('b'); b.textContent = w.label; name.appendChild(b);
@@ -827,7 +834,7 @@ function initGear(post, opts) {
           paints.push(function (prefs) { if (drop) drop(o.choices.map(function (c) { return { id: c.value, name: c.label }; }), cfg.opts(prefs, w)[o.key]); });
         });
         row.appendChild(grip); row.appendChild(demo); row.appendChild(name); row.appendChild(sw); row.appendChild(opts);
-        wireGrip(grip, row, w.id);
+        if (cfg.reorder !== false) wireGrip(grip, row, w.id);
         cfg.host.appendChild(row);
         rows[w.id] = { row: row, demo: demo, sw: sw, paints: paints };
       });
@@ -861,13 +868,13 @@ function initGear(post, opts) {
       });
       if (previewBody) { var pv = cfg.preview(prefs); if (pv) previewBody.replaceChildren(pv); else previewBody.replaceChildren(); }
     }
-    return { paint: paint };
+    return { paint: paint, save: cfg.save };   // save exposed: a second section over the same store (the rings) writes through the first's
   }
   // the tab widgets: settings.tabWidgets with tabCtx as the mirror; the demo is a miniature tab with the widget's node
   // where the strip would put it (before the name or after it)
   function widgetPrefs(s) { return TW.tabWidgetPrefs(s.tabWidgets, s.tabCtx); }
   var tabSection = widgetSection({
-    host: document.getElementById('rs-widgets'), list: TW.tabWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',
+    host: document.getElementById('rs-widgets'), list: TW.titleWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',   // the widgets that render INTO the title; the rings have their own rows below
     order: TW.tabListOrder, divider: { id: TW.NAME_DIVIDER, label: 'session name' }, group: null, groupLabel: null,
     save: function (prefs) { var s = load(); s.tabWidgets = prefs; s.tabCtx = TW.tabCtxOfPrefs(prefs); save(s); paintWidgets(); },
     on: TW.widgetOn, opts: TW.widgetOpts,
@@ -884,6 +891,22 @@ function initGear(post, opts) {
       var node = TW.renderWidgetDemo(w, prefs);
       if (w.slot === 'before') { if (node) tab.appendChild(node); tab.appendChild(label); }
       else { tab.appendChild(label); if (node) tab.appendChild(node); }
+      return tab;
+    },
+  });
+  // THE RINGS (the rings-as-widgets change, 2026-09-14): the same builder over the registry's rings, the same store
+  // (settings.tabWidgets, through the tab section's own save, so the tabCtx mirror and the repaint come with it) and the
+  // same switch; no divider, no grip, no drag (the order is the precedence: red over yellow over amber, the registry's).
+  // The demo is a miniature tab wearing the ring its predicate lights on its demo status, a plain tab once switched off.
+  var ringSection = widgetSection({
+    host: document.getElementById('rs-rings'), list: TW.ringWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',
+    order: function () { return TW.ringWidgets().map(function (w) { return w.id; }); }, divider: null, group: null, groupLabel: null, reorder: false,
+    save: tabSection.save,
+    on: TW.widgetOn, opts: TW.widgetOpts,
+    demo: function (w, prefs) {
+      var tab = document.createElement('span'); tab.className = 'tab';
+      var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web'; tab.appendChild(label);
+      var cls = TW.ringDemoClass(w, prefs); if (cls) tab.classList.add(cls);
       return tab;
     },
   });
@@ -912,7 +935,7 @@ function initGear(post, opts) {
     on: SW.statusWidgetOn, opts: SW.statusWidgetOpts,
     demo: function (w, prefs) { return SW.renderStatusWidgetDemo(w, prefs); },
   });
-  function paintWidgets() { tabSection.paint(); statusSection.paint(); }
+  function paintWidgets() { tabSection.paint(); ringSection.paint(); statusSection.paint(); }
   // The remaining native selects sweep onto the same builder (the user 2026-08-27, closing the
   // 3-house/3-native split the gauge migration left): a generic adapter over ANY hidden select —
   // options snapshot from sel.options (so the effort selects, whose options arrive from /models

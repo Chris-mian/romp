@@ -32,17 +32,20 @@ const compose = (slot: "before" | "after", status: WidgetStatus, prefs: TabWidge
 };
 const P = (p: Partial<TabWidgetPrefs> = {}): TabWidgetPrefs => ({ on: {}, order: [], opts: {}, ...p });
 
-test("the three built-in widgets register in order: the dot before the name, the context bar and the hot key after it; all on by default", () => {
-  assert.deepEqual(W.tabWidgets().map((w) => [w.id, w.slot, w.defaultOn]), [["dot", "before", true], ["ctx", "after", true], ["hotkey", "after", true]]);
-  assert.deepEqual(W.tabWidgets().map((w) => w.label), ["Status dot", "Context bar", "Hot key"]);
+test("the six built-in widgets register in order: the dot before the name, the context bar and the hot key after it, then the three rings in precedence order; all on by default", () => {
+  assert.deepEqual(W.tabWidgets().map((w) => [w.id, w.slot, w.defaultOn]),
+    [["dot", "before", true], ["ctx", "after", true], ["hotkey", "after", true], ["ring-needs-you", "ring", true], ["ring-waiting-on-you", "ring", true], ["ring-retrying", "ring", true]]);
+  assert.deepEqual(W.tabWidgets().map((w) => w.label), ["Status dot", "Context bar", "Hot key", "Needs you", "Waiting on you", "Retrying"]);
   assert.ok(W.tabWidgets().every((w) => w.description.length > 0 && !/\bfleet\b/i.test(w.description)));
+  assert.deepEqual(W.titleWidgets().map((w) => w.id), ["dot", "ctx", "hotkey"], "the settings' Tab widgets rows: the widgets that render into the title");
+  assert.deepEqual(W.ringWidgets().map((w) => [w.id, w.ring]), [["ring-needs-you", "ring-needs-you"], ["ring-waiting-on-you", "ring-waiting-on-you"], ["ring-retrying", "ring-retrying"]], "each ring's class is its id");
 });
 
 test("registration by id replaces; a contributed widget lands after the built-ins in the default order", () => {
   W.registerTabWidget({ id: "mark", label: "Demo mark", description: "a synthetic mark", defaultOn: false, slot: "after", render: () => { const e = mkEl("span"); e.className = "tab-mark"; return e as unknown as HTMLElement; } });
-  assert.deepEqual(W.tabWidgets().map((w) => w.id), ["dot", "ctx", "hotkey", "mark"]);
+  assert.deepEqual(W.tabWidgets().map((w) => w.id), ["dot", "ctx", "hotkey", "ring-needs-you", "ring-waiting-on-you", "ring-retrying", "mark"]);
   W.registerTabWidget({ id: "mark", label: "Demo mark", description: "a synthetic mark, again", defaultOn: false, slot: "after", render: () => null });
-  assert.equal(W.tabWidgets().length, 4, "the same id replaces, never duplicates");
+  assert.equal(W.tabWidgets().length, 7, "the same id replaces, never duplicates");
   assert.equal(W.tabWidget("mark")!.description, "a synthetic mark, again");
 });
 
@@ -160,7 +163,7 @@ test("source: the strip and the gear draw from this ONE module; the dot rule has
   assert.equal((SRC.match(/tabDotClass\(status\.state\)/g) || []).length, 1, "the dot slot's one site (tab-dot-slot.test.ts's rule)");
   assert.match(SRC, /^export function tabCtxGauge\(ctxStr: string, ctxColor\?: number\[\]\): HTMLElement \{/m, "the gauge builder lives here now (the ctx widget calls it)");
   const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
-  assert.match(RENDER, /^import \{ composeTabWidgets, tabHotkey \} from "\.\/tab-widgets";/m);
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, ringSwitch, tabHotkey \} from "\.\/tab-widgets";/m, "the rings compose from here too (2026-09-14)");
   assert.doesNotMatch(RENDER, /^function tabCtxGauge\(/m, "one builder, not two");
   assert.equal((RENDER.match(/const dotCls = tabDotClass\(st\);/g) || []).length, 0, "render.ts no longer appends the dot itself");
   const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
@@ -298,4 +301,46 @@ test("ring: ringDemoClass lights on the ring's own demo status and is null when 
   assert.deepEqual([sw("rr"), sw("ry"), sw("ra"), sw("nosuch")], [true, false, true, true], "an unknown id reads on, so a pure caller's own order decides");
   for (const id of [...RINGS_HERE, "rboom"]) W.registerTabWidget({ ...ring(id, () => false, false), slot: "after" });   // out of the ring list for any later test
   assert.deepEqual(hereRings(), []);
+});
+
+// THE BUILT-IN RINGS (2026-09-14): registered after the hot key in PRECEDENCE order (tab-state.ts RING_ORDER: red over
+// yellow over amber), each rendering nothing and naming its class; over every synthetic status times every switch set,
+// the registry's composition (composeTabRing) equals the pure twin the folded header's pip reads (tabRingId under
+// ringSwitch), so the strip and the pip cannot drift. Runs after the synthetic rings above left the ring list.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const TS = require("./tab-state") as typeof import("./tab-state");
+test("the built-in rings: registration order IS RING_ORDER; a ring renders no node; each demo lights its own ring; over every status times every switch set the composition equals tabRingId", () => {
+  assert.deepEqual(W.ringWidgets().map((w) => w.id), TS.RING_ORDER, "the precedence pinned in tab-state.ts is the registration order");
+  for (const w of W.ringWidgets()) {
+    assert.equal(W.renderWidgetDemo(w, P()), null, w.id + " renders no node");
+    assert.equal(W.ringDemoClass(w, P()), w.ring, w.id + "'s demo status lights its own ring");
+    assert.equal(W.ringDemoClass(w, P({ on: { [w.id]: false } })), null, w.id + " switched off: a plain demo tab");
+    assert.equal(w.options, undefined, "no options");
+  }
+  assert.deepEqual(W.ringWidgets().map((w) => w.demo), [{ state: "awaiting" }, { state: "working", needsYou: true }, { state: "retrying" }]);
+  const statuses: WidgetStatus[] = [
+    { state: "ready" }, { state: "ready", needsYou: true }, { state: "idle", needsYou: true }, { state: "working" }, { state: "working", needsYou: true },
+    { state: "awaitingBg", needsYou: true }, { state: "compacting", needsYou: true }, { state: "needsInput" }, { state: "needsInput", needsYou: true },
+    { state: "awaiting", needsYou: true }, { state: "blocked" }, { state: "blocked", needsYou: true }, { state: "blocked", apiTooLong: true },
+    { state: "blocked", apiSpendLimit: true, needsYou: true }, { state: "blocked", apiModelLimit: true }, { state: "blocked", apiAuthErr: true, needsYou: true },
+    { state: "blocked", apiRefusal: true, needsYou: true }, { state: "retrying" }, { state: "retrying", needsYou: true }, { state: "closed" }, { state: "closed", needsYou: true },
+    { state: "ready", needsYou: false }, { state: "ready", needsYou: null }, { state: "opening" }, {},
+  ];
+  let painted = 0;
+  for (let mask = 0; mask < 8; mask++) {
+    const on = { "ring-needs-you": !!(mask & 1), "ring-waiting-on-you": !!(mask & 2), "ring-retrying": !!(mask & 4) };
+    const prefs = P({ on });
+    for (const st of statuses) {
+      const tab = tabOf("tab ring-needs-you ring-retrying");   // stale ring classes on the element, as after a state change
+      const got = W.composeTabRing(tab as unknown as HTMLElement, "s", st, prefs);
+      const want = TS.tabRingId(st, W.ringSwitch(prefs));
+      assert.equal(got, want, JSON.stringify(st) + " with " + JSON.stringify(on));
+      assert.deepEqual(classes(tab).filter((c) => c.startsWith("ring-")), got ? [got] : [], "one ring class at most, the stale ones gone");
+      if (got) painted++;
+    }
+  }
+  assert.ok(painted > 40, "the grid exercised rings, not only nothings: " + painted);
+  assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "needsInput", needsYou: true }, P()), "ring-needs-you", "red over yellow");
+  assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "retrying", needsYou: true }, P()), "ring-waiting-on-you", "yellow over amber");
+  assert.equal(W.composeTabRing(tabOf("tab") as unknown as HTMLElement, "s", { state: "needsInput", needsYou: true }, P({ on: { "ring-needs-you": false } })), "ring-waiting-on-you", "the red switched off hands the tab to the yellow");
 });
