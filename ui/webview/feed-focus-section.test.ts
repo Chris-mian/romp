@@ -28,7 +28,8 @@ test("the fourth row reads 'Show focused session', a ✓ row after Group by sess
 test("the switch is the feed's own view state under `focused`: OFF unless a blob saved it on", () => {
   assert.match(FEED, /let showFocused = false;/);
   assert.match(FEED, /showFocused = st\.focused;/, "hydrated with the rest of the view state");
-  assert.match(FEED, /order: colOrder\.slice\(\), focused: showFocused \};/, "currentViewState carries it, so persistViewState writes it");
+  assert.match(FEED, /order: colOrder\.slice\(\), focused: showFocused,\s*\n\s*focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\], focusFolded \};/,
+    "currentViewState carries it (and the section's own block layout and fold, T410), so persistViewState writes it");
 });
 
 // ── the event: the kernel's activeChat frame ─────────────────────────────────────────────────────────
@@ -57,12 +58,26 @@ test("#feed-focus sits directly before #feed-cols: head, empty line, the three c
   assert.match(FEED, /sec\.id = "feed-focus";/);
   assert.match(FEED, /if \(board && sec\.nextSibling !== board\) \{ list\.insertBefore\(sec, board\); applyColStack\(\); \}/,
     "ensure-once, kept right above #feed-cols across renders; a fresh section takes the board's column order");
-  for (const mint of ['el("div", "feed-focus-head")', 'el("a", "fname")', 'el("span", "feed-focus-cap")', 'el("div", "feed-focus-empty")',
+  for (const mint of ['el("div", "feed-focus-head")', 'el("button", "feed-focus-fold")', 'el("a", "fname")', 'el("span", "feed-focus-caret")',
+                      'el("span", "feed-col-count feed-focus-count")', 'el("div", "feed-focus-empty")',
                       'el("div", "feed-cols feed-focus-cols")', 'el("hr", "feed-focus-divider")']) {
     assert.ok(FEED.includes(mint), "builds " + mint);
   }
-  assert.match(FEED, /el\("span", "feed-col-name fcol-chip fcol-chip-" \+ chip\); name\.textContent = label;\s*\n\s*const count = el\("span", "feed-col-count"\);\s*\n\s*h\.append\(name, count\);/,
-    "the board's chips and count, NO fold caret and NO drag on the section's heads");
+  assert.doesNotMatch(FEED, /feed-focus-cap|textContent = "focused"/, "the small cap 'focused' is gone: the label says it (T410)");
+  // T410: the section's heads carry their OWN furniture — a grip left of the chip (the section's drag handle; the
+  // chip itself stays inert), a fold caret, the count — and each block a resize gutter; all section-bound
+  assert.match(FEED, /const grip = el\("button", "drag-grip"\) as HTMLButtonElement; grip\.type = "button"; grip\.textContent = "⠿";/,
+    "the six-dot grip is a BUTTON with the glyph (T409's vocabulary): a keyboard handle, not decoration");
+  assert.match(FEED, /grip\.setAttribute\("aria-label", "Drag to reorder: " \+ label\); grip\.title = "Drag to reorder, or press the arrow keys";/,
+    "named for assistive tech per block; the title promises the keys, which wireGripKeys keeps");
+  assert.match(FEED, /el\("span", "feed-col-name fcol-chip fcol-chip-" \+ chip\); name\.textContent = label;\s*\n\s*const fold = el\("button", "fcol-fold"\); fold\.dataset\.label = label;/,
+    "the board's chip, then the section's own fold caret");
+  assert.match(FEED, /h\.append\(grip, name, fold, count\);\s*\n\s*wireColDrag\(grip, col, key, FOCUS_SLOTS\);[^\n]*\n\s*wireGripKeys\(grip, key\);/,
+    "grip, chip, caret, count; the grip drags with the board's mechanics, bound to the section's container, and its keys move the block");
+  assert.match(FEED, /const gutter = el\("div", "focus-gutter"\);[^\n]*\n\s*wireFocusGutter\(gutter, key\);\s*\n\s*col\.append\(h, body, gutter\);/,
+    "the resize gutter rides the block, outside the card list the reconcile owns");
+  assert.match(FEED, /if \(collapsedFocusCols\.has\(key\)\) collapsedFocusCols\.delete\(key\); else collapsedFocusCols\.add\(key\);\s*\n\s*applyFocusLayout\(\);\s*\n\s*persistViewState\(\);/,
+    "the caret folds the section's block under its own state, persisted");
   // in render(): the pick is taken before grouping (a folded thread below must not empty the section), the
   // section is painted before the board's reconcile, and the board's own reconcile is what it always was
   const pickAt = FEED.indexOf("const focusBuckets = showFocused ? focusedEntries(buckets, focusedSid, entrySid) : null;");
@@ -96,8 +111,9 @@ test("the board's own column lookups are scoped to #feed-cols now that the secti
   assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ key\)/, "applyColStack folds the board's column");
   assert.match(FEED, /const twin = document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ key\);/, "…and writes the dragged order to the section's twin column too");
   assert.match(FEED, /else col\.style\.removeProperty\("--col-order"\);/, "the board's own statement stands as feed-col-fold.test.ts pins it");
-  assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ k\)/, "the drag's FLIP reads the board");
-  assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ other\)/);
+  assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ k\)/, "the board drag's element lookup reads the board (BOARD_SLOTS.col)");
+  assert.match(FEED, /const oc = slots\.col\(other\);/, "the drag walks its OWN container's elements: the board's for a chip, the section's for a grip (T410)");
+  assert.match(FEED, /col: \(k\) => document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ k\),/, "FOCUS_SLOTS reads the section");
   assert.match(FEED, /put\(document\.querySelector\("#feed-cols \.feed-col\.col-" \+ key \+ " \.feed-col-head"\), d\.cols\[key\]\);/, "the freeze badges land on the board's heads");
   assert.doesNotMatch(FEED, /querySelector<HTMLElement>\("\.feed-col\.col-"/, "no bare column query survives to land on the section's copy first");
   // a copy's key reads as the card's own identity for the hover-freeze heal (a hovered copy holds the gate)
@@ -119,8 +135,10 @@ test("the head: the session's dot and name, its identity colour, opening the ses
 test("the two quiet states, only while the switch is on: no tab focused; a focused session with no cards", () => {
   assert.match(FEED, /setText\(empty, "No session is focused in the chat"\);/);
   assert.match(FEED, /setText\(empty, who\.name \+ " has no cards"\);/);
-  assert.match(FEED, /head\.style\.display = sid \? "" : "none";\s*\n\s*empty\.style\.display = sid && total \? "none" : "";\s*\n\s*cols\.style\.display = total \? "" : "none";/,
-    "no sid: the line stands in for the head; no cards: head and line; the rule stays in both");
+  assert.match(FEED, /head\.style\.display = sid \? "" : "none";\s*\n\s*sec\._total = total;\s*\n\s*paintFocusFold\(\);/,
+    "no sid: the line stands in for the head; the blocks' and the line's displays are the fold's to paint (T410)");
+  assert.match(FEED, /const folded = !!focusedSid && focusFolded;\s*\n\s*sec\.classList\.toggle\("folded", folded\);\s*\n\s*\(sec\._empty as HTMLElement\)\.style\.display = focusedSid && \(total \|\| folded\) \? "none" : "";\s*\n\s*\(sec\._cols as HTMLElement\)\.style\.display = total && !folded \? "" : "none";/,
+    "no cards: head and line; folded: the head alone (line and blocks hidden); no sid: the line whatever the fold says");
   assert.match(FEED, /removeFocusSection\(\);   \/\/ an empty board is the wordmark alone/, "an empty board shows the wordmark, not the section");
 });
 
@@ -161,15 +179,70 @@ test("the three follow-ups after the review: Tab keeps the copy, Clear from a co
 // ── feed.css: the section's rules, through the variables ─────────────────────────────────────────────
 test("feed.css: #feed-focus, the head, the caption, the rule and the empty line exist, var() only", () => {
   assert.match(CSS, /#feed-focus \{ display: flex; flex-direction: column; gap: 8px; \}/);
-  assert.match(CSS, /\.feed-focus-head \{[^}]*font-weight: 600;[^}]*\}/, "the session headers' weight");
-  assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: inherit; \}/, "the name at the card titles' size, as .feed-sess-head does");
-  assert.match(CSS, /\.feed-focus-cap \{[^}]*font-size: 0\.72em;[^}]*color: var\(--dim\);[^}]*\}/, "the column head's 0.72em, dim — no new size");
+  assert.match(CSS, /\.feed-focus-head \{[^}]*font-size: 0\.72em; font-weight: 600; cursor: pointer; \}/,
+    "the label (T410): the board's column heads' size, the session headers' weight, no new size; the whole row folds on click");
+  assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: inherit; font-weight: 600; \}/, "the name at the label's size, bold (its identity colour is set inline)");
+  assert.match(CSS, /\.feed-focus-fold \{[^}]*font: inherit; color: var\(--dim\);[^}]*\}/, "the label text: a button in the head's font, dim like the column heads");
+  assert.match(CSS, /\.feed-focus-caret \{[^}]*font-size: 1\.389em; font-weight: 400; line-height: 1;/, "the caret at the block carets' compensated size");
+  assert.doesNotMatch(CSS, /feed-focus-cap/, "the cap's rule went with the cap");
   assert.match(CSS, /\.feed-focus-cols \.feed-col-head \.fcol-chip \{ cursor: default; \}/, "no grab cursor where nothing drags");
-  assert.match(CSS, /\.feed-focus-divider \{ border: 0; border-top: 1px solid var\(--menu-border, rgba\(255, 255, 255, 0\.12\)\); margin: 6px 0 2px; \}/);
+  assert.match(CSS, /\.feed-focus-divider \{ border: 0; border-top: 2px solid var\(--rule-strong\); margin: 8px 0 4px; \}/,
+    "T410: a 2px rule in --rule-strong, a step up from the hairline");
+  assert.ok(/--rule-strong:\s*rgba\(255, 255, 255, 0\.22\)/.test(CSS) && /--rule-strong:\s*rgba\(0, 0, 0, 0\.22\)/.test(CSS), "the token is defined in both themes");
   assert.match(CSS, /\.feed-focus-empty \{ color: var\(--dim\); font-size: 0\.82em; \}/);
   // every colour in the section's declarations is a var(); the one literal is that var()'s fallback
   const block = CSS.slice(CSS.indexOf("#feed-focus {"), CSS.indexOf(".feed-focus-empty {") + ".feed-focus-empty { color: var(--dim); font-size: 0.82em; }".length);
   const decls = (block.match(/\{[^}]*\}/g) || []).join("\n").replace(/var\([^)]*\)/g, "");
   assert.doesNotMatch(decls, /#[0-9a-fA-F]{3,8}\b|rgba?\(/, "no hex or rgb outside a var() fallback");
   assert.ok(/--menu-border\s*:/.test(CSS) && /--dim\s*:/.test(CSS), "the variables it reads are defined in this sheet (both themes)");
+});
+
+// ── T410 (the user 2026-09-13 / 2026-09-14): the LABEL, the grip button, the gutter floor, the freeze pair ──────
+test("the label reads 'Current session: <name>' and folds the whole section; the name keeps its click and its title", () => {
+  assert.match(FEED, /const fold = el\("button", "feed-focus-fold"\) as HTMLButtonElement; fold\.type = "button"; fold\.textContent = "Current session:";/,
+    "the label text is a button: the section's fold control");
+  assert.match(FEED, /fold\.setAttribute\("aria-expanded", "true"\); fold\.setAttribute\("aria-controls", "feed-focus-cols"\);/, "aria-expanded and what it controls");
+  assert.match(FEED, /\(sec\._fold as HTMLElement\)\.setAttribute\("aria-label", "Current session: " \+ who\.name\);/, "the accessible name carries the session's name");
+  assert.match(FEED, /const nm = el\("a", "fname"\); nm\.title = "open this session";/, "the name link and its hover title stay");
+  assert.match(FEED, /nm\.onclick = \(ev\) => \{ ev\.stopPropagation\(\); openOrReviveSession\(sid, who\.live, who\.name\); \};/, "…and its click: open, or offer to revive");
+  assert.match(FEED, /const caret = el\("span", "feed-focus-caret"\); caret\.textContent = "▾"; caret\.setAttribute\("aria-hidden", "true"\);/, "the block carets' glyph, decorative (the button carries the state)");
+  assert.match(FEED, /head\.append\(fold, nm, ncount, caret\);/, "label, name, count, caret — the caret at the END of the label line (the user's word), the folded count between the name and it");
+  assert.match(FEED, /head\.addEventListener\("click", \(ev\) => \{\s*\n\s*if \(\(ev\.target as HTMLElement\)\.closest\("\.fname"\)\) return;[^\n]*\n\s*focusFolded = !focusFolded;\s*\n\s*paintFocusFold\(\);\s*\n\s*persistViewState\(\);/,
+    "a click anywhere on the row but the name flips focusFolded, paints and persists");
+  assert.match(FEED, /\(sec\._caret as HTMLElement\)\.textContent = folded \? "▸" : "▾";\s*\n\s*\(sec\._fold as HTMLElement\)\.setAttribute\("aria-expanded", String\(!folded\)\);/, "the caret and aria-expanded read the state");
+  assert.match(FEED, /setText\(count, folded && total \? String\(total\) : ""\);[^\n]*\n\s*count\.style\.display = folded && total \? "" : "none";/, "folded, the focused session's card count after the name (a number only when there are cards, the board's rule)");
+  assert.match(FEED, /let focusFolded = false;/);
+  assert.match(FEED, /focusFolded = st\.focusFolded;/, "hydrated with the rest");
+  const VS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed-view-state.ts"), "utf8");
+  assert.match(VS, /focusFolded: boolean;/);
+  assert.match(VS, /focusFolded: o\.focusFolded === true/, "only the literal true folds");
+});
+
+test("the gutter's floor is 0.35 of a share, the pair's sum preserved", () => {
+  assert.match(FEED, /const MIN_W = 0\.35;/);
+  assert.match(FEED, /const w = Math\.min\(sum - MIN_W, Math\.max\(MIN_W, w0 \+ \(ev\.clientX - startX\) \* sum \/ px\)\);\s*\n\s*focusW = \{ \.\.\.focusW, \[key\]: w, \[next\]: sum - w \};/,
+    "clamped between the floor and the pair's sum less the floor; the neighbour takes the rest");
+});
+
+test("the grip's arrow keys move the block one slot within the section, from the order on screen", () => {
+  const fn = FEED.slice(FEED.indexOf("function wireGripKeys("), FEED.indexOf("// Drag a section by its CATEGORY CHIP"));
+  assert.match(fn, /const delta = e\.key === "ArrowLeft" \|\| e\.key === "ArrowUp" \? -1 : e\.key === "ArrowRight" \|\| e\.key === "ArrowDown" \? 1 : 0;/);
+  assert.match(fn, /const fallback = FOCUS_SLOTS\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);\s*\n\s*const hadCustom = cur\.length === 3;\s*\n\s*const order = \(hadCustom \? cur : fallback\)\.slice\(\);/, "the section's own order, else what it follows — as the drag seeds itself");
+  assert.match(fn, /e\.stopPropagation\(\);/, "the grip's key is the grip's alone: the card cursor's arrow keys must not also fire");
+  assert.match(fn, /FOCUS_SLOTS\.set\(!hadCustom && order\.join\(\) === fallback\.join\(\) \? \[\] : order\);/, "the drag's no-trace rule holds for a keyboard move: back on what the section follows, it keeps following");
+  assert.match(fn, /if \(from < 0 \|\| to < 0 \|\| to >= order\.length\) return;/, "bounded by the section's three slots");
+  assert.match(fn, /FOCUS_SLOTS\.set\([^\n]*\);\s*\n\s*persistViewState\(\);/, "written to the section's order and persisted at once");
+  assert.doesNotMatch(fn, /BOARD_SLOTS|colOrder =/, "never the board's order");
+});
+
+test("the hover-freeze hold is the pair (key, which twin): leaving one twin never releases a hold or a scope taken on the other", () => {
+  assert.match(FEED, /let freezeCopy = false;/);
+  assert.match(FEED, /function freezeEnter\(key: string, copy = false\): void \{ freezeKey = key; freezeCopy = copy; \}/);
+  const leave = FEED.slice(FEED.indexOf("function freezeLeave("), FEED.indexOf("let flushQueued = false;"));
+  assert.match(leave, /if \(tabScopeKey === key && tabScopeCopy === copy\) releaseTabScope\(\);/, "the keyboard scope releases only for the twin it holds");
+  assert.match(leave, /if \(freezeKey !== key \|\| freezeCopy !== copy\) return;/, "…and so does the hold");
+  assert.equal((FEED.match(/freezeEnter\((it\.itemId|fkey), isFocusCopy\(card\)\)/g) || []).length, 2, "both card builders say which twin enters");
+  assert.equal((FEED.match(/freezeLeave\((it\.itemId|fkey), isFocusCopy\(card\)\)/g) || []).length, 2, "…and which leaves");
+  assert.match(FEED, /freezeCopy = isFocusCopy\(hov\);/, "the render-time re-derivation records the twin under the pointer");
+  assert.match(FEED, /const selfCard = selfKey \? cardElByKey\(selfKey, freezeKey \? freezeCopy : tabScopeCopy\) : null;/, "paintFreezeBadges resolves the HELD twin's element for the self-note");
 });
