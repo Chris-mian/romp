@@ -31,7 +31,7 @@ class SettingsSectionsTest(unittest.TestCase):
     def test_the_subsection_headers_are_present_in_order(self):
         h = _gear_src()
         self.assertLess(h.index("id=rs-tabs"), h.index("data-pane=general"), "the pills come first")
-        for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Comments", "Thinking", "Tab widgets"]),
+        for pane, heads in (("general", ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"]), ("chat", ["Display", "Comments", "Thinking", "Tab strip", "Tab widgets"]),
                             ("feed", ["Cards"]), ("sessions", ["New sessions"]), ("automation", ["Nudges"]), ("tasks", ["Task tracking", "Judges"]),
                             ("debug", ["Judging bands", "Diagnostics"])):
             p = _pane(h, pane)
@@ -41,6 +41,10 @@ class SettingsSectionsTest(unittest.TestCase):
         self.assertIn("<div class=rs-sec id=rs-panes-sec>Panes</div>", h)   # the Panes head keeps its id (initGear hides it off the dashboard)
         # the tab widgets are a SECTION of Chat (the user 2026-09-12), its head the anchor the strip's gear opens the panel at; no Tabs tab
         self.assertIn("<div class='rs-sec' data-section=tabwidgets>Tab widgets</div>", _pane(h, "chat"))
+        # T415 (the user 2026-09-14): the tab lock is a switch in its own small Tab strip section ABOVE Tab widgets, where the strip's gear lands
+        self.assertIn("<div class='rs-sec' data-section=tabstrip>Tab strip</div>", _pane(h, "chat"))
+        self.assertLess(_pane(h, "chat").index("data-section=tabstrip"), _pane(h, "chat").index("data-section=tabwidgets"))
+        self.assertIn("id=rs-tablock", _pane(h, "chat"))
         self.assertNotIn("data-pane=tabs", h)
         self.assertLess(h.index(">Diagnostics<"), h.index(">romp · version<"), "version last")
 
@@ -88,7 +92,7 @@ class SettingsSectionsTest(unittest.TestCase):
         # Chat (T404): Display (the transcript rows, the text scheme, the strip's one-group-per-row), Comments, Thinking, Tab widgets
         ch = panes["chat"]
         self.assertTrue(ch.index(">Display<") < ch.index("id=rs-compact") < ch.index("id=rs-dense") < ch.index("id=rs-chatscheme") < ch.index("id=rs-striprows") < ch.index(">Comments<")
-                        < ch.index("id=rs-cmtmodel") < ch.index("id=rs-cmtfast") < ch.index(">Thinking<") < ch.index("id=rs-thinksum") < ch.index("data-section=tabwidgets")
+                        < ch.index("id=rs-cmtmodel") < ch.index("id=rs-cmtfast") < ch.index(">Thinking<") < ch.index("id=rs-thinksum") < ch.index("data-section=tabstrip") < ch.index("id=rs-tablock") < ch.index("data-section=tabwidgets")
                         < ch.index("data-section=statusline"))   # the Status line section follows Tab widgets (T409); the badge and branch checkboxes left Display for it
         for gone in ("id=rs-badge", "id=rs-branch"):
             self.assertNotIn(gone, ch, gone + " left the Chat tab: the Status line section's rows are the controls (T409)")

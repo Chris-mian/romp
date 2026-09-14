@@ -96,11 +96,9 @@ const out = {};
 out.strip0 = await readStrip();
 // the glyph opens the settings frame on the Chat tab, scrolled to its Tab widgets section, through the shell
 const settingsOpen = () => page.evaluate(() => document.body.classList.contains("settings-open"));
-if (out.strip0.gear) {   // T405: the gear opens its menu; the "Tab widgets…" row is the T379 ask
+if (out.strip0.gear) {   // T415: one click on the gear opens the settings at the strip's own section; Tab widgets follows it in the card
   await chatF.click("#tabs .tab-strip-end .tab-widgets-gear");
-  await chatF.waitForSelector('[data-rows-menu="1"]', { timeout: 5000 });
-  out.menuRoles = await chatF.evaluate(() => Array.from(document.querySelectorAll('[data-rows-menu="1"] > div')).map((r) => [r.getAttribute("role"), r.hasAttribute("aria-checked")]));
-  await chatF.click('[data-rows-menu="1"] [role="menuitem"]:nth-child(2)');   // the Tab widgets row is an ACTION (role menuitem, no checked state); a role drift fails here, on the selector that did not match
+  out.menusAfterClick = await chatF.evaluate(() => document.querySelectorAll("[data-rows-menu]").length);   // none: no menu on the way
 }
 await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
 out.shellOpen = await settingsOpen();
@@ -115,7 +113,7 @@ if (!setF) {   // no settings frame opened (the red run's before: no glyph, no a
 await setF.waitForSelector("#rsettings:not([hidden])", { timeout: 15000 }).catch(() => {});
 await setF.evaluate(() => (document.fonts && document.fonts.ready) || null).catch(() => {});   // the layout the measurement reads is the settled one (a late web font moved the head on a slow runner)
 // the landing's own mark, never a delay: the gear stamps the card when the section scroll lands (CI, 2026-09-13: a fixed wait read before it)
-const landed = (frame) => frame.waitForSelector('#rsettings .rs-card[data-section-landed="tabwidgets"]', { timeout: 10000 }).then(() => true).catch(() => false);
+const landed = (frame) => frame.waitForSelector('#rsettings .rs-card[data-section-landed="tabstrip"]', { timeout: 10000 }).then(() => true).catch(() => false);   // T415: the gear lands at the Tab strip section, Tab widgets right below
 out.landed0 = await landed(setF);
 const readPanel = () => setF.evaluate(() => {
   const p = document.getElementById("rsettings");
@@ -132,7 +130,7 @@ const readPanel = () => setF.evaluate(() => {
              opts: Array.from(r.querySelectorAll(".rs-widget-opt")).map((o) => ({ key: o.dataset.opt, label: o.title, current: (o.querySelector("button") || {}).textContent || "" })) };
   });
   // the SECTION: the Tab widgets head against the card's box and scroll (the gear's ask scrolls the card so the head sits under the padding)
-  const card = document.querySelector("#rsettings .rs-card"); const sec = document.querySelector('#rsettings .rs-sec[data-section="tabwidgets"]');
+  const card = document.querySelector("#rsettings .rs-card"); const sec = document.querySelector('#rsettings .rs-sec[data-section="tabstrip"]');
   const cr = card.getBoundingClientRect(); const sr = sec ? sec.getBoundingClientRect() : null;
   const section = sec ? { top: sr.top, cardTop: cr.top, cardBottom: cr.bottom, pad: parseFloat(getComputedStyle(card).paddingTop), scrollTop: card.scrollTop, overflow: card.scrollHeight - card.clientHeight,
                           inChat: !!sec.closest('.rs-pane[data-pane="chat"]'), paneHidden: sec.closest(".rs-pane").hidden,
@@ -170,7 +168,7 @@ await setF.click('#rsettings .rs-tab[data-tab="chat"]'); await setF.waitForTimeo
 out.pillBack = await readPanel();
 // an ask on an OPEN panel (through the shell's relay, the path the glyph's message takes; the lifted settings iframe covers the
 // strip while the panel is open, so the glyph itself is not reachable by a pointer then): switches back to Chat and scrolls
-await page.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets")); out.landedReask = await landed(setF);
+await page.evaluate(() => window.__rompOpenSettings("chat", "tabstrip")); out.landedReask = await landed(setF);
 out.reask = await readPanel();
 // the screenshots: the strip with the glyph and the Chat tab at its Tab widgets section, dark then light
 const shot = async (theme) => {
@@ -226,7 +224,7 @@ for (const mode of ["always", "never"]) {
   // itself goes through the shell's own relay, the path the glyph's message takes, so this scene reads the panel whatever
   // the shell's pointer state is
   const shellBefore = await p2.evaluate(() => { const f = document.getElementById("f-settings"); return { cls: document.body.className, fSrc: f ? f.getAttribute("src") : null, fDisplay: f ? getComputedStyle(f).display : null }; });
-  await p2.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets"));
+  await p2.evaluate(() => window.__rompOpenSettings("chat", "tabstrip"));
   await p2.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
   let sf = p2.frames().find((f) => f.url().includes("/settings"));
   for (let i = 0; i < 50 && !sf; i++) { await p2.waitForTimeout(100); sf = p2.frames().find((f) => f.url().includes("/settings")); }
@@ -248,23 +246,23 @@ for (const mode of ["always", "never"]) {
   let cf3 = p3.frames().find((f) => f.url().includes("/chat"));
   for (let i = 0; i < 100 && !cf3; i++) { await p3.waitForTimeout(100); cf3 = p3.frames().find((f) => f.url().includes("/chat")); }
   await cf3.waitForFunction((n) => document.querySelectorAll("#tabs .tab[data-id]").length >= n, cfg.count, { timeout: 30000 });
-  await p3.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets"));
+  await p3.evaluate(() => window.__rompOpenSettings("chat", "tabstrip"));
   await p3.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 20000 }).catch(() => {});
   let sf3 = p3.frames().find((f) => f.url().includes("/settings"));
   for (let i = 0; i < 50 && !sf3; i++) { await p3.waitForTimeout(100); sf3 = p3.frames().find((f) => f.url().includes("/settings")); }
   await sf3.waitForSelector("#rsettings:not([hidden])", { timeout: 15000 }).catch(() => {});
   await sf3.evaluate(() => (document.fonts && document.fonts.ready) || null).catch(() => {});
   out.tallLanded = await landed(sf3);
-  const readSec = () => sf3.evaluate(() => { const card = document.querySelector("#rsettings .rs-card"); const sec = document.querySelector('#rsettings .rs-sec[data-section="tabwidgets"]');
+  const readSec = () => sf3.evaluate(() => { const card = document.querySelector("#rsettings .rs-card"); const sec = document.querySelector('#rsettings .rs-sec[data-section="tabstrip"]');
     if (!card || !sec) return null; const cr = card.getBoundingClientRect(), sr = sec.getBoundingClientRect();
     return { top: sr.top, cardTop: cr.top, cardBottom: cr.bottom, pad: parseFloat(getComputedStyle(card).paddingTop), scrollTop: card.scrollTop, overflow: card.scrollHeight - card.clientHeight,
              room: parseFloat(getComputedStyle(sec.closest(".rs-pane")).paddingBottom) || 0, cardH: cr.height, viewportH: window.innerHeight, inChat: true, paneHidden: sec.closest(".rs-pane").hidden }; });
   out.tall = { open: await readSec() };
-  await p3.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets")); out.tall.reaskLanded = await landed(sf3);
+  await p3.evaluate(() => window.__rompOpenSettings("chat", "tabstrip")); out.tall.reaskLanded = await landed(sf3);
   out.tall.reask = await readSec();
   // the review's oracles (round two): the ask STANDS across the browser's own scrolls and re-lands on size changes; only the user's input ends it
   const clearMark = () => sf3.evaluate(() => { const c = document.querySelector("#rsettings .rs-card"); if (c) c.removeAttribute("data-section-landed"); });
-  const landedSoon = (frame, ms) => frame.waitForSelector('#rsettings .rs-card[data-section-landed="tabwidgets"]', { timeout: ms }).then(() => true).catch(() => false);
+  const landedSoon = (frame, ms) => frame.waitForSelector('#rsettings .rs-card[data-section-landed="tabstrip"]', { timeout: ms }).then(() => true).catch(() => false);
   await clearMark(); await p3.setViewportSize({ width: 1200, height: 900 });    // SHORTER: the card shrinks to the new cap (Chrome's anchoring nudges the scroll)
   out.tall.shorter = { landed: await landedSoon(sf3, 10000), sec: await readSec() };
   await clearMark(); await p3.setViewportSize({ width: 1200, height: 1400 });   // TALLER: the card grows to the new cap and the browser clamps the scroll first
@@ -280,7 +278,7 @@ for (const mode of ["always", "never"]) {
   // a re-ask's landing owes one scroll event, its echo, dispatched at the next frame: two frames let it pass before the road's
   // own input, so a head without the write ledger fails a road for the road's reason and not for LOW 1's
   const settled = () => sf3.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-  const reask = async () => { await clearMark(); await p3.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets")); const l = await landed(sf3); await settled(); return l; };
+  const reask = async () => { await clearMark(); await p3.evaluate(() => window.__rompOpenSettings("chat", "tabstrip")); const l = await landed(sf3); await settled(); return l; };
   const settleScroll = () => sf3.evaluate(() => new Promise((res) => { const c = document.querySelector("#rsettings .rs-card"); let last = c.scrollTop, same = 0;
     const tick = () => { if (c.scrollTop === last) same++; else { same = 0; last = c.scrollTop; } if (same >= 3) res(); else requestAnimationFrame(tick); }; requestAnimationFrame(tick); }));
   // K: a click in the card (the section head), a pause past the input window on purpose (the key must stand on its own, not on the
@@ -289,7 +287,7 @@ for (const mode of ["always", "never"]) {
   r3.keyLanded = await reask();
   await clearMark(); await p3.setViewportSize({ width: 1200, height: 1450 });   // the ask stands before the key: a size change re-lands
   r3.keyStanding = await landedSoon(sf3, 10000); await settled();
-  const headBox = await sf3.evaluate(() => { const r = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="tabwidgets"]').getBoundingClientRect(); return { x: r.left + 20, y: r.top + r.height / 2 }; });
+  const headBox = await sf3.evaluate(() => { const r = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="tabstrip"]').getBoundingClientRect(); return { x: r.left + 20, y: r.top + r.height / 2 }; });
   await p3.mouse.click(fr3.x + headBox.x, fr3.y + headBox.y);
   await sf3.waitForTimeout(300);
   const beforeKey = await readSec();
@@ -302,7 +300,7 @@ for (const mode of ["always", "never"]) {
   // the three probes below drive the ask's own machinery from inside the page: a synthetic press, a size change of the card (its
   // observer re-lands), frames counted, never a clock, except the pauses past the 120 ms input window that the probes need
   const probe = (body) => sf3.evaluate(new Function("return (async () => {" + `
-    const card = document.querySelector("#rsettings .rs-card"), label = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="tabwidgets"]');
+    const card = document.querySelector("#rsettings .rs-card"), label = document.querySelector('#rsettings .rs-pane:not([hidden]) .rs-sec[data-section="tabstrip"]');
     const mark = () => card.getAttribute("data-section-landed");
     const frames = (n) => new Promise((r) => { const step = () => (--n <= 0 ? r() : requestAnimationFrame(step)); requestAnimationFrame(step); });
     const pastWindow = () => new Promise((r) => setTimeout(r, 200));
@@ -517,9 +515,9 @@ class ServedTabWidgets(unittest.TestCase):
         api = next(t for t in s["tabs"] if t["name"].endswith("api"))
         self.assertIsNone(api["key"], "no hot key assigned: no keycap" + table)
         self.assertIsNotNone(s["gear"], "the glyph is in the strip (the chat sits in the shell, so a gear can be reached)" + table)
-        self.assertEqual((s["gear"]["title"], s["gear"]["aria"], s["gear"]["svg"], s["gear"]["inBox"]), ("Tab strip: lock, widgets…", "Tab strip settings", False, True), "T405: the shell's glyph, a character, in the gear box" + table)
+        self.assertEqual((s["gear"]["title"], s["gear"]["aria"], s["gear"]["svg"], s["gear"]["inBox"]), ("Tab strip settings", "Tab strip settings", False, True), "T405: the shell's glyph, a character; T412: in the right-end wrapper; T415: a plain button to the settings" + table)
         self.assertLessEqual(s["gear"]["rect"]["h"], s["gear"]["boxH"] + 0.5, "it takes no extra height beyond its box (the tags box's floor)" + table)
-        self.assertEqual(self._run().get("menuRoles"), [["menuitemcheckbox", True], ["menuitem", False]], "the lock row a switch, the widgets row an action (round two, low 2)" + table)
+        self.assertEqual(self._run().get("menusAfterClick"), 0, "no menu on the way: the gear's click opens the settings itself (T415)" + table)
 
     def _assert_scrolled_to_the_section(self, p, table):
         # the section head sits inside the card's visible box, under its padding, unless the card ran out of scroll first
@@ -534,7 +532,7 @@ class ServedTabWidgets(unittest.TestCase):
             # round two, LOW 1: the head sits under the card's padding, always: the pane gains room at its end for it
             self.assertLess(abs(sec["top"] - (sec["cardTop"] + sec["pad"])), 3, "the head sits under the card's padding" + table)
 
-    def test_the_glyph_opens_the_settings_on_the_chat_tab_scrolled_to_the_tab_widgets_section_with_the_other_panes_hidden(self):
+    def test_the_glyph_opens_the_settings_on_the_chat_tab_scrolled_to_the_tab_strip_section_with_the_other_panes_hidden(self):
         r = self._run()
         self.assertTrue(r["shellOpen"], "the shell lifted the settings frame")
         p = r["panel0"]
@@ -684,8 +682,8 @@ class ServedTabWidgets(unittest.TestCase):
         # died at 0 and 60 ms after an input); the ask's writes are marked and their one echo consumed
         r = self._run()["tall"]["r3"]; e = r["echo"]; table = "\n  echo: " + json.dumps(e)
         self.assertTrue(r["echoLanded"], table)
-        self.assertEqual(e["afterChange"]["mark"], "tabwidgets", "the re-land's mark survives its own echo inside the input window" + table)
-        self.assertEqual(e["restored"], "tabwidgets", "the ask stands: a second size change re-lands" + table)
+        self.assertEqual(e["afterChange"]["mark"], "tabstrip", "the re-land's mark survives its own echo inside the input window" + table)
+        self.assertEqual(e["restored"], "tabstrip", "the ask stands: a second size change re-lands" + table)
 
     def test_a_lost_release_ends_with_the_pages_focus_or_visibility(self):
         # round three, LOW 2: a page put behind another mid-press gets neither pointerup nor pointercancel, and the hold made the next
@@ -694,16 +692,16 @@ class ServedTabWidgets(unittest.TestCase):
         self.assertTrue(r["blurLanded"], table)
         # headless Chromium hides its scrollbars (the gutter measures 0 here, printed as gw), so the probe's press stands for the
         # gutter by its offsets: clientLeft + clientWidth + half the gutter, beyond the client box, which is all scrollerGrab reads
-        self.assertEqual(b["afterChange"]["mark"], "tabwidgets", "the ask stands after the lost release: the size change re-lands" + table)
-        self.assertEqual(b["restored"], "tabwidgets", table)
+        self.assertEqual(b["afterChange"]["mark"], "tabstrip", "the ask stands after the lost release: the size change re-lands" + table)
+        self.assertEqual(b["restored"], "tabstrip", table)
 
     def test_a_press_on_the_cards_padding_is_no_grab(self):
         # round three, LOW 2: the hold latched on any press whose target was the card (its padding), so an ordinary click on the
         # card's edge outlived the input window as a standing hold; only the gutter latches (landing-settle's scrollerGrab)
         r = self._run()["tall"]["r3"]; p = r["pad"]; table = "\n  pad: " + json.dumps(p)
         self.assertTrue(r["padLanded"], table)
-        self.assertEqual(p["afterChange"]["mark"], "tabwidgets", "no hold from a press on the padding: the size change re-lands" + table)
-        self.assertEqual(p["restored"], "tabwidgets", table)
+        self.assertEqual(p["afterChange"]["mark"], "tabstrip", "no hold from a press on the padding: the size change re-lands" + table)
+        self.assertEqual(p["restored"], "tabstrip", table)
 
     def test_a_landings_echo_is_the_frames_move_or_no_debt_at_all(self):
         # round four, MEDIUM 1: go() dropped the room to measure (the card clamped 594 to 0) and landed it back, and the ledger read the
@@ -712,7 +710,7 @@ class ServedTabWidgets(unittest.TestCase):
         # frame's now, and an unpaid debt is forgiven two frames on
         r = self._run()["tall"]["r3"]; d = r["debt"]; table = "\n  debt: " + json.dumps(d)
         self.assertTrue(r["debtLanded"], table)
-        self.assertEqual(d["relanded"], "tabwidgets", "the size change re-landed before the wheel" + table)
+        self.assertEqual(d["relanded"], "tabstrip", "the size change re-landed before the wheel" + table)
         self.assertIsNone(d["afterWheel"]["mark"], "the first scroll with the user's evidence after a landing ends the ask" + table)
         self.assertIsNone(d["landedAfterChange"], "a size change after it lands nothing" + table)
         self.assertLessEqual(abs(d["scrollTop"] - d["afterWheel"]["scrollTop"]), 1, "the card stays where the wheel put it" + table)
@@ -732,8 +730,8 @@ class ServedTabWidgets(unittest.TestCase):
         # clientLeft + clientWidth - 1 read as the gutter; the offsets come from the padding box now
         r = self._run()["tall"]["r3"]; e = r["edge"]; table = "\n  edge: " + json.dumps(e)
         self.assertTrue(r["edgeLanded"], table)
-        self.assertEqual(e["afterChange"]["mark"], "tabwidgets", "no hold from a press inside the client box: the size change re-lands" + table)
-        self.assertEqual(e["restored"], "tabwidgets", table)
+        self.assertEqual(e["afterChange"]["mark"], "tabstrip", "no hold from a press inside the client box: the size change re-lands" + table)
+        self.assertEqual(e["restored"], "tabstrip", table)
 
 
 if __name__ == "__main__":

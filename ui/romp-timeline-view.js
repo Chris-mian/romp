@@ -11,7 +11,7 @@ const SVGNS = 'http://www.w3.org/2000/svg';
 const MIN_W = 60, MAX_W = 172800;                  // 1 min … 48 h window (NICE has 60 → 1-min ticks render)
 const MAX_OFFSET = 72 * 3600;                      // pan slider: right edge from now (0) back to −72 h (linear)
 // Compact metrics: rows collapse to the minimum height a bar+dots+label need.
-const LOCKED_TEXT = 'the tabs are locked: unlock them in the tab strip\u2019s gear menu (Lock the tabs in place) to move sessions';   // the tab lock (T395)
+const LOCKED_TEXT = 'the tabs are locked: unlock them in the settings (Chat, Tab strip) to move sessions';   // the tab lock (T395; the switch moved to the settings, T415)
 const LANE_GAP = 26, BAR_H = 8, CORNER = 6, MSG_DROP = 10, DOT_R = 6, CLEAR = DOT_R + 4, COINCIDE = 45;
 // Demo/recording VIEW filter (the user 2026-07-14): the dashboard loaded at `#only=<tag>` scopes every
 // pane to sessions whose name starts with <tag>. The timeline reads the SHELL's URL (window.top) so one

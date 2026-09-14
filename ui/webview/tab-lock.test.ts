@@ -11,6 +11,7 @@ import * as path from "node:path";
 
 const UI = path.resolve(process.cwd(), "..", "ui", "webview");
 const RENDER = fs.readFileSync(path.join(UI, "render.ts"), "utf8");
+const GEAR = fs.readFileSync(path.join(UI, "gear.js"), "utf8");   // the settings card: the lock's row since T415
 const CSS = fs.readFileSync(path.join(UI, "styles.css"), "utf8");
 const ICONS = fs.readFileSync(path.join(UI, "icons.ts"), "utf8");
 const TIMELINE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "romp-timeline-view.js"), "utf8");
@@ -37,20 +38,23 @@ test("the padlock is ONE drawing: icons.ts states the Sessions pane's numbers, a
   assert.match(ICONS, /^export const ICON_LOCK = lockSvg\(LOCK_SHACKLE_SEATED\);/m);
   assert.match(ICONS, /^export const ICON_LOCK_OPEN = lockSvg\(LOCK_SHACKLE_OPEN\);/m);
   assert.match(TIMELINE, /the same numbers as ui\/webview\/icons\.ts ICON_LOCK \/ ICON_LOCK_OPEN/, "the timeline points back: one drawing, change both");
-  assert.match(RENDER, /^import \{ GEAR_GLYPH, ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN \} from "\.\/icons";/m);   // T405: the strip's gear glyph rides the same import
+  assert.match(RENDER, /^import \{ GEAR_GLYPH, ICON_FORK \} from "\.\/icons";/m);   // T405: the strip's gear glyph; the lock icons left render.ts with the gear's menu (T415), icons.ts keeps them for the timeline's drawing
 });
 
-test("the lock is a row in the strip's gear menu (T405, the user 2026-09-13), with the button's two titles, toggling the setting and keeping the menu open", () => {
-  // the strip's button left (strip-chrome.test.ts pins the gear and its box); the state, the drag rules and the saveSettings road below are as they were
-  assert.doesNotMatch(RENDER, /el\("span", "tab-lockbox"\)|el\("button", "tab-lock"/, "no lock button or box in the strip");
-  assert.match(RENDER, /\{ label: "Lock the tabs in place", current: settings\.tabsLocked, glyph: settings\.tabsLocked \? ICON_LOCK : ICON_LOCK_OPEN,/, "the row: the ✓ when locked, the padlock seated or open");
-  assert.match(RENDER, /title: settings\.tabsLocked \? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again",/, "the two titles the button wore");
-  assert.match(RENDER, /press: \(\) => \{ setTabsLocked\(!settings\.tabsLocked\); return false; \} \},/, "the same toggle; false keeps the menu open and repaints it");
+test("the lock is a checkbox row in the settings' own Tab strip section, above Tab widgets, where the strip's gear jumps (T415, the user 2026-09-14)", () => {
+  // the strip's button left in T405 (strip-chrome.test.ts pins the gear); the gear's menu row left in T415: the state, the drag rules and the saveSettings road below are as they were
+  assert.doesNotMatch(RENDER, /el\("span", "tab-lockbox"\)|el\("button", "tab-lock"|Lock the tabs in place|openRowsMenu/, "no lock button, box or menu row in the strip");
+  const chat = GEAR.slice(GEAR.indexOf("data-pane=chat"), GEAR.indexOf("data-pane=feed"));
+  assert.ok(chat.indexOf("data-section=tabstrip>Tab strip<") > 0 && chat.indexOf("data-section=tabstrip") < chat.indexOf("data-section=tabwidgets"), "the Tab strip section, above Tab widgets");
+  assert.match(chat, /<input type=checkbox id=rs-tablock>/, "the lock is the house checkbox row");
+  assert.match(GEAR, /tl\.addEventListener\('change', function \(\) \{ var s = load\(\); s\.tabsLocked = tl\.checked; save\(s\); \}\);/, "a change writes tabsLocked through the gear's save, which the strip hears");
+  assert.match(GEAR, /tl\.checked = !!s\.tabsLocked;/, "and every open reads it back");
+  assert.match(RENDER, /gear\.addEventListener\("click", \(e\) => \{ e\.stopPropagation\(\); openSettingsOn\("chat", "tabstrip"\); \}\);/, "the gear's click is the way there");
 });
 
-test("the dress: the padlock rides the menu row; the strip's right-end wrapper (the tags button and the gear, T412) has the tags box's floor; the lock's own rules are gone", () => {
+test("the dress: the strip's right-end wrapper (the tags button and the gear, T412) has the tags box's floor; the lock's own rules are gone", () => {
   assert.doesNotMatch(CSS, /\n\.tab-lockbox \{|\n\.tab-lock \{|\n\.tab-lock\.on \{/, "no lock button rules");
-  assert.match(RENDER, /^import \{ openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS, openRowsMenu \} from "\.\/tag-menu";/m, "the rows menu comes from the tag menu's module");
+  assert.match(RENDER, /^import \{ openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS \} from "\.\/tag-menu";/m, "the rows menu helper left the strip's import with the gear's menu (T415)");
   const end = CSS.match(/\n\.tab-strip-end \{[^}]*\}/)![0];
   assert.match(end, /min-height: 31px;/); assert.match(end, /margin-left: auto;/);
   assert.match(CSS, /\nbody\.dense-chrome \.tab-strip-end \{ min-height: 25px; \}/, "the dense floor follows the dense + tab, as the tags box's does");
@@ -62,7 +66,7 @@ test("locked, nothing moves: every draggable gate, both dragstart guards, the me
   assert.match(RENDER, /if \(fedMissing \|\| settings\.tabsLocked\) \{ e\.preventDefault\(\); return; \}/, "the shared dragstart refuses too (belt and braces)");
   assert.match(RENDER, /head\.draggable = !settings\.tabsLocked;/, "a group drag moves tabs as well");
   assert.match(RENDER, /head\.addEventListener\("dragstart", \(e\) => \{\s*\n\s*if \(settings\.tabsLocked\) \{ e\.preventDefault\(\); return; \}\s*\n\s*draggedGroup = name;/);
-  assert.match(RENDER, /if \(settings\.tabsLocked\) \{ row\.classList\.add\("ctx-item-locked"\); row\.setAttribute\("aria-disabled", "true"\); bodyE\.title = "Tabs are locked: the lock is in the tab strip's gear menu"; \}/, "the Move to rows read held: the label, not the +");
+  assert.match(RENDER, /if \(settings\.tabsLocked\) \{ row\.classList\.add\("ctx-item-locked"\); row\.setAttribute\("aria-disabled", "true"\); bodyE\.title = "Tabs are locked: the lock is in the settings \(Chat, Tab strip\)"; \}/, "the Move to rows read held: the label, not the +");
   assert.match(RENDER, /plus\.title = "add this tag too \(the session keeps its other tags\)" \+ \(settings\.tabsLocked \? ": adding is not a move, so the lock does not hold it" : ""\);/, "the + keeps its own title");
   assert.match(CSS, /\n\.ctx-sub \.ctx-item\.ctx-item-locked > \.ctx-item-body \{ opacity: 0\.45; \}/, "the dim on the body, so the + keeps full strength (round one, LOW 1)");
   assert.match(CSS, /\n\.ctx-sub \.ctx-item\.ctx-item-locked \{ cursor: default; \}\n\.ctx-sub \.ctx-item\.ctx-item-locked > \.ctx-item-body/);
@@ -71,7 +75,7 @@ test("locked, nothing moves: every draggable gate, both dragstart guards, the me
   assert.match(RENDER, /__rompMovableSession = \(sid: unknown\): boolean => typeof sid === "string" && !!sid && !isProvisionalId\(sid\) && !isSubId\(sid\) && !settings\.tabsLocked;/, "the shell's question before a move into another column answers no while locked");
   assert.match(RENDER, /__rompMoveRefusal = \(sid: unknown\): string => typeof sid !== "string" \|\| !sid \|\| isProvisionalId\(sid\) \|\| isSubId\(sid\) \? "not-open" : settings\.tabsLocked \? "locked" : "";/, "…and the reason behind it (round one, MEDIUM 2)");
   assert.match(KERNEL, /function refusal\(f,sid\)\{try\{var w=f&&f\.contentWindow&&f\.contentWindow\.__rompMoveRefusal;return typeof w==='function'\?String\(w\(sid\)\|\|''\):'';\}catch\(e\)\{return '';\}\}/);
-  assert.match(KERNEL, /var LOCKED='The tabs are locked: unlock them in the tab strip\\\\u2019s gear menu \(Lock the tabs in place\) to move this session\.';/, "the toast names the gear's menu, the way back (T405)");
+  assert.match(KERNEL, /var LOCKED='The tabs are locked: unlock them in the settings \(Chat, Tab strip\) to move this session\.';/, "the toast names the settings' section, the way back (T415)");
   assert.match(KERNEL, /var why=refusal\(src,sid\);if\(why==='locked'\)return notify\(LOCKED\);if\(why\|\|!movable\(src,sid\)\)return notify\('Only an open session can be moved between columns\.'\);/, "a lock is not \"not an open session\"");
   assert.match(RENDER, /if \(fedMissing \|\| settings\.tabsLocked\) return false;/, "a drop after another window locked mid-drag commits nothing (round one, LOW 3)");
   assert.match(RENDER, /const focusedGear = !!focusedEl\?\.closest\("\.tab-widgets-gear"\);/);
@@ -89,7 +93,7 @@ test("the setting: per browser, off by default, only the literal true locks; the
 });
 
 test("the Sessions pane shares the order, so the padlock holds its drags too: lanes, the dialog's rows and the pills (round one, MEDIUM 1)", () => {
-  assert.match(TIMELINE, /^const LOCKED_TEXT = 'the tabs are locked: unlock them in the tab strip\\u2019s gear menu \(Lock the tabs in place\) to move sessions';/m, "the way back names the gear's menu (T405)");
+  assert.match(TIMELINE, /^const LOCKED_TEXT = 'the tabs are locked: unlock them in the settings \(Chat, Tab strip\) to move sessions';/m, "the way back names the settings' section (T415)");
   assert.match(TIMELINE, /_tabsLocked\(\) \{\s*\n\s*try \{ const s = JSON\.parse\(localStorage\.getItem\('romp:settings'\) \|\| '\{\}'\); return !!\(s && s\.tabsLocked === true\); \}/, "the strip's own store key, read at the gesture (the pane is served raw: no import)");
   assert.match(TIMELINE, /_beginDrag\(sid, e\) \{\s*\n\s*if \(this\._tabsLocked\(\)\) return;/, "a lane drag never starts while locked");
   assert.match(TIMELINE, /_persistOrder\(order, prev, sid, from\) \{\s*\n\s*if \(this\._tabsLocked\(\)\) \{[^]*?this\._applyOrderToData\(prev\);\s*\n\s*this\.settingRefused\(\{ gesture: 'order', sid: sid \|\| '', from: from \|\| '', text: LOCKED_TEXT \}\);\s*\n\s*return;/, "a persist after a mid-drag lock writes nothing and puts the lanes back");
