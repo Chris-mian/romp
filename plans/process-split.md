@@ -24,6 +24,8 @@ Measurement: the connect push timer (`pusher.connectPush`) and the browser-side 
 
 The checkpoint writer refuses a document for 34 of the 76 transcripts over 10 MB (43 percent of their bytes) because its parent walk gives up on a cycle in the resolved graph (`skip("cycle")`, event_model.py near 5840); the refusal is retried at every settle. Those undocumented sessions are the boot's whole parses (about 28 per boot; about 9 once they have documents). A visited set, as `active_path` uses, ends the walk on a repeated uuid without refusing the document. Owner romp_metrics, design line first; this stage is the prerequisite of every later one, since the document is the form the processes hand each other.
 
+Two measures beside the counts (romp_metrics, 2026-09-14): correctness, a document written over a looping graph must restore to the same world the live parse shows, so the writer's walk stops at the first revisit exactly as `active_path` does and the restore-equality test (the cold parse as the oracle) runs over looping fixtures shaped like the review's rings (an attachment chain; a stop-hook summary, assistant, user, compact-boundary ring); and the refusal class, since `cycle` is not structural today and is retried at every settle and converge pass, paying the writer's prelude each time: after the visited set any cycle that still refuses becomes structural, and the perf block shows the retries gone (`asmCheckpoint.skipped.cycle` at zero across a boot).
+
 Measurement: `asmCheckpoint.parse` at the first refresh with a browser (`full` against `restore`), `checkpoints.readBytes`, and the count of documents on disk that restore cleanly.
 
 ## Stage two: a decode worker process that writes documents (romp_perf with romp_metrics)
