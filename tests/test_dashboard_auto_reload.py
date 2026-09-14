@@ -63,14 +63,14 @@ function out(o) { process.stdout.write("RESULT:" + JSON.stringify(o) + "\n"); }
 """
 
 
-def run_core(scenario, v=7, boot="1.1"):
+def run_core(scenario, v=7, boot="1.1", sha="abc1234"):
     node = shutil.which("node")
     if not node:
         raise unittest.SkipTest("node not installed")
     d = tempfile.mkdtemp(prefix="reload-core-")
     path = os.path.join(d, "core.js")
     with open(path, "w") as f:
-        f.write(HARNESS + km._reload_core_js(v, boot) + "\n(async function(){\n" + scenario + "\n})();\n")
+        f.write(HARNESS + km._reload_core_js(v, boot, sha) + "\n(async function(){\n" + scenario + "\n})();\n")
     r = subprocess.run([node, path], capture_output=True, text=True, timeout=60)
     shutil.rmtree(d, ignore_errors=True)
     if r.returncode != 0:
@@ -111,6 +111,53 @@ out({ blip: blip, after: state() });""")
         self.assertEqual(s["after"]["reloads"], 1)
         self.assertEqual(s["after"]["stored"]["reason"], "restart")
         self.assertEqual(s["after"]["stored"]["detail"], "2.2")
+
+    def test_a_restart_with_an_unchanged_build_never_reloads(self):
+        """Invisible restarts (the user 2026-09-14): a new boot id with the SAME kernel code sha is a restart of the build this
+        page already runs; the board stays on screen and the shim's redial carries the diet; no reload is owed."""
+        s = run_core("""
+var R = window.__rompReload;
+VERSION = { boot: "2.2", dist_ver: 7, kernel_sha: "abc1234" }; R.checkBoot(); await tick(); await tick();
+out({ after: state(), restarted: R.restarted() });""", sha="abc1234")
+        self.assertEqual(s["after"]["reloads"], 0, "the same build restarted: nothing to reload onto")
+        self.assertIsNone(s["after"]["owed"])
+        self.assertEqual(s["restarted"], 1, "the restart was seen and counted")
+
+    def test_a_restart_with_a_changed_build_reloads_once_the_reconnected_pane_has_its_first_frame(self):
+        s = run_core("""
+var R = window.__rompReload;
+window.__rompFreshPending = true;                       // the shim's redial is awaiting its resync frame
+VERSION = { boot: "2.2", dist_ver: 7, kernel_sha: "def5678" }; R.checkBoot(); await tick(); await tick(); var held = state();
+window.__rompFreshPending = false; R.ended(); await tick(); await tick();
+out({ held: held, after: state() });""", sha="abc1234")
+        self.assertEqual(s["held"]["reloads"], 0, "owed but held: the reload must land on a warm kernel")
+        self.assertEqual(s["held"]["owed"]["reason"], "restart")
+        self.assertEqual(s["held"]["waiting"], "fresh")
+        self.assertEqual(s["after"]["reloads"], 1, "the resync frame is the ending event")
+        self.assertEqual(s["after"]["stored"]["reason"], "restart")
+        self.assertEqual(s["after"]["stored"]["detail"], "2.2")
+
+    def test_a_version_without_a_code_sha_still_reloads_on_a_restart(self):
+        # an older kernel's /version (or a fetch that lost the field): the fail-safe is today's reload, never a silent stale page
+        s = run_core("""
+var R = window.__rompReload;
+VERSION = { boot: "2.2", dist_ver: 7 }; R.checkBoot(); await tick(); await tick();
+out({ after: state() });""", sha="abc1234")
+        self.assertEqual(s["after"]["reloads"], 1)
+        self.assertEqual(s["after"]["stored"]["reason"], "restart")
+
+    def test_the_shim_arms_the_fresh_hold_on_a_reconnect_and_the_resync_frame_ends_it(self):
+        js = km._shim("chat", 5)
+        self.assertIn('pendingWhy="";freshPending=true;window.__rompFreshPending=true;', js, "the reopen arms the hold the core reads")
+        self.assertIn('pendingWhy="foreground";freshPending=true;window.__rompFreshPending=true;', js, "and the foreground redial")
+        self.assertIn('if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}', js,
+                      "the first real frame clears it and is the ending event")
+        core = km._reload_core_js(5, "1.1", "abc")
+        self.assertIn("try{if(window.__rompFreshPending)return 'fresh';}catch(e){}", core)
+        self.assertIn('var LOADED=5,BOOT="1.1",SHA="abc",', core, "the page's own code sha is baked beside its build and boot")
+        self.assertIn("The dashboard will reload onto the new build once the reconnected pane has its first frame.", js, "the held wording, the pane's bar")
+        self.assertIn("The dashboard will reload onto the new build once the reconnected pane has its first frame.", km._STALE_JS, "and the shell's")
+        self.assertIn("SHA=%s," % json.dumps(str(km._kernel_sha() or "")), km._reload_core(), "the served core bakes this kernel's sha")
 
     def test_version_readings_feed_both_signals(self):
         s = run_core("""

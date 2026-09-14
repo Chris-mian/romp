@@ -52110,12 +52110,13 @@ body{font-family:var(--vscode-font-family);font-size:13px;color:var(--vscode-for
 # dv check, and the relay never forwards a remote kernel's boot id). tests/test_dashboard_auto_reload.py runs
 # this code in node with fakes and pins the wiring.
 _RELOAD_CORE_JS = r"""/*reload-core*/(function(){if(window.__rompReload)return;
-var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null;
+var LOADED=__LOADEDVER__,BOOT=__ROMP_BOOT__,SHA=__ROMP_SHA__,ptr=0,pan=false,drag=false,owed=null,fired=false,refusedFor=null,restarted=0;
 function shell(){try{var p=window.parent;if(p&&p!==window&&p.__rompReload)return p.__rompReload;}catch(e){}return null;}
 function editing(){try{var a=document.activeElement;if(!a)return false;var tag=(a.tagName||'').toUpperCase();
 var textual=tag==='TEXTAREA'||(tag==='INPUT'&&/^(text|search|url|email|number|password|tel)$/i.test(a.type||'text'))||!!a.isContentEditable;
 if(!textual)return false;var val=(a.value!=null?a.value:(a.textContent||''));return !!String(val).trim();}catch(e){return false;}}
 function busyHere(){if(ptr>0)return 'pointer';if(pan)return 'pan';if(drag)return 'drag';
+try{if(window.__rompFreshPending)return 'fresh';}catch(e){}
 try{var s=document.getSelection&&document.getSelection();var focused=!document.hasFocus||document.hasFocus();
 if(focused&&s&&s.rangeCount&&!s.isCollapsed&&String(s).length)return 'selection';}catch(e){}
 if(editing())return 'typing';
@@ -52139,7 +52140,7 @@ function request(reason,detail){var s=shell();if(s){s.request(reason,detail);ret
 var next={reason:reason,detail:detail||''};if(refusedFor!==null&&key(next)!==refusedFor){refusedFor=null;owed=next;}
 if(!owed)owed=next;tryFire();}
 function noteDv(dv){if(LOADED&&dv&&dv>LOADED)request('build',String(dv));}
-function noteVersion(v){if(!v)return;if(v.boot&&BOOT&&v.boot!==BOOT)request('restart',String(v.boot));if(v.dist_ver)noteDv(v.dist_ver);
+function noteVersion(v){if(!v)return;if(v.boot&&BOOT&&v.boot!==BOOT){restarted++;if(!(SHA&&v.kernel_sha&&v.kernel_sha===SHA))request('restart',String(v.boot));}if(v.dist_ver)noteDv(v.dist_ver);
 if(typeof v.taskTracking==='boolean'){window.__rompTaskTracking=v.taskTracking;if(window.__rompApplyPanes)window.__rompApplyPanes();}}   // the Task tracking switch (T404): the shell's rail follows the kernel
 function checkBoot(){try{fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(noteVersion)['catch'](function(){});}catch(e){}}   // a non-ok answer is not a version: noteVersion's latches (BOOT, LOADED) never see it
 function announce(notify){var raw=null;try{raw=sessionStorage.getItem('romp:reloaded');}catch(e){}
@@ -52161,7 +52162,7 @@ var END=['pointerup','touchend','touchcancel','scrollend','dragend','drop','sele
 function ended(){setTimeout(function(){var s=shell();if(s)s.tryFire();else tryFire();},0);}
 for(var k=0;k<END.length;k++)document.addEventListener(END[k],ended,true);
 window.addEventListener('blur',function(){ptr=0;pan=false;drag=false;ended();});
-var R={request:request,tryFire:tryFire,ended:ended,busyHere:busyHere,busy:busy,noteDv:noteDv,noteVersion:noteVersion,checkBoot:checkBoot,announce:announce,
+var R={request:request,tryFire:tryFire,ended:ended,busyHere:busyHere,busy:busy,noteDv:noteDv,noteVersion:noteVersion,checkBoot:checkBoot,announce:announce,restarted:function(){return restarted;},
 inShell:function(){return !!shell();},owed:function(){return owed;},fired:function(){return fired;},refusedFor:function(){return refusedFor;},refused:null,held:null,waiting:'',loaded:LOADED,boot:BOOT};
 window.__rompReload=R;})();/*end-reload-core*/"""
 
@@ -52169,15 +52170,17 @@ window.__rompReload=R;})();/*end-reload-core*/"""
 def _reload_core(v=0):
     """The reload core with this page's build token and this kernel's boot id baked in (see _RELOAD_CORE_JS).
     Embedded by _shim (every pane page) and _stale_block (the dashboard landing)."""
-    return _RELOAD_CORE_JS.replace("__LOADEDVER__", str(int(v))).replace("__ROMP_BOOT__", json.dumps(_BOOT_ID))
+    return (_RELOAD_CORE_JS.replace("__LOADEDVER__", str(int(v))).replace("__ROMP_BOOT__", json.dumps(_BOOT_ID))
+            .replace("__ROMP_SHA__", json.dumps(str(_kernel_sha() or ""))))
 
 
-def _reload_core_js(v=0, boot=None):
+def _reload_core_js(v=0, boot=None, sha=None):
     """The reload core's IIFE alone — the code between its /*reload-core*/ anchors, baked for `v` and `boot` — so a
     node test runs the REAL decision code with fakes for document, window, location, sessionStorage and fetch
     (test_dashboard_auto_reload.py). Fails loudly if the anchors ever go missing."""
     js = _RELOAD_CORE_JS.replace("__LOADEDVER__", str(int(v))).replace(
-        "__ROMP_BOOT__", json.dumps(_BOOT_ID if boot is None else boot))
+        "__ROMP_BOOT__", json.dumps(_BOOT_ID if boot is None else boot)).replace(
+        "__ROMP_SHA__", json.dumps(str((_kernel_sha() or "") if sha is None else sha)))
     a, b = "/*reload-core*/", "/*end-reload-core*/"
     i, j = js.find(a), js.find(b)
     if i < 0 or j < i:
@@ -52376,7 +52379,7 @@ var buildRaised=false,freshPending=false,restartAnnounced=0;   // freshPending: 
 window.__rompPaneBusy=function(){return (everConnected&&queue.length>queuedDiag)?"sends":"";};
 // …and a standalone page (no same-origin shell) consumes its own reload marker: nobody else would
 try{if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.announce(null);}catch(e){}
-try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
+try{if(window.__rompReload&&!window.__rompReload.inShell()){window.__rompReload.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':b==='fresh'?'The dashboard will reload onto the new build once the reconnected pane has its first frame.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t)selfBar(t,'held');};}}catch(e){}
 function raiseBuild(){if(buildRaised)return;buildRaised=true;var R=window.__rompReload;
 if(R){R.refused=function(){selfBar("A newer romp build is available.","build");};R.request("build","");}
 else selfBar("A newer romp build is available.","build");}
@@ -52402,7 +52405,7 @@ if(failedConnects){send({type:"clientDiag",surface:"pane-shim",what:"wsconnfail"
 if(wasReconn){var ann=restartAnnounced&&Date.now()-restartAnnounced<30000;restartAnnounced=0;   // one-shot: spent here
 if(window.__rompReload&&!window.__rompReload.inShell())window.__rompReload.checkBoot();   // T265: a REOPEN is the restart signal — a standalone page asks /version whose kernel answered; inside the shell, the shell asks on its own socket
 if(!ann)armStale(pendingWhy||"reconnect");   // T217: an ANNOUNCED restart's reconnect skips the arm — the resync lands in a beat and the flash was pure noise; a restart that never comes back stays loud through the disconnected state itself, and a SECOND reconnect arms as always
-pendingWhy="";freshPending=true;try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}
+pendingWhy="";freshPending=true;window.__rompFreshPending=true;try{window.dispatchEvent(new Event("romp:wsup"));}catch(e){}
 enqueue({type:"wsup"});}};   // the flip as a FRAME too: frames of the dead socket may still be draining from the FIFO, and a bundle that scopes "loaded on this socket" must see the flip between them and the new socket's frames, not at onopen (review find 2026-09-07)
 ws.onmessage=function(ev){lastRecv=Date.now();resumeProvisional=0;if(returnAt)returnBytes+=(ev.data&&ev.data.length)||0;var msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
 if(msg&&msg.type==="caps")readyAcked=true;   // the kernel's answer to a ready it processed: _send_caps, which the ready arm alone sends, after its own pushes. From here a redial may declare itself (the dial term in connect); the frame goes on to the bundle below like any other
@@ -52418,7 +52421,7 @@ return;}   // keepalive: stamped lastRecv above and confirmed a resumed keep (re
 if(msg&&msg.type==="restarting"){restartAnnounced=Date.now();staleDiag("restart-announced","");return;}
 // the first REAL frame after a reconnect is the kernel's connect-time push — the resync itself, so the
 // "what you see may be stale" prompt is answered and retires (see clearStale). Keepalives return above.
-if(freshPending){freshPending=false;clearStale();}
+if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}   // the resync frame is the ending event for the 'fresh' hold: a build reload owed since the restart goes now, onto a warm kernel
 if(returnAt){returnDiag("return-fresh",{ms:Date.now()-returnAt,bytesSince:returnBytes,redialed:returnRedialed});returnAt=0;}   // the first real frame after a return: how long the user waited for current content
 // VIEW DELTAS (2026-09-03): the bars/feed slots arrive as {type:"delta"} frames carrying only the changed
 // entries; reassemble the full message from what this pane holds and hand the bundle exactly what it
@@ -52569,7 +52572,7 @@ var row={decision:stale?((!ws||ws.readyState!==1)?"redial-closed":"redial-stale"
 frozenMs:(res&&frozeAt>=hiddenAt&&resumedAt>frozeAt)?resumedAt-frozeAt:0,quietMs:lastRecv?Date.now()-lastRecv:-1,quietAtResumeMs:res?resumeQuiet:-1,ready:ws?ws.readyState:-1};
 returnAt=Date.now();returnBytes=0;returnRedialed=false;returnRow=null;   // every return starts with no held row (review find, 2026-09-08): a keep row left over from an earlier return must not ride this one's close or abandon
 if(!stale){returnRow=row;returnDiag("return",row);return;}   // the socket stands: the row rides it now — and is HELD, because a FIN queued in the same thaw burst would swallow it (review find 2026-09-07; onclose re-files)
-pendingWhy="foreground";freshPending=true;   // the reconnect's arm reads "foreground" (upstream's two-event prompt)
+pendingWhy="foreground";freshPending=true;window.__rompFreshPending=true;   // the reconnect's arm reads "foreground" (upstream's two-event prompt)
 if(ws&&ws.readyState===1)abandon();else{try{if(ws&&ws.readyState===0)ws.close();}catch(e){}}   // OPEN-but-quiet → abandoned + redialed below, now; stuck-CONNECTING → aborted, onclose retries
 if(!ws||ws.readyState===3)connect();
 returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial so it queues for the new socket instead of vanishing into the dead one
@@ -56257,7 +56260,7 @@ _STALE_JS = (
     "if(RL){RL.refused=function(){buildStale=true;show(BUILDMSG);};"
     # a reload HELD by a pane (an upload in flight, a held send, queued sends) says so, once per hold: the notification
     # center line names what it waits for; momentary gesture holds (pointer, typing…) get no line (T272 follow-up)
-    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
+    "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':b==='fresh'?'The dashboard will reload onto the new build once the reconnected pane has its first frame.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
     "RL.announce(function(k,t){if(window.__rompNotify)window.__rompNotify(k,t);});}"
     # a non-ok answer is not a version (the served/dismissed latches and RL.noteVersion would read its body as one)
     "function check(){fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(function(v){"
