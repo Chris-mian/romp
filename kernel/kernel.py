@@ -928,6 +928,26 @@ def _stage_marked(name):
     return deco
 
 
+def _stage_default(name):
+    """Decorator: `name` is the calling thread's stage mark for the function's duration ONLY when the thread carries none, and a
+    standing mark is left alone. For a callable the kernel hands a backend, which may run it on a thread of its own (the SDK
+    backend's push-session thread, unmarked: takes the name) or synchronously on the caller's thread (the Codex backend's
+    set_mode and kill, under a request's `http.<METHOD>.<route>`: the route stands). A plain _stage_marked on the hand-off
+    overwrote the route for the call's length (T401 (5a) follow-up, round two)."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def marked(*args, **kwargs):
+            if getattr(_STAGE_TL, "name", None) is not None:
+                return fn(*args, **kwargs)
+            _set_stage(name)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _set_stage(None)
+        return marked
+    return deco
+
+
 em.set_read_stage_provider(_current_read_stage)   # T401: the thread's stage mark, so reads and hydrations count per (stage, caller)
 em.set_stage_provider(_set_stage)                 # T401 (5a): the setter's pair, so the judge's pool workers carry their tier's mark
 
@@ -17228,10 +17248,11 @@ def _sdk_locked():
             _sdk_backend = sbmod.SdkBackend(
                 jd.STATE, _claude_bin(), _send_to_app,
                 poke=_wake_kernel, push=_pusher_wake.set,   # poke = the turn END: judges AND parked-op delivery
-                push_session=_stage_marked("push.session")(_push_session_now),   # targeted one-session push for per-session chip
-                #   events (connect); marked at the hand-off: the backend runs it on a thread of its own (the read boot of
-                #   2026-09-14 counted 3,312 builds and 9.4 MB under `none:` from that thread), and a decorator on the def would
-                #   overwrite the WS-handler and spawn callers' own marks for the call's length (T401 (5a) follow-up)
+                push_session=_stage_default("push.session")(_push_session_now),   # targeted one-session push for per-session chip
+                #   events (connect); marked at the hand-off as the thread's DEFAULT: the backend runs it on a thread of its own
+                #   (unmarked; the read boot of 2026-09-14 counted 3,312 builds and 9.4 MB under `none:` from it), while a
+                #   decorator on the def, or a plain mark here, would overwrite a marked caller's own stage for the call's
+                #   length (the WS-handler and spawn callers of the def; the Codex backend's synchronous sites) (T401 (5a) follow-up)
                 mcp_config=(str(_SDK_MCP) if _SDK_MCP.exists() else None),
                 append_prompt_path=(str(_SDK_PROMPT) if _SDK_PROMPT.exists() else None),
                 log=_backend_log,   # best-effort, through _exit_log: SdkBackend.drain logs its summary after
@@ -17346,7 +17367,9 @@ def _codex():
                 _codex_backend = cxmod.CodexBackend(
                     jd.STATE, notify=_send_to_app,
                     poke=_wake_kernel, push=_pusher_wake.set,
-                    push_session=_stage_marked("push.session")(_push_session_now),   # marked at the hand-off, as the SDK's above
+                    push_session=_stage_default("push.session")(_push_session_now),   # the thread's default mark, as the SDK's
+                    #   above: this backend calls it synchronously under a request's route at set_mode and kill (the route
+                    #   stands) and from its own event loop elsewhere (unmarked: takes push.session)
                     # Let the backend choose ROMP's managed runtime and helpers.
                     # A separately installed CLI on PATH may use a different protocol.
                     # …but honour the one EXPLICIT knob romp already has — ROMP_CODEX_BIN, which the judges read

@@ -1930,8 +1930,10 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   `materializedBy` (per consumer), `materializedByStage` (the same builds
   under the calling thread's stage mark beside the consumer, as
   `hydratedByStage` does for bodies: `push`, `connect`, `push.session`
-  (the backend's targeted one-session push on a session's connect
-  handshake, run on a thread of the backend's own), `jobs.<job>`,
+  (the backend's targeted one-session push, on a thread of the
+  backend's own at a session's connect handshake; the mark is the
+  thread's default, so a backend calling the push synchronously under
+  a request keeps the request's route), `jobs.<job>`,
   `judge.<tier>` for a tier thread and every worker of the pools it
   submits to (the mark rides the submit, as the pass frame does, since a
   thread-local does not cross into a pool worker), `http.<METHOD>.<route>`
