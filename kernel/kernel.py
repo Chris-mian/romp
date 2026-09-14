@@ -51928,7 +51928,7 @@ if(!owed)owed=next;tryFire();}
 function noteDv(dv){if(LOADED&&dv&&dv>LOADED)request('build',String(dv));}
 function noteVersion(v){if(!v)return;if(v.boot&&BOOT&&v.boot!==BOOT)request('restart',String(v.boot));if(v.dist_ver)noteDv(v.dist_ver);
 if(typeof v.taskTracking==='boolean'){window.__rompTaskTracking=v.taskTracking;if(window.__rompApplyPanes)window.__rompApplyPanes();}}   // the Task tracking switch (T404): the shell's rail follows the kernel
-function checkBoot(){try{fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(noteVersion)['catch'](function(){});}catch(e){}}
+function checkBoot(){try{fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(noteVersion)['catch'](function(){});}catch(e){}}   // a non-ok answer is not a version: noteVersion's latches (BOOT, LOADED) never see it
 function announce(notify){var raw=null;try{raw=sessionStorage.getItem('romp:reloaded');}catch(e){}
 if(!raw)return null;var d=null;try{d=JSON.parse(raw);}catch(e){try{sessionStorage.removeItem('romp:reloaded');}catch(e2){}return null;}if(!d)return null;
 if(d.path&&d.path!==location.pathname)return null;
@@ -54934,8 +54934,10 @@ function fillHosts(){if(!dl)return;var hs=[];
 // innerHTML like any element, so a crafted alias used to run there (2026-09-08)
 dl.textContent='';var cut=hs.length>512?hs.length-512:0;hs.slice(0,512).forEach(function(h){var o=document.createElement('option');o.value=h;dl.appendChild(o);});
 if(cut){var mo=document.createElement('option');mo.value=mo.textContent='\\u2026 '+cut+' more not shown';mo.disabled=true;dl.appendChild(mo);}}   // a cut list says so (strip.ts fillHostSelect wears the same marker)
-function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
-_cfg=(d&&d.hosts)||[];fillHosts();}).catch(function(){});}
+// a non-ok answer is not the host list: a JSON-bodied 5xx used to write an EMPTY list (the delete-by-absence the other
+// readers lost); it throws, the last good list stands, and the console says so
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/ssh-hosts answered HTTP '+r.status);return r.json();}).then(function(d){
+_cfg=(d&&d.hosts)||[];fillHosts();}).catch(function(e){try{console.error('romp: ssh hosts could not be read; keeping the last list',e);}catch(_){}});}
 // Every string a PEER chose is rendered as TEXT: esc() before it meets innerHTML. That is a host it named
 // (a checked-in peer names itself), its status word, its build, the rows it reports for its own connections
 // (/tunnels/of — whitelisted by the kernel too), and the bus gossip below (tiers, relay hosts, holds).
@@ -55702,8 +55704,14 @@ else sub="Turn on to get them on this device.";
 if(devSubEl)devSubEl.textContent=sub;}
 window.__rompNotifyAllPaint=function(on){isOn=!!on;paint();};     // the shell WS repaints every open dashboard on a toggle
 window.__rompNotifyTurnsPaint=function(on){turnsOn=!!on;paint();};
-fetch('/notify-all').then(function(r){return r.json();}).then(function(d){isOn=!!(d&&d.on);paint();}).catch(function(e){});
-fetch('/notify-turns').then(function(r){return r.json();}).then(function(d){turnsOn=!!(d&&d.on);paint();}).catch(function(e){});
+// The two switches are read once per page: an answer that is not the switch (a non-ok status, an unreadable body) used
+// to paint the bell OFF for the page's life. A non-ok answer throws, nothing is painted from it, and the read is retried
+// a few times (5 s apart) before the page gives up; a later toggle still repaints through the shell's WS.
+function readSwitch(url,apply,tries){fetch(url).then(function(r){if(!r.ok)throw new Error(url+' answered HTTP '+r.status);return r.json();})
+.then(function(d){apply(!!(d&&d.on));paint();}).catch(function(e){if(tries>0)setTimeout(function(){readSwitch(url,apply,tries-1);},5000);
+else{try{console.error('romp: '+url+' could not be read after four tries; the bell shows its default, not what the kernel holds',e);}catch(_){}}});}
+readSwitch('/notify-all',function(on){isOn=on;},3);
+readSwitch('/notify-turns',function(on){turnsOn=on;},3);
 function sub(){if(!canPush)return Promise.resolve(null);
 return navigator.serviceWorker.getRegistration('/').then(function(r){return r?r.pushManager.getSubscription():null;}).catch(function(e){return null;});}
 sub().then(function(s){devOn=!!s;paint();});
@@ -56005,7 +56013,8 @@ _STALE_JS = (
     # center line names what it waits for; momentary gesture holds (pointer, typing…) get no line (T272 follow-up)
     "RL.held=function(b){var t=(b==='upload'?'The dashboard will reload once the upload in progress finishes.':b==='held-send'?'The dashboard will reload once the held message has been sent.':b==='sends'?'The dashboard will reload once the queued messages have left.':(b==='pointer'||b==='pan'||b==='drag'||b==='selection'||b==='typing'||!b)?null:'The dashboard will reload once the page is idle ('+b+').');if(t&&window.__rompNotify)window.__rompNotify('reload',t);};"
     "RL.announce(function(k,t){if(window.__rompNotify)window.__rompNotify(k,t);});}"
-    "function check(){fetch('/version',{cache:'no-store'}).then(function(r){return r.json();}).then(function(v){"
+    # a non-ok answer is not a version (the served/dismissed latches and RL.noteVersion would read its body as one)
+    "function check(){fetch('/version',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/version answered HTTP '+r.status);return r.json();}).then(function(v){"
     "if(v&&v.boot&&window.__rompUpdBoot)window.__rompUpdBoot(v.boot);"   # retire cross-boot update offers (2026-08-15)
     "served=v.dist_ver||0;"
     "if(RL)RL.noteVersion(v);"
@@ -56483,7 +56492,8 @@ _UPD_JS = (
     "window.__rompUpdBoot=function(b){if(!b)return;if(!bootNow){bootNow=b;return;}"
     "if(b!==bootNow){bootNow=b;if(waiting){location.reload();return;}"
     "if(!go.hidden){box.classList.remove('show');curTag='';}}};"
-    "function poll(){fetch('/update-check',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
+    # a non-ok answer is not the update state (waiting, bootNow and the failed/done words would be written from its body)
+    "function poll(){fetch('/update-check',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/update-check answered HTTP '+r.status);return r.json();}).then(function(d){"
     "if(!waiting)return;"
     "if(d.boot&&bootNow&&d.boot!==bootNow){location.reload();return;}"
     "if(d.failed){waiting=false;go.hidden=false;go.disabled=false;show('The update did not finish: '+d.failed);return;}"
@@ -56508,7 +56518,7 @@ _UPD_JS = (
     # persist the Not-now (the user 2026-08-31): page loads and kernel restarts stop re-offering
     "try{fetch('/update-dismiss',{method:'POST',headers:{'Content-Type':'application/json'},"
     "body:JSON.stringify({tag:curTag})}).catch(function(){});}catch(e){}};"
-    "fetch('/update-check',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
+    "fetch('/update-check',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/update-check answered HTTP '+r.status);return r.json();}).then(function(d){"
     "bootNow=(d&&d.boot)||'';"
     "if(d&&d.state==='running'){waiting=true;go.hidden=true;dm.hidden=true;"
     "show('romp is updating \\u2014 the dashboard reloads when it restarts\\u2026');poll();return;}"
