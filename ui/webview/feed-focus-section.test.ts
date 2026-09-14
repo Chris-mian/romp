@@ -122,6 +122,17 @@ test("the board's own column lookups are scoped to #feed-cols now that the secti
   assert.match(FEED, /return r\.width > 0 \|\| r\.height > 0;/, "display: none is the zero rect; a folded block still has its head");
   assert.match(FEED, /const visible = visibleKeys\(order, slots\.col\);\s*\n\s*const from = visible\.indexOf\(key\);/, "the drag's from-slot is the block's place among the visible ones");
   assert.match(FEED, /for \(const other of visible\) \{/, "…and its midpoint walk visits the visible blocks alone");
+  // review round two: the pointerdown's default stands, so a focusable chip is focused NATIVELY (pointer-initiated: no
+  // :focus-visible ring, no scroll-into-view); a drag ends with the chip blurred, a plain click keeps its focus
+  const drag = FEED.slice(FEED.indexOf("function wireColDrag("), FEED.indexOf("function ensureCols("));
+  assert.doesNotMatch(drag, /down\.preventDefault\(\)|chip\.focus\(\)/, "no prevented pointerdown and no scripted focus on the drag handle");
+  assert.match(drag, /down\.stopPropagation\(\);\s*\n\s*chip\.setPointerCapture\(down\.pointerId\);/, "capture, without preventing the default");
+  assert.match(drag, /let dragged = false;/);
+  assert.match(FEED, /^const DRAG_SLOP_PX = 4;/m, "a drag is a pointer that moved past a small slop; under it a slipping click stays a click (round three)");
+  assert.match(drag, /col\.style\.transform = translate\(pos\(ev\) - start - slotShift\);\s*\n\s*if \(Math\.abs\(pos\(ev\) - start\) > DRAG_SLOP_PX\) dragged = true;/, "a pointer past the slop is a drag");
+  assert.match(drag, /if \(down\.button !== 0\) return;/, "the primary button (a touch, a pen) arms the drag; a right press arms nothing");
+  assert.match(drag, /if \(dragged && chip\.tabIndex >= 0 && document\.activeElement === chip\) chip\.blur\(\);/, "a drag gives the focus back; the arrow keys return to the card cursor");
+  assert.match(CSS, /\.feed-col-head \.fcol-chip \{ cursor: grab; touch-action: none; user-select: none; \}/, "selection and touch are the CSS's to hold, so the default may stand");
   assert.match(FEED, /applyOrderFlip\(placeVisible\(order, visible, nv\)\);/, "the re-slot keeps hidden blocks in their relative places");
   assert.match(FEED, /col: \(k\) => document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ k\),/, "FOCUS_SLOTS reads the section");
   assert.match(FEED, /put\(document\.querySelector\("#feed-cols \.feed-col\.col-" \+ key \+ " \.feed-col-head"\), d\.cols\[key\]\);/, "the freeze badges land on the board's heads");
@@ -201,7 +212,7 @@ test("feed.css: #feed-focus, the head, the caption, the rule and the empty line 
   assert.doesNotMatch(CSS, /\.feed-focus-cols \.feed-col-head \.fcol-chip \{ cursor: default; \}|drag-grip/, "the section's chips drag as the board's do (the base grab cursor stands; no grip rule)");
   assert.match(CSS, /\.feed-focus-cols \.fcol-chip:focus-visible \{ outline: 2px solid var\(--accent\); outline-offset: 2px; \}/, "a focused chip wears the accent ring: the keyboard's handle");
   assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: calc\(1em \/ 0\.72\); font-weight: 600;/, "the name at the session headers' size (the feed's base, back up from the label's 0.72em) and weight (the user 2026-09-14)");
-  assert.match(CSS, /\.focus-gutter \{ display: none; \}[\s\S]{0,400}\.feed-focus-cols \.feed-col\.col-empty \{ display: none; \}/,
+  assert.match(CSS, /\.focus-gutter \{ display: none; \}[\s\S]{0,800}\.feed-focus-cols \.feed-col\.col-empty \{ display: none; \}/,
     "single column (the stacked query): a block with no cards hides whole, chip and all; the rule lives under the query alone");
   assert.equal((CSS.match(/\.feed-focus-cols \.feed-col\.col-empty \{ display: none; \}/g) || []).length, 1, "…and nowhere else, so side by side the heads stand");
   assert.match(CSS, /\.feed-focus-divider \{ border: 0; border-top: 2px solid var\(--rule-strong\); margin: 8px 0 4px; \}/,
@@ -247,11 +258,20 @@ test("the chip's arrow keys move the block one slot within the section, from the
   assert.match(fn, /const delta = e\.key === "ArrowLeft" \|\| e\.key === "ArrowUp" \? -1 : e\.key === "ArrowRight" \|\| e\.key === "ArrowDown" \? 1 : 0;/);
   assert.match(fn, /const fallback = FOCUS_SLOTS\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);\s*\n\s*const hadCustom = cur\.length === 3;\s*\n\s*const order = \(hadCustom \? cur : fallback\)\.slice\(\);/, "the section's own order, else what it follows — as the drag seeds itself");
   assert.match(fn, /e\.stopPropagation\(\);/, "the chip's key is the chip's alone: the card cursor's arrow keys must not also fire");
-  assert.match(fn, /FOCUS_SLOTS\.set\(!hadCustom && next\.join\(\) === fallback\.join\(\) \? \[\] : next\);/, "the drag's no-trace rule holds for a keyboard move: back on what the section follows, it keeps following");
+  // the no-trace rule per PROVENANCE (review round two): a key sequence out of a following state can be walked back to
+  // nothing stored; an order pinned by drag is never cleared by a key press that lands on the fallback
+  assert.match(fn, /if \(next\.join\(\) === fallback\.join\(\) && focusOrderByKeys\) \{\s*\n\s*FOCUS_SLOTS\.set\(\[\]\);\s*\n\s*focusOrderByKeys = false;/,
+    "back on the followed arrangement: cleared on the flag alone (from a following state the order IS the fallback and a one-slot move always leaves it; round three dropped the unreachable disjunct)");
+  assert.match(fn, /FOCUS_SLOTS\.set\(next\);\s*\n\s*if \(!hadCustom\) focusOrderByKeys = true;/, "a key press out of a following state mints an order the keys may clear again");
+  assert.match(FEED, /^let focusOrderByKeys = false;/m, "the provenance flag beside the section's order; not persisted (a reload reads a stored order as pinned)");
+  // round three: the flag drops only when a GESTURE changed a stored order, at the gesture's end, for either handle
+  assert.match(FEED, /const startOrder = slots\.get\(\)\.slice\(\);/, "the press records what it started from");
+  assert.match(FEED, /if \(slots\.get\(\)\.join\(\) !== startOrder\.join\(\)\) focusOrderByKeys = false;/, "…and the flag drops only when the release committed a different order (a click, or a there-and-back drag, keeps a key-minted order walkable)");
+  assert.doesNotMatch(FEED, /if \(slots === FOCUS_SLOTS\) focusOrderByKeys = false;|colOrder = o; focusOrderByKeys = false;/, "no drop on every pointerup, none inside BOARD_SLOTS.set (a board drag re-slots mid-drag and may end where it started)");
   assert.match(fn, /const visible = visibleKeys\(order, FOCUS_SLOTS\.col\);\s*\n\s*const from = visible\.indexOf\(key\), to = from \+ delta;\s*\n\s*if \(from < 0 \|\| to < 0 \|\| to >= visible\.length\) return;/,
     "one slot among the blocks ON SCREEN: a hidden neighbour is skipped, never swapped behind (review round two)");
   assert.match(fn, /const next = placeVisible\(order, visible, nv\);/, "hidden blocks keep their relative places in the stored order");
-  assert.match(fn, /FOCUS_SLOTS\.set\([^\n]*\);\s*\n\s*persistViewState\(\);/, "written to the section's order and persisted at once");
+  assert.match(fn, /if \(!hadCustom\) focusOrderByKeys = true;[^\n]*\n\s*\}\s*\n\s*persistViewState\(\);/, "written to the section's order and persisted at once");
   assert.doesNotMatch(fn, /BOARD_SLOTS|colOrder =/, "never the board's order");
 });
 

@@ -563,28 +563,163 @@ EOF
     [ ! -x "$TEST_DIR/state/sdkvenv/bin/python" ]     # and never a husk for the next run to trip over
 }
 
-@test "install.sh: a missing SDK backend is a BANNER, not an optional-pieces footnote" {
-    export ROMP_STATE_DIR="$TEST_DIR/state"
-    mkdir -p "$ROMP_STATE_DIR"
-    echo "TESTTOKEN123" > "$ROMP_STATE_DIR/serve-token"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
-    # Let the real sdk step RUN (ROMP_NO_SDK cleared — that flag is what sets ROMP_SDK_MISSING) but
-    # make it fail at the VERSION gate, so this stays hermetic: no venv built, no network reached.
-    cat > "$STUB/oldpython" <<'EOF'
+# ── the Python floor (issue 1600) ──────────────────────────────────────────────────────────
+# This test used to assert the opposite: with a 3.9 python the install exited 0 behind the CANNOT START
+# SESSIONS banner, the 3.10 gate living only in romp-sdk-setup (skipped outright by ROMP_NO_SDK=1), and
+# the manager then crash-looped the kernel on that python. The floor is a preflight now: the interpreter
+# the kernel would run (romp-serve's pick, the ROMP_PYTHON pin here) must be 3.10 or newer, or the install
+# stops with the install command before it touches anything.
+_old_python() {   # a python that reports 3.9 to every version probe the scripts make
+    cat > "$1" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *"version_info >= (3, 10)"*) exit 1 ;;
+  *romp-pyver*)                echo "romp-pyver 3.9"; exit 0 ;;   # romp-serve's sentinel probe (round four)
   *'print("%d.%d"'*)           echo "3.9"; exit 0 ;;
 esac
 exit 0
 EOF
-    chmod +x "$STUB/oldpython"
+    chmod +x "$1"
+}
+
+@test "install.sh: a python below 3.10 stops the preflight with the install command; nothing is installed and no banner is reached" {
+    export ROMP_STATE_DIR="$TEST_DIR/state"
+    mkdir -p "$ROMP_STATE_DIR"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    _old_python "$STUB/oldpython"
 
     PATH="$(bare_path)" ROMP_NO_SDK= ROMP_PYTHON="$STUB/oldpython" \
       run "$ROMP_DIR/install.sh"
 
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"python 3.9"* ]]                       # the interpreter found, and its version
+    [[ "$output" == *"need 3.10 or newer"* ]]
+    [[ "$output" == *"brew install python@3.13"* ]]
+    [[ "$output" == *"uv python install 3.13"* ]]
+    [[ "$output" != *"CANNOT START SESSIONS"* ]]             # the preflight stops before the SDK step
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]              # nothing was wired
+}
+
+# round two of issue 1600: romp-serve exits 1 for three reasons that are NOT the python (the two port spellings
+# disagreeing, a kernel binary that is not there, an unrunnable pin) and the preflight blamed the python for every
+# non-zero exit; the floor has its own code (2) and the rest pass through with romp-serve's own line and a plain stop
+@test "install.sh: a port disagreement in the environment is not a python problem: romp-serve's line, a plain stop, the python unnamed" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    export ROMP_SERVE_PORT=1 ROMP_KERNEL_PORT=2                     # the two spellings of one port, disagreeing
+    PATH="$(bare_path)" run "$ROMP_DIR/install.sh"                  # romp-serve refuses on the ports before pick_python runs: no python is executed
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ROMP_SERVE_PORT=1 and ROMP_KERNEL_PORT=2 disagree"* ]]
+    [[ "$output" == *"romp-serve --print-python stopped"* ]]
+    [[ "$output" != *"need 3.10 or newer"* ]]                        # the python is not the reason and is not named
+    [[ "$output" != *"below the floor"* ]]
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]                      # a plain stop: nothing wired
+}
+
+@test "install.sh: a kernel binary that is not there is not a python problem either" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    PATH="$(bare_path)" ROMP_KERNEL_BIN="$TEST_DIR/no-such-kernel" run "$ROMP_DIR/install.sh"   # refused before pick_python: no python executed
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"kernel not found"* ]]
+    [[ "$output" == *"romp-serve --print-python stopped"* ]]
+    [[ "$output" != *"need 3.10 or newer"* ]]
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]
+}
+
+# round two, low 1: the re-aim above took the suite's only positive pins on the banner with it; the case that still
+# produces it is a python at the floor whose venv build fails (no ensurepip, get-pip opted out): the install exits 0,
+# the banner says CANNOT START SESSIONS, and the failure is not filed under the optional pieces
+@test "install.sh: a missing SDK backend for a reason other than the python is a BANNER, not an optional-pieces footnote" {
+    _pipless_python
+    export ROMP_STATE_DIR="$TEST_DIR/state"
+    mkdir -p "$ROMP_STATE_DIR"
+    echo "TESTTOKEN123" > "$ROMP_STATE_DIR/serve-token"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    PATH="$(bare_path)" ROMP_NO_SDK= ROMP_NO_GET_PIP=1 ROMP_PYTHON="$STUB/python3.12" \
+      run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
     [[ "$output" == *"CANNOT START SESSIONS"* ]]
-    # it must NOT be filed under the things you can happily live without
     [[ "$output" != *"Some optional pieces aren't set up:"*"Agent SDK"* ]]
+    [[ "$output" != *"need 3.10 or newer"* ]]                        # the floor was passed: 3.12
+}
+
+# round three of issue 1600: the probe is the pin's first execution and install.sh's preflight runs it
+@test "install.sh: a pinned interpreter that blocks on its version probe stops the install within the bound with romp-serve's line, hung on nothing" {
+    # the bound is coreutils timeout's alone (round five of issue 1600 dropped the watchdog that stood in for it: without
+    # timeout the probe is unbounded, the stock mac residual), so it rides the bare PATH here and the test needs it
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "the bound needs coreutils timeout"
+    ln -s "$tmo" "$BAREBIN/timeout"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    cat > "$STUB/blockpython" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *-c*) sleep 60 ;;                                                # any -c probe: the base's, without the sentinel, must hang too
+esac
+exit 0
+EOF
+    chmod +x "$STUB/blockpython"
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/blockpython" run ${tmo:+"$tmo" 40} "$ROMP_DIR/install.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [[ "$output" == *"romp-serve --print-python stopped"* ]]
+    [[ "$output" != *"need 3.10 or newer"* ]]                        # not the floor, not the no-version leg: unresponsive
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]
+}
+
+@test "install.sh: a ROMP_PYTHON pin is the interpreter: with one set, no python3 on PATH is not a refusal, and the pin meets the floor check (low 4)" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    _old_python "$STUB/oldpython"
+    rm -f "$BAREBIN/python3"                                         # no python3 anywhere on the bare PATH
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/oldpython" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"python3 not found"* ]]                         # the pin was taken to the floor check…
+    [[ "$output" == *"python 3.9"* ]]                                # …which named it and refused
+    [[ "$output" == *"need 3.10 or newer"* ]]
+}
+
+# round four, medium 1: with a valid pin and no python3 on PATH the preflight passed and the hook block's bare python3 then
+# failed under set -e with the hooks half wired; every python the install runs after the preflight is the pick now
+@test "install.sh: a pinned interpreter with no python3 on PATH carries the whole install: settings.json written, rc 0" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    local realpy; realpy="$(readlink -f "$BAREBIN/python3")"          # a real interpreter, by absolute path, off the PATH
+    rm -f "$BAREBIN/python3"
+    PATH="$(bare_path)" ROMP_PYTHON="$realpy" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"python3 not found"* ]]
+    [[ "$output" != *"command not found"* ]]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
+    [ -f "$HOME/.claude/settings.json" ]                             # the hook block ran on the pin
+    "$realpy" -c 'import json,sys; json.load(open(sys.argv[1]))' "$HOME/.claude/settings.json"
+}
+
+# round five, low: under ROMP_SKIP_PREFLIGHT there is no capture, and the hook block fell to a bare python3 that a pinned
+# machine may not have on PATH; the pin is carried instead
+@test "install.sh: ROMP_SKIP_PREFLIGHT with a pin and no python3 on PATH still runs the hook block on the pin" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    local realpy; realpy="$(readlink -f "$BAREBIN/python3")"
+    rm -f "$BAREBIN/python3"
+    PATH="$(bare_path)" ROMP_SKIP_PREFLIGHT=1 ROMP_PYTHON="$realpy" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"command not found"* ]]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
+    [ -f "$HOME/.claude/settings.json" ]
+    "$realpy" -c 'import json,sys; json.load(open(sys.argv[1]))' "$HOME/.claude/settings.json"
+}
+
+@test "install.sh: a python at the floor passes the preflight (ROMP_NO_SDK=1 still skips only the venv build)" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    cat > "$STUB/newpython" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"version_info >= (3, 10)"*) exit 0 ;;
+  *romp-pyver*)                echo "romp-pyver 3.10"; exit 0 ;;
+  *'print("%d.%d"'*)           echo "3.10"; exit 0 ;;
+esac
+exit 0
+EOF
+    chmod +x "$STUB/newpython"
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/newpython" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"need 3.10 or newer"* ]]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
 }

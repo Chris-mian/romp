@@ -740,6 +740,32 @@ not change what the kernel runs at its next restart. On a machine that runs
 romp as a service, pin it anyway: `ROMP_PYTHON=/usr/bin/python3.12` in
 `service.env` makes the choice explicit and holds if the venv is deleted or
 rebuilt. Pin the versioned path, not `python3`, which an upgrade repoints.
+Whatever the pick, 3.10 is the floor for an interpreter that reports a version:
+`bin/romp-serve` runs the picked interpreter once for its version (its first
+execution), reads the sentinel line the probe prints (`romp-pyver X.Y`, carriage
+returns stripped, so a site customization's chatter or an `atexit` hook that
+prints cannot pass for the version or hide it), and refuses to start the kernel
+below 3.10, naming the interpreter, its version and the install commands, with an
+exit code of its own (2). The probe is bounded to five seconds where `timeout`
+exists, its whole process group signalled at the bound so a child the interpreter
+left behind dies with it; an interpreter that runs out that clock, or exits 124 or
+137 of its own accord (the codes the bound reads as), is refused as unresponsive
+with exit code 1. Where there is no `timeout` (a stock mac) the probe is
+unbounded, as the picker's own runs of a candidate are: the residual. The output
+goes to a file (`TMPDIR`, then `/tmp`, then the state directory; a `TMPDIR` that
+is stale or unwritable, or a `PATH` without `mktemp`, falls to a pipe read the
+same bound covers), read afterwards, so a helper the interpreter left holding its
+output cannot hold the read; the file goes with the shell, a stop mid-probe
+included. An interpreter that reports no readable version is started on purpose
+(the pick already checked it is an executable file, and a version nobody can read
+is not a version below the floor). `bin/romp-serve --print-python` prints the
+pick with that floor applied and starts nothing, which is what `install.sh`'s
+preflight runs, claiming a Python cause on that code alone and passing the
+script's other refusals (the two port spellings disagreeing, a kernel binary that
+is not there, an unrunnable pin, an unresponsive interpreter) through with their
+own line and a plain stop; every python the install runs afterwards is that same
+interpreter, and under `ROMP_SKIP_PREFLIGHT` the pin (`ROMP_PYTHON`) stands in
+for it.
 
 Moving romp to another Python, whether another version or the free-threaded
 build of the same one, takes four steps, and skipping any one of them leaves a
@@ -770,7 +796,24 @@ owner-only permissions (`chmod 600`). The file carries the billing declaration
 (`ROMP_EXPECTED_AUTH`, below) and the service knobs (the ports, the CLI scopes
 and their memory limits, the perf log), never a key. The service reads the file
 at manager startup, so a change needs a manager restart. `ROMP_SERVICE_ENV_FILE`
-overrides the file's path.
+overrides the file's path. The launcher reads the file line by line and never
+sources it: a line that is not `KEY=VALUE`, or whose name the shell refuses to
+assign (`UID`, `PPID`), is skipped and the rest reach the manager.
+
+On macOS the login agent runs the manager under a copy of `node` named
+`romp-node` in the state directory, so that Full Disk Access can be granted to
+romp alone rather than to every script the shared `node` runs; the copy is
+refreshed when `node` changes (a re-grant follows a node upgrade). A `node` whose
+shared library is referenced relative to its own install (Homebrew's build, a
+version manager's shim) cannot run from the copy: the launcher probes the copy
+before using it and runs the manager on the system `node` instead, saying so once
+in the manager log, and `romp-service install` removes such a copy rather than
+leave it. `ROMP_NO_NODE_COPY=1` in `service.env` skips the copy altogether (the
+grant then reads `node`); the launcher reads the file before it decides, so the
+line works for a manager launchd started. The value rule is the same in both
+readers: `0`, `false`, `no` and `off` (in any case) are off, any other non-empty
+value is on (`disabled` and `none` included: only those four words turn it off),
+and the last assignment in the file wins.
 
 The installed unit also sets `MALLOC_ARENA_MAX=2` for the manager and every kernel it spawns (2026-09-11): the kernel is a many-threaded Python process that rebuilds large record lists, and the allocator's per-thread arenas kept hundreds of megabytes of freed memory between restarts; two arenas return it. A line in `service.env` overrides it.
 
@@ -951,7 +994,7 @@ window too), and Ctrl+C is not
 available to a manager the service runs. `romp down` instead stops the login
 service itself (`systemctl --user stop romp-manager.service`; on macOS
 `launchctl bootout` of the agent), which nothing respawns, and then probes the
-processes themselves rather than trusting the exit code of `romp-service stop`. A manager that dies as soon as it starts is another matter: launchd's `ThrottleInterval` in the agent is 60 seconds, so such a manager is retried once a minute rather than every ten seconds (a manager that ran longer than that before exiting, its own refresh, is respawned at once), and `romp-service status` reads the job's record rather than its mere presence, so it says `loaded but not running` with the last exit code instead of `running`, which is also what `install.sh` keys its skip-the-reinstall shortcut on. Under systemd, `Restart=always` keeps the unit's default start limit (five starts within ten seconds and the unit stops), and `systemctl --user status romp-manager.service` tells the two apart.
+processes themselves rather than trusting the exit code of `romp-service stop`. A manager that dies as soon as it starts is another matter: launchd's `ThrottleInterval` in the agent is 60 seconds, so such a manager is retried once a minute rather than every ten seconds (a manager that ran longer than that before exiting, its own refresh, is respawned at once), and `romp-service status` reads the job's record rather than its mere presence, so it says `loaded but not running` with the last exit code instead of `running`, which is also what `install.sh` keys its skip-the-reinstall shortcut on. One such death has a reading of its own: when the agent's manager exited with code 1, its refusal to start beside a manager already holding the control port, and something answers on that port (the port the agent's manager would bind: `ROMP_MANAGER_PORT` in `service.env`, else the environment's, else 7432), `romp-service install` names the manager already serving, most likely a hand-run `romp up` outside the service, with the two ways out (leave it, and the agent takes over when that manager stops; or stop it and re-run the install), and exits 3; `install.sh` then finishes its run, link and banner included, and exits non-zero at the end. Any other exit code with a manager answering is reported as two facts, the agent's own death and its log first. Under systemd, `Restart=always` keeps the unit's default start limit (five starts within ten seconds and the unit stops), and `systemctl --user status romp-manager.service` tells the two apart.
 
 Before stopping, `romp down` gives the turns in flight `--wait` seconds
 (default 5, up to 600) to reach a turn boundary. It asks the kernel to quiesce
@@ -2200,18 +2243,55 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   exists and cannot be read or parsed is answered empty, marks the running
   judge stage incomplete, and is not memoized, so the next call reads the file
   again. `plannerSkip` is the planner's inner change gate (`skipped`,
-  `planned`, `recorded`). The planner runs behind two gates. The outer gate is
+  `planned`, `recorded`, and since T401 (5c) `restored`, `refused`,
+  `persisted`: the gate's memo of "the key of the last pass that had
+  nothing to do", one row per session, persists across boots in
+  `STATE/planner-seen.json` (version 1, the tick-seen shape: a row is never
+  an answer on its own, the key is recomputed at the pass and compared, a
+  malformed row is refused, rows are dropped with the sessions a non-empty
+  pass discovers (an empty discovery is unknown, not every session gone,
+  and leaves the rows for the next non-empty pass), the write
+  is atomic under a per-writer temporary and re-armed on a failed replace).
+  The key holds every file the plan tier's inventory names (the parse, the
+  store trio, the episode log, the leaf's task store, the captions file,
+  the death marker and `cleared.jsonl` by stat; the reg by the values the
+  pass reads, its `spawnedAt` and the SDK-owned bit; the stall slice by
+  this session's records; and each running background launch's deadline
+  bit under the pass clock). The rule: a persisted key term must be stable
+  across the event it persists over, so a file rewritten at every boot (the
+  reg at attach, the stall slice by the jobs pass) is keyed by the values
+  the pass reads, never by its stat (derivation 1 keyed both by stat and no
+  row stood across a boot: the second deploy boot read restored 20, skipped
+  0). The file carries a derivation pair (the planner's derivation version,
+  2 since that fix, and `PLACEMENTS_V`), and a file written under another
+  pair is refused whole, so the first pass after such a change plans every
+  session once and rewrites the rows (the v1 rows are refused once and
+  rewritten under 2). `mismatchByTerm` counts, for every row that stood in
+  the table and compared unequal at a pass, the indexes of the key terms
+  that differed (reset with the process), so a read boot names a term that
+  moves at boot instead of leaving it to a guess. `restored` counts the rows a boot loaded, `refused`
+  the rows it would not trust (a file that cannot be read or decoded counts
+  once per fault spell and leaves the load unlatched, so the next pass
+  retries and the exit drain's forced write declines meanwhile; a torn,
+  empty or other-shaped file counts
+  once; another derivation counts every row), `persisted` the rows on disk
+  after the last write. Before it every boot re-planned every session
+  (`planned` 20 and `skipped` 0 on the 2026-09-14 read boots); the first
+  boot after the change has no rows and re-plans everything while its
+  passes record and persist, and the boot after that is the one to read.
+  The planner runs behind two gates. The outer gate is
   the judge's evidence gate around `_plan_session` (`docs/judges.md`, "Ops and
   knobs"): a session whose signature equals the one the planner stamped after
   its last complete run is skipped before it is submitted. It keys on the
-  inner gate's inputs, the reg by its `spawnedAt` and backend values rather
-  than by identity, plus `cleared.jsonl`, the death marker and the session's
-  stall records. The inner gate
+  same files as the inner gate by identity, plus derived values the inner
+  key does not read (the reg's `spawnedAt` and backend, the stall slice's
+  value, the task-store fingerprint). The inner gate
   sits inside `_plan_session` and sees only the sessions the outer gate ran: a
   session whose parse, store, journal, archive, episode log, its leaf's task
-  store, captions file and reg have not moved since a pass that had nothing to
-  do, and none of whose running background launches has crossed its deadline,
-  is not planned again. The inner gate records a pass only when it placed
+  store, captions file, reg file, death marker, `cleared.jsonl` and stall
+  slice file have not moved since a pass that had nothing to do, and none of
+  whose running background launches has crossed its deadline, is not planned
+  again. The inner gate records a pass only when it placed
   nothing, left the store's key where it was, and ran to completion; a
   deferral without a write, or a side file that exists and did not read,
   marks the run incomplete, and that session is planned again next pass. So
@@ -3684,7 +3764,12 @@ reaches every attached kernel, and a kernel attached later adopts the newest sta
 is named in the merged frame (`offHosts`, beside the per-host build counters), a host that is attached but has not yet
 sent a frame is named too (`pendingHosts`), and a frame built before the browser has read the host list at all (a page
 load's very first, which the local kernel's push produces before the first `/tunnels` answer) says so (`hostsUnread`)
-and counts every card as not in hand until the answer lands, when the frame is re-emitted; the frame's own
+and counts every card as not in hand until the answer lands, when the frame is re-emitted. This touches the
+single-kernel page too: its first frames are unread until the first answer, which the poll delivers within a
+cycle, and an answer that is not the list (a non-ok status, a failed fetch) leaves them unread and is filed once
+in the client diagnostics (a `hostconn` row, `tunnels-poll-failing`, with the reason on one line) and its end
+once (`tunnels-poll-recovered`, filed after the list is read, so it says the frames are no longer unread); the
+frame's own
 `off` stays the local kernel's word, so the notice and the gear row, which both read this dashboard's kernel, agree.
 While any host is named in either list, its cards are not in hand, which is not the same as gone, and the feed pane's
 writers that act on a card's absence stand down: nothing is confirmed, pruned, retired or forgotten because a card is

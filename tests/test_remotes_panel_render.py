@@ -46,6 +46,7 @@ TUNNELS = {
 HARNESS = r"""
 'use strict';
 const HTML_SETS = [];           // every string any element was given as innerHTML, in order (the markup sinks)
+const DROPS = [];               // every rn-drop class added, by element id: the rail's host-fell-off flash, one per drop
 function mkEl(id){
   return {id:id, hidden:true, _text:'', title:'', style:{}, value:'', className:'',
     children:[], _listeners:{}, _html:'',
@@ -55,7 +56,9 @@ function mkEl(id){
     get innerHTML(){return this._html;}, set innerHTML(v){this._html=v; this.children=[]; HTML_SETS.push(String(v));},
     // …and so does assigning textContent (the DOM's rule) — the option lists clear themselves that way
     get textContent(){return this._text;}, set textContent(v){this._text=v; this.children=[];},
-    classList:{_s:new Set(), add(){}, remove(){}, toggle(){}, contains(){return false;}},
+    // classes are RECORDED (the drop cue is a class the icon gains), the DOM's toggle rule included
+    classList:{_s:new Set(), add(c){this._s.add(c); if(c==='rn-drop') DROPS.push(id);}, remove(c){this._s.delete(c);},
+      toggle(c,v){ if(v===undefined) v=!this._s.has(c); if(v) this._s.add(c); else this._s.delete(c); return v; }, contains(c){return this._s.has(c);}},
     appendChild(c){this.children.push(c); return c;},
     querySelector(){return null;}, querySelectorAll(){return [];},
     addEventListener(k,f){this._listeners[k]=f;}, removeEventListener(){},
@@ -74,11 +77,16 @@ const localStorage = { getItem(){return null;}, setItem(){} };
 const TUNNELS = __TUNNELS__;
 const PAIRS = __PAIRS__;        // /tunnels/pairs answer; null = the read never lands (loader-state test)
 const SUB = __SUB__;            // /tunnels/of answer (a PEER's own rows); null = answer with TUNNELS as before
+const TQ = __TQ__;              // a QUEUE of /tunnels answers ({ok, status, body}), one per poll in order; empty = TUNNELS, ok, every time
 const POSTS = [];               // every write the panel makes, so a test can assert what Attach sent
 function fetch(url, opts){
   if (opts && opts.method === 'POST') {
     POSTS.push({url:url, body:JSON.parse(opts.body || '{}')});
     return Promise.resolve({ ok:true, json(){ return Promise.resolve({ok:true}); } });
+  }
+  if (url === '/tunnels' && TQ.length) {
+    const a = TQ.shift();
+    return Promise.resolve({ ok:!!a.ok, status:a.status, json(){ return Promise.resolve(a.body); } });
   }
   if (url.indexOf('/tunnels/pairs') >= 0) {
     if (PAIRS === null) return new Promise(function(){});
@@ -117,7 +125,7 @@ setTimeout_(() => {
     const rows = list.children.length;
     const html = list.children.map(collect).join(' | ');
     const add = ELS['rnet-add'], plus = ELS['rnet-plus'], dl = ELS['rnet-hosts'], fs = ELS['rnet-from'];
-    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err,
+    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err, drops:DROPS,
       addHidden:!!add.hidden, plusHidden:!!plus.hidden,
       hosts:dl.children.map(function(o){return o.value;}), hostsHtml:String(dl.innerHTML||''),
       hostsLastDisabled:!!(dl.children.length&&dl.children[dl.children.length-1].disabled),
@@ -135,11 +143,12 @@ class _PanelHarness:
     no tests of its own, so the classes below share the driver without inheriting each other's tests (a
     subclass of a TestCase re-runs every inherited test — three copies of 26 node spawns, review find)."""
 
-    def _run(self, drive="", tunnels=None, pairs=None, sub=None):
+    def _run(self, drive="", tunnels=None, pairs=None, sub=None, tq=None):
         js = (HARNESS.replace("__PANEL_JS__", km._LANDING_REMOTES_JS)
                      .replace("__TUNNELS__", json.dumps(tunnels if tunnels is not None else TUNNELS))
                      .replace("__PAIRS__", json.dumps(pairs))
                      .replace("__SUB__", json.dumps(sub))
+                     .replace("__TQ__", json.dumps(tq or []))
                      .replace("__DRIVE__", drive))
         p = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
         self.assertEqual(p.returncode, 0, "panel JS crashed:\n%s" % p.stderr[-2000:])
@@ -147,6 +156,25 @@ class _PanelHarness:
 
 
 class RemotesPanelRender(_PanelHarness, unittest.TestCase):
+    def test_a_non_ok_tunnels_answer_is_a_failed_refresh_and_keeps_the_was_up_map_so_the_next_real_drop_flashes(self):
+        # A proxy in JSON-error mode answers /tunnels with a 5xx whose body parses. The refresh read the body without a
+        # status check, so the answer counted as "no hosts": the panel painted no hosts, and dropCue, which writes
+        # by ABSENCE, forgot every host it had seen up, so the next real drop never flashed (2026-09-14; the manager's own
+        # poll had the same class of bug). Three polls: the host up, the 502, the host down. The 502 is a failed refresh
+        # (named in the console, the loud road) and the drop on the third poll flashes exactly once.
+        down = json.loads(json.dumps(TUNNELS)); down["tunnels"][0]["status"] = "down"
+        tq = [{"ok": True, "status": 200, "body": TUNNELS},
+              {"ok": False, "status": 502, "body": {"error": "upstream timeout"}},
+              {"ok": True, "status": 200, "body": down}]
+        out = self._run(drive="window.__rompOpenNet(); setTimeout_(function(){ window.__rompOpenNet(); }, 10);", tq=tq)
+        self.assertTrue(any("remotes refresh failed" in e and "HTTP 502" in e for e in out["errors"]), out["errors"])
+        self.assertEqual(out["drops"], ["rail-net"], "one flash, on the real drop; the 502 neither flashed nor forgot")
+
+    def test_both_shell_side_tunnels_reads_check_the_status_before_the_body(self):
+        pin = "then(function(r){if(!r.ok)throw new Error('/tunnels answered HTTP '+r.status);return r.json();})"
+        self.assertIn(pin, km._LANDING_REMOTES_JS, "the network rail's refresh")
+        self.assertIn(pin, km._RDRIFT_JS, "the update banner's check")
+
     def test_an_attached_host_renders_a_row(self):
         out = self._run()
         self.assertEqual(out.get("errors"), [], "the refresh must not report a failure")

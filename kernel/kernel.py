@@ -12703,7 +12703,13 @@ def _codex_records_blind(cx):
     a Codex session, so every death writer stands down on it (loudly, counted) instead of stamping dead
     history over a session it merely cannot see (decision (d) of the tmux backend's removal, 2026-09-11)."""
     if cx is None:
-        return (jd.STATE / "codex" / "registry.json").exists()
+        try:
+            (jd.STATE / "codex" / "registry.json").stat()   # an explicit stat: a codex/ this kernel cannot read is
+            return True                                      #  blindness too (Path.exists() answers False there on 3.14)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
     return bool(getattr(cx, "_registry_unreadable", False))
 
 
@@ -13421,10 +13427,10 @@ def _task_plan_cached(fsid):
     d = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")) / "tasks" / str(fsid)
     try:
         key = (d.stat().st_mtime, len(os.listdir(d)))
-    except OSError:
-        if d.is_dir():
-            raise                                       # exists but unreadable → the caller must be loud
-        return None                                     # no dir at all → this session declared no plan
+    except OSError as e:
+        if e.errno not in _REG_MISSING_ERRNOS:
+            raise                                       # exists but unreadable → the caller must be loud (by errno, never by
+        return None                                     #  is_dir(), which reads False on EACCES on 3.14); no dir → no plan
     hit = _task_plan_cache.get(fsid)
     if hit is not None and hit[0] == key:
         return hit[1]
@@ -15941,9 +15947,11 @@ def _comment_msg_text(rec):
 _thread_reg_memo = {}   # tsid -> ((mtime_ns, size, inode, ctime_ns), state, dict): one stat per read, the outcome memoized too — see _thread_reg_read
 
 
-# the stat errors Path.exists() reads as "no such file" (the bus's rule for a record): a record behind one of these is
-# MISSING, an ordinary session; any other stat error (EACCES on the directory, EIO) is a record that exists but cannot
-# be read, the closed door (the review on T356's follow-ups: the two sides must agree)
+# the stat errors that mean "no such record" (ENOENT, and the path shapes that cannot hold one: a component that is not a
+# directory, a bad descriptor, a symlink loop): a record behind one of these is MISSING, an ordinary session; any other
+# stat error (EACCES on the directory, EIO) is a record that exists but cannot be read, the closed door. KEEP IN SYNC
+# with postal_service.py's REG_MISSING_ERRNOS (the two sides must agree, the review on T356's follow-ups; a parity test
+# pins them). Spelled as OUR tuple, never as "what Path.exists() ignores": CPython 3.14 widened that to every error.
 _REG_MISSING_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
 
 
@@ -19204,10 +19212,14 @@ _VANISHED_SAID = set()                         # sids whose reg vanished by hand
 
 def _sdk_reg_exists(sid):
     """True / False for the SDK reg file's presence; None when the check itself cannot be made (an
-    unlistable sdk/ makes Path.exists RAISE EACCES rather than answer), which every death writer reads
-    as blindness, never as absence."""
+    unlistable sdk/: EACCES on the stat), which every death writer reads as blindness, never as absence.
+    An explicit stat, never Path.exists(): on CPython 3.14 exists() answers False on EACCES where 3.10 to
+    3.13 raised, and an unlistable sdk/ would have read as every session absent (2026-09-14)."""
     try:
-        return (jd.SDKDIR / (str(sid) + ".json")).exists()
+        (jd.SDKDIR / (str(sid) + ".json")).stat()
+        return True
+    except FileNotFoundError:
+        return False
     except OSError:
         return None
 
@@ -26029,8 +26041,8 @@ def _reg_unreadable(sid):
     if not sid:
         return False
     # ONE memoized read (_thread_reg_read: one stat, the outcome remembered) answers by TYPE, not truthiness: an empty
-    # object {} is a readable record (mail on, as the bus reads it); a stat error outside Path.exists()'s ignored set
-    # is a record that exists but cannot be read (the review's lows on the third follow-up)
+    # object {} is a readable record (mail on, as the bus reads it); a stat error outside _REG_MISSING_ERRNOS is a
+    # record that exists but cannot be read (the review's lows on the third follow-up)
     return _thread_reg_read(str(sid))[0] == "unreadable"
 
 
@@ -55010,7 +55022,11 @@ function flashDrop(){[icon,mnet()].forEach(function(el){if(!el)return;
 el.classList.remove('rn-drop');void el.offsetWidth;   // reflow: a second drop replays the flash
 el.classList.add('rn-drop');
 el.addEventListener('animationend',function(){el.classList.remove('rn-drop');},{once:true});});}
-function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+// A non-ok answer is not the host list: a proxy in JSON-error mode answers a 5xx whose body parses, and it used to
+// read as "no hosts" (the panel painted no hosts, and dropCue below, which writes by ABSENCE, forgot every host
+// it had seen up, so the next real drop never flashed). It throws, so the catch below names the failure and the
+// was-up map stands; the manager's own poll has the same rule (2026-09-14).
+function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/tunnels answered HTTP '+r.status);return r.json();}).then(function(d){
 var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function(t){return busyStatus(t.status);});
 _auto=!!(d&&d.autoUpdate);
 // This machine's own release + commit, so the host rows below have something to be read against.
@@ -56554,7 +56570,9 @@ _RDRIFT_JS = (
     # the user is agreeing to is the same either way — that machine ends up on this build.
     "function prompt(hs){return hs.length===1?(hs[0]+' is on an older romp build. Update it to this one?')"
     ":(hs.length+' remotes are on an older romp build. Update them to this one? ('+hs.join(', ')+')');}"
-    "function check(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
+    # a non-ok answer is not the host list (a JSON-bodied 5xx read as "nothing stale" and hid the banner); the empty catch
+    # below leaves the banner as it was, and the next check reads again
+    "function check(){fetch('/tunnels',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/tunnels answered HTTP '+r.status);return r.json();}).then(function(d){"
     # AUTOMATIC UPDATE ON → this banner does not exist (the user 2026-07-24). It was the modal landing
     # mid-screen on every advance, and the whole point of the setting is that romp just does the push and
     # reports it on the network icon instead. Only a fast-forward auto-pushes, so anything the automation
@@ -62440,6 +62458,10 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
         _persist_spend_trees(force=True)  # the spend guard's tree memos: the next kernel stats directories, lists nothing
     except Exception as _e:
         _exit_log("romp-kernel: the spend-tree memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
+    try:
+        jd.persist_planner_seen(force=True)   # the planner's seen memo: the next kernel's first pass skips what stands (T401 (5c))
+    except Exception as _e:
+        _exit_log("romp-kernel: the planner-seen memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
     try:
         _drain_sessions = [_s for _s in _sessions(time.time()) if _s.get("sid") and _s.get("path")]
     except Exception:

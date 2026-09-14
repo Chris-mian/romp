@@ -908,6 +908,9 @@ export class FederationManager {
   // false until the first /tunnels answer is absorbed (poll): before it, hostSeq is the local host alone and says
   // nothing about which remote hosts exist, so a merged frame built then is flagged hostsUnread (T404 round nine)
   private hostsRead = false;
+  // a /tunnels poll that fails leaves hostsRead standing and the pane's absence-driven writers standing down; that
+  // spell is filed once (a hostconn crumb) and its end once, so a browser whose prunes never resume says why
+  private pollFailing = false;
   private downHosts = new Set<string>(); // attached, but its tunnel isn't up: what's on screen is a memory
   private dialingHosts = new Set<string>(); // the kernel is dialing or health-checking these right now (the row's `dialing`)
   // each host's recovery counter as last seen (/tunnels upSeq, T291b): the kernel bumps it when a row that had
@@ -1526,8 +1529,17 @@ export class FederationManager {
     let tunnels: any[] = [];
     try {
       const r = await fetch("/tunnels", { cache: "no-store" });
+      // a non-ok answer is not the list (a proxy in JSON-error mode returns a 5xx whose body parses, and it used to
+      // read as "the list in hand, no hosts", pruning every remote host's marks on the first frame): it throws,
+      // so the catch returns with hostsRead still false and the next poll, 4 s on, tries again
+      if (!r.ok) throw new Error("/tunnels answered HTTP " + r.status);
       tunnels = (await r.json()).tunnels || [];
     } catch (e) {
+      if (!this.pollFailing) {
+        this.pollFailing = true;
+        // one line, capped: a 200 whose body is not JSON puts body bytes into the parse error's message
+        this.diag("hostconn", { host: "", ev: "tunnels-poll-failing", why: String((e && (e as any).message) || e).replace(/\s+/g, " ").slice(0, 200), unread: !this.hostsRead });
+      }
       return;
     }
     // `hasToken`, never the token: the kernel publishes whether a remote's credential EXISTS, and the
@@ -1544,6 +1556,12 @@ export class FederationManager {
     // returned above and leaves the mark standing: a list that could not be read is not a list in hand.
     const firstRead = !this.hostsRead;
     this.hostsRead = true;
+    // the recovery crumb is filed AFTER the flag flips, so the one row a reader checks to learn whether the prunes
+    // resumed says unread false; endedUnread says whether this answer was the first the page ever read
+    if (this.pollFailing) {
+      this.pollFailing = false;
+      this.diag("hostconn", { host: "", ev: "tunnels-poll-recovered", unread: !this.hostsRead, endedUnread: firstRead });
+    }
     // A host just ATTACHED is pending from this moment, not from the next push that happens to land:
     // re-emit the merged payloads so the placeholders appear at the attach event. Each emission holds
     // until the LOCAL payload exists (the feed's hold is here; the timeline's is its own), so a page
@@ -1624,8 +1642,12 @@ export class FederationManager {
   // feed's tripwires write, so a blink is attributed to the connection layer (a drop, a /tunnels
   // flap) or ruled out of it — instead of re-guessed from pixels. Rides the LOCAL kernel socket.
   private diag(what: string, data: any): void {
-    const s = (window as any).__rompLocalSend;
-    if (typeof s === "function") s({ type: "clientDiag", surface: "federation", what, data });
+    // never throws: poll() is fire-and-forget and files crumbs from its catch, so a shim whose send throws would turn
+    // a failing poll into an unhandled rejection in the browser (the kernel's own diag helpers swallow the same way)
+    try {
+      const s = (window as any).__rompLocalSend;
+      if (typeof s === "function") s({ type: "clientDiag", surface: "federation", what, data });
+    } catch { /* a diagnostics row is never worth the poll */ }
   }
 
   private connect(conn: Conn): void {

@@ -24,9 +24,13 @@ version and build; otherwise another Python of that same minor and build on
 `python3.X` on `PATH` or in `~/.local/bin`, then `python3`, the rule for a
 machine that has no venv yet (`pick_python` in `bin/romp-serve`;
 `bin/romp-sdk-setup` and `bin/romp-codex-setup` carry the same function, so
-each venv is built with the interpreter the kernel runs). `install.sh` only
-checks that a `python3` exists. The full rules, and what the kernel reports
-when the two disagree, are in the [reference](reference.md#the-kernels-python).
+each venv is built with the interpreter the kernel runs). `install.sh` runs
+that same pick as its preflight and stops, naming the interpreter and the
+install command, when it is older than 3.10, the floor the kernel and the Agent
+SDK share; `bin/romp-serve` refuses to start the kernel on one below it, so a
+manager never respawns a kernel that cannot run. The full rules, and what the
+kernel reports when the two disagree, are in the
+[reference](reference.md#the-kernels-python).
 
 Because the venv comes first, installing another interpreter does not move the
 kernel onto it. One hazard remains: `uv python install <version>` puts a
@@ -53,6 +57,14 @@ curl -fsSL https://raw.githubusercontent.com/romp-on/romp/main/bootstrap.sh | ba
 
 Open a new terminal afterwards, so `~/romp/bin` is on your `PATH`, and type
 `romp` to launch the user interface in a browser.
+
+On macOS the login agent runs the manager under its own copy of `node`
+(`romp-node`, in the state directory), so Full Disk Access can be granted to romp
+alone; a `node` that cannot run from a copy (Homebrew's build is one) is
+detected and the system `node` used instead, and `ROMP_NO_NODE_COPY=1` in
+`~/.config/romp/service.env` skips the copy (`0`, `false`, `no` and `off` are off; any
+other non-empty value, `disabled` and `none` included, is on). See the
+[reference](reference.md#service-environment-and-credentials).
 
 The same command updates Romp later. To remove Romp, run `romp uninstall` (add
 `--purge` to delete recorded sessions too).

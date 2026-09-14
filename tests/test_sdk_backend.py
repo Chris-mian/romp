@@ -12,6 +12,7 @@ Two layers:
 """
 import asyncio
 import inspect
+import contextlib
 import io
 import os
 import json
@@ -4911,6 +4912,77 @@ class RegListCache(unittest.TestCase):
         sb.list_regs(self.sd)              # warm
         (self.sd / "sdk" / "bbbb.json").unlink()
         self.assertEqual([r["sid"] for r in sb.list_regs(self.sd)], ["aaaa"])
+
+
+class UpdateRegDroppingUnreadable(unittest.TestCase):
+    """_update_reg_dropping tells an unreadable reg from an absent one by an explicit stat (2026-09-14): under a mode-000 sdk/
+    CPython 3.14's Path.exists() answered False, so the guard read absent and the write below it would have gutted a reg the
+    backend could not read. The real fault staged, never a stub of the call that would raise."""
+
+    SID = "11111111-2222-3333-4444-555555555577"
+
+    def test_a_reg_under_an_unlistable_directory_refuses_the_write_and_says_so(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "cwdPending": True})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0)
+        err = io.StringIO()
+        try:                                                    # restored in a finally, as every staged-fault test here
+            with contextlib.redirect_stderr(err):
+                be._update_reg_dropping(self.SID, drop=("cwdPending",), cwd="/tmp/x")
+        finally:
+            os.chmod(d, 0o755)
+        self.assertIn("unreadable", err.getvalue(), "the refusal is said: %r" % err.getvalue())
+        self.assertEqual(sb.read_reg(root, self.SID), {"sid": self.SID, "name": "web", "cwdPending": True}, "the reg untouched, never gutted")
+
+    def test_update_reg_under_an_unlistable_directory_refuses_the_write_and_says_so(self):
+        """Round two's medium 1: _update_reg kept the exists() guard its twin dropped; under a mode-000 sdk/ the guard read absent
+        and the write raised PermissionError out of the caller from inside write_reg on 3.14 (raised out of the guard on 3.13)."""
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "alive": True})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0)
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                be._update_reg(self.SID, cwd="/tmp/x")          # must not raise, must not write
+        finally:
+            os.chmod(d, 0o755)
+        self.assertIn("unreadable", err.getvalue(), err.getvalue())
+        self.assertEqual(sb.read_reg(root, self.SID), {"sid": self.SID, "name": "web", "alive": True}, "name and alive stand")
+
+    def test_a_symlink_loop_reg_path_is_never_a_writable_absence(self):
+        """ELOOP: Path.exists() answered False on every interpreter, so _update_reg built {sid}+fields over a path that cannot hold
+        a reg and the session lost name and alive (the 2026-08-31 blink class); read_reg_for_rmw answered {} there, the
+        writable-empty base its docstring forbids. A writer may build a fresh record only on ENOENT."""
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        p = sb._reg_path(root, self.SID); p.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(p.name, p)                                   # a loop: the path names itself
+        self.assertIsNone(sb.read_reg_for_rmw(root, self.SID), "a loop is not an absent reg: None, the caller skips its write")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            be._update_reg(self.SID, name="x")
+            be._update_reg_dropping(self.SID, drop=("cwdPending",), name="y")
+        self.assertEqual(err.getvalue().count("unreadable"), 2, err.getvalue())
+        self.assertTrue(os.path.islink(p) and not os.path.exists(p), "the loop stands, nothing was written through it")
+        self.assertEqual(sb.read_reg_for_rmw(root, "11111111-2222-3333-4444-555555555599"), {}, "a genuinely absent reg: the empty base")
+
+    def test_read_reg_for_rmw_answers_none_under_an_unlistable_directory(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        root = tempfile.mkdtemp(); _hosts_off(root)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "bgLedger": [1, 2, 3]})
+        d = os.path.join(root, "sdk"); os.chmod(d, 0)
+        try:
+            self.assertIsNone(sb.read_reg_for_rmw(root, self.SID), "unreadable: None, never the writable-empty base")
+        finally:
+            os.chmod(d, 0o755)
+        self.assertEqual(sb.read_reg_for_rmw(root, self.SID)["bgLedger"], [1, 2, 3])
 
 
 class PushSessionCallback(unittest.TestCase):

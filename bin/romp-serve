@@ -5,7 +5,7 @@
 # and supervises the resulting PID. We map those onto the Python kernel's env and
 # `exec` it, so the manager keeps supervising the same PID and the kernel self-builds
 # its UI bundles if stale.
-#   romp-serve [--port N] [--host H]
+#   romp-serve [--port N] [--host H] [--print-python]
 # Host precedence: --host > local-only. The kernel stays bound to 127.0.0.1;
 # tailnet/phone reach goes through `tailscale serve` proxying to loopback
 # (docs/guide.md#from-your-phone), so there is no persisted off-loopback opt-in
@@ -43,10 +43,12 @@ KERNEL="${ROMP_KERNEL_BIN:-$ROMP_DIR/bin/romp-kernel}"
 # either spelling, and if both are set and DISAGREE with no --port to settle it, refuse.
 port=""
 host=""
+print_python=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --port) port="${2:-}"; shift 2 ;;
         --host) host="${2:-}"; shift 2 ;;
+        --print-python) print_python=1; shift ;;   # install.sh's preflight: the interpreter the kernel would run, floor applied
         *) shift ;;
     esac
 done
@@ -191,6 +193,83 @@ pick_python() {
     command -v python3 || { echo "romp: no python3 on PATH" >&2; exit 1; }
 }
 PY="$(pick_python)"
+
+# THE FLOOR (issue 1600): the kernel and the Agent SDK need python 3.10 or newer. The only gate used to sit
+# in romp-sdk-setup, whose failure banners and lets the install finish, and this script then exec'd the
+# kernel on whatever python3 the pick fell through to, so a fresh install on a machine whose python3 is
+# 3.9 crash-looped the manager on a SyntaxError. The picked interpreter reports its version here and a
+# reading below the floor is refused with the install command, before the exec. An interpreter that
+# cannot report a version at all (the test suites' shell stand-ins) is left to the exec as before: the
+# pick already checked it is an executable file, and a version nobody can read is not a version below the
+# floor. `--print-python` (install.sh's preflight) prints the pick and stops here, floor applied. The version is
+# the first line of the probe's output that IS a bare X.Y, carriage returns stripped: a chatty site customization
+# printing before the program, an atexit hook printing after it, or a CRLF-terminated line would otherwise hide
+# the number and let a 3.9 through. The floor exits 2, a code of its own, so install.sh can tell "the python is
+# too old" from this script's other refusals (the two port spellings disagreeing, a kernel binary that is not
+# there, an unrunnable ROMP_PYTHON pin), which stay at 1.
+#
+# This is the FIRST execution of the picked interpreter (pick_python checks a pin's file and the walk uses
+# command -v), and install.sh's preflight runs it, so it is bounded where coreutils provides `timeout`: `timeout -k 1 5`,
+# plain, so at the bound it signals its whole process group and a child the interpreter left behind dies with it
+# (round five of issue 1600: --foreground had given that up), the KILL a second after the TERM covering an interpreter
+# that ignores TERM. That KILL reaches timeout itself, so the bound reads 137 as well as 124, and an interpreter that
+# exits either code of its own accord is refused as unresponsive with it: no clock tells them apart. The probe runs in
+# a subshell that ends in exit with its stderr dropped, so the shell prints no job-status line for a KILLed timeout
+# (the launcher's wrapper shape). Where there is no timeout (a stock mac) the probe is unbounded, as the picker's own
+# runs of a candidate are; the reference names that residual. Running out the clock is NOT the no-version leg: the
+# interpreter is refused, exit 1 (install.sh passes that through).
+# The output goes to a FILE where one can be made (TMPDIR, then /tmp, then the state directory; mktemp under or-true,
+# since an unwritable or stale TMPDIR, a launchd agent's /var/folders path across a reboot, or a PATH without mktemp
+# must not refuse a good interpreter), read afterwards, so a helper the interpreter leaves holding stdout cannot hold
+# the read (round four); with no file the read is from a pipe, which the same timeout bounds where there is one. The
+# file goes with the shell, a TERM mid-probe included (the traps below, cleared before the exec).
+# The version rides a SENTINEL line, "romp-pyver X.Y", so chatter that happens to be a bare number (a 2.7 printed
+# by a site customization before the program) cannot pass for the version, and a decorated version cannot hide.
+_pyprog='import sys; print("romp-pyver %d.%d" % sys.version_info[:2])'
+_pyout_file=""
+if command -v mktemp >/dev/null 2>&1; then
+    for _pydir in "${TMPDIR:-}" /tmp "${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"; do
+        [[ -n "$_pydir" && -d "$_pydir" ]] || continue
+        _pyout_file="$(mktemp "$_pydir/romp-pyver.XXXXXX" 2>/dev/null)" || _pyout_file=""
+        [[ -n "$_pyout_file" ]] && break
+    done
+fi
+_pyrm() { [[ -n "$_pyout_file" ]] && rm -f "$_pyout_file" 2>/dev/null; return 0; }
+trap '_pyrm' EXIT
+trap '_pyrm; exit 143' TERM INT HUP
+_prc=0 _pybounded="" _pyout=""
+if command -v timeout >/dev/null 2>&1; then
+    _pybounded=1
+    if [[ -n "$_pyout_file" ]]; then
+        ( timeout -k 1 5 "$PY" -c "$_pyprog" </dev/null >"$_pyout_file" 2>/dev/null; exit $? ) 2>/dev/null || _prc=$?
+        _pyout="$(cat "$_pyout_file" 2>/dev/null || true)"
+    else
+        _pyout="$( ( timeout -k 1 5 "$PY" -c "$_pyprog" </dev/null 2>/dev/null; exit $? ) 2>/dev/null )" || _prc=$?
+    fi
+else
+    if [[ -n "$_pyout_file" ]]; then
+        "$PY" -c "$_pyprog" </dev/null >"$_pyout_file" 2>/dev/null || _prc=$?
+        _pyout="$(cat "$_pyout_file" 2>/dev/null || true)"
+    else
+        _pyout="$("$PY" -c "$_pyprog" </dev/null 2>/dev/null)" || _prc=$?
+    fi
+fi
+_pyrm; trap - EXIT TERM INT HUP
+if [[ -n "$_pybounded" && ( "$_prc" -eq 124 || "$_prc" -eq 137 ) ]]; then
+    echo "romp: $PY did not answer its version probe within 5 s (unresponsive: a stalled network mount, a site customization reaching for the network; an interpreter that exits 124 or 137 of its own accord reads the same); the kernel is not started on it." >&2
+    exit 1
+fi
+_pyver=""
+while IFS= read -r _pyline; do
+    _pyline="${_pyline%$'\r'}"
+    if [[ "$_pyline" =~ ^romp-pyver\ ([0-9]+)\.([0-9]+)$ ]]; then _pyver="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"; break; fi
+done <<< "$_pyout"
+if [[ "$_pyver" =~ ^([0-9]+)\.([0-9]+)$ ]] && (( BASH_REMATCH[1] < 3 || (BASH_REMATCH[1] == 3 && BASH_REMATCH[2] < 10) )); then
+    echo "romp: $PY is python $_pyver; the kernel and the Agent SDK need 3.10 or newer, so the kernel is not started on it." >&2
+    echo "  macOS:  brew install python@3.13    or:  uv python install 3.13    (or pin one: ROMP_PYTHON=/path/to/python3.13 in service.env)" >&2
+    exit 2
+fi
+if [[ -n "$print_python" ]]; then echo "$PY"; exit 0; fi
 
 # Map onto the kernel's env, then exec it (preserving the PID for the manager).
 # ROMP_MANAGER_PID (parent-death watchdog) and ROMP_SERVE_TOKEN (auto-loaded from the
