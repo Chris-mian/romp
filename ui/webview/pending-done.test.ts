@@ -35,11 +35,11 @@ test("the optimistic node is rewritten to done, so every part of the line agrees
 test("an optimistic tick is retired by the authoritative tree, not by a timer", () => {
   const i = FEED.indexOf("function reconcilePendingDone");
   const fn = FEED.slice(i, FEED.indexOf("\n}", i));
-  assert.match(fn, /if \(st === "done" \|\| st === undefined\) pendingDone\.delete\(id\);/,
-    "done → the kernel caught up; absent → the node is gone and holding the flag would leak it");
+  assert.match(fn, /if \(st === "done" \|\| \(st === undefined && !cardsUnknown\)\) pendingDone\.delete\(id\);/,
+    "done → the kernel caught up; absent → the node is gone and holding the flag would leak it, unless the payload cannot vouch for every host's cards (T404 round seven)");
   assert.doesNotMatch(fn, /setTimeout/, "event-based, never a grace period (CLAUDE.md)");
-  // and it actually runs on every payload
-  assert.match(FEED, /reconcilePendingDone\(incomingAsks\);/);
+  // and it actually runs on every payload, handed the payload's reading of its cards
+  assert.match(FEED, /reconcilePendingDone\(incomingAsks, !!cardsUnknown\);/);
 });
 
 test("a refused Done reverts the tick and says why, out loud", () => {

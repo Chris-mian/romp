@@ -145,16 +145,37 @@ test("keepCardSigs keeps the store's card-side marks and none of the rings' (T40
   const seen = new Set(["n|c1", "w|c2|1700000000|judge", "r|c3|5", "e|c4|500|sl", "sync|9", "sdk|3", "c|s1|7", "x|odd"]);
   assert.deepEqual(keepCardSigs!(seen).sort(), ["e|c4|500|sl", "n|c1", "r|c3|5", "w|c2|1700000000|judge"], "the four card prefixes, verbatim");
   assert.deepEqual(keepCardSigs!([]), []);
+  // round seven: per host. A remote card's mark ends in "|@host"; a local one (and every mark stored before) has no segment.
+  const hosted = new Set(["w|c2|1700000000|judge|@HOSTA", "n|c1", "e|c4|500|sl|@HOSTB", "r|c3|5|@HOSTA", "sync|9|@HOSTA", "c|s1|7"]);
+  const keepPerHost = keepCardSigs as unknown as (s: Iterable<string>, hosts: Set<string>) => string[];
+  assert.deepEqual(keepPerHost(hosted, new Set(["HOSTA"])).sort(), ["r|c3|5|@HOSTA", "w|c2|1700000000|judge|@HOSTA"], "the off host's card marks alone, never a ring's");
+  assert.deepEqual(keepPerHost(hosted, new Set([""])), ["n|c1"], "the local host's are the ones with no segment");
+  assert.deepEqual(keepPerHost(hosted, new Set(["HOSTA", "HOSTB"])).sort(), ["e|c4|500|sl|@HOSTB", "r|c3|5|@HOSTA", "w|c2|1700000000|judge|@HOSTA"]);
+  assert.deepEqual(keepPerHost(hosted, new Set(["HOSTC"])), [], "a host with no marks keeps nothing");
+  const sigHost = (badgeMirror as any).sigHost as (sig: string) => string;
+  assert.equal(sigHost("w|c2|1700000000|judge|@HOSTA"), "HOSTA"); assert.equal(sigHost("n|c1"), ""); assert.equal(sigHost("e|c4|500|sl"), "");
   // round six: the list is pinned against the minter it tracks, never a literal: the prefixes badgeNotices mints over one item
-  // carrying every trouble kind, so a fifth kind cannot slip past keepCardSigs unnamed
+  // carrying every trouble kind must all be named…
   const minted = badgeNotices([base({
     warns: [{ kind: "distill", t: 100, msg: "the summarizer gave up" }], nudgeFailed: true, retrying: { since: 300 }, blocked: { state: "apiError", status: 529 },
   })], new Set());
   const mintedPrefixes = Array.from(new Set(Array.from(minted.active, (sig) => sig.slice(0, sig.indexOf("|") + 1)))).sort();
   assert.equal(mintedPrefixes.length, 4, "four kinds, four prefixes");
-  assert.deepEqual([...((badgeMirror as any).CARD_SIG_PREFIXES as string[])].sort(), mintedPrefixes, "the prefixes badgeNotices mints, named once");
+  const named = [...((badgeMirror as any).CARD_SIG_PREFIXES as string[])].sort();
+  for (const p of mintedPrefixes) assert.ok(named.includes(p), p + " is named");
+  // …and round seven, low 3: a hand-built item carries only the fields it was built with, so a fifth kind gated on a NEW field
+  // would mint nothing for it and slip past. The minter's SOURCE is the census: every add() call inside badgeNotices opens with
+  // a string literal prefix, and the set of those literals is the list, no more and no less.
+  const SRC = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "badge-mirror.ts"), "utf8");
+  const fnStart = SRC.indexOf("export function badgeNotices(");
+  const fn = SRC.slice(fnStart, SRC.indexOf("\nexport ", fnStart + 1));
+  const adds = fn.match(/\badd\(/g) || [];
+  const literal = Array.from(fn.matchAll(/\badd\("([a-z]\|)"/g), (m) => m[1]);
+  assert.ok(adds.length >= 4, "the minter has at least the four kinds' add calls: " + adds.length);
+  assert.equal(literal.length, adds.length - 1, "every add() call but the definition opens with a literal prefix (a computed one could hide a kind)");
+  assert.deepEqual(Array.from(new Set(literal)).sort(), named, "the list IS the minter's literals, so a fifth kind fails here until it is named");
   // the mirror's off-frame call keeps them: a source pin on the feed's wrapper
   const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
-  assert.match(FEED, /const badges = badgeCardHalf\(items, seenSet, !!opts\?\.cardsUnknown\);/, "one card half for both branches (round six)");
+  assert.match(FEED, /const badges = badgeCardHalf\(items, seenSet, opts\?\.cardsUnknown \?\? false\);/, "one card half for both branches (round six; the frame\'s reading rides through since round seven)");
   assert.match(FEED, /mirrorBadges\(\[\], Array\.isArray\(m\.clearNotices\)[^\n]*\{ cardsUnknown: true \}\);/, "the off branch says the cards are unknown");
 });
