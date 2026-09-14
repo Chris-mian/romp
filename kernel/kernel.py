@@ -4316,11 +4316,51 @@ def _path_of(sid, now=None):
     if memo is not None and sid in memo:
         return memo[sid]
     now = int(time.time()) if now is None else now
-    s = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    s = _session_row(sid, now)
     p = s["path"] if s else None
     if memo is not None:
         memo[sid] = p
     return p
+
+
+def _session_row(sid, now=None):
+    """The _sessions()-shaped row for ONE sid — {sid, name, anchor, path, mtime} — or None. For the doors
+    that ACT on a named session (fork, comment, promote, rewind/rollback, _path_of) rather than list every
+    session. _sessions(now) reaches back only discover's 48h caption horizon (jd.WINDOW), so a session idle
+    longer than that — still on the tab strip through _alive_sessions' wide walk, its chat still rendering
+    — was refused by every one of those doors as "no transcript for this session yet" (the user
+    2026-09-14: a 4-day-idle session took no comment and no fork while its tab sat right there). Same
+    fallbacks _alive_sessions and build_session already use, in the same order: an SDK session resolves
+    through its registry (cwd + lastSid name the CURRENT transcript, a /clear'd one included; no walk) and
+    is accepted only when that file EXISTS, so a never-run session still reads as transcriptless; anything
+    else (a session no SDK registry names, a Codex one) through discover's cached wide walk, as
+    _alive_sessions resolves a live sid idle past the window. Age owns caption/walk cost, never whether a
+    session can be acted on."""
+    now = int(time.time()) if now is None else now
+    s = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    if s is not None:
+        return s
+    be = _sdk()
+    if be and be.owns(sid):
+        reg = _thread_reg(sid)           # any SDK reg, thread or board session: cwd + lastSid are authoritative
+        if reg.get("cwd"):               # an unreadable reg is no authority: fall through, never probe a ~-derived guess
+            path = _thread_transcript_path(reg, sid)
+            try:
+                mtime = os.stat(path).st_mtime
+            except OSError:
+                mtime = None             # a registry without a transcript file IS "no transcript yet"
+            if mtime is not None:
+                return {"sid": sid, "name": _name_of(sid) or reg.get("name") or sid[:8], "anchor": sid,
+                        "path": path, "mtime": mtime}
+    ent = _discover_wide(now, jd.DEATH_BACKFILL_WINDOW).get(sid)
+    if ent is not None:
+        fsid, path, anchor, name = ent
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            mtime = 0
+        return {"sid": fsid, "name": name or fsid[:8], "anchor": anchor, "path": str(path), "mtime": mtime}
+    return None
 
 
 # ── a LIVE session survives a transient transcript-read failure on the tab list (T258) ─────────────────────
@@ -15616,7 +15656,7 @@ def _fork_session_inner(parent_sid, cut_msg_uuid, new_name, now=None, client=Non
     if not (hasattr(be, "fork") and _sdk_ready()):
         return "fork needs a Claude Code session — this one runs on another backend, so there is nothing to fork from."
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    sess = _session_row(parent_sid, now)     # idle > 48h is still forkable (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet — nothing to fork."
     cut_uuid = ""
@@ -16785,7 +16825,7 @@ def _comment_create(parent_sid, anchor_uuid, exact, text, name="", model="", eff
     if not str(exact or "").strip() or not str(text or "").strip():
         return "nothing to send: highlight a passage and write a comment.", None
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    sess = _session_row(parent_sid, now)     # idle > 48h still takes a comment (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet, so nothing to comment on.", None
     if str(anchor_uuid or ""):
@@ -17113,7 +17153,7 @@ def _comment_promote_inner(parent_sid, tid, new_name, now=None, client=None):
     tpath = _thread_transcript_path(reg, tsid)
     if not os.path.exists(tpath):
         return _revert("this thread hasn't written its conversation yet; try again in a moment.")
-    sess = next((s for s in _sessions(now) if s["sid"] == parent_sid), None)
+    sess = _session_row(parent_sid, now)     # the parent may be idle > 48h by promote time
     parent_path = sess["path"] if sess else str(jd._proj_dir(reg.get("cwd") or "~") / (parent_sid + ".jsonl"))
     err = _seed_fork_stores(parent_sid, tsid, parent_path, str(th.get("cutUuid") or ""))
     if err:
@@ -31011,7 +31051,7 @@ def _rewind_send(sid, user_uuid, text, now=None):
     if _ops_gate(sid):
         return "the session is busy — wait for the current turn to finish, then edit"
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    sess = _session_row(sid, now)            # idle > 48h can still be rewound (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet"
     target, err = _rewind_target(sess["path"], sid, str(user_uuid))
@@ -31057,7 +31097,7 @@ def _rewind_rollback(sid, user_uuid, now=None):
     # delete on an in-flight turn interrupts it and arms the rewind at the turn's actual end;
     # compacting and queued-strangers keep their honest refusals inside _arm_rewind.
     now = now or time.time()
-    sess = next((s for s in _sessions(now) if s["sid"] == sid), None)
+    sess = _session_row(sid, now)            # idle > 48h can still be rolled back (_session_row's fallbacks)
     if not sess:
         return "no transcript for this session yet"
     target, err = _rewind_target(sess["path"], sid, str(user_uuid))
