@@ -137,8 +137,10 @@ fi
 # them. Idempotent merge: adds only missing romp entries, never touches any
 # other hooks you have registered. Retired romp hooks (RETIRED below) are
 # de-registered on the way, so an upgrade never leaves Claude Code calling a
-# path this repo no longer ships.
-"${ROMP_INSTALL_PY:-python3}" - <<'PYEOF'
+# path this repo no longer ships. The interpreter is the preflight's capture; under ROMP_SKIP_PREFLIGHT there is
+# none, and the pin (ROMP_PYTHON) is carried instead of falling to a bare python3 that a pinned machine may not have
+# on PATH (round five of issue 1600).
+"${ROMP_INSTALL_PY:-${ROMP_PYTHON:-python3}}" - <<'PYEOF'
 import json, os
 
 SETTINGS = os.path.expanduser("~/.claude/settings.json")

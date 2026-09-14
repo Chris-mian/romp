@@ -644,9 +644,11 @@ EOF
 
 # round three of issue 1600: the probe is the pin's first execution and install.sh's preflight runs it
 @test "install.sh: a pinned interpreter that blocks on its version probe stops the install within the bound with romp-serve's line, hung on nothing" {
-    # with timeout present it rides the bare PATH (the timeout branch); without it the probe's watchdog is the bound (round four)
+    # the bound is coreutils timeout's alone (round five of issue 1600 dropped the watchdog that stood in for it: without
+    # timeout the probe is unbounded, the stock mac residual), so it rides the bare PATH here and the test needs it
     local tmo; tmo="$(command -v timeout || true)"
-    [ -n "$tmo" ] && ln -s "$tmo" "$BAREBIN/timeout"
+    [ -n "$tmo" ] || skip "the bound needs coreutils timeout"
+    ln -s "$tmo" "$BAREBIN/timeout"
     printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
     cat > "$STUB/blockpython" <<'EOF'
 #!/usr/bin/env bash
@@ -687,6 +689,20 @@ EOF
     [[ "$output" != *"command not found"* ]]
     [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
     [ -f "$HOME/.claude/settings.json" ]                             # the hook block ran on the pin
+    "$realpy" -c 'import json,sys; json.load(open(sys.argv[1]))' "$HOME/.claude/settings.json"
+}
+
+# round five, low: under ROMP_SKIP_PREFLIGHT there is no capture, and the hook block fell to a bare python3 that a pinned
+# machine may not have on PATH; the pin is carried instead
+@test "install.sh: ROMP_SKIP_PREFLIGHT with a pin and no python3 on PATH still runs the hook block on the pin" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    local realpy; realpy="$(readlink -f "$BAREBIN/python3")"
+    rm -f "$BAREBIN/python3"
+    PATH="$(bare_path)" ROMP_SKIP_PREFLIGHT=1 ROMP_PYTHON="$realpy" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"command not found"* ]]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
+    [ -f "$HOME/.claude/settings.json" ]
     "$realpy" -c 'import json,sys; json.load(open(sys.argv[1]))' "$HOME/.claude/settings.json"
 }
 

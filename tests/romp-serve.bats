@@ -201,9 +201,10 @@ OLD
     [[ "$output" != *"PORT="* ]]
 }
 
-@test "romp-serve: the probe's bound holds without coreutils timeout (the watchdog fallback, a stock mac's road) and against an interpreter that ignores TERM" {
-    # round four of issue 1600: the bound existed only where timeout did, and timeout carried no -k, so a TERM-ignoring
-    # interpreter hung past it. A bare PATH without timeout takes the watchdog; the stand-in ignores TERM.
+@test "romp-serve: an interpreter that ignores TERM is killed a second after the bound (-k) and refused; no watchdog, no clock" {
+    # round four of issue 1600: timeout carried no -k, so a TERM-ignoring interpreter hung past the bound. Round five dropped
+    # the watchdog that stood in for timeout where there is none (its TERM trap ran under set -e and let a blocking
+    # interpreter through): where coreutils timeout is absent the probe is unbounded, as the picker's own runs are.
     cat > "$TEST_DIR/deaf-python" << 'OLD'
 #!/usr/bin/env bash
 case "$*" in
@@ -212,21 +213,88 @@ esac
 exec bash "$@"
 OLD
     chmod +x "$TEST_DIR/deaf-python"
-    local bare="$TEST_DIR/bare"; mkdir -p "$bare"
-    local t; for t in bash sh sleep cat rm mktemp date dirname readlink; do ln -s "$(command -v "$t")" "$bare/$t"; done
     local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "the bound needs coreutils timeout"
     local t0=$SECONDS
-    PATH="$bare" ROMP_PYTHON="$TEST_DIR/deaf-python" run ${tmo:+"$tmo" 40} "$ROMP_SERVE" --print-python
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"did not answer its version probe"* ]]
-    [ $((SECONDS - t0)) -lt 15 ]                             # the bound, not the outer one: five seconds plus the kill
-    # …and with timeout on PATH the same deaf interpreter is killed at the bound too (-k)
-    [ -n "$tmo" ] || skip "the timeout branch needs coreutils timeout"
-    t0=$SECONDS
     ROMP_PYTHON="$TEST_DIR/deaf-python" run "$tmo" 40 "$ROMP_SERVE" --print-python
     [ "$status" -eq 1 ]
     [[ "$output" == *"did not answer its version probe"* ]]
-    [ $((SECONDS - t0)) -lt 15 ]
+    [ $((SECONDS - t0)) -lt 15 ]                             # the bound plus the kill, not the outer bound
+    [[ "$output" != *"Killed"* ]]                             # the KILLed timeout leaves no job-status line in the log
+}
+
+_dead() {   # $1 pid: gone, or a zombie awaiting its reap
+    local st; st="$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')"
+    [ -z "$st" ] || [ "${st#Z}" != "$st" ]
+}
+
+@test "romp-serve: a child the blocked interpreter left behind dies at the bound with it (the group is signalled)" {
+    # round five of issue 1600: --foreground handed the signals to the interpreter alone, so a child it had started (a
+    # site customization's helper, a sleep here) outlived the bound, one per probe; plain timeout signals the group
+    cat > "$TEST_DIR/forking-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *-c*) sleep 60 & echo $! > "$ROMP_TEST_PIDFILE"; wait ;;   # blocks, with a child of its own
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/forking-python"
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "the bound needs coreutils timeout"
+    ROMP_TEST_PIDFILE="$TEST_DIR/child.pid" ROMP_PYTHON="$TEST_DIR/forking-python" run "$tmo" 40 "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [ -s "$TEST_DIR/child.pid" ]
+    local child; child="$(cat "$TEST_DIR/child.pid")"
+    if ! _dead "$child"; then kill -KILL "$child" 2>/dev/null; return 1; fi   # the child outlived the bound (killed here so the suite's wake is clean)
+}
+
+@test "romp-serve: a TMPDIR that is not there, or a PATH without mktemp, refuses no good interpreter: the file falls to /tmp, or the read to a pipe" {
+    # round five of issue 1600 (round three started it): mktemp ran unguarded under set -e, so a stale TMPDIR (a launchd
+    # agent's /var/folders path across a reboot) refused a good interpreter with mktemp's own message, and a PATH
+    # without mktemp was exit 127
+    cat > "$TEST_DIR/good-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) echo "romp-pyver 3.12"; exit 0 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/good-python"
+    TMPDIR="$TEST_DIR/no-such-tmp" ROMP_PYTHON="$TEST_DIR/good-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 0 ]
+    [ "$output" = "$TEST_DIR/good-python" ]
+    local bare="$TEST_DIR/bare"; mkdir -p "$bare"
+    local t; for t in bash sh cat rm date dirname readlink; do ln -s "$(command -v "$t")" "$bare/$t"; done   # no mktemp, no timeout
+    PATH="$bare" ROMP_PYTHON="$TEST_DIR/good-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 0 ]
+    [ "$output" = "$TEST_DIR/good-python" ]
+    # and the floor still holds through the pipe read
+    cat > "$TEST_DIR/old-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) echo "romp-pyver 3.9"; exit 0 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/old-python"
+    PATH="$bare" ROMP_PYTHON="$TEST_DIR/old-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 2 ]
+}
+
+@test "romp-serve: a TERM mid-probe leaves no probe file behind" {
+    # round five of issue 1600: the probe file was removed after the read alone, so a romp-serve stopped during the probe
+    # (a manager restart mid-launch) left one romp-pyver.* per stop in TMPDIR
+    cat > "$TEST_DIR/blocking-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *-c*) sleep 60 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/blocking-python"
+    local tmp="$TEST_DIR/tmp"; mkdir -p "$tmp"
+    local tmo; tmo="$(command -v timeout || true)"
+    TMPDIR="$tmp" ROMP_PYTHON="$TEST_DIR/blocking-python" ${tmo:+"$tmo" 40} "$ROMP_SERVE" --print-python >/dev/null 2>&1 &
+    local pid=$!
+    sleep 1
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" || true                       # the trap runs once the foreground probe returns, at the bound at the latest
+    [ -z "$(ls "$tmp"/romp-pyver.* 2>/dev/null)" ]
 }
 
 @test "romp-serve: a helper the interpreter leaves holding its stdout cannot hold the version read; the probe returns at once" {
@@ -247,18 +315,23 @@ OLD
     [ $((SECONDS - t0)) -lt 5 ]                              # not the helper's 8 seconds
 }
 
-@test "romp-serve: an interpreter that itself exits 124 at once is not called unresponsive; its own code is reported and it is started" {
-    cat > "$TEST_DIR/oddexit-python" << 'OLD'
+@test "romp-serve: an interpreter that itself exits 124 or 137 from the probe is refused as unresponsive: from the bounded branch the code IS the bound, no clock" {
+    # round five of issue 1600 dropped round four's clock (a SECONDS-grained guess that misread a 124 at about 4 s)
+    command -v timeout >/dev/null 2>&1 || skip "the bounded branch needs coreutils timeout"
+    local code
+    for code in 124 137; do
+        cat > "$TEST_DIR/oddexit-python" << OLD
 #!/usr/bin/env bash
-case "$*" in *romp-pyver*) exit 124 ;; esac
-exec bash "$@"
+case "\$*" in *romp-pyver*) exit $code ;; esac
+exec bash "\$@"
 OLD
-    chmod +x "$TEST_DIR/oddexit-python"
-    ROMP_PYTHON="$TEST_DIR/oddexit-python" run "$ROMP_SERVE" --port 29994
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"exited 124 (the interpreter's own code, not the bound)"* ]]
-    [[ "$output" != *"did not answer"* ]]
-    [[ "$output" == *"PORT=29994"* ]]
+        chmod +x "$TEST_DIR/oddexit-python"
+        ROMP_PYTHON="$TEST_DIR/oddexit-python" run "$ROMP_SERVE" --port 29994
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"did not answer its version probe"* ]]
+        [[ "$output" == *"of its own accord reads the same"* ]]
+        [[ "$output" != *"PORT=29994"* ]]
+    done
 }
 
 @test "romp-serve: a line printed AFTER the version, or a CRLF line ending, cannot hide a 3.9" {
