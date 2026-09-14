@@ -1798,8 +1798,9 @@ function initGear(post, opts) {
     pcard.addEventListener('mouseover', function (e) { var host = hostOf(e.target); if (host) placeSub(host); });
     pcard.addEventListener('mouseout', function (e) { var host = hostOf(e.target); if (host && !(e.relatedTarget && host.contains(e.relatedTarget))) host.classList.remove('rs-up'); });
   }
-  function closeSettings() { endDrags(); clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
+  function closeSettings() { endDrags(); if (raBack && !raBack.hidden) raHide(); clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
   function openSettings(tab, section) {
+    if (raBack && !raBack.hidden) raHide();   // the Token usage panel up: down first, so the card is what this open shows, never the card under the layer (the read of the panel's close fix)
     if (tab === 'appearance' && !section) section = 'appearance';   // the former Appearance tab is General's section (T404)
     if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); if (section) showSection(section); else clearSectionScroll(); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)
     selectTab(tab);
@@ -1815,7 +1816,7 @@ function initGear(post, opts) {
   // document and calls this synchronously): close the modal and say so, unless one of its own dialogs is up
   // (the login card, an open house dropdown), which the document's own Escape handlers close one level at a
   // time; the shell then leaves the press alone. A cross-origin host (VS Code) cannot reach this and has no chain.
-  window.__rompSettingsClose = function () { if (p.hidden || (lgM && !lgM.hidden) || openHousePick || widgetDrag) return false; closeSettings(); return true; };   // one Escape level at a time: a drag in flight takes it (the shell's handler runs before the drag's own, so this is where it yields)
+  window.__rompSettingsClose = function () { if (raBack && !raBack.hidden) { raHide(); return true; } if (p.hidden || (lgM && !lgM.hidden) || openHousePick || widgetDrag) return false; closeSettings(); return true; };   // the Token usage panel is one level: the shell's chain asks this whenever settings-open stands, so a press with the keyboard in the shell document takes the layer down and returns to the card (the panel's own document-local Escape below serves the standalone page, where no shell asks)   // one Escape level at a time: a drag in flight takes it (the shell's handler runs before the drag's own, so this is where it yields)
   // The shortcuts row: the web shell (same-origin parent) gets the customize link — it opens the
   // shell's shortcuts dialog and closes this modal so the two never stack; VS Code (cross-origin
   // parent) gets the pointer at its own Keyboard Shortcuts editor instead (the user 2026-08-09).
@@ -1899,7 +1900,8 @@ function initGear(post, opts) {
   // page (Escape dead, since the shell asks this page and a hidden card answers no; every click on the invisible frame; only the
   // palette or a reload recovered). From the card, Escape and the backdrop close the settings by the normal road. The close's
   // own click stops here: bubbling on to the document, it would meet the card's click-outside listener with the card just
-  // shown and close the settings outright (the lab saw the card hidden again a moment after the close).
+  // shown and close the settings outright (the lab saw the card hidden again a moment after the close). The settings' own
+  // close, open and Escape answer route through this too, so the layer never survives a close or sits over a fresh open.
   function raHide(e) { if (e && e.stopPropagation) e.stopPropagation(); raBack.hidden = true; p.hidden = false; }
   if (raClose) raClose.onclick = raHide;
   if (raBack) raBack.addEventListener('click', function (e) { if (e.target === raBack) raHide(e); });
