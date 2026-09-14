@@ -14,6 +14,7 @@ import inspect
 import json
 import os
 import tempfile
+import time
 from unittest import mock
 import unittest
 from pathlib import Path
@@ -246,10 +247,37 @@ class ColdTabGate(unittest.TestCase):
         self.assertEqual(len(statuses[S3]["awaitingItems"]), 2)
         self.assertEqual(statuses[S2]["state"], "working", "a working row is not asked about awaiting: an active turn is working")
 
-    def test_09d_a_compacting_row_reads_compacting(self):
+    def test_09d_compacting_comes_from_the_backends_bracket_alone(self):
+        """Round three, low a: the row's compacting word is the sticky signal _compacting disproves against the transcript, and
+        that disproof needs the parse; without the backend's own bracket the word falls through."""
         self.live[S3]["state"] = "compacting"
         c, statuses = self._skeleton_push()
-        self.assertEqual(statuses[S3]["state"], "compacting", "the row's own word, the built chip's leg when the backend states no bracket")
+        self.assertEqual(statuses[S3]["state"], "ready", "a compacting row alone is not trusted")
+        del km._clients[:]
+        km._built_chat.clear()
+        class _Be:
+            def compacting(self, sid):
+                return sid == S3
+        with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: _Be())):
+            c, statuses = self._skeleton_push()
+        self.assertEqual(statuses[S3]["state"], "compacting", "the backend's bracket: the built chip's first leg, exact")
+
+    def test_12_the_status_send_re_checks_membership_under_the_lock(self):
+        """Round three, low b: a click between the gate's decision and the send drops the tab from the set and the full goes
+        out on the same slot; a provisional status landing after it would replace the just-built status of the active tab."""
+        frames = []
+        c = {"app": "chat", "alive": True, "sent": {}, "send": lambda s: frames.append(json.loads(s)), "skeleton": {S2, S3},
+             "skeletonOrder": [S3, S2]}
+        light = {"state": "ready", "provisional": True}
+        self.assertTrue(km._send_light_status(c, S2, light))
+        self.assertEqual([f["id"] for f in frames], [S2])
+        km._release_skeleton(c, S3)                          # the click, between the decision and the send
+        self.assertFalse(km._send_light_status(c, S3, light), "released: no provisional word for a tab the page now wants whole")
+        self.assertEqual([f["id"] for f in frames], [S2])
+        src = inspect.getsource(km._send_light_status)
+        self.assertLess(src.index("with _client_lock(c):"), src.index("_send_client("), "the check and the send under one lock")
+        for fn in (km._push, km._push_session_now):
+            self.assertIn("_send_light_status(", inspect.getsource(fn), fn.__name__)
 
     def test_10_the_handshake_push_resolves_the_set_before_it_decides(self):
         """Round two, low 1: a skeleton client whose redial the pusher has not reached yet holds no set at the handshake push;
@@ -289,6 +317,101 @@ class ColdTabGate(unittest.TestCase):
                         "the gate stands before the signature and the build")
         doc = open(os.path.join(os.path.dirname(HERE), "docs", "reference.md"), encoding="utf-8").read()
         self.assertIn("`coldSkipped`", doc)
+
+
+class ProvisionalLegsMatchBuilt(unittest.TestCase):
+    """Round three (the medium): over constructed legs, the provisional status equals the REAL built status on every key the
+    skeleton chip painter reads (tab-widgets.ts and render.ts: the state, the five on-you flags, faded, ctx, ctxColor and
+    ctxTone), plus the tints. A real session on disk (the snapshot test's fixture shape), the real build_session."""
+    PAINTER_KEYS = ("state", "apiTooLong", "apiSpendLimit", "apiModelLimit", "apiAuthErr", "apiRefusal", "faded", "ctx", "ctxColor",
+                    "ctxTone", "ctxOver", "modelColor", "effortColor", "modelTone", "effortTone")
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory(); td = Path(self.td.name)
+        jd = km.jd
+        self.saved = (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE, km.NAMES, km.Sessions.live, km._sdk)
+        names = td / "names"; names.mkdir(); proj = td / "projects"; proj.mkdir()
+        jd.NAMES, jd.PROJECTS = names, proj
+        jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR = td / "captions", td / "archive", td / "goals"
+        for d in (jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR):
+            d.mkdir()
+        jd.STATE = td; km.NAMES = names; km._sdk = lambda: None
+        cdir = td / "work"; cdir.mkdir()
+        import re as _re
+        pdir = proj / _re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(cdir))); pdir.mkdir(parents=True)
+        self.path = str(pdir / (S3 + ".jsonl"))
+        (names / S3).write_text("%s\t%s\t#abcdef\n" % ("tests", str(cdir)))
+        self.now = int(time.time())
+
+    def tearDown(self):
+        jd = km.jd
+        (jd.NAMES, jd.PROJECTS, jd.CAPDIR, jd.ARCHDIR, jd.GOALDIR, jd.STATE, km.NAMES, km.Sessions.live, km._sdk) = self.saved
+        km._live_scope.snapshot = None
+        self.td.cleanup()
+
+    def _plain_transcript(self):
+        recs = [{"type": "user", "uuid": U_PROMPT, "timestamp": "2026-06-11T00:00:00.000Z", "promptSource": "typed",
+                 "message": {"role": "user", "content": "hello there"}},
+                {"type": "assistant", "uuid": "aaaaaaaa-0000-0000-0000-000000000002", "parentUuid": U_PROMPT,
+                 "timestamp": "2026-06-11T00:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}}]
+        with open(self.path, "w") as f:
+            for r in recs:
+                f.write(json.dumps(r) + "\n")
+        self._idle_after(recs[-1]["timestamp"])
+
+    def _idle_after(self, iso):
+        """The states log's idle transition after the last record: the event model closes the turn on it, so the built chip
+        reads the transcript as idle (an open last turn reads working, by design, whatever the row says)."""
+        import datetime as _dt
+        t = _dt.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=_dt.timezone.utc).timestamp()
+        sd = Path(km.jd.STATE) / "states"; sd.mkdir(exist_ok=True)
+        (sd / (S3 + ".jsonl")).write_text(json.dumps({"t": t + 10, "state": "idle"}) + "\n")
+
+    def _row(self, **kw):
+        row = {"state": "waiting", "since": self.now - 30, "model": "claude-sonnet-5", "effort": "high", "context": 37, "ctxOver": False,
+               "mode": "", "compactPct": None, "color": None, "backend": "sdk"}
+        row.update(kw)
+        return row
+
+    def _legs(self, row):
+        live = {S3: row}
+        km.Sessions.live = lambda: dict(live)
+        km._live_scope.snapshot = None
+        built = km.build_session(S3, self.now, live)["status"]
+        light = km._light_status(S3, self.path, row, self.now)
+        return {k: built.get(k) for k in self.PAINTER_KEYS}, {k: light.get(k) for k in self.PAINTER_KEYS}
+
+    def test_the_painter_keys_agree_on_every_leg(self):
+        legs = []
+        self._plain_transcript(); legs.append(("idle, context 37", self._row()))
+        legs.append(("idle, over the window", self._row(context=100, ctxOver=True)))
+        legs.append(("idle, no context", self._row(context=None)))
+        legs.append(("faded: idle for hours", self._row(since=self.now - 5 * 3600)))
+        for name, row in legs:
+            with self.subTest(leg=name):
+                built, light = self._legs(row)
+                self.assertEqual(light, built, "%s: the provisional status differs from the built one" % name)
+        _api_error_tail(self.path); self._idle_after("2026-06-11T00:00:05.000Z")
+        built, light = self._legs(self._row())
+        self.assertEqual(built["state"], "blocked", "the leg is what it claims")
+        self.assertEqual(light, built, "api error: the provisional status differs from the built one")
+        _api_error_tail(self.path, text="API Error: 400 prompt is too long: 250000 tokens > 200000 maximum"); self._idle_after("2026-06-11T00:00:05.000Z")
+        built, light = self._legs(self._row())
+        self.assertTrue(built["apiTooLong"])
+        self.assertEqual(light, built, "prompt too long: the provisional status differs from the built one")
+        self._plain_transcript()
+        class _Be:
+            """A backend that states the compaction bracket; every other question the real build asks it reads as nothing."""
+            def compacting(self, sid):
+                return True
+            def pending_queued(self, sid):
+                return []
+            def __getattr__(self, name):
+                return lambda *a, **k: None
+        with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: _Be())):
+            built, light = self._legs(self._row(state="compacting"))
+        self.assertEqual(built["state"], "compacting")
+        self.assertEqual(light, built, "compacting by the bracket: the provisional status differs from the built one")
 
 
 if __name__ == "__main__":

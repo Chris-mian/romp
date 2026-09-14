@@ -44839,7 +44839,11 @@ def _light_status(sid, path, tm, now):
         bc = be.compacting(sid) if be is not None else None
     except Exception:
         bc = None
-    compacting = bool(bc) if bc is not None else st == "compacting"
+    # Compacting from the backend's own bracket ALONE (round three, low a): the row's compacting word is exactly the
+    # sticky signal _compacting exists to disprove against the transcript (an open turn, a compact_boundary since the
+    # row's since), and that disproof needs the parse this status is built without; a stale row read as compacting for
+    # the whole spread, against a built chip that read working. A row's word without a bracket falls through.
+    compacting = bool(bc)
     aw = None
     if not working:
         try:
@@ -44860,7 +44864,18 @@ def _light_status(sid, path, tm, now):
             "awaitingBg" if aw else "ready")
     since = tm.get("since")
     tries, next_at = _retry_gate_state(sid)
-    return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "faded": False, "provisional": True,
+    ctx = tm.get("context")
+    stops = cm.stops_for(_colormap())
+    return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "provisional": True,
+            "faded": _idle_faded(chip, since, now),      # the built status's own fact (T155), so the chip reads it the same
+            # the painter's context gauge and tints (round three): the row carries the context, the colours are the built
+            # status's own derivations over it (cm.ramp on the global colormap, cm.context_rgb), so a cold tab's gauge and
+            # its model and effort tints paint as built for as long as the tab stays unbuilt
+            "ctx": str(ctx) if ctx is not None else "", "ctxOver": bool(tm.get("ctxOver")),
+            "ctxColor": (list(cm.ramp(ctx / 100.0, stops)) if ctx is not None else None),
+            "ctxTone": (list(cm.context_rgb(ctx)) if ctx is not None else None),
+            "modelColor": _model_color(tm.get("model", ""), stops), "effortColor": _effort_color(tm.get("effort", ""), stops),
+            "modelTone": _model_tone(tm.get("model", "")), "effortTone": _effort_tone(tm.get("effort", "")),
             "awaitingWhy": (aw or {}).get("why") or None, "awaitingKind": (aw or {}).get("kind"),
             "awaitingPeers": (aw or {}).get("peers") or None,
             "awaitingCount": (aw or {}).get("count") if isinstance((aw or {}).get("count"), int) else None,
@@ -44871,6 +44886,19 @@ def _light_status(sid, path, tm, now):
             "retrySuppressed": _session_retry_suppressed(sid), "retryNextAt": int(next_at) or None, "retryTries": tries or None,
             "backend": _session_backend(sid, tm), "model": tm.get("model", ""), "effort": tm.get("effort", ""),
             "mode": tm.get("mode", "")}
+
+
+def _send_light_status(c, sid, light):
+    """The gate's status frame to one client, membership re-checked UNDER the client's lock right before the send (round
+    three, low b): a click between the gate's decision and this send drops the tab from the set and the full goes out on
+    the same slot; a provisional status landing after it would replace the just-built status of the now-active tab. Only a
+    tab the client still holds as a skeleton gets the provisional word; the built full is the answer for the rest. Returns
+    whether it was sent."""
+    with _client_lock(c):
+        if sid not in (c.get("skeleton") or ()):
+            return False
+        _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": light})
+        return True
 
 
 def _held_as_skeleton_by_all(sid, clients):
@@ -48751,8 +48779,7 @@ def _push(targets, connect=False, live_map=None):
                     _light = _light_status(s["sid"], s["path"], _tm, now)   # no live row: no status to state, so build as before
                 if _light is not None:
                     for c in chat_clients:               # a status per skeleton tab still goes (the diet's contract),
-                        with _client_lock(c):            #  the live row's word until the tab's first build
-                            _send_client(c, ("status", s["sid"]), {"type": "status", "id": s["sid"], "status": _light})
+                        _send_light_status(c, s["sid"], _light)   # the live row's word until the tab's first build
                     _VIEW_STATS["chatSkipCold"] += 1
                     _PERF_STATS.build_chat_cold_skip()
                     continue
@@ -49272,8 +49299,7 @@ def _push_session_now(sid):
                   and _held_as_skeleton_by_all(sid, targets) else None)
         if _light is not None:
             for c in targets:                            # the live row's status, so the chip this push exists for still flips
-                with _client_lock(c):
-                    _send_client(c, ("status", sid), {"type": "status", "id": sid, "status": _light})
+                _send_light_status(c, sid, _light)
             _VIEW_STATS["chatSkipCold"] += 1
             _PERF_STATS.build_chat_cold_skip()
             return

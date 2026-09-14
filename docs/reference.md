@@ -2061,7 +2061,8 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   files, and the files and postal values the last build embedded). `chat`
   also carries `coldSkipped` (one count per tab per push the cold-tab gate skipped:
   a tab with a transcript, not built since the boot, watched by no connected chat client,
-  held as a skeleton by every connected chat client, with no Sessions pane connected; the
+  held as a skeleton by every connected chat client, with no Sessions pane connected, and with
+  a live row to state its status from (a tab with no live row is built, not skipped); the
   same tab counts again on every later push until the page asks for it, 2026-09-14),
   `active_built` and `bg_built` (rebuilds of the watched tab
   against rebuilds of a background tab), `moved` (builds not cached because
