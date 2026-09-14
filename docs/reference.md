@@ -3668,7 +3668,9 @@ load's very first, which the local kernel's push produces before the first `/tun
 and counts every card as not in hand until the answer lands, when the frame is re-emitted. This touches the
 single-kernel page too: its first frames are unread until the first answer, which the poll delivers within a
 cycle, and an answer that is not the list (a non-ok status, a failed fetch) leaves them unread and is filed once
-in the client diagnostics until a poll succeeds; the frame's own
+in the client diagnostics (a `hostconn` row, `tunnels-poll-failing`, with the reason on one line) and its end
+once (`tunnels-poll-recovered`, filed after the list is read, so it says the frames are no longer unread); the
+frame's own
 `off` stays the local kernel's word, so the notice and the gear row, which both read this dashboard's kernel, agree.
 While any host is named in either list, its cards are not in hand, which is not the same as gone, and the feed pane's
 writers that act on a card's absence stand down: nothing is confirmed, pruned, retired or forgotten because a card is

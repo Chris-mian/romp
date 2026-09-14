@@ -1538,13 +1538,10 @@ export class FederationManager {
     } catch (e) {
       if (!this.pollFailing) {
         this.pollFailing = true;
-        this.diag("hostconn", { host: "", ev: "tunnels-poll-failing", why: String((e && (e as any).message) || e).slice(0, 200), unread: !this.hostsRead });
+        // one line, capped: a 200 whose body is not JSON puts body bytes into the parse error's message
+        this.diag("hostconn", { host: "", ev: "tunnels-poll-failing", why: String((e && (e as any).message) || e).replace(/\s+/g, " ").slice(0, 200), unread: !this.hostsRead });
       }
       return;
-    }
-    if (this.pollFailing) {
-      this.pollFailing = false;
-      this.diag("hostconn", { host: "", ev: "tunnels-poll-recovered", unread: !this.hostsRead });
     }
     // `hasToken`, never the token: the kernel publishes whether a remote's credential EXISTS, and the
     // relay it dials through (/remote/<host>/ws, _remote_ws) injects that credential itself — so the
@@ -1560,6 +1557,12 @@ export class FederationManager {
     // returned above and leaves the mark standing: a list that could not be read is not a list in hand.
     const firstRead = !this.hostsRead;
     this.hostsRead = true;
+    // the recovery crumb is filed AFTER the flag flips, so the one row a reader checks to learn whether the prunes
+    // resumed says unread false; endedUnread says whether this answer was the first the page ever read
+    if (this.pollFailing) {
+      this.pollFailing = false;
+      this.diag("hostconn", { host: "", ev: "tunnels-poll-recovered", unread: !this.hostsRead, endedUnread: firstRead });
+    }
     // A host just ATTACHED is pending from this moment, not from the next push that happens to land:
     // re-emit the merged payloads so the placeholders appear at the attach event. Each emission holds
     // until the LOCAL payload exists (the feed's hold is here; the timeline's is its own), so a page
@@ -1640,8 +1643,12 @@ export class FederationManager {
   // feed's tripwires write, so a blink is attributed to the connection layer (a drop, a /tunnels
   // flap) or ruled out of it — instead of re-guessed from pixels. Rides the LOCAL kernel socket.
   private diag(what: string, data: any): void {
-    const s = (window as any).__rompLocalSend;
-    if (typeof s === "function") s({ type: "clientDiag", surface: "federation", what, data });
+    // never throws: poll() is fire-and-forget and files crumbs from its catch, so a shim whose send throws would turn
+    // a failing poll into an unhandled rejection in the browser (the kernel's own diag helpers swallow the same way)
+    try {
+      const s = (window as any).__rompLocalSend;
+      if (typeof s === "function") s({ type: "clientDiag", surface: "federation", what, data });
+    } catch { /* a diagnostics row is never worth the poll */ }
   }
 
   private connect(conn: Conn): void {

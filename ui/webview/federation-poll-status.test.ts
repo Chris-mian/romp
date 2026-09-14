@@ -43,6 +43,44 @@ test("a fetch that throws is the same spell; the first OK answer ends it, reads 
   await m.poll();
   const evs = crumbs.filter((c) => c.what === "hostconn").map((c) => c.data.ev);
   assert.deepEqual(evs, ["tunnels-poll-failing", "tunnels-poll-recovered"], "one crumb per edge of the spell");
+  // the recovery is filed AFTER the list is read: the one row a reader checks to learn whether the prunes resumed says
+  // unread false, and names this answer as the one that ended the unread window (round two of the follow-up)
+  const rec = crumbs.filter((c) => c.what === "hostconn" && c.data.ev === "tunnels-poll-recovered")[0];
+  assert.equal(rec.data.unread, false, "filed after hostsRead flipped, not before");
+  assert.equal(rec.data.endedUnread, true);
+});
+
+test("a recovery after the list was already read says endedUnread false", async () => {
+  const { m, crumbs } = harness([okEmpty, thrown, okEmpty]);
+  await m.poll(); await m.poll(); await m.poll();
+  const rec = crumbs.filter((c) => c.what === "hostconn" && c.data.ev === "tunnels-poll-recovered")[0];
+  assert.equal(rec.data.unread, false);
+  assert.equal(rec.data.endedUnread, false);
+});
+
+test("a shim whose send throws never rejects the poll: the crumb is dropped, the failing spell still ends on recovery", async () => {
+  // poll() is fire-and-forget, and the crumbs are filed from its catch: a throw in the send used to turn a failing poll
+  // into an unhandled rejection in the browser
+  const { m, crumbs } = harness([thrown, okEmpty]);
+  (globalThis as any).window.__rompLocalSend = () => { throw new Error("the local socket is closed"); };
+  await m.poll();                                     // would reject at the base
+  assert.equal(m.hostsRead, false);
+  await m.poll();
+  assert.equal(m.hostsRead, true, "the send's throw never reached the poll");
+  assert.deepEqual(crumbs, []);
+});
+
+test("the failing crumb's reason is one line, capped at 200 characters (a 200 whose body is not JSON puts body bytes into the parse error)", async () => {
+  const body = "<html>\n<body>\n" + "x".repeat(400) + "\n</body>";
+  const notJson = () => Promise.resolve({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token '<', \"" + body + "\" is not valid JSON"); } });
+  const { m, crumbs } = harness([notJson]);
+  await m.poll();
+  assert.equal(m.hostsRead, false, "a 200 whose body does not parse is not the list either");
+  const failing = crumbs.filter((c) => c.what === "hostconn" && c.data.ev === "tunnels-poll-failing");
+  assert.equal(failing.length, 1);
+  assert.ok(!/[\r\n]/.test(failing[0].data.why), "no newline in the reason");
+  assert.ok(failing[0].data.why.length <= 200, "capped");
+  assert.match(failing[0].data.why, /^Unexpected token/);
 });
 
 test("an OK answer from the start files nothing and reads the list at once", async () => {
