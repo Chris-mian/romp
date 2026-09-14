@@ -44011,6 +44011,23 @@ def _note_ws_inbound(client, now=None):
     _reveal_proven(client)     # a push tap handed to this socket while it was unproven has landed (2026-09-06)
 
 
+def _note_chat_withheld_at_close(client, now=None):
+    """One client-diag row for a socket that CLOSED without its handshake after chat frames were withheld from it: the permanent
+    case (an older shim's redial with no proto term, a page whose ready never came), told apart from the routine pre-ready race
+    (a pusher cycle between the accept and the bundle's ready, whose handshake then arrives and whose frames follow), which used
+    to file the same row (the tidy after PR 1642, low 1). Returns whether a row was filed."""
+    if client.get("handshake") is not False or not client.get("withheld"):
+        return False
+    try:
+        now = time.time() if now is None else now
+        _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(now), "wid": str(client.get("wid") or ""), "surface": "kernel", "what": "chatWithheld",
+                                                                         "data": {"app": client.get("app"), "frames": int(client.get("withheld") or 0),
+                                                                                  "ageS": round(max(0.0, _ws_clock() - float(client.get("t0") or _ws_clock())), 1)}}) + "\n")
+        return True
+    except Exception:
+        return False
+
+
 def _drop_dead_ws_client(client, why):
     """Mark a peer dead and shut its socket: the handler thread's blocking read returns EOF, its finally
     removes the client from _clients, and the sender thread ends on the sentinel. Logged once per client."""
@@ -46028,14 +46045,10 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
     st = c.setdefault("echat", {})
     pc = st.get(sid)                                  # (tail_head_uuid, headFrom) the client currently holds
     if c.get("handshake") is False:                  # a real socket before its `ready` (marked at accept) has declared no wire: it gets NO chat frame
-        if not c.get("withheld"):                     # …said ONCE per socket in client-diag.jsonl (the follow-up after PR 1584, low 2): a socket whose
-            c["withheld"] = True                      # handshake never comes (an older shim's redial with no proto term) is served nothing for its life,
-            try:                                      # and nothing else says so
-                _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(time.time()), "wid": str(c.get("wid") or ""), "surface": "kernel",
-                                                                                 "what": "chatWithheld", "data": {"sid": sid, "app": c.get("app")}}) + "\n")
-            except Exception:
-                pass
-        return ms                                     # (T386 stage 2, round eleven). It used to get index frames, and a proto-2 page whose ready lost the
+        c["withheld"] = int(c.get("withheld") or 0) + 1   # counted, not filed: a pusher cycle between the accept and the bundle's ready is the ROUTINE
+        return ms                                     # case, and a row for it read the same as the permanent one; the socket's close files the row
+    #                                                    when the handshake never came (_note_chat_withheld_at_close; the tidy after PR 1642, low 1).
+    #                                                                                       # (T386 stage 2, round eleven). It used to get index frames, and a proto-2 page whose ready lost the
     #                                                    race to this push (the pusher fires from the socket's open; the bundle evaluates later) held an
     #                                                    index frame at its reload restore and took the older wire for a landing the window wire owns.
     #                                                    The ready handler resets the base and pushes the wire the handshake declared. Every real socket
@@ -61935,6 +61948,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             client["alive"] = False
             sendq.put(None)                    # end this client's sender thread
+            _note_chat_withheld_at_close(client)   # a socket that closed without ever declaring its wire, chat frames withheld: said once, here
             with _clients_lock:
                 if client in _clients:
                     _clients.remove(client)

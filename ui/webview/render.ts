@@ -13957,10 +13957,14 @@ function virtualizeToViewport(): void {
 let landingNoticeEl: HTMLElement | null = null;
 let pendingAnchorClick = false;   // the landing this pass attempts was armed by the reader's click (a focus frame), not by a pass's own re-attempt
 /** A real second click on the anchor a landing is already on the wire for: the notice pulses once (the page has no other feedback for it). */
+let pulseEnd: (() => void) | null = null;   // the live pulse's one-shot end handler, held so a hide that cuts the animation can remove it (the tidy after PR 1642, low 2: a cut pulse left one dead closure on the reused element per cancel)
 function pulseLandingNotice(): void {
   const n = landingNoticeEl; if (!n || n.style.display === "none") return;
+  if (pulseEnd) { n.removeEventListener("animationend", pulseEnd); pulseEnd = null; }
   n.classList.remove("pulse"); void n.offsetWidth; n.classList.add("pulse");
-  n.addEventListener("animationend", () => n.classList.remove("pulse"), { once: true });   // one-shot: the class leaves on the animation's own end, so a later landing that re-shows this one element replays nothing (the follow-up after PR 1584, low 1)
+  const end = () => { n.classList.remove("pulse"); if (pulseEnd === end) pulseEnd = null; };
+  pulseEnd = end;
+  n.addEventListener("animationend", end, { once: true });   // one-shot: the class leaves on the animation's own end, so a later landing that re-shows this one element replays nothing (the follow-up after PR 1584, low 1)
 }
 let landingNoticeSid: string | null = null;
 // the landing's state lives in ONE RECORD PER ASK (WindowAsk, beside requestAround below; round eight): no per-session slot here
@@ -13988,7 +13992,14 @@ function showLandingNotice(sid: string, t: number | null | undefined): void {
   landingNoticeEl.classList.remove("pulse");   // a pulse cut short by the hide (no animationend) must not replay on this re-show (low 1)
   landingNoticeEl.style.display = "";
 }
-function hideLandingNotice(): void { if (landingNoticeEl) landingNoticeEl.style.display = "none"; landingNoticeSid = null; }
+function hideLandingNotice(): void {
+  if (landingNoticeEl) {
+    if (pulseEnd) { landingNoticeEl.removeEventListener("animationend", pulseEnd); pulseEnd = null; }   // a pulse the hide cuts short never fires animationend: its handler leaves with it (low 2)
+    landingNoticeEl.classList.remove("pulse");
+    landingNoticeEl.style.display = "none";
+  }
+  landingNoticeSid = null;
+}
 /** The notice's click: the pending target and the notice go, the reply still inserts its run when it arrives (nothing is thrown
  *  away) and the view is not moved; the reader stays where they are, including where the pre-jump put them. */
 function cancelLanding(): void {
