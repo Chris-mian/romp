@@ -61,3 +61,16 @@ export function orderWidgets<W extends WidgetLike>(prefs: WidgetPrefs, registry:
   for (const w of registry) if (!out.includes(w)) out.push(w);
   return out;
 }
+
+/** A row moved within a list of ids (the settings rows' visual order, dividers included): the id taken out and put
+ *  back at `to`, an index into the list WITHOUT the id; an unknown id or an out-of-range index leaves the list as it
+ *  was. Pure, so the drag and the keyboard road (and their tests) share one rule. */
+export function moveId(list: readonly string[], id: string, to: number): string[] {
+  const i = list.indexOf(id);
+  if (i < 0) return list.slice();
+  const rest = list.filter((x) => x !== id);
+  const at = Math.max(0, Math.min(rest.length, Math.floor(to)));
+  if (!Number.isFinite(to)) return list.slice();
+  rest.splice(at, 0, id);
+  return rest;
+}
