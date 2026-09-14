@@ -269,7 +269,7 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-widget-opt { display: inline-block; min-width: 140px; }
 /* the demo's miniature tab wears the STRIP's vocabulary (styles.css .tab, .tab-dot, .tab-ctx, .tab-key), in this sheet's
    fallbacks: the gear's hosts load feed.css and gear.css, not the chat's sheet */
-#rsettings .rs-widget-demo .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg, #ccc); position: relative; }
+#rsettings .rs-widget-demo .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg, #ccc); position: relative; border-radius: 6px; }   /* the radius the strip's tab has: a ring's outline follows it */
 #rsettings .rs-widget-demo .tab-dot, #rsettings .rs-preview .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg, #e0b020); }
 #rsettings .rs-widget-demo .tab-dot.await, #rsettings .rs-preview .tab-dot.await { background: var(--st-awaitbg-bg, #54B204); }
 #rsettings .rs-widget-demo .tab-dot.none, #rsettings .rs-preview .tab-dot.none { visibility: hidden; }
@@ -280,6 +280,12 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-widget-demo .tab-ctx-fill, #rsettings .rs-preview .tab-ctx-fill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
 #rsettings .rs-widget-demo .tab-key, #rsettings .rs-preview .tab-key { flex: 0 0 auto; font: 600 calc(0.82em / 0.92) ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted, #9aa0a6); border: 1px solid var(--menu-border, rgba(255, 255, 255, 0.18));
   border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; line-height: 1.5; letter-spacing: 0.02em; }
+/* THE RINGS (the rings-as-widgets change, 2026-09-14): the ring rows' demos (and the preview, should a ring light on its
+   status) wear the strip's dashed outline through this sheet's fallbacks: the gear's hosts load feed.css and gear.css,
+   not styles.css. The classes are the ones the strip composes (tab-widgets.ts), the colours the status tokens. */
+#rsettings .rs-widget-demo .tab.ring-needs-you, #rsettings .rs-preview .tab.ring-needs-you { outline: 2px dashed var(--st-awaiting-bg, #c0392b); outline-offset: -2px; }
+#rsettings .rs-widget-demo .tab.ring-waiting-on-you, #rsettings .rs-preview .tab.ring-waiting-on-you { outline: 2px dashed var(--st-ask-bg, #f5d33f); outline-offset: -2px; }
+#rsettings .rs-widget-demo .tab.ring-retrying, #rsettings .rs-preview .tab.ring-retrying { outline: 2px dashed var(--st-retrying-bg, #e67e22); outline-offset: -2px; }
 
 /* A control that depends on the Task tracking switch while it is off (T404): the row greys by token (the fast-mode box's
    dress), keeps its hover so the title says what to enable, and its inputs are inert (disabled, and no pointer on them or
@@ -300,6 +306,7 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-grip:hover, #rsettings .rs-grip:focus-visible { color: var(--text-bright); background: var(--accent-wash); outline: none; }
 #rsettings .rs-widget.rs-dragging { opacity: 0.7; outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 6px; }
 #rsettings .rs-widget.rs-dragging .rs-grip { cursor: grabbing; }
+#rsettings .rs-grip-none { width: 18px; height: 22px; }   /* a section that does not reorder (the rings, 2026-09-14): the grip's cell, empty, keeps the grid's columns */
 #rsettings .rs-divider { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; padding: 6px 0; border-bottom: 0; color: var(--text-muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
 #rsettings .rs-divider::before, #rsettings .rs-divider::after { content: ""; flex: 1 1 auto; height: 2px; background: var(--hairline); border-radius: 1px; }
 #rsettings .rs-preview { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--menu-border); border-radius: 6px; background: var(--bg); display: flex; align-items: center; gap: 12px; }

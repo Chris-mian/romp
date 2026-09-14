@@ -869,7 +869,7 @@ class SplitExecutes(unittest.TestCase):
         # says the way back
         l = self.out["locked"]
         self.assertIsNone(l["r"])
-        self.assertEqual(l["notify"], [["warn", "The tabs are locked: unlock them in the tab strip\u2019s gear menu (Lock the tabs in place) to move this session."]])
+        self.assertEqual(l["notify"], [["warn", "The tabs are locked: unlock them in the settings (Chat, Tab strip) to move this session."]])   # T415: the lock is a switch in the settings
         self.assertEqual(l["stored"], self.out["unmovable"]["stored"], "the store is untouched")
         self.assertEqual(l["ids"], self.out["unmovable"]["ids"], "no column opened")
 

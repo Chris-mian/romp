@@ -52,6 +52,7 @@ test("every input the strip renders is in the signature", () => {
     "s.name", "s.color?.bg", "s.color?.fg", "st.state", "tabStateClass(st)", "!!st.faded",
     "st.ctx", "st.ctxColor", "st.ctxTone", "!!s.sub", "hostIsDown(id)", "hostDownNote(id)",
     "settings.tabWidgets", "tabHotkey(id)",   // T379: which widgets a tab carries (and their options), and the hot-key keycap's chord
+    "st.needsYou === true", "kst?.needsYou === true",   // the yellow ring's input (the ask ring, 2026-09-13; a widget since 2026-09-14): a card of the session's entering or leaving the feed's needs-you column repaints, on a loaded tab and a skeleton alike; the switches ride settings.tabWidgets above
   ]) assert.ok(sig.includes(needle), "the signature reads " + needle);
   assert.match(fn, /const unions = viewTagUnion\(effViews\(\)\);\s*\n\s*const plan = planStrip\(visibleIds, unions, readTabGroups\(unions\), activeId, phoneLayout\(\),/,
     "the plan reads the unions the signature carries");
@@ -63,7 +64,7 @@ test("every input the strip renders is in the signature", () => {
   assert.match(fn, /const st = applyTabStatus\(tab, s\);/);
   assert.match(chip, /const stateCls = tabStateClass\(s\.status\);\s*\n\s*if \(stateCls\) tab\.classList\.add\(stateCls\);/);
   assert.match(RENDER, /^import \{ tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle \} from "\.\/tab-state";/m);   // the dot rule moved into the dot widget (T379)
-  assert.match(RENDER, /^import \{ composeTabWidgets, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the widgets the strip composes, and the hot-key chord the signature reads");   // + tabDotClass: the dot slot every tab carries derives from st.state, already in the signature (the tab-strip fix, 2026-09-08); + tabDotTitle: the slot's hover title, from the same state
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m, "the widgets the strip composes (the rings too, one class at a time), the ring switches the folded pip reads, and the hot-key chord the signature reads");   // + tabDotClass: the dot slot every tab carries derives from st.state, already in the signature (the tab-strip fix, 2026-09-08); + tabDotTitle: the slot's hover title, from the same state
 });
 
 test("a tab drag resets the signature (its live reorder changes the strip's DOM outside renderTabs), and the tooltip reads the session fresh", () => {

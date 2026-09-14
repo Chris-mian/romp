@@ -105,11 +105,16 @@ class FeedFirstColdPush(unittest.TestCase):
     def test_a_warm_kernel_takes_no_extra_step(self):
         feed_c, chat_c = self._client("feed"), self._client("chat")
         km._built_feed[1] = json.loads(json.dumps(FEED))          # a feed already built since start
+        with km._PERF_STATS.lock:
+            km._PERF_STATS.pusher["cycles"] = 3                    # and later cycles: the built feed alone stands the pass down
         km._push([feed_c, chat_c])
         self.assertEqual(km._wire_stats["feed_first"], 0, "no early pass on a warm kernel")
         self.assertIn(("feed", "feed"), self.seq, "the regular feed section still serves the pane: %r" % self.seq)
 
     def test_a_later_cycle_takes_no_extra_step(self):
+        # Reverted to the boot's first cycle on 2026-09-14: on any later cold refresh the shortcut built the feed cold ahead
+        # of everything while every redialing pane's connect push built the same cold work at once (push.feedFirst 106 s,
+        # a 131 s first refresh at the 12:06 PM PT boot). Back once builds are single-flight across threads.
         with km._PERF_STATS.lock:
             km._PERF_STATS.pusher["cycles"] = 1
         km._push([self._client("feed"), self._client("chat")])

@@ -314,9 +314,9 @@ test("a folded section renders its header alone with the folded-away count and o
   // the pip is the MEMBERS' (a hidden one blocked/waiting/working/retrying), never the header's own status
   // (the user 2026-09-06: no session-tab affordances on a header — but a fold must still say a hidden
   // member needs you); over the hidden members, after the count
-  assert.match(head, /const kind = sectionPip\(hidden\.map\(\(id\) => sessions\.get\(id\)\?\.status\)\);/,
-    "one summary pip, classified by tab-state.ts — the same rule the tab itself wears (tab-state.test)");
-  assert.match(head, /pip\.title = sectionPipTitle\(kind, sectionPipMembers\(kind, hidden\.map\(\(id\) => sessions\.get\(id\)\)\)\);/, "the tooltip names the sessions");
+  assert.match(head, /const kind = sectionPip\(hidden\.map\(\(id\) => sessions\.get\(id\)\?\.status\), ringSwitch\(settings\.tabWidgets\)\);/,
+    "one summary pip, classified by tab-state.ts — the same rule the tab itself wears (tab-state.test), under the same ring switches (the rings are widgets since 2026-09-14)");
+  assert.match(head, /pip\.title = sectionPipTitle\(kind, sectionPipMembers\(kind, hidden\.map\(\(id\) => sessions\.get\(id\)\), ringSwitch\(settings\.tabWidgets\)\)\);/, "the tooltip names the sessions");
   assert.ok(head.indexOf('el("span", "tab-group-count")') < head.indexOf("sectionPip("), "after the count (the row's last child when folded, T284)");
   assert.ok(!head.includes("tabStateClass("), "the header itself wears no state class");
   assert.ok(!head.includes('"tab-dot"'), "never a .tab-dot — the kernel's mobile scrape keys on the tab pips' vocabulary");
@@ -384,7 +384,8 @@ test("the switch lives at the foot of the chat tag-lens menu beside Configure ta
     "✓-marked when on; flips and repaints in place like the tag rows");
   assert.ok(MENU.indexOf("if (opts.groupToggle)") < MENU.indexOf('row("Configure tags…"'), "beside — above — Configure tags…");
   assert.match(RENDER, /groupToggle: \{ label: "Group tabs by tag", on: \(\) => readTabGroups\(\)\.on,/);
-  const mobile = RENDER.slice(RENDER.indexOf('const mslot = document.getElementById("mtag-slot")'), RENDER.indexOf("paintTabRowLines(bar);"));
+  const mobileAt = RENDER.indexOf('const mslot = document.getElementById("mtag-slot")');
+  const mobile = RENDER.slice(mobileAt, RENDER.indexOf("paintTabRowLines(bar);", mobileAt));   // the paint after the mount (the strip's observer paints earlier in the file, T413 round two)
   assert.ok(!mobile.includes("groupToggle"), "the phone page hides the strip itself, so its mount offers no switch");
 });
 
@@ -631,7 +632,7 @@ test("the header's structure and gestures read as a label: the tag's chip, then 
   assert.equal(CSS.match(/\.tab-group-pip\.retrying \{ background: (var\(--st-retrying-bg\)); \}/)![1], CSS.match(/\.tab\.tab-retrying \{ --state: (var\(--st-retrying-bg\)); \}/)![1],
     "the pip's retrying amber IS the tab's — the same status token");
   const toks = new Set((rules.map((m) => m[2]).join(" ").match(/var\((--[a-z-]+)/g) || []).map((m) => m.slice(4)));
-  for (const t of toks) assert.ok(["--fg", "--dim", "--accent", "--accent-wash", "--box-border", "--st-working-bg", "--st-blocked-bg", "--st-retrying-bg", "--tab-active-bg", "--chip-bg"].includes(t), "a token the strip does not already wear: " + t);
+  for (const t of toks) assert.ok(["--fg", "--dim", "--accent", "--accent-wash", "--box-border", "--st-working-bg", "--st-blocked-bg", "--st-retrying-bg", "--st-ask-bg", "--tab-active-bg", "--chip-bg"].includes(t), "a token the strip does not already wear: " + t);   // --st-ask-bg: the ask ring's yellow, on the tab AND the pip (2026-09-13)
 });
 
 // SHOW WHEN FOLDED (the user 2026-09-06): a member pinned to its section keeps its tab on the strip
@@ -1897,9 +1898,10 @@ test("the guide states the every-tag rule (T264b)", () => {
   assert.doesNotMatch(GUIDE, /sits under the first of them in your tag order/, "the retired home-tag sentence is gone");
 });
 
-test("the guide's small-dot sentence says the dot shows only in the pip's three states and names them in the rule's order (tab-state.ts sectionPip): red for blocked or waiting on you, else gold for working, else amber for an API retry", () => {
+test("the guide's small-dot sentence says the dot shows only in the pip's four states and names them in the rule's order (tab-state.ts sectionPip): red for blocked or waiting on you, else yellow for something waiting on you, else gold for working, else amber for an API retry", () => {
   const prose = (t: string) => new RegExp(t.replace(/[.()]/g, "\\$&").split(" ").join("\\s+"));   // the guide wraps its lines
-  assert.match(GUIDE, prose("a small dot after it shows when one of them is busy or needs you: red when one is blocked or waiting on you, otherwise gold when one is working, otherwise amber when one hit an API error and is retrying on its own (hover it for their names)."));
+  assert.match(GUIDE, prose("a small dot after it shows when one of them is busy or needs you: red when one is blocked or waiting on you, otherwise yellow when one has something waiting on you, otherwise gold when one is working, otherwise amber when one hit an API error and is retrying on its own (hover it for their names)."));
+  assert.doesNotMatch(GUIDE, prose("red when one is blocked or waiting on you, otherwise gold when one is working"), "the three-state sentence is gone: the ask yellow sits between red and gold");
   assert.doesNotMatch(GUIDE, prose("a small dot after it says when one of them is working or waiting on you"), "the two-state sentence is gone");
 });
 

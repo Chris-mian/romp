@@ -206,6 +206,13 @@ body.scheme-solarized-dark {
   /* amber-orange — the API is backing off and retrying (the tab ring, the chip, the chat's retry notices); the
      hue sat RAW in seven rules until 2026-09-08 (5.38:1 on the chat's card surface) */
   --st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;
+  /* the ASK yellow (the ask ring, 2026-09-13): something of a session's is waiting on you — a card of the session's
+     in the feed's needs-you column — while the session may be idle, awaiting or still working. A clear lemon, not
+     Working's mustard gold (#e0b020) and not the retrying amber, so the dashed ring and the folded header's
+     pip read as their own state; 11.3:1 on the page (theme-parity.test.ts pins the pair, the ring on the page and
+     every pair of ring hues per theme: 9.5 from the gold to full-colour readers, a known pair, the dot and the
+     ring differing in shape and position; 9.2 under a red-green deficiency; every other pair well clear). */
+  --st-ask-bg: #f5d33f; --st-ask-fg: #332600;
 
   /* the assistant's READING face (.assistant): the UI face in dark, mono in light (the light block re-points it).
      --font-doc is the file viewer's face for a rendered document (.fileview-md): sans in both themes, since the mono
@@ -282,6 +289,13 @@ body.theme-light {
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
   --st-5xx-bg: #A21CAF; --st-5xx-fg: #ffffff;   /* the 5xx magenta in the light palette: 5.3:1 on the card, white on it 6.7:1 */
   --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;   /* the retrying amber in the light palette: 4.86:1 on the card, white on it 6.18:1 */
+  /* the ask yellow in the light palette (2026-09-14): a dark olive at OKLCH lightness 0.38, hue 94, because the light
+     palette's convention (the same hue darkened to lightness 0.5 for 3:1 on cream) would put a second yellow on the
+     working gold (#8B6914), and hue alone does not survive a red-green deficiency against the gold or the retrying
+     amber (#9C4A0C); lightness is the axis left. 8.40:1 on the page, white on it 10.01:1; OKLab distance x100 from the
+     other rings and dots, full colour / under a deficiency: working 16.4 / 15.3, retrying 15.4 / 8.3, awaiting 22.7 /
+     8.6, blocked 30.7 / 16.1, await-green 33.6 / 30.3 (theme-parity.test.ts pins every pair, both themes). */
+  --st-ask-bg: #504100; --st-ask-fg: #ffffff;
   --radius-menu: 6px;
   --shadow-menu: 0 4px 12px rgba(31, 26, 20, 0.16);
   --menu-bg: #FBF6EF;
@@ -468,6 +482,7 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 .tab-group-pip { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--st-working-bg); }
 .tab-group-pip.blocked { background: var(--st-blocked-bg); }
 .tab-group-pip.retrying { background: var(--st-retrying-bg); }
+.tab-group-pip.ask { background: var(--st-ask-bg); }   /* yellow — a hidden member has something waiting on you (the ask ring, 2026-09-13) */
 /* ONE GROUP PER LINE (T264, the user 2026-09-08: the grouped strip read as one long concatenation).
    A break is a zero-height flex item spanning the whole row, so the item after it — a group's header,
    or the untagged trail's first tab — opens a new line: the chip sits at the left edge and its tabs
@@ -516,22 +531,31 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
 /* BLOCKED (API error): the SAME dashed ring as awaiting but in the alarm-red blocked color, PLUS a faint
    red fill so a stopped session is highlighted (not just outlined). It isn't working, so it has NO dot
    (the user 2026-06-16). */
-.tab.tab-blocked { --state: var(--st-blocked-bg); background: rgba(229, 72, 77, 0.30); }   /* translucent red fill so a hard-blocked tab reads at a glance, atop the dashed ring (the user 2026-06-18) */
+.tab.tab-blocked { --state: var(--st-blocked-bg); }
+/* The FILL rides the red RING (the rings-as-widgets change, 2026-09-14): the ring is a widget with a switch in the
+   settings (tab-widgets.ts, the class ring-needs-you the strip composes), and with it switched off a stopped session
+   is a plain tab: its state's dot slot and hover title, no ring and no fill. */
+.tab.tab-blocked.ring-needs-you { background: rgba(229, 72, 77, 0.30); }   /* translucent red fill so a hard-blocked tab reads at a glance, atop the dashed ring (the user 2026-06-18) */
 /* the red fill must out-specify .tab.active (white, equal specificity but LATER in source) and :hover, so
    the FOCUSED/hovered blocked tab still reads red — without this the active blocked tab showed white (the user 2026-06-18) */
-.tab.tab-blocked:hover { background: rgba(229, 72, 77, 0.38); }
+.tab.tab-blocked.ring-needs-you:hover { background: rgba(229, 72, 77, 0.38); }
 /* SELECTED + blocked (the user 2026-07-24): the FILL has to carry both facts at once, since a blocked tab
    can't fall back to the plain white selection background without losing the red. So layer them literally —
    the normal selection white OVER the red — and the selected tab reads as a lighter, brighter red than its
    unselected neighbours while staying unmistakably red. A hybrid, rather than one state replacing the other. */
-.tab.tab-blocked.active {
+.tab.tab-blocked.ring-needs-you.active {
   background: linear-gradient(rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.14)), rgba(229, 72, 77, 0.42);
 }
 /* (The identity stand-down while blocked — the user 2026-07-24 — is structural now: every identity
    TINT rule carries :not(.tab-blocked), so the red fill wins by construction. The old box-shadow:none
    override died with the ring it overrode, 2026-08-26.) */
-/* STATE ring on all four sides, no layout jitter. WORKING shows a yellow dot
-   (.tab-dot) instead; COMPACTING intentionally gets NO outline (the user: it's
+/* THE RINGS on all four sides, no layout jitter: WIDGETS since 2026-09-14 (tab-widgets.ts), one per row of the
+   settings' Tab widgets section with a switch each, and a tab wears ONE at a time (composeTabRing: the first
+   switched-on ring in precedence order, red over yellow over amber). The rules below key on the RING class the strip
+   composes, never on the state class, so a ring switched off leaves the tab with its state's dot and hover title
+   alone, and no :not chain or specificity game decides which ring shows. WORKING shows a gold dot (.tab-dot)
+   instead; the dashed YELLOW ring is the ASK ring (a card of the session's under needs-you, 2026-09-13), which rides
+   beside any live state, working included; COMPACTING intentionally gets NO outline (the user: it's
    transient plumbing, not something to flag — the statusline's scan bar is the
    compacting cue); a selected compacting tab keeps its normal active styling.
    BLOCKED/awaiting gets a DASHED red ring (the user: dashed with long dashes +
@@ -549,7 +573,15 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    label survives a state overlap either way. */
 .tab.tab-peek { outline: 1.5px dashed rgba(255, 255, 255, 0.35); outline-offset: -2px; }
 .tab.tab-peek .tab-label { font-style: italic; opacity: 0.85; }
-.tab.tab-awaiting, .tab.tab-blocked, .tab.tab-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }
+.tab.ring-needs-you, .tab.ring-retrying { outline: 2px dashed var(--state); outline-offset: -2px; }   /* the red (--state from .tab-awaiting / .tab-blocked) and the amber (from .tab-retrying) */
+/* THE ASK RING (2026-09-13): the same dashed ring in the ask YELLOW when the feed files a card of this session under
+   needs-you — it asked something, a decision is pending, a peer's message waits for a say — so the sessions that need
+   you stand out in the strip without a click. It rides beside any live state: the session may be idle, awaiting or
+   still WORKING while the card waits, composed with the working dot. Which ring shows is the composition's call
+   (tab-widgets.ts composeTabRing, red over yellow over amber, one class at a time), so this rule needs no :not chain
+   and no specificity above the red and amber rule's; a stopped session with the red ring switched off wears this one
+   when it has a card, which is true of that tab. tab-rings.test.ts pins the rules and the tokens. */
+.tab.ring-waiting-on-you { outline: 2px dashed var(--st-ask-bg); outline-offset: -2px; }
 /* WORKING: a small yellow dot left of the name (replaces the old yellow outline). */
 .tab-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--st-working-bg); }   /* solid — dot oscillation was distracting (the user 2026-06-16) */
 .tab-dot.await { background: var(--st-awaitbg-bg); }   /* awaiting-bg: the dot matches the await-green chip (the user 2026-07-13) */
@@ -576,7 +608,7 @@ body.tabbar-resizing { cursor: ns-resize; user-select: none; }
    wrapped line stands as tall as one the + is on. The gear is a bare glyph dressed exactly as the rail's settings gear at the
    bottom right of every romp page (kernel.py .rail-act and #rail-gear, which strip-chrome.test.ts reads value for value):
    no border, no background at rest, the 19px glyph, the rail's rest colour, its 5px radius and its hover wash. */
-.tab-strip-end { display: inline-flex; align-items: center; min-height: 31px; margin-left: auto; }
+.tab-strip-end { display: inline-flex; align-items: center; min-height: 31px; margin-left: auto; min-width: 0; }   /* min-width 0 (T413 round two): the end's content, the run of chips, may shrink; the controls keep their sizes */
 .tab-widgets-gear { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; margin: 1px 4px; padding: 4px 0; cursor: pointer;
   font-size: 19px; line-height: 1; border: 0; border-radius: 5px; background: transparent; color: #8a8a8a; user-select: none;
   transition: color 0.1s, background 0.1s; }
@@ -842,7 +874,16 @@ body.chat-theme-yatharth .tab.active.colored:not(.tab-blocked) {
    tag-mounts.test.ts): a wrapped controls-only flex line otherwise stood only as tall as the 18px
    pill and landed nearly flush under the tab row above, while a line the + shared had air (the
    user 2026-08-25). Inner centering keeps the pill and chips at their own sizes. */
-.tab-tagbox { display: inline-flex; align-items: center; flex-wrap: wrap; min-height: 31px; }
+.tab-tagbox { display: inline-flex; align-items: center; flex-wrap: nowrap; min-height: 31px; min-width: 0; }   /* nowrap + min-width 0 (T413 round two): the run of chips shrinks beside the button, never wraps under it */
+/* the selected tags as chips LEFT of the tags button (T413, the user 2026-09-14), outside group mode: the shared chips with
+   their crosses, the run bounded to three and a plain "+N more" chip (tag-menu.ts chipRun); the host shrinks before the
+   controls do (the chain: .tab-strip-end and .tab-tagbox above let it), an empty host takes no room, and render.ts
+   fitStripChips steps a run that would carry the right end onto a new row down chip by chip, then hides it. The hide is
+   [hidden], which loses to this author display (the sheet's standing trap: the attribute alone hid nothing, round two) */
+.tab-tagchips { display: inline-flex; gap: 5px; align-items: center; margin-right: 4px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.tab-tagchips:empty { display: none; }
+.tab-tagchips[hidden] { display: none; }
+.tab-tagchips .tag-chip-more { cursor: pointer; }
 /* (the tab lock's strip button and its box left with T405, the user 2026-09-13: the lock is a row in the strip's gear menu) */
 .tab-add:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
 /* (The .tab-fleet pill was removed 2026-06-24 — Fleet/Chat are now the rotated toggles in the chat pane's

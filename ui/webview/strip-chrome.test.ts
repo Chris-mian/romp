@@ -4,7 +4,7 @@
 // row inside that gear's menu, with the two titles the button wore, its state, drag rules and saveSettings road untouched;
 // (3) the strip's tag control displays no chips (the tags show in the strip's sections when Group tabs by tag is on, else
 // whoever is interested clicks the button; the filter itself is unchanged); (4) the gear sits in a box of its own at the
-// strip's farthest right. The rows menu (tag-menu.ts openRowsMenu) is executed over a stub document; the rest are source
+// strip's farthest right. Since T415 the gear opens the settings directly (its menu and the rows-menu helper are gone); the rest are source
 // pins on render.ts, styles.css, icons.ts and kernel.py. Synthetic only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -25,7 +25,7 @@ test("one gear, one glyph, one source: the strip renders icons.ts GEAR_GLYPH and
   assert.ok(m, "icons.ts declares GEAR_GLYPH");
   const glyph = decodeTs(m![1]);
   assert.equal(glyph, "\u26ed", "the gear-without-hub character the rail has worn since 2026-06-29");
-  assert.match(RENDER, /^import \{ GEAR_GLYPH, ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN \} from "\.\/icons";/m, "the strip imports it");
+  assert.match(RENDER, /^import \{ GEAR_GLYPH, ICON_FORK \} from "\.\/icons";/m, "the strip imports it");
   assert.match(RENDER, /gear\.textContent = GEAR_GLYPH;/, "and renders exactly it");
   assert.doesNotMatch(RENDER, /M19\.4 15a1\.7 1\.7 0 0 0 \.3 1\.8/, "the strip's own gear drawing is gone");
   // the rail: the kernel's landing renders _gear_glyph(), which reads icons.ts; no literal gear character in the rail's markup line
@@ -43,21 +43,21 @@ test("one gear, one glyph, one source: the strip renders icons.ts GEAR_GLYPH and
   assert.equal(decodeTs(fb![1]), glyph, "the fallback IS the constant's character");
 });
 
-test("the tab lock is a row in the gear's menu with the button's two titles, toggling setTabsLocked and keeping the menu open; Tab widgets… is the other row", () => {
+test("the strip's gear opens the settings' Tab strip section directly (T415): no lock button, no menu, the keyboard belt kept", () => {
   assert.doesNotMatch(RENDER, /el\("button", "tab-lock"/, "no lock button in the strip");
   assert.doesNotMatch(RENDER, /el\("span", "tab-lockbox"\)/, "no lock box in the strip");
-  assert.match(RENDER, /openRowsMenu\(gear, \(\) => \[\s*\n\s*\{ label: "Lock the tabs in place", current: settings\.tabsLocked, glyph: settings\.tabsLocked \? ICON_LOCK : ICON_LOCK_OPEN,\s*\n\s*title: settings\.tabsLocked \? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again",\s*\n\s*press: \(\) => \{ setTabsLocked\(!settings\.tabsLocked\); return false; \} \},\s*\n\s*\.\.\.\(settingsReachable \? \[\{ label: "Tab widgets…", dim: true, press: \(\) => \{ openSettingsOn\("chat", "tabwidgets"\); \} \}\] : \[\]\),\s*\n\s*\]\);/,
-               "the two rows: the lock's toggle (a switch: the menu stays and repaints) and, where a settings gear can be reached, the T379 ask (an action: the menu closes)");
-  // the lock's state, its drag rules and its saveSettings road are as they were (tab-lock.test.ts pins them); only the toggle's door moved
+  assert.match(RENDER, /gear\.addEventListener\("click", \(e\) => \{ e\.stopPropagation\(\); openSettingsOn\("chat", "tabstrip"\); \}\);/, "one click, the settings at the strip's section");
+  assert.doesNotMatch(RENDER, /openRowsMenu|Tab widgets…/, "no menu, no widgets row: the section holds the lock and Tab widgets follows it in the card");
+  // the lock's state, its drag rules and its saveSettings road are as they were (tab-lock.test.ts pins them); only the toggle's door moved, twice (T405, T415)
   assert.match(RENDER, /const focusedGear = !!focusedEl\?\.closest\("\.tab-widgets-gear"\);/, "a keyboard press on the gear keeps the focus across the strip's rebuild");
   assert.match(RENDER, /\} else if \(focusedGear\) \(bar\.querySelector\("\.tab-widgets-gear"\) as HTMLElement \| null\)\?\.focus\(\);/);
   assert.doesNotMatch(RENDER, /focusedLock/, "the lock's own focus rule went with the button");
 });
 
-test("the strip's tag control displays no chips: the host is built for the shared sync and never appended", () => {
-  assert.doesNotMatch(RENDER, /const tagChipsHost = el\("span", "tab-tagchips"\);/, "no detached chips host: nothing is built to be dropped (round two, low 3)");
-  assert.doesNotMatch(RENDER, /tagBox\.appendChild\(tagChipsHost\);/, "and nothing is appended to the strip's tag box");
-  assert.match(RENDER, /syncTagFilter\(tagBtn, null, surfaceLens\(v, "chat"\)/, "the shared sync still runs with no host, so the button's accent says it filters and no chip is built");
+test("the strip's tag control shows the selected tags as chips left of the button outside group mode (T413), none for the no-tags pick (T405 stands)", () => {
+  assert.match(RENDER, /const tagChipsHost = el\("span", "tab-tagchips"\);/, "the chips host is back (T413)");
+  assert.match(RENDER, /tagBox\.append\(tagChipsHost, tagBtn\);/, "left of the button in the strip's tag box");
+  assert.match(RENDER, /syncTagFilter\(tagBtn, plan\.sectioned \? null : tagChipsHost, surfaceLens\(v, "chat"\)/, "grouping: the headings carry the tags and no host is fed; otherwise the chips");
   assert.match(RENDER, /syncTagFilter\(mslot\.children\[0\] as HTMLElement, phoneLayout\(\) \? \(mslot\.children\[1\] as HTMLElement\) : null,/, "the phone header's mount builds its chips only in the phone layout: on the desktop no chip is built per paint anywhere (the T405 read)");
   assert.match(TAGMENU, /export function syncTagFilter\(btn: HTMLElement, chipsHost: HTMLElement \| null,/);
   assert.match(TAGMENU, /btn\.setAttribute\("aria-pressed", narrowed \? "true" : "false"\);\s*\n\s*if \(!chipsHost\) return;/, "the sync skips the chip loop with no host");
@@ -144,60 +144,17 @@ function harness() {
 }
 const label = (n: Node): string => n.kids.map((k) => k.tag === "#text" ? (k.text || "") : label(k)).join("");
 
-test("executed: the rows menu renders its rows with the ✓ and titles, a switch keeps it open and repaints, an action closes it, Enter presses, Escape returns the focus", () => {
-  const h = harness();
-  try {
-    let locked = false; const acted: string[] = [];
-    const anchor = h.mk("button"); anchor.attrs.class = "tab-widgets-gear";
-    h.mod.closeTagMenu();
-    h.mod.openRowsMenu(anchor, () => [
-      { label: "Lock the tabs in place", current: locked, title: locked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again", press: () => { locked = !locked; return false; } },
-      { label: "Tab widgets…", dim: true, press: () => { acted.push("widgets"); } },
-    ]);
-    const menu = h.body.kids[h.body.kids.length - 1];
-    assert.equal(menu.dataset.rowsMenu, "1"); assert.equal(menu.dataset.tagMenu, "1", "the tag menu's closers close it too");
-    let rows = menu.kids;
-    assert.deepEqual(rows.map(label), ["Lock the tabs in place", "Tab widgets…"]);
-    assert.equal(rows[0].attrs["aria-checked"], "false"); assert.equal(rows[0].title, "Lock the tabs in place: no drag or move until clicked again");
-    assert.equal(rows[0].tabIndex, 0, "a row takes focus");
-    assert.equal(h.focused(), rows[0], "the first row is focused on open: Enter on the gear, then Enter on the row, is the whole path");
-    rows[0].handlers.keydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
-    assert.equal(locked, true, "Enter pressed the switch");
-    assert.equal(menu.removed, undefined, "a switch keeps the menu open");
-    rows = menu.kids;
-    assert.equal(rows[0].attrs["aria-checked"], "true", "and repaints it with the ✓"); assert.equal(rows[0].title, "Tabs are locked in place: click to allow moving them again");
-    assert.ok(rows[0].kids.some((k) => k.tag === "span" && label(k) === "✓"));
-    assert.equal(h.focused(), rows[0], "the focus stays on the row across the repaint");
-    assert.equal(rows[0].attrs.role, "menuitemcheckbox", "a row with a current value is a switch");
-    assert.equal(rows[1].attrs.role, "menuitem", "a row without one is an action (round two, low 2)…");
-    assert.equal(rows[1].attrs["aria-checked"], undefined, "…and carries no checked state");
-    rows[1].handlers.click();
-    assert.deepEqual(acted, ["widgets"]); assert.equal(menu.removed, true, "an action closes the menu");
-    // Escape hands the focus back to the anchor
-    h.mod.openRowsMenu(anchor, () => [{ label: "Lock the tabs in place", current: locked, press: () => false }]);
-    const menu2 = h.body.kids[h.body.kids.length - 1];
-    menu2.handlers.keydown({ key: "Escape", stopPropagation() {} });
-    assert.equal(menu2.removed, true); assert.equal(h.focused(), anchor);
-    // a press rebuilt the strip: the anchor is detached and a fresh gear stands in its place; Escape focuses the replacement, not the body
-    const stale: any = h.mk("button"); stale.attrs.class = "tab-widgets-gear"; stale.className = "tab-widgets-gear"; stale.tagName = "BUTTON"; stale.isConnected = false;
-    const fresh = h.mk("button"); fresh.attrs.class = "tab-widgets-gear";
-    (globalThis as any).document.querySelector = (sel: string) => (sel === "button.tab-widgets-gear" ? fresh : null);
-    h.mod.openRowsMenu(stale, () => [{ label: "Lock the tabs in place", current: locked, press: () => false }]);
-    const menu3 = h.body.kids[h.body.kids.length - 1];
-    menu3.handlers.keydown({ key: "Escape", stopPropagation() {} });
-    assert.equal(menu3.removed, true); assert.equal(h.focused(), fresh, "Escape after a rebuild hands the focus to the live gear, not the detached one");
-  } finally { h.mod.closeTagMenu(); h.restore(); }
+test("the rows-menu helper is gone with its one caller (T415): the tag menu's card and ✓ grammar stay for the tags menu", () => {
+  assert.doesNotMatch(TAGMENU, /openRowsMenu|RowsMenuRow|rowsMenu/, "no rows menu in the menu module");
+  assert.match(TAGMENU, /background:var\(--check-bg, #1EA1EB\)/, "the ✓ badge serves the tags menu");
 });
 
-test("the shared rows menu is the tag menu's card and ✓-row grammar, stated once in tag-menu.ts", () => {
-  assert.match(TAGMENU, /export function openRowsMenu\(anchor: HTMLElement, rows: \(\) => RowsMenuRow\[\]\): void \{/);
-  assert.match(TAGMENU, /if \(anchor\.isConnected !== false\) return anchor;/, "Escape refocuses the anchor's live replacement after the strip rebuilt");
-  assert.match(TAGMENU, /closeTagMenu\(\); liveAnchor\(\)\?\.focus\(\); \}/);
-  assert.match(TAGMENU, /menu\.dataset\.rowsMenu = "1"; menu\.dataset\.tagMenu = "1";/);
-  assert.equal((TAGMENU.match(/background:var\(--check-bg, #1EA1EB\);color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;/g) || []).length, 2, "the ✓ badge, the tag menu's and the rows menu's, one text");
+test("the ✓ badge is stated once in tag-menu.ts: checkMark draws it for every row that is current (T413)", () => {
+  assert.equal((TAGMENU.match(/background:var\(--check-bg, #1EA1EB\);color:#fff;/g) || []).length, 1, "one builder for the mark");
 });
 
-test("the gear's title names the widgets row only where a settings gear can be reached (round two, low 1)", () => {
-  assert.match(RENDER, /gear\.title = settingsReachable \? "Tab strip: lock, widgets…" : "Tab strip: lock";/);
-  assert.doesNotMatch(RENDER, /gear\.title = "Tab strip: lock, widgets…";/);
+test("the gear's title and label name the settings, and the gear is drawn only where a settings card can open (T415)", () => {
+  assert.match(RENDER, /if \(settingsReachable\) \{\s*\n\s*const gear = el\("button", "tab-widgets-gear"\) as HTMLButtonElement;/);
+  assert.match(RENDER, /gear\.title = "Tab strip settings";/);
+  assert.doesNotMatch(RENDER, /Tab strip: lock/, "the old titles are gone");
 });
