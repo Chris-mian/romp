@@ -33766,8 +33766,14 @@ def _merge_tx_sets(session, sid, t_floor=None):
 
     A restored pre-cut turn contributes its stored scalars (uuids, pcs: T358) and no atom is built for it; its USER
     texts (the echo landing keys) are read only when `t_floor`, the oldest live echo's send time, is at or before the
-    turn's newest atom: a text lands at or after its send, so no older turn can hold an echo's landing. The memo
-    entry records the floor its texts cover; a caller asking for an older floor misses and rebuilds."""
+    turn's newest atom: a text lands at or after its send, so no older turn can hold an echo's landing. Above the floor
+    the turn is read through its light facts (T401 (5b)): only the USER rows that carry text are built and their bodies
+    read, a light row without text is skipped unbuilt, a row whose facts lack the text bit is built (the safe road), and
+    no assistant row is ever built; the sets are equal to the every-atom road's by construction (the uuids and the
+    text-bearing uuids came from the scalars). The memo entry records the floor its texts cover; a caller asking for an
+    older floor misses and rebuilds. memos.chatMergeSets carries floorAgeMaxS (the newest atom's time over every turn,
+    live tail included, minus the floor; a zero floor is skipped) and builtAboveFloor (pre-cut user rows BUILT above a
+    floor), the two numbers the question of a dropped echo holding the floor is decided on."""
     ent = _merge_sets_memo.get(sid)
     if ent is not None and ent[0] is session and (t_floor is None or ent[2] <= t_floor):
         _chat_memo_bump(_merge_sets_stats, "hit")
@@ -33780,7 +33786,10 @@ def _merge_tx_sets(session, sid, t_floor=None):
     built_above, newest = 0, 0.0
     for turn in turns:
         pcs = em.turn_scalar(turn, "pcs")
-        newest = max(newest, float(turn.get("maxT") or 0))
+        if pcs is not None:                        # the newest atom over EVERY turn: the pre-turn's stored maxT, a plain turn's atoms
+            newest = max(newest, float(turn.get("maxT") or 0))
+        else:
+            newest = max([newest] + [float(a.get("t") or 0) for a in turn["atoms"]])
         if pcs is not None:                        # a restored pre-cut turn (T323 stage 4c / T358): its scalars, no atom built.
             tx_uuids.update(u for u in turn["uuids"] if u)
             tx_text_uuids.update(pcs)             # its USER texts are read only from the echo floor up (below)
@@ -33788,11 +33797,13 @@ def _merge_tx_sets(session, sid, t_floor=None):
                 continue
             atoms = turn["atoms"]
             if isinstance(atoms, em.LazyAtoms):   # above the floor: the USER rows with text alone are built and their bodies read
-                for i, f in atoms.user_facts():   #  (5b: every atom of such a turn used to be built, its assistant rows for nothing;
-                    if f.get("_light") is not None and f.get("_nt") is False:   #  the uuids and the text-bearing uuids came from
-                        continue                  #  the scalars above); a light row without text contributes no landing key
-                    a = atoms[i] if f.get("_light") is not None else f     # a row whose facts lack the bit is built (the safe road)
-                    built_above += 1
+                unbuilt = {i for i in range(len(atoms)) if list.__getitem__(atoms, i) is em._UNMAT}   # the slots THIS derivation
+                for i, f in atoms.user_facts():   #  may build (5b: every atom of such a turn used to be built, its assistant rows
+                    if f.get("_light") is not None and f.get("_nt") is False:   #  for nothing; the uuids and the text-bearing uuids
+                        continue                  #  came from the scalars above); a light row without text contributes no key
+                    a = atoms[i] if f.get("_light") is not None else f   # a row whose facts lack the bit is built (the safe road)
+                    if i in unbuilt and list.__getitem__(atoms, i) is not em._UNMAT:
+                        built_above += 1          # counted on the BUILD (a slot unbuilt before this walk, built now), never the read
                     for t in _atom_user_texts(a):
                         tx_texts.add(t)
                         tx_text_t[t] = max(tx_text_t.get(t, 0), float(a.get("t") or 0))
@@ -33805,9 +33816,11 @@ def _merge_tx_sets(session, sid, t_floor=None):
             for t in _atom_user_texts(a):
                 tx_texts.add(t)
                 tx_text_t[t] = max(tx_text_t.get(t, 0), float(a.get("t") or 0))
-    if t_floor is not None and newest:            # the two questions the next design line asks (on this miss's return): how far
-        age = max(0.0, newest - float(t_floor))   #  back the oldest live echo holds the floor, and how many pre-cut user rows that
-        _merge_sets_stats["floorAgeMaxS"] = max(_merge_sets_stats.get("floorAgeMaxS", 0.0), age)   # floor made the derivation build
+    if t_floor and newest:                        # the two questions the next design line asks (on this miss's return): how far
+        age = max(0.0, newest - float(t_floor))   #  back the oldest live echo holds the floor (the newest atom's time over every
+        _merge_sets_stats["floorAgeMaxS"] = max(_merge_sets_stats.get("floorAgeMaxS", 0.0), age)   # turn minus the floor; a zero
+        #                                          floor, an echo with no send time, is skipped), and how many pre-cut user rows that
+        #                                          floor made the derivation BUILD
     _merge_sets_stats["builtAboveFloor"] = _merge_sets_stats.get("builtAboveFloor", 0) + built_above
     sets = (frozenset(tx_uuids), frozenset(tx_text_uuids), frozenset(tx_texts), tx_text_t, _human_turn_floor(session))
     _merge_sets_memo.pop(sid, None)

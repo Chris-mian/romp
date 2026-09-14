@@ -48,6 +48,27 @@ def _reference(session, floor):
     return (sorted(tx_uuids), sorted(tx_text_uuids), sorted(tx_texts), dict(tx_text_t), km._human_turn_floor(session))
 
 
+def _user_rows_with_text_above(tree, floor):
+    """The count of restored pre-cut user rows with text in turns at or above the floor, read from the DOCUMENT rows' recorded
+    scalars (type, the lazy header's text bit, an inline body) without building anything: the bound the derivation's builds must
+    stay under, taken before the derivation runs (round two, low 4)."""
+    n = 0
+    for t in tree["turns"]:
+        la = t.get("atoms")
+        if not isinstance(la, em.LazyAtoms) or floor is None or (t.get("maxT") or 0) < floor:
+            continue
+        for k in la._rows:
+            row = la._index._row(k)
+            sc = row.get("s") or {}
+            typ = sc.get("type") or ({"u": "user", "a": "assistant", "s": "system"}.get(la._index.records[row["r"]][2], "user") if row.get("r") is not None else None)
+            if typ != "user":
+                continue
+            lz = row.get("lz")
+            if (lz is not None and lz.get("nt")) or (lz is None and "m" in row):
+                n += 1
+    return n
+
+
 def _floors(whole):
     """The floors that stress the derivation: none (no live echo), a floor exactly at a pre-cut user row's time, a floor between
     two turns, a floor days back (a dropped echo), and one past the newest atom (nothing above it)."""
@@ -68,18 +89,14 @@ class RestoredSetsEqualTheWholeBuilds(TA.Harness):
             for floor in _floors(whole):
                 with self.subTest(scenario=name, floor=floor):
                     self.fresh(); tree = self.parse(path)                          # a fresh restore: nothing built yet
+                    expect_rows = _user_rows_with_text_above(tree, floor)          # from the recorded scalars, BEFORE the derivation
                     m0 = em._ASM_INDEX_STATS["materialized"]
                     got = _sets(tree, floor)
                     built = em._ASM_INDEX_STATS["materialized"] - m0
                     self.fresh(); ref_tree = self.parse(path)
                     want = _reference(ref_tree, floor)                             # today's road over another fresh restore
                     self.assertEqual(got, want, "the five sets over the light road equal the every-atom road's")
-                    lazy_user_with_text = 0
-                    for t in tree["turns"]:
-                        la = t.get("atoms")
-                        if isinstance(la, em.LazyAtoms) and floor is not None and (t.get("maxT") or 0) >= floor:
-                            lazy_user_with_text += sum(1 for _, f in la.user_facts() if f.get("_light") is None or f.get("_nt") is not False)
-                    self.assertLessEqual(built, lazy_user_with_text, "%s at floor %r: only user rows with text above the floor are built (%d built)" % (name, floor, built))
+                    self.assertLessEqual(built, expect_rows, "%s at floor %r: only user rows with text above the floor are built (%d built, %d such rows)" % (name, floor, built, expect_rows))
                     if floor is None:
                         self.assertEqual(built, 0, "no floor: no pre-cut atom built")
 
@@ -144,6 +161,25 @@ class TheShapesTheFloorStresses(TA.Harness):
         out, built, above = self._run(tree, 1060 - 3 * 86400)
         self.assertEqual((built, above), (1, 1), "the user row with text is built; the assistant row is not")
         self.assertAlmostEqual(km._merge_sets_stats["floorAgeMaxS"], 3 * 86400, delta=1.0, msg="the floor's age at the newest atom")
+
+    def test_three_forced_misses_over_one_tree_count_builds_once(self):
+        """Round two, low 1: builtAboveFloor counted rows READ above the floor (3, 3, 3 over three misses); it counts BUILDS (1, 0, 0)."""
+        tree, _ = self._tree([("user", 1000, True, None), ("assistant", 1060, True, {"pc": 10})], 1060)
+        deltas = [self._run(tree, 900)[2] for _ in range(3)]
+        self.assertEqual(deltas, [1, 0, 0], "the first miss builds the user row; the next two find it built")
+
+    def test_the_floor_age_reads_from_the_newest_atom_over_every_turn_and_skips_a_zero_floor(self):
+        """Round two, low 2: the age was taken from pre-turn maxT alone (the top of the pre-cut region) and a 0.0 floor latched the
+        gauge at epoch scale. The newest atom over every turn, the live tail included; a zero floor records nothing."""
+        tree, _ = self._tree([("user", 1000, True, None)], 1000)
+        tree["turns"].append({"id": "t2", "t": 5000, "end": 5000, "ended": True, "atoms": [                 # a plain tail turn
+            {"type": "user", "author": "human", "uuid": "z1", "t": 5000, "message": {"role": "user", "content": "tail prompt"}}]})
+        km._merge_sets_stats["floorAgeMaxS"] = 0.0
+        self._run(tree, 900)
+        self.assertAlmostEqual(km._merge_sets_stats["floorAgeMaxS"], 5000 - 900, delta=0.5, msg="from the tail's newest atom, not the pre-cut top")
+        km._merge_sets_stats["floorAgeMaxS"] = 0.0
+        self._run(tree, 0.0)
+        self.assertEqual(km._merge_sets_stats["floorAgeMaxS"], 0.0, "a zero floor (an echo with no send time) records no age")
 
     def test_a_turn_below_the_floor_is_skipped_whole(self):
         tree, _ = self._tree([("user", 1000, True, {"ir": False})], 1000)
