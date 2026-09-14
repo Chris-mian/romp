@@ -76,7 +76,7 @@ test("the slot comes from the VIRTUAL layout — boundaries that cannot move und
 });
 
 test("the DOM insertion still does the cross-row move; the simulation only decides WHERE", () => {
-  assert.match(CSS, /#tabs \{ display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 0; position: relative; \}/);
+  assert.match(CSS, /#tabs \{ display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 1px 0; position: relative; \}/);
   const body = between('tabs.addEventListener("dragover"', "});");
   assert.match(body, /flipTabs\(\(\) => tabs\.insertBefore\(dragged, ref\)\);/,
     "one insert per boundary crossing — the wrap layout itself performs the visual reflow");

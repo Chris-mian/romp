@@ -1,0 +1,27 @@
+<!-- SYNTHETIC fixture: the chat tab strip with the three RINGS as widgets (2026-09-14; the ask ring itself from
+     2026-09-13) — the dashed ring a tab wears is one of three widgets with a switch each, composed one class at a time
+     beside the state class (red over yellow over amber). Left to right: a WORKING session that asked something (gold
+     dot inside the yellow ring), an idle one that asked (the ring alone), a live prompt (the red ring: outranks the
+     yellow), a plain working tab, an API retry (amber ring), an API stop with the red ring SWITCHED OFF (tab-blocked
+     alone: a plain tab, no ring and no fill), and a folded tag group whose hidden member asked (the yellow pip after
+     the count). Classes mirror render.ts applyTabStatus + tab-widgets.ts (the dot slot, composeTabRing) + makeGroupHead.
+     Invented sessions (notes-api demo domain). Run, dark then light:
+       tools/ui-verify/shot.sh --css ui/webview/styles.css --body tools/ui-verify/fixtures/tabs-rings.html \
+           --out ~/.cache/romp-feature-review/1611-rings/tabs-rings.png --size 860x200 --extra-css 'body{--active-accent:#1EA1EB}'
+       tools/ui-verify/shot.sh --css ui/webview/styles.css --body tools/ui-verify/fixtures/tabs-rings.html \
+           --out ~/.cache/romp-feature-review/1611-rings/tabs-rings-light.png --size 860x200 --body-class 'theme-light' --extra-css 'body{--active-accent:#1EA1EB}'
+-->
+<div id="winframe"></div>
+<div id="tabbar"><span id="tabs">
+  <div class="tab active colored tab-working ring-waiting-on-you" style="--chip-bg:#1EA1EB;--chip-fg:#0c1a2e"><span class="tab-dot" title="working — a turn is running right now"></span><span class="tab-label">web</span><span class="tab-ctx" title="context 41% used"><span class="tab-ctx-fill" style="height:41%;background:rgb(84,178,4)"></span></span><span class="tab-close">×</span></div>
+  <div class="tab colored ring-waiting-on-you" style="--chip-bg:#54B204;--chip-fg:#0c1a00"><span class="tab-dot none"></span><span class="tab-label">api</span><span class="tab-ctx" title="context 12% used"><span class="tab-ctx-fill" style="height:12%;background:rgb(84,178,4)"></span></span><span class="tab-close">×</span></div>
+  <div class="tab colored tab-awaiting ring-needs-you" style="--chip-bg:#DD42FF;--chip-fg:#ffffff"><span class="tab-dot none"></span><span class="tab-label">docs</span><span class="tab-ctx" title="context 63% used"><span class="tab-ctx-fill" style="height:63%;background:rgb(224,176,32)"></span></span><span class="tab-close">×</span></div>
+  <div class="tab colored tab-working" style="--chip-bg:#4EA8A9;--chip-fg:#ffffff"><span class="tab-dot" title="working — a turn is running right now"></span><span class="tab-label">tests</span><span class="tab-ctx" title="context 27% used"><span class="tab-ctx-fill" style="height:27%;background:rgb(84,178,4)"></span></span><span class="tab-close">×</span></div>
+  <div class="tab tab-retrying ring-retrying"><span class="tab-dot none"></span><span class="tab-label">scratch</span><span class="tab-ctx" title="context 5% used"><span class="tab-ctx-fill" style="height:5%;background:rgb(84,178,4)"></span></span><span class="tab-close">×</span></div>
+  <div class="tab tab-blocked"><span class="tab-dot none"></span><span class="tab-label">export</span><span class="tab-ctx" title="context 71% used"><span class="tab-ctx-fill" style="height:71%;background:rgb(224,176,32)"></span></span><span class="tab-close">×</span></div>
+  <div class="tab-group-head collapsed" data-group="infra" data-folded="1" aria-label="infra: 2 sessions folded away; a session in this group has something waiting on you: deploy"><span class="tab-group-chip" style="display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:9px;border:1px solid #E5484D;color:#E5484D;background:transparent;white-space:nowrap;font-weight:400;letter-spacing:normal;">infra</span><span class="tab-group-caret" aria-hidden="true">▸</span><span class="tab-group-count">2</span><span class="tab-group-pip ask" title="a session in this group has something waiting on you: deploy" aria-hidden="true"></span></div>
+</span></div>
+<div id="content" style="flex:1 1 auto">
+  <div class="turn turn-user"><div class="user-bubble">Where does the exporter stand?</div></div>
+  <div class="turn"><div class="md"><p>Two exporters fit the schema — should the CSV keep the raw timestamps, or the formatted ones the report uses? I'll keep going on the tests meanwhile.</p></div></div>
+</div>

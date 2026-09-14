@@ -45,17 +45,19 @@ test("dot colors are decoupled from the session (no ring, absolute hues)", () =>
 
 test("a hard-blocked (API-error) tab carries a translucent red fill atop its dashed ring (the user 2026-06-18)", () => {
   // the dashed outline alone read too faint; a translucent red fill makes a stopped session legible at a glance
-  assert.match(CSS, /\.tab\.tab-blocked \{[^}]*background: rgba\(229, 72, 77, 0\.30\)/);
-  assert.match(CSS, /\.tab\.tab-awaiting, \.tab\.tab-blocked, \.tab\.tab-retrying \{[^}]*outline: 2px dashed/);   // the dashed ring stays (now incl. amber retrying)
+  // the fill rides the red RING class the strip composes (the rings are widgets since 2026-09-14, each with a switch): a
+  // stopped session with the ring switched off is a plain tab
+  assert.match(CSS, /\.tab\.tab-blocked\.ring-needs-you \{[^}]*background: rgba\(229, 72, 77, 0\.30\)/);
+  assert.match(CSS, /\.tab\.ring-needs-you, \.tab\.ring-retrying \{[^}]*outline: 2px dashed/);   // the dashed ring stays (the red and the amber; the yellow has its own rule)
   // the red must beat .tab.active (white, equal specificity but later in source) + :hover, else a FOCUSED
   // blocked tab showed white instead of red (the user 2026-06-18)
-  assert.match(CSS, /\.tab\.tab-blocked:hover \{[^}]*background: rgba\(229, 72, 77, 0\.38\)/);
+  assert.match(CSS, /\.tab\.tab-blocked\.ring-needs-you:hover \{[^}]*background: rgba\(229, 72, 77, 0\.38\)/);
 });
 
 test("a SELECTED blocked tab blends the selection white OVER the red, so it reads as both (the user 2026-07-24)", () => {
   // it can't fall back to the plain white selection background without losing the red, so the fill layers
   // them: selection white atop a stronger red → lighter/brighter than its unselected neighbours, still red
-  const rule = (CSS.match(/\.tab\.tab-blocked\.active \{[^}]*\}/) || [""])[0];
+  const rule = (CSS.match(/\.tab\.tab-blocked\.ring-needs-you\.active \{[^}]*\}/) || [""])[0];
   assert.match(rule, /linear-gradient\(rgba\(255, 255, 255, 0\.14\), rgba\(255, 255, 255, 0\.14\)\)/,
     "the normal selection white rides on top");
   assert.match(rule, /rgba\(229, 72, 77, 0\.42\)/, "over a stronger red than the unselected fill");

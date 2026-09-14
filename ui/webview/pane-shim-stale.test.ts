@@ -31,9 +31,11 @@ function shimJs(app: string, noStale = false): string {
   // the tuple's first slot is the reload core (T265, its own executed test in tests/test_dashboard_auto_reload.py);
   // an empty core here leaves window.__rompReload undefined, so the shim's raise takes its fallback path. The
   // fourth slot is the stale opt-out the Files page renders with (no_stale=True): a JS boolean literal.
-  const end = KERNEL.indexOf('""" % (_reload_core(v), app, int(v), "true" if no_stale else "false", app, app)', start);
+  // The second slot is the chat pane's restart-diet read (PR 1661 round two: emitted for the chat app alone); the harness's apps are not
+  // chat, so it substitutes the false the other panes carry, and the dial line compiles against it.
+  const end = KERNEL.indexOf('""" % (_reload_core(v), _RESTART_DIET_JS if app == "chat" else "var RESTART_DIET=false;", app, int(v), "true" if no_stale else "false", app, app)', start);
   assert.ok(end > start, "the template's format tuple is the one the test substitutes");
-  const args = ["", app, "5", noStale ? "true" : "false", app, app];
+  const args = ["", "var RESTART_DIET=false;", app, "5", noStale ? "true" : "false", app, app];
   let i = 0;
   return KERNEL.slice(start, end).replace(/%[sd]/g, () => args[i++]).replace(/%%/g, "%");
 }

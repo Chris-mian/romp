@@ -246,7 +246,7 @@ class PlannerSeenMemo(unittest.TestCase):
         finally:
             jd._rebind_state(self.root)
 
-    PLAN_SESSION_TOKENS_SHA16 = "169d37751d9f879d"   # v2: the skip check counts mismatches by term (the derivation bumped with it)
+    PLAN_SESSION_TOKENS_SHA16 = "37e9193b948d4430"   # 2026-09-14: the skipped and planned bumps under the memo lock (counters only, no derivation change)   # v2: the skip check counts mismatches by term (the derivation bumped with it)
 
     def test_a_change_to_the_plan_session_bumps_the_derivation_or_this_pin(self):
         """Round three, low 3: the derivation bump rule made mechanical. A persisted row asserts the planner had nothing to do
@@ -306,6 +306,46 @@ class PlannerSeenMemo(unittest.TestCase):
         p.unlink(); jd._PLANNER_SEEN_LOADED[0] = False
         self.assertEqual(jd._load_planner_seen(), 0); self.assertTrue(jd._PLANNER_SEEN_LOADED[0], "a missing file is a successful empty load: latched")
         self.assertEqual(jd._PLANNER_STATS["refused"], 2, "and no refusal")
+
+    def test_a_read_fault_is_said_once_per_spell_on_stderr_like_the_persists(self):
+        """The tidy's low 2: the load's fault was counted but never said though its docstring promised 'said once'."""
+        p = self.root / jd._PLANNER_SEEN_FILE; p.write_bytes(b"\xff\xfe torn")
+        err = io.StringIO()
+        with mock.patch.object(jd.sys, "stderr", err):
+            for _ in range(3):
+                jd._load_planner_seen()
+        self.assertEqual(err.getvalue().count("planner-seen memo: not decoded"), 1, err.getvalue())
+        p.write_text(json.dumps({"v": 1, "derivation": [jd._PLANNER_SEEN_DERIVATION_V, jd.PLACEMENTS_V], "rows": {}}))
+        self.assertEqual(jd._load_planner_seen(), 0); self.assertTrue(jd._PLANNER_SEEN_LOADED[0])
+        jd._PLANNER_SEEN_LOADED[0] = False; p.write_bytes(b"{torn")
+        with mock.patch.object(jd.sys, "stderr", err):
+            jd._load_planner_seen()
+        self.assertEqual(err.getvalue().count("planner-seen memo: not decoded"), 2, "a new spell is said again")
+
+    def test_the_mismatch_histogram_bumps_under_the_memo_lock(self):
+        """The tidy's low 4: the pool workers bump mismatchByTerm together; unlocked, a boot read under-counted."""
+        import inspect
+        src = inspect.getsource(jd._planner_seen_stands)
+        self.assertIn("with _PLANNER_SEEN_LOCK:", src)
+        self.assertLess(src.index("with _PLANNER_SEEN_LOCK:"), src.index('hist = _PLANNER_STATS["mismatchByTerm"]'))
+        jd._planner_seen_set(FSID, ["a", 1, 2]); jd._planner_seen_set(FSID2, ["b", 1, 2])
+        for k in list(jd._PLANNER_STATS["mismatchByTerm"]):
+            del jd._PLANNER_STATS["mismatchByTerm"][k]
+        def bump(fsid, n):
+            for _ in range(n):
+                jd._planner_seen_stands(fsid, ["x", 9, 2])
+        ts = [threading.Thread(target=bump, args=(f, 500)) for f in (FSID, FSID2) for _ in range(3)]
+        [t.start() for t in ts]; [t.join(10) for t in ts]
+        self.assertEqual(jd._PLANNER_STATS["mismatchByTerm"], {"0": 3000, "1": 3000}, "every bump counted")
+        # round two of the tidy: the sibling counters (skipped, planned, recorded) and the read-fault check-and-set with its
+        # refused bump go through the same lock; no bare += on them stays in run_plan
+        import inspect
+        self.assertIn("with _PLANNER_SEEN_LOCK:", inspect.getsource(jd._planner_bump))
+        self.assertIn("with _PLANNER_SEEN_LOCK:", inspect.getsource(jd._planner_seen_read_fault))
+        for key, fn in (("skipped", jd._plan_session), ("planned", jd._plan_session), ("recorded", jd._plan_session)):
+            fn_src = inspect.getsource(fn)
+            self.assertIn('_planner_bump("%s")' % key, fn_src, key)
+            self.assertNotIn('_PLANNER_STATS["%s"] += 1' % key, fn_src, "a bare bump outside the lock")
 
     def test_the_perf_row_carries_the_three_new_counters(self):
         self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted", "mismatchByTerm"})

@@ -59,14 +59,14 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 EXT = os.path.join(ROOT, "vscode-extension")
+from romp_load import load_source
+from tests.dist_copy import copy_dist
 # Hermetic state BEFORE the loads — they resolve their state root at import time, and only
 # pytest runs conftest's floor (a bare unittest or script run otherwise writes REAL state).
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
 # the kernel refuses to boot with a retired key variable or a 1Password name in its environment (kernel/credentials.py
 # check_boot_environment): the lab's kernel env is scrubbed by the kernel's own rule, read from the module itself
-from romp_load import load_source
-from tests.dist_copy import copy_dist
 _cred = load_source("romp_credentials_served", os.path.join(ROOT, "kernel", "credentials.py"))
 os.environ["ROMP_KERNEL_NO_OPEN"] = "1"
 os.environ.setdefault("ROMP_SERVE_TOKEN", "testtok")

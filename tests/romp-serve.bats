@@ -325,6 +325,36 @@ OLD
     [[ "$output" == *"python 3.9"* ]]
 }
 
+@test "romp-serve: the NUL join reads a version a few NULs in, and is capped so a NUL-stuffed output cannot slow a launch" {
+    # the third tidy: one read per NUL with no cap (200k NULs added 1.7 s to a launch); ten NULs ahead of the sentinel are
+    # joined as before (a control), and the cap is pinned in the source, since a timing assertion would ride the machine
+    cat > "$TEST_DIR/nuls-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) printf '\0\0\0\0\0\0\0\0\0\0romp-pyver 3.9\n'; exit 0 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/nuls-python"
+    ROMP_PYTHON="$TEST_DIR/nuls-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 2 ]
+    # the cap, executed (the fourth tidy: past it the read took the no-version leg and STARTED a 3.9 the old cat refused;
+    # the fifth: at exactly 64 NULs the sentinel was the 65th chunk and a working interpreter was refused, an off-by-one):
+    # 64 NULs before the sentinel are 65 chunks and the version, refused as 3.9; 65 NULs are a 66th chunk, the output
+    # unread, the interpreter refused as such with exit 1
+    local n
+    for n in 64 65; do
+        { head -c "$n" /dev/zero; printf 'romp-pyver 3.9\n'; } > "$TEST_DIR/nuls-$n.bin"
+        printf '#!/usr/bin/env bash\ncase "$*" in *romp-pyver*) cat "%s"; exit 0 ;; esac\nexec bash "$@"\n' "$TEST_DIR/nuls-$n.bin" > "$TEST_DIR/nuls-$n-python"
+        chmod +x "$TEST_DIR/nuls-$n-python"
+    done
+    ROMP_PYTHON="$TEST_DIR/nuls-64-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"python 3.9"* ]]
+    ROMP_PYTHON="$TEST_DIR/nuls-65-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"the version probe of $TEST_DIR/nuls-65-python printed more than 64 NUL bytes"* ]]   # the refusal names the interpreter
+    [[ "${lines[${#lines[@]}-1]}" != "$TEST_DIR/nuls-65-python" ]]   # and the pick is not printed as the answer: the interpreter is refused
+}
+
 @test "romp-serve: a TERM mid-probe leaves no probe file behind" {
     # round five of issue 1600: the probe file was removed after the read alone, so a romp-serve stopped during the probe
     # (a manager restart mid-launch) left one romp-pyver.* per stop in TMPDIR

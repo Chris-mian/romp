@@ -79,7 +79,7 @@ class SplitSourcePins(unittest.TestCase):
         self.assertEqual(shim_key.group(1) + shim_key.group(2), shell_key.group(1))
         self.assertIn("st.activeId=sid;try{localStorage.setItem(BK+n,JSON.stringify(st));}catch(e){}}", km._LANDING_SPLIT_JS)
         self.assertIn('var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";', self.shim)
-        self.assertIn('+(SKEL?"&skeleton=1":""));', self.shim, "the term closes the connect query, after the column")
+        self.assertIn('+((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":""));', self.shim, "the term closes the connect query, after the column")
         self.assertIn('+((everConnected&&bundleReady&&readyAcked&&!readyQueued)?"&reconnect=1&proto="+readyProto:"")', self.shim,
                       "the redial gate is untouched (tests/test_pane_shim_return.py runs it)")
 
@@ -869,7 +869,7 @@ class SplitExecutes(unittest.TestCase):
         # says the way back
         l = self.out["locked"]
         self.assertIsNone(l["r"])
-        self.assertEqual(l["notify"], [["warn", "The tabs are locked: unlock them in the tab strip\u2019s gear menu (Lock the tabs in place) to move this session."]])
+        self.assertEqual(l["notify"], [["warn", "The tabs are locked: unlock them in the settings (Chat, Tab strip) to move this session."]])   # T415: the lock is a switch in the settings
         self.assertEqual(l["stored"], self.out["unmovable"]["stored"], "the store is untouched")
         self.assertEqual(l["ids"], self.out["unmovable"]["ids"], "no column opened")
 
