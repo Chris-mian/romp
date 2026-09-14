@@ -3629,7 +3629,15 @@ def _bus_restore_mail(sid, mids):
     if held:
         sys.stderr.write("romp-kernel: the bus holds %d stranded message(s) it could not put back yet (its cur/ cannot be read); "
                          "neither re-fed nor dropped, the bus's retry puts them back: %s\n" % (len(held), ", ".join(sorted(held))))
-    return set(m for m in (body.get("restored") or []) if isinstance(m, str)) | held
+    out = _BusHeld(set(m for m in (body.get("restored") or []) if isinstance(m, str)) | held)
+    out.held = held                                   # the caller's log names the pending fault beside the ids handed back
+    return out
+
+
+class _BusHeld(set):
+    """The set _bus_restore_mail answers: the ids the bus holds (put back, or held under an unreadable cur/ for its retry), with
+    the held ones named in `.held` so SdkSession._return_stranded_mail can say the pending fault in its own line."""
+    held = frozenset()
 
 
 ROMP_VOICE_WORDS = ("romp", "card", "board", "goal", "cleared", "dismissal", "status check", "nudge")
@@ -7123,8 +7131,9 @@ def _flags_exit_text(p):
     except OSError:
         pass
     return ("the session settings file %s was moved aside%s (torn bytes) and no flags are known, so mail is held for every "
-            "session and flag changes are refused. To start the settings from empty, write {} to %s (every session's mail "
-            "isolation and feed mute is then off until set again); to keep them, restore the sidecar's contents there."
+            "session and flag changes are refused. The one exit: write {} to %s to start the settings from empty (every "
+            "session's mail isolation and feed mute is then off until set again). The sidecar keeps the unreadable bytes "
+            "for forensics; they cannot be read back."
             % (p, (" to " + ", ".join(sides)) if sides else "", p))
 
 

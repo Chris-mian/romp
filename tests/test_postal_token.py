@@ -679,6 +679,10 @@ class InboxThatCannotBeListedAnswersAFault(_LiveBus):
             self.assertIn("cannot be listed", body["unreadable"])
             status, body = _call(self.port, "/drain?id=%s" % _RCP)
             self.assertEqual((status, body["messages"]), (503, [])); self.assertIn("cannot be listed", body["unreadable"])
+            _call(self.port, "/inbox?id=%s&peek=1" % _RCP)
+            self.assertEqual(sum("cannot be listed" in m for m in self.logged), 1,
+                             "the BUS log carries the reason once per fault spell across the polls (round four: the clients' "
+                             "stderr has no reader in the Stop hook): %r" % self.logged)
         finally:
             os.chmod(newd, 0o755)
         status, body = _call(self.port, "/inbox?id=%s&peek=1" % _RCP)

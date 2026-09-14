@@ -114,6 +114,24 @@ class StrandedMailGoesBackToTheBus(_StrandWorld):
         self.assertTrue(any(MID1 in ln and MID2 in ln for ln in self.logged),
                         "one log line names the ids handed back: %r" % (self.logged,))
 
+    def test_an_id_the_bus_holds_under_a_pending_fault_is_said_so_and_not_re_fed(self):
+        # round four of the lows PR: with unknown ids folded into the held set, a permanently unreadable cur/ leaves the mail
+        # with the bus and the banner is not re-headed (no second id, an honest pending receipt, a durable record, recovery
+        # when cur/ reads); the kernel's own line says the pending fault beside the ids handed back
+        s = self._sess()
+        class _Held(set):
+            held = frozenset()
+        def hook(sid, mids):
+            out = _Held(mids); out.held = {MID2}
+            return out
+        self.be.postal_restore = hook
+        self._strand(s, _banner(MID1, MID2))
+        self.assertEqual(s.pending(), [], "neither id is re-fed")
+        line = next(ln for ln in self.logged if "handed back to the bus" in ln)
+        self.assertIn(MID1, line.split("PENDING fault")[0], "the put-back id is named as handed back")
+        self.assertIn("held by the bus under a PENDING fault", line); self.assertIn(MID2, line.split("PENDING fault")[1])
+        self.assertIn("receipt reads pending", line)
+
     def test_a_banner_the_bus_cannot_take_back_is_re_headed_not_dropped(self):
         s = self._sess()
         def refuse(sid, mids):

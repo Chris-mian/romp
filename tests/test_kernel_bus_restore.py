@@ -89,7 +89,9 @@ class BusRestoreMail(unittest.TestCase):
             import io, contextlib
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                self.assertEqual(km._bus_restore_mail(SID, [MID1, MID2]), {MID1, MID2}, "the held id is the bus's, not gone")
+                res = km._bus_restore_mail(SID, [MID1, MID2])
+                self.assertEqual(res, {MID1, MID2}, "the held id is the bus's, not gone")
+                self.assertEqual(res.held, {MID2}, "and named as held, so the backend's line can say the pending fault (round four)")
             self.assertIn("could not put back yet", err.getvalue())
         finally:
             bus.close()

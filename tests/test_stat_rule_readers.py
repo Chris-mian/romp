@@ -366,13 +366,10 @@ class TheQueuedLows(unittest.TestCase):
         pm._self_identity = lambda: ("11111111-2222-4333-8444-0000000000e1", "web"); pm._LOCAL_CONFIRMED[0] = True
         self.addCleanup(setattr, pm, "_self_identity", saved_ident)
         self.addCleanup(lambda: pm._LOCAL_CONFIRMED.__setitem__(0, saved_local))
-        logs = []; saved_log = pm._log; pm._log = logs.append
-        self.addCleanup(setattr, pm, "_log", saved_log)
         text, is_err = pm._mcp_call("check_inbox", {})
         self.assertTrue(is_err); self.assertIn("cannot be read right now", text)
         self.assertNotIn("cannot be listed", text); self.assertNotIn("PermissionError", text); self.assertNotIn("/", text,
-                         "the person hears the plain sentence: no exception repr, no path")
-        self.assertTrue(any("cannot be listed" in m for m in logs), "the reason went to the log")
+                         "the person hears the plain sentence: no exception repr, no path (the reason is the BUS log's, round four)")
         import io, contextlib
         saved_ensure, saved_my = pm.ensure, pm.my_id
         pm.ensure = lambda: True; pm.my_id = lambda: "11111111-2222-4333-8444-0000000000e1"
@@ -383,7 +380,6 @@ class TheQueuedLows(unittest.TestCase):
         self.assertEqual(rc, 0, "the hook's command exits clean")
         self.assertIn("could not be checked this turn", out.getvalue())
         self.assertNotIn("cannot be listed", out.getvalue()); self.assertNotIn("/", out.getvalue(), "no repr, no path in the turn-end block")
-        self.assertTrue(sum("cannot be listed" in m for m in logs) >= 2, "both clients logged the reason")
 
 
 class TaskPlanLoudOnUnreadable(unittest.TestCase):

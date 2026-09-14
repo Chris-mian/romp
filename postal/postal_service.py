@@ -2627,7 +2627,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"messages": read_box(sid, consume=not peek)})
             except InboxUnreadable as e:
                 # a fault the client can show (the MCP tool and `romp mail inbox` surface the error text; the pages
-                # read `unreadable`), never an empty inbox where mail sits unread; the next poll retries
+                # read `unreadable`), never an empty inbox where mail sits unread; the next poll retries. The BUS log
+                # carries the reason once per fault spell, for every client (the Stop hook drops its command's stderr)
+                _say_inbox_unreadable_once(sid, str(e))
                 return self._send({"error": str(e), "unreadable": str(e), "messages": []}, 503)
         if u.path == "/drain":
             sid = (q.get("id") or [""])[0]
@@ -2635,6 +2637,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"error": "missing or invalid id"}, 400)
             res = _drain(sid)
             if res.get("unreadable"):
+                _say_inbox_unreadable_once(sid, res["unreadable"])   # the bus log carries the reason once per spell
                 return self._send(dict(res, error=res["unreadable"]), 503)
             return self._send(res)
         if u.path == "/quarantine":                # held inbound mail from directed peers (kernel reads the
@@ -5284,11 +5287,10 @@ def _mcp_call(name, args):
             return "Not inside a romp session.", True
         try:
             msgs = _http("GET", "/inbox?id=%s" % urllib.parse.quote(mid)).get("messages", [])
-        except BusError as e:
+        except BusError:
             # an inbox that cannot be listed answers 503 with the reason (2026-09-14): said as what it is, never an
-            # internal error and never "no new messages" where mail sits unread; the reason (a path, an errno) goes to
-            # the log, the person hears the plain sentence
-            _log("check_inbox for %s: %s" % (mid, e))
+            # internal error and never "no new messages" where mail sits unread. The person hears the plain sentence;
+            # the reason (a path, an errno) is in the BUS log, said once per fault spell when it answered the 503
             return "Your inbox cannot be read right now; your mail waits unread and the next check retries.", True
         return (format_inbox(msgs, mid) or "No new messages."), False
     if name == "list_agents":
@@ -5558,11 +5560,12 @@ def cli_drain(argv):
         return 0
     try:
         res = _http("GET", "/drain?id=%s" % urllib.parse.quote(sid))
-    except BusError as e:
+    except BusError:
         # the Stop hook wraps this command's STDOUT into the turn-end block and drops its stderr and exit code, so the
         # one automatic /drain client says the fault where the mail would have appeared (an unlistable inbox answers
-        # 503 with the reason since 2026-09-14); the mail waits unread and the next drain retries
-        _log("drain for %s: %s" % (sid, e))          # the reason for the log; the person hears the plain sentence
+        # 503 with the reason since 2026-09-14); the mail waits unread and the next drain retries. The reason has its
+        # reader in the BUS log, where the bus said it once per fault spell as it answered; nothing is written here
+        # to a channel nobody reads
         print("Your mail could not be checked this turn; it waits unread and the next check retries.")
         return 0
     except Exception:

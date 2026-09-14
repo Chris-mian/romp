@@ -5862,7 +5862,7 @@ class SdkSession:
                                   "before the teardown; the resumed conversation carries it, not handed back (%s)"
                                   % (self.name, ", ".join(mids)))
                 continue
-            back, why = None, "no bus hook is installed"
+            back, why, held_by_bus = None, "no bus hook is installed", set()
             if callable(hook):
                 try:
                     res = hook(self.sid, list(mids))
@@ -5870,6 +5870,7 @@ class SdkSession:
                         why = "the bus gave no answer"
                     else:
                         back = set(res)
+                        held_by_bus = set(getattr(res, "held", ()) or ())   # ids the bus holds under an unreadable cur/ (2026-09-14)
                 except Exception as e:
                     why = "the bus could not be asked (%r)" % (e,)
             if back is None:
@@ -5890,10 +5891,13 @@ class SdkSession:
                                   % (self.name, ", ".join(mids)), problem=True)
                 continue
             self.backend._log("stranded mail (%s): a banner fed to the abandoned client never resulted; handed back "
-                              "to the bus by id for re-delivery (%s)%s"
-                              % (self.name, ", ".join(m for m in mids if m in back),
+                              "to the bus by id for re-delivery (%s)%s%s"
+                              % (self.name, ", ".join(m for m in mids if m in back and m not in held_by_bus),
+                                 ("; held by the bus under a PENDING fault (its cur/ cannot be read; the sender's receipt reads "
+                                  "pending, the bus's retry puts them back once it reads): %s"
+                                  % ", ".join(m for m in mids if m in held_by_bus)) if held_by_bus & set(mids) else "",
                                  ("; no longer in the bus's box, not re-fed: %s" % ", ".join(gone)) if gone else ""),
-                              problem=False)
+                              problem=bool(held_by_bus & set(mids)))
         if rehead:
             with self._lock:
                 self._q_prepend(rehead, self._unfeed_locked(rehead))   # back at the head under their own ids

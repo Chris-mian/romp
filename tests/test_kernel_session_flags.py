@@ -3,6 +3,7 @@
 from the timeline lane gear. The only flag today is hideFromFeed — a session whose prompts shouldn't mint
 feed cards (it stays on the timeline). These pin the storage helpers + the web boot hook. Synthetic only."""
 import os
+import pathlib
 import tempfile
 import unittest
 from romp_load import load_source
@@ -217,13 +218,55 @@ class FlagsStoreUnreadableRefuses(unittest.TestCase):
             raised = e
         self.assertEqual(type(raised).__name__, "_StateUnreadable", "refused loudly (got %r)" % raised)
         self.assertIn("moved aside", str(raised))
-        # round three: the refusal names the one in-product exit, the file to write and what that does
+        # round three: the refusal names the one in-product exit, the file to write and what that does; round four: the
+        # sidecar is named as forensics only, never as an exit (its bytes are the ones that cannot be read back)
         self.assertIn("write {} to %s" % self._path(), str(raised), "the exit: the path to write")
         self.assertIn("mail isolation and feed mute is then off", str(raised), "and what writing it does")
         self.assertIn(list(jd.STATE.glob("session-flags.json.corrupt-*"))[0].name, str(raised), "and names the sidecar")
+        self.assertIn("for forensics; they cannot be read back", str(raised), "the sidecar is kept, not offered as an exit")
+        self.assertNotIn("restore the sidecar", str(raised))
         self.assertFalse(self._path().exists(), "no fresh store was written")
         self.assertEqual(len(list(jd.STATE.glob("session-flags.json.corrupt-*"))), 1, "the sidecar still stands")
         self.assertEqual(km._mail_off_why_k(self.SID), "flags", "the door stays closed")
+
+    def test_every_exit_the_refusal_names_taken_as_written_opens_the_door(self):
+        # round four's rule: a remedy text is tested by taking it as written. Every exit the refusal names is parsed from its
+        # text and taken verbatim from a fresh hold, and each must open the door; round three's text named a second exit
+        # (restore the sidecar's contents) whose bytes by construction cannot be read back, so taking it left the door held
+        import re, shutil
+        def hold():
+            for old in jd.STATE.glob("session-flags.json.*"):
+                old.unlink()
+            if self._path().exists():
+                self._path().unlink()
+            self._path().write_bytes(b'{"torn": ')
+            km._flags_cache.clear(); km._state_fault_seen.pop(str(self._path()), None)
+            self.assertEqual(km._session_flags(), {}); self.assertEqual(km._mail_off_why_k(self.SID), "flags", "held")
+            with self.assertRaises(km._StateUnreadable) as cm:
+                km._set_session_flag(self.SID, "hideFromFeed", True)
+            return str(cm.exception)
+        text = hold()
+        exits = []
+        for m in re.finditer(r"write (\S+) to (\S+)", text):           # "write {} to <path> ..."
+            exits.append(("write", m.group(1), m.group(2).rstrip(".,;)")))
+        if re.search(r"restore the sidecar", text):
+            exits.append(("restore-sidecar", None, None))
+        self.assertTrue(exits, "the refusal names at least one exit: %r" % text)
+        for kind, literal, path in exits:
+            text = hold()
+            if kind == "write":
+                self.assertEqual((literal, path), ("{}", str(self._path())), "the write exit names the literal and the flags path")
+                pathlib.Path(path).write_text(literal)
+            else:
+                side = list(jd.STATE.glob("session-flags.json.corrupt-*"))[0]
+                shutil.copyfile(side, self._path())                      # "restore the sidecar's contents there", as written
+            self.assertEqual(km._mail_off_why_k(self.SID), "", "the exit %r, taken as written, opens the door" % kind)
+            km._set_session_flag(self.SID, "hideFromFeed", True)         # and the refused toggle now lands
+            self.assertEqual(km._session_flags().get(self.SID), {"hideFromFeed": True})
+            self.assertEqual(list(jd.STATE.glob("session-flags.json.corrupt-*")), [], "the mark retired after exit %r" % kind)
+        self.assertIn("for forensics; they cannot be read back", text, "the sidecar is named as kept, not as an exit")
+        kept = list(jd.STATE.glob("session-flags.json.retired-*"))
+        self.assertEqual([k.read_bytes() for k in kept], [b'{"torn": '], "the sidecar's bytes kept for forensics, as the text says")
 
     def test_the_exit_writing_the_file_by_hand_opens_the_door_retires_the_mark_and_a_later_delete_is_a_fresh_install(self):
         # round three: a fail-closed state needs an in-product exit; taking it must end the hold, and a fresh file beside an
