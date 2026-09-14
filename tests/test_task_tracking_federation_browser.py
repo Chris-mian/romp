@@ -9,9 +9,12 @@ card's Sub-goals button writes the card's disclosure state (romp:feedview). Two 
 off, empty lists) and HOSTON pushes a frame with a NEW card carrying a warn: the merged frame names HOSTOFF off, the view
 state is byte-identical (the gate: no writer prunes while a host's cards are unknown), HOSTOFF's mark is kept, the two
 stale marks are pruned (the on hosts' absent marks prune as ever: the store's bound), and the new card's notice rings with
-its mark written. Stage C, HOSTOFF flips on with no cards: the merged frame names no host, pruning resumes, and HOSTOFF's
-disclosure entry and mark leave while HOSTON's stand. Skips LOUDLY without the extension deps or a browser (a failure under
-ROMP_SERVED_TESTS_REQUIRE=1). SYNTHETIC fixtures only: hosts HOSTON and HOSTOFF, placeholder sids, invented goal text."""
+its mark written. Stage B2 (round eight, the medium): the page RELOADS while HOSTOFF is off; the first merged frame names both
+remotes pending with no host off, and the marks and the view state survive it intact (a pending host's cards are not in hand
+either). Stage C: HOSTOFF flips back on WITH its card and nothing re-rings (its mark was kept). Stage C2: HOSTOFF pushes a frame
+with no cards: the merged frame names no host, pruning resumes, HOSTOFF's disclosure entry and mark leave while HOSTON's stand.
+Stage D: a plain reload with every host on: no warn re-rings. Skips LOUDLY without the extension deps or a browser (a failure
+under ROMP_SERVED_TESTS_REQUIRE=1). SYNTHETIC fixtures only: hosts HOSTON and HOSTOFF, placeholder sids, invented goal text."""
 import base64
 import hashlib
 import json
@@ -237,14 +240,21 @@ await page.addInitScript(() => { if (window !== window.top) return; const w = wi
 await page.goto(cfg.landing);
 await page.waitForSelector("#rail-gear", { timeout: 20000 });
 const frameBy = async (part) => { let f = page.frames().find((x) => x.url().includes(part)); for (let i = 0; i < 100 && !f; i++) { await page.waitForTimeout(100); f = page.frames().find((x) => x.url().includes(part)); } return f; };
-const feedF = await frameBy("/feed");
-if (!feedF) { console.error("no feed frame"); process.exit(4); }
-await feedF.waitForSelector("#feed-list", { timeout: 15000 });
-// every feed frame the pane receives, by either path: the switch's per-host list, the pending list and the card ids it carried
-await feedF.evaluate(() => { const w = window; w.__ttFrames = [];
-  const note = (m, via) => { if (m && m.type === "feed") w.__ttFrames.push({ via, off: m.off === true, offHosts: Array.isArray(m.offHosts) ? m.offHosts.slice() : null, pendingHosts: Array.isArray(m.pendingHosts) ? m.pendingHosts.slice() : null, askIds: Array.isArray(m.asks) ? m.asks.map((a) => a.itemId) : [] }); };
-  window.addEventListener("message", (e) => note(e.data, "window"));
-  const fed = w.__rompFed; if (fed && typeof fed.onFrame === "function") fed.onFrame((e) => note(e.data, "fed")); });
+// the feed page and its hook: every feed frame the pane receives, by either path, with the switch's per-host list, the pending list
+// and the card ids it carried; re-installed after each reload (the frames the pane applied BEFORE the hook are the reload's first
+// ones, so the hook goes in as early as the page allows and the reload stages read the store, which every frame writes)
+const hookFeed = async () => {
+  const f = await frameBy("/feed");
+  if (!f) { console.error("no feed frame"); process.exit(4); }
+  await f.waitForSelector("#feed-list", { timeout: 15000 });
+  await f.evaluate(() => { const w = window; w.__ttFrames = [];
+    const note = (m, via) => { if (m && m.type === "feed") w.__ttFrames.push({ via, off: m.off === true, offHosts: Array.isArray(m.offHosts) ? m.offHosts.slice() : null, pendingHosts: Array.isArray(m.pendingHosts) ? m.pendingHosts.slice() : null, askIds: Array.isArray(m.asks) ? m.asks.map((a) => a.itemId) : [] }); };
+    window.addEventListener("message", (e) => note(e.data, "window"));
+    const fed = w.__rompFed; if (fed && typeof fed.onFrame === "function") fed.onFrame((e) => note(e.data, "fed")); });
+  return f;
+};
+let feedF = await hookFeed();
+const reload = async () => { await page.reload(); await page.waitForSelector("#rail-gear", { timeout: 20000 }); feedF = await hookFeed(); };
 const frames = () => feedF.evaluate(() => window.__ttFrames);
 const lastFrame = () => feedF.evaluate(() => { const f = window.__ttFrames; return f.length ? f[f.length - 1] : null; });
 const waitFrame = (pred, why) => feedF.waitForFunction((p) => { const f = window.__ttFrames; const last = f.length ? f[f.length - 1] : null; return !!last && (new Function("f", "return (" + p + ")(f)"))(last); }, pred.toString(), { timeout: 30000 }).catch(() => { errors.push("timeout: " + why); });
@@ -269,10 +279,12 @@ await page.mouse.move(3, 3);   // the pointer off every card: a hovered card que
 out.ctlRepush = await ctl(cfg.hostOnCtl, "on");
 await feedF.waitForFunction((ids) => { try { const v = JSON.parse(localStorage.getItem("romp:feedview") || "{}"); return ids.every((id) => v.sec && v.sec[id] === "subgoals"); } catch { return false; } }, [cfg.offCard, cfg.onCard0], { timeout: 15000 }).catch(() => { errors.push("timeout: the two Sub-goals choices persisted"); });
 await feedF.waitForFunction((ids) => { const m = JSON.parse(localStorage.getItem("romp:cardNotified") || "[]"); return ids.every((id) => m.some((s) => s.startsWith("w|" + id + "|"))); }, [cfg.offCard, cfg.onCard0], { timeout: 15000 }).catch(() => { errors.push("timeout: both cards' marks stored"); });
-// two stale marks that no frame carries: an on host's card and a local card that left. The on hosts' absent marks are what
-// the mixed frame must still prune (the store's bound), while the off host's are kept
-await feedF.evaluate((stale) => { const m = JSON.parse(localStorage.getItem("romp:cardNotified") || "[]"); localStorage.setItem("romp:cardNotified", JSON.stringify(m.concat(stale))); }, [cfg.staleOnMark, cfg.staleLocalMark]);
+// three stale marks that no frame carries: an on host's card and a local card that left (the reporting hosts' absent marks are
+// what the mixed frame must still prune, the store's bound, while the off host's are kept), and one in the OLD shape with no host
+// segment (stored before round seven): kept while any host is not in hand, pruned once every host is (round eight, low 1)
+await feedF.evaluate((stale) => { const m = JSON.parse(localStorage.getItem("romp:cardNotified") || "[]"); localStorage.setItem("romp:cardNotified", JSON.stringify(m.concat(stale))); }, [cfg.staleOnMark, cfg.staleLocalMark, cfg.staleOldMark]);
 out.a = { frame: await lastFrame(), store: await store(), notes: await notes() };
+out.frames = await frames();
 // ── stage B: HOSTOFF flips off (its stand-in frame), HOSTON pushes a frame with a NEW card carrying a warn ──
 out.ctlOff = await ctl(cfg.hostOffCtl, "off");
 await waitFrame((f) => f.offHosts && f.offHosts.includes(CFG_HOST_OFF), "a merged frame naming HOSTOFF off");
@@ -280,12 +292,27 @@ out.ctlOn2 = await ctl(cfg.hostOnCtl, "on2");
 await waitFrame((f) => f.askIds.includes(CFG_ON_CARD2) && f.offHosts && f.offHosts.includes(CFG_HOST_OFF), "the mixed frame carrying the new card");
 await page.waitForTimeout(800);   // the render's tail persists the view state; the mirror writes on the frame
 out.b = { frame: await lastFrame(), store: await store(), notes: await notes(), frames: (await frames()).length };
-// ── stage C: HOSTOFF flips on with no cards: pruning resumes ──
+// ── stage B2 (round eight, the medium): a RELOAD while HOSTOFF is off. The first merged frame names both remotes pending and no
+// host off; before this round the pane read their cards as gone, pruned every remote mark and re-rang every remote warn ──
+await reload();
+await waitFrame((f) => f.offHosts && f.offHosts.includes(CFG_HOST_OFF) && f.askIds.includes(CFG_ON_CARD2), "after the reload, the mixed frame again");
+await page.waitForTimeout(800);
+out.b2 = { frame: await lastFrame(), store: await store(), notes: await notes(), frames: await frames() };
+// ── stage C: HOSTOFF flips back on WITH its card: nothing re-rings, its mark having been kept through the off frames and the reload ──
+out.ctlBackOn = await ctl(cfg.hostOffCtl, "on");
+await waitFrame((f) => f.offHosts && f.offHosts.length === 0 && f.pendingHosts && f.pendingHosts.length === 0 && f.askIds.includes(CFG_OFF_CARD) && f.askIds.includes(CFG_ON_CARD2), "every host on again, HOSTOFF's card back");
+await page.waitForTimeout(800);
+out.c = { frame: await lastFrame(), store: await store(), notes: await notes() };
+// ── stage C2: HOSTOFF pushes a frame with no cards: its card left for real, so pruning resumes ──
 out.ctlOnEmpty = await ctl(cfg.hostOffCtl, "on-empty");
 await waitFrame((f) => f.offHosts && f.offHosts.length === 0 && f.askIds.includes(CFG_ON_CARD2) && !f.askIds.includes(CFG_OFF_CARD), "a merged frame naming no host off, without HOSTOFF's card");
 await page.waitForTimeout(800);
-out.c = { frame: await lastFrame(), store: await store(), notes: await notes() };
-out.frames = await frames();
+out.c2 = { frame: await lastFrame(), store: await store(), notes: await notes() };
+// ── stage D: a plain reload with every host on: the first frame names both remotes pending; no warn re-rings ──
+await reload();
+await waitFrame((f) => f.offHosts && f.offHosts.length === 0 && f.pendingHosts && f.pendingHosts.length === 0 && f.askIds.includes(CFG_ON_CARD0) && f.askIds.includes(CFG_ON_CARD2), "after the plain reload, every host reporting");
+await page.waitForTimeout(800);
+out.d = { frame: await lastFrame(), store: await store(), notes: await notes(), frames: await frames() };
 await browser.close();
 process.stdout.write("RESULT:" + JSON.stringify(out) + "\n", () => process.exit(0));
 """
@@ -335,12 +362,13 @@ class ServedTaskTrackingFederation(QueuedLab):
             base = "http://127.0.0.1:%d" % self.port
             cfg = os.path.join(self.lab, "cfg_fed.json")
             stale_on = "w|%s:gone|%d|distill|@HOSTON" % (SID_ON, now - 900)
-            stale_local = "n|%s:gone" % SID
+            stale_local = "n|%s:gone|@" % SID                         # the local host's shape: the empty segment
+            stale_old = "w|%s:old|%d|distill" % (SID_ON, now - 900)     # the shape before round seven: no segment at all
             with open(cfg, "w") as f:
                 json.dump({"landing": base + "/?token=" + self.token, "hostOnCtl": "http://127.0.0.1:%d" % host_on.port,
                            "hostOffCtl": "http://127.0.0.1:%d" % host_off.port, "hostOff": "HOSTOFF", "hostOn": "HOSTON",
                            "offCard": off1["itemId"], "onCard0": on0["itemId"], "onCard2": on2["itemId"],
-                           "staleOnMark": stale_on, "staleLocalMark": stale_local}, f)
+                           "staleOnMark": stale_on, "staleLocalMark": stale_local, "staleOldMark": stale_old}, f)
             driver = os.path.join(self.lab, "driver_fed.mjs")
             src = DRIVER.replace("CFG_OFF_CARD", json.dumps(off1["itemId"])).replace("CFG_ON_CARD0", json.dumps(on0["itemId"])) \
                         .replace("CFG_ON_CARD2", json.dumps(on2["itemId"])).replace("CFG_HOST_OFF", json.dumps("HOSTOFF"))
@@ -391,12 +419,42 @@ class ServedTaskTrackingFederation(QueuedLab):
         self.assertTrue(any(m.startswith("w|" + c["offCard"] + "|") for m in marks), "the off host's mark is kept" + table)
         self.assertNotIn(c["staleOnMark"], marks, "the on host's absent mark pruned: the store's bound" + table)
         self.assertNotIn(c["staleLocalMark"], marks, "the local host's absent mark pruned" + table)
+        self.assertIn(c["staleOldMark"], marks, "a mark in the shape before round seven names no host: kept while a host is not in hand (low 1)" + table)
         self.assertTrue(any(m.startswith("w|" + c["onCard2"] + "|") and m.endswith("|@HOSTON") for m in marks), "the new card's mark is written" + table)
         rung_b = [n for n in b["notes"] if n["kind"] == "warn" and n["itemId"] == c["onCard2"]]
         self.assertEqual(len(rung_b), 1, "the new card's warn rang once" + table)
 
-    def test_stage_c_the_host_back_on_with_no_cards_resumes_pruning_its_entry_and_mark_leave_while_the_on_hosts_stand(self):
-        r = self._result(); b, cc = r["b"], r["c"]; c = r["cfg"]; table = "\n  b: " + json.dumps(b["store"])[:1200] + "\n  c: " + json.dumps(cc)[:2500] + "\n  errors: " + json.dumps(r["errors"])
+    def test_stage_b2_the_round_eight_medium_a_reload_while_a_host_is_off_keeps_the_marks_and_the_view_state_through_the_pending_first_frame(self):
+        r = self._result(); b, b2 = r["b"], r["b2"]; c = r["cfg"]; table = "\n  b: " + json.dumps(b["store"])[:1200] + "\n  b2: " + json.dumps(b2)[:3000] + "\n  errors: " + json.dumps(r["errors"])
+        self.assertEqual([e for e in r["errors"] if e.startswith("timeout")], [], "every wait held" + table)
+        self.assertEqual(b2["store"]["view"], b["store"]["view"], "romp:feedview byte-identical across the reload: the pending first frame pruned nothing" + table)
+        marks = b2["store"]["marks"]
+        self.assertTrue(any(m.startswith("w|" + c["offCard"] + "|") for m in marks), "the off host's mark survived the reload" + table)
+        for card in (c["onCard0"], c["onCard2"]):
+            self.assertTrue(any(m.startswith("w|" + card + "|") for m in marks), "the on host's marks survived the reload: " + card + table)
+        self.assertEqual([n for n in b2["notes"] if n["kind"] == "warn"], [], "no warn re-rang on the reload" + table)
+        self.assertEqual(b2["frame"]["offHosts"], ["HOSTOFF"], table)
+
+    def test_stage_c_the_off_host_back_on_with_its_card_re_rings_nothing(self):
+        r = self._result(); cc = r["c"]; c = r["cfg"]; table = "\n  c: " + json.dumps(cc)[:2500] + "\n  errors: " + json.dumps(r["errors"])
+        self.assertEqual([e for e in r["errors"] if e.startswith("timeout")], [], "every wait held" + table)
+        self.assertEqual(cc["frame"]["offHosts"], [], table); self.assertEqual(cc["frame"]["pendingHosts"], [], table)
+        self.assertIn(c["offCard"], cc["frame"]["askIds"], "HOSTOFF's card is back" + table)
+        self.assertEqual([n for n in cc["notes"] if n["kind"] == "warn"], [], "its warn did not re-ring: the mark was kept" + table)
+        view = json.loads(cc["store"]["view"])
+        self.assertEqual(view["sec"].get(c["offCard"]), "subgoals", "HOSTOFF's disclosure entry stands, its card being back" + table)
+        self.assertNotIn(c["staleOldMark"], cc["store"]["marks"], "every host in hand: the old-shape mark prunes by absence like any other" + table)
+
+    def test_stage_d_a_plain_reload_with_every_host_on_re_rings_nothing(self):
+        r = self._result(); d = r["d"]; c = r["cfg"]; table = "\n  d: " + json.dumps(d)[:3000] + "\n  errors: " + json.dumps(r["errors"])
+        self.assertEqual([e for e in r["errors"] if e.startswith("timeout")], [], "every wait held" + table)
+        self.assertEqual([n for n in d["notes"] if n["kind"] == "warn"], [], "no warn re-rang on the plain reload" + table)
+        marks = d["store"]["marks"]
+        for card in (c["onCard0"], c["onCard2"]):
+            self.assertTrue(any(m.startswith("w|" + card + "|") for m in marks), "the on host's marks stand: " + card + table)
+
+    def test_stage_c2_the_host_on_with_no_cards_resumes_pruning_its_entry_and_mark_leave_while_the_on_hosts_stand(self):
+        r = self._result(); b, cc = r["b"], r["c2"]; c = r["cfg"]; table = "\n  b: " + json.dumps(b["store"])[:1200] + "\n  c2: " + json.dumps(cc)[:2500] + "\n  errors: " + json.dumps(r["errors"])
         self.assertEqual([e for e in r["errors"] if e.startswith("timeout")], [], "every wait held" + table)
         self.assertEqual(cc["frame"]["offHosts"], [], table)
         view = json.loads(cc["store"]["view"])
@@ -409,9 +467,13 @@ class ServedTaskTrackingFederation(QueuedLab):
     def test_the_page_threw_nothing_and_every_frame_carried_the_per_host_lists(self):
         r = self._result(); table = "\n  " + json.dumps(r["errors"]) + "\n  frames: " + json.dumps(r["frames"])[:2000]
         self.assertEqual([e for e in r["errors"] if e.startswith("page:")], [], "no uncaught error in the page" + table)
-        merged = [f for f in r["frames"] if f["offHosts"] is not None]
+        merged = [f for f in r["frames"] + r["b2"]["frames"] + r["d"]["frames"] if f["offHosts"] is not None]
         self.assertGreater(len(merged), 2, "merged frames carry offHosts and pendingHosts" + table)
         self.assertTrue(all(f["pendingHosts"] is not None for f in merged), table)
+        # the reload stages saw the frame the medium names: both remotes pending, no host off (the hook may miss the very first
+        # frames of a reload, so this is asserted only when one was seen; the store reads above are the proof either way)
+        early = [f for f in r["b2"]["frames"] + r["d"]["frames"] if f["pendingHosts"]]
+        self.assertTrue(all(f["offHosts"] == [] for f in early), "a pending host is named pending, never off" + table)
 
 
 if __name__ == "__main__":

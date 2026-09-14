@@ -3651,19 +3651,23 @@ reaches every attached kernel, and a kernel attached later adopts the newest sta
 /compact and file editing take.
 
 **Across attached machines** the browser merges every host's feed frame into one. A host whose frame is the off stand-in
-is named in the merged frame (`offHosts`, beside the per-host build counters); the frame's own `off` stays the local
-kernel's word, so the notice and the gear row, which both read this dashboard's kernel, agree. While any host is named
-there, the feed pane's writers that act on a card's absence stand down: nothing is confirmed, pruned, retired or
-forgotten because a card is not in the frame (a pending clear's confirmation, a card's disclosure state, a predicted
-move's gone verdict, an optimistic tick, a bell mark), since an off host's cards were not built rather than gone;
-presence-driven work goes on and the on hosts' cards still ring the bell. The bell's card marks name their host from the
-mint, so only the off hosts' marks are kept and the on hosts' prune by absence as ever; a host mints nothing while off,
-so what is kept for it is what its cards carried at the flip, and the store stays bounded however long it stays off. The
-convergence above does not reach an isolated peer (its settings are neither adopted nor pushed), so an attached isolated
-host with the switch off stays named indefinitely: the marks kept for it are bounded as said, and the disclosure state
-grows only by the user's own gestures, so a long mixed state costs stale entries for cards that have left, never growth
-without a gesture. A host that is attached but has not yet sent a frame is pending, not off: its cards prune by absence
-as before.
+is named in the merged frame (`offHosts`, beside the per-host build counters), and a host that is attached but has not
+yet sent a frame is named too (`pendingHosts`: on a reload, every remote host, for the first frame); the frame's own
+`off` stays the local kernel's word, so the notice and the gear row, which both read this dashboard's kernel, agree.
+While any host is named in either list, its cards are not in hand, which is not the same as gone, and the feed pane's
+writers that act on a card's absence stand down: nothing is confirmed, pruned, retired or forgotten because a card is
+not in the frame (a pending clear's confirmation, a card's disclosure state, a predicted move's gone verdict, an
+optimistic tick, a bell mark); presence-driven work goes on and the reporting hosts' cards still ring the bell. The
+bell's card marks name their host from the mint (a remote card's as a trailing segment, a local card's as the empty
+one), so only the marks of the hosts not in hand are kept and the reporting hosts' prune by absence as ever; a host
+mints nothing while off, so what is kept for it is what its cards carried at the flip, and the store stays bounded
+however long it stays off. A mark stored before the segment existed names no host: it is kept while any host is not in
+hand and rewritten with its host the next time its card is seen, a finite set that only shrinks. The convergence above
+does not reach an isolated peer (its settings are neither adopted nor pushed), so an attached isolated host with the
+switch off stays named indefinitely: the marks kept for it are bounded as said, and the disclosure state grows only by
+the user's own gestures, so a long mixed state costs stale entries for cards that have left, never growth without a
+gesture. Before the pending hosts counted, every reload pruned every remote card's marks and disclosure state on its
+first frame and re-rang every remote warn once the frames arrived.
 
 **Off, the kernel stands down** the two judge tiers (the producer starts no index and no triage thread: no
 kernel-initiated model call, no `judge-usage.jsonl` row), the feed and outline builds (the panes receive one frame with

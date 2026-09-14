@@ -1,4 +1,4 @@
-// The Task tracking switch across kernels (T404 rounds six and seven). mergeHostFeeds builds the merged frame as the
+// The Task tracking switch across kernels (T404 rounds six to eight). mergeHostFeeds builds the merged frame as the
 // local host's with the lists overridden, so before round six a remote host's off frame (the switch's stand-in: no cards
 // built) merged under a local frame with the switch on left no trace, and the pane's writers that act on a card's
 // ABSENCE (the badge mirror's prune, the view state's prune, a predicted move's gone verdict, an optimistic tick's
@@ -27,6 +27,8 @@ type Unknown = boolean | Set<string>;
 const frameCardsUnknown = (badgeMirror as any).frameCardsUnknown as ((m: any) => Unknown) | undefined;
 const badgeCardHalf = (badgeMirror as any).badgeCardHalf as ((items: any[], seen: Set<string>, unknown: Unknown) => Half) | undefined;
 const sigHost = (badgeMirror as any).sigHost as ((sig: string) => string) | undefined;
+const hasSigHost = (badgeMirror as any).hasSigHost as ((sig: string) => boolean) | undefined;
+const keepCardSigs = (badgeMirror as any).keepCardSigs as ((seen: Iterable<string>, hosts: true | Set<string>) => string[]) | undefined;
 const FEED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "feed.ts"), "utf8");
 
 // one card per host carrying a warn chip, so the mirror has a notice to mint and a mark to keep; shaped as prefixInbound
@@ -57,15 +59,22 @@ test("the helpers exist: the pane's reading of a frame, the mirror's card half, 
   assert.equal(typeof frameCardsUnknown, "function");
   assert.equal(typeof badgeCardHalf, "function");
   assert.equal(typeof sigHost, "function");
+  assert.equal(typeof hasSigHost, "function");
 });
 
-test("a remote card's mark names its host as the last segment, a local card's has none, and a mark stored in the old shape reads as seen and is rewritten without a ring (round seven)", () => {
+test("a remote card's mark names its host as the last segment, a local card's carries the empty segment, a mark with none is one stored before, and the old shape reads as seen and is rewritten without a ring (rounds seven and eight)", () => {
   const remote = markFor(REMOTE, SID_R, new Set());
   assert.ok(remote.endsWith("|@" + REMOTE), remote);
   assert.equal(sigHost!(remote), REMOTE);
   const local = markFor("", SID_L, new Set());
   assert.equal(sigHost!(local), "");
-  assert.ok(!local.includes("|@"), local);
+  assert.ok(local.endsWith("|@") && hasSigHost!(local), "the local host's key is the empty string, and the segment is there: " + local);
+  assert.ok(!hasSigHost!("w|" + SID_R + ":g1|100|distill"), "no segment at all is the old shape");
+  // a mark in the old shape is kept while any host's cards are unknown, whoever its host was (round eight, low 1): the one-time
+  // upgrade window loses nothing; a mark with a segment is kept only for its own host
+  const oldRemote = "w|" + SID_R + ":g1|100|distill", oldLocal = "n|" + SID_L + ":g3";
+  assert.deepEqual(keepCardSigs!(new Set([oldRemote, oldLocal, local, remote]), new Set([REMOTE])).sort(), [oldLocal, oldRemote, remote].sort(), "the old shapes and the named host's; the local host's new-shape mark prunes");
+  assert.deepEqual(keepCardSigs!(new Set([oldRemote, local, remote]), new Set([""])).sort(), [local, oldRemote].sort());
   // the old shape: the same sig without the host segment, as every store holds it before this round
   const bare = remote.slice(0, remote.length - ("|@" + REMOTE).length);
   const seen = new Set([bare]);
@@ -132,12 +141,18 @@ test("both on: no host is named, the cards are known, and a mark whose card left
   assert.ok(!half.active.has(remoteGone) && !half.active.has(localGone), "the absent cards' marks are pruned");
 });
 
-test("a host attached but yet to send a frame is pending, not off: named nowhere, and pruning proceeds (pre-existing, kept as intended: round seven, low 4)", () => {
+test("a host attached but yet to send a frame is PENDING: its cards are not in hand either, so it counts as unknown and its marks are kept while the local host's absent ones prune (round eight, the medium: a reload's first merged frame names every remote host pending)", () => {
   const pending = mergeHostFeeds({ "": onFrame("", SID_L) }, ["", REMOTE]);
   assert.deepEqual(pending.offHosts, []); assert.deepEqual(pending.pendingHosts, [REMOTE]);
-  assert.equal(frameCardsUnknown!(pending), false);
-  const seen = new Set<string>(); const remoteMark = markFor(REMOTE, SID_R, seen);
-  assert.ok(!badgeCardHalf!(pending.asks, seen, false).active.has(remoteMark), "a pending host's marks prune by absence as before");
+  const unknown = asSet(frameCardsUnknown!(pending));
+  assert.deepEqual(Array.from(unknown), [REMOTE], "the pending host is unknown, the local host in hand");
+  const seen = new Set<string>(); const remoteMark = markFor(REMOTE, SID_R, seen); const localGone = markFor("", SID_L, seen, "gone");
+  const half = badgeCardHalf!(pending.asks, seen, unknown);
+  assert.ok(half.active.has(remoteMark), "a pending host's marks are kept: not in hand is not gone");
+  assert.ok(!half.active.has(localGone), "the local host's absent mark prunes: its cards are in hand");
+  // both reasons at once: one host off, another pending, a third on
+  const mixed = mergeHostFeeds({ "": onFrame("", SID_L), [REMOTE]: offFrame() }, ["", REMOTE, "HOSTB"]);
+  assert.deepEqual(Array.from(asSet(frameCardsUnknown!(mixed))).sort(), [REMOTE, "HOSTB"].sort());
 });
 
 test("the ONE gate in applyFeedPayload: the frame's reading is taken first, and every absence-driven writer stands behind it (source pins on feed.ts)", () => {

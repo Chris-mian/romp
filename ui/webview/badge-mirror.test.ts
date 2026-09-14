@@ -145,15 +145,17 @@ test("keepCardSigs keeps the store's card-side marks and none of the rings' (T40
   const seen = new Set(["n|c1", "w|c2|1700000000|judge", "r|c3|5", "e|c4|500|sl", "sync|9", "sdk|3", "c|s1|7", "x|odd"]);
   assert.deepEqual(keepCardSigs!(seen).sort(), ["e|c4|500|sl", "n|c1", "r|c3|5", "w|c2|1700000000|judge"], "the four card prefixes, verbatim");
   assert.deepEqual(keepCardSigs!([]), []);
-  // round seven: per host. A remote card's mark ends in "|@host"; a local one (and every mark stored before) has no segment.
-  const hosted = new Set(["w|c2|1700000000|judge|@HOSTA", "n|c1", "e|c4|500|sl|@HOSTB", "r|c3|5|@HOSTA", "sync|9|@HOSTA", "c|s1|7"]);
+  // rounds seven and eight: per host. A remote card's mark ends in "|@host", a local one in a bare "|@" (the empty key), and
+  // a mark with no segment was stored before round seven: its host cannot be told, so it is kept while any host is unknown
+  const hosted = new Set(["w|c2|1700000000|judge|@HOSTA", "n|c1", "e|c4|500|sl|@HOSTB", "r|c3|5|@HOSTA", "n|c8|@", "sync|9|@HOSTA", "c|s1|7"]);
   const keepPerHost = keepCardSigs as unknown as (s: Iterable<string>, hosts: Set<string>) => string[];
-  assert.deepEqual(keepPerHost(hosted, new Set(["HOSTA"])).sort(), ["r|c3|5|@HOSTA", "w|c2|1700000000|judge|@HOSTA"], "the off host's card marks alone, never a ring's");
-  assert.deepEqual(keepPerHost(hosted, new Set([""])), ["n|c1"], "the local host's are the ones with no segment");
-  assert.deepEqual(keepPerHost(hosted, new Set(["HOSTA", "HOSTB"])).sort(), ["e|c4|500|sl|@HOSTB", "r|c3|5|@HOSTA", "w|c2|1700000000|judge|@HOSTA"]);
-  assert.deepEqual(keepPerHost(hosted, new Set(["HOSTC"])), [], "a host with no marks keeps nothing");
-  const sigHost = (badgeMirror as any).sigHost as (sig: string) => string;
-  assert.equal(sigHost("w|c2|1700000000|judge|@HOSTA"), "HOSTA"); assert.equal(sigHost("n|c1"), ""); assert.equal(sigHost("e|c4|500|sl"), "");
+  assert.deepEqual(keepPerHost(hosted, new Set(["HOSTA"])).sort(), ["n|c1", "r|c3|5|@HOSTA", "w|c2|1700000000|judge|@HOSTA"], "the off host's card marks and the old shape, never a ring's nor the local host's");
+  assert.deepEqual(keepPerHost(hosted, new Set([""])).sort(), ["n|c1", "n|c8|@"], "the local host's carry the empty segment; the old shape rides along");
+  assert.deepEqual(keepPerHost(hosted, new Set(["HOSTA", "HOSTB"])).sort(), ["e|c4|500|sl|@HOSTB", "n|c1", "r|c3|5|@HOSTA", "w|c2|1700000000|judge|@HOSTA"]);
+  assert.deepEqual(keepPerHost(hosted, new Set(["HOSTC"])), ["n|c1"], "a host with no marks keeps only the old shape");
+  const sigHost = (badgeMirror as any).sigHost as (sig: string) => string, hasSigHost = (badgeMirror as any).hasSigHost as (sig: string) => boolean;
+  assert.equal(sigHost("w|c2|1700000000|judge|@HOSTA"), "HOSTA"); assert.equal(sigHost("n|c1"), ""); assert.equal(sigHost("n|c8|@"), "");
+  assert.ok(hasSigHost("n|c8|@") && hasSigHost("w|c2|1700000000|judge|@HOSTA") && !hasSigHost("n|c1") && !hasSigHost("e|c4|500|sl"));
   // round six: the list is pinned against the minter it tracks, never a literal: the prefixes badgeNotices mints over one item
   // carrying every trouble kind must all be named…
   const minted = badgeNotices([base({

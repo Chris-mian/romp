@@ -41,36 +41,44 @@ export const CARD_SIG_PREFIXES = ["w|", "n|", "r|", "e|"];
  *  was built (the Task tracking switch's off frame, T404 round five): the mirror stores only the ACTIVE set, which re-arms a
  *  cleared badge because a card that left the payload takes its sigs with it; a payload that was never built is not that,
  *  so its cards' marks are kept, and every card would otherwise re-mint its bell row on the return to on. */
-/** The host segment of a card mark (T404 round seven): appended last as "|@host" for a remote card, absent for a local
- *  one and for every mark stored before this round. No other segment starts with "@" (item ids, clocks, kinds,
- *  statuses), so the last "|@" is the host's. */
+/** The host segment of a card mark (T404 rounds seven and eight): appended last as "|@host" for a remote card and as a
+ *  bare "|@" for a local one (the local host's key is the empty string), so a mark with NO segment is one stored before
+ *  round seven, whose host nobody can tell. No other segment starts with "@" (item ids, clocks, kinds, statuses), so the
+ *  last "|@" is the host's. */
 export const SIG_HOST_SEP = "|@";
-export function withSigHost(bare: string, host: string): string { return host ? bare + SIG_HOST_SEP + host : bare; }
+export function withSigHost(bare: string, host: string): string { return bare + SIG_HOST_SEP + host; }
+export function hasSigHost(sig: string): boolean { return sig.lastIndexOf(SIG_HOST_SEP) >= 0; }
 export function sigHost(sig: string): string {
   const i = sig.lastIndexOf(SIG_HOST_SEP);
   return i < 0 ? "" : sig.slice(i + SIG_HOST_SEP.length);
 }
 
 /** …and PER HOST since round seven: every card mark when `hosts` is true (the switch's own off frame: nothing was built),
- *  else the marks of the hosts named (a merged frame carrying an off host's stand-in beside the others' frames; a mark
- *  with no host segment is the local host's). A host that is on has its cards in the frame, so its marks prune by
- *  absence as ever; a host that is off mints nothing while off, so the marks kept for it are the ones its cards
- *  carried at the flip and grow by nothing: the store stays bounded however long a host stays off. */
+ *  else the marks of the hosts named (a merged frame carrying an off host's stand-in, or missing a pending host's frame,
+ *  beside the others'), plus every mark with no host segment at all (stored before round seven: its host cannot be told,
+ *  so it is kept while any host's cards are unknown and rewritten with its host the next time its card is seen; a
+ *  finite set that only shrinks). A host whose cards are in hand has its marks prune by absence as ever, the local host's
+ *  included (its marks carry the empty segment, round eight); a host that is off mints nothing while off, so the marks
+ *  kept for it are the ones its cards carried at the flip and grow by nothing: the store stays bounded however long a
+ *  host stays off. */
 export function keepCardSigs(seen: Iterable<string>, hosts: true | ReadonlySet<string> = true): string[] {
-  return Array.from(seen).filter((sig) => CARD_SIG_PREFIXES.some((p) => sig.startsWith(p)) && (hosts === true || hosts.has(sigHost(sig))));
+  return Array.from(seen).filter((sig) => CARD_SIG_PREFIXES.some((p) => sig.startsWith(p))
+    && (hosts === true || !hasSigHost(sig) || hosts.has(sigHost(sig))));
 }
 
-/** The pane's reading of a frame's cards (T404 rounds six and seven): true when the frame is the switch's own stand-in
+/** The pane's reading of a frame's cards (T404 rounds six to eight): true when the frame is the switch's own stand-in
  *  (`off`: a single kernel's, or the local kernel's word over a merged frame; nothing was built, every host's cards are
- *  unknown), the set of hosts named in `offHosts` when a merged frame carries an off host's stand-in beside the others'
- *  frames (those hosts' cards are unknown, the rest are in hand), false when every card is in hand. Truthy is the ONE
- *  gate every writer in the page that prunes, retires or forgets by absence stands behind (applyFeedPayload). */
+ *  unknown); the set of hosts whose cards are not in hand when a merged frame names any, the OFF hosts (their frame is
+ *  the stand-in, `offHosts`) and the PENDING hosts (attached, no frame yet, `pendingHosts`: on a reload the first merged
+ *  frame names every remote host here, and reading their cards as gone pruned every remote mark and re-rang every remote
+ *  warn, round eight); false when every card is in hand. A card not in hand is not a card gone, whichever of the two
+ *  reasons. Truthy is the ONE gate every writer in the page that prunes, retires or forgets by absence stands behind. */
 export type CardsUnknown = boolean | ReadonlySet<string>;
-export function frameCardsUnknown(m: { off?: unknown; offHosts?: unknown } | null | undefined): CardsUnknown {
+export function frameCardsUnknown(m: { off?: unknown; offHosts?: unknown; pendingHosts?: unknown } | null | undefined): CardsUnknown {
   if (!m) return false;
   if (m.off === true) return true;
-  if (!Array.isArray(m.offHosts)) return false;
-  const hosts = new Set<string>(m.offHosts.filter((h: unknown): h is string => typeof h === "string"));
+  const hosts = new Set<string>();
+  for (const list of [m.offHosts, m.pendingHosts]) if (Array.isArray(list)) for (const h of list) if (typeof h === "string") hosts.add(h);
   return hosts.size ? hosts : false;
 }
 
@@ -89,10 +97,11 @@ export function badgeNotices(items: BadgeItem[], seen: Set<string>): { notices: 
   const notices: BadgeNotice[] = [];
   const active = new Set<string>();
   for (const it of items) {
-    // A remote card's mark names its host as a trailing segment (T404 round seven): federation prefixes the sid, never
-    // the itemId, so without it a stored mark could not be told apart by host, and one host's off frame had the mirror
-    // keep or prune EVERY host's marks together. A mark stored in the old shape (no host segment) still reads as seen,
-    // so the upgrade rings nothing; it is rewritten in the new shape on this write and the old one leaves by absence.
+    // A card's mark names its host as a trailing segment (T404 rounds seven and eight; the local host's is the empty one):
+    // federation prefixes the sid, never the itemId, so without it a stored mark could not be told apart by host, and one
+    // host's off frame had the mirror keep or prune EVERY host's marks together. A mark stored in the old shape (no
+    // segment) still reads as seen, so the upgrade rings nothing; it is rewritten in the new shape on this write and the
+    // old one leaves by absence.
     const host = hostOf(it.sid);
     const add = (bare: string, kind: string, text: string) => {
       const sig = withSigHost(bare, host);
