@@ -30533,6 +30533,7 @@ def _chat_push_scopes_close():
     for k in getattr(_live_scope, "chat_push_owned", None) or ():
         setattr(_live_scope, k, None)
     _live_scope.chat_push_owned = None
+    _chat_inflight_release_all()                      # ...and the chat tab claims a raise left on this thread (single-flight)
 
 
 def _claudemd_key(cwd):
@@ -48699,8 +48700,26 @@ def _push(targets, connect=False, live_map=None):
                     _chat_sig_fault(s, e)                # once per fault episode: stderr and a bell row
                     sig = None                           # an input that cannot be keyed: build, never cache
                 hit = _built_chat.get(s["sid"])
+                _claimed = False
+                if not (hit is not None and sig is not None and hit[0] == sig):
+                    _ev = _chat_inflight_claim(s["sid"])            # single-flight (2026-09-14): another thread building this tab?
+                    if _ev is not None:
+                        _ev.wait(CHAT_INFLIGHT_WAIT_S)              # wait for it, then re-read what it stored
+                        hit = _built_chat.get(s["sid"])
+                        if hit is not None and sig is not None and hit[0] == sig:
+                            _VIEW_STATS["chatWaited"] += 1
+                        else:
+                            _claimed = _chat_inflight_claim(s["sid"]) is None   # nothing usable stored: build, as before
+                    else:
+                        _claimed = True
+                    if _claimed:
+                        hit = _built_chat.get(s["sid"])             # re-read under the claim (round two, low c): a builder that
+                        #                                             stored between the first read and the claim is served, as
+                        #                                             _cached_feed re-checks under its lock
                 post, served, _rec = None, False, None
                 if hit is not None and sig is not None and hit[0] == sig:
+                    if _claimed:
+                        _chat_inflight_done(s["sid"])                # the re-read's road: claimed, then found stored
                     m, ms, served = hit[1], hit[2], True   # unchanged → reuse, no reshape/serialize
                     _VIEW_STATS["chatServeActive" if is_active else "chatServeBg"] += 1
                     _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
@@ -48719,6 +48738,8 @@ def _push(targets, connect=False, live_map=None):
                         # that stopped updating is not a silent degrade (review find, 2026-09-08).
                         _chat_build_fault(s, e)
                         _chat_dep_scope.deps = None      # the failed build's record is nobody's
+                        if _claimed:
+                            _chat_inflight_done(s["sid"])   # the waiters build their own, as before this change
                         continue
                     _chat_build_ok(s["sid"])             # a build that succeeds ends its fault episode
                     # The full serialization is LAZY (the 2026-08-10 CPU fix, round two): steady state
@@ -48753,6 +48774,8 @@ def _push(targets, connect=False, live_map=None):
                               prefix=_chat_fold_last_info().get("prefix", 0),   # events reused from the sealed prefix
                               why=_chat_fold_last_info().get("why", ""))         # the demote reason on a full build
                 if not m:
+                    if _claimed:
+                        _chat_inflight_done(s["sid"])
                     continue
                 if _empty_build_regresses(m, _prev_chat_events.get(m["id"])):
                     # a failed read, not a conversation that emptied (see _empty_build_regresses): the last cached
@@ -48760,6 +48783,8 @@ def _push(targets, connect=False, live_map=None):
                     # cached, this cycle sends nothing for the sid; the file's return busts the stat key and rebuilds
                     _note_empty_build(s["sid"], s.get("path"), len(_prev_chat_events.get(m["id"]) or ()))
                     if hit is None:
+                        if _claimed:
+                            _chat_inflight_done(s["sid"])
                         continue
                     m, ms, _rec = hit[1], hit[2], hit[3]   # the stand-in payload keeps its own dependency record
                 else:
@@ -48807,6 +48832,8 @@ def _push(targets, connect=False, live_map=None):
                         if _PERF:
                             _perf("chatsig", sid=str(s["sid"])[:8],
                                   moved=",".join(l for l in _chat_sig_miss(sig, post) if l not in _CHAT_SIG_DEPS))
+                if _claimed:
+                    _chat_inflight_done(s["sid"])        # stored (or not cacheable): the waiters re-read the cache now
             shown_sids = {s["sid"] for s in chat_list}
             for sid in list(_built_chat):                # drop cache for tabs no longer shown (closed/×-hidden)
                 if sid not in shown_sids:
@@ -48943,6 +48970,10 @@ def _push(targets, connect=False, live_map=None):
             tl_clients = [c for c in targets if c["app"] == "timeline"]
             live_first = connect and _built_timeline[1] is None     # cold start, nothing warmed yet → live only
             if live_first:
+                # Outside any lock (round two, medium 2): this is the pane's FIRST frame, the cheap live-only partial, and
+                # holding the full build's lock across it serialised two cold connects and blocked the pusher's whole
+                # timeline stage (the cards for every pane behind it). The single-flight lock covers the FULL build alone
+                # (_cached_timeline); a connect racing it still gets its partial at once and the full on the next cycle.
                 skel = build_timeline(now, live_map, with_bars=False, live_only=True)
                 for c in tl_clients:
                     _send_client(c, ("timeline",), {"type": "data", "data": skel})
@@ -49338,12 +49369,69 @@ def _producer_sig(browser):
 # dashboard re-does it every tick. Cache each payload, keyed on a fleet fingerprint; an UNCHANGED fleet (a
 # reload, an idle tick) reuses the last build instead of rebuilding.
 _built_feed = [None, None, 0.0, 0.0]              # [fleet_sig, payload, built_at, build_started_at]
+# SINGLE-FLIGHT BUILDS (2026-09-14). The first browser-attached boot on the cards-first code (12:06 PM PT): every pane's
+# socket redialed after the outage and each connect push built its own copy of the same cold work on its handler thread
+# while the pusher built it too: five to seven cold builders of one feed, one timeline and the same 27 chat tabs on one
+# interpreter, each five to seven times slower for it (push.feedFirst 106 s; connect pushes 109 to 130 s each; cards at
+# 131 s against 72 s the day before). A build in flight is the build every later caller wants: the feed and the timeline
+# take one lock each around their build, and a caller that finds the lock held waits for the builder and serves its
+# result; a chat tab in flight on another thread is waited for the same way (_chat_inflight_*), and the waiter re-reads
+# the cache the builder stored. The review's item (review-push 7): three threads under one interpreter lock gain little
+# from concurrency; ordering and de-duplication do. Counted under _VIEW_STATS feedWaited / tlWaited / chatWaited.
+_FEED_BUILD_LOCK = threading.RLock()
+_TL_BUILD_LOCK = threading.RLock()
+_CHAT_INFLIGHT = {}                                # sid -> (Event set when that sid's build and its cache store ended, claimed at)
+_CHAT_INFLIGHT_LOCK = threading.Lock()
+CHAT_INFLIGHT_WAIT_S = 30.0                        # a waiter's bound, near the per-tab worst case (about 2.4 s a tab cold, 66 s for
+#                                                    27 on the measured day): the waiter is the pusher, and its fallback, building its
+#                                                    own copy, is the behaviour before this change (round two, medium 1)
+
+
+def _chat_inflight_claim(sid):
+    """Claim `sid`'s build for this thread. Returns None when claimed, else the Event of the thread already building it.
+    The claim is recorded on THIS thread's scope (_live_scope.chat_claims) so _chat_push_scopes_close, the push's and the
+    cycle's finally, releases whatever a raise left claimed: the same handler, for the same reason, as the chat scopes
+    (round two, medium 1: a raise between the claim and the store left the Event unset for the kernel's life, and every
+    later rebuild of that tab waited the whole bound). An entry older than the bound is stale by definition (its builder
+    would have released it); a new claim replaces it and releases anyone waiting on it."""
+    with _CHAT_INFLIGHT_LOCK:
+        ent = _CHAT_INFLIGHT.get(sid)
+        if ent is not None and time.monotonic() - ent[1] <= CHAT_INFLIGHT_WAIT_S:
+            return ent[0]
+        stale = ent
+        _CHAT_INFLIGHT[sid] = (threading.Event(), time.monotonic())
+    if stale is not None:
+        stale[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims is None:
+        claims = _live_scope.chat_claims = []
+    claims.append(sid)
+    return None
+
+
+def _chat_inflight_done(sid):
+    """The claimed build ended (stored, faulted or skipped): release the waiters and forget the claim on this thread."""
+    with _CHAT_INFLIGHT_LOCK:
+        ent = _CHAT_INFLIGHT.pop(sid, None)
+    if ent is not None:
+        ent[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims and sid in claims:
+        claims.remove(sid)
+
+
+def _chat_inflight_release_all():
+    """Every claim this thread still holds, released: the push's and the cycle's finally (via _chat_push_scopes_close)."""
+    for sid in list(getattr(_live_scope, "chat_claims", None) or ()):
+        _chat_inflight_done(sid)
+    _live_scope.chat_claims = None
 # How often each view is REBUILT vs SERVED from its cache — the pusher's cost, as numbers (2026-09-03).
 # Exposed on the version route beside the parse counters, so "the kernel is pegged" can be read as
 # "the timeline rebuilt 900 times in 30 min with 12 sessions idle" instead of inferred from top. A
 # rebuild is justified only by a changed input; a rising build count on a quiet board is a bug signature.
 _VIEW_STATS = {"feedBuild": 0, "feedServe": 0, "tlBuild": 0, "tlServe": 0,
                "chatBuildActive": 0, "chatBuildBg": 0, "chatServeActive": 0, "chatServeBg": 0,
+               "feedWaited": 0, "tlWaited": 0, "chatWaited": 0,   # served a build another thread had in flight (single-flight)
                # GET /feed.json's reads (_pure_feed), apart: a poller's builds under the pusher's numbers
                # would forge the bug signature above, or bury a pusher regression (review find, 2026-09-08)
                "feedJsonBuild": 0, "feedJsonServe": 0}
@@ -49533,6 +49621,22 @@ def _cached_feed(now, live_map, sig, connect=False):
     # is instant; the pusher refreshes it within a tick. Else: reuse on an unchanged sig OR a recent rebuild —
     # UNLESS an optimistic kernel-side mutation postdates the build (_views_dirty): that state is invisible
     # to the sig AND must not wait out REBUILD_MIN_S, or the push meant to show it serves the stale payload.
+    if _feed_servable(sig, connect):
+        _VIEW_STATS["feedServe"] += 1
+        _PERF_STATS.build("feed", True)
+        return _built_feed[1]
+    with _FEED_BUILD_LOCK:                                # single-flight: a build in flight on another thread is the one we want
+        if _feed_servable(sig, connect):                  # ...and it landed while we waited for the lock
+            _VIEW_STATS["feedServe"] += 1
+            _VIEW_STATS["feedWaited"] += 1
+            _PERF_STATS.build("feed", True)
+            return _built_feed[1]
+        return _build_feed_locked(now, live_map, sig)
+
+
+def _feed_servable(sig, connect):
+    """Whether the built feed stands for this caller: a connect serves any warmed build (never rebuilds); the pusher
+    serves it while the view signature holds or within REBUILD_MIN_S, and never past a dirty mark newer than its start."""
     e = _built_feed
     # The dirty mark compares against build START, not finish (the user 2026-07-28): a build takes
     # ~1-1.6s and reads the stores one session at a time, so a mutation landing MID-build may or may
@@ -49542,11 +49646,13 @@ def _cached_feed(now, live_map, sig, connect=False):
     # until the next sig bust — the window a client fallback needs to bounce a just-replied card
     # back to Completed. REBUILD_MIN_S stays keyed on the FINISH (e[2]): it rate-limits build COST,
     # so back-to-back starts must not shrink its window.
-    dirty = not connect and _views_dirty[0] > e[3]        # connect still serves the warmed build (never rebuilds)
-    if e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
-        _VIEW_STATS["feedServe"] += 1
-        _PERF_STATS.build("feed", True)
-        return e[1]
+    dirty = not connect and _views_dirty[0] > e[3]
+    return e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S)
+
+
+def _build_feed_locked(now, live_map, sig):
+    """The feed build proper, under _FEED_BUILD_LOCK (the caller holds it): the build, the cache store, the needs-you set,
+    the bells."""
     _VIEW_STATS["feedBuild"] += 1
     bid = _next_feed_build_id()          # claimed BEFORE the read, so an ack issued during this build outranks it
     started = time.time()                # …and the dirty floor for the NEXT check: mutations after this
@@ -51447,13 +51553,20 @@ def _cached_timeline(now, live_map, sig, connect=False):
         _VIEW_STATS["tlServe"] += 1
         _PERF_STATS.build("timeline", True)
         return built
-    _VIEW_STATS["tlBuild"] += 1
-    started = time.time()
-    _t0 = time.monotonic()
-    tl = build_timeline(now, live_map)
-    _PERF_STATS.build("timeline", False, time.monotonic() - _t0)
-    _built_timeline[:] = [sig, tl, time.time(), started]
-    return tl
+    with _TL_BUILD_LOCK:                                  # single-flight: a build in flight on another thread is the one we want
+        built = _built_timeline[1]
+        if built is not None and (connect or _timeline_cache_fresh(sig)):   # ...and it landed while we waited for the lock
+            _VIEW_STATS["tlServe"] += 1
+            _VIEW_STATS["tlWaited"] += 1
+            _PERF_STATS.build("timeline", True)
+            return built
+        _VIEW_STATS["tlBuild"] += 1
+        started = time.time()
+        _t0 = time.monotonic()
+        tl = build_timeline(now, live_map)
+        _PERF_STATS.build("timeline", False, time.monotonic() - _t0)
+        _built_timeline[:] = [sig, tl, time.time(), started]
+        return tl
 
 
 def _timeline_cache_fresh(sig):

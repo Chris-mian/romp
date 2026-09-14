@@ -666,7 +666,7 @@ class PushSink(unittest.TestCase):
         # builds — so it inherits the transition-event detection and the silent first-build
         # baseline by construction, rather than re-deriving either
         import inspect
-        src = inspect.getsource(km._cached_feed)
+        src = inspect.getsource(km._build_feed_locked)   # the build body, under the single-flight lock (2026-09-14)
         self.assertIn("_system_notify(_t, _b)", src)
         self.assertIn('_push_notify(_t, _b, _sid, _badge, kind="card", card_id=_iid)', src)
         self.assertIn("_badge_push(_badge)", src)

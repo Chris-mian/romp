@@ -994,7 +994,7 @@ class OneBuzzPerTurnEnd(unittest.TestCase):
         # a card push that yields the BUZZ to an already-fired turn push must still deliver the badge,
         # QUIET: a closed installed app learns the needs-you count only from a push (#937 fold)
         import inspect
-        src = inspect.getsource(km._cached_feed)
+        src = inspect.getsource(km._build_feed_locked)   # the build body, under the single-flight lock (2026-09-14)
         self.assertIn('_push_notify(_t, _b, _sid, _badge, kind="card", card_id=_iid, quiet=True)', src,
                       "the yielding branch still pushes, with the badge, quiet")
         self.assertLess(src.index('quiet=True'), src.index('_push_notify(_t, _b, _sid, _badge, kind="card", card_id=_iid)'),
@@ -1002,7 +1002,7 @@ class OneBuzzPerTurnEnd(unittest.TestCase):
 
     def test_the_feed_path_claims_before_it_pushes(self):
         import inspect
-        src = inspect.getsource(km._cached_feed)
+        src = inspect.getsource(km._build_feed_locked)   # the build body, under the single-flight lock (2026-09-14)
         self.assertIn('_buzz_claim(_sid, _turn_end_key(_sid), "bell")', src)
         self.assertLess(src.index("_buzz_claim("), src.index('_push_notify(_t, _b, _sid, _badge, kind="card", card_id=_iid)'))
         self.assertLess(src.index("_system_notify(_t, _b)"), src.index("_buzz_claim("),
