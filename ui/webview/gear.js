@@ -23,6 +23,7 @@
 
 var gclock = require('./gesture-clock.js');   // every `gt` below is minted here (see that file)
 var BN = require('./backend-names.ts');   // the backends' user-facing names and the offer rule (T288)
+var WP = require('./widget-prefs.ts');   // the order arithmetic both widget sections' drags share (moveId)
 var SW = require('./status-widgets.ts');   // the status line's widgets (T409): the Status line section's rows render from its registry, as the line does
 var TW = require('./tab-widgets.ts');   // the tab-title widgets (T379): the registry the Tab widgets section's rows render from, the strip's own module
 var LS = require('./landing-settle.ts');   // gestureEvidence: the chat's rule for telling the user's scroll from the browser's own (the section ask ends only on input, T379 follow-up)
@@ -370,6 +371,11 @@ function initGear(post, opts) {
   // fans {settingsSync} out to the other panes (the browser ignores it — its
   // same-origin tabs already sync via the storage event).
   function save(s) {
+    // both widget keys normalized on EVERY gear save, when the store carries them (never injected: the fresh-key rule), as
+    // settings.ts's saveSettings does, so a malformed order in either section is rewritten clean by any save (review round
+    // two, low 7); the mirrors follow the normalized prefs
+    if ('tabWidgets' in s) { s.tabWidgets = TW.tabWidgetPrefs(s.tabWidgets, s.tabCtx); s.tabCtx = TW.tabCtxOfPrefs(s.tabWidgets); }
+    if ('statusWidgets' in s) { s.statusWidgets = SW.statusWidgetPrefs(s.statusWidgets, { showBranch: s.showBranch, showSessionBadge: s.showSessionBadge }); var m2 = SW.legacyOfStatusPrefs(s.statusWidgets); s.showBranch = m2.showBranch; s.showSessionBadge = m2.showSessionBadge; }
     try { localStorage.setItem('romp:settings', JSON.stringify(s)); } catch (e) {}
     try { window.dispatchEvent(new Event('romp:settings')); } catch (e) {}
     post({ type: 'settingsSync', settings: s });
@@ -408,6 +414,7 @@ function initGear(post, opts) {
   // are the caller's pick() verbatim — the dropdown changes when the options are visible, never
   // what a pick does.
   var openHousePick = null;   // at most one of the card's dropdowns is open (a click that opens one closes the other)
+  var widgetDrag = false;   // a widget row in flight (the reorder, T409): the drag takes the Escape itself, so the shell's Escape-to-close stands down while it is on
   function housePick(wrap, attr, rowHTML, pick) {
     if (!wrap) return null;
     var btn = document.createElement('button');
@@ -667,12 +674,126 @@ function initGear(post, opts) {
   // house pickers. Built once; every paint re-fills in place (click-safe). A change writes the registry's prefs and its
   // mirror(s) through save(), and the chat repaints on the romp:settings signal. ONE builder serves both sections.
   function widgetOptRowHTML(o) { return '<span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--menu-fg, #ccc)">' + o.name + '</span>'; }
-  function widgetSection(cfg) {   // cfg: host, list(), prefs(store), save(prefs), on(prefs, w), opts(prefs, w), demo(w, prefs) -> node or null, pickPrefix
-    var rows = {};
+  function widgetSection(cfg) {   // cfg: host, list(), order(prefs) -> ids in visual order (a divider's id among them), divider {id, label} or null,
+                                  //      group(id) -> a key rows may not leave (null: none), prefs(store), save(prefs), on(prefs, w), opts(prefs, w),
+                                  //      demo(w, prefs) -> node or null, preview(prefs) -> node, pickPrefix
+    var rows = {}, dividerRow = null, previewBody = null;
+    // REORDER (the user's addition to T409): the rows drag by their grip (pointer events on the document for the drag's life,
+    // one pointer at a time; Escape cancels) and move by the arrow keys on the focused grip; the order is the render order on
+    // the surface and is stored WHOLE (the divider's id included, so every tab widget's side of the name is explicit from
+    // the first drag on). The same moveId rule serves the drag's drop and the key. A section whose rows have GROUPS (the
+    // status line: its two slots) holds a row inside its group, with a nudge for a move that would leave it.
+    function rowOf(id) { return id === (cfg.divider && cfg.divider.id) ? dividerRow : (rows[id] && rows[id].row); }
+    function idOf(r) { return r.getAttribute('data-widget') || r.getAttribute('data-divider'); }
+    function currentList() { return Array.from(cfg.host.children).map(idOf).filter(Boolean); }
+    function labelOf(id) { var w = cfg.list().filter(function (x) { return x.id === id; })[0]; return w ? w.label : id; }
+    function commit(list, movedId) { var prefs = cfg.prefs(load()); prefs.order = list; cfg.save(prefs); if (movedId) announce(list, movedId); }
+    // only a row OUT OF PLACE moves (review round two, the regression): appendChild re-inserts a node that sits where it belongs, and
+    // re-inserting the ancestor of document.activeElement blurs it, so a switch toggled by Space lost its focus at the paint
+    function placeRows(list) {
+      var prev = null;
+      list.forEach(function (id) {
+        var r = rowOf(id); if (!r) return;
+        var want = prev ? prev.nextSibling : cfg.host.firstChild;
+        if (want !== r) cfg.host.insertBefore(r, want);
+        prev = r;
+      });
+    }
+    // a move that would leave the row's group is refused with a brief cue (the status line's two slots stay the registry's)
+    function nudge(row) { row.classList.remove('rs-nudge'); void row.offsetWidth; row.classList.add('rs-nudge'); setTimeout(function () { row.classList.remove('rs-nudge'); }, 350); }
+    // the groups' runs, consecutive repeats collapsed: [left, right, right] reads "left,right"; a row carried across a
+    // boundary opens a second run of its group, or swaps the runs, and either differs from the list it started from
+    // (a group of one row is always contiguous, so the moved row's own group alone proved nothing: the lab walked the
+    // session name into the right slot)
+    function runs(list) { var out = []; list.forEach(function (x) { var g = cfg.group(x); if (!out.length || out[out.length - 1] !== g) out.push(g); }); return out.join(); }
+    function keepsGroup(list, base) { return !cfg.group || runs(list) === runs(base); }
+    function liveRegion() {
+      var live = document.getElementById('rs-widget-live');
+      if (!live) { live = document.createElement('div'); live.id = 'rs-widget-live'; live.className = 'rs-live'; live.setAttribute('aria-live', 'polite'); document.getElementById('rsettings').appendChild(live); }
+      return live;
+    }
+    // the polite LIVE REGION every move speaks through (review round two): one element for the card, the position and, for
+    // the tab widgets, the side of the session name. For the status line the position is counted WITHIN the row's slot and
+    // the slot is named (round three, low 2), and a refused move says so (low 1): a screen-reader user tells a key that did
+    // nothing from a key that went unheard
+    function announce(list, id) {
+      var g = cfg.group ? cfg.group(id) : null;
+      var ids = list.filter(function (x) { return !(cfg.divider && x === cfg.divider.id) && (!cfg.group || cfg.group(x) === g); }), n = ids.indexOf(id) + 1;
+      var side = cfg.divider ? (list.indexOf(id) < list.indexOf(cfg.divider.id) ? ', before the ' + cfg.divider.label : ', after the ' + cfg.divider.label) : '';
+      var where = cfg.group ? ' in the ' + cfg.groupLabel(g) : '';
+      liveRegion().textContent = labelOf(id) + ' moved to position ' + n + ' of ' + ids.length + side + where;
+    }
+    function refused(id) { liveRegion().textContent = labelOf(id) + ' stays in the ' + cfg.groupLabel(cfg.group(id)); }
+    function wireGrip(grip, row, id) {
+      grip.addEventListener('keydown', function (e) {
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        var list = currentList(), i = list.indexOf(id), to = e.key === 'ArrowUp' ? i - 1 : i + 1;
+        if (i < 0 || to < 0 || to >= list.length) return;
+        var next = WP.moveId(list, id, to);
+        if (!keepsGroup(next, list)) { nudge(row); refused(id); return; }
+        commit(next, id);
+        grip.focus();
+      });
+      grip.addEventListener('pointerdown', function (e) {
+        if (e.button !== 0) return;   // no preventDefault: the grip TAKES the focus, so the frame hears Escape and the keys
+        var pid = e.pointerId, before = currentList(), blocked = false;
+        var others = function () { return Array.from(cfg.host.children).filter(function (r) { return r !== row; }); };
+        // the moves and the release are heard on the DOCUMENT, never through a pointer capture on the grip: moving the row
+        // re-inserts it, which releases a capture on its grip, and the drag would end after its first step. Only the drag's
+        // own pointer counts (review round two, low 8): a second finger's release must not commit the drag.
+        row.classList.add('rs-dragging'); widgetDrag = true;
+        var move = function (ev) {
+          if (ev.pointerId !== pid) return;
+          var y = ev.clientY, after = null;
+          others().forEach(function (r) { var b = r.getBoundingClientRect(); if (y > b.top + b.height / 2) after = r; });
+          var wantBefore = after ? after.nextSibling : cfg.host.firstChild;
+          if (wantBefore === row || (after && after.nextSibling === row)) return;
+          var tentative = others().map(idOf); tentative.splice(after ? tentative.indexOf(idOf(after)) + 1 : 0, 0, id);
+          if (!keepsGroup(tentative, before)) { blocked = true; return; }   // held inside its group; the cue comes at the release
+          cfg.host.insertBefore(row, wantBefore);
+        };
+        // the CLICK the release synthesizes belongs to the drag, not to the panel: with the grip moved since the press, the
+        // browser targets that click at the two positions' common ancestor, the body, and the panel's click-outside would
+        // close the settings under the user's hand. One swallow, for the release's own POINTER click alone (a keyboard's
+        // click has detail 0 and no pointer type: the next Space on a switch must land), disarmed by that click, by the next
+        // press or key, or one frame on (review round two, medium 2)
+        var armSwallow = function () {
+          var swallow = function (ce) { if (ce.detail === 0 && !ce.pointerType) return; ce.stopImmediatePropagation(); ce.preventDefault(); disarm(); };   // immediate: the click's target is the document itself, where the panel's own click-outside listener sits beside this one
+          var disarm = function () { document.removeEventListener('click', swallow, true); document.removeEventListener('pointerdown', disarm, true); document.removeEventListener('keydown', disarm, true); };
+          document.addEventListener('click', swallow, true); document.addEventListener('pointerdown', disarm, true); document.addEventListener('keydown', disarm, true);
+          requestAnimationFrame(disarm);
+        };
+        var end = function (ev) {
+          if (ev && ev.pointerId !== undefined && ev.pointerId !== pid) return;
+          document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', cancel); document.removeEventListener('keydown', esc, true);
+          row.classList.remove('rs-dragging'); widgetDrag = false;
+          if (ev && ev.type === 'pointerup') armSwallow();
+          else if (!ev) {
+            // Escape ended the drag under a held pointer: its release is still to come, and the click that release synthesizes
+            // is the drag's. A CANCEL arms nothing (round three, the medium): a cancelled pointer fires no click and delivers no
+            // pointerup, so a listener armed there would wait for the mouse's NEXT release, whose id in Chromium is always 1,
+            // and eat that release's click. The late listener leaves on its pointer's release or cancel, never outliving it.
+            var lateUp = function (up) { if (up.pointerId !== pid) return; document.removeEventListener('pointerup', lateUp, true); document.removeEventListener('pointercancel', lateUp, true); if (up.type === 'pointerup') armSwallow(); };
+            document.addEventListener('pointerup', lateUp, true); document.addEventListener('pointercancel', lateUp, true);
+          }
+          var now = currentList();
+          if (blocked && now.join() === before.join()) { nudge(row); refused(id); }
+          if (now.join() !== before.join()) commit(now, id); else paint();
+        };
+        var cancel = function (ev) { if (ev.pointerId !== pid) return; placeRows(before); end(ev); };
+        // Escape is the drag's own while a drag is on (heard first, in the capture phase, and stopped there: the panel's
+        // Escape-to-close must not fire under a cancelled drag)
+        var esc = function (ev) { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); placeRows(before); end(); } };
+        document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', cancel); document.addEventListener('keydown', esc, true);
+      });
+    }
     function build() {
       if (!cfg.host || cfg.host.children.length) return;
       cfg.list().forEach(function (w) {
         var row = document.createElement('div'); row.className = 'rs-widget'; row.setAttribute('data-widget', w.id);
+        var grip = document.createElement('button'); grip.type = 'button'; grip.className = 'rs-grip'; grip.textContent = '⠿';   // the six-dot grip glyph
+        grip.setAttribute('aria-label', 'Drag to reorder: ' + w.label); grip.title = 'Drag to reorder, or press the arrow keys';
         var demo = document.createElement('span'); demo.className = 'rs-widget-demo';
         var name = document.createElement('span'); name.className = 'rs-widget-name';
         var b = document.createElement('b'); b.textContent = w.label; name.appendChild(b);
@@ -687,14 +808,30 @@ function initGear(post, opts) {
           var drop = housePick(wrap, cfg.pickPrefix + w.id + '-' + o.key, widgetOptRowHTML, function (id) { var prefs = cfg.prefs(load()); prefs.opts[w.id] = prefs.opts[w.id] || {}; prefs.opts[w.id][o.key] = id; cfg.save(prefs); });
           paints.push(function (prefs) { if (drop) drop(o.choices.map(function (c) { return { id: c.value, name: c.label }; }), cfg.opts(prefs, w)[o.key]); });
         });
-        row.appendChild(demo); row.appendChild(name); row.appendChild(sw); row.appendChild(opts);
+        row.appendChild(grip); row.appendChild(demo); row.appendChild(name); row.appendChild(sw); row.appendChild(opts);
+        wireGrip(grip, row, w.id);
         cfg.host.appendChild(row);
         rows[w.id] = { row: row, demo: demo, sw: sw, paints: paints };
       });
+      if (cfg.divider) {   // the fixed row the widgets are dragged above or below: a line with the name's place in subtle text, never a fake name (the user's word)
+        dividerRow = document.createElement('div'); dividerRow.className = 'rs-widget rs-divider'; dividerRow.setAttribute('data-divider', cfg.divider.id);
+        dividerRow.setAttribute('role', 'separator'); dividerRow.setAttribute('aria-label', cfg.divider.label);
+        var lbl = document.createElement('span'); lbl.className = 'rs-divider-label'; lbl.textContent = cfg.divider.label; dividerRow.appendChild(lbl);
+        cfg.host.appendChild(dividerRow);
+      }
+      if (cfg.preview) {   // the LIVE PREVIEW (the user's addition): the surface as the current choices and order draw it, under the rows
+        var box = document.createElement('div'); box.className = 'rs-preview';
+        var cap = document.createElement('span'); cap.className = 'rs-preview-label'; cap.textContent = 'Preview'; box.appendChild(cap);
+        previewBody = document.createElement('div'); previewBody.className = 'rs-preview-body'; box.appendChild(previewBody);
+        cfg.host.parentNode.insertBefore(box, cfg.host.nextSibling);
+      }
     }
     function paint() {
       build();
       var prefs = cfg.prefs(load());
+      var focused = document.activeElement && cfg.host.contains(document.activeElement) ? document.activeElement : null;
+      placeRows(cfg.order(prefs));   // the rows in the stored order: only a row out of place moves (nodes never rebuild: click-safe, focus kept)
+      if (focused && document.activeElement !== focused && focused.isConnected) focused.focus();   // the belt under placeRows: a focus a move did take comes back
       cfg.list().forEach(function (w) {
         var r = rows[w.id]; if (!r) return;
         var on = cfg.on(prefs, w);
@@ -704,6 +841,7 @@ function initGear(post, opts) {
         if (node) r.demo.replaceChildren(node); else r.demo.replaceChildren();
         r.paints.forEach(function (fn) { fn(prefs); });
       });
+      if (previewBody) { var pv = cfg.preview(prefs); if (pv) previewBody.replaceChildren(pv); else previewBody.replaceChildren(); }
     }
     return { paint: paint };
   }
@@ -712,8 +850,16 @@ function initGear(post, opts) {
   function widgetPrefs(s) { return TW.tabWidgetPrefs(s.tabWidgets, s.tabCtx); }
   var tabSection = widgetSection({
     host: document.getElementById('rs-widgets'), list: TW.tabWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',
+    order: TW.tabListOrder, divider: { id: TW.NAME_DIVIDER, label: 'session name' }, group: null, groupLabel: null,
     save: function (prefs) { var s = load(); s.tabWidgets = prefs; s.tabCtx = TW.tabCtxOfPrefs(prefs); save(s); paintWidgets(); },
     on: TW.widgetOn, opts: TW.widgetOpts,
+    preview: function (prefs) {   // a tab as the strip would draw it: the enabled widgets on each side of the name, in order
+      var tab = document.createElement('span'); tab.className = 'tab';
+      TW.composeTabWidgets(tab, 'before', TW.DEMO_SID, TW.DEMO_STATUS, prefs);
+      var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web'; tab.appendChild(label);
+      TW.composeTabWidgets(tab, 'after', TW.DEMO_SID, TW.DEMO_STATUS, prefs);
+      return tab;
+    },
     demo: function (w, prefs) {
       var tab = document.createElement('span'); tab.className = 'tab';
       var label = document.createElement('span'); label.className = 'tab-label'; label.textContent = 'web';
@@ -729,6 +875,20 @@ function initGear(post, opts) {
   function statusPrefs(s) { return SW.statusWidgetPrefs(s.statusWidgets, { showBranch: s.showBranch, showSessionBadge: s.showSessionBadge }); }
   var statusSection = widgetSection({
     host: document.getElementById('rs-swidgets'), list: SW.statusWidgets, prefs: statusPrefs, pickPrefix: 'swopt-',
+    order: SW.statusListOrder, divider: null,
+    group: function (id) { var w = SW.statusWidget(id); return w ? w.slot : null; },
+    groupLabel: function (g) { return g + ' slot'; },   // "left slot" / "right slot", the words the live region uses   // a row stays in its slot's group: the line's slots are the registry's (the user's word), a drag across is refused with a cue
+    preview: function (prefs) {   // the line as the chat would draw it: the left slot, the state chip, then the right slot ahead of the controls
+      var line = document.createElement('div'); line.className = 'rs-sl';
+      SW.composeStatusWidgets(line, 'left', SW.DEMO_RECORD, prefs);
+      var chip = document.createElement('span'); chip.className = 'chip rs-sl-chip'; chip.textContent = 'Ready'; line.appendChild(chip);
+      var right = document.createElement('span'); right.className = 'rs-sl-right';
+      SW.composeStatusWidgets(right, 'right', SW.DEMO_RECORD, prefs);
+      var ctl = document.createElement('span'); ctl.className = 'rs-sl-ctl'; ctl.textContent = 'Auto · Opus 5 · high'; right.appendChild(ctl);
+      var batt = document.createElement('span'); batt.className = 'rs-sl-batt'; batt.textContent = '62%'; right.appendChild(batt);
+      line.appendChild(right);
+      return SW.makeInert(line);   // a preview never carries the folder's click act (review round two, low 4)
+    },
     save: function (prefs) { var s = load(); s.statusWidgets = prefs; var m = SW.legacyOfStatusPrefs(prefs); s.showBranch = m.showBranch; s.showSessionBadge = m.showSessionBadge; save(s); paintWidgets(); },
     on: SW.statusWidgetOn, opts: SW.statusWidgetOpts,
     demo: function (w, prefs) { return SW.renderStatusWidgetDemo(w, prefs); },
@@ -1646,7 +1806,7 @@ function initGear(post, opts) {
   // document and calls this synchronously): close the modal and say so, unless one of its own dialogs is up
   // (the login card, an open house dropdown), which the document's own Escape handlers close one level at a
   // time; the shell then leaves the press alone. A cross-origin host (VS Code) cannot reach this and has no chain.
-  window.__rompSettingsClose = function () { if (p.hidden || (lgM && !lgM.hidden) || openHousePick) return false; closeSettings(); return true; };
+  window.__rompSettingsClose = function () { if (p.hidden || (lgM && !lgM.hidden) || openHousePick || widgetDrag) return false; closeSettings(); return true; };   // one Escape level at a time: a drag in flight takes it (the shell's handler runs before the drag's own, so this is where it yields)
   // The shortcuts row: the web shell (same-origin parent) gets the customize link — it opens the
   // shell's shortcuts dialog and closes this modal so the two never stack; VS Code (cross-origin
   // parent) gets the pointer at its own Keyboard Shortcuts editor instead (the user 2026-08-09).

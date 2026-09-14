@@ -19,7 +19,7 @@
 // the widgets' defaults when absent (the branch's default flipped on under a fresh key, never under the old one, since
 // the gear's whole-object saves had merged the old default into every store); every save writes them back.
 import { badgeSpec } from "./session-badge";
-import { type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets, widgetOn, widgetOpts } from "./widget-prefs";
+import { type WidgetOption, type WidgetPrefs, emptyWidgetPrefs, normalizeWidgetPrefs, orderWidgets, sanitizeOrder, widgetOn, widgetOpts } from "./widget-prefs";
 
 export type StatusSlot = "left" | "right";
 /** The slice of the session record the widgets read. */
@@ -67,7 +67,7 @@ export interface StatusLegacy { showBranch?: unknown; showSessionBadge?: unknown
  *  default) when absent: a fresh install shows the branch, an install that turned it off keeps it off. */
 export function statusWidgetPrefs(v: unknown, legacy?: StatusLegacy): StatusWidgetPrefs {
   const o = normalizeWidgetPrefs(v);
-  if (o) return o;
+  if (o) { o.order = sanitizeOrder(o.order, (id) => REGISTRY.some((w) => w.id === id)); return o; }
   const out = emptyWidgetPrefs();
   if (legacy) {
     if (typeof legacy.showBranch === "boolean") out.on.branch = legacy.showBranch;
@@ -107,9 +107,30 @@ export function composeStatusWidgets(host: HTMLElement, slot: StatusSlot, rec: S
   return out;
 }
 
-/** A settings row's live rendering: the widget over its demo record, as the line would draw it. */
+/** The settings rows' visual order: the left slot's widgets, then the right slot's, each in composition order. The
+ *  line has no divider row (the user's word: its slots stay the registry's), so a drag or an arrow key moves a row
+ *  within its slot's group only (gear.js holds it there with a cue); this is the list it reorders and stores back. */
+export function statusListOrder(prefs: StatusWidgetPrefs): string[] {
+  return [...orderedStatusWidgets(prefs, "left").map((w) => w.id), ...orderedStatusWidgets(prefs, "right").map((w) => w.id)];
+}
+
+/** A rendering made INERT for a demo or a preview: the folder's click act and its link dress go (review round two: in the
+ *  VS Code chat panel the gear mounts in the delegate's own document, and a demo's act posted a real openFolder for the
+ *  demo path), and so does the click clause of its title, which would promise what nothing delivers (round three, low 3);
+ *  the path stays, so it still reads on hover. The walk over [data-act] reaches a folder nested in a composed line. */
+export function makeInert<T extends HTMLElement>(node: T): T {
+  const strip = (n: HTMLElement) => {
+    n.removeAttribute("data-act"); n.removeAttribute("data-cwd"); n.removeAttribute("data-id"); n.classList.remove("folder-link");
+    if (n.title) n.title = n.title.replace(/\s+·\s+click to [^·]*$/, "");
+  };
+  strip(node);
+  node.querySelectorAll<HTMLElement>("[data-act]").forEach(strip);
+  return node;
+}
+
+/** A settings row's live rendering: the widget over its demo record, as the line would draw it, made inert. */
 export function renderStatusWidgetDemo(w: StatusWidget, prefs: StatusWidgetPrefs): HTMLElement | null {
-  try { return w.render(w.demo, widgetOpts(prefs, w)); } catch { return null; }
+  try { const n = w.render(w.demo, widgetOpts(prefs, w)); return n ? makeInert(n) : null; } catch { return null; }
 }
 
 // ── the folder's pieces, shared with render.ts (they lived there until T409) ──────────────────────────────────────

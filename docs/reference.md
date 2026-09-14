@@ -227,8 +227,9 @@ error center says so under the `refused` kind.
 
 ### Folder click, in your terminal or editor
 
-The chat statusline shows the session's working directory; clicking it opens
-that folder. The default is the OS opener (`open` / `xdg-open`). To open it
+The chat statusline shows the session's working directory by default (a widget
+of the Status line section under Settings, Chat, beside the git branch, on by
+default too); clicking it opens that folder. The default is the OS opener (`open` / `xdg-open`). To open it
 elsewhere, set a command via the env var `ROMP_OPEN_FOLDER` or the first
 non-comment line of `~/.config/romp/open-folder`; `{dir}` is replaced with
 the clicked path (omitted, the path is appended). The command runs on the

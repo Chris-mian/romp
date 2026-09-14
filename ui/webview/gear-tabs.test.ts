@@ -233,7 +233,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.match(GEAR, /save: function \(prefs\) \{ var s = load\(\); s\.statusWidgets = prefs; var m = SW\.legacyOfStatusPrefs\(prefs\); s\.showBranch = m\.showBranch; s\.showSessionBadge = m\.showSessionBadge; save\(s\); paintWidgets\(\); \},/);
   assert.match(GEAR, /demo: function \(w, prefs\) \{ return SW\.renderStatusWidgetDemo\(w, prefs\); \},/, "the status demo is the widget alone, as the line draws it");
   assert.match(GEAR, /function paintWidgets\(\) \{ tabSection\.paint\(\); statusSection\.paint\(\); \}/, "one repaint covers both sections");
-  assert.equal((GEAR.match(/s\.statusWidgets = /g) || []).length, 1, "one writer of the status key: the section's save");
+  assert.equal((GEAR.match(/s\.statusWidgets = /g) || []).length, 2, "the section's save, and save() normalizing a key the store already carries (round two; still no injection)");
   assert.doesNotMatch(GEAR.slice(GEAR.indexOf("function load() {"), GEAR.indexOf("function save(s) {")), /statusWidgets|showBranch|showSessionBadge/, "load() neither defaults nor touches the status key or its mirrors (the fresh-key rule)");
   // round one, HIGH: NO injected default for tabWidgets. An empty object in load()'s defaults won over a pre-widgets store's
   // tabCtx (the derivation runs only with no object), and a save of any setting wrote it and rewrote the mirror. The prefs
@@ -241,10 +241,10 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.doesNotMatch(GEAR, /tabWidgets: \{ on: \{\}, order: \[\], opts: \{\} \}/);
   assert.doesNotMatch(GEAR.slice(GEAR.indexOf("function load() {"), GEAR.indexOf("function save(s) {")), /tabWidgets/, "load() neither defaults nor touches the key");
   assert.match(GEAR, /function widgetPrefs\(s\) \{ return TW\.tabWidgetPrefs\(s\.tabWidgets, s\.tabCtx\); \}/, "read-time derivation from the mirror when the store has no prefs");
-  assert.equal((GEAR.match(/s\.tabWidgets = /g) || []).length, 1, "one writer of the key: saveWidgets");
+  assert.equal((GEAR.match(/s\.tabWidgets = /g) || []).length, 2, "two assignments: the section's save, and save() normalizing a key the store already carries (T409 round two; still no injection)");
   assert.match(GEAR, /d\.className = 'rs-sub'; d\.textContent = w\.description;/, "the description is the row's hover popover, the panel's idiom (round one, LOW 2)");
   assert.match(GEAR_CSS, /#rsettings \.rs-switch\.on::after \{ left: 18px;/, "the knob slides");
-  assert.match(GEAR_CSS, /#rsettings \.rs-widgets \{ display: grid; grid-template-columns: 96px 1fr auto auto; column-gap: 10px; \}\s*\n#rsettings \.rs-widget \{ display: grid; grid-template-columns: subgrid; grid-column: 1 \/ -1;/, "one grid across the rows, each row a subgrid of it (round one, LOW 2)");
+  assert.match(GEAR_CSS, /#rsettings \.rs-widgets \{ display: grid; grid-template-columns: 18px 96px 1fr auto auto; column-gap: 10px; \}[^\n]*\n#rsettings \.rs-widget \{ display: grid; grid-template-columns: subgrid; grid-column: 1 \/ -1;/, "one grid across the rows (the grip's column leads since the reorder, T409), each row a subgrid of it (round one, LOW 2)");
   assert.match(GEAR_CSS, /#rsettings \.rs-row:hover \.rs-sub, #rsettings \.rs-widget:hover \.rs-sub \{ display: block; position: absolute;/, "the widget rows share the panel's hover popover rule");
   assert.doesNotMatch(GEAR_CSS, /#rsettings \.rs-widget-name span \{/, "no always-painted description rule");
   // round two, LOW 3: grid-template-columns: subgrid needs Chromium 117 and the stylesheet's oklch(from) 119; the extension's declared
@@ -253,7 +253,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.equal(pkg.engines.vscode, "^1.88.0", "the declared floor carries subgrid (117) and oklch(from) (119)");
   const lock = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "..", "vscode-extension", "package-lock.json"), "utf8"));
   assert.equal(lock.packages[""].engines.vscode, "^1.88.0", "the lockfile's root agrees, so the first install after the merge rewrites nothing (LOW 2)");
-  assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab-dot \{ flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var\(--st-working-bg, #e0b020\); \}/, "the demo wears the strip's vocabulary in this sheet's fallbacks");
+  assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab-dot, #rsettings \.rs-preview \.tab-dot \{ flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var\(--st-working-bg, #e0b020\); \}/, "the demo wears the strip's vocabulary in this sheet's fallbacks (the section's preview tab beside it, T409)");
 });
 
 test("the strip's gear glyph opens the Chat tab at its Tab widgets section through the shell (or this window's own gear), and the shell relays the tab and the section", () => {
