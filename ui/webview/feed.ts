@@ -1581,6 +1581,13 @@ let showFocused = false;
 // collapsedCols/colOrder: persisted with the rest, prune-exempt, painted by applyFocusLayout.
 let focusOrder: string[] = [];
 let focusW: Record<string, number> = {};
+// PROVENANCE of the stored focusOrder (T410 review): true while it was minted by the arrow keys out of a FOLLOWING
+// state (a key sequence the user can walk back), false once a drag pinned it or the board's own order moved (the
+// arrangement the section follows changed under it). The keys' no-trace rule clears the stored order only under
+// this flag: an arrow press that happens to land on the followed arrangement must never clear an order the user
+// pinned by DRAG (one press cleared a drag-pinned section, and a board drag then rearranged it). Not persisted: a
+// reload reads any stored order as pinned, the conservative side.
+let focusOrderByKeys = false;
 const collapsedFocusCols = new Set<string>();
 // The whole section folded to its LABEL (T410b, the user 2026-09-14): "Current session: <name>" alone, the blocks,
 // their cards and the quiet line hidden under it, the divider standing. A view switch like showFocused: persisted
@@ -4444,11 +4451,17 @@ function wireBlockKeys(chip: HTMLElement, key: string): void {
     nv.splice(from, 1);
     nv.splice(to, 0, key);
     const next = placeVisible(order, visible, nv);
-    // the no-trace rule, for the keys WHETHER OR NOT an order was stored (T410 review): a move that lands on the
-    // arrangement the section follows leaves it FOLLOWING the board rather than pinning that arrangement as its own,
-    // so a there-and-back (ArrowDown, then ArrowUp) from a following state stores nothing; guarding on a stored
-    // order, as the drag does, made the second press pin the followed arrangement explicitly
-    FOCUS_SLOTS.set(next.join() === fallback.join() ? [] : next);
+    // the no-trace rule per PROVENANCE (T410 review): a key sequence that started from a following state and lands
+    // back on the arrangement the section follows leaves it FOLLOWING (a there-and-back stores nothing); an order the
+    // user pinned by DRAG is never cleared by a key press that happens to land on the fallback (focusOrderByKeys)
+    const following = !hadCustom;
+    if (next.join() === fallback.join() && (following || focusOrderByKeys)) {
+      FOCUS_SLOTS.set([]);
+      focusOrderByKeys = false;
+    } else {
+      FOCUS_SLOTS.set(next);
+      if (following) focusOrderByKeys = true;   // minted by the keys out of a following state: walkable back
+    }
     persistViewState();
   });
 }
@@ -4478,7 +4491,7 @@ const BOARD_SLOTS: SlotDrag = {
   container: () => document.getElementById("feed-cols"),
   col: (k) => document.querySelector<HTMLElement>("#feed-cols .feed-col.col-" + k),   // the board's, not the focused section's copy (T347)
   get: () => colOrder,
-  set: (o) => { colOrder = o; applyColStack(); },
+  set: (o) => { colOrder = o; focusOrderByKeys = false; applyColStack(); },   // the board moved: what the section follows changed, a key can no longer walk it back
   fallback: (d) => d,   // each layout's own CSS default
 };
 const FOCUS_SLOTS: SlotDrag = {
@@ -4513,12 +4526,14 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
     const colsEl = slots.container();
     if (!colsEl) return;
     const vertical = getComputedStyle(colsEl).flexDirection === "column";   // the drag AXIS, per layout
-    down.preventDefault();
+    // the pointerdown's default STANDS (T410 review): the browser focuses a focusable chip natively, pointer-initiated,
+    // so a mouse click arms the arrow keys without a Tab and without the keyboard's :focus-visible ring or a
+    // scroll-into-view (a scripted focus() inside a prevented pointerdown painted the ring on every click and lurched
+    // a clipped chip into view); selection and touch are held by the chip's CSS (user-select: none, touch-action: none)
     down.stopPropagation();
-    if (chip.tabIndex >= 0) chip.focus();   // the section's chip takes focus on the click itself (T410 review): the arrow keys
-    //                                         its tooltip promises need no Tab first; preventDefault above withheld the browser's
     chip.setPointerCapture(down.pointerId);
     col.classList.add("col-dragging");
+    let dragged = false;   // a pointer that moved: the chip gives focus back when the drag ends (a plain click keeps it)
     const pos = (ev: PointerEvent) => (vertical ? ev.clientY : ev.clientX);
     const edge = (r: DOMRect) => (vertical ? r.top : r.left);
     const midOf = (r: DOMRect) => (vertical ? r.top + r.height / 2 : r.left + r.width / 2);
@@ -4570,11 +4585,15 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
         applyOrderFlip(placeVisible(order, visible, nv));   // hidden blocks keep their relative places
       }
       col.style.transform = translate(pos(ev) - start - slotShift);
+      dragged = true;
     };
     const up = () => {
       chip.removeEventListener("pointermove", move);
       chip.removeEventListener("pointerup", up);
       chip.removeEventListener("pointercancel", up);
+      // a DRAG ends with the chip no longer holding focus, so the arrow keys go back to the card cursor (a click that
+      // never moved keeps the focus it took: that is how the keys arm)
+      if (dragged && chip.tabIndex >= 0 && document.activeElement === chip) chip.blur();
       // settle: animate from wherever the hand left it into its slot, then drop the transform
       const hang = col.style.transform;
       col.style.transform = "";
@@ -4589,6 +4608,7 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
       // the section, dropping back on the board's arrangement keeps FOLLOWING the board rather than pinning it)
       const cur = slots.get();
       if (!hadCustom && cur.length === 3 && cur.join() === fallback.join()) slots.set([]);
+      if (slots === FOCUS_SLOTS) focusOrderByKeys = false;   // a drag's order is pinned by drag: no key press clears it (T410 review)
       persistViewState();
     };
     chip.addEventListener("pointermove", move);
