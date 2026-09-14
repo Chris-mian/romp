@@ -199,7 +199,31 @@ EOF
 # so it runs standalone; skipped when node isn't found. ROMP_NODE_SRC overrides
 # the source (tests). Never fatal — a copy failure just leaves romp-node-launch
 # to fall back to the system node.
+#
+# The copy is PROBED once made (issue 1600): a node whose shared libnode is referenced relative to its
+# own install (Homebrew's build, a version manager's shim) cannot run from the copy; dyld aborts it at
+# exec, and the login agent's KeepAlive respawned that abort forever, the launcher remaking the same copy
+# each time. A copy that cannot run is removed here, with the consequence said (the manager runs on the
+# system node, so the Full Disk Access grant reads "node"); romp-node-launch probes too, so a copy that
+# stops running later never takes the manager down. ROMP_NO_NODE_COPY=1 skips the copy altogether.
+_node_runs() {   # $1 a node binary: exit 0 when it can run an empty program from where it sits, under a bound
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$1" -e '' </dev/null >/dev/null 2>&1
+        return
+    fi
+    "$1" -e '' </dev/null >/dev/null 2>&1 &
+    local pp=$! wd rc=0
+    ( sleep 10; kill "$pp" 2>/dev/null ) >/dev/null 2>&1 &
+    wd=$!
+    wait "$pp" || rc=$?
+    kill "$wd" 2>/dev/null || true
+    return $rc
+}
 ensure_romp_node() {
+    if [[ -n "${ROMP_NO_NODE_COPY:-}" ]]; then
+        rm -f "$ROMP_NODE" "$ROMP_NODE.tmp" 2>/dev/null || true   # a stale copy would still be exec'd by an older launcher
+        return 0
+    fi
     local src="${ROMP_NODE_SRC:-$(command -v node 2>/dev/null || true)}"
     [[ -n "$src" ]] || return 0
     mkdir -p "$STATE"
@@ -209,6 +233,11 @@ ensure_romp_node() {
         else
             rm -f "$ROMP_NODE.tmp" 2>/dev/null || true
         fi
+    fi
+    if [[ -x "$ROMP_NODE" ]] && ! _node_runs "$ROMP_NODE"; then
+        rm -f "$ROMP_NODE" 2>/dev/null || true
+        echo "  romp-node: the copied node cannot run from $ROMP_NODE (node's shared library is likely referenced relative to its install, as Homebrew's and version managers' builds do)." >&2
+        echo "  The manager runs on the system node instead, so the Full Disk Access grant reads 'node'. Set ROMP_NO_NODE_COPY=1 in $SERVICE_ENV_FILE to skip the copy." >&2
     fi
     return 0
 }

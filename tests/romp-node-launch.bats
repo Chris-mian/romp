@@ -65,6 +65,39 @@ teardown() { rm -rf "$TEST_DIR"; }
     [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]] # ran via the kept v1 copy, not aborted
 }
 
+# ── the copy that cannot run (issue 1600) ──────────────────────────────────────────────────
+# A node whose shared libnode is referenced relative to its own install (Homebrew's build, a version
+# manager's shim) copies fine and then dies at exec from the copy; the launcher trusted "executable" and
+# exec'd it, and the login agent's KeepAlive respawned that abort forever. The copy is probed first.
+_path_bound_node() {   # $1 the path the fake node must be run FROM; anywhere else it dies like dyld would
+    cat > "$1" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$1") echo "NODE_V1 ran: \$*" ;;
+  *) echo "dyld[4242]: Library not loaded: @rpath/libnode.dylib" >&2; exit 134 ;;
+esac
+EOF
+    chmod +x "$1"
+}
+
+@test "a copy that cannot run from its new path never takes the manager down: the system node runs it, and the log says why" {
+    _path_bound_node "$BIN/node"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]          # the manager came up, on the system node
+    [[ "$output" == *"cannot run here"* ]]                    # said once on stderr (the manager log)
+    [[ "$output" == *"ROMP_NO_NODE_COPY=1"* ]]                # with the way to stop the copy attempts
+    [[ "$output" != *"Library not loaded"* ]]                 # the probe's own noise is dropped
+}
+
+@test "ROMP_NO_NODE_COPY=1 skips the copy altogether and runs the manager on the system node" {
+    ROMP_NO_NODE_COPY=1 run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [ ! -e "$RN" ]                                            # no copy was made
+    [[ "$output" != *"cannot run here"* ]]                    # and nothing to say about one
+}
+
 @test "service.env: KEY=VALUE lines reach the manager; comments and junk skipped" {
     # Parity with the systemd unit's EnvironmentFile=- : the launcher parses
     # (never sources) ~/.config/romp/service.env before exec'ing the manager.

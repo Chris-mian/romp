@@ -65,6 +65,38 @@ teardown() { rm -rf "$TEST_DIR"; }
     [[ "$output" == *"Full Disk Access"* ]]
 }
 
+@test "install (macOS): a node copy that cannot run from the state dir is removed, and the install says the manager runs on the system node" {
+    # issue 1600: the copy is probed once made (an empty program, stdin closed, a bound); a node whose shared
+    # library is referenced relative to its install dies from the copy, so the copy goes and the message
+    # names the consequence for Full Disk Access. The launcher probes too, so this is the install's half.
+    local src="$TEST_DIR/bound-node"
+    cat > "$src" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$src") exit 0 ;;
+  *) echo "dyld[4242]: Library not loaded: @rpath/libnode.dylib" >&2; exit 134 ;;
+esac
+EOF
+    chmod +x "$src"
+    ROMP_NODE_SRC="$src" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    local rn="$XDG_STATE_HOME/romp/romp-node"
+    [ ! -e "$rn" ]                                            # the unusable copy is gone
+    [[ "$output" == *"cannot run from $rn"* ]]
+    [[ "$output" == *"runs on the system node"* ]]
+    [[ "$output" == *"ROMP_NO_NODE_COPY=1"* ]]
+    [[ "$output" != *"grant it to romp's OWN node copy"* ]]   # no grant advice for a copy that is not there
+}
+
+@test "install (macOS): ROMP_NO_NODE_COPY=1 makes no copy and removes a stale one" {
+    ROMP_OS_OVERRIDE=Darwin "$SVC" install >/dev/null        # a copy from a normal install
+    local rn="$XDG_STATE_HOME/romp/romp-node"
+    [ -x "$rn" ]
+    ROMP_NO_NODE_COPY=1 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$rn" ]
+}
+
 @test "install (Linux): systemd unit is unchanged — no romp-node launcher (no TCC there)" {
     ROMP_OS_OVERRIDE=Linux run "$SVC" install
     [ "$status" -eq 0 ]

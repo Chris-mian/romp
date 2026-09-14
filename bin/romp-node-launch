@@ -19,6 +19,14 @@
 # copy-based approach (a signed romp.app would avoid it; that's the heavier
 # "Path B"). Falls back to the system node if the copy can't be made or used, so
 # a botched copy can never take the manager — and thus the whole kernel — down.
+# "Used" is checked, not assumed (issue 1600): a node whose shared libnode is
+# referenced relative to its own install (Homebrew's build, a version manager's
+# shim) cannot run from the copy; dyld aborts it at exec, and under the login
+# agent's KeepAlive that abort respawned forever while every launch remade the
+# same copy. The copy is probed once per launch (an empty program, stdin closed,
+# a short bound) and the system node takes over when the probe fails.
+# ROMP_NO_NODE_COPY=1 skips the copy altogether (the Full Disk Access grant then
+# reads "node").
 #
 # Usage: romp-node-launch <manager-path> [args...]   (the login agent passes "up")
 set -eu
@@ -29,12 +37,32 @@ shift
 STATE="${ROMP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/romp}"
 ROMP_NODE="$STATE/romp-node"
 sys_node="$(command -v node 2>/dev/null || true)"
+NO_COPY="${ROMP_NO_NODE_COPY:-}"
+
+# Can this node run from where it sits? One empty program, stdin closed, output dropped, under a
+# ten-second bound: `timeout` where the platform has it (coreutils; a stock mac does not), else a
+# watchdog that kills the probe. A copy that cannot load its shared library dies here in a moment
+# instead of under launchd forever; a hang counts as unusable.
+_probe_node() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$1" -e '' </dev/null >/dev/null 2>&1 || return $?
+        return 0
+    fi
+    "$1" -e '' </dev/null >/dev/null 2>&1 &
+    _pp=$!
+    ( sleep 10; kill "$_pp" 2>/dev/null ) >/dev/null 2>&1 &
+    _wd=$!
+    _rc=0
+    wait "$_pp" || _rc=$?
+    kill "$_wd" 2>/dev/null || true
+    return $_rc
+}
 
 # (Re)create the romp-node copy when it is missing or differs from the system
 # node. cmp follows the /opt/homebrew/bin/node symlink and compares real bytes,
 # so a node upgrade (new bytes) triggers a fresh copy. Atomic rename so a
 # concurrent launch never sees a half-written binary.
-if [ -n "$sys_node" ]; then
+if [ -z "$NO_COPY" ] && [ -n "$sys_node" ]; then
     if [ ! -x "$ROMP_NODE" ] || ! cmp -s "$sys_node" "$ROMP_NODE"; then
         mkdir -p "$STATE" 2>/dev/null || true
         if cp "$sys_node" "$ROMP_NODE.tmp" 2>/dev/null && chmod +x "$ROMP_NODE.tmp" 2>/dev/null; then
@@ -82,9 +110,13 @@ if [ -f "$ENV_FILE" ]; then
     done < "$ENV_FILE"
 fi
 
-# Prefer the labeled copy; fall back to the system node so a bad/missing copy
-# never blocks startup.
-if [ -x "$ROMP_NODE" ]; then
-    exec "$ROMP_NODE" "$MANAGER" "$@"
+# Prefer the labeled copy WHEN IT RUNS; fall back to the system node so a bad,
+# missing or unusable copy never blocks startup. The fallback is said once per
+# launch on stderr (the manager log), with the way to stop the copy attempts.
+if [ -z "$NO_COPY" ] && [ -x "$ROMP_NODE" ]; then
+    if _probe_node "$ROMP_NODE"; then
+        exec "$ROMP_NODE" "$MANAGER" "$@"
+    fi
+    echo "romp-node-launch: the romp-node copy at $ROMP_NODE cannot run here (node's shared library is likely referenced relative to its install, as Homebrew's and version managers' builds do); running the manager on ${sys_node:-node} instead, so the Full Disk Access grant reads 'node'. Set ROMP_NO_NODE_COPY=1 in service.env to stop the copy attempts." >&2
 fi
 exec "${sys_node:-node}" "$MANAGER" "$@"
