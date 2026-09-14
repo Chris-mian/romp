@@ -236,9 +236,11 @@ if command -v mktemp >/dev/null 2>&1; then
 fi
 _pyrm() { [[ -n "$_pyout_file" ]] && rm -f "$_pyout_file" 2>/dev/null; return 0; }
 _pyread() {   # $1 the probe file: its bytes into _pyout with NULs dropped; a missing or unreadable file leaves _pyout empty
-    local _chunk
+    # one read per NUL, capped at 64 chunks: an output stuffed with NULs (200k added 1.7 s to a launch) is read no
+    # further, and what came after the cap is the no-version leg; a version is never more than a few NULs in
+    local _chunk _n=0
     _pyout=""
-    { while IFS= read -r -d '' _chunk || [[ -n "$_chunk" ]]; do _pyout+="$_chunk"; _chunk=""; done < "$1"; } 2>/dev/null || true
+    { while [[ $_n -lt 64 ]] && { IFS= read -r -d '' _chunk || [[ -n "$_chunk" ]]; }; do _pyout+="$_chunk"; _chunk=""; _n=$((_n + 1)); done < "$1"; } 2>/dev/null || true
     return 0
 }
 trap '_pyrm' EXIT
