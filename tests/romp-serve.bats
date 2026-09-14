@@ -249,7 +249,7 @@ OLD
     if ! _dead "$child"; then kill -KILL "$child" 2>/dev/null; return 1; fi   # the child outlived the bound (killed here so the suite's wake is clean)
 }
 
-@test "romp-serve: a TMPDIR that is not there, or a PATH without mktemp, refuses no good interpreter: the file falls to /tmp, or the read to a pipe" {
+@test "romp-serve: a TMPDIR that is not there, or a PATH without mktemp, refuses no good interpreter: the file falls to the system temp dir, or the read to a pipe" {
     # round five of issue 1600 (round three started it): mktemp ran unguarded under set -e, so a stale TMPDIR (a launchd
     # agent's /var/folders path across a reboot) refused a good interpreter with mktemp's own message, and a PATH
     # without mktemp was exit 127
