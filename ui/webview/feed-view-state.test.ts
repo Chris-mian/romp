@@ -332,3 +332,17 @@ test("feed.ts hydrates the four section fields and currentViewState writes them"
   }
   assert.match(FEED, /focusOrder: focusOrder\.slice\(\), focusW: \{ \.\.\.focusW \}, focusCols: \[\.\.\.collapsedFocusCols\], focusFolded \};/);
 });
+
+test("executed: the column-key gate keeps known keys once, so a repeated key can never read as a complete order (T410 review)", () => {
+  // a hand-edited blob with one key three times over: before the fix it parsed as a three-long order, which the section
+  // took for a complete arrangement and its drag then wedged on (indexOf found every slot at once)
+  const st = parseViewState(JSON.stringify({ v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [], cols: ["asks", "asks"],
+    order: ["completed", "completed", "completed"], focused: true, focusOrder: ["asks", "asks", "asks"], focusW: {}, focusCols: ["needsInput", "needsInput", "bogus"] }));
+  assert.deepEqual(st.focusOrder, ["asks"], "one key, once: never a complete order out of a repeated key");
+  assert.deepEqual(st.order, ["completed"]);
+  assert.deepEqual(st.cols, ["asks"]);
+  assert.deepEqual(st.focusCols, ["needsInput"], "known keys only, each once");
+  const ok = parseViewState(JSON.stringify({ v: 1, sec: {}, tree: [], nodes: [], logs: [], asks: [], threads: [], cols: [], order: [],
+    focused: true, focusOrder: ["needsInput", "asks", "completed"], focusW: {}, focusCols: [] }));
+  assert.deepEqual(ok.focusOrder, ["needsInput", "asks", "completed"], "a complete order of three distinct keys stands, in its order");
+});
