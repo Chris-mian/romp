@@ -52,8 +52,10 @@ import { planStrip, readTabGroups, writeTabGroups, setSectionCollapsed, sectionR
 import { snapshotModel, snapshotHeading, rowWords, type SnapModel, type SnapRow } from "./tab-snapshot";
 import { rowStillOpen, installSnapshotEscape, reconcileRows } from "./tab-snapshot-view";
 import { tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle } from "./tab-state";
-import { composeTabWidgets, composeTabRing, ringSwitch, tabHotkey } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry; the rings too (2026-09-14), one class at a time, and their switches for the folded header's pip
-import { titleWithKey, chordOf, effectiveChord, loadOverrides } from "./keybindings";
+import { composeTabWidgets, composeTabRing, ringSwitch, tabHotkey, miniChord } from "./tab-widgets";   // the tab-title widgets (T379): the dot, the context bar and the hot-key keycap compose onto every tab from the registry, and the rings too, one class at a time; miniChord is the chord the strip signature reads
+import { titleWithKey, keyHint, chordOf, effectiveChord, loadOverrides, saveOverride, KEYS_EVENT } from "./keybindings";
+import { hotkeyCommandId, loadTabKeys, rememberTabKey, forgetTabKey, goneTabKeys, renamedTabKeys } from "./tab-keys";   // per-tab hot keys (2026-09-10): the set and its bookkeeping; the keycap on the tab is the T379 widget, read from the same store
+import { notePendingFlag, dropPendingFlag, applyFrameFlags, type PendingFlags, type SessionFlag } from "./flag-pending";   // the per-session view flags' pending guard (review 2026-09-14)
 import { DEFAULT_CHORDS } from "./commands";
 import { NavHistory } from "./nav-history";
 import { StagedStack, quoteReplyBody, stagedPosts, type StagedMsg } from "./staged-messages";
@@ -5767,6 +5769,18 @@ function applyTabOrder(o: any, tabs?: any, report?: OrderReport, live?: any) {
   // restore above, so its render is the first that may post or fall back.
   if (localStrip(report)) tabOrderSeen = true;
   renderTabs();
+  syncTabKeysWithStrip();
+}
+// The hot-key set follows the strip (review, 2026-09-10): a session whose tab is gone loses its "Switch to" command
+// and its chord — there is nothing to switch to — and a renamed one is re-titled, so the shortcuts dialog never
+// says "Switch to <old name>". The pane owns this end because only it knows the strip; the shell hears the writes
+// (storage events) and follows them in its registry. Every column runs it on the same push: the first to write
+// wins, the rest find the set already right.
+function syncTabKeysWithStrip(): void {
+  if (!inRompShell()) return;   // the set exists only under the shell's dispatcher
+  const set = loadTabKeys(localStorage);
+  for (const sid of goneTabKeys(set, order)) { forgetTabKey(localStorage, sid); saveOverride(hotkeyCommandId(sid), null); }
+  for (const [sid, name] of renamedTabKeys(set, (sid) => sessions.get(sid)?.name)) rememberTabKey(localStorage, sid, name);
 }
 // The tabOrder frame's `skeleton` list (2026-09-07): the tabs the kernel is withholding from this page after a
 // redial (skeleton-tabs.ts). Applied BEFORE applyTabOrder — the dispatch calls this first — so the ONE
@@ -6983,9 +6997,11 @@ function copyToClipboard(text: string) {
 // Toggle a per-session view flag (feed mute / postal isolation) — the SAME message the timeline lane toggles
 // send, persisted + re-broadcast by the kernel. Optimistically update the local copy so reopening the menu
 // reflects it before the next push (the kernel reconciles).
+const pendingFlags: PendingFlags = new Map();   // the view flags a click flipped here, held against frames built before it (flag-pending.ts)
 function setSessionFlag(id: string, flag: "hideFromFeed" | "postalServiceOff" | "notify", value: boolean) {
   const s = sessions.get(id);
   if (s) s[flag] = value;   // both flags are declared optional booleans on Session — no cast needed
+  notePendingFlag(pendingFlags, id, flag, value);   // a frame built before the kernel applied this cannot flip the row back (flag-pending.ts)
   if (vscodeApi) vscodeApi.postMessage({ type: "setSessionFlag", id, flag, value });
 }
 // Override a session's identity color from the tab menu's swatches (the user 2026-06-29). Optimistically paint
@@ -7014,7 +7030,7 @@ function setSessionColor(id: string, bg: string) {
 
 // Small inline-SVG icon for the tab menu's toggle items (trusted constant markup; `off` slashes + dims it,
 // matching the timeline lane toggles). 16-unit viewBox; currentColor so .ctx-icon/.off set the tint.
-function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil", off: boolean): HTMLElement {
+function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "pencil" | "key", off: boolean): HTMLElement {
   const span = el("span", "ctx-icon" + (off ? " off" : ""));
   const slash = off ? '<line x1="1.6" y1="14.4" x2="14.4" y2="1.6"/>' : "";
   const body = kind === "feed"
@@ -7027,6 +7043,8 @@ function ctxIcon(kind: "feed" | "mail" | "bell" | "bill" | "folder" | "tag" | "p
           ? '<path d="M2 4.5 A1.2 1.2 0 0 1 3.2 3.3 L6.2 3.3 L7.6 4.9 L12.8 4.9 A1.2 1.2 0 0 1 14 6.1 L14 11.5 A1.2 1.2 0 0 1 12.8 12.7 L3.2 12.7 A1.2 1.2 0 0 1 2 11.5 Z"/>'  // folder (browse files)
         : kind === "tag"
           ? '<path d="M2 3.4 A1.4 1.4 0 0 1 3.4 2 L7.6 2 A1.4 1.4 0 0 1 8.6 2.4 L13.6 7.4 A1.4 1.4 0 0 1 13.6 9.4 L9.4 13.6 A1.4 1.4 0 0 1 7.4 13.6 L2.4 8.6 A1.4 1.4 0 0 1 2 7.6 Z"/><circle cx="5.4" cy="5.4" r="1.1"/>'  // luggage tag (session tags)
+        : kind === "key"
+          ? '<rect x="1.5" y="4" width="13" height="8" rx="1.5"/><line x1="4.5" y1="9.5" x2="11.5" y2="9.5"/>'  // a keycap (the tab's hot key)
         : kind === "pencil"
           ? '<path d="M3 13 L3.6 10.4 L10.8 3.2 A1.3 1.3 0 0 1 12.8 5.2 L5.6 12.4 Z"/><line x1="9.8" y1="4.2" x2="11.8" y2="6.2"/>'  // pencil (rename)
           : '<path d="M8 2 C5.9 2.2 4.7 3.8 4.7 5.8 L4.7 8 L3.4 9.9 L12.6 9.9 L11.3 8 L11.3 5.8 C11.3 3.8 10.1 2.2 8 2 Z"/><path d="M6.6 11.6 A1.5 1.5 0 0 0 9.4 11.6"/>';  // bell (system notifications)
@@ -7131,6 +7149,26 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     rename.appendChild(bodyEl);
     rename.addEventListener("click", (ev) => { ev.stopPropagation(); dismissTabMenu(); startTabRename(id, copy); });
     menu.appendChild(rename);
+  }
+  // Hot key (the user 2026-09-10): a key combination that switches to this tab, recorded in the shell's
+  // shortcuts dialog (it owns the recorder and the conflict check) — this pane only asks. The chord shows
+  // minified on the tab (the T379 keycap widget, from the same store). ONE row (the user 2026-09-11): while a chord is bound it reads "Update hot key…", and the
+  // recorder it opens both re-records and removes (Backspace, or its Remove button — an unbind in the shared store).
+  if (inRompShell() && typeof (window.parent as any).__rompHotkeyConfigure === "function") {
+    const cur = tabHotkey(id);
+    const hot = el("div", "ctx-item ctx-item-toggle");
+    hot.appendChild(ctxIcon("key", false));
+    const bodyEl = el("span", "ctx-item-body");
+    const l = el("span", "ctx-item-label"); l.textContent = cur ? "Update hot key…" : "Hot key…"; bodyEl.appendChild(l);
+    const sb = el("span", "ctx-item-sub");
+    sb.textContent = cur ? "now " + miniChord(cur) + " — press a new combination, or remove it" : "press a key combination that switches to this tab";
+    bodyEl.appendChild(sb);
+    hot.appendChild(bodyEl);
+    hot.addEventListener("click", (ev) => {
+      ev.stopPropagation(); dismissTabMenu();
+      try { window.parent.postMessage({ romp: "hotkeyConfigure", sid: id, name: sessions.get(id)?.name || "" }, "*"); } catch (e) { /* no shell to ask */ }
+    });
+    menu.appendChild(hot);
   }
   // The colour swatches close the section with Rename (the user 2026-08-24, who grouped the menu by
   // kind). The swatch row itself is unchanged (the user 2026-06-29): the identity palette as circles,
@@ -7465,9 +7503,12 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
     () => setSessionFlag(id, "postalServiceOff", !offMail));
   // system-notification bell (the user 2026-07-28) — same flag the timeline lane bell toggles. NOTE the
   // inverted polarity vs the two above: `notify` true is the ENABLED state, so the icon slashes on !onBell.
+  // the row's sub-line names the command's chord when one is bound (the user 2026-09-11: where is the key revealed?)
+  const bellKey = keyHint("session.notify");
   toggle("bell", !onBell,
     onBell ? "Stop notifying" : "Notify me",
-    onBell ? "no more system notifications for this session" : "system notification when its work blocks on you or completes",
+    (onBell ? "no more system notifications for this session" : "system notification when its work blocks on you or completes")
+      + (bellKey ? " · " + bellKey : ""),
     () => setSessionFlag(id, "notify", !onBell));
   // (The hide-session mechanism is fully RETIRED, the user 2026-08-24 — the tag system covers
   // backgrounding; the kernel migrated existing hidden entries into the "archived" tag. revealIn
@@ -7649,7 +7690,9 @@ window.addEventListener("mousedown", (e) => { if (ctxMenuEl && !ctxMenuEl.contai
 // an Escape that closed the menu says so on the event (preventDefault), so the section view's own Escape
 // (installSnapshotEscape, armed at this same capture phase, later in the listener order) yields to it
 window.addEventListener("keydown", (e) => { if (e.key === "Escape" && ctxMenuEl) { dismissTabMenu(); e.preventDefault(); } }, true);
-window.addEventListener("scroll", dismissTabMenu, true);
+// …but not the menu's own scroll: taller than the window it scrolls inside it (styles.css max-height, 2026-09-13), and a
+// dismissal on that scroll closed it under the pointer the moment a row below the fold was brought into view
+window.addEventListener("scroll", (e) => { if (ctxMenuEl && ctxMenuEl.contains(e.target as Node)) return; dismissTabMenu(); }, true);
 window.addEventListener("blur", () => dismissTabMenu());
 
 // "Rename" (tab context menu): swap the tab's label for an inline input. Enter
@@ -11801,6 +11844,11 @@ function ensureToastBox(): HTMLElement {
 // as before: the nack (the attachment was not saved, the held message not sent), the dismissal and the other-tab ack
 // (the held message not sent).
 function ephemeralWarnToast(msg: string): void { warnToast(msg).dataset.ephemeral = "1"; }
+// The same toast for a CONFIRMATION (review 2026-09-14): the warn toast's border is the error colour, so a routine
+// "done" on it read as a failure. Dressed .note (styles.css: the standard hairline, no tint), otherwise the warn toast's
+// mechanics, the ✕, Esc, the fade and the reload-skip mark, since what it confirms is a state the fresh page reads
+// for itself. For an act that succeeded, never a refusal: those stay warnings.
+function ephemeralNoteToast(msg: string): void { const t = warnToast(msg); t.classList.add("note"); t.dataset.ephemeral = "1"; }
 
 // Tail-windowing (see the View comment): a fresh/rewound view renders only the
 // last WINDOW_TAIL events; scrolling within EXPAND_TRIGGER_PX of the top reveals
@@ -17248,6 +17296,7 @@ function upsert(msg: any) {
   // watches transcript+states only) — the freshest tabOrder meta wins over it, pending guard included
   const tm = tabMeta.get(msg.id);
   if (tm) applyMetaToSession(s, tm, pendingTabMeta.get(msg.id));
+  applyFrameFlags(s, msg, pendingFlags, msg.id);   // the flags the frame carries, under the click's pending guard: a frame built before a click cannot revert them (flag-pending.ts)
   reconcileRewind(s);       // pending-rewind overlay + the editable-bubble set, from the fresh payload
   reconcileHeldCopies(s);   // a queued copy the kernel no longer lists but has not landed keeps its slot (T262i)
   reconcileOptimistic(s);   // re-assert (or retire) any in-flight optimistic sends across the rebuild
@@ -17507,6 +17556,9 @@ function chatTail(msg: any) {
   if (s.proto === 2 && s.headKnown && !(s.regions && s.regions.some((r) => r.kind === "gap"))) s.headTotal = s.events.reduce((n, e) => n + (isOptimistic(e) || isHeldGroup(e) ? 0 : 1), 0);   // the WHOLE is resident (no gap): its count (T386 stage 2, low 7: a mid-transcript gap holds older history, so the resident count is not the total)
   const before = awaitKey(s.status);
   if (msg.status) s.status = msg.status;
+  // the per-session view flags ride the tail beside the status (2026-09-11): a bell flipped in another column or
+  // browser reaches this caught-up copy on the flip, not on the next full frame
+  applyFrameFlags(s, msg, pendingFlags, msg.id);   // under the click's pending guard (flag-pending.ts): a tail built before a click cannot flip its row back
   if ("ledger" in msg) ledgers.set(msg.id, msg.ledger ?? null);
   scheduleRenderTabs();   // once per animation frame however many tails a cycle lands (2026-09-04)
   if (msg.id === activeId) {
@@ -18349,6 +18401,20 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   // shell names ONLY the ids that page's own cross removed (colEmpty's `crossed`): the backstop behind this hold toasts
   // "Couldn't close", which is right for a refused cross and wrong for anything else (the vanishing tab, 2026-09-12)
   if (m.romp === "closing") { if (Array.isArray(m.ids)) for (const id of m.ids) { if (typeof id === "string" && id) closingTabs.set(id, Date.now()); } renderTabs(); return; }
+  // the shell's palette, or a chord bound to it: flip the ACTIVE session's bell — the same per-session override the
+  // tab menu's bell row writes (setSessionFlag "notify"), so the kernel's next push repaints the row; a toast names
+  // the new state, since the icon in that menu is the flip's only other witness (the user 2026-09-11, who wanted the
+  // bell on a key). A quiet note, not a warning: it confirms (review 2026-09-14). A placeholder tab has no session to
+  // flag yet; nothing happens.
+  if (m.romp === "notifyToggle") {
+    const s = activeId && !isProvisionalId(activeId) ? liveSession(activeId) : undefined;   // a skeleton's copy is stale: no flag blind
+    if (s && activeId) {
+      const on = !s.notify;
+      setSessionFlag(activeId, "notify", on);
+      ephemeralNoteToast((on ? "Notifications enabled for " : "Notifications disabled for ") + (s.name || activeId.slice(0, 8)));
+    }
+    return;
+  }
   // the shell's pane set, which panes are on screen by key: the cache openPath routes file links by (panesOn
   // above; the shell posts it on every toggle, on this iframe's load and on a phone's tab switch). Whole-set
   // replace: a key the shell stopped naming must not linger as on.
@@ -18471,6 +18537,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
     if (m.gesture === "flag" && typeof m.sid === "string" && typeof m.flag === "string" && m.sid && m.flag) {
       // a tab-menu flag: repaint the local copy to the value the kernel still paints (the frame carries it —
       // what the next push shows), not to a value recorded at the click, which a second click made wrong
+      dropPendingFlag(pendingFlags, m.sid, m.flag as SessionFlag);   // the click's expectation ends here, not after three frames
       const s = sessions.get(m.sid);
       if (s && typeof m.value === "boolean") (s as any)[m.flag] = m.value;
     }
@@ -18689,7 +18756,7 @@ listenForFrames(perfFrameHandler("chat", (m) => vscodeApi?.postMessage(m), (e: M
   else if (m.type === "renamed" && m.id && typeof m.name === "string") {
     notePendingMeta(pendingTabMeta, m.id, { name: m.name });   // kernel truth — hold it against a push built pre-rename
     const s = sessions.get(m.id);
-    if (s && s.name !== m.name) { s.name = m.name; renderTabs(); if (m.id === activeId) { syncComposerPh(); updateStatusline(); } }   // the box and the badge name the session as it is now called
+    if (s && s.name !== m.name) { s.name = m.name; renderTabs(); syncTabKeysWithStrip(); if (m.id === activeId) { syncComposerPh(); updateStatusline(); } }   // the box, the badge and a hot key's title name the session as it is now called
   }
   else if (m.type === "droppedPath" && typeof m.path === "string") {   // host-saved drop/paste/pick → a thumbnail, not path text (the user 2026-08-04)
     const ackShip = typeof m.shipId === "string" && m.shipId ? m.shipId : undefined;
@@ -20119,6 +20186,10 @@ window.addEventListener("storage", (e) => { if (e.key === TABGROUPS_KEY) renderT
 // source's own dragend render already read the new sets in the same task)
 window.addEventListener("storage", (e) => { if (e.key === "romp-chat-cols") renderTabs(); });
 window.addEventListener(TABGROUPS_EVENT, () => renderTabs());
+// a hot key bound or removed (the shell's dialog writes the bindings store; this document's own Remove does too)
+// repaints the tabs' badges — the store's key doubles as the same-document event name
+window.addEventListener("storage", (e) => { if (e.key === KEYS_EVENT) renderTabs(); });
+window.addEventListener(KEYS_EVENT, () => renderTabs());
 // …and so does crossing the phone/desktop boundary (an iPad rotation): renderTabs samples
 // phoneLayout() per render, and the kernel's CSS swaps the strip for its scraped session list the
 // instant the same media rule flips — so the DOM kept the desktop plan (folded tabs absent from the

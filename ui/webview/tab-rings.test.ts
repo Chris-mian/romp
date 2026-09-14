@@ -31,7 +31,7 @@ test("the tab wears its ring through the registry's composition, right after the
   for (const c of [...RINGS, "tab-ask"]) assert.equal(RENDER.split('"' + c + '"').length - 1, 0, "no hand-rolled ring class in render.ts (" + c + "): the classes live in the registry");
   assert.doesNotMatch(RENDER, /tabAskClass/, "the branch's one-off ask class is gone: the yellow ring is a widget like the others");
   assert.match(RENDER, /^import \{ tabStateClass, sectionPip, sectionPipMembers, sectionPipTitle \} from "\.\/tab-state";/m);
-  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, ringSwitch, tabHotkey \} from "\.\/tab-widgets";/m);
+  assert.match(RENDER, /^import \{ composeTabWidgets, composeTabRing, ringSwitch, tabHotkey, miniChord \} from "\.\/tab-widgets";/m);   // miniChord joined the import with the per-tab hot keys (merged 2026-09-14)
   // the folded header's pip and its tooltip read the same switches, so a fold never shows a colour no unfolded tab would
   const head = RENDER.slice(RENDER.indexOf("function makeGroupHead("), RENDER.indexOf("function applyTabStatus("));
   assert.match(head, /const kind = sectionPip\(hidden\.map\(\(id\) => sessions\.get\(id\)\?\.status\), ringSwitch\(settings\.tabWidgets\)\);/);

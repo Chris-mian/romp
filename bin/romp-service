@@ -233,17 +233,19 @@ _kill_tree() {
     sleep 1
     kill -KILL $all 2>/dev/null || true
 }
-_end_sleep() {   # the watchdog's sleep: TERM, a bounded check (up to a second in tenths), KILL if still there, waited on; the launcher's rule
-    local p="$1" i=0
+_end_sleep() {   # the watchdog's sleep and its tree: TERM, a bounded check (up to a second in tenths), KILL if still there, waited on; the launcher's rule
+    local p="$1" i=0 all
     [[ -n "$p" ]] || return 0
-    kill -TERM "$p" 2>/dev/null || true
+    all="$(_tree_of "$p")"
+    kill -TERM $all 2>/dev/null || true
     while kill -0 "$p" 2>/dev/null && (( i < 10 )); do sleep 0.1; i=$((i + 1)); done
-    kill -KILL "$p" 2>/dev/null || true
+    kill -KILL $all 2>/dev/null || true
     wait "$p" 2>/dev/null || true
 }
 _node_runs() {   # $1 a node binary: exit 0 when it can run an empty program from where it sits, under a bound
     local bound="${ROMP_NODE_PROBE_BOUND:-10}"   # ten seconds; the tests shorten it to run the hang shapes in two
     [[ "$bound" =~ ^[0-9]+$ ]] || bound=10
+    bound="${bound#"${bound%%[!0]*}"}"; [[ -n "$bound" ]] || bound=0   # leading zeros off first: 0000001 is one second, not seven digits
     [[ ${#bound} -le 6 ]] || bound=3600   # seven digits or more: the integer test below would refuse it and clamp to one second
     [ "$bound" -ge 1 ] || bound=1   # 0 would be no bound for timeout and an instant kill for the watchdog's sleep; test's
                                     # decimal compare, never (( )), which reads 08 as octal and errors on stderr

@@ -46,6 +46,7 @@ function liftChatTail(): (hooks: TailHooks) => TailApi {
     const reconcileOptimistic = () => { H.optRecs++; };
     const awaitKey = (st) => JSON.stringify((st && st.awaitingWhy) || "");
     const scheduleRenderTabs = () => { H.tabRenders++; };
+    const pendingFlags = new Map(); const applyFrameFlags = () => [];   // the view flags' pending guard (flag-pending.ts, 2026-09-14): no click in these worlds
     const scheduleAppendActive = () => { H.appends++; };
     const renderBgTasks = () => { H.bgRenders++; };
     const awaitChanged = (_sid) => { H.bgRenders++; };   // 2026-09-10: the tail calls this (box + a viewer's header); it counts as the box render
