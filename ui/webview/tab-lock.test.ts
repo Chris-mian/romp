@@ -48,12 +48,12 @@ test("the lock is a row in the strip's gear menu (T405, the user 2026-09-13), wi
   assert.match(RENDER, /press: \(\) => \{ setTabsLocked\(!settings\.tabsLocked\); return false; \} \},/, "the same toggle; false keeps the menu open and repaints it");
 });
 
-test("the dress: the padlock rides the menu row; the strip's gear box has the tags box's floor; the lock's own rules are gone", () => {
+test("the dress: the padlock rides the menu row; the strip's right-end wrapper (the tags button and the gear, T412) has the tags box's floor; the lock's own rules are gone", () => {
   assert.doesNotMatch(CSS, /\n\.tab-lockbox \{|\n\.tab-lock \{|\n\.tab-lock\.on \{/, "no lock button rules");
   assert.match(RENDER, /^import \{ openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS, openRowsMenu \} from "\.\/tag-menu";/m, "the rows menu comes from the tag menu's module");
-  const box = CSS.match(/\n\.tab-gearbox \{[^}]*\}/)![0];
-  assert.match(box, /min-height: 31px;/); assert.match(box, /margin-left: auto;/);
-  assert.match(CSS, /\nbody\.dense-chrome \.tab-gearbox \{ min-height: 25px; \}/, "the dense floor follows the dense + tab, as the tags box's does");
+  const end = CSS.match(/\n\.tab-strip-end \{[^}]*\}/)![0];
+  assert.match(end, /min-height: 31px;/); assert.match(end, /margin-left: auto;/);
+  assert.match(CSS, /\nbody\.dense-chrome \.tab-strip-end \{ min-height: 25px; \}/, "the dense floor follows the dense + tab, as the tags box's does");
 });
 
 test("locked, nothing moves: every draggable gate, both dragstart guards, the menu's Move to rows, and the strip's signature", () => {
