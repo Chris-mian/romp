@@ -1,11 +1,11 @@
-// THE TAB STRIP'S CHROME (T405, the user 2026-09-13): (1) the strip's gear renders the EXACT glyph the shell's settings
-// gear wears at the bottom right of every romp page, from ONE source (icons.ts GEAR_GLYPH: the strip imports it, the kernel
-// reads it from the file when it builds the rail), so the two cannot drift; (2) the tab lock left the strip and is a toggle
-// row inside that gear's menu, with the two titles the button wore, its state, drag rules and saveSettings road untouched;
-// (3) the strip's tag control displays no chips (the tags show in the strip's sections when Group tabs by tag is on, else
-// whoever is interested clicks the button; the filter itself is unchanged); (4) the gear sits in a box of its own at the
-// strip's farthest right. Since T415 the gear opens the settings directly (its menu and the rows-menu helper are gone); the rest are source
-// pins on render.ts, styles.css, icons.ts and kernel.py. Synthetic only.
+// THE TAB STRIP'S CHROME (T405, the user 2026-09-13; T412; T415): (1) the strip's gear renders the EXACT glyph the shell's
+// settings gear wears at the bottom right of every romp page, from ONE source (icons.ts GEAR_GLYPH: the strip imports it, the
+// kernel reads it from the file when it builds the rail), so the two cannot drift; (2) the tab lock left the strip with T405 and
+// since T415 is a switch in the settings card's Tab strip section, where the gear's click lands (no menu in between; the lock's
+// state, drag rules and store are unchanged); (3) the strip's tag control displays no chip of its own for the none pick (the tags
+// show in the strip's sections when Group tabs by tag is on, the selected tags as chips beside the button otherwise, T413); (4)
+// the gear sits at the strip's farthest right, dressed as the rail's (T412). Source pins on render.ts, styles.css, icons.ts and
+// kernel.py. Synthetic only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";

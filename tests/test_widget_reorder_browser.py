@@ -105,14 +105,15 @@ const readPanel = (setF) => setF.evaluate(() => {
     label: (r.querySelector(".rs-widget-name b") || r.querySelector(".rs-divider-label") || {}).textContent || "",
     hasSwitch: !!r.querySelector(".rs-switch"),
     checked: (() => { const sw = r.querySelector(".rs-switch"); return sw ? sw.getAttribute("aria-checked") : null; })() }));
-  const preview = (host) => { const p = document.querySelector(host).nextElementSibling; if (!p || !p.classList.contains("rs-preview")) return null;
+  const preview = (host) => { const title = document.querySelector(host).nextElementSibling; const p = title && title.nextElementSibling;   // T415 part two: the caption is a title above the box
+    if (!title || !title.classList.contains("rs-preview-title") || !p || !p.classList.contains("rs-preview")) return null;
     const body = p.querySelector(".rs-preview-body").firstElementChild;
-    return { label: p.querySelector(".rs-preview-label").textContent, cls: body ? body.className : null,
+    return { label: title.textContent, cls: body ? body.className : null,
              kids: body ? Array.from(body.children).map((c) => c.className + (c.className === "tab-label" || c.className.indexOf("chip") >= 0 ? ":" + c.textContent : "")) : null,
              right: body && body.querySelector(".rs-sl-right") ? Array.from(body.querySelector(".rs-sl-right").children).map((c) => c.className) : null }; };
   const gridCols = getComputedStyle(document.getElementById("rs-widgets")).gridTemplateColumns;
   const liveEl = document.getElementById("rs-widget-live");
-  const previewFolder = document.querySelector("#rs-swidgets + .rs-preview .status-dir");
+  const previewFolder = document.querySelector("#rs-swidgets + .rs-preview-title + .rs-preview .status-dir");   // the title sits between the rows and the box (T415 part two)
   return { tabRows: rows("#rs-widgets"), statusRows: rows("#rs-swidgets"), tabPreview: preview("#rs-widgets"), statusPreview: preview("#rs-swidgets"), gridCols,
            live: liveEl ? { text: liveEl.textContent, polite: liveEl.getAttribute("aria-live") } : null,
            previewFolder: previewFolder ? { act: previewFolder.dataset.act || null, cls: previewFolder.className, title: previewFolder.title } : null,
@@ -439,11 +440,11 @@ class ServedWidgetReorder(unittest.TestCase):
     def test_the_previews_draw_the_surfaces_from_the_current_choices(self):
         p = self.out["panel0"]
         self.assertEqual(p["tabPreview"]["label"], "Preview"); self.assertEqual(p["statusPreview"]["label"], "Preview")
-        self.assertEqual(p["tabPreview"]["cls"], "tab")
+        self.assertEqual(p["tabPreview"]["cls"], "tab colored", "the demo tab wears the identity colour class, as a real tab does (T415 part two)")
         self.assertEqual(p["tabPreview"]["kids"], ["tab-dot", "tab-label:web", "tab-ctx", "tab-key"], "the dot before the name, the context bar and the hot key after it, over the demo status")
         self.assertEqual(p["statusPreview"]["cls"], "rs-sl")
         self.assertEqual(p["statusPreview"]["kids"][:1], ["chip rs-sl-chip:Ready"], "no session name by default, the state chip leads")
-        self.assertEqual(p["statusPreview"]["right"], ["status-dir", "status-branch", "rs-sl-ctl", "rs-sl-batt"], "folder, branch, then the controls and the battery; the preview's folder inert")
+        self.assertEqual(p["statusPreview"]["right"], ["status-dir", "status-branch", "spinner-meta", "ctx-bar"], "folder, branch, then the controls and the battery; the preview's folder inert")
 
     def test_dragging_the_context_bar_above_the_divider_puts_it_before_the_name_on_the_strip_live_and_stores_the_order_whole(self):
         c = self.out["ctxBefore"]

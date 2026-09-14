@@ -20,6 +20,7 @@ import * as path from "node:path";
 
 const ROOT = path.resolve(process.cwd(), "..");
 const RENDER = fs.readFileSync(path.join(ROOT, "ui", "webview", "render.ts"), "utf8");
+const MODULE = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-controls.ts"), "utf8");   // the status line's controls moved here from render.ts (T415 part two)
 const INTENT = fs.readFileSync(path.join(ROOT, "vscode-extension", "src", "pipe-intent.ts"), "utf8");
 
 test("the picker's Billing row shows for SDK whenever availability is known", () => {
@@ -66,8 +67,8 @@ test("the pick rides createSession, omitted when the row is hidden or written-ou
 
 test("the switching CONTROL is the tab menu's Billing submenu, both sides listed (the unavailable one greyed)", () => {
   // moved OUT of the statusline (the user 2026-08-09): no auth badge kind survives there
-  assert.match(RENDER, /type MetaKind = "mode" \| "model" \| "effort" \| "fast";/);
-  assert.doesNotMatch(RENDER, /metaButton\("auth"/);
+  assert.match(MODULE, /export type MetaKind = "mode" \| "model" \| "effort" \| "fast";/);   // the kinds live with the controls (T415 part two)
+  assert.doesNotMatch(RENDER + MODULE, /metaButton\("auth"/);
   assert.doesNotMatch(RENDER, /AUTH_CHOICES/);
   // …and INTO showTabMenu: only when the machine offers both choices does the item exist at all
   // (a one-auth machine keeps the fact on the tab hover, never a dead selector)

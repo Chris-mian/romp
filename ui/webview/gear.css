@@ -309,18 +309,60 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-grip-none { width: 18px; height: 22px; }   /* a section that does not reorder (the rings, 2026-09-14): the grip's cell, empty, keeps the grid's columns */
 #rsettings .rs-divider { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; padding: 6px 0; border-bottom: 0; color: var(--text-muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
 #rsettings .rs-divider::before, #rsettings .rs-divider::after { content: ""; flex: 1 1 auto; height: 2px; background: var(--hairline); border-radius: 1px; }
-#rsettings .rs-preview { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--menu-border); border-radius: 6px; background: var(--bg); display: flex; align-items: center; gap: 12px; }
-#rsettings .rs-preview-label { flex: 0 0 auto; color: var(--text-muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+/* the caption is a TITLE above the box (T415 part two): the word Preview never sits inside the previewed thing */
+#rsettings .rs-preview-title { margin-top: 10px; color: var(--text-muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+#rsettings .rs-preview { margin-top: 4px; padding: 8px; border: 1px solid var(--menu-border); border-radius: 6px; background: var(--bg); display: flex; align-items: center; gap: 12px; }
 #rsettings .rs-preview-body { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
 #rsettings .rs-preview .tab { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; font-size: 12px; color: var(--fg); position: relative; border: 1px solid var(--menu-border); border-radius: 6px; }
-#rsettings .rs-sl { display: flex; align-items: center; gap: 10px; width: 100%; font-size: 12px; }
-#rsettings .rs-sl-chip { display: inline-block; padding: 2px 10px; border-radius: 11px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; background: var(--accent); color: var(--accent-fg); }
-#rsettings .rs-sl-right { margin-left: auto; display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
-#rsettings .rs-sl .status-dir, #rsettings .rs-sl .status-branch, #rsettings .rs-sl-ctl { color: var(--text-muted); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 11px; white-space: nowrap; }
+/* the demo tab wears the demo record's identity colour as a real tab does (T415 part two): styles.css .tab.colored .tab-label, mirrored */
+#rsettings .rs-widget-demo .tab.colored .tab-label, #rsettings .rs-preview .tab.colored .tab-label { color: var(--chip-bg); font-weight: 600; }
+#rsettings .rs-sl { display: flex; align-items: center; gap: 8px; width: 100%; font-size: 12px; }   /* the preview's own spacing, a notch tighter than T409's (the card's width is the line's whole room: T415 part two) */
+#rsettings .rs-sl-chip { display: inline-block; padding: 2px 8px; border-radius: 11px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; background: var(--accent); color: var(--accent-fg); }
+#rsettings .rs-sl-right { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+#rsettings .rs-sl .status-dir, #rsettings .rs-sl .status-branch { color: var(--text-muted); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); font-size: 11px; white-space: nowrap; }
 #rsettings .rs-sl .status-dir-icon { display: inline-block; width: 13px; height: 13px; margin-right: 2px; vertical-align: -2px; }
 #rsettings .rs-sl .status-dir-icon svg { display: block; }
 #rsettings .rs-sl .chip-session { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: black; background: var(--menu-border); }
-#rsettings .rs-sl-batt { border: 1px solid var(--menu-border); border-radius: 4px; padding: 0 5px; font-size: 10px; color: var(--text-muted); }
+/* THE STATUS LINE PREVIEW'S CONTROLS (T415 part two): the badges and the battery the shared renderer builds (status-controls.ts),
+   dressed as styles.css dresses the chat's line, declaration for declaration (ui/webview/settings-previews.test.ts pins each copy to
+   its original); this page loads feed.css and gear.css, never the chat's sheet. The tokens they read (--dim, --mono, --fg,
+   --box-border, --text-halo) are feed.css's. Inert here: no pointer, no hover lift, no compaction scan. */
+#rsettings .rs-sl .spinner-meta {
+  margin-left: 12px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 8px; min-width: 0;
+}
+#rsettings .rs-sl .meta-btn {
+  display: inline-flex; align-items: center; gap: 3px;
+  cursor: pointer; border-radius: 4px; padding: 1px 4px; margin: -1px -2px;
+}
+#rsettings .rs-sl .meta-caret { font-size: 0.82em; opacity: 0.65; }
+#rsettings .rs-sl .meta-ico { display: inline-flex; align-items: center; margin-right: 4px; vertical-align: -2px; }
+#rsettings .rs-sl .meta-ico svg { display: block; }
+#rsettings .rs-sl .ctx-bar {
+  position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 48px; height: 15px; border-radius: 4px; overflow: hidden;
+  border: 1px solid var(--box-border); background: rgba(255, 255, 255, 0.07);
+  cursor: pointer;
+}
+#rsettings .rs-sl .ctx-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; transition: width 0.3s ease, background 0.3s ease; }
+#rsettings .rs-sl .ctx-text {
+  position: relative; z-index: 1; font-family: var(--mono); font-size: 0.72em; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: var(--fg); text-shadow: 0 0 2px var(--text-halo);
+}
+#rsettings .rs-sl .ctx-scan { display: none; }
+/* the preview's departures, after the copies: nothing here opens or compacts; the badges never wrap between themselves (the line's own
+   rule at a narrow width), because the card is narrower than the chat and a badge dropped to a second row would read as the renderer's
+   fault rather than the room's; the cluster drops the line's 12px lead-in (the card's right cluster carries its own 10px gap); and when
+   the card is too narrow for the whole line, the right cluster drops below the widgets as ONE row (the line wraps), never a clipped battery. */
+#rsettings .rs-sl .meta-btn, #rsettings .rs-sl .ctx-bar { cursor: default; }
+#rsettings .rs-sl .spinner-meta { flex-wrap: nowrap; margin-left: 0; }
+#rsettings .rs-sl-right { flex: 0 0 auto; }
+#rsettings .rs-sl { flex-wrap: wrap; row-gap: 6px; }
 /* a move refused (a status-line row held in its slot's group): a brief sideways nudge; the live region every move speaks through */
 @keyframes rs-nudge { 0% { transform: translateX(0); } 30% { transform: translateX(-5px); } 60% { transform: translateX(5px); } 100% { transform: translateX(0); } }
 #rsettings .rs-widget.rs-nudge { animation: rs-nudge 0.3s ease; }

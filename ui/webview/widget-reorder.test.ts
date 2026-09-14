@@ -122,16 +122,17 @@ test("the Tab widgets divider is a separator named for the session name's place,
 
 test("the previews are drawn by the surfaces' own composers over the demo records, under each section's rows, repainted with every paint", () => {
   assert.match(SECTION, /var box = document\.createElement\('div'\); box\.className = 'rs-preview';/);
-  assert.match(SECTION, /cfg\.host\.parentNode\.insertBefore\(box, cfg\.host\.nextSibling\);/, "right under the rows");
+  assert.match(SECTION, /cfg\.host\.parentNode\.insertBefore\(title, cfg\.host\.nextSibling\);\s*\n\s*cfg\.host\.parentNode\.insertBefore\(box, title\.nextSibling\);/, "right under the rows: the title, then the box (T415 part two)");
   assert.match(SECTION, /if \(previewBody\) \{ var pv = cfg\.preview\(prefs\); if \(pv\) previewBody\.replaceChildren\(pv\); else previewBody\.replaceChildren\(\); \}/, "repainted in place on every paint");
   // the tab preview: a tab as the strip draws it, both slots around the name, through the strip's own composer
-  assert.match(GEAR, /TW\.composeTabWidgets\(tab, 'before', TW\.DEMO_SID, TW\.DEMO_STATUS, prefs\);\s*\n\s*var label = document\.createElement\('span'\); label\.className = 'tab-label'; label\.textContent = 'web'; tab\.appendChild\(label\);\s*\n\s*TW\.composeTabWidgets\(tab, 'after', TW\.DEMO_SID, TW\.DEMO_STATUS, prefs\);/);
+  assert.match(GEAR, /TW\.composeTabWidgets\(tab, 'before', TW\.DEMO_SID, TW\.DEMO_STATUS, prefs\);\s*\n\s*tab\.appendChild\(demoLabel\(\)\);/, "the name between the slots, the demo record's in its identity colour (T415 part two)");
+  assert.match(GEAR, /TW\.composeTabWidgets\(tab, 'after', TW\.DEMO_SID, TW\.DEMO_STATUS, prefs\);/, "the after slot follows the name");
   // the status preview: the left slot, the state chip, the right slot ahead of the controls, through the line's own composer
   assert.match(GEAR, /SW\.composeStatusWidgets\(line, 'left', SW\.DEMO_RECORD, prefs\);/);
   assert.match(GEAR, /chip\.className = 'chip rs-sl-chip'; chip\.textContent = 'Ready';/);
   assert.match(GEAR, /SW\.composeStatusWidgets\(right, 'right', SW\.DEMO_RECORD, prefs\);/);
-  assert.match(GEAR, /ctl\.className = 'rs-sl-ctl'; ctl\.textContent = 'Auto · Opus 5 · high';/, "the fixed controls, drawn as words in the preview");
-  assert.match(GEAR_CSS, /#rsettings \.rs-preview-label \{[^}]*text-transform: uppercase;/);
+  assert.match(GEAR, /SC\.syncMetaControls\(meta, st, null, \{\}\); right\.appendChild\(meta\);\s*\n\s*var bar = SC\.ctxBar\(\); SC\.setCtxBar\(bar, st\.ctx, false, st\.ctxColor, false\); right\.appendChild\(bar\);/, "the fixed controls, drawn by the line's own renderer over the demo status (T415 part two)");
+  assert.match(GEAR_CSS, /#rsettings \.rs-preview-title \{[^}]*text-transform: uppercase;/);
 });
 
 // THE RINGS (2026-09-14): a section built with reorder: false has no grip and wires no drag; its rows keep the grid's
