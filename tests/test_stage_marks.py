@@ -3,14 +3,17 @@
 per-stage rows on /perf (asmIndex.materializedByStage, asmCheckpoint.hydratedByStage) never read `none`. The read boot of
 2026-09-13 22:01 UTC counted 206 MB hydrated and 100,000 atoms built under `none`: the judge tiers and the request handler
 carried no mark, and the tiers' per-session POOL workers carried none even after the tier thread was marked, since a
-thread-local does not cross into a pool worker (round two). Hermetic: synthetic fixtures, the kernel and judge loaded against
-a temp state directory, threads joined explicitly. The served pin (a real boot over two documented sessions and one real
-request) is tests/test_stage_marks_served.py."""
+thread-local does not cross into a pool worker (round two). The census here is the design's proof: it reads every Thread,
+Timer and pool construction in kernel.py and judge.py by the ast, resolves each target by SCOPE (the def inside the
+enclosing function, else the module-level def: a local helper named like a marked function is never vouched for by its
+namesake, round three), decides marked-or-not from the ast (a _stage_marked decorator on that def, a _stage_marked wrapper
+at the site, or a _set_stage call in that def's own body), and lists the pure I/O helpers by SITE (file, enclosing function,
+target). Hermetic: synthetic fixtures, the kernel and judge loaded against a temp state directory, threads joined explicitly.
+The served pin (a real boot over two documented sessions and one real socket request) is tests/test_stage_marks_served.py."""
 import ast
 import inspect
 import json
 import os
-import re as _re
 import tempfile
 import threading
 import unittest
@@ -35,114 +38,221 @@ KERNEL_DIR = os.path.join(os.path.dirname(HERE), "kernel")
 SOURCES = {"kernel.py": open(os.path.join(KERNEL_DIR, "kernel.py"), encoding="utf-8").read(),
            "judge.py": open(os.path.join(KERNEL_DIR, "judge.py"), encoding="utf-8").read()}
 SID = "11111111-2222-4333-8444-0000000000d5"
+CTORS = ("Thread", "Timer", "ThreadPoolExecutor", "_TimedPool")
 
-# Threads that can build no atom and hydrate no body: pure I/O helpers, keyed by SITE (file, enclosing function or "*", target),
-# each with the reason it is left unmarked. Anything else the kernel or the judge starts must carry a stage mark (T401 (5a)).
+# Threads that can build no atom and hydrate no body: pure I/O helpers, keyed by SITE (file, the enclosing function of the
+# Thread line, the target's name), each with the reason it is left unmarked. A name that recurs (go, run, work, one, _ask,
+# _pf, _gl, _bd) is keyed to its real enclosing function, so a new closure of the same name elsewhere is flagged.
 ALLOW = {
-    ("kernel.py", "*", "_propagate_judge_settings"): "fans an applied settings body to linked kernels over HTTP",
-    ("kernel.py", "*", "_revive_postal_bus"): "re-spawns the postal bus process",
-    ("kernel.py", "*", "_wake_when_port_up"): "a socket probe on a dialed tunnel",
-    ("kernel.py", "*", "_update_check_loop"): "the main-drift git probe",
-    ("kernel.py", "*", "_tunnel_supervisor"): "ssh tunnel supervision and status",
-    ("kernel.py", "*", "_run_main_update"): "a git fast-forward of the checkout",
-    ("kernel.py", "*", "_push_settings_to_peer"): "peer HTTP with a settings body",
-    ("kernel.py", "*", "_parent_watch"): "a pid probe on the spawning manager",
-    ("kernel.py", "*", "_login_reader"): "drives the login CLI's output for states",
-    ("kernel.py", "*", "_heartbeat"): "WS keepalive frames",
-    ("kernel.py", "*", "_ws_sender"): "the WS frame writer",
-    ("kernel.py", "*", "_do_warm_commands"): "lists the CLI's slash commands into the commands cache",
-    ("kernel.py", "*", "_first_cycle_sampler_run"): "the first-pass stack sampler: reads frames, builds nothing",
-    ("kernel.py", "*", "_fleet_restart_run"): "the remote half of a fleet restart over the tunnels, then this kernel's own",
-    ("kernel.py", "*", "_ensure_postal_bus"): "starts the postal bus process",
-    ("kernel.py", "*", "_sdk"): "constructs the SDK backend, whose boot reconcile reads raw records through the backend, never the "
-                                "index or hydrate (sdk_backend.py makes no event-model parse or hydrate call); two wiring pins hold "
-                                "its Thread line literal",
-    ("kernel.py", "*", "_pusher"): "marks inside: push and connect through _push's decorator",
-    ("kernel.py", "*", "_jobs_loop"): "marks inside: jobs.<name> through _job_stage",
-    ("kernel.py", "*", "_pf"): "a native file dialog for the paperclip (a closure of the socket loop)",
-    ("kernel.py", "*", "_gl"): "a git link subprocess for a file (a closure of the socket loop)",
-    ("kernel.py", "*", "_bd"): "a native folder dialog for a field (a closure of the socket loop)",
-    ("kernel.py", "*", "_ask"): "one peer's spend call over its tunnel (a closure of the spend rows)",
-    ("kernel.py", "*", "one"): "one peer's status call over its tunnel (a closure of the remotes status)",
-    ("kernel.py", "*", "work"): "the model price refresh over HTTP (a closure of the price refresh)",
-    ("kernel.py", "*", "run"): "web push delivery to subscriptions and the peer relay POST (closures of the two push fan-outs)",
-    ("kernel.py", "*", "go"): "the models frame notice (a closure of the model catalog); the warm threads' go closures are wrapped "
-                              "in _stage_marked at their Thread lines and never reach this entry",
+    ("kernel.py", "main", "_sdk"): "constructs the SDK backend, whose boot reconcile reads raw records through the backend, never the "
+                                   "index or hydrate (sdk_backend.py makes no event-model parse or hydrate call); two wiring pins hold "
+                                   "its Thread line literal",
+    ("kernel.py", "main", "_pusher"): "marks inside: push and connect through _push's decorator",
+    ("kernel.py", "main", "_jobs_loop"): "marks inside: jobs.<name> through _job_stage",
+    ("kernel.py", "main", "_heartbeat"): "WS keepalive frames",
+    ("kernel.py", "main", "_parent_watch"): "a pid probe on the spawning manager",
+    ("kernel.py", "main", "_update_check_loop"): "the main-drift git probe",
+    ("kernel.py", "main", "_ensure_postal_bus"): "starts the postal bus process",
+    ("kernel.py", "main", "_tunnel_supervisor"): "ssh tunnel supervision and status",
+    ("kernel.py", "_notify_bus_peer", "_revive_postal_bus"): "re-spawns the postal bus process",
+    ("kernel.py", "_notify_bus_origin_trust", "_revive_postal_bus"): "re-spawns the postal bus process",
+    ("kernel.py", "_spawn_tunnel", "_wake_when_port_up"): "a socket probe on a dialed tunnel",
+    ("kernel.py", "do_POST", "_run_main_update"): "a git fast-forward of the checkout",
+    ("kernel.py", "do_POST", "_fleet_restart_run"): "the remote half of a fleet restart over the tunnels, then this kernel's own",
+    ("kernel.py", "do_POST", "_propagate_judge_settings"): "fans an applied settings body to linked kernels over HTTP",
+    ("kernel.py", "_dispatch_ws", "_propagate_judge_settings"): "fans an applied settings body to linked kernels over HTTP",
+    ("kernel.py", "_converge_peer_settings", "_push_settings_to_peer"): "peer HTTP with a settings body",
+    ("kernel.py", "_login_start", "_login_reader"): "drives the login CLI's output for states",
+    ("kernel.py", "_new_ws_client", "_ws_sender"): "the WS frame writer",
+    ("kernel.py", "_commands_for_cwd", "_do_warm_commands"): "lists the CLI's slash commands into the commands cache",
+    ("kernel.py", "_first_cycle_sampler_start", "_first_cycle_sampler_run"): "the first-pass stack sampler: reads frames, builds nothing",
+    ("kernel.py", "_dispatch_ws", "_pf"): "a native file dialog for the paperclip",
+    ("kernel.py", "_dispatch_ws", "_gl"): "a git link subprocess for a file",
+    ("kernel.py", "_dispatch_ws", "_bd"): "a native folder dialog for a field",
+    ("kernel.py", "_spend_detail", "_ask"): "one peer's spend call over its tunnel",
+    ("kernel.py", "pairs_snapshot", "one"): "one peer's status call over its tunnel",
+    ("kernel.py", "_refresh_remote_prices", "work"): "the model price refresh over HTTP",
+    ("kernel.py", "_push_notify", "run"): "web push delivery to subscriptions",
+    ("kernel.py", "_push_forward", "run"): "the peer relay POST",
+    ("kernel.py", "_refresh_model_catalog", "go"): "the models frame notice",
 }
 
 
-def _sites(fname, text):
-    """Every Thread, Timer and pool construction in `text`, by the ast: (line, ctor, enclosing function name, target expression
-    source or None). A regex could not cross a newline nor tell name= from target=; the ast reads both, in any keyword order."""
-    tree = ast.parse(text)
-    spans = []                                               # (start, end, name) of every function, innermost resolved below
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            spans.append((node.lineno, node.end_lineno or node.lineno, node.name))
-    def enclosing(line):
-        best = None
-        for a, b, n in spans:
-            if a <= line <= b and (best is None or (b - a) < (best[1] - best[0])):
-                best = (a, b, n)
-        return best[2] if best else "<module>"
-    out = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        f = node.func
-        ctor = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
-        if ctor not in ("Thread", "Timer", "ThreadPoolExecutor", "_TimedPool"):
-            continue
-        target = None
-        if ctor == "Thread":
-            kw = next((k for k in node.keywords if k.arg == "target"), None)
-            target = kw.value if kw is not None else (node.args[1] if len(node.args) > 1 else None)
-        elif ctor == "Timer":
-            kw = next((k for k in node.keywords if k.arg == "function"), None)
-            target = kw.value if kw is not None else (node.args[1] if len(node.args) > 1 else None)
-        out.append((node.lineno, ctor, enclosing(node.lineno), ast.get_source_segment(text, target) if target is not None else None))
-    return out
+def _ctor_of(call):
+    f = call.func
+    n = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
+    return n if n in CTORS else None
 
 
-def _marked_at_def(text, name):
-    """True when a `def name(` in `text` is decorated with _stage_marked or sets a stage in its body."""
-    lines = text.split("\n")
-    for i, l in enumerate(lines):
-        if _re.match(r"\s*def %s\(" % _re.escape(name), l):
-            head = "\n".join(lines[max(0, i - 3):i])
-            body = "\n".join(lines[i:i + 80])
-            if "@_stage_marked(" in head or "_set_stage(" in body:
-                return True
+def _names_in(node):
+    """The identifiers an expression names (a conditional target names several functions)."""
+    return [n.id for n in ast.walk(node) if isinstance(n, ast.Name)]
+
+
+def _wrapped_at_site(node):
+    """True for a target written `_stage_marked(<name>)(<fn>)`: the wrapper call at the Thread line."""
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Call) and isinstance(node.func.func, ast.Name) \
+        and node.func.func.id == "_stage_marked"
+
+
+def _def_marked(fn):
+    """A def is marked when a `_stage_marked(...)` decorator sits on it or its own body calls `_set_stage(...)`: read from the
+    ast of THAT def, never from a text window (round three, medium 1 and low 3)."""
+    for d in fn.decorator_list:
+        if isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id == "_stage_marked":
+            return True
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_set_stage":
+            return True
     return False
 
 
+def census(fname, text):
+    """Every Thread, Timer and pool construction in `text`: a list of rows (line, ctor, enclosing function name, target
+    name, verdict) where the verdict is "marked", "allowed", "pool", or a reason it is UNMARKED. Targets are resolved by
+    scope: the def of that name inside the enclosing function (the last one defined before the site), else the module-level
+    def; a bare pool (any constructor that is not the judge's timed one, whose submit carries the mark) is unmarked."""
+    tree = ast.parse(text)
+    module_defs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for n in tree.body:                                          # decorated module-level defs and class bodies (the handler)
+        if isinstance(n, ast.ClassDef):
+            for m in n.body:
+                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    module_defs.setdefault(m.name, m)
+    timed = {"_TimedPool"} | ({"ThreadPoolExecutor"} if any(isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "ThreadPoolExecutor" for t in n.targets)
+                                                           and isinstance(n.value, ast.Name) and n.value.id == "_TimedPool" for n in tree.body) else set())
+    funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    def enclosing(line):
+        best = None
+        for fn in funcs:
+            if fn.lineno <= line <= (fn.end_lineno or fn.lineno) and (best is None or (fn.end_lineno - fn.lineno) < (best.end_lineno - best.lineno)):
+                best = fn
+        return best
+    def resolve(name, enc, line):
+        local = [n for n in (ast.walk(enc) if enc is not None else ()) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and n.name == name and n is not enc and n.lineno < line]
+        if local:
+            return local[-1]
+        return module_defs.get(name)
+    rows = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _ctor_of(node) is None:
+            continue
+        ctor = _ctor_of(node)
+        enc = enclosing(node.lineno)
+        enc_name = enc.name if enc is not None else "<module>"
+        if ctor in ("ThreadPoolExecutor", "_TimedPool"):
+            rows.append((node.lineno, ctor, enc_name, None, "pool" if ctor in timed else "a bare pool: its submit carries no mark"))
+            continue
+        kw = next((k for k in node.keywords if k.arg == ("target" if ctor == "Thread" else "function")), None)
+        target = kw.value if kw is not None else (node.args[1] if len(node.args) > 1 else None)
+        if target is None:
+            rows.append((node.lineno, ctor, enc_name, None, "no target the census can read")); continue
+        if _wrapped_at_site(target):
+            rows.append((node.lineno, ctor, enc_name, ast.get_source_segment(text, target), "marked")); continue
+        names = [n for n in _names_in(target) if resolve(n, enc, node.lineno) is not None]
+        if not names:
+            rows.append((node.lineno, ctor, enc_name, ast.get_source_segment(text, target), "no function the census can resolve")); continue
+        for name in names:
+            fn = resolve(name, enc, node.lineno)
+            if _def_marked(fn):
+                rows.append((node.lineno, ctor, enc_name, name, "marked"))
+            elif (fname, enc_name, name) in ALLOW:
+                rows.append((node.lineno, ctor, enc_name, name, "allowed"))
+            else:
+                rows.append((node.lineno, ctor, enc_name, name, "unmarked: no _stage_marked decorator on the def the scope binds, "
+                             "no _set_stage in its body, no wrapper at the site, not a listed helper"))
+    return rows
+
+
 class StageMarksCensus(unittest.TestCase):
-    def test_every_thread_and_pool_site_in_the_kernel_and_the_judge_is_marked_or_a_listed_io_helper(self):
-        """T401 (5a): every Thread, Timer and pool construction site in kernel.py and judge.py, walked by the ast (keyword order
-        and aliases included): a Thread or Timer target is marked (wrapped in _stage_marked at the site, decorated at its def, or
-        setting a stage in its body) or is a pure I/O helper listed by SITE with its reason; a pool is marked by its submit, which
-        carries the submitter's stage into the worker (pinned below), so a pool site needs no mark of its own."""
-        unmarked, pools, seen = [], 0, 0
+    def test_every_thread_and_pool_site_in_the_kernel_and_the_judge_is_marked_allowed_or_a_riding_pool(self):
+        """T401 (5a): every construction site in kernel.py and judge.py is marked (by the ast: a _stage_marked decorator on
+        the def the scope binds, a _set_stage in that def's body, or a _stage_marked wrapper at the site), a pure I/O helper
+        listed by site with its reason, or a pool whose submit carries the submitter's stage (the judge's timed pool, pinned
+        below); a bare pool is flagged."""
+        bad, seen, pools = [], 0, 0
         for fname, text in SOURCES.items():
-            for line, ctor, enclosing, target in _sites(fname, text):
+            for line, ctor, enc, target, verdict in census(fname, text):
                 seen += 1
-                if ctor in ("ThreadPoolExecutor", "_TimedPool"):
+                if verdict == "pool":
                     pools += 1
-                    continue
-                if target is None:
-                    unmarked.append((fname, line, enclosing, "<no target the census can read>")); continue
-                if target.startswith("_stage_marked("):
-                    continue
-                names = [n for n in _re.findall(r"[A-Za-z_][A-Za-z0-9_]*", target) if _re.search(r"\bdef %s\(" % _re.escape(n), text)]
-                if not names:
-                    unmarked.append((fname, line, enclosing, target)); continue
-                for name in names:
-                    if (fname, enclosing, name) in ALLOW or (fname, "*", name) in ALLOW or _marked_at_def(text, name):
-                        continue
-                    unmarked.append((fname, line, enclosing, name))
-        self.assertEqual(unmarked, [], "sites that can reach a build or a hydration without a stage mark (file, line, enclosing, target)")
+                elif verdict not in ("marked", "allowed"):
+                    bad.append((fname, line, ctor, enc, target, verdict))
+        self.assertEqual(bad, [], "sites that can reach a build or a hydration without a stage mark")
         self.assertGreaterEqual(seen, 40, "the census walked the construction sites: %d" % seen)
         self.assertGreaterEqual(pools, 7, "the judge's pools are sites the census walked: %d" % pools)
+
+    def test_every_listed_helper_site_still_exists(self):
+        """A stale ALLOW entry would silently vouch for nothing: every key names a site the census saw."""
+        sites = {(f, enc, t) for f, text in SOURCES.items() for _, _, enc, t, _ in census(f, text) if t}
+        stale = sorted(k for k in ALLOW if k not in sites)
+        self.assertEqual(stale, [], "ALLOW entries with no site behind them")
+
+    # The census's own rules, proven on synthetic snippets: what round one and round two got wrong.
+    SNIPPET_SHADOW = '''
+@_stage_marked("push")
+def _push():
+    pass
+
+def _dispatch():
+    def _push():
+        pass
+    threading.Thread(target=_push).start()
+'''
+    SNIPPET_WINDOW = '''
+def _helper():
+    pass
+
+def _other():
+    _set_stage("x")
+
+def _start():
+    threading.Thread(target=_helper).start()
+'''
+    SNIPPET_POOL = '''
+def _fan():
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        ex.submit(print)
+'''
+    SNIPPET_CLOSURE = '''
+def _elsewhere():
+    def go():
+        pass
+    threading.Thread(target=go).start()
+'''
+    SNIPPET_MARKED = '''
+def _tier():
+    _set_stage("judge.x")
+
+def _start():
+    threading.Thread(target=_tier).start()
+    threading.Thread(target=_stage_marked("warm")(_tier)).start()
+'''
+
+    def _verdicts(self, snippet):
+        return [(enc, t, v.split(":")[0]) for _, _, enc, t, v in census("kernel.py", snippet)]
+
+    def test_a_local_helper_named_like_a_marked_function_is_not_vouched_for_by_its_namesake(self):
+        """Round three, medium 1: round two resolved a target by NAME and read the first def in the file, so a local _push handed
+        to a Thread passed on the module-level _push's decorator. The scope binds the local def, which is unmarked."""
+        self.assertEqual(self._verdicts(self.SNIPPET_SHADOW), [("_dispatch", "_push", "unmarked")])
+
+    def test_an_unmarked_def_is_not_read_as_marked_by_a_set_stage_call_that_follows_it(self):
+        """Round three, low 3: an 80-line forward text window read any later _set_stage( as the def's own."""
+        self.assertEqual(self._verdicts(self.SNIPPET_WINDOW), [("_start", "_helper", "unmarked")])
+
+    def test_a_bare_pool_is_flagged_where_the_judges_timed_pool_is_covered_by_its_submit(self):
+        """Round three, low 4: only _TimedPool.submit carries the mark; a bare ThreadPoolExecutor is not covered."""
+        self.assertEqual(self._verdicts(self.SNIPPET_POOL), [("_fan", None, "a bare pool")])
+        self.assertEqual(self._verdicts("ThreadPoolExecutor = _TimedPool\n" + self.SNIPPET_POOL), [("_fan", None, "pool")])
+
+    def test_a_generic_closure_name_outside_its_listed_site_is_flagged(self):
+        """Round three, medium 2: ALLOW is keyed by site, so a new `go` closure in an unlisted function is not vouched for."""
+        self.assertEqual(self._verdicts(self.SNIPPET_CLOSURE), [("_elsewhere", "go", "unmarked")])
+
+    def test_a_set_stage_in_the_defs_own_body_and_a_wrapper_at_the_site_both_mark(self):
+        self.assertEqual(self._verdicts(self.SNIPPET_MARKED), [("_start", "_tier", "marked"), ("_start", '_stage_marked("warm")(_tier)', "marked")])
 
     def test_the_pools_submit_carries_the_submitters_stage_into_the_worker(self):
         src = inspect.getsource(jd._TimedPool.submit)
@@ -177,7 +287,7 @@ class BuildsCountUnderTheThreadsStage(unittest.TestCase):
     under the tier that submitted it; an unmarked thread's reads `none`."""
 
     def setUp(self):
-        self._prev = (em._READ_STAGE_FN[0], em._SET_STAGE_FN[0])
+        self._prev = (em._READ_STAGE_FN[0], getattr(em, "_SET_STAGE_FN", [None])[0])
         em.set_read_stage_provider(km._current_read_stage)   # several kernel loads share one event model in a pytest process: the
         em.set_stage_provider(km._set_stage)                 #  providers must be THIS load's, whose thread-local the marks set
 

@@ -133,15 +133,15 @@ class StageMarksOnAServedBoot(unittest.TestCase):
         self.assertGreaterEqual(len(docs), 1, "the exit wrote at least one assembly document; wrote: %s" % docs)
         k2, p2, log2 = self._boot()
         try:
-            self._wait_for(p2, lambda pf: (pf.get("judge") or {}).get("passes", 0) >= 1
-                           and sum(((pf.get("asmIndex") or {}).get("materializedByStage") or {}).values()) > 0,
-                           90, "the judge's first pass built through its pools")
+            # the socket request FIRST, before the judge's first pass (held BOOT_JUDGE_HOLD_S after boot) has built the documents'
+            # rows: the history window it asks for, anchored deep in the pre-cut part, is rendered from rows nobody has built yet,
+            # so the request itself mints a build or a hydration key under http.GET.ws (round three, low 5)
             c = ChatClient(p2, self.token, WEB)
             try:
                 self._session_frame(c, log2)
-                c.send({"type": "loadAround", "id": WEB, "uuid": "u5"})    # one REAL history request over the socket, anchored deep
-                for fr2 in c.frames(30):                                   #  in the pre-cut part: its window is rendered from the
-                    if fr2.get("type") == "chatWindow":                    #  document's rows, so the request builds and hydrates
+                c.send({"type": "loadAround", "id": WEB, "uuid": "u5"})    # one REAL history request over the socket
+                for fr2 in c.frames(30):
+                    if fr2.get("type") == "chatWindow":
                         self.assertFalse(fr2.get("missing"), "the anchor is a pre-cut turn's prompt: %s" % {k: fr2.get(k) for k in ("anchor", "missing")})
                         break
                 else:
@@ -150,8 +150,16 @@ class StageMarksOnAServedBoot(unittest.TestCase):
                 stages = {name: row.get("stage") for name, row in (perf.get("stacks") or {}).items()}   #  parked in the recv loop
                 self.assertIn("http.GET.ws", stages.values(), "the socket's handler thread carries the request's mark for the "
                               "connection's life (the real request just answered ran under it): %s" % stages)
+                by_ws = (perf.get("asmIndex") or {}).get("materializedByStage") or {}
+                hy_ws = (perf.get("asmCheckpoint") or {}).get("hydratedByStage") or {}
+                self.assertTrue(any(k.startswith("http.GET.ws:") for k in list(by_ws) + list(hy_ws)),
+                                "the socket request's own builds or hydrations land under http.GET.ws: builds=%s hydrations=%s%s"
+                                % (by_ws, hy_ws, self._log_tail(log2)))
             finally:
                 c.close()
+            self._wait_for(p2, lambda pf: (pf.get("judge") or {}).get("passes", 0) >= 1
+                           and any(k.startswith("judge.triage:") for k in ((pf.get("asmIndex") or {}).get("materializedByStage") or {})),
+                           90, "the judge's first pass built through its pools under judge.triage")
             perf = self._get(p2, "/perf")
             by_stage = (perf.get("asmIndex") or {}).get("materializedByStage") or {}
             hy_stage = (perf.get("asmCheckpoint") or {}).get("hydratedByStage") or {}
