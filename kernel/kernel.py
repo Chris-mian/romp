@@ -55066,7 +55066,11 @@ function flashDrop(){[icon,mnet()].forEach(function(el){if(!el)return;
 el.classList.remove('rn-drop');void el.offsetWidth;   // reflow: a second drop replays the flash
 el.classList.add('rn-drop');
 el.addEventListener('animationend',function(){el.classList.remove('rn-drop');},{once:true});});}
-function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+// A non-ok answer is not the host list: a proxy in JSON-error mode answers a 5xx whose body parses, and it used to
+// read as "no hosts" (the panel painted no hosts, and dropCue below, which writes by ABSENCE, forgot every host
+// it had seen up, so the next real drop never flashed). It throws, so the catch below names the failure and the
+// was-up map stands; the manager's own poll has the same rule (2026-09-14).
+function refresh(){fetch('/tunnels',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/tunnels answered HTTP '+r.status);return r.json();}).then(function(d){
 var ts=(d&&d.tunnels)||[];var pmode=!!(d&&d.peersMode);var busy=ts.some(function(t){return busyStatus(t.status);});
 _auto=!!(d&&d.autoUpdate);
 // This machine's own release + commit, so the host rows below have something to be read against.
@@ -56610,7 +56614,9 @@ _RDRIFT_JS = (
     # the user is agreeing to is the same either way — that machine ends up on this build.
     "function prompt(hs){return hs.length===1?(hs[0]+' is on an older romp build. Update it to this one?')"
     ":(hs.length+' remotes are on an older romp build. Update them to this one? ('+hs.join(', ')+')');}"
-    "function check(){fetch('/tunnels',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
+    # a non-ok answer is not the host list (a JSON-bodied 5xx read as "nothing stale" and hid the banner); the empty catch
+    # below leaves the banner as it was, and the next check reads again
+    "function check(){fetch('/tunnels',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/tunnels answered HTTP '+r.status);return r.json();}).then(function(d){"
     # AUTOMATIC UPDATE ON → this banner does not exist (the user 2026-07-24). It was the modal landing
     # mid-screen on every advance, and the whole point of the setting is that romp just does the push and
     # reports it on the network icon instead. Only a fast-forward auto-pushes, so anything the automation
