@@ -116,8 +116,10 @@ test("every entry point is gated to where the click can land, and posts the one 
 });
 
 test("the statusline folder link BROWSES on the web; OS-open lives on its right-click (the user 2026-08-14)", () => {
-  assert.match(RENDER, /elem\.dataset\.act = web \? "browseFiles" : "openFolder";/);   // pane-local browse needs no shell (2026-08-24)
-  assert.match(RENDER, /click to browse this folder/);
+  const SW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-widgets.ts"), "utf8");   // the folder link rule lives beside the folder widget since T409 (folderLink); render.ts's asFolderLink delegates
+  assert.match(SW, /elem\.dataset\.act = web \? "browseFiles" : "openFolder";/);   // pane-local browse needs no shell (2026-08-24)
+  assert.match(RENDER, /function asFolderLink\(elem: HTMLElement, cwd: string, sid\?: string\): void \{\n\s*folderLink\(elem, cwd, sid\);/);
+  assert.match(SW, /click to browse this folder/);
   // the demoted OS-open: one document-level contextmenu on folder links, posting the old openFolder
   assert.match(RENDER, /item\.textContent = "Open folder window";/);
   assert.match(RENDER, /browseFiles: \(el\) => \{/, "the body delegate carries the new act");

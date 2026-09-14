@@ -46,7 +46,7 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   const ps = panes();
   const where: Record<string, string[]> = {
     general: ["rs-billing", "rs-login-acct", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
-    chat: ["rs-compact", "rs-dense", "rs-badge", "rs-branch", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets"],
+    chat: ["rs-compact", "rs-dense", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets", "rs-swidgets"],
     feed: ["rs-feedcollapsed"],
     sessions: ["rs-defaultdir", "rs-backend"],
     automation: ["rs-autonudge", "rs-suggestcompact"],
@@ -94,9 +94,11 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   assert.doesNotMatch(GEAR, /data-pane=appearance\b|\['appearance', 'Appearance'\]/, "no Appearance pane or pill remains");
   // Chat: Display (the transcript rows, the text scheme, the strip's one-group-per-row), Comments, Thinking, Tab widgets
   const C = ps.chat;
-  assert.ok(C.indexOf(">Display<") < C.indexOf("id=rs-compact") && C.indexOf("id=rs-branch") < C.indexOf("id=rs-chatscheme") && C.indexOf("id=rs-chatscheme") < C.indexOf("id=rs-striprows")
+  assert.ok(C.indexOf(">Display<") < C.indexOf("id=rs-compact") && C.indexOf("id=rs-dense") < C.indexOf("id=rs-chatscheme") && C.indexOf("id=rs-chatscheme") < C.indexOf("id=rs-striprows")
             && C.indexOf("id=rs-striprows") < C.indexOf(">Comments<") && C.indexOf(">Comments<") < C.indexOf("id=rs-cmtmodel") && C.indexOf("id=rs-cmtfast") < C.indexOf(">Thinking<")
-            && C.indexOf(">Thinking<") < C.indexOf("id=rs-thinksum") && C.indexOf("id=rs-thinksum") < C.indexOf("data-section=tabwidgets"), "Chat: Display, Comments, Thinking, Tab widgets");
+            && C.indexOf(">Thinking<") < C.indexOf("id=rs-thinksum") && C.indexOf("id=rs-thinksum") < C.indexOf("data-section=tabwidgets")
+            && C.indexOf("data-section=tabwidgets") < C.indexOf("data-section=statusline"), "Chat: Display, Comments, Thinking, Tab widgets, Status line (T409)");
+  assert.doesNotMatch(C, /id=rs-badge|id=rs-branch/, "the badge and branch checkboxes left the Display section: the Status line section's rows are the controls (T409)");
   assert.doesNotMatch(C, />Transcript<|>Text and comments<|>Files<|>Strip</, "the old Chat heads are gone");
   // Automation: the nudges; Task tracking: the judges alone; Debug: the judges' views then the diagnostics
   assert.ok(ps.automation.indexOf(">Nudges<") < ps.automation.indexOf("id=rs-autonudge") && ps.automation.indexOf("id=rs-autonudge") < ps.automation.indexOf("id=rs-suggestcompact"), "Automation: Nudges, Auto Nudge, Suggest /compact");
@@ -211,15 +213,28 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
 
 test("the Tab widgets section's rows come from the strip's own module: built once, painted in place, a sliding switch, house pickers for the options", () => {
   assert.match(GEAR, /var TW = require\('\.\/tab-widgets\.ts'\);/);
-  assert.match(GEAR, /function buildWidgets\(\) \{\s*\n\s*if \(!wHost \|\| wHost\.children\.length\) return;\s*\n\s*TW\.tabWidgets\(\)\.forEach\(function \(w\) \{/, "one row per registered widget, built once");
+  // ONE builder serves both sections since T409 (the status line's widgets): each section hands it its host, registry, prefs
+  // reader, saver, switch and option readers, demo and picker prefix
+  assert.match(GEAR, /function widgetSection\(cfg\) \{[\s\S]*?function build\(\) \{\s*\n\s*if \(!cfg\.host \|\| cfg\.host\.children\.length\) return;\s*\n\s*cfg\.list\(\)\.forEach\(function \(w\) \{/, "one row per registered widget, built once");
   assert.match(GEAR, /sw\.className = 'rs-switch'; sw\.setAttribute\('role', 'switch'\);/, "the sliding toggle (the user's pick), a switch to the accessibility tree");
-  assert.match(GEAR, /prefs\.on\[w\.id\] = !TW\.widgetOn\(prefs, w\); saveWidgets\(prefs\);/, "the switch flips the widget's own flag");
-  assert.match(GEAR, /var drop = housePick\(wrap, 'wopt-' \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/, "an option is the panel's house picker");
+  assert.match(GEAR, /prefs\.on\[w\.id\] = !cfg\.on\(prefs, w\); cfg\.save\(prefs\);/, "the switch flips the widget's own flag");
+  assert.match(GEAR, /var drop = housePick\(wrap, cfg\.pickPrefix \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/, "an option is the panel's house picker");
+  assert.match(GEAR, /host: document\.getElementById\('rs-widgets'\), list: TW\.tabWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',/, "the tab widgets' section keeps its picker ids");
   assert.match(GEAR, /var node = TW\.renderWidgetDemo\(w, prefs\);/, "the live demo is the widget's OWN render over the demo status");
   assert.match(GEAR, /if \(w\.slot === 'before'\) \{ if \(node\) tab\.appendChild\(node\); tab\.appendChild\(label\); \}\s*\n\s*else \{ tab\.appendChild\(label\); if \(node\) tab\.appendChild\(node\); \}/, "the demo places the node in the widget's slot: before the name or after it (no corner slot: pinning is gone, the user 2026-09-12)");
   assert.match(GEAR, /r\.sw\.classList\.toggle\('on', on\); r\.sw\.setAttribute\('aria-checked', on \? 'true' : 'false'\);/);
-  assert.match(GEAR, /r\.demo\.replaceChildren\(tab\);/, "the demo is re-filled in place: the row's controls are never rebuilt (click-safe)");
-  assert.match(GEAR, /function saveWidgets\(prefs\) \{ var s = load\(\); s\.tabWidgets = prefs; s\.tabCtx = TW\.tabCtxOfPrefs\(prefs\); save\(s\); paintWidgets\(\); \}/, "the prefs and the tabCtx mirror, through the one save()");
+  assert.match(GEAR, /var node = cfg\.demo\(w, prefs\);\s*\n\s*if \(node\) r\.demo\.replaceChildren\(node\); else r\.demo\.replaceChildren\(\);/, "the demo is re-filled in place: the row's controls are never rebuilt (click-safe)");
+  assert.match(GEAR, /save: function \(prefs\) \{ var s = load\(\); s\.tabWidgets = prefs; s\.tabCtx = TW\.tabCtxOfPrefs\(prefs\); save\(s\); paintWidgets\(\); \},/, "the prefs and the tabCtx mirror, through the one save()");
+  // the STATUS LINE section (T409): the same builder over the status registry, its prefs read through the two legacy keys as
+  // mirrors, its save writing both mirrors back, its pickers under their own prefix; no injected default for any of the three
+  assert.match(GEAR, /var SW = require\('\.\/status-widgets\.ts'\);/);
+  assert.match(GEAR, /function statusPrefs\(s\) \{ return SW\.statusWidgetPrefs\(s\.statusWidgets, \{ showBranch: s\.showBranch, showSessionBadge: s\.showSessionBadge \}\); \}/);
+  assert.match(GEAR, /host: document\.getElementById\('rs-swidgets'\), list: SW\.statusWidgets, prefs: statusPrefs, pickPrefix: 'swopt-',/);
+  assert.match(GEAR, /save: function \(prefs\) \{ var s = load\(\); s\.statusWidgets = prefs; var m = SW\.legacyOfStatusPrefs\(prefs\); s\.showBranch = m\.showBranch; s\.showSessionBadge = m\.showSessionBadge; save\(s\); paintWidgets\(\); \},/);
+  assert.match(GEAR, /demo: function \(w, prefs\) \{ return SW\.renderStatusWidgetDemo\(w, prefs\); \},/, "the status demo is the widget alone, as the line draws it");
+  assert.match(GEAR, /function paintWidgets\(\) \{ tabSection\.paint\(\); statusSection\.paint\(\); \}/, "one repaint covers both sections");
+  assert.equal((GEAR.match(/s\.statusWidgets = /g) || []).length, 1, "one writer of the status key: the section's save");
+  assert.doesNotMatch(GEAR.slice(GEAR.indexOf("function load() {"), GEAR.indexOf("function save(s) {")), /statusWidgets|showBranch|showSessionBadge/, "load() neither defaults nor touches the status key or its mirrors (the fresh-key rule)");
   // round one, HIGH: NO injected default for tabWidgets. An empty object in load()'s defaults won over a pre-widgets store's
   // tabCtx (the derivation runs only with no object), and a save of any setting wrote it and rewrote the mirror. The prefs
   // derive from tabCtx at read time, as settings.ts does, and only a widget change writes the key.

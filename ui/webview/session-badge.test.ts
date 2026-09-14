@@ -24,44 +24,44 @@ test("no name, no badge — the opening line covers a tab whose payload has not 
   assert.equal(badgeSpec(undefined), null);
 });
 
-test("render.ts: updateStatusline puts the badge first, before the state chip, on every state", () => {
-  assert.match(RENDER, /import \{ badgeSpec \} from "\.\/session-badge";/);
+// Since T409 the badge is the status line's NAME widget (status-widgets.ts, off by default): the line composes its left
+// slot before the state chip, and the widget's render draws the chip from the same badgeSpec.
+const SW = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "status-widgets.ts"), "utf8");
+test("render.ts: updateStatusline composes the left slot (the name widget) first, before the state chip, on every state", () => {
+  assert.match(SW, /import \{ badgeSpec \} from "\.\/session-badge";/);
+  assert.doesNotMatch(RENDER, /badgeSpec/, "the renderer no longer builds the badge itself");
   const fn = RENDER.slice(RENDER.indexOf("function updateStatusline() {"), RENDER.indexOf("\n}\n", RENDER.indexOf("function updateStatusline() {")));
-  const badgeAt = fn.indexOf("const bs = settings.showSessionBadge === true ? badgeSpec(s) : null;");
-  assert.ok(badgeAt > 0, "the badge is built from the active session — when the setting opts in (off by default, the maintainers 2026-09-10)");
-  assert.ok(badgeAt > fn.indexOf("sl.replaceChildren();"), "after the line is emptied");
-  assert.ok(badgeAt > fn.indexOf('ro.textContent = "read-only · a subagent\'s transcript";'), "a subagent viewer, which is no session, gets none");
-  assert.ok(badgeAt < fn.indexOf('if (s.status.state === "working") {'), "…and before the first state chip");
-  assert.match(fn, /const b = el\("span", "chip chip-session"\); b\.textContent = bs\.text;/);
-  assert.match(fn, /if \(bs\.bg\) b\.style\.background = bs\.bg;/, "the identity colour is the fill");
+  const leftAt = fn.indexOf('composeStatusWidgets(sl, "left", rec, settings.statusWidgets);');
+  assert.ok(leftAt > 0, "the left slot is composed from the active session's record");
+  assert.ok(leftAt > fn.indexOf("sl.replaceChildren();"), "after the line is emptied");
+  assert.ok(leftAt > fn.indexOf('ro.textContent = "read-only · a subagent\'s transcript";'), "a subagent viewer, which is no session, gets none");
+  assert.ok(leftAt < fn.indexOf('if (s.status.state === "working") {'), "…and before the first state chip");
+  assert.match(SW, /const b = el\("span", "chip chip-session"\);\n\s*b\.textContent = bs\.text;/);
+  assert.match(SW, /if \(bs\.bg\) b\.style\.background = bs\.bg;/, "the identity colour is the fill");
 });
 
 test("styles.css: the badge is a chip with black text on the session's colour, clipped to a short name", () => {
   assert.match(CSS, /\.chip-session \{ color: #000; background: var\(--box-border\); max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/);
 });
 
-// The badge is an OPT-IN (the maintainers via the user, 2026-09-10): the composer's placeholder names the session by default;
-// the statusline badge is a setting, off by default, in the gear's Chat section right above Show git branch. Pinned the way
-// statusline-branch.test.ts pins Show git branch: the type and its default, the gear's row/default/fill/save, the gate.
-test("settings carry showSessionBadge, defaulting OFF, and the gear agrees", () => {
+// The badge is an OPT-IN (the maintainers via the user, 2026-09-10; the user again on T409): the name widget defaults off.
+// showSessionBadge stays in the store as the widget's MIRROR (settings.ts derives from it when statusWidgets is absent and
+// writes it back on every save); the gear injects no default for it and has no row of its own for it any more: the
+// Status line section's Session name row is the control.
+test("settings carry showSessionBadge as the name widget's mirror, defaulting OFF, and the gear injects no default and keeps no row", () => {
   const SETTINGS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "settings.ts"), "utf8");
   const GEAR = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "gear.js"), "utf8");
   assert.match(SETTINGS, /showSessionBadge: boolean;/);
   assert.match(SETTINGS, /DEFAULT_SETTINGS[^;]*showSessionBadge: false/);
-  assert.doesNotMatch(GEAR, /showSessionBadge: true/);
-  assert.equal((GEAR.match(/showSessionBadge: false/g) || []).length, 2, "both of the gear's default objects");
-  assert.match(GEAR, /sbg = document\.getElementById\('rs-badge'\)/);
-  assert.match(GEAR, /if \(sbg\) sbg\.checked = s\.showSessionBadge === true;/, "filled at open from the store, never assumed on");
-  assert.match(GEAR, /if \(sbg\) sbg\.addEventListener\('change', function \(\) \{ var s = load\(\); s\.showSessionBadge = sbg\.checked; save\(s\); \}\);/);
-  // the row: right above Show git branch, in the Chat section's checkbox dress, saying what it adds and that it is off
-  const badgeRow = GEAR.indexOf("id=rs-badge"), branchRow = GEAR.indexOf("id=rs-branch"), denseRow = GEAR.indexOf("id=rs-dense");
-  assert.ok(denseRow < badgeRow && badgeRow < branchRow, "between Compact tabs and agents and Show git branch");
-  assert.match(GEAR, /<b>Show session badge<\/b>/);
-  assert.match(GEAR, /The message box already names the session; this adds the name where its state reads\. Off by default\./);
+  assert.match(SETTINGS, /Object\.assign\(s, legacyOfStatusPrefs\(s\.statusWidgets\)\);/, "the mirror is written from the widgets on load");
+  assert.doesNotMatch(GEAR, /showSessionBadge: (true|false)/, "no injected default: a store from before the widgets derives at read (the fresh-key rule)");
+  assert.doesNotMatch(GEAR, /id=rs-badge|Show session badge|sbg = document/, "the checkbox row is gone");
+  assert.match(GEAR, /data-section=statusline>Status line</, "the Status line section is the control");
+  assert.match(GEAR, /s\.showBranch = m\.showBranch; s\.showSessionBadge = m\.showSessionBadge; save\(s\);/, "a section save writes both mirrors");
+  assert.match(SW, /id: "name", label: "Session name", defaultOn: false, slot: "left",/);
 });
 
-test("render.ts: the badge is gated on the live setting, so a gear flip shows or hides it at the next statusline paint", () => {
-  assert.match(RENDER, /const bs = settings\.showSessionBadge === true \? badgeSpec\(s\) : null;/);
-  // a settings change re-renders the active view, whose showActive repaints the statusline: no extra wiring needed
-  assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); rerenderAll\(\);/);
+test("render.ts: the line reads the widgets' prefs, never the legacy key, and a gear flip repaints it at once", () => {
+  assert.doesNotMatch(RENDER, /settings\.showSessionBadge|showSessionBadge ===/);
+  assert.match(RENDER, /onExternalSettingsChange\(\(s\) => \{ settings = s; applyChatScheme\(s\); renderTabs\(\); updateStatusline\(\); rerenderAll\(\);/);
 });

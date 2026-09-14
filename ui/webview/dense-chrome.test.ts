@@ -72,12 +72,12 @@ test("the gear row mirrors the other booleans: Chat section, save path, open-tim
   const at = GEAR.indexOf("id=rs-dense");
   assert.ok(at > 0, "the checkbox exists in the gear markup");
   assert.ok(GEAR.indexOf(">Chat<") < at, "in the Chat section");
-  assert.ok(GEAR.indexOf("id=rs-compact") < at && at < GEAR.indexOf("id=rs-branch"), "between Compact transcript and Show git branch");
+  assert.ok(GEAR.indexOf("id=rs-compact") < at && at < GEAR.indexOf("id=rs-chatscheme"), "between Compact transcript and the text scheme (the branch row left for the Status line section, T409)");
   assert.ok(GEAR.includes("<b>Compact tabs and agents</b>"), "the label");
   // the sub-line leads with the panel, which every layout has, then the strip, and says where the strip half
   // does not apply: under the phone layout's media rule (kernel.py _CHAT_MOBILE_CSS) the session picker
   // stands in for the strip, so a phone gets the panel half alone (the guide paragraph says the same)
-  const sub = GEAR.slice(at, GEAR.indexOf("id=rs-branch")).match(/<span class=rs-sub>([^<]*)<\/span>/)![1];
+  const sub = GEAR.slice(at, GEAR.indexOf("id=rs-chatscheme")).match(/<span class=rs-sub>([^<]*)<\/span>/)![1];
   assert.ok(sub.indexOf("background-work panel") < sub.indexOf("tab strip"), "the panel first, then the strip");
   assert.match(sub, /about four rows/); assert.match(sub, /session picker stands in for the strip/); assert.match(sub, /Off by default\.$/);
   assert.ok(GEAR.includes("dn = document.getElementById('rs-dense')"), "the handle");
