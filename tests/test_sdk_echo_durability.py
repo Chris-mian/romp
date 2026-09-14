@@ -313,6 +313,46 @@ class DroppedSendsAnnounceThemselves(unittest.TestCase):
         self.assertTrue((sb.read_reg(state, SID).get("echoes") or [{}])[0].get("dropped"),
                         "the flag rides the mirror, so the NEXT restart keeps the verdict")
 
+    def _live_host_lease(self, state, sid):
+        """A lease that reads 'attach': the CLI pid and the holder are THIS process (alive, start time matching), the holder a
+        host, the beat now: a CLI that survived the kernel under its session host."""
+        pid = os.getpid(); start = sb.proc_start(pid)
+        sb.write_lease(state, {"sid": sid, "fsid": sid, "name": "web", "pid": pid, "start": start,
+                               "holder": {"kind": "host", "pid": pid, "start": start}, "version": "test", "spawnedAt": 1700000000, "t": time.time()})
+
+    def test_boot_reseed_does_not_flag_a_send_a_surviving_cli_still_holds(self):
+        """The boot-time twin of the fresh-CLI marking (the spawnedAt fix's follow-up, 2026-09-14): under session hosts the CLI
+        survives the kernel under a valid host lease and still holds the sends the previous kernel handed it; the boot's reseed
+        flagged them dropped anyway, and the chat said never delivered of a message the live CLI was about to take."""
+        state = tempfile.mkdtemp(); open(os.path.join(state, "session-hosts"), "w").write("on")
+        be = self._backend(state)
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        k, e = _echo("the send the surviving CLI still holds")
+        be._live[SID] = dict([(k, e)])
+        be._persist_echoes(SID)
+        self._live_host_lease(state, SID)
+        be2 = self._backend(state)               # "kernel restart" with the CLI alive under its host
+        atoms = be2.live_atoms(SID)
+        self.assertTrue(atoms and not atoms[0].get("dropped"), "a surviving CLI's held send is not lost: no flag")
+        self.assertFalse((sb.read_reg(state, SID).get("echoes") or [{}])[0].get("dropped"), "and the mirror carries none")
+        os.unlink(sb.lease_path(state, SID))
+        be3 = self._backend(state)               # the next restart with the host gone: the dead CLI's send is flagged
+        self.assertTrue((be3.live_atoms(SID) or [{}])[0].get("dropped"), "no lease: the send was held by a dead CLI, flagged as before")
+
+    def test_boot_awaiting_heal_spares_a_surviving_cli(self):
+        """The other twin: __init__ cleared every alive session's awaiting:true on the premise nothing is running yet; under
+        session hosts a surviving CLI's awaiting is real (its background tasks and its Stop hook live on)."""
+        state = tempfile.mkdtemp(); open(os.path.join(state, "session-hosts"), "w").write("on")
+        be = self._backend(state)
+        sb.write_reg(be.state_dir, SID, {"sid": SID, "alive": True})
+        sb.append_awaiting(state, SID, True)
+        self._live_host_lease(state, SID)
+        self._backend(state)                     # "kernel restart" with the CLI alive under its host
+        self.assertTrue(sb.last_awaiting(state, SID), "the surviving CLI's awaiting stands")
+        os.unlink(sb.lease_path(state, SID))
+        self._backend(state)                     # the host gone: the stale overlay is healed as before
+        self.assertFalse(sb.last_awaiting(state, SID), "no lease: healed")
+
     def test_boot_reseed_spares_an_echo_still_in_the_queue(self):
         state = tempfile.mkdtemp()
         be = self._backend(state)

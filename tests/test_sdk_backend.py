@@ -16,6 +16,7 @@ import contextlib
 import io
 import os
 import json
+import sys
 import threading
 import time
 import tracemalloc
@@ -4985,24 +4986,47 @@ class UpdateRegDroppingUnreadable(unittest.TestCase):
         self.assertEqual(sb.read_reg_for_rmw(root, self.SID)["bgLedger"], [1, 2, 3])
 
 
-@unittest.skipUnless(_HAVE_SDK, "claude_agent_sdk not installed")
+def _sdk_module_for_the_road_pins():
+    """The module the connect loop imports ClaudeSDKClient from: the installed SDK when there is one, else a stand-in with the
+    five names the import asks for. The road pins stub the transport and fake the client, so they need no package; CI installs
+    none, and a gate on the package would let a re-key on the pre-read go green on every Python (the follow-up's item a)."""
+    if _HAVE_SDK:
+        return _sdk
+    import types
+    m = sys.modules.get("claude_agent_sdk")
+    if m is None:
+        class _StandIn(types.ModuleType):
+            """Any name the backend imports from the SDK (ClaudeSDKClient, ClaudeAgentOptions, HookMatcher, the message classes,
+            the permission results) answers as an inert class: the road pins never call into the SDK, they stub the transport
+            and the client."""
+            def __getattr__(self, name):
+                if name.startswith("__"):
+                    raise AttributeError(name)
+                cls = type(name, (), {"__init__": lambda self, *a, **k: None})
+                setattr(self, name, cls)
+                return cls
+        m = _StandIn("claude_agent_sdk")
+        sys.modules["claude_agent_sdk"] = m
+    return m
+
+
 class SpawnedAtStampedOnSpawnOnly(unittest.TestCase):
     """spawnedAt is the CLI's epoch (judge _cli_epoch, the bg-tasks ghost gate, the evidence gate, the planner's persisted
     memo): a connect that ATTACHES to a live host keeps it, a connect that spawns moves it (2026-09-14: every kernel boot
-    under session hosts re-stamped every attached session). The decision is made at the transport's OUTCOME inside the
-    connect loop, never at the lease pre-read (round two: a host ending between the pre-read and the transport read, or a
-    live lease under hosts off, spawns a fresh CLI the prediction called an attach, and the reverse race attaches to a
-    survivor the prediction called a spawn). The pins drive the REAL connect loop (`_run` -> `_amain`) with the transport
-    road stubbed to each shape and a fake SDK client that records the reg at the connect and ends the thread."""
+    under session hosts re-stamped every attached session). The decision is made ONCE PER CLI LAUNCH at the transport's
+    OUTCOME inside the connect loop, after the SDK has spawned or attached, never at the lease pre-read; the launch-login
+    stamp (T346) rides the same decision. The pins drive the REAL connect loop (`_run` into `_amain`) with the transport
+    road stubbed to each shape and a fake SDK client that ends the thread once the block has run."""
 
     SID = "11111111-2222-3333-4444-555555555588"
     T0 = 1700000000
 
     def setUp(self):
-        self._orig_client = _sdk.ClaudeSDKClient
+        self._mod = _sdk_module_for_the_road_pins()
+        self._orig_client = self._mod.ClaudeSDKClient
 
     def tearDown(self):
-        _sdk.ClaudeSDKClient = self._orig_client
+        self._mod.ClaudeSDKClient = self._orig_client
 
     def _world(self, hosts):
         root = tempfile.mkdtemp()
@@ -5010,7 +5034,9 @@ class SpawnedAtStampedOnSpawnOnly(unittest.TestCase):
         self.logs = []
         be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None, log=self.logs.append)
         sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "cwd": "/tmp", "spawnedAt": self.T0})
-        return root, be, sb.SdkSession(be, {"sid": self.SID, "name": "web", "cwd": "/tmp"})
+        s = sb.SdkSession(be, {"sid": self.SID, "name": "web", "cwd": "/tmp"})
+        s._launched_login = "restored-login"        # what the reg restored for a surviving CLI (item b: an attach keeps it)
+        return root, be, s
 
     def _live_host_lease(self, root):
         """A lease that reads 'attach' at the pre-read: its CLI pid and holder are THIS process (alive, start time matching),
@@ -5019,10 +5045,11 @@ class SpawnedAtStampedOnSpawnOnly(unittest.TestCase):
         sb.write_lease(root, {"sid": self.SID, "fsid": self.SID, "name": "web", "pid": pid, "start": start,
                               "holder": {"kind": "host", "pid": pid, "start": start}, "version": "test", "spawnedAt": self.T0, "t": now})
 
-    def _drive(self, be, s, root, roads, incomplete_first=False):
+    def _drive(self, be, s, root, roads, incomplete_first=False, fail_first=False, marking_raises=False):
         """Run the real connect loop: `roads` is the transport's answer per iteration ("attach", "spawn-host", "child"); the fake
-        client records the reg's spawnedAt at each connect, then ends the thread (an incomplete attach on the first iteration
-        when asked, which the loop retries on its next iteration as a respawn). Returns the recorded stamps per iteration."""
+        client's connect either fails before any CLI exists (`fail_first`, item d), completes as an attach that then times out
+        (`incomplete_first`, the loop's own retry road), or succeeds, after which the block has run and the thread is ended.
+        Returns the reg's spawnedAt as seen right after each block (or declined block)."""
         seen = []; calls = {"n": 0}; sid = self.SID
         class FakeTransport:
             pass
@@ -5036,57 +5063,89 @@ class SpawnedAtStampedOnSpawnOnly(unittest.TestCase):
             return None                                      # a kernel child
         class FakeHost:                                       # an attach that reached the host (hello) but did not complete
             hello = {"ok": True}; _init_pending = True; exit_info = None
+        real_stamp = s._fresh_cli_stamp
+        def stamp_then_end(attached, mark_echoes=True):
+            real_stamp(attached, mark_echoes=mark_echoes)
+            seen.append(sb.read_reg(root, sid).get("spawnedAt"))
+            s.ended = True                                   # the last connect: the thread ends on this raise
+            raise RuntimeError("stop: the block ran at the connect")
+        s._fresh_cli_stamp = stamp_then_end
         class FakeClient:
             def __init__(self, options=None, transport=None):
                 pass
             async def __aenter__(self):
                 calls["n"] += 1
-                seen.append(sb.read_reg(root, sid).get("spawnedAt"))
+                if fail_first:
+                    raise OSError("the binary is missing: no CLI launched")   # item d: this launch fails before any CLI exists
                 if incomplete_first and calls["n"] == 1:
-                    s._host = FakeHost()                     # the loop's incomplete-attach branch: _reconnect and retry
-                    raise TimeoutError("initialize timed out")
-                s.ended = True                               # the last connect: the thread ends on this raise
-                raise RuntimeError("stop: the connect point was reached")
+                    s._host = FakeHost()                     # the attach reached the host but the initialize timed out inside
+                    raise TimeoutError("initialize timed out")   #  the SDK's connect: the loop's retry branch arms a respawn
+                return self
             async def __aexit__(self, *a):
                 return False
+        if marking_raises:
+            def boom(sid_, texts, refeed=True):
+                raise RuntimeError("the tail moved under the walk")
+            be._mark_dropped_echoes = boom                   # item c: a bookkeeping fault, never a launch error
         be._host_transport_for = transport_for
-        _sdk.ClaudeSDKClient = FakeClient
+        self._mod.ClaudeSDKClient = FakeClient
         s._run()
-        self.assertTrue(seen, "the connect point was never reached; the backend said: %s" % "\n".join(str(m) for m in self.logs[-6:]))
+        if not fail_first:
+            self.assertTrue(seen, "the block never ran; the backend said: %s" % "\n".join(str(m) for m in self.logs[-6:]))
         return seen
 
     def test_a_host_ending_between_the_pre_read_and_the_transport_read_spawns_and_stamps(self):
-        """Road one: the pre-read says attach (a live lease), the transport finds the host gone and spawns a fresh host and
-        CLI; the fresh CLI takes a fresh epoch (the base kept the dead CLI's)."""
         root, be, s = self._world("on"); self._live_host_lease(root)
         self.assertTrue(be._connect_would_attach(s), "the pre-read: attach")
         seen = self._drive(be, s, root, ["spawn-host"])
         self.assertEqual(len(seen), 1); self.assertGreater(seen[0], self.T0, "stamped at the outcome, the prediction notwithstanding")
+        self.assertEqual(s._launched_login, "", "a launch stamps its login (the machine's own here), item b")
 
     def test_hosts_off_with_a_live_lease_spawns_a_kernel_child_and_stamps(self):
-        """Road two: hosts OFF with a live host lease (the rollback shape): the pre-read says attach, the transport returns
-        no host transport, a plain kernel-child CLI spawns; its epoch is fresh."""
         root, be, s = self._world("off"); self._live_host_lease(root)
         self.assertTrue(be._host_lease_applies(s) and be._connect_would_attach(s), "the pre-read: attach through the live lease")
         seen = self._drive(be, s, root, ["child"])
         self.assertEqual(len(seen), 1); self.assertGreater(seen[0], self.T0)
 
     def test_a_respawn_after_an_incomplete_attach_stamps_on_its_own_iteration(self):
-        """Road three: the first iteration attaches and the connect does not complete (the loop arms _reconnect and retries);
-        the second iteration spawns; the stamp fires on the second, not once at the thread top."""
+        """The first iteration attaches and the connect does not complete (the initialize times out inside the SDK's connect,
+        before any block runs: the CLI was never spawned, its epoch stands); the loop's own retry branch arms a respawn, whose
+        iteration spawns and stamps: one block run, on the respawn."""
         root, be, s = self._world("on"); self._live_host_lease(root)
         seen = self._drive(be, s, root, ["attach", "spawn-host"], incomplete_first=True)
-        self.assertEqual(len(seen), 2, "two connects: the incomplete attach and the respawn")
-        self.assertEqual(seen[0], self.T0, "the attach kept the epoch")
-        self.assertGreater(seen[1], self.T0, "the respawn stamped")
+        self.assertEqual(len(seen), 1, "one block run: the incomplete attach launched nothing, the respawn did")
+        self.assertGreater(seen[0], self.T0, "the respawn stamped")
+        self.assertTrue(any("attach did not complete" in str(m) for m in self.logs), "the loop's retry road was the one taken: %s" % self.logs[-4:])
 
-    def test_the_reverse_race_attaches_to_a_survivor_and_keeps_its_epoch(self):
-        """The mirror: the pre-read says spawn (no lease yet), the transport attaches to a surviving CLI whose host wrote its
-        lease in between; the epoch stands (the pre-read decision had moved it)."""
+    def test_the_reverse_race_attaches_to_a_survivor_and_keeps_its_epoch_and_its_login(self):
         root, be, s = self._world("on")
         self.assertFalse(be._connect_would_attach(s), "the pre-read: spawn")
         seen = self._drive(be, s, root, ["attach"])
         self.assertEqual(seen, [self.T0], "an attach at the outcome keeps the epoch")
+        self.assertEqual(s._launched_login, "restored-login", "and the restored launch login and init evidence stand (item b: "
+                         "the pre-read stamp wiped them on this road)")
+
+    def test_a_launch_that_fails_before_any_cli_exists_moves_nothing(self):
+        """Item d: a missing binary, a bad cwd or a transport fault fails the connect before any CLI exists and the thread ends
+        (the crash heal restarts it later); the block runs only once the SDK has spawned, so the epoch and the launch login move
+        nothing on a failed launch, and once on the launch that succeeds."""
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, ["spawn-host"], fail_first=True)
+        self.assertEqual(seen, [], "no block ran")
+        self.assertEqual(sb.read_reg(root, self.SID).get("spawnedAt"), self.T0, "the failed launch moved nothing")
+        self.assertEqual(s._launched_login, "restored-login", "nor the launch login")
+        s2 = sb.SdkSession(be, {"sid": self.SID, "name": "web", "cwd": "/tmp"})
+        seen2 = self._drive(be, s2, root, ["spawn-host"])
+        self.assertEqual(len(seen2), 1); self.assertGreater(seen2[0], self.T0, "the launch that succeeded stamped once")
+
+    def test_a_raise_out_of_the_marking_is_a_bookkeeping_fault_not_a_launch_error(self):
+        """Item c: the marking runs inside the connect loop now; a raise out of it is caught and logged, and the connect goes on
+        (before: swallowed as a launch error and surfaced as the CLI never coming up)."""
+        root, be, s = self._world("on")
+        seen = self._drive(be, s, root, ["spawn-host"], marking_raises=True)
+        self.assertEqual(len(seen), 1, "the block completed and the connect was reached")
+        self.assertTrue(any("dropped-echo marking" in str(m) and "failed" in str(m) for m in self.logs), self.logs)
+        self.assertFalse(any("failed to start" in str(m) for m in self.logs), "never a launch error: %s" % self.logs)
 
     def test_the_four_plain_roads_as_controls(self):
         for hosts, lease, roads, moves in (("on", True, ["attach"], False), ("on", False, ["spawn-host"], True),

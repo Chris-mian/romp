@@ -500,6 +500,15 @@ class _Backend(unittest.TestCase):
 
 
 class StoredLoginPick(_Backend):
+    def _launch_options(self, s):
+        """The options build for a LAUNCH, followed by the launch-login stamp the connect loop makes once the SDK has spawned
+        (the stamp moved out of _options to the transport's outcome, 2026-09-14: an attach to a surviving CLI keeps the
+        restored evidence and login whatever the lease pre-read said); the two together are what a launch's options build
+        used to do here."""
+        kw = self.be._options(s, dict)
+        self.be._stamp_launch_login(s)
+        return kw
+
     def test_set_auth_persists_the_login_and_seeds_the_next_session(self):
         rec = _rec(self.be.state_dir, "Work", org="Acme", kind="enterprise")
         sid = self.be.spawn("n", "/tmp")
@@ -607,7 +616,7 @@ class StoredLoginPick(_Backend):
         rec = _rec(self.be.state_dir, "Work")
         sb._STARTUP_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN": _token_shaped()}
         s = self._sess(1, auth="login", authLogin=rec["id"])
-        kw = self.be._options(s, dict)
+        kw = self._launch_options(s)
         st = self._settings_of(kw)
         self.assertEqual(st.get("apiKeyHelper"), lg.helper_command(rec["id"], self.be.state_dir))
         self.assertIn("romp-login-helper %s" % rec["id"], st["apiKeyHelper"])
@@ -622,7 +631,7 @@ class StoredLoginPick(_Backend):
         self.assertFalse(s._launched_keyed)
         # the machine's own login launch is exactly as before: the helper disabled, the token restored
         s2 = self._sess(2, auth="login")
-        kw2 = self.be._options(s2, dict)
+        kw2 = self._launch_options(s2)
         self.assertEqual(self._settings_of(kw2).get("apiKeyHelper"), "")
         self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", kw2["env"])
         self.assertEqual(s2._launched_login, "")
@@ -633,10 +642,10 @@ class StoredLoginPick(_Backend):
         logs = []
         self.be._log = lambda m, problem=False: logs.append((m, problem))
         s = self._sess(1, auth="login", authLogin=rec["id"])
-        kw = self.be._options(s, dict)
+        kw = self._launch_options(s)
         self.assertNotIn("apiKeyHelper", self._settings_of(kw), "a key launch runs the box's helper")
         self.assertEqual(s._launched_login, "")
-        self.be._options(s, dict)
+        self._launch_options(s)
         said = [m for m, p in logs if "cannot apply" in m]
         self.assertEqual(len(said), 1, said)
         self.assertIn("'Work' login", said[0][:80] + said[0]) if False else self.assertIn("Work", said[0])
@@ -645,7 +654,7 @@ class StoredLoginPick(_Backend):
     def test_the_init_reads_the_helper_landing_as_the_login_and_labels_its_own_bucket(self):
         rec = _rec(self.be.state_dir, "Work", org="Acme", kind="enterprise")
         s = self._sess(1, auth="login", authLogin=rec["id"])
-        self.be._options(s, dict)
+        self._launch_options(s)
         self.be._note_auth_source(s, "apiKeyHelper")
         self.assertEqual(s.auth_live, "login", "the stored login rides the helper, so the helper landing IS the login")
         self.assertTrue(s.auth_label.startswith("login:"), s.auth_label)
@@ -657,7 +666,7 @@ class StoredLoginPick(_Backend):
         self.assertEqual(snap["buckets"][s.auth_label + "|fable"]["label"], "Work · Acme · enterprise")
         # a machine-login session's helper landing is still the key (unchanged)
         s2 = self._sess(2, auth="login")
-        self.be._options(s2, dict)
+        self._launch_options(s2)
         self.be._note_auth_source(s2, "apiKeyHelper")
         self.assertEqual(s2.auth_live, "key")
 
@@ -668,8 +677,8 @@ class StoredLoginPick(_Backend):
         # two sessions launched on the stored login while it stands: the CLI's init is the EVIDENCE of what each did
         s = self._sess(1, auth="login", authLogin=rec["id"])
         s2 = self._sess(2, auth="login", authLogin=rec["id"])
-        self.be._options(s, dict)
-        self.be._options(s2, dict)
+        self._launch_options(s)
+        self._launch_options(s2)
         self.assertEqual((s._launched_login, s2._launched_login), (rec["id"], rec["id"]))
         self.assertIsNone(s.auth_login_live, "no evidence before an init")
         self.assertIsNone(s.snapshot()["authLoginLive"])
@@ -701,7 +710,7 @@ class StoredLoginPick(_Backend):
                             ("none", "the machine's own login"), ("", "the machine's own login")):
             lg.clear_refused(self.be.state_dir, rec["id"])
             s = self._sess(9, auth="login", authLogin=rec["id"])
-            self.be._options(s, dict)
+            self._launch_options(s)
             self.assertEqual(s._launched_login, rec["id"])
             s.request_reconnect = lambda defer=True: recon.append(1)
             self.be._note_auth_source(s, word)
@@ -719,7 +728,7 @@ class StoredLoginPick(_Backend):
         self.be.key_state = lambda: "missing"
         self.be.login_ok = lambda: False
         s = self._sess(3, auth="login", authLogin=rec["id"])
-        self.be._options(s, dict)
+        self._launch_options(s)
         s.request_reconnect = lambda defer=True: recon.append(1)
         self.be._note_auth_source(s, "none")
         self.assertEqual(self.be.pick_fall("login", rec["id"]), "", "the probe: nothing to fall to")
@@ -734,7 +743,7 @@ class StoredLoginPick(_Backend):
         lg.clear_refused(self.be.state_dir, rec["id"])
         self.be.login_ok = lambda: True
         s2 = self._sess(4, auth="login", authLogin=rec["id"])
-        self.be._options(s2, dict)
+        self._launch_options(s2)
         s2.request_reconnect = lambda defer=True: recon.append(2)
         self.be._note_auth_source(s2, "none")
         self.assertEqual(recon, [2])
@@ -752,18 +761,18 @@ class StoredLoginPick(_Backend):
         self.assertNotEqual(picked, machine)
         # the helper answered: the bucket is the stored login's
         s = self._sess(5, auth="login", authLogin=rec["id"])
-        self.be._options(s, dict)
+        self._launch_options(s)
         self.be._note_auth_source(s, "apiKeyHelper")
         self.assertEqual(s.auth_label, picked)
         # the helper did not answer and the machine's own login did the work: the machine's bucket, not the pick's
         s = self._sess(6, auth="login", authLogin=rec["id"])
-        self.be._options(s, dict)
+        self._launch_options(s)
         s.request_reconnect = lambda defer=True: None
         self.be._note_auth_source(s, "none")
         self.assertEqual(s.auth_label, machine)
         # the fallback relaunch (the record now refused, the key does the work) files under the key's bucket
         s = self._sess(7, auth="login", authLogin=rec["id"])
-        self.be._options(s, dict)
+        self._launch_options(s)
         self.assertEqual(s._launched_login, "", "the refused record falls to the key")
         self.be._note_auth_source(s, "apiKeyHelper")
         self.assertTrue(s.auth_label.startswith("key"), s.auth_label)
@@ -774,7 +783,7 @@ class StoredLoginPick(_Backend):
         self.be._log = lambda m, problem=False: None
         sid = self.be.spawn("n", "/tmp", auth="login:" + rec["id"])
         s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
-        self.be._options(s, dict)
+        self._launch_options(s)
         self.assertEqual(s._launched_login, rec["id"])
         self.be._note_auth_source(s, "apiKeyHelper")
         self.assertEqual(s.auth_login_live, rec["id"])
@@ -785,7 +794,7 @@ class StoredLoginPick(_Backend):
         self.assertEqual((s_re._launched_login, s_re.auth_login_live), (rec["id"], rec["id"]))
         # the login goes unavailable, then a reconnect for a model change relaunches on the fall: the old evidence goes
         lg.mark_refused(self.be.state_dir, rec["id"], "refused")
-        self.be._options(s, dict)
+        self._launch_options(s)
         self.assertEqual(s._launched_login, "", "fell to the key")
         self.assertIsNone(s.auth_login_live, "no evidence from this process yet")
         self.assertIsNone(s.snapshot()["authLoginLive"])
@@ -800,7 +809,7 @@ class StoredLoginPick(_Backend):
         self.assertEqual(lg.read_record(self.be.state_dir, rec["id"])["refused"], "refused")
         # a wrong landing's evidence is persisted too ("" = another credential answered)
         lg.clear_refused(self.be.state_dir, rec["id"])
-        self.be._options(s, dict)
+        self._launch_options(s)
         s.request_reconnect = lambda defer=True: None
         self.be._note_auth_source(s, "none")
         self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("authLoginLive"), "")
@@ -813,8 +822,7 @@ class StoredLoginPick(_Backend):
         s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
         # the connect loop's order: the lease pre-read, then the options build; no host, no lease: a launch, stamped
         self.assertFalse(self.be._connect_would_attach(s), "no lease: a launch")
-        s._connect_attach = self.be._connect_would_attach(s)
-        self.be._options(s, dict)
+        kw = self._launch_options(s); self.be._stamp_launch_login(s)   # the connect loop's launch stamp, at the outcome
         self.assertEqual((s._options_login, s._launched_login, s.auth_login_live), (rec["id"], rec["id"], None))
         self.be._note_auth_source(s, "apiKeyHelper")
         reg = sb.read_reg(self.be.state_dir, sid)
@@ -842,14 +850,14 @@ class StoredLoginPick(_Backend):
         import types
         s2._ah_note_assistant(types.SimpleNamespace(model="claude-opus-5", message_id="m4", parent_tool_use_id=None, error=None))
         self.assertNotIn("refused", lg.read_record(self.be.state_dir, rec["id"]))
-        # the pre-read outrun: the host died between the lease read and the host road, which launches after all and
-        # stamps then (the hosts file off, so the road ends at a kernel child: the real function, through its launch exit)
+        # the pre-read outrun: the host died between the lease read and the host road, which launches after all; the
+        # stamp is the connect loop's, at the outcome (the hosts file off, so the road ends at a kernel child)
         import asyncio
         sb.lease_path(self.be.state_dir, sid).unlink()
         (Path(self.be.state_dir) / "session-hosts").write_text("off\n")
-        s2._connect_attach = True
-        self.assertIsNone(asyncio.run(self.be._host_transport_for(s2, {}, ())))
-        self.assertFalse(s2._connect_attach)
+        self.assertIsNone(asyncio.run(self.be._host_transport_for(s2, {}, ())), "the host road ends at a kernel child")
+        self.be._stamp_launch_login(s2)          # the connect loop's act at that outcome (a launch): the stamp, made once the
+        #                                           SDK has spawned, from the transport's answer, never from the pre-read
         self.assertEqual((s2._launched_login, s2.auth_login_live), ("", None), "launched after all: stamped from the options")
         reg3 = sb.read_reg(self.be.state_dir, sid)
         self.assertEqual((reg3["launchedLogin"], reg3["authLoginLive"]), ("", None))
@@ -862,7 +870,7 @@ class StoredLoginPick(_Backend):
         s = sb.SdkSession(self.be, sb.read_reg(self.be.state_dir, sid))
         self.be.sessions[sid] = s
         s.request_reconnect = lambda defer=True: recon.append(1)
-        self.be._options(s, dict)
+        self._launch_options(s)
         self.be._note_auth_source(s, "none")          # the wrong landing: the one reconnect
         self.assertTrue(s._wrong_landing_reconnected)
         self.assertEqual(len(recon), 1)
@@ -871,13 +879,13 @@ class StoredLoginPick(_Backend):
         self.assertTrue(self.be.set_auth(sid, "login:" + rec["id"]))
         self.assertFalse(s._wrong_landing_reconnected)
         n0 = len(recon)
-        self.be._options(s, dict)
+        self._launch_options(s)
         self.assertEqual(s._launched_login, rec["id"])
         self.be._note_auth_source(s, "none")
         self.assertEqual(len(recon), n0 + 1, "the documented fall is taken again after a new pick")
         # a helper-answered init resets it as well
         lg.clear_refused(self.be.state_dir, rec["id"])
-        self.be._options(s, dict)
+        self._launch_options(s)
         self.be._note_auth_source(s, "apiKeyHelper")
         self.assertFalse(s._wrong_landing_reconnected)
 
