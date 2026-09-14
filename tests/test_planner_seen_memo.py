@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tokenize
 import threading
 import unittest
 from pathlib import Path
@@ -243,18 +244,23 @@ class PlannerSeenMemo(unittest.TestCase):
         finally:
             jd._rebind_state(self.root)
 
-    PLAN_SESSION_AST_SHA16 = "750172566b088da2"
+    PLAN_SESSION_TOKENS_SHA16 = "b3ce93e3421bd728"
 
     def test_a_change_to_the_plan_session_bumps_the_derivation_or_this_pin(self):
         """Round three, low 3: the derivation bump rule made mechanical. A persisted row asserts the planner had nothing to do
         under the code that wrote it, so a change to _plan_session's body must either bump _PLANNER_SEEN_DERIVATION_V (when a pass
         that had nothing to do under the old code could have something under the new: a heal, a unit shape, a retire rule) or,
-        when it cannot move a verdict, update this pin's hash. The hash is of the function's ast (comments and formatting free)."""
-        fn = ast.parse(textwrap.dedent(inspect.getsource(jd._plan_session))).body[0]
-        h = hashlib.sha256(ast.dump(fn, include_attributes=False).encode()).hexdigest()[:16]
-        self.assertEqual(h, self.PLAN_SESSION_AST_SHA16,
-                         "_plan_session changed (ast sha16 %s): bump _PLANNER_SEEN_DERIVATION_V in kernel/judge.py if a pass that had "
-                         "nothing to do under the old code could have something under the new, else set PLAN_SESSION_AST_SHA16 to %s" % (h, h))
+        when it cannot move a verdict, update this pin's hash. The hash is of the function's TOKEN stream with comments, newlines
+        and indentation dropped: ast.dump and ast.unparse both change their text between Python minors (3.10 to 3.13 gave three
+        dump hashes and two unparse hashes for one source in CI), while the token strings of an f-string-free function do not."""
+        seg = textwrap.dedent(inspect.getsource(jd._plan_session))
+        skip = {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENCODING, tokenize.ENDMARKER}
+        toks = [t.string for t in tokenize.generate_tokens(io.StringIO(seg).readline) if t.type not in skip]
+        self.assertFalse(any(t.startswith(("f\"", "f'")) or t in ("FSTRING_START",) for t in toks), "no f-string in _plan_session: the token stream stays one across minors")
+        h = hashlib.sha256(" ".join(toks).encode()).hexdigest()[:16]
+        self.assertEqual(h, self.PLAN_SESSION_TOKENS_SHA16,
+                         "_plan_session changed (token sha16 %s): bump _PLANNER_SEEN_DERIVATION_V in kernel/judge.py if a pass that had "
+                         "nothing to do under the old code could have something under the new, else set PLAN_SESSION_TOKENS_SHA16 to %s" % (h, h))
 
     def test_the_perf_row_carries_the_three_new_counters(self):
         self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted"})
