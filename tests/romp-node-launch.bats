@@ -162,9 +162,19 @@ EOF
 @test "the watchdog path: the kill of the sleep is waited on, so a sleep that takes a moment to die never outlives the launcher" {
     # CI 2026-09-14 (a tree that did not touch the launcher): the check above saw one leftover sleep pid once, a race the
     # watchdog's trap left open by exiting right after its kill. The sleep here is a stand-in that lingers a second after
-    # its TERM (killing the real sleep it wraps), so at the base the launcher exits with the stand-in still alive, every
-    # time; with the trap waiting for it, the session is empty when the launcher has exec'd the manager.
+    # its TERM (killing the real sleep it wraps), and the copy takes a moment to answer, so the watchdog's sleep is surely
+    # running when the kill lands (an instant probe can kill the watchdog before it has started its sleep, and then nothing
+    # lingers: the base passed one run in three that way). At the base the launcher exits with the stand-in still alive,
+    # every time; with the trap waiting for it, the session is empty when the launcher has exec'd the manager.
     command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    cat > "$BIN/node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$RN") sleep 0.3; echo "NODE_V1 ran: \$*" ;;
+  *) echo "NODE_V1 ran: \$*" ;;
+esac
+EOF
+    chmod +x "$BIN/node"
     local bare="$TEST_DIR/bare-linger"; mkdir -p "$bare"
     local t
     for t in sh cmp cp chmod mv mkdir rm ps pgrep setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
