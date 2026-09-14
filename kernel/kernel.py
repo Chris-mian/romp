@@ -44859,6 +44859,54 @@ def _release_skeleton(c, sid):
         return _release_skeleton_locked(c, sid)
 
 
+COMPACT_TAIL_WINDOW = 256 * 1024                   # the tail read's first window for _compact_boundary_since; widened 4x while
+#                                                    the window's oldest stamped record is still after the moment asked about
+
+
+def _compact_boundary_since(path, since):
+    """Whether the transcript carries a compact_boundary record stamped at or after `since` (epoch seconds): the built
+    chip's compaction disproof (_compacting), as a tail-first read that needs no parse (round four, low c). Records are
+    appended in order, so the read widens back from the end only while the window's oldest stamped record is still at
+    or after `since`; the whole file is the bound. False on any read fault (the caller then trusts the row's word)."""
+    if not since:
+        return False
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    win = COMPACT_TAIL_WINDOW
+    try:
+        with open(path, "rb") as f:
+            while True:
+                start = max(0, size - win)
+                f.seek(start)
+                chunk = f.read(size - start)
+                lines = chunk.split(b"\n")
+                if start > 0:
+                    lines = lines[1:]                     # the first piece is a torn line
+                oldest = None
+                for ln in lines:
+                    if b'"compact_boundary"' in ln:
+                        try:
+                            rec = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
+                            t = em.parse_z(rec.get("timestamp"))
+                            if t is not None and t >= since:
+                                return True
+                    if oldest is None and b'"timestamp"' in ln:
+                        try:
+                            oldest = em.parse_z(json.loads(ln).get("timestamp"))
+                        except ValueError:
+                            oldest = None
+                if start == 0 or (oldest is not None and oldest < since):
+                    return False
+                win *= 4
+    except OSError:
+        return False
+
+
 def _light_status(sid, path, tm, now):
     """A skeleton tab's status without a build, from the sources the built chip reads that need no parse: the backend's live
     row (its live-prompt, retrying, working and compacting words, its since, backend, model, effort, mode), the api-error
@@ -44878,11 +44926,17 @@ def _light_status(sid, path, tm, now):
         bc = be.compacting(sid) if be is not None else None
     except Exception:
         bc = None
-    # Compacting from the backend's own bracket ALONE (round three, low a): the row's compacting word is exactly the
-    # sticky signal _compacting exists to disprove against the transcript (an open turn, a compact_boundary since the
-    # row's since), and that disproof needs the parse this status is built without; a stale row read as compacting for
-    # the whole spread, against a built chip that read working. A row's word without a bracket falls through.
-    compacting = bool(bc)
+    # Compacting in the built chip's order (round four, low c): the backend's bracket when it states one; else the row's
+    # word or the kernel's own /compact click, disproved by the cheap reads this status has: a compact_boundary at or
+    # after the row's since is a tail read (_compact_boundary_since), and the open turn's disproof stands in by the
+    # row's working. The residual: a row that says compacting while the transcript's last turn is open with no
+    # boundary since reads compacting here and working built, until the tab's first build.
+    since_s = tm.get("since")
+    if bc is not None:
+        compacting = bool(bc)
+    else:
+        compacting = bool((st == "compacting" or _compact_clicked.get(sid) is not None) and not working
+                          and not _compact_boundary_since(path, since_s))
     aw = None
     if not working:
         try:
@@ -44907,6 +44961,7 @@ def _light_status(sid, path, tm, now):
     stops = cm.stops_for(_colormap())
     return {"state": chip, "sinceEpoch": int(since * 1000) if since else None, "provisional": True,
             "faded": _idle_faded(chip, since, now),      # the built status's own fact (T155), so the chip reads it the same
+            "needsYou": _feed_needs_input_of(sid),       # the yellow ask ring's one input (round four): the feed's verdict, a membership read
             # the painter's context gauge and tints (round three): the row carries the context, the colours are the built
             # status's own derivations over it (cm.ramp on the global colormap, cm.context_rgb), so a cold tab's gauge and
             # its model and effort tints paint as built for as long as the tab stays unbuilt

@@ -247,37 +247,53 @@ class ColdTabGate(unittest.TestCase):
         self.assertEqual(len(statuses[S3]["awaitingItems"]), 2)
         self.assertEqual(statuses[S2]["state"], "working", "a working row is not asked about awaiting: an active turn is working")
 
-    def test_09d_compacting_comes_from_the_backends_bracket_alone(self):
-        """Round three, low a: the row's compacting word is the sticky signal _compacting disproves against the transcript, and
-        that disproof needs the parse; without the backend's own bracket the word falls through."""
+    def test_09d_compacting_follows_the_built_chips_order(self):
+        """Round four, low c: the backend's bracket when it states one; else the row's word, disproved by a compact boundary
+        since the row's since (a tail read), the open turn standing in by the row's working."""
         self.live[S3]["state"] = "compacting"
         c, statuses = self._skeleton_push()
-        self.assertEqual(statuses[S3]["state"], "ready", "a compacting row alone is not trusted")
-        del km._clients[:]
-        km._built_chat.clear()
-        class _Be:
+        self.assertEqual(statuses[S3]["state"], "compacting", "no bracket, a compacting row, no boundary since: the row's word holds")
+        del km._clients[:]; km._built_chat.clear()
+        class _No:
             def compacting(self, sid):
-                return sid == S3
-        with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: _Be())):
+                return False                                 # the backend states the bracket is closed
+        with mock.patch.object(km.Sessions, "backend_for", staticmethod(lambda sid: _No())):
             c, statuses = self._skeleton_push()
-        self.assertEqual(statuses[S3]["state"], "compacting", "the backend's bracket: the built chip's first leg, exact")
+        self.assertEqual(statuses[S3]["state"], "ready", "a stated bracket outranks the row's word")
+        del km._clients[:]; km._built_chat.clear()
+        with open(self.paths[S3], "a") as f:                   # a compaction landed after the row's since: over
+            f.write("\n" + json.dumps({"type": "system", "subtype": "compact_boundary", "uuid": "cccccccc-0000-0000-0000-000000000009",
+                                       "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(1781100000 + 60))}) + "\n")
+        c, statuses = self._skeleton_push()
+        self.assertEqual(statuses[S3]["state"], "ready", "a boundary since the row's since disproves the row's word")
 
-    def test_12_the_status_send_re_checks_membership_under_the_lock(self):
-        """Round three, low b: a click between the gate's decision and the send drops the tab from the set and the full goes
-        out on the same slot; a provisional status landing after it would replace the just-built status of the active tab."""
-        frames = []
-        c = {"app": "chat", "alive": True, "sent": {}, "send": lambda s: frames.append(json.loads(s)), "skeleton": {S2, S3},
-             "skeletonOrder": [S3, S2]}
-        light = {"state": "ready", "provisional": True}
-        self.assertTrue(km._send_light_status(c, S2, light))
-        self.assertEqual([f["id"] for f in frames], [S2])
-        km._release_skeleton(c, S3)                          # the click, between the decision and the send
-        self.assertFalse(km._send_light_status(c, S3, light), "released: no provisional word for a tab the page now wants whole")
-        self.assertEqual([f["id"] for f in frames], [S2])
-        src = inspect.getsource(km._send_light_status)
-        self.assertLess(src.index("with _client_lock(c):"), src.index("_send_client("), "the check and the send under one lock")
-        for fn in (km._push, km._push_session_now):
-            self.assertIn("_send_light_status(", inspect.getsource(fn), fn.__name__)
+    def test_12_a_click_between_the_decision_and_the_send_leaves_the_full_last(self):
+        """Round three, low b, executed (round four, low b): the real _push over a client whose click lands INSIDE the gate's
+        decision, releasing the tab's skeleton and sending the full the click asked for; the gate's status send finds the tab
+        released and sends nothing, so the raced tab's frames end at the full. The same for _push_session_now."""
+        c = self._client(reconnect=True, active=S1)
+        km._clients[:] = [c]
+        real = km._light_status
+        def clicking(sid, path, tm, now):
+            light = real(sid, path, tm, now)
+            if sid == S2:                                    # the click: the page releases the skeleton and asks for the full,
+                km._release_skeleton(c, S2)                  #  which lands on the ("chat", S2) slot before the gate's send
+                with km._client_lock(c):
+                    km._send_client(c, ("chat", S2), {"type": "session", "id": S2, "name": "api", "events": [], "status": {"state": "working"}})
+            return light
+        with mock.patch.object(km, "_light_status", clicking):
+            km._push([c])
+        kinds = [(f["type"], f["id"]) for f in c["_frames"] if f.get("id") == S2]
+        self.assertEqual(kinds[-1], ("session", S2), "the raced tab's frames end at the full, never a provisional status after it: %r" % kinds)
+        self.assertNotIn(("status", S2), kinds)
+        self.assertIn(S3, {f["id"] for f in self._frames(c, "status")}, "the tab nobody clicked still got its provisional status")
+        # the per-session push, the same race
+        km._built_chat.clear(); del c["_frames"][:]; c["sent"].clear(); c["skeleton"] = {S2, S3}; c["skeletonOrder"] = [S3, S2]   # a fresh page's state
+        with mock.patch.object(km, "_light_status", clicking):
+            km._push_session_now(S2)
+        kinds = [(f["type"], f["id"]) for f in c["_frames"] if f.get("id") == S2]
+        self.assertEqual(kinds[-1], ("session", S2), "the handshake push too: %r" % kinds)
+        self.assertNotIn(("status", S2), kinds)
 
     def test_10_the_handshake_push_resolves_the_set_before_it_decides(self):
         """Round two, low 1: a skeleton client whose redial the pusher has not reached yet holds no set at the handshake push;
@@ -324,7 +340,33 @@ class ProvisionalLegsMatchBuilt(unittest.TestCase):
     skeleton chip painter reads (tab-widgets.ts and render.ts: the state, the five on-you flags, faded, ctx, ctxColor and
     ctxTone), plus the tints. A real session on disk (the snapshot test's fixture shape), the real build_session."""
     PAINTER_KEYS = ("state", "apiTooLong", "apiSpendLimit", "apiModelLimit", "apiAuthErr", "apiRefusal", "faded", "ctx", "ctxColor",
-                    "ctxTone", "ctxOver", "modelColor", "effortColor", "modelTone", "effortTone")
+                    "ctxTone", "ctxOver", "needsYou", "modelColor", "effortColor", "modelTone", "effortTone")
+
+    @staticmethod
+    def _painter_keys_from_source():
+        """The status fields the skeleton chip painter reads, taken from the page's source (round four, low a): the strip
+        signature's skeleton branch in render.ts (kst?.X), the fields tabStateClass reads in tab-state.ts (s!.X) and the
+        widget status fields (ctx, ctxColor, ctxTone, faded). The class's tuple must cover them, so it cannot go green while
+        a painter key disagrees."""
+        import re as _re
+        ui = os.path.join(os.path.dirname(HERE), "ui", "webview")
+        render = open(os.path.join(ui, "render.ts"), encoding="utf-8").read()
+        i = render.index('renderKind(skeletonTabs, id, !!s) === "skeleton"'); j = render.index("makePlaceholderTab's reads", i)
+        keys = set(_re.findall(r"kst\?\.(\w+)", render[i:j]))
+        state = open(os.path.join(ui, "tab-state.ts"), encoding="utf-8").read()
+        k = state.index("export function tabStateClass"); l = state.index("\n}\n", k)
+        keys |= set(_re.findall(r"s[!?]\.(\w+)", state[k:l]))
+        widgets = open(os.path.join(ui, "tab-widgets.ts"), encoding="utf-8").read()
+        m = _re.search(r"interface WidgetStatus extends TabStateLike \{([^}]*)\}", widgets)
+        keys |= set(_re.findall(r"(\w+)\?:", m.group(1))) if m else set()
+        return keys
+
+    def test_the_painter_key_list_covers_every_field_the_page_reads(self):
+        src_keys = self._painter_keys_from_source()
+        self.assertTrue(src_keys, "the source scan found the painter's reads")
+        for k in ("state", "needsYou", "faded", "ctx", "ctxColor", "ctxTone", "apiTooLong"):
+            self.assertIn(k, src_keys, "the scan reads the known fields: %s" % k)
+        self.assertTrue(src_keys <= set(self.PAINTER_KEYS), "painter keys the class does not compare: %r" % sorted(src_keys - set(self.PAINTER_KEYS)))
 
     def setUp(self):
         self.td = tempfile.TemporaryDirectory(); td = Path(self.td.name)
@@ -399,6 +441,17 @@ class ProvisionalLegsMatchBuilt(unittest.TestCase):
         built, light = self._legs(self._row())
         self.assertTrue(built["apiTooLong"])
         self.assertEqual(light, built, "prompt too long: the provisional status differs from the built one")
+        # the yellow ask ring's input (round four): the feed's verdict, both ways and before the first feed build
+        self._plain_transcript()
+        saved_needs = km._feed_needs_input[0]
+        try:
+            for verdict, name in (({S3}, "a needs-you card filed"), (set(), "no card"), (None, "before the first feed build")):
+                km._feed_needs_input[0] = verdict
+                built, light = self._legs(self._row())
+                self.assertEqual(light["needsYou"], built["needsYou"], name)
+                self.assertEqual(light, built, "%s: the provisional status differs from the built one" % name)
+        finally:
+            km._feed_needs_input[0] = saved_needs
         self._plain_transcript()
         class _Be:
             """A backend that states the compaction bracket; every other question the real build asks it reads as nothing."""
@@ -412,6 +465,18 @@ class ProvisionalLegsMatchBuilt(unittest.TestCase):
             built, light = self._legs(self._row(state="compacting"))
         self.assertEqual(built["state"], "compacting")
         self.assertEqual(light, built, "compacting by the bracket: the provisional status differs from the built one")
+        # no bracket (the hermetic module's backend_for is None): the row's word, disproved by a boundary since the row's since
+        self._plain_transcript()
+        built, light = self._legs(self._row(state="compacting", since=self.now - 30))
+        self.assertEqual((built["state"], light["state"]), ("compacting", "compacting"), "a compacting row with no boundary since: both compacting")
+        with open(self.path, "a") as f:                       # a compaction landed after the row's since: the compaction is over
+            f.write(json.dumps({"type": "system", "subtype": "compact_boundary", "uuid": "cccccccc-0000-0000-0000-000000000001",
+                                "parentUuid": "aaaaaaaa-0000-0000-0000-000000000002",
+                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(self.now))}) + "\n")
+        self._idle_after(time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(self.now)))
+        built, light = self._legs(self._row(state="compacting", since=self.now - 30))
+        self.assertEqual(light["state"], built["state"], "a boundary since the row's since disproves the row's word on both roads")
+        self.assertNotEqual(light["state"], "compacting")
 
 
 if __name__ == "__main__":
