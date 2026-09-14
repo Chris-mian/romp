@@ -216,10 +216,44 @@ class FlagsStoreUnreadableRefuses(unittest.TestCase):
         except Exception as e:                                          # noqa: BLE001
             raised = e
         self.assertEqual(type(raised).__name__, "_StateUnreadable", "refused loudly (got %r)" % raised)
-        self.assertIn("moved aside", str(raised)); self.assertIn("set the flag again", str(raised))
+        self.assertIn("moved aside", str(raised))
+        # round three: the refusal names the one in-product exit, the file to write and what that does
+        self.assertIn("write {} to %s" % self._path(), str(raised), "the exit: the path to write")
+        self.assertIn("mail isolation and feed mute is then off", str(raised), "and what writing it does")
+        self.assertIn(list(jd.STATE.glob("session-flags.json.corrupt-*"))[0].name, str(raised), "and names the sidecar")
         self.assertFalse(self._path().exists(), "no fresh store was written")
         self.assertEqual(len(list(jd.STATE.glob("session-flags.json.corrupt-*"))), 1, "the sidecar still stands")
         self.assertEqual(km._mail_off_why_k(self.SID), "flags", "the door stays closed")
+
+    def test_the_exit_writing_the_file_by_hand_opens_the_door_retires_the_mark_and_a_later_delete_is_a_fresh_install(self):
+        # round three: a fail-closed state needs an in-product exit; taking it must end the hold, and a fresh file beside an
+        # old sidecar must never re-enter it
+        self._path().write_bytes(b'{"torn": ')
+        km._flags_cache.clear()
+        self.assertEqual(km._session_flags(), {}); self.assertEqual(km._mail_off_why_k(self.SID), "flags", "held")
+        self.assertEqual(len(list(jd.STATE.glob("session-flags.json.corrupt-*"))), 1)
+        self._path().write_text("{}")                                    # the remedy the refusal names
+        self.assertEqual(km._mail_off_why_k(self.SID), "", "the door opens on the clean read")
+        self.assertEqual(list(jd.STATE.glob("session-flags.json.corrupt-*")), [], "the mark is retired...")
+        retired = list(jd.STATE.glob("session-flags.json.retired-*"))
+        self.assertEqual(len(retired), 1); self.assertEqual(retired[0].read_bytes(), b'{"torn": ', "...and the bytes kept")
+        km._set_session_flag(self.OTHER, "postalServiceOff", True)     # a write works again
+        self._path().unlink()                                            # the user later removes the store beside the old sidecar
+        km._flags_cache.clear()
+        self.assertEqual(km._mail_off_why_k(self.SID), "", "a missing file beside a RETIRED sidecar is a fresh install, not a hold")
+        self.assertFalse(km._flags_quarantined(self._path()))
+
+    def test_a_clean_write_primes_the_cache_so_a_process_that_only_wrote_holds_the_last_known_flags(self):
+        # round three, low (b): the proved reader's warm path needed a prior DISPLAY read; a process that just wrote the
+        # flags had an empty cache and refused the next toggle cold after a quarantine
+        km._flags_cache.clear()
+        km._set_session_flag(self.OTHER, "postalServiceOff", True)     # a write, no display read
+        self.assertIn(str(self._path()), km._flags_cache, "the write primed the cache")
+        self._path().write_bytes(b'{"torn": ')
+        km._set_session_flag(self.SID, "hideFromFeed", True)           # a toggle straight after the quarantine, still no display read
+        stored = json.loads(self._path().read_text())
+        self.assertEqual(stored.get(self.OTHER), {"postalServiceOff": True}, "rebuilt from the flags the write knew, not from empty")
+        self.assertEqual(stored.get(self.SID), {"hideFromFeed": True})
 
     def test_enoent_flags_still_reads_empty_with_no_quarantine(self):
         self.assertEqual(km._session_flags(), {}, "a missing store is legitimately empty")
@@ -403,6 +437,22 @@ class FlagsDisplayReaderServesUnproved(unittest.TestCase):
         km._session_flags()
         self.assertEqual(len(self.notices), 2, "one notice per episode")
 
+    def test_the_stderr_quarantine_line_is_branched_for_the_flags_file_like_the_notice(self):
+        # round three, low (a): the stderr line said the store reads as empty for every file; for the flags it says what is held
+        import io
+        err = io.StringIO()
+        self._path().write_bytes(b'{"torn": ')
+        km._flags_cache.clear()
+        with contextlib.redirect_stderr(err):
+            km._session_flags()
+        self.assertIn("session-flags.json could not be parsed", err.getvalue())
+        self.assertIn("the flags it held are unknown", err.getvalue()); self.assertNotIn("reads as empty", err.getvalue())
+        other = jd.STATE / "notify-cards.json"; other.write_bytes(b'{"torn": ')
+        err2 = io.StringIO()
+        with contextlib.redirect_stderr(err2):
+            km._read_state_json(other, expect=dict)
+        self.assertIn("the store reads as empty", err2.getvalue(), "the other state files keep their sentence")
+
     def test_valid_json_of_the_wrong_shape_is_quarantined_not_read_as_empty(self):
         # review find, 2026-09-08: a LIST where the flags dict belongs read as a proved empty store and
         # was overwritten by the next writer -- a file none of our writers produce, gone without a trace
@@ -433,10 +483,12 @@ class FlagsDisplayReaderServesUnproved(unittest.TestCase):
         self.assertNotEqual(key1, key2, "the write must move the stat key, or this test reads nothing")
         with _reads_fault(self._path()):
             served = km._session_flags()
-            self.assertEqual(served, {self.OTHER: {"postalServiceOff": True}},
-                             "the fault serves the LAST value this kernel read, not the unread file and not {}")
-            self.assertEqual(km._flags_cache[str(self._path())][0], key1,
-                             "nothing is cached under the NEW key -- the fault produced no value worth keeping")
+            # round three (low b): the write primed the cache with the value it wrote, so the last KNOWN value is the
+            # written one (this kernel's own write, not the unread file and not {}); the fault caches nothing new
+            self.assertEqual(served, {self.OTHER: {"postalServiceOff": True}, self.SID: {"hideFromFeed": True}},
+                             "the fault serves the LAST value this kernel read or wrote, not {}")
+            self.assertEqual(km._flags_cache[str(self._path())][0], key2,
+                             "the cache holds the write's key; the fault produced no value worth keeping")
         # the disk recovers: the reader reads the real, newer file (a reader that had cached the
         # fault's value under key2 would serve the stale copy here forever)
         self.assertEqual(km._session_flags(), {self.OTHER: {"postalServiceOff": True}, self.SID: {"hideFromFeed": True}})

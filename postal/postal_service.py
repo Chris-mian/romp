@@ -920,14 +920,16 @@ def restore_stranded(data):
     restored, missing, unknown = [], [], []
     for mid in mids:
         r = restore(sid, mid) if _safe_id(mid) else RESTORE_MISSING
+        if r == RESTORE_UNKNOWN:
+            _hold_claim(sid, mid)                    # the fourth UNKNOWN site: recorded for the retry loop, the exec row retracted
         (restored if r == RESTORED else unknown if r == RESTORE_UNKNOWN else missing).append(mid)
     if restored:
         _log("restore for %s: %d message(s) the kernel fed and lost (a connection rebuild stranded the turn) put back "
              "in new/ under their own ids for re-delivery: %s" % (sid, len(restored), ", ".join(restored)))
         threading.Thread(target=_wake_when_ready, args=(sid,), daemon=True).start()
     if unknown:
-        _log("restore for %s: %d message(s) could not be answered for (cur/ unreadable); neither put back nor re-fed, "
-             "the next sweep retries: %s" % (sid, len(unknown), ", ".join(unknown)))
+        _log("restore for %s: %d message(s) could not be answered for (cur/ unreadable); held (mail-held/), neither put back "
+             "nor re-fed, the retry loop puts them back once cur/ reads: %s" % (sid, len(unknown), ", ".join(unknown)))
     return {"ok": True, "restored": restored, "missing": missing, "unknown": unknown}, 200
 
 def _queue_read_receipt(meta, unread=False, dmid=""):
@@ -5284,8 +5286,10 @@ def _mcp_call(name, args):
             msgs = _http("GET", "/inbox?id=%s" % urllib.parse.quote(mid)).get("messages", [])
         except BusError as e:
             # an inbox that cannot be listed answers 503 with the reason (2026-09-14): said as what it is, never an
-            # internal error and never "no new messages" where mail sits unread
-            return "Your inbox cannot be read right now (%s); your mail waits unread and the next check retries." % e, True
+            # internal error and never "no new messages" where mail sits unread; the reason (a path, an errno) goes to
+            # the log, the person hears the plain sentence
+            _log("check_inbox for %s: %s" % (mid, e))
+            return "Your inbox cannot be read right now; your mail waits unread and the next check retries.", True
         return (format_inbox(msgs, mid) or "No new messages."), False
     if name == "list_agents":
         res = _http("GET", "/agents?me=%s" % urllib.parse.quote(me or ""))
@@ -5558,7 +5562,8 @@ def cli_drain(argv):
         # the Stop hook wraps this command's STDOUT into the turn-end block and drops its stderr and exit code, so the
         # one automatic /drain client says the fault where the mail would have appeared (an unlistable inbox answers
         # 503 with the reason since 2026-09-14); the mail waits unread and the next drain retries
-        print("Your mail could not be checked this turn (%s); it waits unread until the mailbox can be read again." % e)
+        _log("drain for %s: %s" % (sid, e))          # the reason for the log; the person hears the plain sentence
+        print("Your mail could not be checked this turn; it waits unread and the next check retries.")
         return 0
     except Exception:
         return 0

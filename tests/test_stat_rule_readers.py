@@ -310,9 +310,49 @@ class TheQueuedLows(unittest.TestCase):
         self.assertFalse((pm.MAILHELD / sid).exists(), "the record is dropped")
         self.assertTrue((pm.MAILPENDING / sid).exists(), "the put-back mail is pending mail for the retry")
         import inspect
-        src = inspect.getsource(pm._push) + inspect.getsource(pm._bounce_oversize)
-        self.assertEqual(src.count("_hold_claim("), 3, "every RESTORE_UNKNOWN site in the push records the claim")
+        src = inspect.getsource(pm._push) + inspect.getsource(pm._bounce_oversize) + inspect.getsource(pm.restore_stranded)
+        self.assertEqual(src.count("_hold_claim("), 4, "every site that meets RESTORE_UNKNOWN records the claim (the push's two, the "
+                         "oversize bounce's, and POST /restore: round three found the fourth unwired)")
         self.assertIn("_retry_held_claims()", inspect.getsource(pm._retry_pending), "the retry pass puts held claims back first")
+
+    def test_post_restore_over_an_unreadable_cur_holds_the_claim_and_the_drain_delivers_the_original_id_once(self):
+        """Round three's first medium: restore_stranded (POST /restore) was the fourth RESTORE_UNKNOWN site, unwired: the kernel's
+        caller no longer re-headed the banner (the ids came back as held), and nothing revisited cur/, so the message sat in
+        cur/ forever with the receipt reading READ. Wired to _hold_claim: recorded, the exec row retracted, put back by the retry
+        loop under the ORIGINAL id once cur/ reads, the pending marker set, and the drain delivers it once."""
+        if ROOT_ONLY:
+            self.skipTest("root reads through chmod 000")
+        sid = "aaaaaaaa-2222-4333-8444-0000000000ea"
+        td = Path(tempfile.mkdtemp()); saved_tl = pm.TLDIR; pm.TLDIR = td
+        self.addCleanup(setattr, pm, "TLDIR", saved_tl)
+        saved_flags = pm.SESSION_FLAGS; pm.SESSION_FLAGS = td / "session-flags.json"     # no flags file: this session's mail is on
+        self.addCleanup(setattr, pm, "SESSION_FLAGS", saved_flags)
+        pm._FLAGS_LAST[0] = None; pm._FLAGS_FAULT_SAID[0] = False
+        saved_post = pm._kernel_post; pm._kernel_post = lambda path, body, timeout=2: {"ok": True}
+        self.addCleanup(setattr, pm, "_kernel_post", saved_post)
+        mid = pm.deliver(sid, "web", "11111111-2222-4333-8444-0000000000e1", "the banner the kernel fed and lost", kind="coordinate")
+        self.assertEqual([m["id"] for m in pm.read_box(sid, consume=True)], [mid], "claimed into cur/ (exec stamped)")
+        self.assertIsNotNone(pm._sent_receipts("11111111-2222-4333-8444-0000000000e1")[0]["exec"])
+        cur = pm.MAILROOT / sid / "cur"
+        woke = []; saved_wake = pm._wake_when_ready; pm._wake_when_ready = lambda s: woke.append(s)
+        self.addCleanup(setattr, pm, "_wake_when_ready", saved_wake)
+        os.chmod(cur, 0)
+        try:
+            res, code = pm.restore_stranded({"id": sid, "mids": [mid]})
+            self.assertEqual((code, res["restored"], res["unknown"]), (200, [], [mid]))
+            self.assertEqual((pm.MAILHELD / sid).read_text().split(), [mid], "the claim is recorded for the retry loop")
+            self.assertIsNone(pm._sent_receipts("11111111-2222-4333-8444-0000000000e1")[0]["exec"], "the receipt turns pending")
+            pm._retry_held_claims()
+            self.assertEqual((pm.MAILHELD / sid).read_text().split(), [mid], "cur/ still unreadable: held")
+        finally:
+            os.chmod(cur, 0o755)
+        pm._retry_held_claims()
+        self.assertFalse((pm.MAILHELD / sid).exists(), "put back: the record is dropped")
+        self.assertTrue((pm.MAILPENDING / sid).exists(), "pending mail again")
+        got = pm.read_box(sid, consume=True)
+        self.assertEqual([m["id"] for m in got], [mid], "the drain delivers the ORIGINAL id once")
+        self.assertEqual(pm.read_box(sid, consume=True), [], "and only once")
+        self.assertEqual([p.name for p in cur.iterdir()], [mid], "claimed again under the same id")
 
     def test_the_two_clients_say_an_inbox_fault_as_what_it_is(self):
         """Lows 2 and 3: the Stop hook's drain (stdout is what the hook wraps; its stderr and exit code are dropped) and the MCP
@@ -326,8 +366,13 @@ class TheQueuedLows(unittest.TestCase):
         pm._self_identity = lambda: ("11111111-2222-4333-8444-0000000000e1", "web"); pm._LOCAL_CONFIRMED[0] = True
         self.addCleanup(setattr, pm, "_self_identity", saved_ident)
         self.addCleanup(lambda: pm._LOCAL_CONFIRMED.__setitem__(0, saved_local))
+        logs = []; saved_log = pm._log; pm._log = logs.append
+        self.addCleanup(setattr, pm, "_log", saved_log)
         text, is_err = pm._mcp_call("check_inbox", {})
-        self.assertTrue(is_err); self.assertIn("cannot be read right now", text); self.assertIn("cannot be listed", text)
+        self.assertTrue(is_err); self.assertIn("cannot be read right now", text)
+        self.assertNotIn("cannot be listed", text); self.assertNotIn("PermissionError", text); self.assertNotIn("/", text,
+                         "the person hears the plain sentence: no exception repr, no path")
+        self.assertTrue(any("cannot be listed" in m for m in logs), "the reason went to the log")
         import io, contextlib
         saved_ensure, saved_my = pm.ensure, pm.my_id
         pm.ensure = lambda: True; pm.my_id = lambda: "11111111-2222-4333-8444-0000000000e1"
@@ -336,7 +381,9 @@ class TheQueuedLows(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             rc = pm.cli_drain([])
         self.assertEqual(rc, 0, "the hook's command exits clean")
-        self.assertIn("could not be checked this turn", out.getvalue()); self.assertIn("cannot be listed", out.getvalue())
+        self.assertIn("could not be checked this turn", out.getvalue())
+        self.assertNotIn("cannot be listed", out.getvalue()); self.assertNotIn("/", out.getvalue(), "no repr, no path in the turn-end block")
+        self.assertTrue(sum("cannot be listed" in m for m in logs) >= 2, "both clients logged the reason")
 
 
 class TaskPlanLoudOnUnreadable(unittest.TestCase):

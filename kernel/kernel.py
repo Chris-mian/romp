@@ -4535,8 +4535,11 @@ def _state_quarantine(p, st, reason):
         return None
     except OSError as e:
         return "could not be moved aside: %s" % _errno_text(e)
-    sys.stderr.write("romp-kernel: %s could not be parsed (%s); moved aside to %s, the store reads as empty\n"
-                     % (p.name, reason, aside.name))
+    sys.stderr.write("romp-kernel: %s could not be parsed (%s); moved aside to %s, %s\n"
+                     % (p.name, reason, aside.name,
+                        "the flags it held are unknown (the last cleanly read ones stand; with none known mail is held and flag "
+                        "changes are refused until the file is written again)" if p.name == "session-flags.json"
+                        else "the store reads as empty"))
     # The dashboard hears it too (review find, 2026-09-08): a quarantine resets the store to EMPTY, so
     # every bell override, lane flag (postal isolation included) or saved lane order it held reads as
     # a default from here on, and the stderr line alone left that looking like settings resetting
@@ -7075,8 +7078,7 @@ def _session_flags_proved():
         return {}                                    # missing, never quarantined: a fresh install, legitimately empty
     if hit is not None:
         return dict(hit[1])                          # the last cleanly read flags: the toggle applies on top of them
-    raise _StateUnreadable(p, "the session settings file was moved aside (torn bytes) and no flags are known; "
-                              "set the flag again once it is repaired")
+    raise _StateUnreadable(p, _flags_exit_text(p))   # the refusal names the exit: the file to write, and what that does
 
 
 _FLAGS_UNKNOWN_TEXT = ("torn or wrong-shaped bytes were moved aside, so the flags are unknown: %s until the file is "
@@ -7086,11 +7088,57 @@ _FLAGS_UNKNOWN_TEXT = ("torn or wrong-shaped bytes were moved aside, so the flag
 def _flags_quarantined(p):
     """A quarantine sidecar stands beside the (missing) flags file: _read_state_json moved torn or wrong-shaped bytes
     aside, so a missing file here is not a user who set no flags but a store whose contents are UNKNOWN (the isolation
-    boundaries included); an unlistable parent reads as quarantined too (closed, never a quiet empty)."""
+    boundaries included); an unlistable parent reads as quarantined too (closed, never a quiet empty). A sidecar the
+    store has been written or cleanly read since is history (_retire_flags_quarantine renamed it `.retired-*`, bytes
+    kept), so deleting the flags file later beside an old sidecar is a fresh install, not a re-entered hold."""
     try:
         return any(True for _ in p.parent.glob(p.name + ".corrupt-*"))
     except OSError:
         return True
+
+
+def _retire_flags_quarantine(p):
+    """The flags store was written, or read cleanly, with quarantine sidecars beside it: the hold they keyed is over.
+    Each `session-flags.json.corrupt-<stamp>` is renamed `.retired-<stamp>` (the bytes stay for forensics; only the
+    mark the readers key on goes), said once on stderr. Best-effort: a rename that fails leaves the mark, and the
+    readers keep holding, which is the safe side."""
+    try:
+        sides = list(p.parent.glob(p.name + ".corrupt-*"))
+    except OSError:
+        return
+    for side in sides:
+        try:
+            os.replace(side, side.with_name(side.name.replace(".corrupt-", ".retired-", 1)))
+            sys.stderr.write("romp-kernel: %s is written again; the quarantine mark %s retired (bytes kept as %s)\n"
+                             % (p.name, side.name, side.name.replace(".corrupt-", ".retired-", 1)))
+        except OSError as e:
+            sys.stderr.write("romp-kernel: the quarantine mark %s could not be retired (%s); the hold stands\n" % (side.name, _errno_text(e)))
+
+
+def _flags_exit_text(p):
+    """The refusal's remedy, the one in-product exit of the fail-closed hold: what to write and what it does."""
+    sides = []
+    try:
+        sides = sorted(s.name for s in p.parent.glob(p.name + ".corrupt-*"))
+    except OSError:
+        pass
+    return ("the session settings file %s was moved aside%s (torn bytes) and no flags are known, so mail is held for every "
+            "session and flag changes are refused. To start the settings from empty, write {} to %s (every session's mail "
+            "isolation and feed mute is then off until set again); to keep them, restore the sidecar's contents there."
+            % (p, (" to " + ", ".join(sides)) if sides else "", p))
+
+
+def _flags_written(p, cur):
+    """A clean write of the flags store landed (`cur`, the object written): the display cache is primed from the file's
+    identity (so a process that only wrote, never displayed, holds a warm last-known copy for the next fault), the read
+    fault episode ends, and any quarantine mark is retired."""
+    try:
+        st = p.stat()
+        _flags_cache[str(p)] = ((st.st_mtime_ns, st.st_size), dict(cur))
+    except OSError:
+        pass
+    _clear_state_fault(p)
+    _retire_flags_quarantine(p)
 
 
 def _session_flags():
@@ -7135,6 +7183,7 @@ def _session_flags():
     _clear_state_fault(p)
     d = raw if isinstance(raw, dict) else {}
     _flags_cache[str(p)] = (key, d)
+    _retire_flags_quarantine(p)                      # read cleanly: a quarantine mark beside it is history
     return d
 
 
@@ -7166,6 +7215,7 @@ def _set_session_flag(sid, flag, value):
         else:
             cur.pop(sid, None)
         _write_state_json(jd.STATE / "session-flags.json", json.dumps(cur, sort_keys=True))
+        _flags_written(jd.STATE / "session-flags.json", cur)   # the cache primed, the fault episode ended, the mark retired
     if flag == "hideFromFeed" and value:
         # Muting takes the session OUT of task tracking → VIEW-CLEAR its current goals: seal them exactly like
         # crossing each card off the feed (cleared.jsonl + the durable node flag), NOT delete — they stay on
@@ -7352,6 +7402,7 @@ def _set_notify_session(sid, value):
         else:
             cur.pop(sid, None)
         _write_state_json(jd.STATE / "session-flags.json", json.dumps(cur, sort_keys=True))
+        _flags_written(jd.STATE / "session-flags.json", cur)   # the cache primed, the fault episode ended, the mark retired
 
 
 def _prune_notify_cards(live_ids, gone_ids=()):
