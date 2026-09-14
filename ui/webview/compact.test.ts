@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { compactDisplay, summarizeTools, toolCounts, itemAnchor, STANDALONE_TOOLS, type DisplayItem } from "./compact";
+import { compactDisplay, itemAnchor, STANDALONE_TOOLS, actionHead, actionParts, actionPhrases, toolRowLabel, diffTotals, toolInputText, type DisplayItem } from "./compact";
 
 test("compactDisplay: thinking is dropped entirely", () => {
   const d = compactDisplay(["user", "thinking", "assistant"]);
@@ -63,22 +63,6 @@ test("compactDisplay: without names, every tool still collapses (back-compat)", 
   assert.deepEqual(compactDisplay(["tool", "tool", "tool"]), [{ kind: "toolgroup", indices: [0, 1, 2] }]);
 });
 
-test("summarizeTools: capitalized tool names, ordered by count desc, pluralized", () => {
-  assert.equal(summarizeTools(["Edit", "Edit", "Edit", "Read", "Read", "Bash"]), "3 Edits, 2 Reads, 1 Bash");
-});
-
-test("summarizeTools: Edit variants merge as Edits; other tools keep their own name", () => {
-  assert.equal(summarizeTools(["Edit", "MultiEdit", "Grep", "Glob"]), "2 Edits, 1 Grep, 1 Glob");
-});
-
-test("summarizeTools: a single tool is singular; Bash pluralizes correctly", () => {
-  assert.equal(summarizeTools(["Read"]), "1 Read");
-  assert.equal(summarizeTools(["Bash", "Bash"]), "2 Bashes");
-});
-
-test("toolCounts: returns ordered, pluralized {label,count} for styled rendering", () => {
-  assert.deepEqual(toolCounts(["Edit", "Edit", "Read"]), [{ label: "Edits", count: 2 }, { label: "Read", count: 1 }]);
-});
 
 test("every non-tool event owns exactly one display unit — the scroll-mark translation's ground truth", () => {
   // eventUnitIndex (render.ts) inverts this stream to map mark anchors (events) onto the frame's
@@ -158,4 +142,68 @@ test("itemAnchor: a lone event is its own anchor; a run anchors on its latest me
   assert.equal(itemAnchor({ kind: "noticegroup", indices: [0, 4, 1] }, at), 1, "a member with no epoch never anchors");
   assert.equal(itemAnchor({ kind: "toolgroup", indices: [2, 5] }, at), 2, "a tool run keeps its first member, as before");
   assert.equal(itemAnchor({ kind: "noticegroup", indices: [4, 4] } as DisplayItem, at), 4, "no timed member: the first");
+});
+
+
+// ── T418: the tool rows in the user's terms ──
+const T = (name: string, extra: Record<string, unknown> = {}) => ({ name, desc: "", input: "{}", ...extra });
+const rows = (add: number, del: number) => [...Array(add).fill({ sign: "+" }), ...Array(del).fill({ sign: "-" })];
+
+test("T418 head: the screenshot's turn reads by action, ordered by the printed number, the edits' totals once at the end", () => {
+  const tools = [
+    ...Array(11).fill(T("Bash", { input: JSON.stringify({ command: "true" }) })),
+    T("Write", { file: "/w/a.txt" }), T("Write", { file: "/w/b.txt" }),
+    T("Edit", { file: "/w/f.ts", diffRows: rows(12, 0) }), T("Edit", { file: "/w/g.ts", diffRows: rows(20, 0) }), T("MultiEdit", { file: "/w/h.ts", diffRows: rows(5, 0) }),
+    T("Read", { file: "/w/1" }), T("Read", { file: "/w/2" }), T("Read", { file: "/w/3" }), T("Read", { file: "/w/4" }),
+  ];
+  assert.equal(actionHead(tools), "Ran 11 commands, read 4 files, edited 3 files, created 2 files +37 -0");
+  assert.deepEqual(actionParts(tools), { text: "Ran 11 commands, read 4 files, edited 3 files, created 2 files", add: 37, del: 0 });
+});
+test("T418 head: singulars, the sole search by its own words, tools with no action, the task list", () => {
+  assert.equal(actionHead([T("Bash")]), "Ran a command");
+  assert.equal(actionHead([T("Read", { file: "/a/b/c.py" })]), "Read a file");
+  assert.equal(actionHead([T("Edit", { file: "/a.ts", diffRows: rows(12, 3) })]), "Edited a file +12 -3");
+  assert.equal(actionHead([T("Grep", { input: JSON.stringify({ pattern: "foo", path: "/repo/src" }), file: "/repo/src" })]), "Searched for foo");
+  assert.equal(actionHead([T("Grep", { input: JSON.stringify({ pattern: "foo" }) }), T("Glob", { input: JSON.stringify({ pattern: "*.ts" }) })]), "Searched 2 times");
+  assert.equal(actionHead([T("WebFetch", { input: JSON.stringify({ url: "https://example.org/x" }) })]), "Fetched a page");
+  assert.equal(actionHead([T("Agent"), T("Task")]), "Ran 2 agents");
+  assert.equal(actionHead([T("TodoWrite"), T("TaskUpdate")]), "Updated the task list");
+  assert.equal(actionHead([T("Skill"), T("Monitor")]), "Used 2 tools");
+  assert.equal(actionHead([T("Skill")]), "Used a tool");
+});
+test("T418 head: distinct files for reads, edits and creations, uses for the rest; the order follows the printed number; the head never reads desc", () => {
+  const tools = [T("Edit", { file: "/a.ts", diffRows: rows(3, 1), desc: "this is ignored" }), T("Edit", { file: "/a.ts", diffRows: rows(4, 0) })];
+  assert.equal(actionHead(tools), "Edited a file +7 -1");
+  assert.deepEqual(actionPhrases(tools).map((p) => [p.action, p.count, p.printed, p.add, p.del]), [["edit", 2, 1, 7, 1]]);
+  assert.equal(actionHead([...Array(4).fill(T("Read", { file: "/one" })), ...Array(3).fill(T("Bash"))]), "Ran 3 commands, read a file");
+  assert.deepEqual(diffTotals({ name: "Write", diff: "+ a\n+ b\n- c" }), { add: 2, del: 1 });
+});
+test("T418 head: the totals of every edit in a group sum into ONE printing; a creation carries none (the kernel emits no Write diff)", () => {
+  const tools = [T("Edit", { file: "/a.ts", diffRows: rows(3, 1) }), T("NotebookEdit", { file: "/b.ipynb", diffRows: rows(2, 0) }), T("Write", { file: "/c.md" })];
+  assert.deepEqual(actionParts(tools), { text: "Edited 2 files, created a file", add: 5, del: 1 });
+  assert.equal(actionHead(tools), "Edited 2 files, created a file +5 -1");
+  assert.equal(actionHead([T("Write", { file: "/c.md" })]), "Created a file");
+});
+test("T418 row: the model's description wins; else the derived phrase per tool, the file as the link after it; a bare Bash shows its command in the code face", () => {
+  assert.deepEqual(toolRowLabel(T("Bash", { desc: "Verified the venv exists", input: JSON.stringify({ command: "ls" }) })), { text: "Verified the venv exists" });
+  assert.deepEqual(toolRowLabel(T("Bash", { input: JSON.stringify({ command: "cd ~/x && make\necho done" }) })), { text: "cd ~/x && make", code: true });
+  assert.deepEqual(toolRowLabel(T("Read", { file: "/home/u/repo/kernel/kernel.py" })), { text: "Read ", link: true });
+  assert.deepEqual(toolRowLabel(T("Edit", { file: "/r/ui/feed.ts", diffRows: rows(12, 3) })), { text: "Edited ", link: true });   // the totals are the diff fold's toggle, not the label's
+  assert.deepEqual(toolRowLabel(T("Write", { file: "/r/new.md" })), { text: "Created ", link: true });
+  assert.deepEqual(toolRowLabel(T("Grep", { input: JSON.stringify({ pattern: "foo", path: "/r/src/lib" }), file: "/r/src/lib" })), { text: "Searched for foo in ", link: true });
+  assert.deepEqual(toolRowLabel(T("Grep", { input: JSON.stringify({ pattern: "foo" }) })), { text: "Searched for foo" });
+  assert.deepEqual(toolRowLabel(T("Glob", { input: JSON.stringify({ pattern: "**/*.ts", path: "/r" }), file: "/r" })), { text: "Searched for **/*.ts in ", link: true });
+  assert.deepEqual(toolRowLabel(T("WebFetch", { input: JSON.stringify({ url: "https://docs.example.org/a/b" }) })), { text: "Fetched docs.example.org" });
+  assert.deepEqual(toolRowLabel(T("WebSearch", { input: JSON.stringify({ query: "romp kernel" }) })), { text: "Searched the web for romp kernel" });
+  assert.deepEqual(toolRowLabel(T("Agent")), { text: "Ran an agent" });
+  assert.deepEqual(toolRowLabel(T("TaskUpdate")), { text: "Updated the task list" });
+  assert.deepEqual(toolRowLabel(T("Skill")), { text: "Used a tool", secondary: "Skill" });
+  assert.deepEqual(toolRowLabel(T("LS", { file: "/r/dir" })), { text: "Used a tool", secondary: "LS" });
+  const long = "x".repeat(100);
+  assert.equal(toolRowLabel(T("Grep", { input: JSON.stringify({ pattern: long }) })).text.length, "Searched for ".length + 80);
+});
+test("T418 expanded row: a Bash shows its command as typed; other tools their input JSON", () => {
+  assert.equal(toolInputText(T("Bash", { input: JSON.stringify({ command: "cd ~/x && make", description: "Built it" }) })), "cd ~/x && make");
+  assert.equal(toolInputText(T("Read", { input: JSON.stringify({ file_path: "/a" }) })), JSON.stringify({ file_path: "/a" }));
+  assert.equal(toolInputText(T("Bash", { input: "{not json" })), "{not json");
 });
