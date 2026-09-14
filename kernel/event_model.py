@@ -4913,7 +4913,8 @@ class LazyIndex:
         rr = self.records[ri] if ri is not None else None
         lz = row.get("lz")
         facts = {"type": "user", "uuid": rr[0] if rr else None, "t": rr[5] if rr else 0,
-                 "lazy": _IR_TRUE if (lz or {}).get("ir") else _IR_FALSE, "_light": k}
+                 "lazy": _IR_TRUE if (lz or {}).get("ir") else _IR_FALSE, "_light": k,
+                 "_nt": (bool(lz.get("nt")) if lz is not None else None)}   # has text, from the lazy header; None when unknown (5b)
         for f in ("type", "uuid", "t", "author"):      # the recorded scalars over the record row's fields, exactly as the build
             if f in sc:                                #  applies them (a repaired timestamp lives in the scalars, not the record)
                 facts[f] = sc[f]

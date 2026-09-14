@@ -2343,8 +2343,18 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   uuids and user texts the transcript already holds, and the newest human
   turn's time), one entry per session keyed on the parsed session object's
   identity and shared by the chat, feed and timeline builds of one cycle:
-  `hit` and `miss` (merges served against derived) and the gauge `entries`
-  (a session neither shown as a tab nor alive is dropped). `chatPostal` is
+  `hit` and `miss` (merges served against derived), the gauge `entries`
+  (a session neither shown as a tab nor alive is dropped), and two numbers
+  a miss records (T401 (5b)): `floorAgeMaxS`, the largest distance from the
+  newest atom's time over every turn, live tail included, back to the
+  oldest live echo's send that floors the derivation (a zero floor, an echo
+  with no send time, is skipped, and a floor newer than every atom
+  contributes zero), and `builtAboveFloor`, the restored pre-cut user rows
+  the derivation itself built above such a floor since boot (never another
+  road's builds, never the rows it read already built); a restored session's
+  pre-cut turns above the floor are read through the index's light facts,
+  building only the user rows that carry text, so the two say whether a
+  dropped echo days back should hold the floor at all. `chatPostal` is
   the chat fold's memo of a tab's sealed postal cards, keyed on the values
   the cards embed from outside the transcript (the message log's identity
   and, per card, its caption and its peer's name and colour): `gate` (gate

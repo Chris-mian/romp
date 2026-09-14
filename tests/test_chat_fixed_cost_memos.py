@@ -138,7 +138,7 @@ class Collector(unittest.TestCase):
 
     def test_the_four_memos_report_under_memos(self):
         snap = km._PerfStats().snapshot()["memos"]
-        self.assertEqual(set(snap["chatMergeSets"]), {"hit", "miss", "entries"})
+        self.assertEqual(set(snap["chatMergeSets"]), {"hit", "miss", "entries", "floorAgeMaxS", "builtAboveFloor"})   # 5b's two counters
         self.assertEqual(set(snap["chatPostal"]), {"gate", "hit", "commit_new"})
         self.assertEqual(set(snap["chatLedger"]), {"hit", "miss", "bypass_live", "bypass_hold", "bypass_empty", "evict", "entries"})
         self.assertEqual(set(snap["chatFoldTasks"]), {"hit", "miss", "entries"})
@@ -420,7 +420,8 @@ class MergeSets(unittest.TestCase):
         self.assertEqual(km._merge_sets_stats["miss"], 2)
         km._merge_tx_sets(again, SID_B)                             # another sid, the same object: its own entry
         self.assertEqual(km._merge_sets_stats["miss"], 3)
-        self.assertEqual(km._merge_sets_report(), {"hit": 1, "miss": 3, "entries": 2})
+        self.assertEqual(km._merge_sets_report(), {"hit": 1, "miss": 3, "entries": 2, "floorAgeMaxS": 0, "builtAboveFloor": 0})   # no floor here:
+        #                                                                                                        the two 5b counters stay at zero
 
     def test_the_sets_equal_the_unmemoized_derivation_and_the_three_sets_are_frozen(self):
         sess = self._session()
@@ -460,7 +461,7 @@ class MergeSets(unittest.TestCase):
     def test_no_live_atoms_skips_the_sets(self):
         sess = self._session()
         self.assertIs(km._merge_live_atoms(sess, SID_A), sess)
-        self.assertEqual(km._merge_sets_stats, {"hit": 0, "miss": 0})
+        self.assertEqual(km._merge_sets_stats, {"hit": 0, "miss": 0, "floorAgeMaxS": 0, "builtAboveFloor": 0})
 
     def test_the_memo_is_bounded_one_eviction_at_a_time(self):
         sess = self._session()

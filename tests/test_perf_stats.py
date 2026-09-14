@@ -155,7 +155,7 @@ class Collector(unittest.TestCase):
                                                      "segs_hit", "segs_miss", "prefix_hit", "prefix_segs", "dead_serve", "dead_miss", "dead_failed_serve"},
                          "the timeline's per-lane segment memo: one outcome per live lane per bars build, the dead lanes beside")
         self.assertTrue(all(type(v) is int for v in snap["memos"]["lanes"].values()))
-        self.assertEqual(set(snap["memos"]["chatMergeSets"]), {"hit", "miss", "entries"})
+        self.assertEqual(set(snap["memos"]["chatMergeSets"]), {"hit", "miss", "entries", "floorAgeMaxS", "builtAboveFloor"})   # 5b's two
         self.assertEqual(set(snap["memos"]["chatPostal"]), {"gate", "hit", "commit_new"})
         self.assertEqual(set(snap["memos"]["chatLedger"]), {"hit", "miss", "bypass_live", "bypass_hold", "bypass_empty", "evict", "entries"})
         self.assertEqual(set(snap["memos"]["chatFoldTasks"]), {"hit", "miss", "entries"})
