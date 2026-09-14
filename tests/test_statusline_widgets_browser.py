@@ -323,7 +323,7 @@ class ServedStatusLineWidgets(unittest.TestCase):
     def test_no_gear_on_the_line_and_no_new_menu_row_the_settings_section_is_the_whole_entry_point(self):
         self.assertFalse(self.out["chatGear"]["onLine"], "the user's ruling: no gear icon on the line")
         self.assertFalse(self.out["panel0"]["gearOnLine"])
-        self.assertIn(self.out["chatGear"]["stripRows"], ("Tab strip: lock, widgets…", "Tab strip: lock"), "the strip's gear keeps its own rows, no Status line row added: %r" % self.out["chatGear"])
+        self.assertEqual(self.out["chatGear"]["stripRows"], "Tab strip settings", "the strip's gear is a plain button to the settings (T415), no Status line row added: %r" % self.out["chatGear"])
         self.assertEqual(self.out["panel0"]["landed"], "statusline", "the relay's ask lands on the Status line section")
         self.assertTrue(self.out["panel0"]["order"], "the section follows Tab widgets")
         self.assertIn("Status line", self.out["panel0"]["heads"])

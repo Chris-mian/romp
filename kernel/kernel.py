@@ -56354,7 +56354,7 @@ function refusal(f,sid){try{var w=f&&f.contentWindow&&f.contentWindow.__rompMove
 function busy(f){try{var b=f&&f.contentWindow&&f.contentWindow.__rompColumnBusy;return typeof b==='function'&&!!b();}catch(e){return false;}}
 function loaded(f){try{return !!(f&&f.contentWindow&&typeof f.contentWindow.__rompTakeSessionState==='function');}catch(e){return false;}}   // the page's bundle has evaluated, so a posted message is heard
 var BUSY='A session is still being created in this column.';
-var LOCKED='The tabs are locked: unlock them in the tab strip\\u2019s gear menu (Lock the tabs in place) to move this session.';
+var LOCKED='The tabs are locked: unlock them in the settings (Chat, Tab strip) to move this session.';
 function make(n,sid,state){var have=document.getElementById(frameId(n));if(have)return have;
 var g=document.createElement('div');g.className='gv gv-chat';g.id='gv-chat-'+n;
 var p=document.createElement('div');p.className='pane chat-col';p.id=paneId(n);p.setAttribute('data-col',String(n));

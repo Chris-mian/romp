@@ -43,7 +43,7 @@ test("the fork button sits INLINE, right of the worked-seconds label — never i
   // drawing from icons.ts, a line in from the left branching into two that run on to the right, no arrowheads
   assert.match(RENDER, /fk\.innerHTML = ICON_FORK \+ '<span class="msg-fork-word">fork<\/span>';/, "the glyph carried on the button, the word beside it");
   assert.match(RENDER, /fk\.setAttribute\("aria-label", "Fork"\);/);
-  assert.match(RENDER, /import \{ GEAR_GLYPH, ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN \} from "\.\/icons";/);   // the tab lock (T395) shares the import
+  assert.match(RENDER, /import \{ GEAR_GLYPH, ICON_FORK \} from "\.\/icons";/);   // the strip's gear glyph shares the import (the lock icons left with the gear's menu, T415)
   assert.doesNotMatch(RENDER, /fk\.textContent = "fork";/, "no bare word any more");
   const ICONS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "icons.ts"), "utf8");
   const fork = ICONS.slice(ICONS.indexOf("export const ICON_FORK"), ICONS.indexOf(";", ICONS.indexOf("export const ICON_FORK")));

@@ -1,5 +1,5 @@
 import { marked } from "marked";
-import { GEAR_GLYPH, ICON_FORK, ICON_LOCK, ICON_LOCK_OPEN } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
+import { GEAR_GLYPH, ICON_FORK } from "./icons";   // the fork control's glyph (T381), the stroke family the bars share
 import { sanitizeMd, userContentTarget } from "./md-sanitize";   // the one sanitizer every markdown surface shares, and the lookup for a message's own `#` links
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -27,7 +27,7 @@ import { SUBAGENT_OPEN_WAIT_MS, subagentStallText, subagentStalled } from "./sub
 import { placeholderKind, placeholderStands, fillPlaceholder } from "./pane-placeholder";   // the empty pane's placeholder, by kind (T355)
 import { mintWriteId, ackOutcome, adoptViews, seqOf, capsAdopts, announcedSeq, announcedAfter, createInFlight, rederivePending, lensBlob, applyLensFields, type InflightWrite, type LensFields, type TagEditOp, type ViewsAck } from "./views-writes";
 import { lensVisible, surfaceLens } from "./tag-lens";
-import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS, openRowsMenu } from "./tag-menu";
+import { openTagMenu, tagMenuButton, syncTagFilter, tagChip, TAG_BTN_BORDER_CSS } from "./tag-menu";
 import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTabMeta } from "./tab-meta";
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
@@ -6796,8 +6796,8 @@ function renderTabs() {
   add.title = titleWithKey("Open a session", "session.new");
   add.addEventListener("click", () => openPicker());
   bar.appendChild(add);
-  // (THE TAB LOCK's button left the strip 2026-09-13, T405, the user: the lock is a row inside the strip's gear below; its
-  // state, its drag rules and its saveSettings road are unchanged, only where it is toggled moved.)
+  // (THE TAB LOCK's button left the strip 2026-09-13, T405, the user; since T415, 2026-09-14, the lock is a checkbox row in the
+  // settings' Tab strip section, where the strip's gear jumps; its state, its drag rules and its saveSettings road are unchanged.)
   // the shared TAG-ICON filter (the user 2026-08-25): identical across surfaces, opening the one
   // multi-select lens menu — this instance governs the TAB STRIP (actives.chat)
   const tagBtn = tagMenuButton("filter these tabs by tag", (btn) => {
@@ -6833,33 +6833,23 @@ function renderTabs() {
   // control stays the same button with the same convention and menu, and nothing folds into the gear
   const end = el("span", "tab-strip-end");
   end.appendChild(tagBox);
-  // THE STRIP'S GEAR (T379, the user 2026-09-12; T405, the user 2026-09-13): ONE glyph, the shell's own settings gear
-  // (icons.ts GEAR_GLYPH, the character the rail wears at the bottom right of every romp page, read by the kernel from the
-  // same file), a bare glyph after the tags button in the strip's right-end wrapper (T412, the user 2026-09-13: no box,
-  // dressed exactly as the rail's gear; styles.css .tab-widgets-gear mirrors the kernel's .rail-act rules). It opens a small menu in the house vocabulary (tag-menu.ts openRowsMenu):
-  // "Lock the tabs in place", the tab lock's toggle row with the two titles the strip's button wore (T395: the state,
-  // its drag rules and its saveSettings road are unchanged); and "Tab widgets…", the settings on the Chat tab scrolled to
-  // its Tab widgets section (T379's ask, through the shell or this window's own gear as before), that row only where a
-  // settings gear can be reached (an honest absence elsewhere); the strip's gear itself is everywhere the strip is, since
-  // the lock's button was. Built once per strip paint; the click is its own, click-safe because the strip is rebuilt
-  // only when its signature changes; a keyboard press on the gear then on the row keeps the focus on the row.
-  {
-    const settingsReachable = !!((window as any).__rompShowStrip || inRompShell());
+  const settingsReachable = !!((window as any).__rompShowStrip || inRompShell());
+  // THE STRIP'S GEAR (T379, the user 2026-09-12; T405, the user 2026-09-13; T412; T415, the user 2026-09-14): ONE glyph, the
+  // shell's own settings gear (icons.ts GEAR_GLYPH, the character the rail wears at the bottom right of every romp page, read by
+  // the kernel from the same file), a bare glyph after the tags button in the strip's right-end wrapper, dressed exactly as the
+  // rail's (styles.css .tab-widgets-gear mirrors the kernel's .rail-act rules). One click takes the person STRAIGHT to the
+  // settings' Chat tab scrolled to the strip's own "Tab strip" section (gear.js showSection), which holds the tab lock as a
+  // checkbox row above Tab widgets; the menu the gear opened since T405 (the lock's toggle row and the row to Tab widgets) kept nothing
+  // once the lock moved, so it is gone, and the gear is drawn only where a settings card can open: the shell, or a host with its
+  // own gear (__rompShowStrip). The lock's state, its drag rules and its saveSettings road are unchanged (T395). Click-safe:
+  // the strip is rebuilt only when its signature changes.
+  if (settingsReachable) {
     const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
     gear.type = "button";
-    gear.title = settingsReachable ? "Tab strip: lock, widgets…" : "Tab strip: lock";   // no widgets row where no settings gear can be reached, and the title says so (round two, low 1)
+    gear.title = "Tab strip settings";
     gear.setAttribute("aria-label", "Tab strip settings");
-    gear.setAttribute("aria-haspopup", "menu");
     gear.textContent = GEAR_GLYPH;
-    gear.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openRowsMenu(gear, () => [
-        { label: "Lock the tabs in place", current: settings.tabsLocked, glyph: settings.tabsLocked ? ICON_LOCK : ICON_LOCK_OPEN,
-          title: settings.tabsLocked ? "Tabs are locked in place: click to allow moving them again" : "Lock the tabs in place: no drag or move until clicked again",
-          press: () => { setTabsLocked(!settings.tabsLocked); return false; } },
-        ...(settingsReachable ? [{ label: "Tab widgets…", dim: true, press: () => { openSettingsOn("chat", "tabwidgets"); } }] : []),
-      ]);
-    });
+    gear.addEventListener("click", (e) => { e.stopPropagation(); openSettingsOn("chat", "tabstrip"); });
     end.appendChild(gear);
   }
   bar.appendChild(end);
@@ -7356,7 +7346,7 @@ function showTabMenu(e: MouseEvent, id: string, copy?: string) {   // `copy`: th
             row.appendChild(bodyE);
             // the tab lock (T395): a move row is a tab move, so it reads held (the label dims, the row answers nothing); the + beside
             // it still tags (adding is not a move), so it keeps its strength and says so itself (round one, LOW 1)
-            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock is in the tab strip's gear menu"; }
+            if (settings.tabsLocked) { row.classList.add("ctx-item-locked"); row.setAttribute("aria-disabled", "true"); bodyE.title = "Tabs are locked: the lock is in the settings (Chat, Tab strip)"; }
             const plus = el("button", "ctx-tag-x ctx-tag-plus") as HTMLButtonElement;
             plus.type = "button"; plus.textContent = "+";
             plus.title = "add this tag too (the session keeps its other tags)" + (settings.tabsLocked ? ": adding is not a move, so the lock does not hold it" : "");
