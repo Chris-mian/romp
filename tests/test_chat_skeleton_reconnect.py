@@ -832,8 +832,8 @@ class RestartDiet(unittest.TestCase):
         self.assertIn("sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,path:location.pathname,t:Date.now()}))", fire,
                       "the reload core keeps the reason and the document's path durably when it fires (the announce record is consumed before the panes dial)")
         chat, feed = km._shim("chat"), km._shim("feed")
-        self.assertIn("""var RESTART_DIET=false;if(!COL&&!SKEL){var rr=null;try{var raw=sessionStorage.getItem('romp:reloadReason');sessionStorage.removeItem('romp:reloadReason');rr=raw?JSON.parse(raw):null;}catch(e){}RESTART_DIET=!!(rr&&(rr.path===undefined||rr.path==='/'||String(rr.path).indexOf('/chat')===0));}""", chat,
-                      "the chat shim removes the record BEFORE parsing it and dials the diet on any reload the core fired for the shell or a chat document (the follow-up after PR 1661): a main pane, not a column, not a skeleton view")
+        self.assertIn("""var RESTART_DIET=false;if(!COL&&!SKEL){var rr=null;try{var raw=sessionStorage.getItem('romp:reloadReason');sessionStorage.removeItem('romp:reloadReason');rr=raw?JSON.parse(raw):null;}catch(e){}RESTART_DIET=!!(rr&&typeof rr==='object'&&typeof rr.reason==='string'&&(rr.path===undefined||rr.path==='/'||String(rr.path).indexOf('/chat')===0));}""", chat,
+                      "the chat shim removes the record BEFORE parsing it and dials the diet on any reload the core fired for the shell or a chat document, only for an object with the fields (a scalar is consumed and diets nothing): a main pane, not a column, not a skeleton view")
         self.assertIn("sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,path:location.pathname,t:Date.now()}))", src,
                       "the reload core's record names the document that reloaded, so a standalone feed page's reload steers no chat dial")
         read = "sessionStorage.getItem('romp:reloadReason')"   # the READ; the reload core's write of the record rides every page's shim

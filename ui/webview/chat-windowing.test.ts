@@ -290,5 +290,6 @@ test("the skeleton prefetch never builds a tab the strip does not show (the user
   assert.match(RENDER, /const next = nextPrefetch\(skeletonTabs, activeId, awaitingFull, document\.hidden \|\| paneHidden\(\), stripShowsTab\);/,
     "the idle prefetch's gate is the strip's own visibility, stripShowsTab (the views, another column's holds, the #only= filter, a collapsed section's fold)");
   assert.match(RENDER, /function stripShowsTab\(id: string\): boolean \{ return stripShows\(id\) && !collapsedTabIds\.has\(id\); \}/, "a tab folded under a collapsed section header is not shown, so not prefetched (the follow-up after PR 1661, low 3)");
+  assert.match(RENDER, /window\.addEventListener\(TABGROUPS_EVENT, \(\) => \{ renderTabs\(\); schedulePrebuild\(\); \}\);/, "a section opened re-arms the idle prefetch (round two, medium 1); the executed road is the lab's fold road");
   assert.match(RENDER, /const onOnlyHashChange = \(\): void => \{ renderTabs\(\); schedulePrebuild\(\); \};/, "the filter's reveal re-arms the idle prefetch (round two of PR 1661, medium 3)");
 });

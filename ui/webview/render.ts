@@ -20214,7 +20214,7 @@ window.addEventListener("storage", (e) => { if (e.key === TABGROUPS_KEY) renderT
 // away is simply gone from this strip and a session moved here appears; an equal signature skips the rebuild (the
 // source's own dragend render already read the new sets in the same task)
 window.addEventListener("storage", (e) => { if (e.key === "romp-chat-cols") renderTabs(); });
-window.addEventListener(TABGROUPS_EVENT, () => renderTabs());
+window.addEventListener(TABGROUPS_EVENT, () => { renderTabs(); schedulePrebuild(); });   // a section opened is a strip change that shows tabs: the idle prefetch re-arms for the skeletons it now shows, as the #only= reveal does (the follow-up after PR 1661, round two, medium 1)
 // a hot key bound or removed (the shell's dialog writes the bindings store; this document's own Remove does too)
 // repaints the tabs' badges — the store's key doubles as the same-document event name
 window.addEventListener("storage", (e) => { if (e.key === KEYS_EVENT) renderTabs(); });

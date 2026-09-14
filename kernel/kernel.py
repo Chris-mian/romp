@@ -52223,13 +52223,17 @@ var COL=new URLSearchParams(location.search).get("col")||"";if(COL==="1")COL="";
 // (Handler._ws → _resolve_reconnect: the redial diet, for a fresh page that has a hint). false everywhere else: the
 // first column, a standalone page and every non-chat pane dial exactly as today.
 var SKEL=new URLSearchParams(location.search).get("skeleton")==="1";
-// The RESTART DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
-// until shown): a main chat pane whose page was just reloaded by a kernel RESTART dials its first socket as a skeleton client, the later
-// column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab, and the
-// page's idle prefetch fills the rest. The reason is the reload core's durable record (romp:reloadReason; the announce record is consumed
-// before this shim dials), CONSUMED here on the read that acts on it, as the announce record is by announce() (round two, medium 1: a
-// plain reload two seconds after a restart reload dialed the diet on the same record); a build reload, a column, a fresh open and every
-// redial dial as before. Emitted for the chat app alone (round two, medium 2): every other pane's shim carries the false alone.
+// The RELOAD DIET (the user 2026-09-14: the selected tab builds first, the strip's other tabs spread over later refreshes, hidden tabs not
+// until shown; and restarts are invisible, so the one reload the reload core still fires is a changed build, a fresh page on a kernel that
+// just restarted): a main chat pane whose page the reload core just reloaded, for ANY reason, dials its first socket as a skeleton client,
+// the later column's shape, so the kernel serves the strip with the skeleton set, ONE full for the active tab and a status per other tab,
+// and the page's idle prefetch fills the rest. The signal is the reload core's durable record (romp:reloadReason, written in fire() with the
+// reason and the path of the document that reloaded; the announce record is consumed before this shim dials). The chat shim alone reads
+// it (the slot below is emitted for the chat app; every other pane's shim carries the false), REMOVES it before parsing it (a malformed or
+// scalar record is consumed and diets nothing, as announce() consumes its record), and acts on it only when it is an object with the fields
+// and its path names the shell or a chat document, so a standalone feed or timeline page's own reload steers no later chat dial. A column
+// and a skeleton view leave the record alone (their dials are the shell's statement); a redial carries the diet through reconnect=1; a
+// fresh open with no record dials as before.
 %s
 // This PAGE's instance id — minted once per load, never stored: every connect of this page carries it, so the
 // kernel retires this page's previous socket on a reconnect, and never another page's (a duplicated tab copies
@@ -52581,7 +52585,7 @@ returnDiag("return",row);});/*end-shim-core*/})();   // filed AFTER the redial s
 # column (col=N) and a skeleton view (skeleton=1) leave the record alone: their dials are the shell's statement, not this page's.
 _RESTART_DIET_JS = ("var RESTART_DIET=false;if(!COL&&!SKEL){var rr=null;try{var raw=sessionStorage.getItem('romp:reloadReason');sessionStorage.removeItem('romp:reloadReason');"
                     "rr=raw?JSON.parse(raw):null;}catch(e){}"
-                    "RESTART_DIET=!!(rr&&(rr.path===undefined||rr.path==='/'||String(rr.path).indexOf('/chat')===0));}")
+                    "RESTART_DIET=!!(rr&&typeof rr==='object'&&typeof rr.reason==='string'&&(rr.path===undefined||rr.path==='/'||String(rr.path).indexOf('/chat')===0));}")
 # The record is REMOVED before it is parsed (a malformed one is consumed too, as announce() does), and any reload the reload core fired
 # dials the diet (the user's ruling of 2026-09-14: restarts invisible, so the one reload left is a changed build, a fresh page on a kernel
 # that just restarted): the record's presence decides, not its reason. A record written by a standalone feed or timeline page's own

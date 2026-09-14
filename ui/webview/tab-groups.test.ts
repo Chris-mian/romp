@@ -202,7 +202,7 @@ test("executed: the PHONE layout renders the flat strip — every visible id, no
   // list (folded tabs absent from the scrape) until the next push. The flip IS the event — one
   // listener on the same MediaQueryList, beside the fold-state listeners; no resize polling.
   assert.match(RENDER, /try \{ window\.matchMedia\(PHONE_LAYOUT_MEDIA\)\.addEventListener\("change", \(\) => renderTabs\(\)\); \} catch \{/);
-  assert.ok(RENDER.indexOf("window.addEventListener(TABGROUPS_EVENT, () => renderTabs());") < RENDER.indexOf('matchMedia(PHONE_LAYOUT_MEDIA).addEventListener("change"'),
+  assert.ok(RENDER.indexOf("window.addEventListener(TABGROUPS_EVENT, () => { renderTabs(); schedulePrebuild(); });") < RENDER.indexOf('matchMedia(PHONE_LAYOUT_MEDIA).addEventListener("change"'),
     "installed once at module scope with the other strip listeners, never inside a render");
 });
 
@@ -359,7 +359,7 @@ test("headers are click-safe: data-act on the node, the action on the stable #ta
   // the click derives the next fold state from the one the header RENDERED (data-folded), never from the store, and
   // shows the section in the pane (snapView; tab-snapshot-pane.test.ts)
   assert.match(RENDER, /"toggle-group": \(el\) => \{\s*\n\s*const name = el\.dataset\.group;\s*\n\s*if \(!name\) return;\s*\n\s*snapView = name;\s*\n\s*writeTabGroups\(setSectionCollapsed\(tabGroups\(\), name, el\.dataset\.folded !== "1"\)\);/);
-  assert.match(RENDER, /window\.addEventListener\(TABGROUPS_EVENT, \(\) => renderTabs\(\)\);/, "the same-window delivery");
+  assert.match(RENDER, /window\.addEventListener\(TABGROUPS_EVENT, \(\) => \{ renderTabs\(\); schedulePrebuild\(\); \}\);/, "the same-window delivery");
   assert.match(RENDER, /window\.addEventListener\("storage", \(e\) => \{ if \(e\.key === TABGROUPS_KEY\) renderTabs\(\); \}\);/, "…and a sibling pane's");
   assert.doesNotMatch(RENDER.slice(RENDER.indexOf('"toggle-group": (el) => {'), RENDER.indexOf('"toggle-group": (el) => {') + 300), /renderTabs\(\)/,
     "the toggle does not render itself — the event does, so a local toggle and a sibling pane's take one path");
