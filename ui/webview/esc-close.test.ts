@@ -59,7 +59,7 @@ test("the gear is the chain's last step: the shell asks the settings page's own 
   assert.ok(ESC.includes("return !!(w&&w.__rompSettingsClose&&w.__rompSettingsClose());}catch(e){return false;}}"), "no page yet, or a cross-origin one: not closed");
   // gear.js: the hook closes the modal and says so, unless one of its own dialogs is up (they close one level at a time)
   // ...and a widget row in flight (the reorder's drag, T409): the drag takes the Escape itself, so the hook answers no while it is on
-  assert.ok(GEAR.includes("window.__rompSettingsClose = function () { if (p.hidden || (lgM && !lgM.hidden) || openHousePick || widgetDrag) return false; closeSettings(); return true; };"));
+  assert.ok(GEAR.includes("window.__rompSettingsClose = function () { if (raBack && !raBack.hidden) { raHide(); return true; } if (p.hidden || (lgM && !lgM.hidden) || openHousePick || widgetDrag) return false; closeSettings(); return true; };"));
   assert.ok(GEAR.includes("if (e.key === 'Escape' && lgM && !lgM.hidden) lgModal(false);"), "the login card's own Escape stays");
   // closing hides the iframe that held the keyboard: the shell's settings bridge puts focus back in the chat — the
   // split's column last worked in, else the first (chat split, 2026-09-11)

@@ -50,7 +50,7 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
     feed: ["rs-feedcollapsed"],
     sessions: ["rs-defaultdir", "rs-backend"],
     automation: ["rs-autonudge", "rs-suggestcompact"],
-    tasks: ["rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
+    tasks: ["rs-tasktrack", "rs-judgemodel", "rs-judgefast", "rs-judgeeffort", "rs-distillmodel", "rs-distillfast", "rs-distilleffort", "rs-indexmodel", "rs-indexfast", "rs-indexeffort", "rs-judgeconc"],
     debug: ["rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver"],
   };
   for (const [pane, ids] of Object.entries(where)) {
@@ -102,7 +102,7 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   assert.doesNotMatch(C, />Transcript<|>Text and comments<|>Files<|>Strip</, "the old Chat heads are gone");
   // Automation: the nudges; Task tracking: the judges alone; Debug: the judges' views then the diagnostics
   assert.ok(ps.automation.indexOf(">Nudges<") < ps.automation.indexOf("id=rs-autonudge") && ps.automation.indexOf("id=rs-autonudge") < ps.automation.indexOf("id=rs-suggestcompact"), "Automation: Nudges, Auto Nudge, Suggest /compact");
-  assert.ok(ps.tasks.indexOf("<div class='rs-sec rs-sec-first'>Judges</div>") === ps.tasks.indexOf("<div class='rs-sec"), "Task tracking opens with the Judges");
+  assert.ok(ps.tasks.indexOf("<div class='rs-sec rs-sec-first'>Task tracking</div>") === ps.tasks.indexOf("<div class='rs-sec") && ps.tasks.indexOf("id=rs-tasktrack") < ps.tasks.indexOf(">Judges<") && ps.tasks.indexOf(">Judges<") < ps.tasks.indexOf("id=rs-judgemodel"), "Task tracking opens with the master switch, then the Judges (T404 PR 2)");
   // T408: the two Automation rows carry a permanent one-sentence line in place of a hover tooltip, and no title attribute
   assert.match(ps.automation, /<span class=rs-line id=rs-autonudge-sub>' \+ AUTONUDGE_SUB \+ '<\/span>'/, "Auto Nudge's line, the var fillAutoNudge appends the mixed hosts to");
   assert.match(GEAR, /var AUTONUDGE_SUB = "When a session goes idle with its work still in progress and nothing awaited, nudge it once for a status update, on every connected machine\.";/);
@@ -133,7 +133,7 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   assert.match(GEAR, /b\.classList\.toggle\('on', on\); b\.setAttribute\('aria-selected', on \? 'true' : 'false'\);/);
   assert.match(GEAR, /pn\.hidden = pn\.getAttribute\('data-pane'\) !== t;/);
   assert.match(GEAR, /try \{ localStorage\.setItem\(TAB_KEY, t\); \} catch \(e\) \{\}/);
-  assert.match(GEAR, /function openSettings\(tab, section\) \{\s*\n\s*if \(tab === 'appearance' && !section\) section = 'appearance';[^\n]*\n\s*if \(!p\.hidden\) \{ if \(knownTab\(tab\)\) \{ selectTab\(tab\); if \(section\) showSection\(section\); else clearSectionScroll\(\); return; \} closeSettings\(\); return; \}/,
+  assert.match(GEAR, /function openSettings\(tab, section\) \{\s*\n\s*if \(raBack && !raBack\.hidden\) raHide\(\);[^\n]*\n\s*if \(tab === 'appearance' && !section\) section = 'appearance';[^\n]*\n\s*if \(!p\.hidden\) \{ if \(knownTab\(tab\)\) \{ selectTab\(tab\); if \(section\) showSection\(section\); else clearSectionScroll\(\); return; \} closeSettings\(\); return; \}/,
     "a named tab on an open panel switches to it and scrolls to its section; a bare ask still toggles");
   assert.match(GEAR, /if \(e\.data && e\.data\.romp === 'openSettings'\) openSettings\(typeof e\.data\.tab === 'string' \? e\.data\.tab : undefined, typeof e\.data\.section === 'string' \? e\.data\.section : undefined\);/, "the tab and the section ride the message");
   // the SECTION anchor (the user's amendment 2026-09-12): looked up in the shown pane only; the card, the modal's one scroll box, scrolls so the head
@@ -154,7 +154,7 @@ test("selectTab shows one pane, marks its pill, remembers it per browser; openSe
   assert.match(GEAR, /selectTab\(b\.getAttribute\('data-tab'\)\); clearSectionScroll\(\); \}\); \}\);/, "a pill change clears the room and starts at the top (LOW 1)");
   assert.match(GEAR, /function clearSectionScroll\(\) \{\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}\s*\n\s*sectionAsk = null;\s*\n\s*var card = document\.querySelector\('#rsettings \.rs-card'\);\s*\n\s*if \(card\) \{ writeCard\(card, 0\); card\.removeAttribute\('data-section-landed'\); \}/);
   assert.match(GEAR, /function showSection\(section\) \{\s*\n\s*if \(sectionRO\) \{ sectionRO\.disconnect\(\); sectionRO = null; \}/, "a new ask retires the pending one");
-  assert.match(GEAR, /function closeSettings\(\) \{ endDrags\(\); clearSectionScroll\(\); p\.hidden = true; setModalCls\(false\); feedFull\(false\); \}/, "the reset before the hide: a hidden card ignores a scroll write");
+  assert.match(GEAR, /function closeSettings\(\) \{ endDrags\(\); if \(raBack && !raBack\.hidden\) raHide\(\); clearSectionScroll\(\); p\.hidden = true; setModalCls\(false\); feedFull\(false\); \}/, "the reset before the hide: a hidden card ignores a scroll write");
   // the ask STANDS: the head re-lands on every size change of the card or the pane (a font arriving, a list filling), until the
   // user's own scroll, a pill change or the close ends it (CI 2026-09-13: the head landed neither at the top nor at the end)
   assert.match(GEAR, /sectionRO = new ResizeObserver\(function \(\) \{ if \(sectionAsk === ask && card\.clientHeight > 0\) go\(\); \}\);\s*\n\s*sectionRO\.observe\(card\);\s*\n\s*sectionRO\.observe\(pane\);/);
@@ -260,7 +260,7 @@ test("the strip's gear glyph opens the Chat tab at its Tab widgets section throu
   assert.match(RENDER, /function openSettingsOn\(tab: string, section\?: string\): void \{\s*\n\s*const m: \{ romp: string; tab: string; section\?: string \} = \{ romp: "openSettings", tab \};\s*\n\s*if \(section\) m\.section = section;\s*\n\s*if \(inRompShell\(\)\) \{ try \{ window\.parent\.postMessage\(m, "\*"\); \} catch \{[^}]*\} return; \}\s*\n\s*window\.postMessage\(m, "\*"\);/, "through the shell when in one, else to this window; the section only when given");
   assert.match(RENDER, /const settingsReachable = !!\(\(window as any\)\.__rompShowStrip \|\| inRompShell\(\)\);/, "the settings ask only where a gear can be reached: an honest absence elsewhere (T405: the strip's gear itself is everywhere, its Tab widgets row asks)");
   assert.match(RENDER, /\.\.\.\(settingsReachable \? \[\{ label: "Tab widgets…", dim: true, press: \(\) => \{ openSettingsOn\("chat", "tabwidgets"\); \} \}\] : \[\]\),/, "the glyph's menu asks for Chat at its Tab widgets section (T405: a row of the gear's menu, beside the lock, where settings can be reached)");
-  assert.ok(RENDER.indexOf('el("button", "tab-widgets-gear")') > RENDER.indexOf("  bar.appendChild(tagBox);") && RENDER.indexOf("bar.appendChild(gearBox);") > RENDER.indexOf('el("button", "tab-widgets-gear")'), "in a box of its own after the tag box, the last thing on the bar (T405)");
+  assert.ok(RENDER.indexOf('el("button", "tab-widgets-gear")') > RENDER.indexOf("  end.appendChild(tagBox);") && RENDER.indexOf("bar.appendChild(end);") > RENDER.indexOf('el("button", "tab-widgets-gear")'), "after the tag box in the strip's right-end wrapper, the wrapper the last thing on the bar (T405, T412)");
   assert.match(KERNEL, /window\.__rompOpenSettings=function\(tab,section\)\{var f=document\.getElementById\('f-settings'\);if\(!f\)return;/);
   assert.match(KERNEL, /var msg=\{romp:'openSettings'\};if\(typeof tab==='string'&&tab\)msg\.tab=tab;if\(typeof section==='string'&&section\)msg\.section=section;\s*\n\s*var open=function\(\)\{try\{f\.contentWindow&&f\.contentWindow\.postMessage\(msg,'\*'\);\}catch\(e\)\{\}\};/, "the shell forwards the tab and the section into the settings iframe; a bare ask stays bare");
   assert.match(KERNEL, /if\(m\.romp==='openSettings'\)window\.__rompOpenSettings\(m\.tab,m\.section\);/, "a pane's ask carries its tab and section through");
@@ -274,4 +274,8 @@ test("the Token usage panel's every close returns to the settings card (the T409
   assert.match(GEAR, /if \(e\.target === raBack\) raHide\(e\); \}\);/, "the backdrop");
   assert.match(GEAR, /if \(e\.key === 'Escape' && raBack && !raBack\.hidden\) raHide\(\); \}\);/, "the panel's Escape");
   assert.equal((GEAR.match(/raBack\.hidden = true/g) || []).length, 1, "the one hide of the layer is raHide's");
+  // the read of that fix (three pre-existing lows): the shell's Escape chain asks the page's close answer whenever settings-open
+  // stands, so the answer takes the layer down first, one level; every open and close of the settings resets the layer the same way
+  assert.match(GEAR, /window\.__rompSettingsClose = function \(\) \{ if \(raBack && !raBack\.hidden\) \{ raHide\(\); return true; \}/, "a press with the keyboard in the shell document reaches the panel");
+  assert.match(GEAR, /function openSettings\(tab, section\) \{\s*\n\s*if \(raBack && !raBack\.hidden\) raHide\(\);/, "an open while the panel is up lands on the card, never under the layer");
 });

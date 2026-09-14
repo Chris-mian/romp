@@ -6801,11 +6801,15 @@ function renderTabs() {
   // beside the button: with Group tabs by tag on the tags show in the strip's sections anyway, and otherwise whoever is
   // interested clicks the button, which still wears the accent while narrowed. The filter itself is unchanged; the shared
   // sync runs with no chips host, so it builds no chip (round two, low 3: two chips were built and dropped per paint)
-  bar.appendChild(tagBox);
+  // THE STRIP'S RIGHT END (T412, the user 2026-09-13): the tags button and the gear together at the farthest right, on ONE
+  // invisible wrapper pushed by the auto margin (styles.css .tab-strip-end) with the + tab's height as its floor; the tags
+  // control stays the same button with the same convention and menu, and nothing folds into the gear
+  const end = el("span", "tab-strip-end");
+  end.appendChild(tagBox);
   // THE STRIP'S GEAR (T379, the user 2026-09-12; T405, the user 2026-09-13): ONE glyph, the shell's own settings gear
   // (icons.ts GEAR_GLYPH, the character the rail wears at the bottom right of every romp page, read by the kernel from the
-  // same file), in a box of its own appended LAST and pushed to the strip's farthest right (styles.css .tab-gearbox,
-  // margin-left auto on the last flex line). It opens a small menu in the house vocabulary (tag-menu.ts openRowsMenu):
+  // same file), a bare glyph after the tags button in the strip's right-end wrapper (T412, the user 2026-09-13: no box,
+  // dressed exactly as the rail's gear; styles.css .tab-widgets-gear mirrors the kernel's .rail-act rules). It opens a small menu in the house vocabulary (tag-menu.ts openRowsMenu):
   // "Lock the tabs in place", the tab lock's toggle row with the two titles the strip's button wore (T395: the state,
   // its drag rules and its saveSettings road are unchanged); and "Tab widgets…", the settings on the Chat tab scrolled to
   // its Tab widgets section (T379's ask, through the shell or this window's own gear as before), that row only where a
@@ -6814,7 +6818,6 @@ function renderTabs() {
   // only when its signature changes; a keyboard press on the gear then on the row keeps the focus on the row.
   {
     const settingsReachable = !!((window as any).__rompShowStrip || inRompShell());
-    const gearBox = el("span", "tab-gearbox");
     const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;
     gear.type = "button";
     gear.title = settingsReachable ? "Tab strip: lock, widgets…" : "Tab strip: lock";   // no widgets row where no settings gear can be reached, and the title says so (round two, low 1)
@@ -6830,9 +6833,9 @@ function renderTabs() {
         ...(settingsReachable ? [{ label: "Tab widgets…", dim: true, press: () => { openSettingsOn("chat", "tabwidgets"); } }] : []),
       ]);
     });
-    gearBox.appendChild(gear);
-    bar.appendChild(gearBox);
+    end.appendChild(gear);
   }
+  bar.appendChild(end);
   {
     const v = effViews();
     syncTagFilter(tagBtn, null, surfaceLens(v, "chat"), viewTagUnion(v), (l) => {

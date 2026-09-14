@@ -72,7 +72,7 @@ test("client: an ACKED prediction yields only to a payload built AFTER the gestu
   // about the reopen, and taking it as the answer is the bounce back to Completed this replaced
   assert.match(FEED, /const acked = pendingMoveAck\.get\(id\);/);
   assert.match(FEED, /if \(typeof mark === "number" && mark > acked\.buildId\) clearFollowMove\(id, "outranked"\);/);
-  assert.match(FEED, /function reconcileFollowMove\(incoming: AskItem\[\], buildId: number, buildIds\?: Record<string, number>\)/);
+  assert.match(FEED, /function reconcileFollowMove\(incoming: AskItem\[\], buildId: number, buildIds\?: Record<string, number>, cardsUnknown = false\)/);
 });
 
 test("client: 'after' is judged on the CARD's kernel's counter, never another kernel's (2026-08-15)", () => {

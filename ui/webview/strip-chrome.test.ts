@@ -65,19 +65,50 @@ test("the strip's tag control displays no chips: the host is built for the share
   assert.match(RENDER, /mslot\.append\(mBtn, mChips\);/);
 });
 
-test("the gear sits in a box of its own appended last, pushed to the strip's farthest right, with the tags box's floor", () => {
-  const iTag = RENDER.indexOf("  bar.appendChild(tagBox);\n"), iGear = RENDER.indexOf('const gearBox = el("span", "tab-gearbox");'), iGearAppend = RENDER.indexOf("bar.appendChild(gearBox);");
-  assert.ok(iTag > 0 && iTag < iGear && iGear < iGearAppend, "after the tag box, the last thing appended to the bar");
-  assert.match(RENDER, /\{\s*\n\s*const settingsReachable = !!\(\(window as any\)\.__rompShowStrip \|\| inRompShell\(\)\);\s*\n\s*const gearBox = el\("span", "tab-gearbox"\);\s*\n\s*const gear = el\("button", "tab-widgets-gear"\) as HTMLButtonElement;/,
-               "the gear is everywhere the strip is (the lock's button was); only its Tab widgets row asks whether a settings gear can be reached");
-  const box = CSS.match(/\n\.tab-gearbox \{[^}]*\}/)![0];
-  assert.match(box, /margin-left: auto;/, "the auto margin pushes it to the right edge of its flex line");
-  assert.match(box, /min-height: 31px;/, "the + tab's rendered height, as the tags box");
-  assert.match(CSS, /\nbody\.dense-chrome \.tab-gearbox \{ min-height: 25px; \}/, "dense follows");
-  assert.match(CSS, /\nbody\.dense-chrome \.tab-widgets-gear \{ line-height: 18px; \}/, "the dense button: 18 + 4 + 2 = 24px inside the 25px row (round two, the medium); dense-chrome-layout.test.ts measures it");
-  assert.doesNotMatch(CSS, /\.tab-lockbox|\n\.tab-lock \{|\n\.tab-lock\.on \{/, "the lock button's rules are gone");
+test("the strip's right end (T412): the tags button and the gear share one invisible wrapper appended last and pushed to the farthest right; the gear is a bare glyph dressed exactly as the rail's settings gear", () => {
+  // the render: the tag box goes INTO the wrapper, the gear after it with no box of its own, the wrapper is the last thing on the bar
+  const iEnd = RENDER.indexOf('const end = el("span", "tab-strip-end");'), iTag = RENDER.indexOf("  end.appendChild(tagBox);\n"), iGear = RENDER.indexOf('const gear = el("button", "tab-widgets-gear") as HTMLButtonElement;'),
+        iGearAppend = RENDER.indexOf("end.appendChild(gear);"), iEndAppend = RENDER.indexOf("bar.appendChild(end);");
+  assert.ok(iEnd > 0 && iEnd < iTag && iTag < iGear && iGear < iGearAppend && iGearAppend < iEndAppend, "wrapper, tag box, gear, then the wrapper onto the bar");
+  assert.doesNotMatch(RENDER, /tab-gearbox|gearBox/, "no box around the gear any more");
+  assert.doesNotMatch(RENDER, /\n  bar\.appendChild\(tagBox\);/, "the tag box no longer sits after the + tab on its own");
+  assert.match(RENDER, /const settingsReachable = !!\(\(window as any\)\.__rompShowStrip \|\| inRompShell\(\)\);/, "the gear is everywhere the strip is; only its Tab widgets row asks whether a settings gear can be reached");
+  // the wrapper: the auto margin pushes it right; the + tab's height as its floor, so a controls-only wrapped line stands as tall
+  const end = CSS.match(/\n\.tab-strip-end \{[^}]*\}/)![0];
+  assert.match(end, /margin-left: auto;/); assert.match(end, /min-height: 31px;/);
+  assert.doesNotMatch(end, /border|background/, "nothing visible on the wrapper");
+  assert.match(CSS, /\nbody\.dense-chrome \.tab-strip-end \{ min-height: 25px; \}/, "dense follows");
+  assert.doesNotMatch(CSS, /\.tab-gearbox/, "the gear box's rules are gone");
+  // the gear: the rail action's dress, value for value, read from the kernel's own rules so the two cannot drift
+  const railAct = KERNEL.match(/"\.rail-act\{([^"]*)"\s*\n\s*"([^"]*)\}"/);
+  assert.ok(railAct, "the kernel's .rail-act rule located");
+  const rail = railAct![1] + railAct![2];
+  const railColor = rail.match(/color:(#[0-9a-f]+)/i)![1], railRadius = rail.match(/border-radius:(\d+px)/)![1], railPad = rail.match(/padding:([^;]+);/)![1], railMargin = rail.match(/margin:([^;]+);/)![1];
+  const railActive = KERNEL.match(/"\.rail-act:active\{transform:(scale\([0-9.]+\))\}"/)![1];
+  const railSize = KERNEL.match(/"#rail-gear\{font-size:(\d+px)\}"/)![1];
+  const railHover = KERNEL.match(/"\.rail-act:hover\{color:(#[0-9a-f]+);background:(rgba\([^)]*\))\}"/i)!;
+  const railLight = KERNEL.match(/"body\.theme-light \.rail-act\{color:(#[0-9A-Fa-f]+)\}"/)!, railLightHover = KERNEL.match(/"body\.theme-light \.rail-act:hover\{color:(#[0-9A-Fa-f]+);background:(rgba\([^)]*\))\}"/)!;
   const gear = CSS.match(/\n\.tab-widgets-gear \{[^}]*\}/)![0];
-  assert.match(gear, /font-size: 16px;/); assert.match(gear, /line-height: 20px;/);
+  assert.match(gear, new RegExp("font-size: " + railSize + ";"), "the rail gear's glyph size");
+  assert.match(gear, /line-height: 1;/); assert.match(gear, new RegExp("padding: " + railPad.replace(/(\d+)px/g, "$1px").replace(" ", " ") + ";"), "the rail action's padding");
+  assert.match(gear, /border: 0;/); assert.match(gear, /background: transparent;/); assert.match(gear, new RegExp("border-radius: " + railRadius + ";"));
+  assert.match(gear, new RegExp("margin: " + railMargin + ";"), "the rail action's margin, 4px from its bar's end (round two, low 1)");
+  assert.match(CSS, new RegExp("\\n\\.tab-widgets-gear:active \\{ transform: " + railActive.replace(/[()]/g, "\\$&") + "; \\}"), "the rail action's press");
+  assert.match(gear, new RegExp("color: " + railColor + ";"), "the rail action's rest colour, the same literal");
+  assert.doesNotMatch(gear, /var\(--card-border\)|var\(--dim\)/, "no card border, no dim token: the rail's own values");
+  const hover = CSS.match(/\n\.tab-widgets-gear:hover \{[^}]*\}/)![0];
+  assert.match(hover, new RegExp("color: " + railHover[1] + ";")); assert.match(hover, new RegExp("background: " + railHover[2].replace(/[()]/g, "\\$&").replace(/,/g, ", ?") + ";"), "the rail's hover wash");
+  assert.doesNotMatch(hover, /border|accent/, "no accent border on hover: the rail's hover has none");
+  // the light theme: the rail's light colours are the chat's own light tokens (--dim and --fg carry those two values), so the overrides use the tokens
+  const light = CSS.match(/\nbody\.theme-light \.tab-widgets-gear \{[^}]*\}/)![0], lightHover = CSS.match(/\nbody\.theme-light \.tab-widgets-gear:hover \{[^}]*\}/)![0];
+  const lightBlock = CSS.match(/\nbody\.theme-light \{[\s\S]*?\n\}/)![0];
+  assert.equal(lightBlock.match(/--dim: (#[0-9A-Fa-f]+);/)![1].toLowerCase(), railLight[1].toLowerCase(), "the light rest colour is the light --dim value");
+  assert.equal(lightBlock.match(/--fg: (#[0-9A-Fa-f]+);/)![1].toLowerCase(), railLightHover[1].toLowerCase(), "the light hover colour is the light --fg value");
+  assert.match(light, /color: var\(--dim\);/); assert.match(lightHover, /color: var\(--fg\);/);
+  assert.match(lightHover, new RegExp("background: " + railLightHover[2].replace(/[()]/g, "\\$&").replace(/,/g, ", ?") + ";"));
+  // dense: the 19px glyph inside the 25px row by the padding alone (19 + 3 + 3), no border to count
+  assert.match(CSS, /\nbody\.dense-chrome \.tab-widgets-gear \{ margin: 0 4px; padding: 3px 0; \}/, "dense restates the margin: the rail's 1px above and below would carry the box past the 25px row; dense-chrome-layout.test.ts measures it");
+  assert.doesNotMatch(CSS, /\.tab-lockbox|\n\.tab-lock \{|\n\.tab-lock\.on \{/, "the lock button's rules are gone");
 });
 
 // the rows menu, executed over a stub document (the tag-menu tests' harness): rows, the ✓, a switch keeps the menu and

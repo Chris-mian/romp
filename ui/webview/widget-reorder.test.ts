@@ -46,7 +46,7 @@ test("the drag: pointer events heard on the document (a capture on the grip woul
   assert.match(GEAR, /var widgetDrag = false;/);
   assert.match(SECTION, /row\.classList\.add\('rs-dragging'\); widgetDrag = true;/);
   assert.match(SECTION, /row\.classList\.remove\('rs-dragging'\); dragAborts = dragAborts\.filter/);
-  assert.match(GEAR, /window\.__rompSettingsClose = function \(\) \{ if \(p\.hidden \|\| \(lgM && !lgM\.hidden\) \|\| openHousePick \|\| widgetDrag\) return false; closeSettings\(\); return true; \};/);
+  assert.match(GEAR, /window\.__rompSettingsClose = function \(\) \{ if \(raBack && !raBack\.hidden\) \{ raHide\(\); return true; \} if \(p\.hidden \|\| \(lgM && !lgM\.hidden\) \|\| openHousePick \|\| widgetDrag\) return false; closeSettings\(\); return true; \};/);
   // the click the release synthesizes is the drag's: swallowed once in the capture phase, for the release's own POINTER click
   // alone (a keyboard's click has detail 0 and no pointer type, round two: the next Space on a switch lands), disarmed by
   // that click, by the next press or key, or one frame on; an Escape-ended drag arms it at the release still to come

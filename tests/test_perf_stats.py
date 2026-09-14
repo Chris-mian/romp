@@ -159,7 +159,7 @@ class Collector(unittest.TestCase):
         self.assertEqual(set(snap["memos"]["chatPostal"]), {"gate", "hit", "commit_new"})
         self.assertEqual(set(snap["memos"]["chatLedger"]), {"hit", "miss", "bypass_live", "bypass_hold", "bypass_empty", "evict", "entries"})
         self.assertEqual(set(snap["memos"]["chatFoldTasks"]), {"hit", "miss", "entries"})
-        self.assertEqual(set(snap["memos"]["plannerSkip"]), {"skipped", "planned", "recorded"})
+        self.assertEqual(set(snap["memos"]["plannerSkip"]), {"skipped", "planned", "recorded", "restored", "refused", "persisted", "mismatchByTerm"})   # T401 (5c)
         self.assertEqual(set(snap["memos"]["captions"]), {"served", "parsed", "unstatable"})
         self.assertEqual(set(snap["memos"]["goalArchive"]), {"served", "loaded"})
         self.assertEqual(set(snap["memos"]["backref"]), {"served", "built"},
