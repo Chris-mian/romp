@@ -4432,13 +4432,17 @@ function wireBlockKeys(chip: HTMLElement, key: string): void {
     const fallback = FOCUS_SLOTS.fallback(vertical ? STACK_DEFAULT : ROW_DEFAULT);
     const hadCustom = cur.length === 3;
     const order = (hadCustom ? cur : fallback).slice();
-    const from = order.indexOf(key), to = from + delta;
-    if (from < 0 || to < 0 || to >= order.length) return;
-    order.splice(from, 1);
-    order.splice(to, 0, key);
+    // one slot among the blocks ON SCREEN (visibleKeys): a hidden neighbour is skipped, never swapped behind
+    const visible = visibleKeys(order, FOCUS_SLOTS.col);
+    const from = visible.indexOf(key), to = from + delta;
+    if (from < 0 || to < 0 || to >= visible.length) return;
+    const nv = visible.slice();
+    nv.splice(from, 1);
+    nv.splice(to, 0, key);
+    const next = placeVisible(order, visible, nv);
     // the drag's no-trace rule: a keyboard move that lands back on the arrangement the section follows keeps it
     // FOLLOWING the board rather than pinning that arrangement as its own
-    FOCUS_SLOTS.set(!hadCustom && order.join() === fallback.join() ? [] : order);
+    FOCUS_SLOTS.set(!hadCustom && next.join() === fallback.join() ? [] : next);
     persistViewState();
   });
 }
@@ -4453,7 +4457,7 @@ function wireBlockKeys(chip: HTMLElement, key: string): void {
 // mid-drag is the arrangement you get on drop.
 //
 // ONE implementation for two containers (T410): the BOARD (the chip drags a column of #feed-cols; colOrder,
-// the default `slots`) and the focused-session SECTION (the grip drags a block of #feed-focus; focusOrder). A
+// the default `slots`) and the focused-session SECTION (its chip drags a block of #feed-focus; focusOrder). A
 // SlotDrag names the container (the drag axis is read from it), the order it reads and writes, the element per
 // key and the order a drag starts from when none is stored — so the BOUND is the container: a section drag
 // never touches a board column, and a board drag never reaches the section.
@@ -4478,6 +4482,26 @@ const FOCUS_SLOTS: SlotDrag = {
   set: (o) => { focusOrder = o; applyFocusLayout(); },
   fallback: (d) => (colOrder.length === 3 ? colOrder : d),   // the section follows the board until it has an order of its own
 };
+// A re-slot walks VISIBLE blocks only (T410 review round two): in the single-column layout a focused block whose
+// category has no cards is display: none (col-empty), and its rect is all zeros, so a midpoint walk over every key
+// read 0 for each hidden block after the dragged one and jumped the target to the LAST slot on the first move
+// (a 14 px jiggle on the one visible chip stored an order the user never chose; a one-slot drag past a visible
+// neighbour landed behind a hidden one, surfacing only when that block's first card arrived). The dragged block
+// moves among the blocks on screen; hidden blocks keep their relative places in the stored order.
+function visibleKeys(order: string[], colOf: (k: string) => HTMLElement | null): string[] {
+  return order.filter((k) => {
+    const e = colOf(k);
+    if (!e) return false;
+    const r = e.getBoundingClientRect();
+    return r.width > 0 || r.height > 0;   // display: none (a hidden block) is the zero rect; a folded block still has its head
+  });
+}
+function placeVisible(order: string[], visible: string[], newVisible: string[]): string[] {
+  const out = order.slice();
+  const slotsIdx = order.map((k, i) => (visible.includes(k) ? i : -1)).filter((i) => i >= 0);
+  newVisible.forEach((k, i) => { out[slotsIdx[i]] = k; });
+  return out;
+}
 function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: SlotDrag = BOARD_SLOTS): void {
   chip.addEventListener("pointerdown", (down) => {
     const colsEl = slots.container();
@@ -4515,22 +4539,27 @@ function wireColDrag(chip: HTMLElement, col: HTMLElement, key: string, slots: Sl
     const move = (ev: PointerEvent) => {
       const cur = slots.get();
       const order = (cur.length === 3 ? cur : fallback).slice();
-      const from = order.indexOf(key);
-      // the slot whose axis midpoint the pointer is past — walk the OTHER two sections' rects
+      // the slot whose axis midpoint the pointer is past — walk the OTHER VISIBLE sections' rects (visibleKeys: a
+      // block the single-column layout hides has a zero rect and no slot to offer)
+      const visible = visibleKeys(order, slots.col);
+      const from = visible.indexOf(key);
       let to = from;
-      for (const other of order) {
-        if (other === key) continue;
-        const oc = slots.col(other);
-        if (!oc) continue;
-        const m = midOf(oc.getBoundingClientRect());
-        const oi = order.indexOf(other);
-        if (oi < from && pos(ev) < m) { to = Math.min(to, oi); }
-        if (oi > from && pos(ev) > m) { to = Math.max(to, oi); }
+      if (from >= 0) {
+        for (const other of visible) {
+          if (other === key) continue;
+          const oc = slots.col(other);
+          if (!oc) continue;
+          const m = midOf(oc.getBoundingClientRect());
+          const oi = visible.indexOf(other);
+          if (oi < from && pos(ev) < m) { to = Math.min(to, oi); }
+          if (oi > from && pos(ev) > m) { to = Math.max(to, oi); }
+        }
       }
       if (to !== from) {
-        order.splice(from, 1);
-        order.splice(to, 0, key);
-        applyOrderFlip(order);
+        const nv = visible.slice();
+        nv.splice(from, 1);
+        nv.splice(to, 0, key);
+        applyOrderFlip(placeVisible(order, visible, nv));   // hidden blocks keep their relative places
       }
       col.style.transform = translate(pos(ev) - start - slotShift);
     };

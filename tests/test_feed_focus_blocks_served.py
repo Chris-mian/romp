@@ -38,7 +38,12 @@ the page's own frame path, with page.mouse for every drag, and walks these roads
       empty lists (nothing said under a head, the user 2026-09-14);
   (j) the single-column layout (a 520 px viewport stacks the columns): a focused block whose category has no cards hides
       whole, chip and all (api has one Working card: Blocked and Completed vanish), and a card arriving for Blocked
-      brings the block back; the row layout keeps every head.
+      brings the block back; the row layout keeps every head;
+  (k) (l) (m) the slot math over HIDDEN blocks (review round two): a jiggle on the one visible chip stores nothing; a one-slot
+      drag of Completed past Blocked with Working hidden lands right behind Blocked, Working keeping its place; ArrowDown
+      on the last visible block (Completed, the hidden Working below it) and ArrowUp on the first move nothing;
+  (n) the label's clamp, MEASURED at 520 and 420 px with an 80-character session name: the caret on the name's line to its
+      right, the name cut inside the head, the head one line.
 Screenshots with FEED_FOCUS_BLOCKS_SHOTS=<path-prefix>: -1-label-dark/-light (unfolded, the label above the blocks),
 -2-folded-dark/-light, -3-completed-collapsed-dark/-light, -4-working-widened-dark/-light, -5-reordered-dark/-light,
 -6-label-vs-colhead-dark (a clip with the label and a board column head together), -7-empty-row-dark/-light (a focused
@@ -70,6 +75,8 @@ import test_ship_reship as _lab   # noqa: E402  the lab kernel's environment (th
 SID_WEB = "aaaaaaaa-1111-2222-3333-777777777777"
 SID_API = "aaaaaaaa-1111-2222-3333-888888888888"
 SID_TESTS = "aaaaaaaa-1111-2222-3333-999999999999"
+SID_LONG = "aaaaaaaa-1111-2222-3333-aaaaaaaaaaaa"
+LONG_NAME = ("notes-api-" * 8)[:80]   # an 80-character session name: the label's clamp (review round two)
 IDS = {
     "webWork1": "cccccccc-1111-2222-3333-000000000001",
     "webWork2": "cccccccc-1111-2222-3333-000000000002",
@@ -145,8 +152,14 @@ const payloadOf = (apiColumn) => ({ type: "feed", asks: [
     ask(cfg.ids.webDone1, cfg.web, "web", "completed", "notes-api: write the index schema", now - 240),
     ask(cfg.ids.webDone2, cfg.web, "web", "completed", "notes-api: add the tag table migration", now - 900),
     ask(cfg.ids.apiWork, cfg.api, "api", apiColumn, "notes-api: wire the tag filter", now - 120)],
-  sessions: [{ sid: cfg.web, name: "web" }, { sid: cfg.api, name: "api" }, { sid: cfg.tests, name: "tests" }],
-  order: [cfg.web, cfg.api, cfg.tests] });
+  sessions: [{ sid: cfg.web, name: "web" }, { sid: cfg.api, name: "api" }, { sid: cfg.tests, name: "tests" }, { sid: cfg.long, name: cfg.longName }],
+  order: [cfg.web, cfg.api, cfg.tests, cfg.long] });
+// the label's clamp, measured: the name's and the caret's rects on the label's line
+const labelGeom = () => page.evaluate(() => {
+  const r = (s) => { const e = document.querySelector(s); if (!e) return null; const b = e.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom, width: b.width, height: b.height }; };
+  return { head: r("#feed-focus .feed-focus-head"), name: r("#feed-focus .feed-focus-head .fname"), caret: r("#feed-focus .feed-focus-caret"),
+           nameText: document.querySelector("#feed-focus .feed-focus-head .fname")?.textContent ?? null };
+});
 const payload = payloadOf("working");
 // the page's own frame path; then ONE animation frame (the handler renders synchronously, there is no timer to wait out)
 const deliver = (m) => page.evaluate((m) => new Promise((res) => {
@@ -189,6 +202,8 @@ const survey = () => page.evaluate(() => {
     total: shown(q(".feed-focus-count")) ? q(".feed-focus-count").textContent : null,
     emptyShown: shown(q(".feed-focus-empty")), colsShown: shown(q(".feed-focus-cols")), divider: shown(q("hr.feed-focus-divider")),
     secOrder: byLeft(cols), boardOrder: byLeft(Array.from(document.querySelectorAll("#feed-cols .feed-col"))),
+    // the single-column layout's order: the VISIBLE blocks top to bottom (a hidden block's rect is all zeros)
+    secOrderY: cols.filter((c) => shown(c)).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map(keyOf),
     rects: Object.fromEntries(cols.map((c) => [keyOf(c), rect(c)])),
     collapsed: cols.filter((c) => c.classList.contains("col-collapsed")).map(keyOf),
     listShown: Object.fromEntries(cols.map((c) => [keyOf(c), shown(c.querySelector(".feed-col-list"))])),
@@ -373,13 +388,62 @@ withBlocked.asks.push(ask(cfg.ids.apiBlocked, cfg.api, "api", "needs_input", "no
 await deliver(withBlocked);
 await frame(); await park();
 out.stackedArrived = await survey();
+// (k) stacked, the section following the board (no order of its own): api has one Working card, so Working is the only
+// visible block; a 14 px jiggle on its chip must store NOTHING (the hidden blocks' zero rects used to read as slots)
+await boot(T347_BLOB);
+await page.setViewportSize({ width: 520, height: 760 });
+await deliver({ type: "activeChat", id: cfg.api });
+await frame(); await park();
+const jw = await page.locator("#feed-focus .col-asks .feed-col-head .fcol-chip").boundingBox();
+await page.mouse.move(jw.x + jw.width / 2, jw.y + jw.height / 2);
+await page.mouse.down();
+await page.mouse.move(jw.x + jw.width / 2, jw.y + jw.height / 2 + 14, { steps: 4 });
+await page.waitForTimeout(150);
+await page.mouse.up();
+await page.waitForTimeout(300); await park();
+out.stackedJiggle = await survey();
+// (l) stacked, api with a Blocked and a Completed card and NO Working card (Working hidden): a one-slot drag of Completed
+// down past Blocked must land it right behind Blocked, the hidden Working keeping its place last
+const twoBlocks = payloadOf("completed");
+twoBlocks.asks.push(ask(cfg.ids.apiBlocked, cfg.api, "api", "needs_input", "notes-api: choose the tag limit", now - 30));
+await deliver(twoBlocks);
+await frame(); await park();
+out.stackedTwo = await survey();
+const bl = await page.locator("#feed-focus .col-needsInput").boundingBox();
+const cc = await page.locator("#feed-focus .col-completed .feed-col-head .fcol-chip").boundingBox();
+await page.mouse.move(cc.x + cc.width / 2, cc.y + cc.height / 2);
+await page.mouse.down();
+await page.mouse.move(cc.x + cc.width / 2, bl.y + bl.height * 0.75, { steps: 16 });
+await page.waitForTimeout(200);
+await page.mouse.up();
+await page.waitForTimeout(300); await park();
+out.stackedOneSlot = await survey();
+// (m) the arrow keys skip a hidden neighbour: after (l) Completed is the last VISIBLE block (the hidden Working below
+// it), so ArrowDown on its chip moves nothing, and ArrowUp on Blocked (the first) moves nothing either
+await page.focus("#feed-focus .col-completed .feed-col-head .fcol-chip");
+await page.keyboard.press("ArrowDown");
+await frame(); await park();
+out.stackedKeyDown = await survey();
+await page.focus("#feed-focus .col-needsInput .feed-col-head .fcol-chip");
+await page.keyboard.press("ArrowUp");
+await frame(); await park();
+out.stackedKeyUp = await survey();
+// (n) the label's clamp, measured at 520 and 420 px with an 80-character session name: the caret sits on the name's line,
+// to its right; the name is cut with an ellipsis, never wrapped
+await deliver({ type: "activeChat", id: cfg.long });
+await frame(); await park();
+out.long520 = await labelGeom();
+await shotBoth("9-long-name-520");
+await page.setViewportSize({ width: 420, height: 760 });
+await frame(); await park();
+out.long420 = await labelGeom();
 await page.setViewportSize({ width: 1100, height: 760 });
 await deliver(payload);
 await deliver({ type: "activeChat", id: cfg.web });
 await frame(); await park();
 out.rowAgain = await survey();
 out.errors = errors;
-fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
+fs.writeFileSync(cfg.out, JSON.stringify(out));   // a file, not stdout: the survey record is past the size one pipe write carries whole
 await browser.close();
 process.exit(0);
 """
@@ -436,6 +500,7 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         with open(cfg, "w") as f:
             json.dump({"feed": "http://127.0.0.1:%d/feed?token=%s" % (self.port, self.token),
                        "web": SID_WEB, "api": SID_API, "tests": SID_TESTS, "ids": IDS,
+                       "long": SID_LONG, "longName": LONG_NAME, "out": os.path.join(self.lab, "result.json"),
                        "colors": {"web": {"bg": "#1EA1EB", "fg": "#ffffff"}, "api": {"bg": "#E0A526", "fg": "#000000"}},
                        "shots": os.environ.get("FEED_FOCUS_BLOCKS_SHOTS", "")}, f)
         driver = os.path.join(self.lab, "driver.mjs")
@@ -446,7 +511,10 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         if p.returncode == 3:
             raise unittest.SkipTest("no playwright browser on this box — the served guard needs one (CI installs none)")
         self.assertEqual(p.returncode, 0, "driver failed:\n" + p.stdout[-3000:] + p.stderr[-3000:])
-        line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
+        out_path = os.path.join(self.lab, "result.json")
+        self.assertTrue(os.path.exists(out_path), "driver wrote no result file:\n" + p.stdout[-3000:] + p.stderr[-3000:])
+        with open(out_path) as fh:
+            line = "RESULT:" + fh.read()
         self.assertIsNotNone(line, "driver printed no result:\n" + p.stdout[-3000:])
         r = json.loads(line[len("RESULT:"):])
         self.assertEqual(r.get("errors"), [], "the page threw nothing (an exception mid-render would skip the view-state write): %r" % r.get("errors"))
@@ -587,6 +655,31 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         self.assertEqual(self._col_of(sa["secCards"], "f:a:" + IDS["apiBlocked"]), "needsInput", "the arrived card sits in the returned block: %r" % sa["secCards"])
         ra = r["rowAgain"]
         self.assertEqual({k: v["shown"] for k, v in ra["chips"].items()}, {"asks": True, "needsInput": True, "completed": True}, "side by side again: every head stands: %r" % ra["chips"])
+        # ── (k) stacked, one visible block: a jiggle stores nothing (review round two, medium 1) ──
+        sj = r["stackedJiggle"]
+        self.assertEqual(sj["stored"]["focusOrder"], [], "a 14 px jiggle on the one visible chip stores no order (the hidden blocks are no slots): %r" % sj["stored"])
+        self.assertEqual({k: v["shown"] for k, v in sj["chips"].items()}, {"asks": True, "needsInput": False, "completed": False})
+        # ── (l) stacked, Working hidden: a one-slot drag of Completed past Blocked lands right behind Blocked ──
+        st2 = r["stackedTwo"]
+        self.assertEqual({k: v["shown"] for k, v in st2["chips"].items()}, {"asks": False, "needsInput": True, "completed": True}, "Working hidden, Blocked and Completed shown: %r" % st2["chips"])
+        so = r["stackedOneSlot"]
+        self.assertEqual(so["stored"]["focusOrder"], ["needsInput", "completed", "asks"],
+                         "Completed one slot down, behind Blocked; the hidden Working keeps its place last (the base stored it behind Working): stored %r, on screen %r, rects %r, two-block state %r"
+                         % (so["stored"], so["secOrder"], so["rects"], {k: (v["shown"], v["cursor"]) for k, v in st2["chips"].items()}))
+        # ── (m) the arrow keys skip a hidden neighbour ──
+        sk = r["stackedKeyDown"]
+        self.assertEqual(sk["stored"]["focusOrder"], ["needsInput", "completed", "asks"], "ArrowDown on the last visible block (Completed) moves nothing past the hidden Working: %r" % sk["stored"])
+        self.assertEqual(sk["secOrderY"], ["needsInput", "completed"], "on screen, Blocked then Completed, unchanged: %r" % sk["secOrderY"])
+        self.assertEqual(so["secOrderY"], ["needsInput", "completed"], "after the one-slot drag, Blocked then Completed on screen: %r" % so["secOrderY"])
+        self.assertEqual(r["stackedKeyUp"]["stored"]["focusOrder"], ["needsInput", "completed", "asks"], "ArrowUp on the first block moves nothing: %r" % r["stackedKeyUp"]["stored"])
+        # ── (n) the label's clamp, measured (review round two, medium 2): one line, the caret to the right of the name ──
+        for w, g in (("520", r["long520"]), ("420", r["long420"])):
+            nm, ca, hd = g["name"], g["caret"], g["head"]
+            self.assertEqual(g["nameText"], LONG_NAME)
+            self.assertGreater(ca["left"], nm["right"] - 0.5, "%s px: the caret sits to the right of the name: %r" % (w, g))
+            self.assertLess(abs((ca["top"] + ca["bottom"]) / 2 - (nm["top"] + nm["bottom"]) / 2), nm["height"] / 2, "%s px: the caret on the name's line: %r" % (w, g))
+            self.assertLess(nm["right"], hd["right"] + 0.5, "%s px: the name is clamped inside the head: %r" % (w, g))
+            self.assertLess(hd["height"], nm["height"] * 1.6, "%s px: the head is one line: %r" % (w, g))
         f2, fb = r["fresh2"], r["freshBoardDragged"]
         self.assertEqual((f2["secOrder"], f2["stored"].get("focusOrder")), (ROW_DEFAULT, []), "the reseeded state follows the board: %r" % f2["stored"])
         self.assertEqual((fb["boardOrder"], fb["secOrder"]), (["completed", "asks", "needsInput"], ["completed", "asks", "needsInput"]), "the section followed the board's drag: %r" % {k: fb[k] for k in ("boardOrder", "secOrder")})

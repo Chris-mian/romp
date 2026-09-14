@@ -117,6 +117,12 @@ test("the board's own column lookups are scoped to #feed-cols now that the secti
   assert.match(FEED, /else col\.style\.removeProperty\("--col-order"\);/, "the board's own statement stands as feed-col-fold.test.ts pins it");
   assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ k\)/, "the board drag's element lookup reads the board (BOARD_SLOTS.col)");
   assert.match(FEED, /const oc = slots\.col\(other\);/, "the drag walks its OWN container's elements: the board's columns for its chips, the section's blocks for theirs (T410)");
+  // review round two, medium 1: the slot math walks VISIBLE blocks only (a hidden block's rect is all zeros)
+  assert.match(FEED, /function visibleKeys\(order: string\[\], colOf: \(k: string\) => HTMLElement \| null\): string\[\] \{/, "the visible-blocks filter");
+  assert.match(FEED, /return r\.width > 0 \|\| r\.height > 0;/, "display: none is the zero rect; a folded block still has its head");
+  assert.match(FEED, /const visible = visibleKeys\(order, slots\.col\);\s*\n\s*const from = visible\.indexOf\(key\);/, "the drag's from-slot is the block's place among the visible ones");
+  assert.match(FEED, /for \(const other of visible\) \{/, "…and its midpoint walk visits the visible blocks alone");
+  assert.match(FEED, /applyOrderFlip\(placeVisible\(order, visible, nv\)\);/, "the re-slot keeps hidden blocks in their relative places");
   assert.match(FEED, /col: \(k\) => document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ k\),/, "FOCUS_SLOTS reads the section");
   assert.match(FEED, /put\(document\.querySelector\("#feed-cols \.feed-col\.col-" \+ key \+ " \.feed-col-head"\), d\.cols\[key\]\);/, "the freeze badges land on the board's heads");
   assert.doesNotMatch(FEED, /querySelector<HTMLElement>\("\.feed-col\.col-"/, "no bare column query survives to land on the section's copy first");
@@ -184,8 +190,8 @@ test("the three follow-ups after the review: Tab keeps the copy, Clear from a co
 // ── feed.css: the section's rules, through the variables ─────────────────────────────────────────────
 test("feed.css: #feed-focus, the head, the caption, the rule and the empty line exist, var() only", () => {
   assert.match(CSS, /#feed-focus \{ display: flex; flex-direction: column; gap: 8px; \}/);
-  assert.match(CSS, /\.feed-focus-head \{[^}]*font-size: 0\.72em; font-weight: 600; cursor: pointer; \}/,
-    "the label (T410): the board's column heads' size, the session headers' weight, no new size; the whole row folds on click");
+  assert.match(CSS, /\.feed-focus-head \{ display: flex; flex-wrap: nowrap;[^}]*font-size: 0\.72em; font-weight: 600; cursor: pointer; \}/,
+    "the label (T410): ONE line (nowrap, so the name's clamp can act: review round two), the board's column heads' size, the session headers' weight, no new size; the whole row folds on click");
   assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: calc\(1em \/ 0\.72\); font-weight: 600;/, "the name as a session name below: the headers' size, bold (its identity colour is set inline)");
   assert.match(CSS, /\.feed-focus-fold \{[^}]*font: inherit; color: var\(--dim\);[^}]*\}/, "the label text: a button in the head's font, dim like the column heads");
   assert.match(CSS, /\.feed-focus-caret \{[^}]*font-size: calc\(1em \/ 0\.72\); font-weight: 400; line-height: 1;/, "the caret at the block carets' compensated size");
@@ -241,8 +247,10 @@ test("the chip's arrow keys move the block one slot within the section, from the
   assert.match(fn, /const delta = e\.key === "ArrowLeft" \|\| e\.key === "ArrowUp" \? -1 : e\.key === "ArrowRight" \|\| e\.key === "ArrowDown" \? 1 : 0;/);
   assert.match(fn, /const fallback = FOCUS_SLOTS\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);\s*\n\s*const hadCustom = cur\.length === 3;\s*\n\s*const order = \(hadCustom \? cur : fallback\)\.slice\(\);/, "the section's own order, else what it follows — as the drag seeds itself");
   assert.match(fn, /e\.stopPropagation\(\);/, "the chip's key is the chip's alone: the card cursor's arrow keys must not also fire");
-  assert.match(fn, /FOCUS_SLOTS\.set\(!hadCustom && order\.join\(\) === fallback\.join\(\) \? \[\] : order\);/, "the drag's no-trace rule holds for a keyboard move: back on what the section follows, it keeps following");
-  assert.match(fn, /if \(from < 0 \|\| to < 0 \|\| to >= order\.length\) return;/, "bounded by the section's three slots");
+  assert.match(fn, /FOCUS_SLOTS\.set\(!hadCustom && next\.join\(\) === fallback\.join\(\) \? \[\] : next\);/, "the drag's no-trace rule holds for a keyboard move: back on what the section follows, it keeps following");
+  assert.match(fn, /const visible = visibleKeys\(order, FOCUS_SLOTS\.col\);\s*\n\s*const from = visible\.indexOf\(key\), to = from \+ delta;\s*\n\s*if \(from < 0 \|\| to < 0 \|\| to >= visible\.length\) return;/,
+    "one slot among the blocks ON SCREEN: a hidden neighbour is skipped, never swapped behind (review round two)");
+  assert.match(fn, /const next = placeVisible\(order, visible, nv\);/, "hidden blocks keep their relative places in the stored order");
   assert.match(fn, /FOCUS_SLOTS\.set\([^\n]*\);\s*\n\s*persistViewState\(\);/, "written to the section's order and persisted at once");
   assert.doesNotMatch(fn, /BOARD_SLOTS|colOrder =/, "never the board's order");
 });

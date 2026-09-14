@@ -414,16 +414,19 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
    head, the board's three column chips, a horizontal rule under it — and the board below stays exactly as it
    is (feed.ts renderFocusSection). The section's columns carry .feed-cols / .feed-col, so the row layout, the
    stacked container query above and the --col-order var all reach them unchanged; what differs is here: no
-   sticky heads (a miniature is short), the chip inert (the GRIP drags here, T410), the block furniture the
-   board has not got — grip, an always-on fold caret, a resize gutter — and the rule. Both themes read
-   through the variables. */
+   sticky heads (a miniature is short), the block furniture the board has not got — an always-on fold caret,
+   a resize gutter, a focusable chip for the arrow keys — and the rule (T410). Both themes read through the
+   variables. */
 #feed-focus { display: flex; flex-direction: column; gap: 8px; }
 /* the LABEL (T410b): "Current session: <name>", the section's fold control. The board's column heads' size
    (0.72em — no new size) at the session headers' weight (600); the label text dim like the column heads, the
    name bold in its identity colour (set inline, as the session headers do); the whole row folds on click, so
    it wears the pointer. The caret is the block carets' glyph at their compensated size (1em / 0.72, back to the
    feed's base exactly); the folded count rides .feed-col-count. */
-.feed-focus-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 2px 3px 0;
+/* ONE line, never wrapping (T410 review round two): with flex-wrap the oversize name wrapped onto its own line before
+   flex-shrink could clamp it, and the caret onto a third; nowrap lets the name's min-width: 0 and ellipsis do their
+   work, so the caret sits at the end of the label's line, to the right of the name, at 420 px too */
+.feed-focus-head { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 6px; margin: 2px 3px 0;
   font-size: 0.72em; font-weight: 600; cursor: pointer; }
 /* the name is styled as a session name is below it (the user 2026-09-14): the session headers' size (the card titles',
    the feed's base: 1em / 0.72 back up from the label's 0.72em, exact) and weight, its identity colour set inline; the card's name
