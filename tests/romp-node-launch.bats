@@ -90,12 +90,69 @@ EOF
     [[ "$output" != *"Library not loaded"* ]]                 # the probe's own noise is dropped
 }
 
-@test "ROMP_NO_NODE_COPY=1 skips the copy altogether and runs the manager on the system node" {
-    ROMP_NO_NODE_COPY=1 run "$LAUNCH" "$MANAGER" up
+@test "ROMP_NO_NODE_COPY=1 in service.env, the route the message names, skips the copy: the manager runs on the system node" {
+    # round two of issue 1600: the launcher read the variable before it parsed service.env, so the one route a
+    # launchd-started launcher has did nothing; the file is parsed first now. The environment is UNSET here.
+    export ROMP_SERVICE_ENV_FILE="$TEST_DIR/service.env"
+    printf 'ROMP_NO_NODE_COPY=1\n' > "$ROMP_SERVICE_ENV_FILE"
+    unset ROMP_NO_NODE_COPY
+    run "$LAUNCH" "$MANAGER" up
     [ "$status" -eq 0 ]
     [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
     [ ! -e "$RN" ]                                            # no copy was made
     [[ "$output" != *"cannot run here"* ]]                    # and nothing to say about one
+    # …and a quoted value, the shape the kernel's reader and systemd accept, reads the same
+    printf 'ROMP_NO_NODE_COPY="1"\n' > "$ROMP_SERVICE_ENV_FILE"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [ ! -e "$RN" ]
+}
+
+@test "ROMP_NO_NODE_COPY=1 in the environment skips the copy too (the second route)" {
+    ROMP_NO_NODE_COPY=1 run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [ ! -e "$RN" ]
+}
+
+@test "a copy that dies by SIGNAL from its new path (the real dyld abort) leaves no job-status line in the log" {
+    # dyld kills the process with SIGABRT, and coreutils timeout re-raises a child's signal on itself; a subshell
+    # whose last command dies by a signal dies by it too, and the launcher's shell then printed "Aborted (core
+    # dumped)" on its stderr, the manager log. The probe's subshell ends in an explicit exit, so the death is a
+    # code, and only the launcher's own message remains.
+    cat > "$BIN/node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$BIN/node") echo "NODE_V1 ran: \$*" ;;
+  *) kill -ABRT \$\$ ;;
+esac
+EOF
+    chmod +x "$BIN/node"
+    run "$LAUNCH" "$MANAGER" up
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [[ "$output" == *"cannot run here"* ]]
+    [[ "$output" != *"Aborted"* ]]
+    [[ "$output" != *"core dumped"* ]]
+}
+
+@test "the watchdog path (no timeout on PATH) leaves no ten-second sleep behind after a fast probe" {
+    # a stock mac has no coreutils timeout, so the launcher's watchdog subshell is the normal path there; killed
+    # after a fast probe, it used to leave its sleep 10 orphaned, one per launch. The launcher runs in its own
+    # session (setsid), so the orphan, if any, would still be in that process group after the launcher exits.
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    local bare="$TEST_DIR/bare"; mkdir -p "$bare"
+    local t
+    for t in sh cmp cp chmod mv mkdir rm sleep ps setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    ln -s "$BIN/node" "$bare/node"
+    PATH="$bare" run setsid -w sh -c 'printf "%s\n" "$$" > "$1"; exec "$2" "$3" up' _ "$TEST_DIR/pgid" "$LAUNCH" "$MANAGER"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    [ -n "$pgid" ]
+    # nothing of the launcher's session survives it: no sleep, no watchdog subshell
+    run bash -c 'ps -eo pgid=,comm= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
 }
 
 @test "service.env: KEY=VALUE lines reach the manager; comments and junk skipped" {

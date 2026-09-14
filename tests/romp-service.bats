@@ -88,13 +88,54 @@ EOF
     [[ "$output" != *"grant it to romp's OWN node copy"* ]]   # no grant advice for a copy that is not there
 }
 
-@test "install (macOS): ROMP_NO_NODE_COPY=1 makes no copy and removes a stale one" {
+@test "install (macOS): ROMP_NO_NODE_COPY=1 in service.env, the route the message names, makes no copy and removes a stale one" {
+    # round two of issue 1600: the install never parsed service.env (it bakes the path into the unit and the plist), so
+    # the line the messages name did nothing for the install's own copy. The environment is UNSET here; the file is
+    # the default one under this test's HOME (the setup clears XDG_CONFIG_HOME and ROMP_SERVICE_ENV_FILE).
     ROMP_OS_OVERRIDE=Darwin "$SVC" install >/dev/null        # a copy from a normal install
     local rn="$XDG_STATE_HOME/romp/romp-node"
     [ -x "$rn" ]
-    ROMP_NO_NODE_COPY=1 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    unset ROMP_NO_NODE_COPY
+    mkdir -p "$HOME/.config/romp"
+    printf '# knobs\nROMP_NO_NODE_COPY="1"\n' > "$HOME/.config/romp/service.env"
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
     [ "$status" -eq 0 ]
     [ ! -e "$rn" ]
+    [[ "$output" != *"grant it to romp's OWN node copy"* ]]   # no grant advice for a copy that is not there
+    # …and the line read from a non-default path, the one the plist and unit are told about
+    printf 'ROMP_NO_NODE_COPY=\n' > "$HOME/.config/romp/service.env"   # an empty value is OFF
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$rn" ]
+    export ROMP_SERVICE_ENV_FILE="$TEST_DIR/elsewhere/service.env"
+    mkdir -p "$TEST_DIR/elsewhere"; printf 'ROMP_NO_NODE_COPY=yes\n' > "$ROMP_SERVICE_ENV_FILE"
+    ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$rn" ]
+}
+
+@test "install (macOS): ROMP_NO_NODE_COPY=1 in the environment makes no copy either (the second route)" {
+    ROMP_NO_NODE_COPY=1 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+}
+
+@test "install (macOS): a node copy that dies by SIGNAL from the state dir leaves no job-status line in the output" {
+    local src="$TEST_DIR/abort-node"
+    cat > "$src" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$src") exit 0 ;;
+  *) kill -ABRT \$\$ ;;
+esac
+EOF
+    chmod +x "$src"
+    ROMP_NODE_SRC="$src" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ ! -e "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" == *"cannot run from"* ]]
+    [[ "$output" != *"Aborted"* ]]
+    [[ "$output" != *"core dumped"* ]]
 }
 
 @test "install (Linux): systemd unit is unchanged — no romp-node launcher (no TCC there)" {

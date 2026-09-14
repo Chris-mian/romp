@@ -771,6 +771,18 @@ and their memory limits, the perf log), never a key. The service reads the file
 at manager startup, so a change needs a manager restart. `ROMP_SERVICE_ENV_FILE`
 overrides the file's path.
 
+On macOS the login agent runs the manager under a copy of `node` named
+`romp-node` in the state directory, so that Full Disk Access can be granted to
+romp alone rather than to every script the shared `node` runs; the copy is
+refreshed when `node` changes (a re-grant follows a node upgrade). A `node` whose
+shared library is referenced relative to its own install (Homebrew's build, a
+version manager's shim) cannot run from the copy: the launcher probes the copy
+before using it and runs the manager on the system `node` instead, saying so once
+in the manager log, and `romp-service install` removes such a copy rather than
+leave it. `ROMP_NO_NODE_COPY=1` in `service.env` skips the copy altogether (the
+grant then reads `node`); the launcher reads the file before it decides, so the
+line works for a manager launchd started.
+
 The installed unit also sets `MALLOC_ARENA_MAX=2` for the manager and every kernel it spawns (2026-09-11): the kernel is a many-threaded Python process that rebuilds large record lists, and the allocator's per-thread arenas kept hundreds of megabytes of freed memory between restarts; two arenas return it. A line in `service.env` overrides it.
 
 Romp holds no API key (the user 2026-09-08, who wants romp to hold no key). A

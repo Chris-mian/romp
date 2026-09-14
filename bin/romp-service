@@ -206,21 +206,44 @@ EOF
 # each time. A copy that cannot run is removed here, with the consequence said (the manager runs on the
 # system node, so the Full Disk Access grant reads "node"); romp-node-launch probes too, so a copy that
 # stops running later never takes the manager down. ROMP_NO_NODE_COPY=1 skips the copy altogether.
+# The probe runs in a subshell that ends in an explicit exit: a node killed by a signal (the real dyld abort; timeout
+# re-raises the child's signal on itself) as the subshell's LAST command would kill the subshell by that signal too,
+# and the reaping shell would print "Aborted (core dumped)" into the install's output; ended with exit, the death is
+# an exit code. The watchdog subshell traps TERM and kills its own sleep, so a fast probe leaves no ten-second sleep
+# behind (round two of issue 1600).
 _node_runs() {   # $1 a node binary: exit 0 when it can run an empty program from where it sits, under a bound
     if command -v timeout >/dev/null 2>&1; then
-        timeout 10 "$1" -e '' </dev/null >/dev/null 2>&1
+        ( timeout 10 "$1" -e '' </dev/null >/dev/null 2>&1; exit $? ) 2>/dev/null
         return
     fi
-    "$1" -e '' </dev/null >/dev/null 2>&1 &
+    ( "$1" -e '' </dev/null >/dev/null 2>&1; exit $? ) 2>/dev/null &
     local pp=$! wd rc=0
-    ( sleep 10; kill "$pp" 2>/dev/null ) >/dev/null 2>&1 &
+    ( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep 10 & s=$!; wait "$s"; kill "$pp" 2>/dev/null ) >/dev/null 2>&1 &
     wd=$!
     wait "$pp" || rc=$?
     kill "$wd" 2>/dev/null || true
+    wait "$wd" 2>/dev/null || true
     return $rc
 }
+# The escape hatch, from the environment OR from service.env (round two of issue 1600): the install never parsed
+# that file (it bakes the path into the unit and the plist), so the line the messages name did nothing for the
+# install's own copy. Read the way the launcher reads it: KEY=VALUE, whitespace trimmed, one layer of matching
+# quotes off; any non-empty value is on.
+_no_node_copy() {
+    [[ -n "${ROMP_NO_NODE_COPY:-}" ]] && return 0
+    [[ -f "$SERVICE_ENV_FILE" ]] || return 1
+    local line val
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == ROMP_NO_NODE_COPY=* ]] || continue
+        val="${line#*=}"
+        val="${val#"${val%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"
+        case "$val" in \"*\") val="${val#\"}"; val="${val%\"}" ;; \'*\') val="${val#\'}"; val="${val%\'}" ;; esac
+        [[ -n "$val" ]] && return 0
+    done < "$SERVICE_ENV_FILE"
+    return 1
+}
 ensure_romp_node() {
-    if [[ -n "${ROMP_NO_NODE_COPY:-}" ]]; then
+    if _no_node_copy; then
         rm -f "$ROMP_NODE" "$ROMP_NODE.tmp" 2>/dev/null || true   # a stale copy would still be exec'd by an older launcher
         return 0
     fi
