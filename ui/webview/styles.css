@@ -385,7 +385,9 @@ body.chat-theme-yatharth #winframe { display: block; position: fixed; inset: 0; 
    2026-08-08): the strip trades its empty inter-tab space for room for the per-tab context gauge —
    the active/hover fills and per-tab padding still separate neighbours visually. (The Yatharth
    theme reopens a 3px seam — its flat tints need one; see its block below.) */
-#tabs { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 0; position: relative; }   /* relative: the per-row hairlines (T134) anchor to it */
+#tabs { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: stretch; gap: 1px 0; position: relative; }   /* relative: the per-row hairlines (T134) anchor to it; the 1px ROW gap (T417, the user 2026-09-14) is
+   each hairline's own pixel row: painted at a row's bottom edge with no gap, the line covered the top pixel of the row below, and the active tab's inset
+   identity ring there, which begins one pixel under that edge, read cut off at the top. The columns keep their 0 (Yatharth's own gap rule stands). */
 /* T134 (the user 2026-08-27, overturning the T125 survey's one-outer-line call — theirs to make):
    a full-bleed hairline under EVERY row of tabs, so a row above a short row never floats. Painted
    by paintTabRowLines (render.ts — CSS cannot select wrap rows); the last row is closed by

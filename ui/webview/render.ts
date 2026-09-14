@@ -6502,7 +6502,7 @@ function paintTabRowLines(bar: HTMLElement): void {
   for (const y of bottoms) {
     const line = el("div", "tab-row-line");
     line.style.top = y + "px";
-    bar.appendChild(line);
+    bar.appendChild(line);   // at the row's bottom edge: the strip's 1px row gap is the line's own pixel row (styles.css #tabs, T417)
   }
 }
 let tabRowObserver: ResizeObserver | null = null;
