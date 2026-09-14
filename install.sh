@@ -276,11 +276,12 @@ if [[ -z "${ROMP_NO_SERVICE:-}" ]]; then
             _svc_rc=0
             "$_svc" install || _svc_rc=$?
             if [[ "$_svc_rc" -eq 3 ]]; then
-                # romp-service's own code for one state: the agent is installed but its manager exited at once because a
-                # manager already serves on the control port outside the service (a hand-run romp up). The dashboard is UP
-                # on that manager; saying it would be dead was wrong. Still non-zero: the service is not the one running.
-                echo "install.sh: the login service is installed, but a manager already serving outside it holds the control port (the line above); the dashboard is up on that manager. The service retries once a minute and takes over when it stops; to hand over now, stop it (Ctrl+C in its terminal, or romp down then romp up) and re-run this install to verify." >&2
-                exit 1
+                # romp-service's own code for one state: the agent is installed but its manager exited with the refusal code
+                # because a manager already serves on the control port, most likely a hand-run romp up outside the service.
+                # romp IS serving, so the run goes on to the link and the end-of-run banner (round two of the install-wording
+                # fix: it used to exit here, before both) and exits non-zero at the end: the service is not the one running.
+                echo "install.sh: the login service is installed, but a manager already serving on the control port holds it (the line above), most likely a hand-run romp up outside the service. It retries once a minute and takes over when that manager stops; to hand over now, stop it (Ctrl+C in its terminal, or romp down then romp up) and re-run this install to verify." >&2
+                _svc_held=1
             elif [[ "$_svc_rc" -ne 0 ]]; then
                 echo "install.sh: romp-service install FAILED — romp-manager is NOT running; the dashboard will be dead on :29855." >&2
                 echo "  Retry by hand:  $_svc install" >&2
@@ -378,4 +379,8 @@ elif [[ -n "${ROMP_NO_SERVICE:-}" ]]; then
     echo "  then open the dashboard link:  romp url"
 else
     echo "  romp is still starting; print the dashboard link in a moment:  romp url"
+fi
+if [[ -n "${_svc_held:-}" ]]; then
+    echo "install.sh: exiting non-zero: the login service is installed but is not the manager that is serving (see the service's line above)." >&2
+    exit 1
 fi

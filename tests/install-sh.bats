@@ -343,11 +343,16 @@ SH
     unset ROMP_NO_SERVICE
     _svc_stub "$TEST_DIR/romp-service"
     export ROMP_SVC_LOG="$TEST_DIR/svc.log" ROMP_SVC_HELD=1
-    ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
+    ROMP_INSTALL_TOKEN_TRIES=1 ROMP_SERVICE_BIN="$TEST_DIR/romp-service" run "$ROMP_DIR/install.sh"
     [ "$status" -ne 0 ]                                            # the service is still not the one running
-    [[ "$output" == *"a manager already serving outside it holds the control port"* ]]
-    [[ "$output" == *"the dashboard is up on that manager"* ]]
+    [[ "$output" == *"a manager already serving on the control port holds it"* ]]
+    [[ "$output" == *"most likely a hand-run romp up outside the service"* ]]
     [[ "$output" != *"dashboard will be dead"* ]]
+    [[ "$output" != *"dashboard is up"* ]]                          # the control port proves a manager, not the dashboard
+    # round two: romp IS serving in this state, so the run goes on to the finish line (the link, or how to print it) and
+    # the end-of-run banner, and exits non-zero at the END, not before them
+    [[ "$output" == *"romp url"* ]]
+    [[ "$output" == *"exiting non-zero"* ]]
     grep -qx install "$TEST_DIR/svc.log"
 }
 
