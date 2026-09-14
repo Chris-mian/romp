@@ -84,54 +84,57 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
   closeTagMenu();
   if (reopen) return;
   const menu = document.createElement("div");
+  menu.setAttribute("role", "menu");
   menu.dataset.tagMenu = "1";
   menu.setAttribute("style",
     "position:fixed;z-index:1001;min-width:180px;padding:4px;background:var(--menu-bg, #252526);" +
     "border:1px solid var(--menu-border, rgba(255,255,255,0.12));border-radius:var(--radius-menu, 6px);box-shadow:var(--shadow-menu, 0 4px 12px rgba(0,0,0,0.35));" +
     "font-size:12px;line-height:1.4;color:var(--menu-fg, #cccccc);user-select:none;");
   menu.addEventListener("click", (e) => e.stopPropagation());
+  menuKeys(menu, anchor);   // the house rows grammar (T413 round two): Escape back to the button, the arrows walking the rows
   const build = () => {
+    const focusAt = Array.prototype.indexOf.call(menu.children, document.activeElement);   // the focused row's place, kept across the repaint a toggle causes
     menu.textContent = "";
     const lens = opts.lens();
     // (the scope caption retired 2026-08-25 — the user: the button tooltip already names the
     // surface, so it is the ONE scope carrier and the menu opens straight onto its rows)
     // a plain row (All, (no tags), the group switch, Configure tags…): the label, the ✓ when current; the
     // tags are not rows any more but chips (below), so the colour dot the tag rows wore is gone (T283)
-    const row = (label: string, current: boolean, dim?: boolean) => {
+    // a plain row (All, the group switch, Configure tags…): the label, the ✓ when current; `checkbox` makes it the house switch
+    // (role menuitemcheckbox, aria-checked, the two-state mark), which (no tags), a selection member, is
+    const row = (label: string, current: boolean, dim?: boolean, checkbox?: boolean) => {
       const r = document.createElement("div");
-      r.setAttribute("style", "padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;"
+      r.setAttribute("style", "padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;outline:none;"
         + (dim ? "opacity:0.85;" : ""));
       r.appendChild(document.createTextNode(label));
-      if (current) {
-        const c = document.createElement("span");
-        c.textContent = "✓";
-        c.setAttribute("style", "position:absolute;right:6px;top:50%;transform:translateY(-50%);"
-          + "background:var(--check-bg, #1EA1EB);color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;"
-          + "font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1;");
-      r.appendChild(c);
-      }
+      if (checkbox) { r.setAttribute("role", "menuitemcheckbox"); r.setAttribute("aria-checked", current ? "true" : "false"); r.appendChild(checkMark(current)); }
+      else { r.setAttribute("role", "menuitem"); if (current) r.appendChild(checkMark(true)); }
       r.addEventListener("mouseenter", () => { r.style.background = "var(--menu-hover, rgba(255,255,255,0.09))"; });
       r.addEventListener("mouseleave", () => { r.style.background = "transparent"; });
+      focusableRow(r);
       menu.appendChild(r);
       return r;
     };
     row("All", lensAll(lens)).addEventListener("click", () => opts.onApply({ all: true }, true));
-    row("(no tags)", !lensAll(lens) && !!lens.none)
+    row("(no tags)", !lensAll(lens) && !!lens.none, false, true)
       .addEventListener("click", () => { opts.onApply(toggleLens(lens, "none"), false); build(); });
     for (const u of opts.unions()) {
-      // one tag per line, the chip at the left: the chip IS the toggle (aria-pressed), full colour when
-      // selected, faded when not — the same pill tagChip builds for every other surface
+      // one tag per line, the chip at the left, lit when selected and faded when not (the same pill tagChip builds for every
+      // other surface); the ROW is the control, the house switch with the two-state mark at its right (T413, the user
+      // 2026-09-14: a checkbox beside each tag, the lit state kept), so a reader hears one checkbox per tag
       const on = !lensAll(lens) && (lens.tags || []).includes(u.name);
       const r = document.createElement("div");
-      r.setAttribute("style", "padding:3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;");
+      r.setAttribute("style", "padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;outline:none;");
+      r.setAttribute("role", "menuitemcheckbox");
+      r.setAttribute("aria-checked", on ? "true" : "false");
+      r.setAttribute("title", on ? "selected: click to drop it from the filter" : "click to add it to the filter");
       const chip = tagChip(u.name, u.color || null, { off: !on });
-      chip.setAttribute("role", "button");
-      chip.setAttribute("aria-pressed", on ? "true" : "false");
-      chip.setAttribute("title", on ? "selected — click to drop it from the filter" : "click to add it to the filter");
       r.appendChild(chip);
+      r.appendChild(checkMark(on));
       r.addEventListener("mouseenter", () => { r.style.background = "var(--menu-hover, rgba(255,255,255,0.09))"; });
       r.addEventListener("mouseleave", () => { r.style.background = "transparent"; });
       r.addEventListener("click", () => { opts.onApply(toggleLens(lens, { tag: u.name }), false); build(); });
+      focusableRow(r);
       menu.appendChild(r);
     }
     if (opts.groupToggle || opts.onConfigure) {
@@ -143,15 +146,77 @@ export function openTagMenu(anchor: HTMLElement, opts: TagMenuOpts): void {
       row(opts.groupToggle.label, opts.groupToggle.on(), true).addEventListener("click", () => { opts.groupToggle!.toggle(); build(); });
     if (opts.onConfigure)
       row("Configure tags…", false, true).addEventListener("click", () => { closeTagMenu(); opts.onConfigure!(); });
+    const back = menu.children[focusAt] as HTMLElement | undefined;   // the same place after the repaint: the rows rebuild in one order
+    if (back && back.tabIndex >= 0) back.focus();
   };
   build();
   document.body.appendChild(menu);
   const r = anchor.getBoundingClientRect();
   const mw = menu.offsetWidth || 200;
   menu.style.left = Math.max(6, Math.min(Math.round(r.left), window.innerWidth - mw - 8)) + "px";
+  // the many-tags case (T413; the rule of 2026-09-09): dozens of tags make a menu taller than the room, and one placed over its
+  // own button took the release, so the click, fired at the common ancestor, closed it. The menu opens BELOW the button and caps
+  // its height to the room there (above only when there is more room above), scrolling within itself; it never covers the button.
   const mh = menu.offsetHeight || 0;
-  menu.style.top = (r.bottom + 4 + mh > window.innerHeight - 8 ? Math.max(8, Math.round(r.top) - mh - 4) : Math.round(r.bottom + 4)) + "px";
+  const below = window.innerHeight - 8 - (r.bottom + 4), above = r.top - 4 - 8;
+  if (mh <= below || below >= above) { menu.style.top = Math.round(r.bottom + 4) + "px"; menu.style.maxHeight = Math.max(120, Math.floor(below)) + "px"; }
+  else { const h = Math.min(mh, Math.max(120, Math.floor(above))); menu.style.top = Math.max(8, Math.round(r.top) - h - 4) + "px"; menu.style.maxHeight = h + "px"; }
+  menu.style.overflowY = "auto";
+  (menu.children[0] as HTMLElement | undefined)?.focus();   // the first row takes the focus on open (the house rows menu's rule); the button's press prevents its own focus, so nothing fights it
   openMenu = menu;
+}
+
+/** The bounded run for a many-tags selection (T413): the first `limit` items and how many follow; 0 = no limit. */
+export function chipRun<T>(items: T[], limit: number): { shown: T[]; more: number } {
+  if (!limit || items.length <= limit) return { shown: items.slice(), more: 0 };
+  return { shown: items.slice(0, limit), more: items.length - limit };
+}
+
+/** The menus' mark, stated once (the tag menu and the rows menu): the house ✓-in-circle from --check-bg when on; off, an empty
+ *  ring in the menu's hairline, so a CHECKBOX row reads in both states (T413, the user 2026-09-14). An exclusive pick (All) or
+ *  an action row shows the ✓ alone when current and nothing otherwise. `data-check` carries the state for a reader of the DOM. */
+function checkMark(on: boolean): HTMLElement {
+  const c = document.createElement("span");
+  c.setAttribute("data-check", on ? "true" : "false");
+  c.textContent = on ? "✓" : "";
+  c.setAttribute("style", "position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;"
+    + "display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:9px;font-weight:900;"
+    + (on ? "background:var(--check-bg, #1EA1EB);color:#fff;" : "border:1px solid var(--text-muted, #9aa0a6);background:transparent;"));   // off: the muted text, 3 to 1 against the menu ground in both themes (the hairline read at 1.5, round two low 1)
+  return c;
+}
+
+/** The element a closing menu hands the focus to: `anchor` while it is in the document, else its live replacement (a press may
+ *  rebuild the anchor's host: the strip re-renders on a lens change), found by id, else by tag and classes among the VISIBLE
+ *  matches (the phone header mounts a hidden twin of the strip's tags button), else null (a detached focus() would drop it on the body). */
+function liveAnchorOf(anchor: HTMLElement): HTMLElement | null {
+  if (anchor.isConnected !== false) return anchor;
+  if (anchor.id) return document.getElementById(anchor.id);
+  const cls = String(anchor.className || "").split(/\s+/).filter(Boolean).map((c) => "." + c).join("");
+  if (!cls) return null;
+  const all = Array.from(document.querySelectorAll(anchor.tagName.toLowerCase() + cls)) as HTMLElement[];
+  return all.find((x) => x.getClientRects().length > 0) || all[0] || null;
+}
+/** The house rows grammar for a menu's keys (T405's rows menu; the tags menu since T413 round two): Escape closes the menu and hands
+ *  the focus back to the anchor; ArrowDown and ArrowUp walk the focusable rows, Home and End jump to the ends, neither end wraps. */
+function menuKeys(menu: HTMLElement, anchor: HTMLElement): void {
+  menu.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); closeTagMenu(); liveAnchorOf(anchor)?.focus(); return; }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+    const rows = (Array.from(menu.children) as HTMLElement[]).filter((c) => c.tabIndex >= 0);
+    if (!rows.length) return;
+    e.preventDefault(); e.stopPropagation();
+    const at = rows.indexOf(document.activeElement as HTMLElement);
+    const to = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : e.key === "ArrowDown" ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1);
+    rows[to].focus();
+  });
+}
+/** A row that takes the focus and the keys (the same grammar): tabindex 0, the hover wash while focused, Enter and Space pressing
+ *  it as a click would (the row's click listeners are the press). */
+function focusableRow(r: HTMLElement): void {
+  r.tabIndex = 0;
+  r.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); r.click(); } });
+  r.addEventListener("focus", () => { r.style.background = "var(--menu-hover, rgba(255,255,255,0.09))"; });
+  r.addEventListener("blur", () => { r.style.background = "transparent"; });
 }
 
 /** The shared tag-icon button (the user chose a tag glyph): identical across surfaces. It wears
@@ -168,8 +233,12 @@ export function tagMenuButton(title: string, open: (btn: HTMLElement) => void): 
   btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none">'
     + '<path d="M2 7.5 L7.5 2.5 H14 V9 L8.5 14 Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>'
     + '<circle cx="11" cy="5.5" r="1.2" fill="currentColor"/></svg>';
+  btn.setAttribute("aria-haspopup", "menu");
   btn.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); open(btn); });
   btn.addEventListener("click", (e) => e.stopPropagation());   // the click-and-hold rule: swallow the opener's own click
+  // the keyboard's open (T413 round two): the press opens on the pointer and swallows its click, so Enter on the focused button did
+  // nothing at all; Enter, Space and ArrowDown open it (the menu-button grammar), and the menu's first row takes the focus
+  btn.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); open(btn); } });
   return btn;
 }
 
@@ -225,7 +294,8 @@ export function tagChip(label: string, color?: string | null, opts?: { inheritSi
 export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement | null,
                               lens: TagLens, unions: { name: string; color?: string | null; members: string[]; }[],
                               onApply: (l: TagLens) => void,
-                              mode: "inline" | "class" = "inline"): void {
+                              mode: "inline" | "class" = "inline",
+                              opts?: { limit?: number; tagsOnly?: boolean }): void {   // T413, the strip: the first `limit` chips then one "+N more"; tagsOnly draws no chip for the none pick
   const narrowed = !lensAll(lens);
   if (mode === "class") btn.classList.toggle("on", narrowed);
   else {
@@ -235,9 +305,11 @@ export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement | null,
     btn.style.background = narrowed ? TAG_BTN_WASH : "transparent";
   }
   btn.setAttribute("aria-pressed", narrowed ? "true" : "false");
-  if (!chipsHost) return;   // the button's state alone (the chat strip since T405, which displays no chips): nothing built, nothing to drop
+  if (!chipsHost) return;   // the button's state alone (the strip in group mode: the headings carry the tags): nothing built, nothing to drop
   chipsHost.textContent = "";
-  for (const c of lensChips(lens, unions as never)) {
+  const all = lensChips(lens, unions as never).filter((c) => !(opts && opts.tagsOnly && c.pick === "none"));
+  const run = chipRun(all, (opts && opts.limit) || 0);
+  for (const c of run.shown) {
     const chip = tagChip(c.label, c.color);
     const x = document.createElement("span");
     x.textContent = "✕";
@@ -246,6 +318,15 @@ export function syncTagFilter(btn: HTMLElement, chipsHost: HTMLElement | null,
     x.addEventListener("click", (e) => { e.stopPropagation(); onApply(toggleLens(lens, c.pick)); });
     chip.appendChild(x);
     chipsHost.appendChild(chip);
+  }
+  if (run.more) {
+    // the rest as one count in the user's terms, the plain chip (no colour: the dim), its title naming them; a press opens the
+    // menu through the button, which opens on the pointer's press (its click is swallowed), so the press is what is dispatched
+    const more = tagChip("+" + run.more + " more", null);
+    more.setAttribute("class", "tag-chip-more");
+    more.title = all.slice(run.shown.length).map((c) => c.label).join(", ");
+    more.addEventListener("click", (e) => { e.stopPropagation(); if (typeof PointerEvent === "function") btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true })); else (btn as HTMLButtonElement).click(); });
+    chipsHost.appendChild(more);
   }
 }
 

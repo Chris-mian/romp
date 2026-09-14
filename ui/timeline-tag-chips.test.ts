@@ -1,7 +1,8 @@
 // THE TIMELINE'S VIEWS MENU RENDERS EACH TAG AS ITS CHIP ACTING AS A TOGGLE (T283b, the user 2026-09-09: menus wear
 // one vocabulary): the shared tag-lens menu (ui/webview/tag-menu.ts, T283) made each union tag the tag chip itself,
-// aria-pressed on the chip, selected = full colour, unselected = faded at 0.45 with its colour kept, one tag per line
-// with the chip at the left, All and (no tags) keeping the ✓ row grammar. This pane inlines its own copy of that
+// selected = full colour, unselected = faded at 0.45 with its colour kept, one tag per line with the chip at the left, All
+// and (no tags) keeping the ✓ row grammar; since T413 (the user 2026-09-14) the ROW is the control, the house switch
+// (menuitemcheckbox, aria-checked) with a two-state mark at its right (the ✓ when selected, an empty ring when not). This pane inlines its own copy of that
 // menu (it may live in Obsidian's document and loads no module), so the copy mirrors the chips with the RESOLVED
 // palette values it already carries. Executed over the house three-helper host (the tagbtn-click harness), plus
 // drift pins between the two menus' chip and row shapes. Synthetic sessions and tags only.
@@ -29,6 +30,7 @@ function makeNode(tag: string): any {
     querySelector() { return null; }, querySelectorAll() { return []; },
     getBoundingClientRect() { return { width: 32, height: 18, left: 8, top: 400, right: 40, bottom: 418 }; },
     closest() { return null; }, focus() {},
+    click() { if (n._listeners.click) n._listeners.click({ stopPropagation() {}, preventDefault() {} }); },
     createEl(t: string, o: any) { const e = makeNode(t); if (o && o.cls) e.classList.add(o.cls); if (o && o.text) e.textContent = o.text; this.appendChild(e); return e; },
     createDiv(o: any) { return this.createEl("div", o); }, createSpan(o: any) { return this.createEl("span", o); },
   };
@@ -68,10 +70,11 @@ function panelWith(lens: any): any {
 const openMenu = (panel: any) => { panel._openViewsMenu(makeNode("button")); return panel._viewsMenu; };
 const rows = (menu: any) => menu.children.filter((c: any) => c.tag === "div");
 const text = (n: any): string => (n.tag === "#text" ? n.textContent : (n.textContent || "")) + (n.children || []).map(text).join("");
-const chipOf = (row: any) => (row.children || []).find((c: any) => c.tag === "span" && "aria-pressed" in c._attrs);
+const chipOf = (row: any) => (row.children || []).find((c: any) => c.tag === "span" && /border:1px solid/.test(c._attrs.style || "") && !("data-check" in c._attrs));
+const markOf = (row: any) => (row.children || []).find((c: any) => c.tag === "span" && "data-check" in c._attrs);
 const hasCheck = (row: any) => (row.children || []).some((c: any) => c.tag === "span" && c.textContent === "✓");
 
-test("executed: each tag is its own chip acting as a toggle, the selected one full colour, the other faded with its colour kept", () => {
+test("executed: each tag row is the house switch (menuitemcheckbox, aria-checked, the ✓ or ring mark), its chip full colour when selected and faded with its colour kept when not", () => {
   const panel = panelWith({ tags: ["infra"] });
   const menu = openMenu(panel);
   const r = rows(menu);
@@ -79,16 +82,21 @@ test("executed: each tag is its own chip acting as a toggle, the selected one fu
   const infra = chipOf(r[2]), qa = chipOf(r[3]);
   assert.ok(infra && qa, "the two tags render as chips, one per row, after All and (no tags)");
   assert.equal(infra.textContent, "infra"); assert.equal(qa.textContent, "qa");
-  assert.equal(infra._attrs["aria-pressed"], "true"); assert.equal(infra._attrs.role, "button");
+  assert.equal(r[2]._attrs.role, "menuitemcheckbox"); assert.equal(r[2]._attrs["aria-checked"], "true", "the row is the checkbox and reads selected");
+  assert.equal(r[3]._attrs.role, "menuitemcheckbox"); assert.equal(r[3]._attrs["aria-checked"], "false");
+  assert.equal(infra._attrs["aria-pressed"], undefined, "the chip carries no control role of its own: the row does"); assert.equal(infra._attrs.role, undefined);
   assert.doesNotMatch(infra._attrs.style, /opacity/, "a selected chip stands at full opacity");
   assert.equal(infra.classList.contains("tag-chip-off"), false);
   assert.match(infra._attrs.style, /border:1px solid #DD42FF;color:#DD42FF;/, "the chip keeps the tag's own colour");
-  assert.equal(qa._attrs["aria-pressed"], "false");
   assert.equal(qa.classList.contains("tag-chip-off"), true, "an unselected chip wears the faded class");
   assert.match(qa._attrs.style, /opacity:0\.45;/, "…and paints the same fade inline: this host loads no sheet");
   assert.match(qa._attrs.style, /border:1px solid #3355aa;color:#3355aa;/, "faded, not recoloured");
-  for (const row of [r[2], r[3]]) assert.equal(hasCheck(row), false, "the tag rows carry no ✓: the chip's state IS the mark");
-  assert.match(r[2]._attrs.style, /^padding:3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;$/, "the chip row's shape");
+  const on = markOf(r[2]), off = markOf(r[3]);
+  assert.ok(on && off, "each tag row carries the mark");
+  assert.equal(on._attrs["data-check"], "true"); assert.equal(on.textContent, "✓", "selected: the ✓-in-circle (the palette's check)");
+  assert.equal(off._attrs["data-check"], "false"); assert.equal(off.textContent, "", "unselected: an empty ring");
+  assert.match(off._attrs.style, /border-radius:50%;box-sizing:border-box;border:1px solid #9aa0a6;/, "the ring in the palette's muted text (round two: the hairline read at 1.5 to 1 against the menu ground; this clears 3)");
+  assert.match(r[2]._attrs.style, /^padding:3px 22px 3px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;display:flex;align-items:center;position:relative;outline:none;$/, "the chip row's shape, room for the mark, the focus ring the hover wash");
   panel._closeViewsMenu();
 });
 
@@ -116,12 +124,45 @@ test("executed: clicking a chip's row toggles that tag, the menu stays open and 
   assert.deepEqual(applied[0].actives.timeline.tags, ["infra", "qa"]); assert.ok(!applied[0].actives.timeline.none);
   assert.equal(panel._viewsMenu, menu, "the menu stayed open");
   assert.equal(rows(menu).length, before, "repainted in place: the same rows");
-  assert.equal(chipOf(rows(menu)[3])._attrs["aria-pressed"], "true", "the chip now reads selected");
+  assert.equal(rows(menu)[3]._attrs["aria-checked"], "true", "the row now reads selected"); assert.equal(markOf(rows(menu)[3]).textContent, "✓");
   assert.equal(chipOf(rows(menu)[3]).classList.contains("tag-chip-off"), false);
   rows(menu)[2]._listeners.click();          // infra: on → off
-  assert.equal(chipOf(rows(menu)[2])._attrs["aria-pressed"], "false");
+  assert.equal(rows(menu)[2]._attrs["aria-checked"], "false"); assert.equal(markOf(rows(menu)[2]).textContent, "");
   assert.equal(chipOf(rows(menu)[2]).classList.contains("tag-chip-off"), true);
   panel._closeViewsMenu();
+});
+
+// ROUND TWO of T413 (the manager's read of 2026-09-14): the shared menu took the house rows menu's keyboard grammar, and so does
+// this copy: role menu; rows that take focus (tabindex 0) and keys (Enter and Space press, ArrowDown and ArrowUp walk, Home and
+// End jump), the first row focused on open; Escape closes and hands the focus back to the button.
+test("executed: the inlined menu takes the house rows menu's keyboard grammar: role menu, rows with focus and keys, Escape back to the button", () => {
+  const panel = panelWith({ tags: ["infra"] });
+  const anchor = makeNode("button"); let refocused = 0; anchor.focus = () => { refocused++; };
+  let focusedRow: any = null;
+  panel._openViewsMenu(anchor); const menu = panel._viewsMenu;
+  assert.equal(menu._attrs.role, "menu", "the menu's role");
+  const r = rows(menu).filter((x: any) => x._attrs.role);
+  assert.deepEqual(r.map(text).map((t: string) => t.replace("✓", "")), ["All", "(no tags)", "infra", "qa", "Group by tag", "Configure tags…"]);
+  for (const x of r) {
+    assert.equal(x.tabIndex, 0, text(x) + ": the row takes focus");
+    assert.ok(x._listeners.keydown, text(x) + ": and the keys");
+    assert.match(x._attrs.style, /outline:none;/, text(x) + ": the focus ring is the hover wash");
+    x.focus = () => { focusedRow = x; };
+  }
+  assert.ok(menu._listeners.keydown, "the menu's own handler: Escape and the walk");
+  const key = (k: string) => ({ key: k, target: null as any, prevented: false, stopped: false, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } });
+  // the walk: from the first row, ArrowDown lands on the second (the menu's handler reads the focused row from the event's target)
+  const d = key("ArrowDown"); d.target = r[0]; menu._listeners.keydown(d);
+  assert.equal(focusedRow, r[1], "ArrowDown moves to the next row"); assert.ok(d.prevented);
+  const e = key("End"); e.target = r[1]; menu._listeners.keydown(e); assert.equal(focusedRow, r[5], "End jumps to the last");
+  const u = key("ArrowDown"); u.target = r[5]; menu._listeners.keydown(u); assert.equal(focusedRow, r[5], "the end holds");
+  // Space on the qa row toggles it, the menu staying
+  const applied: any[] = []; panel._setLens = (blob: any) => { applied.push(blob); panel.data.views.actives = blob.actives; };
+  const sp = key(" "); r[3]._listeners.keydown(sp);
+  assert.deepEqual(applied[0].actives.timeline.tags, ["infra", "qa"], "Space pressed the row"); assert.ok(sp.prevented && sp.stopped);
+  assert.equal(panel._viewsMenu, menu, "the menu stayed open");
+  const esc = key("Escape"); esc.target = r[3]; menu._listeners.keydown(esc);
+  assert.equal(panel._viewsMenu, null, "Escape closed it"); assert.equal(refocused, 1, "and handed the focus back to the button"); assert.ok(esc.stopped);
 });
 
 test("drift pins: the inlined chip is the shared tagChip's pill up to the colour, and the fade and row shape match the shared menu", () => {
@@ -153,7 +194,7 @@ test("drift pins: the inlined chip is the shared tagChip's pill up to the colour
   const cls = /export const TAG_CHIP_OFF_CLASS = "([^"]+)";/.exec(MENU);
   assert.ok(cls, "the shared state class is where the pin expects it");
   assert.equal(cls![1], "tag-chip-off", "the shared state class");
-  const row = /r\.setAttribute\("style", "([^"]+)"\);\s*\n\s*const chip = tagChip\(u\.name/.exec(MENU);
+  const row = /r\.setAttribute\("style", "([^"]+)"\);\s*\n(?:\s*r\.setAttribute\([^\n]*\n)*\s*const chip = tagChip\(u\.name/.exec(MENU);   // T413: the row's role, state and title sit between the style and the chip
   assert.ok(row, "the shared chip row is where the pin expects it");
   assert.equal(/const TAG_CHIP_ROW_STYLE = '([^']+)';/.exec(SRC)![1], row![1], "the chip row's shape");
   // the shared tag rows never carried a dot after T283; this copy's plain rows carry none either

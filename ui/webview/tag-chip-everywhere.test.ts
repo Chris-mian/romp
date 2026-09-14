@@ -54,7 +54,7 @@ test("every tag surface builds through tagChip", () => {
   assert.match(head, /const chip = tagChip\(name, sec\.color, \{ inheritSize: true \}\);/, "the strip's group row");
   const filt = MENU.slice(MENU.indexOf("export function syncTagFilter("));
   assert.match(filt, /const chip = tagChip\(c\.label, c\.color\);/, "the filter chips: the strip's, the feed's and the outline's, one builder");
-  assert.match(RENDER, /syncTagFilter\(tagBtn, null, surfaceLens\(v, "chat"\)/, "the strip's filter mount goes through it (no chips host since T405: the button's state alone)");
+  assert.match(RENDER, /syncTagFilter\(tagBtn, plan\.sectioned \? null : tagChipsHost, surfaceLens\(v, "chat"\)/, "the strip's filter mount goes through it (T413: the selected tags as chips outside group mode, none while grouping)");
   assert.match(FEED, /syncTagFilter\(b, ch, feedLens, lensUnions\(feedTagViews\) as never/, "the feed's");
   assert.match(OUTLINE, /syncTagFilter\(tagBtn, chipsHost, surfaceLens\(fleetViews, "outline"\)/, "the outline's");
   const lensMenu = MENU.slice(MENU.indexOf("export function openTagMenu("), MENU.indexOf("export const TAG_CHIP_OFF_CLASS"));
