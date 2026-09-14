@@ -12631,7 +12631,10 @@ function runPrebuild(deadline: IdleDeadline): void {
   // is already in flight (a 1 MB full ahead of the active tab's 2 KB tail on a slow link delays that tail;
   // one at a time bounds it). The upsert that lands it calls schedulePrebuild, so the chain re-arms itself
   // one tab per idle until the set is empty. A click always wins: same message, awaitingFull dedups.
-  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), tabInView);
+  // …and never a tab the strip does not SHOW (the user 2026-09-14: hidden tabs are not built until shown): tabInView covers the views and
+  // another column's holds, stripShows adds the #only= filter on top, the one predicate the strip itself lists by; a tab the filter reveals
+  // later is prefetched then, or loads on the switch that shows it
+  const next = nextPrefetch(skeletonTabs, activeId, awaitingFull, document.hidden || paneHidden(), (id) => tabInView(id) && stripShows(id));
   if (next) requestFullSession(next, "prefetch");
   const viewState = (id: string): ViewState | null => {
     if (skeletonTabs.ids.has(id)) return null;   // a skeleton's stale session must never get its DOM pre-built

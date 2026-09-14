@@ -813,5 +813,27 @@ class SkeletonReconnect(unittest.TestCase):
             km._PENDING_REVEAL[0] = None
 
 
+
+class RestartDiet(unittest.TestCase):
+    """The user's ruling (2026-09-14): after a kernel restart's reload the selected tab builds first, the strip's other tabs spread over later
+    refreshes, hidden tabs not until shown. The client half: the main chat pane's FIRST dial after a restart reload is a skeleton dial
+    (the later column's shape), so the kernel's existing handshake serves the strip with the skeleton set, one full for the active tab and
+    a status per other tab. Pinned in the served shim's source: the reload core keeps the reason in a durable record (announce() removes
+    the announce record before a pane dials, and a pane inside the shell never announces), the shim reads it fresh within two minutes for
+    a main pane that is not a column, and the dial carries skeleton=1 on the first socket alone (a redial dials as before)."""
+
+    def test_the_first_dial_after_a_restart_reload_is_a_skeleton_dial(self):
+        src = open(os.path.join(BIN, "romp-kernel")).read()
+        fire = src[src.index("function fire(){"):src.index("var heldFor=null;")]
+        self.assertIn("sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,t:Date.now()}))", fire,
+                      "the reload core keeps the reason durably when it fires (the announce record is consumed before the panes dial)")
+        self.assertIn("""var RESTART_DIET=false;try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||"null");RESTART_DIET=!!(rr&&rr.reason==='restart'&&typeof rr.t==='number'&&Date.now()-rr.t<120000&&!COL&&!SKEL);}catch(e){}""", src,
+                      "the shim reads the durable reason: a restart within two minutes, a main pane, not a column, not already a skeleton view")
+        self.assertIn("""((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":"")""", src,
+                      "the dial carries skeleton=1 for a column, or for the main pane's FIRST socket after a restart reload (a redial dials as before)")
+        # the kernel side the dial lands on is unchanged and already pinned above: skeleton=1 without reconnect arms skeletonOnReady at the
+        # handshake, and the ready arm serves the strip with the skeleton set, one full for the active tab, a status per other tab
+        self.assertIn('client["skeletonOnReady"] = True', src)
+
 if __name__ == "__main__":
     unittest.main()

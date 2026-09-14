@@ -284,3 +284,9 @@ test("the landing notice's pulse is one-shot (the follow-up after PR 1584, low 1
     "the show path drops a pulse the hide cut short before the element is shown again");
   assert.match(CSS, /\.tx-landing-notice\.pulse \{ animation: tx-notice-pulse 500ms ease-out; \}/, "the animation itself is unchanged: one short pulse");
 });
+
+
+test("the skeleton prefetch never builds a tab the strip does not show (the user 2026-09-14): tabInView and the #only= filter gate it", () => {
+  assert.match(RENDER, /const next = nextPrefetch\(skeletonTabs, activeId, awaitingFull, document\.hidden \|\| paneHidden\(\), \(id\) => tabInView\(id\) && stripShows\(id\)\);/,
+    "the idle prefetch's in-view gate is the strip's own predicate: the views, another column's holds, and the #only= filter");
+});

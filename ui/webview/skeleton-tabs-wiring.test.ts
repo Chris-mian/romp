@@ -165,7 +165,8 @@ test("upsert computes wasSkeleton beside awaitingFull.delete and routes a just-l
 
 test("the idle prefetch: runPrebuild asks nextPrefetch (hidden = document.hidden || the pane display:none) for exactly one, and viewState is null for a skeleton", () => {
   const run = fn("runPrebuild");
-  assert.match(run, /if \(pendingBuildRaf != null\) \{ schedulePrebuild\(\); return; \}[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*const next = nextPrefetch\(skeletonTabs, activeId, awaitingFull, document\.hidden \|\| paneHidden\(\), tabInView\);\s*\n\s*if \(next\) requestFullSession\(next, "prefetch"\);/);
+  assert.match(run, /if \(pendingBuildRaf != null\) \{ schedulePrebuild\(\); return; \}[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*const next = nextPrefetch\(skeletonTabs, activeId, awaitingFull, document\.hidden \|\| paneHidden\(\), \(id\) => tabInView\(id\) && stripShows\(id\)\);\s*\n\s*if \(next\) requestFullSession\(next, "prefetch"\);/,
+    "…for exactly one tab the strip SHOWS (tabInView and the #only= filter, the user 2026-09-14: hidden tabs are not built until shown)");
   assert.match(run, /const viewState = \(id: string\): ViewState \| null => \{\s*\n\s*if \(skeletonTabs\.ids\.has\(id\)\) return null;/,
     "the pure planner never builds DOM for a stale session");
   assert.match(RENDER, /function paneHidden\(\): boolean \{\s*\n\s*try \{ return \(window\.parent !== window && \(window\.innerWidth === 0 \|\| window\.innerHeight === 0\)\) \|\| \(window as PaneHiddenHost\)\.__rompPaneHidden === true; \}/,
