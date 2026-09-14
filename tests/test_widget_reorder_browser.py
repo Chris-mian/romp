@@ -218,6 +218,31 @@ const afterClick = await readPanel(setF);
 out.cancelLeak = { midDrag, afterCancel, rowsBefore: cancelBefore.tabRows.map((r) => r.id || r.divider), openAfterClick: await setF.evaluate(() => window.__puOpen()),
                    ctxChecked: afterClick.tabRows.filter((r) => r.id === "ctx").map((r) => r.checked)[0], strip: await readStrip(chatF) };
 await page.mouse.click(frS.x + swb.x, frS.y + swb.y); await setF.waitForTimeout(300);   // the bar back on
+// 3e. the panel closed by script under a held pointer (part two's read, a pre-existing gap): closeSettings ends the drag
+// in flight: rows restored, listeners gone, nothing armed. Before, the release never reached the hidden frame's document,
+// so the drag's listeners survived the reopen, the next real click was eaten, and a later move plus release stored an order
+const closeBefore = { rows: (await readPanel(setF)).tabRows.map((r) => r.id || r.divider), store: await readStrip(chatF) };
+await setF.evaluate(() => { const grip = document.querySelector('#rs-widgets > .rs-widget[data-widget="ctx"] .rs-grip'); const b = grip.getBoundingClientRect();
+  const next = document.querySelector('#rs-widgets > .rs-widget[data-widget="hotkey"]').getBoundingClientRect();
+  grip.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, pointerType: "mouse", button: 0, bubbles: true, clientX: b.left + 4, clientY: b.top + b.height / 2 }));
+  document.dispatchEvent(new PointerEvent("pointermove", { pointerId: 1, pointerType: "mouse", bubbles: true, clientX: b.left + 4, clientY: next.bottom - 2 })); });
+await setF.waitForTimeout(100);
+const closeMid = { open: await setF.evaluate(() => window.__puOpen()), rows: (await readPanel(setF)).tabRows.map((r) => r.id || r.divider) };
+await page.evaluate(() => window.__rompOpenSettings());   // the scripted close: the opener with no tab toggles the open panel shut
+await page.waitForFunction(() => !document.body.classList.contains("settings-open"), null, { timeout: 5000 }).catch(() => {});
+await setF.waitForTimeout(150);
+const closedOpen = await setF.evaluate(() => window.__puOpen());
+await page.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets"));
+await setF.waitForSelector("#rs-widgets .rs-widget", { timeout: 15000 }); await setF.waitForTimeout(300);
+const reopened = { rows: (await readPanel(setF)).tabRows.map((r) => r.id || r.divider), store: await readStrip(chatF) };
+await page.mouse.click(frS.x + swb.x, frS.y + swb.y); await setF.waitForTimeout(400);   // a real click on the Context bar's switch
+const clickLanded = (await readPanel(setF)).tabRows.filter((r) => r.id === "ctx").map((r) => r.checked)[0];
+await page.mouse.click(frS.x + swb.x, frS.y + swb.y); await setF.waitForTimeout(300);   // the bar back on
+await setF.evaluate(() => { const next = document.querySelector('#rs-widgets > .rs-widget[data-widget="dot"]').getBoundingClientRect();   // a later move and release under the same pointer id: a surviving drag would take them
+  document.dispatchEvent(new PointerEvent("pointermove", { pointerId: 1, pointerType: "mouse", bubbles: true, clientX: next.left + 4, clientY: next.bottom - 2 }));
+  document.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1, pointerType: "mouse", bubbles: true, clientX: next.left + 4, clientY: next.bottom - 2 })); });
+await setF.waitForTimeout(300);
+out.closeMidDrag = { before: closeBefore, mid: closeMid, closedOpen, reopened, clickLanded, after: { rows: (await readPanel(setF)).tabRows.map((r) => r.id || r.divider), store: await readStrip(chatF), open: await setF.evaluate(() => window.__puOpen()) } };
 // 4. the Status line section: the branch dragged above the folder
 await page.evaluate(() => window.__rompOpenSettings("chat", "statusline"));
 await setF.waitForSelector('#rsettings .rs-card[data-section-landed="statusline"]', { timeout: 10000 }).catch(() => {});
@@ -439,6 +464,18 @@ class ServedWidgetReorder(unittest.TestCase):
         self.assertEqual(c["afterCancel"]["rows"], c["rowsBefore"], "the cancel restored the rows")
         self.assertFalse(any(cl.startswith("ctx") for cl in c["strip"]["tab"]), "and the strip followed: %r" % c["strip"]["tab"])
         self.assertEqual(c["openAfterClick"], 0)
+
+    def test_closing_the_panel_under_a_held_pointer_ends_the_drag_restores_the_rows_and_arms_nothing(self):
+        c = self.out["closeMidDrag"]
+        self.assertEqual(c["mid"]["open"], 1, "the drag was on when the panel closed: %r" % c["mid"])
+        self.assertNotEqual(c["mid"]["rows"], c["before"]["rows"], "and its row had moved live")
+        self.assertEqual(c["closedOpen"], 0, "closeSettings ended the drag: no release listener survives the close")
+        self.assertEqual(c["reopened"]["rows"], c["before"]["rows"], "the rows came back in the stored order")
+        self.assertEqual(c["reopened"]["store"]["store"], c["before"]["store"]["store"], "nothing stored by the close")
+        self.assertEqual(c["clickLanded"], "false", "the next real click landed on the switch")
+        self.assertEqual(c["after"]["rows"], c["before"]["rows"], "a later move and release under the same pointer id moved nothing: the drag is over")
+        self.assertEqual(c["after"]["store"]["store"], c["before"]["store"]["store"], "and stored nothing")
+        self.assertEqual(c["after"]["open"], 0)
 
     def test_every_move_speaks_through_the_live_region_and_the_previews_are_inert(self):
         c = self.out["ctxBefore"]["panel"]

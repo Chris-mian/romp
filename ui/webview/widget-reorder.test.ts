@@ -55,7 +55,13 @@ test("the drag: pointer events heard on the document (a capture on the grip woul
   assert.match(SECTION, /if \(ev && ev\.type === 'pointerup'\) armSwallow\(\);\s*\n\s*else if \(!ev\) \{/, "only an Escape-ended drag waits for the release still to come; a cancel arms nothing (round three, the medium: the lab's ledger holds the cancel path at zero)");
   assert.match(SECTION, /var lateUp = function \(up\) \{ if \(up\.pointerId !== pid\) return; document\.removeEventListener\('pointerup', lateUp, true\); document\.removeEventListener\('pointercancel', lateUp, true\); if \(up\.type === 'pointerup'\) armSwallow\(\); \};/);
   assert.match(SECTION, /document\.addEventListener\('pointerup', lateUp, true\); document\.addEventListener\('pointercancel', lateUp, true\);/, "the late listener leaves with its pointer, released or cancelled");
-  assert.doesNotMatch(SECTION, /released/, "no dead variable (round three, low 5)");
+  assert.doesNotMatch(SECTION, /var pid = e\.pointerId[^\n]*released/, "no dead variable among the drag's declarations (round three, low 5; anchored to the declaration, so a comment cannot trip it)");
+  // the panel closing under a held pointer ends the drag (part two's third read): one hook, set at the press, cleared at the
+  // end, called first by closeSettings; the lab's ledger reads zero after a scripted close
+  assert.match(GEAR, /var dragAbort = null;/);
+  assert.match(SECTION, /dragAbort = function \(\) \{ placeRows\(before\); end\(\{ type: 'abort', pointerId: pid \}\); \};/, "the teardown is a cancel's: rows back, listeners off, and the abort type arms nothing");
+  assert.match(SECTION, /widgetDrag = false; dragAbort = null;/, "cleared at every ending");
+  assert.match(GEAR, /function closeSettings\(\) \{ if \(dragAbort\) dragAbort\(\);/);
 });
 
 test("the keyboard road: ArrowUp and ArrowDown on the focused grip move the row one place through the same moveId rule, and the grip keeps the focus", () => {
