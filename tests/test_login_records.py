@@ -440,6 +440,18 @@ class AvailabilityLists(unittest.TestCase):
         lg.remove(self.state, ok["id"])
         self.assertEqual(km._auth_avail()["default"], "login")
 
+    def test_an_explicit_stored_login_default_is_reported_as_the_explicit_default(self):
+        """The user 2026-09-14: a stored login set under Set default billing reads "login:<id>" with defaultExplicit true
+        while usable, and falls through the machine rules like any remembered login pick when it is not."""
+        self._world(FAKE_KEY, "aaaaaaaaaaaa")
+        ok = _rec(self.state, "Work")
+        (self.state / "sdk-defaults.json").write_text(json.dumps({"auth": "login", "authLogin": ok["id"], "authExplicit": True}))
+        a = km._auth_avail()
+        self.assertEqual((a["default"], a["defaultExplicit"]), ("login:" + ok["id"], True))
+        lg.mark_refused(self.state, ok["id"], "refused by the API")
+        a = km._auth_avail()
+        self.assertEqual((a["default"], a["defaultExplicit"]), ("login", True), "a refused stored default falls to the machine's own login, still explicit")
+
     def test_the_status_push_and_the_live_map_carry_the_login_fields(self):
         src = inspect.getsource(km.build_session)
         self.assertIn('"authLogin": tm.get("authLogin", "")', src)
@@ -552,6 +564,55 @@ class StoredLoginPick(_Backend):
         self.assertTrue(self.be.set_auth_default("login"))
         self.assertEqual(sb.read_reg(self.be.state_dir, self.be.spawn("o", "/tmp")).get("authLogin") or "", "")
         self.assertEqual(sb.read_reg(self.be.state_dir, sid).get("authLogin"), rec["id"], "the session's own pick is untouched")
+
+    def test_a_stored_login_can_be_the_explicit_machine_default_and_unpicked_sessions_follow_it(self):
+        """The user 2026-09-14: the Set default billing submenu offers a stored login. set_auth_default takes "login:<id>",
+        judged on its record as a pick of it would be; the seed carries the id; a session with no pick of its own reads
+        that login in its status (live and dormant), launches with its helper, and its judges' resolver names it. A
+        refused (or removed) stored default falls through to the machine's own login everywhere, and is refused at the door."""
+        rec = _rec(self.be.state_dir, "Work", org="Acme")
+        self.assertTrue(self.be.set_auth_default("login:" + rec["id"]))
+        d = sb.read_sdk_defaults(self.be.state_dir)
+        self.assertEqual((d.get("auth"), d.get("authExplicit"), d.get("authLogin")), ("login", True, rec["id"]))
+        self.assertEqual((self.be.explicit_default_auth(), self.be.explicit_default_login()), ("login", rec["id"]))
+        self.assertEqual(self.be.fallback_auth(), "login")
+        self.assertEqual(self.be.default_login({}), rec["id"], "the judges' resolver names the stored default for an unpicked reg")
+        self.assertEqual(self.be.default_login({"auth": "key"}), "", "a key pick of its own: no login")
+        self.assertEqual(self.be.default_login({"auth": "login"}), "", "a machine-login pick of its own: the machine's own")
+        reg = sb.read_reg(self.be.state_dir, self.be.spawn("m", "/tmp"))
+        self.assertEqual((reg.get("auth"), reg.get("authLogin")), ("login", rec["id"]), "a new session seeds the stored default")
+        s = self._sess(1)                                   # no pick of its own
+        snap = s.snapshot()
+        self.assertEqual((snap["auth"], snap["authLogin"], snap["authLabel"]), ("login", rec["id"], "Work · Acme"), "the live status reads the login it follows")
+        row = self.be._live_row({"sid": s.sid}, s.sid)
+        self.assertEqual((row["auth"], row["authLogin"], row["authLabel"]), ("login", rec["id"], "Work · Acme"), "the dormant row too")
+        kw = self._launch_options(s)
+        self.assertEqual(self._settings_of(kw).get("apiKeyHelper"), lg.helper_command(rec["id"], self.be.state_dir), "the launch names that login's helper")
+        self.assertEqual(s._launched_login, rec["id"])
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", kw["env"])
+        # refused: the status, the launch and the resolver fall through to the machine's own login
+        lg.mark_refused(self.be.state_dir, rec["id"], "refused")
+        self.assertEqual((self.be.explicit_default_login(), self.be.fallback_auth(), self.be.default_login({})), ("", "login", ""))
+        s2 = self._sess(2)
+        snap2 = s2.snapshot()
+        self.assertEqual((snap2["auth"], snap2["authLogin"], snap2["authLabel"]), ("login", "", ""))
+        kw2 = self._launch_options(s2)
+        self.assertEqual(self._settings_of(kw2).get("apiKeyHelper"), "", "the machine's own login launch: the helper disabled")
+        self.assertEqual(s2._launched_login, "")
+        # the door: a refused or unknown stored login is no default, with the reason
+        self.assertFalse(self.be.set_auth_default("login:" + rec["id"]))
+        self.assertIn("refused", self.be.last_auth_refusal)
+        self.assertFalse(self.be.set_auth_default("login:" + ZID))
+        self.assertEqual(self.be.last_auth_refusal, "no stored login with that id")
+        # the machine's own login and the key still write the id EMPTY (the T380 merge read), and auto clears it
+        lg.clear_refused(self.be.state_dir, rec["id"])
+        self.assertTrue(self.be.set_auth_default("login:" + rec["id"]))
+        self.assertTrue(self.be.set_auth_default("key"))
+        self.assertEqual(sb.read_sdk_defaults(self.be.state_dir).get("authLogin"), "")
+        self.assertTrue(self.be.set_auth_default("login:" + rec["id"]))
+        self.assertTrue(self.be.set_auth_default("auto"))
+        d = sb.read_sdk_defaults(self.be.state_dir)
+        self.assertEqual((d.get("auth"), d.get("authExplicit"), d.get("authLogin")), ("", False, ""))
 
     def test_the_picker_pick_and_a_fork_carry_the_stored_login(self):
         rec = _rec(self.be.state_dir, "Work")

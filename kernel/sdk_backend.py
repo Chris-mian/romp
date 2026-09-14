@@ -6228,11 +6228,23 @@ class SdkSession:
         explicit = getattr(self.backend, "explicit_default_auth", None)   # getattr: test doubles
         if explicit:
             side = explicit()
-            if side and not self.backend.auth_unavailable_why(side):
+            # a stored login as the default (the user 2026-09-14) is judged on its own record, as a pick of it would be
+            lid = getattr(self.backend, "explicit_default_login", lambda: "")() if side == "login" else ""
+            if side and not (self.backend.auth_unavailable_why(side, lid) if lid else self.backend.auth_unavailable_why(side)):
                 return side
         if key is None:
             key = self.backend.key_available
         return "key" if key else "login"
+
+    def effective_login(self) -> str:
+        """WHICH login this session bills when effective_auth() reads login (the status's authLogin and authLabel): its
+        own pick's stored login, else the stored login the explicit machine default names when it has no pick of its
+        own (the user 2026-09-14), "" for the machine's own login or the key."""
+        if self.auth in ("login", "key"):
+            return (getattr(self, "auth_login", "") or "") if self.auth == "login" else ""
+        if self.effective_auth() != "login":
+            return ""
+        return getattr(self.backend, "explicit_default_login", lambda: "")()
 
     async def _do_refresh_usage(self):
         """Pull the EXACT account-wide /usage snapshot from the CLI — the designed data behind the /usage
@@ -8987,6 +8999,7 @@ class SdkSession:
         else:
             ls = last_state(self.backend.state_dir, self.sid)
             state, since = ls.get("state") or "waiting", ls.get("t") or 0
+        _el = self.effective_login()   # once per snapshot: authLogin and authLabel below read the same answer
         return {"state": state, "since": str(since) if since else "",
                 "model": model_label(self.model, self.chosen_model), "effort": self.effort,
                 "modelPending": bool(self._model_pending),   # a /model switch resolving → the badge shows switching-dots
@@ -8998,10 +9011,11 @@ class SdkSession:
                 # the fall carried explicitly 2026-09-09)
                 "authPickUnavailable": self.backend.pick_unavailable(self.auth, getattr(self, "auth_login", "")),
                 "authPickFell": self.backend.pick_fall(self.auth, getattr(self, "auth_login", "")),
-                # WHICH login a login pick bills (T346): the stored login's record id and its display label,
-                # "" for the machine's own (the kernel fills the machine's own label into the status push)
-                "authLogin": getattr(self, "auth_login", ""),
-                "authLabel": self.backend.login_display(getattr(self, "auth_login", "")),
+                # WHICH login this session bills (T346): the stored login's record id and its display label, its own
+                # pick's or, unpicked, the explicit default's (2026-09-14); "" for the machine's own (the kernel fills
+                # the machine's own label into the status push)
+                "authLogin": _el,
+                "authLabel": self.backend.login_display(_el),
                 # the init's EVIDENCE of which login answered (T346): the record id when the stored login's helper did,
                 # "" when the CLI fell back to the machine's own login, absent until an init lands
                 "authLoginLive": getattr(self, "auth_login_live", None),
@@ -12097,7 +12111,10 @@ class SdkBackend:
             # and the launch agree (before, an unpicked session read Login in its status and billed the key at launch,
             # the helper unsuppressed); without one the launch stays plain and the CLI decides, as ever
             _exp = self.explicit_default_auth()
-            side = _exp if (_exp and not self.auth_unavailable_why(_exp)) else ""
+            _exl = self.explicit_default_login() if _exp == "login" else ""   # a STORED login as the default (the user 2026-09-14)
+            side = _exp if (_exp and not self.auth_unavailable_why(_exp, _exl)) else ""
+            if side == "login" and _exl:
+                login_id = _exl          # the launch names that login's helper below, exactly as a pick of it would
         if side == sess.auth and sess.auth in ("login", "key") and sess._pick_unknown_said != picked:
             why = self.pick_unknown(sess.auth, auth_login)   # cannot tell just now: the pick stands, said once per session
             if why:
@@ -14300,8 +14317,9 @@ class SdkBackend:
         per-session pick gets (auth_unavailable_why). Marks the default explicit (`authExplicit`), so a later
         per-session pick no longer moves it; "auto" clears the flag and the seed (the helper rule again).
         Touches no session's own pick: a session that follows the default shows the new side in its status at
-        once and launches on it next time. Every write here empties authLogin: an explicit default is the machine's own
-        side, never a stored login (T346)."""
+        once and launches on it next time. A STORED login ("login:<id>") is a default too since 2026-09-14 (the user:
+        the Set default billing submenu offers every billing the picks do), written with its id under authLogin and
+        judged on its own record as a pick of it would be; the machine's own login and the key write authLogin empty."""
         if value == "auto":
             # back to the helper rule (the key when an apiKeyHelper is configured, else the login): the flag
             # clears and the seed empties, so a per-session pick seeds the default again as it did before
@@ -14310,18 +14328,21 @@ class SdkBackend:
             write_sdk_default(self.state_dir, auth="", authExplicit=False, authLogin="")
             self._log("auth: the machine's default billing is automatic again (the helper rule)")
             return True
-        if value not in ("login", "key"):
+        side, lid = _logins.parse_pick(value)
+        if not side:
             return False
-        why = self.auth_unavailable_why(value)
+        why = self.auth_unavailable_why(side, lid)
         if why:
             self.last_auth_refusal = why
             self._log("auth: the machine default cannot be %s on this box: %s" % (value, why), problem=True)
             return False
-        # the machine's OWN side, always: authLogin is written empty, so a stored login a per-session pick seeded into the
-        # defaults never becomes the machine default by inheritance (the Default group offers no stored login, and the
-        # kernel refuses one by name; a seed carrying one would bill it silently, the 2026-08-12 wrong-account failure)
-        write_sdk_default(self.state_dir, auth=value, authExplicit=True, authLogin="")
-        self._log("auth: the machine's default billing is now %s (new sessions, and sessions with no pick of their own)" % value)
+        # a STORED login (the user 2026-09-14) is written with its id; the machine's own login and the key write authLogin
+        # EMPTY, so a stored login a per-session pick seeded into the defaults while the default was automatic never becomes
+        # the machine default by inheritance (a seed carrying one would bill it silently, the 2026-08-12 wrong-account
+        # failure): an id here is always the user's explicit choice in the submenu
+        write_sdk_default(self.state_dir, auth=side, authExplicit=True, authLogin=lid)
+        self._log("auth: the machine's default billing is now %s (new sessions, and sessions with no pick of their own)"
+                  % (self.login_display(lid) if lid else side))
         return True
 
     def default_auth(self, reg: dict | None = None) -> str:
@@ -14343,7 +14364,9 @@ class SdkBackend:
         never a dead login) — a box with neither still reads login, the CLI's own resolution, and the launch's
         auth check rings on what lands."""
         side = self.explicit_default_auth()
-        if side and not self.auth_unavailable_why(side):
+        # a stored login as the default (the user 2026-09-14) is judged on its own record, as a pick of it would be; an
+        # unusable one reads "" here and the machine's own login is judged instead (the fall-through _auth_avail follows)
+        if side and not self.auth_unavailable_why(side, self.explicit_default_login() if side == "login" else ""):
             return side
         return "key" if self.key_available else "login"
 
@@ -14366,20 +14389,46 @@ class SdkBackend:
         """The machine default the user set explicitly (sdk-defaults.json `auth` with `authExplicit` true), else
         "". Read per status snapshot, so cached on the file's mtime and size: one stat per call. The cache is
         module-level, keyed by the state root, not an attribute on the backend: the perf bench's stand-in backend
-        refuses any attribute it did not anticipate (CI, 2026-09-12)."""
+        refuses any attribute it did not anticipate (CI, 2026-09-12). The stat key takes ino and ctime too: a same-size
+        rewrite whose mtime did not advance (review)."""
+        return self._explicit_default()[0]
+
+    def _explicit_default(self) -> tuple:
+        """(side, stored login id) of the explicit machine default: explicit_default_auth's read, the id the defaults
+        carry under authLogin beside an explicit login side ("" otherwise; whether that record is usable is
+        explicit_default_login's question). Cached on sdk-defaults.json's stat like the side."""
         p = _defaults_path(self.state_dir)
         try:
             st = p.stat()
-            key = (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)   # ino and ctime too: a same-size rewrite whose mtime did not advance (review)
+            key = (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
         except OSError:
             key = None
         cache = _EXPLICIT_DEFAULT_CACHE.get(str(self.state_dir))
         if cache is not None and cache[0] == key:
-            return cache[1]
+            return cache[1], cache[2]
         d = read_sdk_defaults(self.state_dir) if key is not None else {}
         side = d.get("auth") if (d.get("authExplicit") and d.get("auth") in ("login", "key")) else ""
-        _EXPLICIT_DEFAULT_CACHE[str(self.state_dir)] = (key, side)
-        return side
+        lid = SdkBackend.reg_login(d) if side == "login" else ""
+        _EXPLICIT_DEFAULT_CACHE[str(self.state_dir)] = (key, side, lid)
+        return side, lid
+
+    def explicit_default_login(self) -> str:
+        """The STORED login the explicit machine default names (the user 2026-09-14: sdk-defaults.json `authLogin` beside
+        auth login and authExplicit), "" for the machine's own login, the key, an automatic default, or a stored login
+        this box cannot bill just now (refused, expired, command-less or removed: the default falls through to the
+        machine's own login, the rule _auth_avail's `default` follows). One record read per call beside the cached side."""
+        side, lid = self._explicit_default()
+        return lid if (side == "login" and lid and not self.auth_unavailable_why("login", lid)) else ""
+
+    def default_login(self, reg: dict | None = None) -> str:
+        """WHICH stored login a session bills when default_auth(reg) reads login: the reg's own pick's id, else the
+        explicit machine default's stored login when the reg has no pick of its own (the user 2026-09-14), "" for the
+        machine's own login or the key. The dormant twin of SdkSession.effective_login(); the judges ask it too
+        (the kernel wires it beside default_auth, judge._DEFAULT_LOGIN_FN)."""
+        a = (reg or {}).get("auth")
+        if a in ("login", "key"):
+            return SdkBackend.reg_login(reg) if a == "login" else ""
+        return self.explicit_default_login() if self.fallback_auth() == "login" else ""
 
     def auth_unavailable_why(self, side: str, login_id: str = "") -> str:
         """Why this box cannot bill `side` ("login" | "key"), as ONE plain sentence for the refusal toast,
@@ -14709,6 +14758,7 @@ class SdkBackend:
         if st in ("working", "permission", "picker", "compacting", "retrying"):
             st = "waiting"
         lc = reg.get("liveCtx")   # last persisted context fill → bar survives idle/restart
+        _dl = self.default_login(reg)   # once per row: the stored login the reg names, or the explicit default's (2026-09-14)
         return {"state": st,
                     "since": str(ls.get("t") or ""),
                     # not running (e.g. post-restart): prefer the last LIVE model we persisted
@@ -14720,8 +14770,8 @@ class SdkBackend:
                     "auth": self.default_auth(reg),
                     "authPickUnavailable": self.pick_unavailable(reg.get("auth") or "", self.reg_login(reg)),   # same as snapshot()
                     "authPickFell": self.pick_fall(reg.get("auth") or "", self.reg_login(reg)),
-                    "authLogin": self.reg_login(reg),                        # the stored login a dormant reg names (T346)
-                    "authLabel": self.login_display(self.reg_login(reg)),
+                    "authLogin": _dl,                                        # the stored login a dormant reg names, or the default's (T346, 2026-09-14)
+                    "authLabel": self.login_display(_dl),
                     # the persisted CLI truth (apiKeyAuth, the liveModel pattern) so a dormant
                     # session's Billing row keeps telling it; absent = no init ever landed
                     "authLive": ("key" if reg.get("apiKeyAuth") else "login")

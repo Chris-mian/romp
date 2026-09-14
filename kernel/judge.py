@@ -1672,6 +1672,8 @@ def _fast_org_env():
 
 
 _DEFAULT_AUTH_FN = None        # kernel wiring: fn(reg) -> 'login' | 'key', SdkBackend.default_auth: the ONE billing resolver
+_DEFAULT_LOGIN_FN = None       # kernel wiring beside it: fn(reg) -> a stored login's id or "", SdkBackend.default_login: WHICH login
+#                                an unpicked session bills when the machine's explicit default names a stored one (2026-09-14)
 #                                (the reg's own pick, else the machine's explicit default when billable, else the helper rule)
 _LOGIN_AUTH_ENV_FN = None      # login tokens claimed out of the manager's ambient environment: the kernel
                                # wires sdk_backend.startup_auth_env; standalone reads the environment
@@ -1716,7 +1718,8 @@ def _judge_auth(fsid):
     file all move the launch, the status and the flyout to the other side, and the judges with them — the
     round-3 review found a seed re-read here that kept billing the login alone), else the helper rule. A
     call with no session (rows with no session) takes the same default a fresh session would. A session billed to a STORED login (T346) is decided here first, from the reg's
-    own pick: the resolver names sides, and a stored login is a pick, never a default. Standalone
+    own pick: the resolver names sides. A stored login set as the machine's DEFAULT (the user 2026-09-14) reaches an
+    unpicked session's judges through the second wired function, default_login, which judges the record. Standalone
     (tests, no kernel wiring) the registry file and the helper rule stand in: an explicit 'login' or 'key'
     pick → that side; else the key when Claude Code's settings carry an apiKeyHelper, else login."""
     reg = {}
@@ -1746,6 +1749,12 @@ def _judge_auth(fsid):
     if _DEFAULT_AUTH_FN is not None:
         try:
             side = str(_DEFAULT_AUTH_FN(reg) or "")
+            if side == "login" and _DEFAULT_LOGIN_FN is not None:
+                # an unpicked session following a STORED login set as the machine's default (the user 2026-09-14): its
+                # judges bill that login, as its launch does; default_login judges the record ("" = the machine's own)
+                lid = str(_DEFAULT_LOGIN_FN(reg) or "")
+                if re.fullmatch(r"[0-9a-f]{12}", lid):
+                    return "login:" + lid
             if side in ("login", "key"):
                 return side
         except Exception:
