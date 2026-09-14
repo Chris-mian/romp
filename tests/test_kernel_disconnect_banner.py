@@ -259,7 +259,7 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn("if(wasReconn){raiseStale();", js, "…and never raises it outright")
         self.assertIn('function clearStale(){stalePending="";', js,
                       "the resync disarms it, so it never appears at all")
-        self.assertIn("if(freshPending){freshPending=false;clearStale();}", js,
+        self.assertIn("if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}", js,   # the reload core's fresh hold ends here too (invisible restarts, 2026-09-14)
                       "the first real frame after it fires the retire")
         # keepalives must NOT count as a resync — the ka branch returns before the retire line
         self.assertLess(js.index('msg.type==="ka"'), js.index("if(freshPending)"),
