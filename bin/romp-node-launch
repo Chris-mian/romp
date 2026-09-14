@@ -109,6 +109,7 @@ case "$NO_COPY" in 0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) NO_COPY="" ;; e
 # shortens it for the tests, which run the hang shapes in two.
 _bound="${ROMP_NODE_PROBE_BOUND:-10}"
 case "$_bound" in ''|*[!0-9]*) _bound=10 ;; esac
+[ "$_bound" -ge 1 ] || _bound=1   # 0 would be NO bound for timeout and an instant kill for the watchdog's sleep
 # Everything under a pid, TERM then KILL. The node that hangs may be a version manager's shim that RUNS node
 # instead of exec'ing it, so the hung process is a CHILD of the pid the wrapper holds; the timeout path signals
 # the whole process group, and this keeps the watchdog path equivalent (round four of issue 1600: one hung

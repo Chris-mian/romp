@@ -752,10 +752,12 @@ left behind dies with it; an interpreter that runs out that clock, or exits 124 
 137 of its own accord (the codes the bound reads as), is refused as unresponsive
 with exit code 1. Where there is no `timeout` (a stock mac) the probe is
 unbounded, as the picker's own runs of a candidate are: the residual. The output
-goes to a file (`TMPDIR`, then `/tmp`, then the state directory; a `TMPDIR` that
-is stale or unwritable, or a `PATH` without `mktemp`, falls to a pipe read the
-same bound covers), read afterwards, so a helper the interpreter left holding its
-output cannot hold the read; the file goes with the shell, a stop mid-probe
+goes to a file (`TMPDIR`, then `/tmp`, then the state directory: a `TMPDIR` that
+is stale or unwritable falls to the next directory, and only a `PATH` without
+`mktemp`, or every directory unusable, falls to a pipe read, which the bound
+covers for the interpreter but not for a helper it leaves holding the output),
+read afterwards by the shell itself, so a helper the interpreter left holding its
+output cannot hold the file read; the file goes with the shell, a stop mid-probe
 included. An interpreter that reports no readable version is started on purpose
 (the pick already checked it is an executable file, and a version nobody can read
 is not a version below the floor). `bin/romp-serve --print-python` prints the
@@ -813,7 +815,10 @@ grant then reads `node`); the launcher reads the file before it decides, so the
 line works for a manager launchd started. The value rule is the same in both
 readers: `0`, `false`, `no` and `off` (in any case) are off, any other non-empty
 value is on (`disabled` and `none` included: only those four words turn it off),
-and the last assignment in the file wins.
+and the last assignment in the file wins. The copy is probed under a ten-second
+bound (`ROMP_NODE_PROBE_BOUND`, never below one second), and a probe that hangs is
+killed with everything under it, TERM then KILL, so a version manager's shim that
+runs `node` without replacing itself leaks nothing.
 
 The installed unit also sets `MALLOC_ARENA_MAX=2` for the manager and every kernel it spawns (2026-09-11): the kernel is a many-threaded Python process that rebuilds large record lists, and the allocator's per-thread arenas kept hundreds of megabytes of freed memory between restarts; two arenas return it. A line in `service.env` overrides it.
 

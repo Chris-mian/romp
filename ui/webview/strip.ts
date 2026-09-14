@@ -1040,7 +1040,10 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
 
   let diagPending = false;   // report the first /tunnels outcome of each open, not every 3s poll
   function refresh() {
-    fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => r.json()).then((d) => {
+    // a non-ok answer is not the host list (a proxy in JSON-error mode answers a 5xx whose body parses, and it read as
+    // an empty list: "No remotes attached", the autoUpdate box mirrored off, a clientDiag filed as ok); it throws into
+    // the catch below, the same rule as the dashboard rail's refresh and the federation manager's poll
+    fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("/tunnels answered HTTP " + r.status); return r.json(); }).then((d) => {
       const ts = (d && d.tunnels) || [];
       if (diagPending) { diagPending = false; post?.({ type: "clientDiag", surface: "strip", what: "netFetch", data: { ok: true, tunnels: ts.length } }); }
       if (!autoCb.disabled) autoCb.checked = !!(d && d.autoUpdate);   // mirror the kernel; never clobber a write in flight

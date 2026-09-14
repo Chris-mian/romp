@@ -155,6 +155,9 @@ EOF
     [ -z "$output" ]
 }
 
+# These cases need setsid and coreutils timeout for their outer bound, so on a mac, the platform that takes the watchdog
+# path, they SKIP: the watchdog code is the same on both platforms and is exercised here through the bare PATH, but a mac
+# run of the suite proves nothing about it (the tidy of the fresh-install set names this; a mac-shaped bound is future work).
 # The hang shapes on both probe paths, the install's twin of the launcher's matrix (round four of issue 1600): exec (the
 # copy is the hung process), fork (a version manager's shim runs node instead of exec'ing it: the hung process is a child
 # of the pid the wrapper holds, which leaked on the watchdog path) and deaf (TERM ignored: only KILL ends it, and a timeout
@@ -208,6 +211,13 @@ _install_hang_asserts() {   # the copy is removed with the reason said, and noth
 @test "install (macOS), the timeout path: a hung copy is killed at the bound (control: so it was before this round)" { _run_install_hang exec timeout; _install_hang_asserts; }
 @test "install (macOS), the timeout path: a shim that FORKS the hung node leaks nothing (control: timeout signals the whole group)" { _run_install_hang fork timeout; _install_hang_asserts; }
 @test "install (macOS), the timeout path: a node that IGNORES TERM is killed by -k a second after the bound instead of holding the install for good" { _run_install_hang deaf timeout; _install_hang_asserts; }
+
+@test "install (macOS): ROMP_NODE_PROBE_BOUND=0 is clamped to one second, so a good copy is kept instead of failed at once" {
+    ROMP_NODE_PROBE_BOUND=0 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" != *"cannot run from"* ]]
+}
 
 @test "install (macOS): the hatch reads 0, false, no and off as off, and the file's last assignment wins" {
     mkdir -p "$HOME/.config/romp"

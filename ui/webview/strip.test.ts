@@ -79,6 +79,10 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
   assert.ok(src.includes('"/restart"') || src.includes("/restart`"), "the refresh button restarts the kernel");
   for (const ep of ["/ssh-hosts", "/tunnels", "/tunnels/detach", "/tunnels/update", "/tunnels/start"])
     assert.ok(src.includes(ep), `the network popover must drive ${ep} (the rail twin)`);
+  // the popover's /tunnels read checks the status before the body (the fourth reader of that route to gain the rule: a
+  // JSON-bodied 5xx read as "No remotes attached" with the autoUpdate box mirrored off and a clientDiag filed as ok)
+  assert.ok(src.includes('fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("/tunnels answered HTTP " + r.status); return r.json(); })'),
+    "a non-ok /tunnels answer throws into the popover's catch instead of reading as an empty host list");
   assert.ok(src.includes('{ type: "openPane", pane: p.key }'), "quick-opens post openPane to the host");
 });
 
