@@ -605,7 +605,7 @@ EOF
 @test "install.sh: a port disagreement in the environment is not a python problem: romp-serve's line, a plain stop, the python unnamed" {
     printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
     export ROMP_SERVE_PORT=1 ROMP_KERNEL_PORT=2                     # the two spellings of one port, disagreeing
-    PATH="$(bare_path)" run "$ROMP_DIR/install.sh"                  # the host's python3 (at or above the floor) is the pick
+    PATH="$(bare_path)" run "$ROMP_DIR/install.sh"                  # romp-serve refuses on the ports before pick_python runs: no python is executed
     [ "$status" -eq 1 ]
     [[ "$output" == *"ROMP_SERVE_PORT=1 and ROMP_KERNEL_PORT=2 disagree"* ]]
     [[ "$output" == *"romp-serve --print-python stopped"* ]]
@@ -616,7 +616,7 @@ EOF
 
 @test "install.sh: a kernel binary that is not there is not a python problem either" {
     printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
-    PATH="$(bare_path)" ROMP_KERNEL_BIN="$TEST_DIR/no-such-kernel" run "$ROMP_DIR/install.sh"
+    PATH="$(bare_path)" ROMP_KERNEL_BIN="$TEST_DIR/no-such-kernel" run "$ROMP_DIR/install.sh"   # refused before pick_python: no python executed
     [ "$status" -eq 1 ]
     [[ "$output" == *"kernel not found"* ]]
     [[ "$output" == *"romp-serve --print-python stopped"* ]]
@@ -639,6 +639,38 @@ EOF
     [[ "$output" == *"CANNOT START SESSIONS"* ]]
     [[ "$output" != *"Some optional pieces aren't set up:"*"Agent SDK"* ]]
     [[ "$output" != *"need 3.10 or newer"* ]]                        # the floor was passed: 3.12
+}
+
+# round three of issue 1600: the probe is the pin's first execution and install.sh's preflight runs it
+@test "install.sh: a pinned interpreter that blocks on its version probe stops the install within the bound with romp-serve's line, hung on nothing" {
+    command -v timeout >/dev/null 2>&1 || skip "the bound needs coreutils timeout"
+    ln -s "$(command -v timeout)" "$BAREBIN/timeout"                  # the bound's tool, on the bare PATH the install runs with
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    cat > "$STUB/blockpython" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'print("%d.%d"'*) sleep 60 ;;
+esac
+exit 0
+EOF
+    chmod +x "$STUB/blockpython"
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/blockpython" run timeout 40 "$ROMP_DIR/install.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [[ "$output" == *"romp-serve --print-python stopped"* ]]
+    [[ "$output" != *"need 3.10 or newer"* ]]                        # not the floor, not the no-version leg: unresponsive
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]
+}
+
+@test "install.sh: a ROMP_PYTHON pin is the interpreter: with one set, no python3 on PATH is not a refusal, and the pin meets the floor check (low 4)" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    _old_python "$STUB/oldpython"
+    rm -f "$BAREBIN/python3"                                         # no python3 anywhere on the bare PATH
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/oldpython" run "$ROMP_DIR/install.sh"
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"python3 not found"* ]]                         # the pin was taken to the floor check…
+    [[ "$output" == *"python 3.9"* ]]                                # …which named it and refused
+    [[ "$output" == *"need 3.10 or newer"* ]]
 }
 
 @test "install.sh: a python at the floor passes the preflight (ROMP_NO_SDK=1 still skips only the venv build)" {

@@ -202,12 +202,30 @@ PY="$(pick_python)"
 # cannot report a version at all (the test suites' shell stand-ins) is left to the exec as before: the
 # pick already checked it is an executable file, and a version nobody can read is not a version below the
 # floor. `--print-python` (install.sh's preflight) prints the pick and stops here, floor applied. The version is
-# the LAST line of the probe's output: a chatty site customization that prints before the interpreter runs the
-# program would otherwise hide the number and let a 3.9 through. The floor exits 2, a code of its own, so
-# install.sh can tell "the python is too old" from this script's other refusals (the two port spellings
-# disagreeing, a kernel binary that is not there, an unrunnable ROMP_PYTHON pin), which stay at 1.
-_pyver="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
-_pyver="${_pyver##*$'\n'}"
+# the first line of the probe's output that IS a bare X.Y, carriage returns stripped: a chatty site customization
+# printing before the program, an atexit hook printing after it, or a CRLF-terminated line would otherwise hide
+# the number and let a 3.9 through. The floor exits 2, a code of its own, so install.sh can tell "the python is
+# too old" from this script's other refusals (the two port spellings disagreeing, a kernel binary that is not
+# there, an unrunnable ROMP_PYTHON pin), which stay at 1.
+#
+# This is the FIRST execution of the picked interpreter (pick_python checks a pin's file and the walk uses
+# command -v), and install.sh's preflight runs it, so it is bounded the way _runs_as bounds its own: timeout 5
+# where coreutils provides it (a bare test PATH, and a stock mac, do not), since an interpreter that blocks (a
+# stalled network mount, a site customization reaching for the network) would otherwise hang the install with no
+# output. Running out the clock is NOT the no-version leg: the interpreter is refused as unresponsive, exit 1.
+_pyprobe=("$PY")
+if command -v timeout >/dev/null 2>&1; then _pyprobe=(timeout 5 "$PY"); fi
+_prc=0
+_pyout="$("${_pyprobe[@]}" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" || _prc=$?
+if [[ "$_prc" -eq 124 ]]; then
+    echo "romp: $PY did not answer its version probe within 5 s (unresponsive: a stalled network mount, a site customization reaching for the network); the kernel is not started on it." >&2
+    exit 1
+fi
+_pyver=""
+while IFS= read -r _pyline; do
+    _pyline="${_pyline%$'\r'}"
+    if [[ "$_pyline" =~ ^[0-9]+\.[0-9]+$ ]]; then _pyver="$_pyline"; break; fi
+done <<< "$_pyout"
 if [[ "$_pyver" =~ ^([0-9]+)\.([0-9]+)$ ]] && (( BASH_REMATCH[1] < 3 || (BASH_REMATCH[1] == 3 && BASH_REMATCH[2] < 10) )); then
     echo "romp: $PY is python $_pyver; the kernel and the Agent SDK need 3.10 or newer, so the kernel is not started on it." >&2
     echo "  macOS:  brew install python@3.13    or:  uv python install 3.13    (or pin one: ROMP_PYTHON=/path/to/python3.13 in service.env)" >&2

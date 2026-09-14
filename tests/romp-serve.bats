@@ -181,6 +181,48 @@ OLD
     [[ "$output" != *"PORT="* ]]
 }
 
+@test "romp-serve: an interpreter that blocks on its version probe is refused as unresponsive within the bound, not exec'd and not hung" {
+    # round three of issue 1600: the probe is the picked interpreter's FIRST execution and was unbounded, so a blocking one
+    # (a stalled network mount, a site customization reaching for the network) hung install.sh with no output
+    command -v timeout >/dev/null 2>&1 || skip "the bound needs coreutils timeout (a stock mac has none: there the probe is unbounded, as _runs_as is)"
+    cat > "$TEST_DIR/blocking-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *'print("%d.%d"'*) sleep 60 ;;      # blocks on the version probe alone
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/blocking-python"
+    ROMP_PYTHON="$TEST_DIR/blocking-python" run timeout 40 "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]                                      # its own refusal, exit 1: install.sh's pass-through
+    [[ "$output" == *"did not answer its version probe"* ]]
+    [[ "$output" == *"blocking-python"* ]]
+    [[ "$output" != *"PORT="* ]]
+}
+
+@test "romp-serve: a line printed AFTER the version, or a CRLF line ending, cannot hide a 3.9" {
+    # round three, low 1: the last-line read let a 3.9 through when an atexit hook printed after it or the output was CRLF
+    cat > "$TEST_DIR/atexit-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *'print("%d.%d"'*) echo "3.9"; echo "atexit: goodbye from a chatty hook"; exit 0 ;; esac
+exec bash "$@"
+OLD
+    cat > "$TEST_DIR/crlf-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *'print("%d.%d"'*) printf '3.9\r\n'; exit 0 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/atexit-python" "$TEST_DIR/crlf-python"
+    ROMP_PYTHON="$TEST_DIR/atexit-python" run "$ROMP_SERVE" --port 29996
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"python 3.9"* ]]
+    [[ "$output" != *"PORT="* ]]
+    ROMP_PYTHON="$TEST_DIR/crlf-python" run "$ROMP_SERVE" --port 29995
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"python 3.9"* ]]
+    [[ "$output" != *"PORT="* ]]
+}
+
 @test "romp-serve: the other refusals keep exit 1, so install.sh can tell them from the floor" {
     ROMP_SERVE_PORT=29855 ROMP_KERNEL_PORT=29856 run "$ROMP_SERVE"
     [ "$status" -eq 1 ]
