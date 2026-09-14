@@ -3060,6 +3060,20 @@ def read_reg(state_dir: Path, sid: str) -> dict | None:
         return None
 
 
+def _reg_absent_for_write(path) -> bool:
+    """Whether a reg WRITER may build a fresh {sid} record at `path`: only when the stat says ENOENT, a genuinely absent
+    file. Every other stat error (EACCES on sdk/, ELOOP on a symlink-loop path, ENOTDIR, EIO) is a reg that exists or a
+    path that cannot hold one, and a write there guts the record or lands in the wrong place; never Path.exists(), which
+    answered False on all of them on CPython 3.14 and on ELOOP on every interpreter (2026-09-14)."""
+    try:
+        path.stat()
+        return False
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
 def read_reg_for_rmw(state_dir: Path, sid: str) -> "dict | None":
     """read_reg for a READ-MODIFY-WRITE on one reg FIELD: {} when the reg genuinely does not
     exist (a fresh session — an empty base is correct), None when the reg EXISTS but would not
@@ -3071,7 +3085,7 @@ def read_reg_for_rmw(state_dir: Path, sid: str) -> "dict | None":
     reg = read_reg(state_dir, sid)
     if reg is not None:
         return reg
-    return None if _reg_path(state_dir, sid).exists() else {}
+    return {} if _reg_absent_for_write(_reg_path(state_dir, sid)) else None
 
 
 def write_reg(state_dir: Path, sid: str, reg: dict) -> None:
@@ -13730,14 +13744,7 @@ class SdkBackend:
         with self._reg_lock:
             reg = read_reg(self.state_dir, sid)
             if reg is None:
-                try:                                               # an explicit stat tells unreadable from absent; Path.exists()
-                    _reg_path(self.state_dir, sid).stat()          #  answers False on EACCES on CPython 3.14 (2026-09-14), and
-                    present = True                                 #  the write below would have gutted a reg it could not read
-                except FileNotFoundError:
-                    present = False
-                except OSError:
-                    present = True
-                if present:
+                if not _reg_absent_for_write(_reg_path(self.state_dir, sid)):   # the writers' one rule (2026-09-14)
                     sys.stderr.write("update_reg: %s unreadable — skipping a %s write rather than "
                                      "gutting the reg\n" % (sid[:8], "/".join(sorted(fields) + list(drop))))
                     return
@@ -15131,7 +15138,7 @@ class SdkBackend:
         with self._reg_lock:                       # kernel + loop threads both write (queue mirror);
             reg = read_reg(self.state_dir, sid)    # unserialized RMWs would drop fields
             if reg is None:
-                if _reg_path(self.state_dir, sid).exists():
+                if not _reg_absent_for_write(_reg_path(self.state_dir, sid)):
                     # the reg EXISTS but would not read: writing {sid}+fields here GUTS it — no
                     # alive, no name — and a gutted reg vanishes from every listing until a full
                     # rewrite (the 2026-08-31 blink class). Losing one mirror update is the far

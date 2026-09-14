@@ -1242,6 +1242,47 @@ def present_count():
     return present_count_checked()[0]
 
 THREAD_REG_UNREADABLE = "?"   # _thread_of: a reg that EXISTS but cannot be read; the mail rule fails closed on it
+# The stat errors that mean "no such record" (ENOENT, and the path shapes that cannot hold one: a component that is
+# not a directory, a bad descriptor, a symlink loop); any other stat error (EACCES on the directory, EIO) means a
+# record that exists but cannot be read. KEEP IN SYNC with kernel.py's _REG_MISSING_ERRNOS (the kernel's thread-reg
+# reader must agree with the bus's, or the bus holds mail while the tab paints mail on; a parity test pins the two).
+# Never Path.exists(): CPython 3.14 answers False on every stat error where 3.10 to 3.13 raised on EACCES (2026-09-14).
+REG_MISSING_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+
+
+def _dir_empty(d):
+    """True when `d` is a directory with nothing in it or does not exist (an absent directory holds nothing), False when it
+    holds an entry, None when it exists but cannot be read (unknown is never empty)."""
+    try:
+        return not any(d.iterdir())
+    except NotADirectoryError:
+        return False
+    except OSError as e:
+        return True if e.errno in REG_MISSING_ERRNOS else None
+
+
+def _record_state(p):
+    """'present', 'missing' or 'unreadable' for a message or record FILE the bus itself wrote: only ENOENT is missing (a
+    symlink loop, a non-directory component or a permission fault is a path the bus cannot answer for, so it is unreadable
+    and the sweep leaves the temp and the ledger alone). The reg reader's wider missing set (_path_state) is the kernel's
+    parity rule for a session's record, not this one."""
+    try:
+        p.stat()
+        return "present"
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unreadable"
+
+
+def _path_state(p):
+    """'present', 'missing' or 'unreadable' for a path, by an explicit stat under the rule above: the one shape every
+    fail-closed reader here uses, so an unreadable answer is never mistaken for an absent one on any interpreter."""
+    try:
+        p.stat()
+        return "present"
+    except OSError as e:
+        return "missing" if e.errno in REG_MISSING_ERRNOS else "unreadable"
 
 def _thread_of(sid):
     """The parent sid when `sid` is a COMMENT THREAD (its durable SDK reg, beside session-flags.json in the kernel's
@@ -1255,12 +1296,14 @@ def _thread_of(sid):
     try:
         # the stat sits INSIDE the try (the review's medium): a directory that cannot be read (EACCES, EIO) raised
         # out of every reader — read_box, the sender gate, resolve_recipient, the /agents filter — a crash, not a
-        # closed door; here it is the closed door. An EXPLICIT stat, never Path.exists(): on CPython 3.14 exists()
-        # answers False on EACCES where 3.10 to 3.13 raised, and the door read "not a thread" (2026-09-14)
-        try:
-            p.stat()
-        except FileNotFoundError:
+        # closed door; here it is the closed door. An EXPLICIT stat under the kernel's own errno rule (_path_state,
+        # REG_MISSING_ERRNOS), never Path.exists(): on CPython 3.14 exists() answers False on EACCES where 3.10 to 3.13
+        # raised, and the door read "not a thread" (2026-09-14)
+        state = _path_state(p)
+        if state == "missing":
             return ""
+        if state == "unreadable":
+            return THREAD_REG_UNREADABLE
         d = json.loads(p.read_text())
         return str(d.get("threadOf") or "") if isinstance(d, dict) else THREAD_REG_UNREADABLE
     except Exception:
@@ -1816,7 +1859,11 @@ def _sweep_orphans():
         if not newd.is_dir():
             continue
         recip = _name_for_id(box.name, rows=live)  # dead by construction: the registry names it, no fetch
-        for f in list(newd.iterdir()):
+        try:
+            files = list(newd.iterdir())
+        except OSError:
+            continue                                    # an inbox the bus cannot read is skipped, never bounced or tidied
+        for f in files:
             if not f.is_file():
                 continue
             try:
@@ -1876,10 +1923,12 @@ def _sweep_orphans():
                 pass
         _mark_pending(box.name)                         # bounced orphans may have emptied new/
         try:                                            # tidy: drop the mailbox if nothing's left
-            if all(not any((box / d).iterdir()) for d in ("new", "cur", "tmp") if (box / d).is_dir()) \
+            if all(_dir_empty(box / d) for d in ("new", "cur", "tmp")) \
                     and not any(p.is_file() for p in box.iterdir()):
                 # …and no `.corrupt-*` sidecar beside the three dirs: a file moved aside is evidence
-                # the tidy must not sweep away with the empty box (review find, 2026-09-08)
+                # the tidy must not sweep away with the empty box (review find, 2026-09-08). _dir_empty
+                # answers False for a directory that cannot be read (an is_dir() that read False there on
+                # 3.14 dropped the unreadable new/ from the check and the box, mail and all, was removed)
                 shutil.rmtree(box, ignore_errors=True)
         except Exception:
             pass
@@ -2775,7 +2824,11 @@ def _retry_pending():
     for m in markers:
         sid = m.name
         newd = MAILROOT / sid / "new"
-        if not (newd.is_dir() and any(newd.iterdir())):
+        empty = _dir_empty(newd)
+        if empty is None:
+            continue                           # new/ cannot be read: the marker stands (a clear here painted mail as
+        #                                        drained while it sat unread; is_dir() read False there on 3.14)
+        if empty:
             _mark_pending(sid)                 # stale marker -> clear it
             continue
         if live is None:
@@ -2937,7 +2990,15 @@ def _sweep_unfinished_writes():
         except OSError:
             temps = []
         for f in temps:
-            published = (box / "new" / f.name).exists() or (box / "cur" / f.name).exists()
+            states = (_record_state(box / "new" / f.name), _record_state(box / "cur" / f.name))
+            if "unreadable" in states and "present" not in states:
+                # new/ or cur/ cannot be searched: whether the message reached the inbox is UNKNOWN, so the temp and
+                # the ledger are left alone (a bounce here read a delivered message as never published, the
+                # 2026-09-08 regression; Path.exists() answered False on the unsearchable directory on 3.14)
+                _log("unfinished mail %s for %s left at start: its inbox cannot be read, so whether it was published is unknown"
+                     % (f.name, box.name))
+                continue
+            published = "present" in states
             try:
                 f.unlink()
             except OSError as e:
@@ -2967,7 +3028,12 @@ def _sweep_unfinished_writes():
                 continue
             for f in temps:
                 mid = f.name.split(".json.tmp-", 1)[0]
-                record_stands = (hostdir / (mid + ".json")).exists()
+                state = _record_state(hostdir / (mid + ".json"))
+                if state == "unreadable":
+                    _log("unfinished %s record %s for %s left at start: the record cannot be read, so whether it stands is unknown"
+                         % (store.name, f.name, hostdir.name))
+                    continue                 # the temp and the ledger stay: never a bounce on an answer the stat could not give
+                record_stands = state == "present"
                 try:
                     f.unlink()
                 except OSError as e:

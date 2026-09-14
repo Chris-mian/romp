@@ -1394,6 +1394,40 @@ class BusStartSweepsUnfinishedWrites(_LoudBus):
     def _rows_for(self, mid):
         return [r["ev"] for r in self._rows() if r.get("id") == mid]
 
+    def test_a_temp_whose_inbox_cannot_be_read_is_left_with_its_ledger(self):
+        """Round two's medium 2: the sweep decided 'published' by exists() on new/ and cur/; with both unsearchable, 3.14 read a
+        delivered message as never published and bounced it (3.13 raised out of the sweep and the bus did not start). Unknown
+        is never a bounce: the temp and the ledger stay."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root reads through chmod 000")
+        mb = pm._mailbox(_RCP)
+        pm._tl_append("messages.jsonl", {"t": 10, "ev": "sent", "id": "m-dark", "from": "alpha", "from_id": _SND,
+                                         "to_id": _RCP, "body": "hi", "kind": "question"})
+        (mb / "tmp" / "m-dark").write_text("From: alpha\n\nhi\n")
+        (mb / "new" / "m-dark").write_text("From: alpha\n\nhi\n")
+        os.chmod(mb / "new", 0); os.chmod(mb / "cur", 0)
+        try:
+            pm._sweep_unfinished_writes()                       # must not raise
+        finally:
+            os.chmod(mb / "new", 0o755); os.chmod(mb / "cur", 0o755)
+        self.assertTrue((mb / "tmp" / "m-dark").is_file(), "the temp stays: whether it was published is unknown")
+        self.assertTrue((mb / "new" / "m-dark").is_file(), "the delivered message stands")
+        self.assertEqual(self._rows_for("m-dark"), ["sent"], "no bounced row on an answer the stat could not give")
+        self.assertTrue(any("left at start" in m and "cannot be read" in m for m in self.logged), self.logged)
+
+    def test_a_record_temp_beside_a_symlink_loop_record_is_left_with_its_ledger(self):
+        """record_stands by exists(): a symlink-loop record path (ELOOP) read False on every interpreter, so the temp was removed
+        and the parked message's ledger closed as never parked; unreadable leaves both."""
+        host = pm.OUTBOX / "TESTHOST"; host.mkdir(parents=True, exist_ok=True)
+        pm._tl_append("messages.jsonl", {"t": 10, "ev": "sent", "id": "m-loop", "from": "alpha", "from_id": _SND,
+                                         "to_id": _RCP, "body": "hi", "kind": "question"})
+        (host / "m-loop.json.tmp-abc").write_text("{}")
+        os.symlink("m-loop.json", host / "m-loop.json")         # the record path names itself
+        pm._sweep_unfinished_writes()
+        self.assertTrue((host / "m-loop.json.tmp-abc").is_file(), "the temp stays")
+        self.assertEqual(self._rows_for("m-loop"), ["sent"], "the ledger stays")
+        self.assertTrue(any("left at start" in m and "record cannot be read" in m for m in self.logged), self.logged)
+
     def test_a_temp_beside_a_standing_message_is_removed_and_its_ledger_left_alone(self):
         # the planted state: two delivered messages (one read, one not) whose publish could not remove
         # its temp, the only way this writer leaves a temp beside a sent row. Before the fix the sweep
