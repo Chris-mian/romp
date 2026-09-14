@@ -6,6 +6,7 @@ asserted against the source rather than executed. (Behaviour: each judge still o
 it has real new work, so an idle pass is filesystem stats, not model calls.)
 """
 import os
+import inspect
 import re
 import unittest
 from pathlib import Path
@@ -32,9 +33,12 @@ class ProducerPolicy(unittest.TestCase):
 
     def test_both_tiers_share_the_same_live_session_guard(self):
         body = self._producer_body()
-        # index + triage appends sit inside one `if _live_map():` block (same guard for both)
-        guard = re.search(r"if _live_map\(\) and not _retry_paused_on\(\):\n(.*?)\n            for t in tiers:", body, re.S)
-        self.assertTrue(guard, "the two tiers are guarded by a single _live_map() and not _retry_paused_on() check")
+        # index + triage appends sit inside ONE guard: _tiers_may_start (a live session, retries not paused, the Task
+        # tracking switch on; T404), a predicate executed in tests/test_task_tracking_switch.py
+        guard = re.search(r"if _tiers_may_start\(tracking\):\n(.*?)\n            for t in tiers:", body, re.S)
+        self.assertTrue(guard, "the two tiers are guarded by the single _tiers_may_start(tracking) check")
+        self.assertIn("def _tiers_may_start(tracking=None):", SRC)
+        self.assertIn("return bool(tracking) and bool(_live_map()) and not _retry_paused_on()", SRC, "the predicate's three inputs")
         block = guard.group(1)
         self.assertIn('name="index"', block)
         self.assertIn('name="triage"', block)

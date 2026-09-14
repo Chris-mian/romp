@@ -25,6 +25,7 @@ import re
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from unittest import mock
 from romp_load import load_source
 from pathlib import Path
 
@@ -106,6 +107,8 @@ class _World(unittest.TestCase):
     def _reset():
         jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._episode_memo.clear(); jd._shared_clear()
         jd._PLANNER_SEEN.clear(); jd._lastsid_memo.clear(); jd._BG_SCAN_CACHE.clear()
+        if hasattr(jd, "_PLANNER_SEEN_LOADED"):
+            jd._PLANNER_SEEN_LOADED[0] = False; jd._PLANNER_SEEN_DIRTY[0] = False
         for k in jd._PLANNER_STATS:
             jd._PLANNER_STATS[k] = 0
         jd._discover_cache["fp"] = None
@@ -287,9 +290,77 @@ class PlannerSkip(_World):
             other.cleanup()
 
     def test_the_counters(self):
-        self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded"})
+        self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted"})   # T401 (5c): the persisted memo's three
         s = jd.planner_skip_stats(); s["skipped"] = 99
         self.assertNotEqual(jd.planner_skip_stats()["skipped"], 99)
+
+    def reboot(self):
+        """The next kernel: the memo persisted at exit, the table empty, the load latch re-armed; the next pass loads the rows
+        (T401 (5c)). Before the persisted memo every restart was an amnesty that re-planned every session."""
+        self.assertTrue(jd.persist_planner_seen(force=True))
+        jd._PLANNER_SEEN.clear(); jd._PLANNER_SEEN_LOADED[0] = False
+        jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._discover_cache["fp"] = None; jd._discover_cache["result"] = None   # both memos share an identity
+
+    def test_a_persisted_row_skips_through_the_pass_after_a_reboot_and_a_moved_transcript_does_not(self):
+        """T401 (5c) round two, low 3: the skip reached through run_plan itself, not the table."""
+        self.settle()
+        self.reboot()
+        self.assertEqual(self.run_pass(), (0, 3, 0), "the rows the previous kernel left stand: every session skipped, none planned")
+        self.assertEqual(jd.planner_skip_stats()["restored"], 3)
+        self.reboot()
+        self.prompt(B, T0 + 500, "and add the retry hint")
+        self.assertEqual(self.run_pass()[0:2], (1, 2), "the twin: B's transcript moved across the reboot, B alone planned")
+
+    def test_each_file_of_the_plan_tiers_inventory_moved_across_a_reboot_un_skips(self):
+        """Round two, medium 2: _sig_inputs("plan") names the death marker (_cli_epoch), cleared.jsonl (plan_units through
+        _live_anchor_gone) and auto-nudge.json (rollup_status), none of which the persisted key carried; the in-memory memo's
+        per-boot amnesty hid it (planned 3 at main by forgetting, planned 0 skipped 3 at the first persisted head)."""
+        self.settle(); self.reboot()
+        jd.GONEDIR.mkdir(parents=True, exist_ok=True)
+        (jd.GONEDIR / (A + ".json")).write_text(json.dumps({"t": NOW - 10, "pid": 1}))
+        planned, skipped, _ = self.run_pass()
+        self.assertEqual(skipped, 2, "A's death marker landed across the reboot: A is not skipped (planned %d)" % planned)
+        self.settle(); self.reboot()
+        with (jd.STATE / "cleared.jsonl").open("a") as f:
+            f.write(json.dumps({"id": C + ":g9", "t": NOW - 5, "op": "dismiss"}) + "\n")
+        self.assertEqual(self.run_pass()[1], 0, "cleared.jsonl moved across the reboot: a shared file, no session skipped")
+        self.settle(); self.reboot()
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps({"v": 1, "sessions": {}}))
+        self.assertEqual(self.run_pass()[1], 0, "the stall slice moved across the reboot: no session skipped")
+
+    def test_the_inner_key_covers_every_file_the_plan_tiers_inventory_names(self):
+        """The completeness pin (round two, medium 2): every file _sig_inputs("plan") names, moved alone, changes _plan_key;
+        the task-store directory is covered by _task_store_key (a file added under it)."""
+        self.settle()
+        path = str(self.proj_dir / (A + ".jsonl"))
+        session = jd._PARSE_CACHE[A][1]
+        base = jd._planner_key_norm(jd._plan_key(A, path, session, NOW)); self.assertIsNotNone(base)
+        ident, value = jd._sig_inputs("plan", A, path)
+        for p in ident + value:
+            p = Path(p)
+            if p.is_dir() or p.name == A and p.parent.name == "tasks" or "tasks" in p.parts:
+                p.mkdir(parents=True, exist_ok=True); (p / "9.json").write_text(json.dumps({"id": "9", "subject": "x", "status": "pending"}))
+            else:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                with p.open("a") as f:
+                    f.write("\n")
+                os.utime(p, (NOW + 7, NOW + 7))
+            key = jd._planner_key_norm(jd._plan_key(A, path, session, NOW))
+            self.assertNotEqual(key, base, "%s moved alone and the key did not: the inventory names a file the key lacks" % p)
+            base = key
+
+    def test_a_bumped_derivation_re_plans_everything_once_after_a_reboot(self):
+        """Round two, medium 3: a row asserts nothing to do under the code that wrote it; a derivation or a placements-identity
+        change refuses the rows once, plans every session, and the rows are rewritten under the new pair."""
+        self.settle(); self.reboot()
+        with mock.patch.object(jd, "PLACEMENTS_V", jd.PLACEMENTS_V + 1):
+            self.assertEqual(self.run_pass()[0:2], (3, 0), "every session planned once under the new identity version")
+            self.assertEqual(jd.planner_skip_stats()["refused"], 3); self.assertEqual(jd.planner_skip_stats()["restored"], 0)
+            for _ in range(3):
+                if self.run_pass()[0] == 0:
+                    break
+            self.reboot()
+            self.assertEqual(self.run_pass(), (0, 3, 0), "rewritten under the new pair: the rows stand again")
 
     def test_a_task_store_change_under_the_forked_leaf_un_skips(self):
         # A is an SDK session that /cleared: its reg names LEAF as the current transcript, so discover hands the

@@ -94,8 +94,10 @@ export function parseViewState(raw: string | null | undefined): FeedViewState {
     // (T347) is the same shape: a new key under the same v, so a blob saved before it, or one carrying a
     // foreign-typed value, reads as the default (OFF) and keeps everything else it stored. Only the
     // literal `true` switches it on.
+    // known keys only, each ONCE (T410 review): a three-long order of one repeated key read as a complete order and
+    // wedged the section's drag (hand-edited storage is the only writer of such a blob; the widget prefs dedupe the same way)
     const col = (x: unknown): string[] =>
-      arr(x).filter((k) => k === "asks" || k === "needsInput" || k === "completed");
+      Array.from(new Set(arr(x).filter((k) => k === "asks" || k === "needsInput" || k === "completed")));
     // the section's block weights (T410): the three known keys only, each a finite positive number; anything
     // else is dropped at the gate and that block reads as weight 1. A blob saved before T410 reads as the
     // defaults for all three fields (follow the board, equal split, nothing folded), same shape as `focused`.

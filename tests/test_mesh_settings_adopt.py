@@ -43,9 +43,11 @@ km = load_source("romp_kernel_mesh_adopt", os.path.join(BIN, "romp-kernel"))
 jd = km.jd
 
 KERNEL_SRC = open(os.path.join(BIN, "romp-kernel")).read()
-SETTERS = {"compact-suggest": km._set_compact_suggest, "auto-nudge": km._set_auto_nudge, "file-editing": km._set_file_editing}
-READERS = {"compact-suggest": km._compact_suggest_on, "auto-nudge": km._auto_nudge_on, "file-editing": km._file_editing_on}
-KEYS = {"compact-suggest": "compactSuggest", "auto-nudge": "autoNudge", "file-editing": "fileEditing"}
+SETTERS = {"compact-suggest": km._set_compact_suggest, "auto-nudge": km._set_auto_nudge, "file-editing": km._set_file_editing,
+           "task-tracking": km._set_task_tracking}   # the Task tracking switch joined the road with T404 round two
+READERS = {"compact-suggest": km._compact_suggest_on, "auto-nudge": km._auto_nudge_on, "file-editing": km._file_editing_on,
+           "task-tracking": km._task_tracking_on}
+KEYS = {"compact-suggest": "compactSuggest", "auto-nudge": "autoNudge", "file-editing": "fileEditing", "task-tracking": "taskTracking"}
 
 
 class _Kernel:
@@ -177,10 +179,10 @@ class AdoptPeerSettings(unittest.TestCase):
         self.assertEqual(self.b.adopt("TESTHOST2", self.a.version())[0], ["compact-suggest"])
         self.assertEqual(self.b.read("compact-suggest"), (False, 4_000))
 
-    def test_auto_nudge_and_file_editing_converge_the_same_way(self):
-        # each store's fresh-install default differs (Auto Nudge ships on, file editing off): the peer's pick
-        # is the OTHER value, since a pick equal to what we hold has nothing to converge
-        for store in ("auto-nudge", "file-editing"):
+    def test_auto_nudge_file_editing_and_task_tracking_converge_the_same_way(self):
+        # each store's fresh-install default differs (Auto Nudge and task tracking ship on, file editing off): the peer's
+        # pick is the OTHER value, since a pick equal to what we hold has nothing to converge
+        for store in ("auto-nudge", "file-editing", "task-tracking"):
             default = self.a.read(store)[0]
             self.b.set(store, not default, 2_000)
             adopted, _ = self.a.adopt("TESTHOST", self.b.version())
@@ -293,7 +295,7 @@ class TheEmitterIsOneSnapshotPerStore(unittest.TestCase):
         self.assertEqual(len(calls), 1, "one read of the auto-nudge blob for its two values and two stamps")
         self.assertEqual((values["compactSuggest"], stamps["compact-suggest"]), (True, 9_000))
 
-    def test_version_builds_the_three_adopted_settings_from_the_snapshot_helper(self):
+    def test_version_builds_the_four_adopted_settings_from_the_snapshot_helper(self):
         src = KERNEL_SRC.split("def _version_info():")[1].split("\ndef ")[0]
         self.assertIn("_mesh_settings_snapshot()", src)
         with self.k:
@@ -301,8 +303,12 @@ class TheEmitterIsOneSnapshotPerStore(unittest.TestCase):
             values, stamps = km._mesh_settings_snapshot()
         self.assertEqual(values["fileEditing"], True)
         self.assertEqual(stamps["file-editing"], 4_000)
-        self.assertEqual(set(values), {"autoNudge", "compactSuggest", "fileEditing"})
-        self.assertEqual(set(stamps), {"auto-nudge", "compact-suggest", "file-editing"})
+        self.assertEqual(set(values), {"autoNudge", "compactSuggest", "fileEditing", "taskTracking"})
+        self.assertEqual(set(stamps), {"auto-nudge", "compact-suggest", "file-editing", "task-tracking"})
+        with self.k:
+            km._set_task_tracking(False, gt=4_500)
+            values, stamps = km._mesh_settings_snapshot()
+        self.assertEqual((values["taskTracking"], stamps["task-tracking"]), (False, 4_500), "the switch's value and stamp from one read of its file")
 
 
 class _Mesh:
@@ -400,8 +406,8 @@ class OneDirectionalAttach(unittest.TestCase):
         self.assertEqual(err2.count("did not take"), 0, "…once per peer, not every pass")
         self.assertEqual(self.b.read("compact-suggest"), (True, 5_000), "the peer keeps its copy until it updates or the next click")
 
-    def test_all_three_settings_push_the_same_way(self):
-        for store in ("compact-suggest", "auto-nudge", "file-editing"):
+    def test_all_four_settings_push_the_same_way(self):
+        for store in ("compact-suggest", "auto-nudge", "file-editing", "task-tracking"):
             default = self.b.read(store)[0]
             self.a.set(store, not default, 9_000)
             self.b.set(store, default, 5_000)
@@ -460,9 +466,9 @@ class ThePollSeam(unittest.TestCase):
         self.assertNotIn("_converge_peer_settings(", before_lock_exit, "never under _remotes_lock")
         self.assertIn('if u.path == "/mesh-settings":', KERNEL_SRC, "the peer-side gesture route the push lands on")
 
-    def test_the_table_names_exactly_the_three_broadcast_booleans(self):
-        self.assertEqual([row[0] for row in km._MESH_ADOPTED_SETTINGS], ["compactSuggest", "autoNudge", "fileEditing"])
-        self.assertEqual([row[1] for row in km._MESH_ADOPTED_SETTINGS], ["compact-suggest", "auto-nudge", "file-editing"])
+    def test_the_table_names_exactly_the_four_broadcast_booleans(self):
+        self.assertEqual([row[0] for row in km._MESH_ADOPTED_SETTINGS], ["compactSuggest", "autoNudge", "fileEditing", "taskTracking"])
+        self.assertEqual([row[1] for row in km._MESH_ADOPTED_SETTINGS], ["compact-suggest", "auto-nudge", "file-editing", "task-tracking"])
 
 
 if __name__ == "__main__":

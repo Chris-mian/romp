@@ -24,11 +24,20 @@ export function hostsGear(w: GearWindow): boolean {
   return !w.__rompGearOnSettingsPage;
 }
 
+export type GearOpenOpts = { tab?: string; section?: string };
+
 /** Raise the gear: in the document that hosts it, or through the shell when this one does not. A
  *  hostless document with no parent (a standalone /feed tab on a kernel that serves the gear elsewhere)
- *  has nowhere to send the ask, and drops it rather than throw. */
-export function openGear(w: GearWindow): void {
-  if (hostsGear(w)) { w.postMessage({ romp: "openSettings" }, "*"); return; }
+ *  has nowhere to send the ask, and drops it rather than throw; the return says whether the ask was
+ *  DELIVERED (here or to the shell), so a caller with a road of its own can take it (the off notice's
+ *  button goes to the dashboard, T404 round two). `tab` and `section` ride the message in the shape the
+ *  shell's __rompOpenSettings reads (T379's), naming the pane to open at. */
+export function openGear(w: GearWindow, opts?: GearOpenOpts): boolean {
+  const msg: Record<string, unknown> = { romp: "openSettings" };
+  if (opts?.tab) msg.tab = opts.tab;
+  if (opts?.section) msg.section = opts.section;
+  if (hostsGear(w)) { w.postMessage(msg, "*"); return true; }
   const p = w.parent;
-  if (p && p !== w) { try { p.postMessage({ romp: "openSettings" }, "*"); } catch { /* no shell to ask */ } }
+  if (p && p !== w) { try { p.postMessage(msg, "*"); return true; } catch { /* no shell to ask */ } }
+  return false;
 }

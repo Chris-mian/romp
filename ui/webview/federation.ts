@@ -80,7 +80,7 @@ const KERNEL_SETTING = new Set(["setAutoNudge", "setJudgeModel", "setIndexModel"
                                 "setJudgeEffort", "setIndexEffort", "setUpdateMode",
                                 "setJudgeConcurrency",   // T277: the judges' pool width, one value across machines
                                 "setDistillModel", "setDistillEffort", "setFileEditing",
-                                "setCompactSuggest",
+                                "setCompactSuggest", "setTaskTracking",   // T404: the master switch, one value across machines
                                 "setCommentModel", "setCommentEffort", "setCommentFast",
                                 "setJudgeFast", "setDistillFast", "setIndexFast"]);   // Fast mode per judge tier, one value across machines
 
@@ -517,7 +517,7 @@ export function applyViewerClears(merged: any, ledgers: any[], clearedForeign: a
 
 export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly string[],
                                view: readonly string[] = [], deadHosts: readonly string[] = [],
-                               arrivedAt: Record<string, number> = {}): any {
+                               arrivedAt: Record<string, number> = {}, hostsRead = true): any {
   const local = perHost[LOCAL] || {};
   const merged: any = { ...local, type: "feed", items: [], asks: [], working: [], awaiting: [], stateUnknown: [], order: [], sessions: [] };
   let anchor = typeof local.now === "number" ? LOCAL : null;
@@ -554,10 +554,18 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // of uptime, "outranked" the remote ack's small post-restart buildId on the first merged emission,
   // dropping the prediction while the cached remote frame still predated the reopen).
   const buildIds: Record<string, number> = {};
+  // The Task tracking switch (T404 round six): a host whose frame is the switch's stand-in (off, no cards built) is
+  // NAMED here beside its counter. `merged.off` stays the local kernel's word (the spread above), so the notice and
+  // the gear row agree, both reading the kernel this dashboard belongs to; a remote host's off frame contributes no
+  // cards while the local frame is a normal one, and without this list the pane would read that host's cards as
+  // gone and drop their seen marks by absence. The mesh converges the switch across hosts on the supervisor's
+  // steady pass, so a mixed state is a short one; the pane keeps every card mark while any host is named here.
+  const offHosts: string[] = [];
   for (const h of hostSeq) {
     const f = perHost[h];
     if (!f) continue;
     if (typeof f.buildId === "number") buildIds[h] = f.buildId;
+    if (f.off === true) offHosts.push(h);
     if (Array.isArray(f.syncNotices)) {
       for (const r of f.syncNotices) {
         if (!r || !r.sig) continue;
@@ -598,6 +606,7 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   if (syncs.length) merged.syncNotices = syncs;
   else delete merged.syncNotices;
   merged.buildIds = buildIds;
+  merged.offHosts = offHosts;
   // Hosts ATTACHED but yet to contribute a feed payload (the user 2026-08-25: after attaching, the
   // sessions land via the faster tabOrder/timeline channels while the cards trail with no cue) —
   // the sessions-shown/cards-pending window, named per host so the board can say cards are coming.
@@ -609,6 +618,14 @@ export function mergeHostFeeds(perHost: Record<string, any>, hostSeq: readonly s
   // THAT instead of an open-ended wait — the fail-loudly rule; still retired only by the real
   // events (a payload arriving, or the detach dropping the host from hostSeq).
   merged.pendingDead = merged.pendingHosts.filter((h: string) => deadHosts.includes(h));
+  // The host list itself may not be in hand yet (T404 round nine): a page load's FIRST merged frame is built when the
+  // local kernel's push lands on its open socket, before the first /tunnels answer has put any remote host in
+  // hostSeq, so offHosts and pendingHosts are both empty and read as "every card in hand". Until the manager has
+  // absorbed one answer the frame says so, and the pane's absence-driven writers stand down for it exactly as for
+  // an off or pending host (frameCardsUnknown); the local host's cards still show and still ring. The manager
+  // re-emits the moment the first answer lands, so the wait is the answer's, not a push's.
+  if (!hostsRead) merged.hostsUnread = true;
+  else delete merged.hostsUnread;
   return merged;
 }
 
@@ -889,6 +906,9 @@ export class FederationManager {
   private perHostTl: Record<string, any> = {}; //   last timeline lanes payload ({type:"data"}.data) per host
   private perHostTlBars: Record<string, any> = {}; // last timeline {type:"bars"} detail per host
   private hostSeq: string[] = [LOCAL]; // local first, then attach order — fixes the group order in the strip
+  // false until the first /tunnels answer is absorbed (poll): before it, hostSeq is the local host alone and says
+  // nothing about which remote hosts exist, so a merged frame built then is flagged hostsUnread (T404 round nine)
+  private hostsRead = false;
   private downHosts = new Set<string>(); // attached, but its tunnel isn't up: what's on screen is a memory
   private dialingHosts = new Set<string>(); // the kernel is dialing or health-checking these right now (the row's `dialing`)
   // each host's recovery counter as last seen (/tunnels upSeq, T291b): the kernel bumps it when a row that had
@@ -1238,7 +1258,7 @@ export class FederationManager {
     }
     this.publishPending();
     const dead = this.deadHosts();
-    this.emit(mergeHostFeeds(this.perHostFeed, this.hostSeq, this.view(), dead, this.perHostFeedAt));
+    this.emit(mergeHostFeeds(this.perHostFeed, this.hostSeq, this.view(), dead, this.perHostFeedAt, this.hostsRead));
   }
 
   // the hosts whose link is DOWN right now (this manager knows its sockets) — the merges' pendingDead input
@@ -1519,11 +1539,17 @@ export class FederationManager {
     let opened = false;
     for (const [host, t] of want) if (!this.conns.has(host)) { this.openRemote(host, t.status === "up"); opened = true; }
     for (const host of [...this.conns.keys()]) if (!want.has(host)) this.closeRemote(host);
+    // The host list is in hand from here (T404 round nine): the first answer, hosts or none, ends the frames'
+    // hostsUnread mark, and the merged feed is re-emitted once for it, so the pane's absence-driven writers
+    // run on a frame that knows its hosts rather than on the next push that happens to land. A failed fetch
+    // returned above and leaves the mark standing: a list that could not be read is not a list in hand.
+    const firstRead = !this.hostsRead;
+    this.hostsRead = true;
     // A host just ATTACHED is pending from this moment, not from the next push that happens to land:
     // re-emit the merged payloads so the placeholders appear at the attach event. Each emission holds
     // until the LOCAL payload exists (the feed's hold is here; the timeline's is its own), so a page
     // still booting never gets an empty merged feed dropped onto its loader.
-    if (opened) {
+    if (opened || firstRead) {
       if (LOCAL in this.perHostFeed) this.emitMergedFeed();
       this.emitMergedTimeline(false);
       this.publishPending();

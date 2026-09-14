@@ -242,16 +242,25 @@ var GEAR_HTML =
   "<label class='rs-row rs-sep'><input type=checkbox id=rs-autonudge>" +
   '<span><b>Auto Nudge</b><span class=rs-mixed id=rs-autonudge-split hidden></span>' +
   '<span class=rs-line id=rs-autonudge-sub>' + AUTONUDGE_SUB + '</span>' +
+  '<span class=rs-note id=rs-autonudge-tt hidden>While task tracking is off, the goal nudges wait: the judges no longer update the goals they are about. Only the reminders about unanswered messages from other sessions still go out.</span>' +
   '</span></label>' +
   "<label class='rs-row'><input type=checkbox id=rs-suggestcompact>" +
   '<span><b>Suggest /compact</b><span class=rs-mixed hidden></span>' +
   '<span class=rs-line>When a session has sat idle for an hour with a lot of context built up, suggest one /compact at a natural point, once per fill-up, on every connected machine.</span>' +
+  '<span class=rs-note id=rs-suggestcompact-tt hidden>Task tracking off changes nothing here: the suggestion reads the context size, not the judges.</span>' +
   '</span></label>' +
   '</div>' +
   '<div class=rs-pane data-pane=tasks hidden>' +
-  // TASK TRACKING (T404, the user 2026-09-13): the judges alone; the nudges went to Automation, Conserve memory to General, Thinking
-  // summaries to Chat. PR 2's master switch goes at the top of this pane.
-  "<div class='rs-sec rs-sec-first'>Judges</div>" +
+  // TASK TRACKING (T404, the user 2026-09-13): the master switch first, then the judges alone; the nudges went to Automation,
+  // Conserve memory to General, Thinking summaries to Chat. Off, the switch stands the whole system down (kernel.py
+  // _task_tracking_on: no judge tier, no feed or outline, the shell hides their buttons) and every control that depends on it
+  // here, in General's Panes and in Debug's Judging bands wears rs-off with the one tooltip (dressTracking).
+  "<div class='rs-sec rs-sec-first'>Task tracking</div>" +
+  "<label class='rs-row'><input type=checkbox id=rs-tasktrack checked>" +
+  '<span><b>Task tracking</b><span class=rs-mixed hidden></span>' +
+  '<span class=rs-sub>romp reads every session and keeps the feed and the outline current with its judges. Off, the judges do not run and spend nothing, the feed and the outline are not shown, and the controls that depend on them wait; the chat and the Sessions pane carry on. Follows to every connected machine.</span>' +
+  '</span></label>' +
+  '<div class=rs-sec>Judges</div>' +
   "<div class='rs-row rs-jrow'><b>Triage model <span class=rs-mixed hidden></span></b><span class=rs-sub>The model the triage judges use — planner, grouper, closer, courier (the judgment-heavy tier). Applies on the judges' next pass; no restart. A pick here follows to every connected machine's kernel.</span><select id=rs-judgemodel></select>" +
   // Fast mode sits with the model (the user 2026-09-10, who wanted the setting to speak the chat's own words
   // and sit with the model): the chat's statusline badge and docs/reference.md call it fast mode, so this
@@ -353,6 +362,7 @@ function initGear(post, opts) {
     fe = document.getElementById('rs-fileedit'),
     pn = { timeline: document.getElementById('rs-pane-timeline'), fleet: document.getElementById('rs-pane-fleet'), feed: document.getElementById('rs-pane-feed') },
     ths = document.getElementById('rs-thinksum'),
+    tk = document.getElementById('rs-tasktrack'),
     ans = document.getElementById('rs-autonudge-split'), asub = document.getElementById('rs-autonudge-sub');
   // No default for tabWidgets (round one, HIGH): an injected empty object won over a pre-widgets store's tabCtx, so the
   // Context bar read as on at 50 percent whatever the user had chosen, and a save of ANY setting wrote the empty prefs and
@@ -958,6 +968,34 @@ function initGear(post, opts) {
   // membership), so it neither queues for nor reaches another machine. Stamped all the same: two
   // dashboards on one kernel still race, and the kernel orders every setting by `gt`.
   if (ths) ths.addEventListener('change', function () { post({ type: 'setThinkingSummaries', enabled: ths.checked, gt: gclock.stamp('thinking-summaries') }); });
+  // THE TASK TRACKING SWITCH (T404): the kernel's setting (gt-gated, a KERNEL_SETTING across machines). The click POSTS and
+  // nothing more: the dependent controls dress and the shell hears the flip (a taskTracking message: the rail's Outline and
+  // Feed buttons and any open pane of theirs, ahead of its next /version read) on the KERNEL'S ECHO, the taskTracking frame
+  // the applying kernel answers on this socket, so a refused write (a settingStale frame with why) leaves the shell and the
+  // panes as they were and fill() snaps the box back (T404 round two, medium 4: the gear and the shell went off 6 ms after
+  // a click the kernel had refused, and the judges kept spending behind a switch that read off)
+  var TT_OFF_TIP = 'Enable task tracking to use this (Settings, Task tracking).';
+  function dressTracking(on) {
+    var rows = Array.prototype.slice.call(document.querySelectorAll('#rsettings .rs-pane[data-pane=tasks] .rs-row')).filter(function (r) { return !r.querySelector('#rs-tasktrack'); });   // the judge rows; never the switch's own row
+    [pn.fleet, pn.feed, jix, jtr].forEach(function (el) { var row = el && el.closest ? el.closest('label') : null; if (row) rows.push(row); });
+    rows.forEach(function (row) {
+      row.classList.toggle('rs-off', !on);
+      if (on) row.removeAttribute('title'); else row.title = TT_OFF_TIP;
+      Array.prototype.forEach.call(row.querySelectorAll('input, select, button'), function (c) { c.disabled = !on; });
+    });
+    var an1 = document.getElementById('rs-autonudge-tt'), sc1 = document.getElementById('rs-suggestcompact-tt');
+    if (an1) an1.hidden = !!on;
+    if (sc1) sc1.hidden = !!on;
+  }
+  function tellShellTracking(on) { try { (window.parent !== window ? window.parent : window).postMessage({ romp: 'taskTracking', on: !!on }, '*'); } catch (e) {} }
+  if (tk) tk.addEventListener('change', function () { post({ type: 'setTaskTracking', enabled: tk.checked, gt: gclock.stamp('task-tracking') }); });
+  window.addEventListener('message', function (e) {
+    var m = e.data;
+    if (!m || m.type !== 'taskTracking' || typeof m.on !== 'boolean') return;   // the kernel's echo of an applied flip
+    if (tk) tk.checked = m.on;
+    dressTracking(m.on);
+    tellShellTracking(m.on);
+  });
   // Auto Nudge / judge tiers are SERVER-SIDE (the kernel runs them): post the
   // change; the controls re-initialize from /version on every open (fill()).
   // Each attached kernel keeps its own copy, so the post goes to all of them
@@ -1375,7 +1413,7 @@ function initGear(post, opts) {
   // refused pick as applied (fill() runs only on open), and with every kernel AGREEING on the
   // kept value the mixed marks show nothing. Event-keyed: the frame IS the deciding event — toast
   // it in plain words and re-read the kernel's actual values if the modal is up. No polling.
-  var STALE_LABELS = { 'auto-nudge': 'Auto Nudge', 'compact-suggest': 'Suggest /compact',
+  var STALE_LABELS = { 'auto-nudge': 'Auto Nudge', 'compact-suggest': 'Suggest /compact', 'task-tracking': 'Task tracking',
     'file-editing': 'File editing',
     'update-mode': 'Automatic updates', 'judge-model': 'Triage model', 'judge-effort': 'Triage effort',
     'index-model': 'Indexing model', 'index-effort': 'Indexing effort', 'judge-concurrency': 'Judge concurrency',
@@ -1387,7 +1425,7 @@ function initGear(post, opts) {
   // store name → the message type that sets it: the whitelist for the toast's Apply anyway (a frame
   // may re-issue the one setting it names, nothing else) and the completeness pin's map
   // (gear.test.ts checks every emitter stamps through the clock under its own store name)
-  var STALE_TYPE = { 'auto-nudge': 'setAutoNudge', 'compact-suggest': 'setCompactSuggest',
+  var STALE_TYPE = { 'auto-nudge': 'setAutoNudge', 'compact-suggest': 'setCompactSuggest', 'task-tracking': 'setTaskTracking',
     'file-editing': 'setFileEditing', 'update-mode': 'setUpdateMode', 'thinking-summaries': 'setThinkingSummaries',
     'judge-model': 'setJudgeModel', 'judge-effort': 'setJudgeEffort',
     'index-model': 'setIndexModel', 'index-effort': 'setIndexEffort', 'judge-concurrency': 'setJudgeConcurrency',
@@ -1666,7 +1704,7 @@ function initGear(post, opts) {
     var mine = (v && v.settings) || null;
     [['updateMode', upm], ['judgeModel', jm], ['judgeEffort', je], ['indexModel', im],
      ['indexEffort', ie], ['judgeConcurrency', jc], ['distillModel', dm], ['distillEffort', de], ['fileEditing', fe],
-     ['compactSuggest', csg],
+     ['compactSuggest', csg], ['taskTracking', tk],
      ['commentModel', cmm], ['commentEffort', cme], ['commentFast', cmf],
      ['judgeFast', jf], ['distillFast', df], ['indexFast', xf]].forEach(function (pair) {
       var key = pair[0], el = pair[1];
@@ -1699,6 +1737,7 @@ function initGear(post, opts) {
       fillMixedMarks(v, rows);
     }).catch(function () { fillAutoNudge(v.autoNudge, []); fillMixedMarks(v, []); });
     if (ths) ths.checked = !!v.thinkingSummaries;   // per-install opt-in: this kernel's persisted answer is authoritative
+    if (tk) { tk.checked = v.taskTracking !== false; dressTracking(tk.checked); }   // the master switch (T404): absent reads on
     if (fe) fe.checked = !!v.fileEditing;   // the kernel's persisted opt-in is authoritative (see the viewer's consent popup)
     if (cvm) cvm.checked = !!v.conserveMemory;   // T148: the kernel's persisted conserve flag is authoritative
     if (csg) csg.checked = !!v.compactSuggest;   // T208+: the kernel's persisted opt-in is authoritative
@@ -1798,8 +1837,9 @@ function initGear(post, opts) {
     pcard.addEventListener('mouseover', function (e) { var host = hostOf(e.target); if (host) placeSub(host); });
     pcard.addEventListener('mouseout', function (e) { var host = hostOf(e.target); if (host && !(e.relatedTarget && host.contains(e.relatedTarget))) host.classList.remove('rs-up'); });
   }
-  function closeSettings() { endDrags(); clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
+  function closeSettings() { endDrags(); if (raBack && !raBack.hidden) raHide(); clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
   function openSettings(tab, section) {
+    if (raBack && !raBack.hidden) raHide();   // the Token usage panel up: down first, so the card is what this open shows, never the card under the layer (the read of the panel's close fix)
     if (tab === 'appearance' && !section) section = 'appearance';   // the former Appearance tab is General's section (T404)
     if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); if (section) showSection(section); else clearSectionScroll(); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)
     selectTab(tab);
@@ -1815,7 +1855,7 @@ function initGear(post, opts) {
   // document and calls this synchronously): close the modal and say so, unless one of its own dialogs is up
   // (the login card, an open house dropdown), which the document's own Escape handlers close one level at a
   // time; the shell then leaves the press alone. A cross-origin host (VS Code) cannot reach this and has no chain.
-  window.__rompSettingsClose = function () { if (p.hidden || (lgM && !lgM.hidden) || openHousePick || widgetDrag) return false; closeSettings(); return true; };   // one Escape level at a time: a drag in flight takes it (the shell's handler runs before the drag's own, so this is where it yields)
+  window.__rompSettingsClose = function () { if (raBack && !raBack.hidden) { raHide(); return true; } if (p.hidden || (lgM && !lgM.hidden) || openHousePick || widgetDrag) return false; closeSettings(); return true; };   // the Token usage panel is one level: the shell's chain asks this whenever settings-open stands, so a press with the keyboard in the shell document takes the layer down and returns to the card (the panel's own document-local Escape below serves the standalone page, where no shell asks)   // one Escape level at a time: a drag in flight takes it (the shell's handler runs before the drag's own, so this is where it yields)
   // The shortcuts row: the web shell (same-origin parent) gets the customize link — it opens the
   // shell's shortcuts dialog and closes this modal so the two never stack; VS Code (cross-origin
   // parent) gets the pointer at its own Keyboard Shortcuts editor instead (the user 2026-08-09).
@@ -1899,7 +1939,8 @@ function initGear(post, opts) {
   // page (Escape dead, since the shell asks this page and a hidden card answers no; every click on the invisible frame; only the
   // palette or a reload recovered). From the card, Escape and the backdrop close the settings by the normal road. The close's
   // own click stops here: bubbling on to the document, it would meet the card's click-outside listener with the card just
-  // shown and close the settings outright (the lab saw the card hidden again a moment after the close).
+  // shown and close the settings outright (the lab saw the card hidden again a moment after the close). The settings' own
+  // close, open and Escape answer route through this too, so the layer never survives a close or sits over a fresh open.
   function raHide(e) { if (e && e.stopPropagation) e.stopPropagation(); raBack.hidden = true; p.hidden = false; }
   if (raClose) raClose.onclick = raHide;
   if (raBack) raBack.addEventListener('click', function (e) { if (e.target === raBack) raHide(e); });

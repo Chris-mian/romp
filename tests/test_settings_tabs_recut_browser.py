@@ -61,7 +61,7 @@ let browser;
 try { browser = await chromium.launch(); }
 catch (e) { console.error("browser-launch-failed: " + e); process.exit(3); }
 const MOVED = ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-keys-web", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates",
-               "rs-compact", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-thinksum", "rs-widgets", "rs-feedcollapsed", "rs-defaultdir", "rs-backend", "rs-autonudge", "rs-suggestcompact", "rs-judgemodel", "rs-judgeconc",
+               "rs-compact", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-thinksum", "rs-widgets", "rs-feedcollapsed", "rs-defaultdir", "rs-backend", "rs-autonudge", "rs-suggestcompact", "rs-tasktrack", "rs-judgemodel", "rs-judgeconc",
                "rs-judges-index", "rs-judges-triage", "ra-open", "rs-log-open", "rsver", "rs-filelink", "rs-activeonly", "rs-collapsegaps"];   // the last three must be GONE (T404)
 // open the landing in a fresh context, seeded with a remembered tab when given; hand back the settings frame once the panel is up
 async function openPanel(seedTab, ask) {
@@ -238,6 +238,42 @@ for (const old of ["automatic", "system", "tabs", "appearance"]) {
   await page.mouse.click(fr.x + tgt.x, fr.y + tgt.y); await page.waitForTimeout(500);
   const activeAfter = await chatF.evaluate(() => { const a = document.querySelector("#tabs .tab.active"); return a ? a.dataset.id : null; });
   out.tokenUsageClose = { mid, afterClose, afterEsc, click: { target: tgt.id, activeBefore: tgt.activeBefore, activeAfter, shell: await shellRead() } };
+  // 3b. the panel's other roads (the read of that fix queued them, pre-existing): the shell's Escape chain had no entry for
+  // the layer, so with the keyboard in the SHELL document Escape did nothing for the panel; nothing reset the layer, so an
+  // open through the shell while the panel was up showed the card UNDER the layer; and the scene covered the close button only
+  await page.evaluate(() => window.__rompOpenSettings("debug"));
+  await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 10000 });
+  await setF.waitForSelector("#rsettings:not([hidden])", { timeout: 10000 }); await setF.waitForTimeout(200);
+  // between roads: a known state whatever a road did at the base (the button road, which held there, takes a layer left up;
+  // the card is reopened on the Debug pane, where the Token usage button lives)
+  const reset = async () => {
+    await setF.evaluate(() => { const b = document.getElementById("ranalytics-back"); if (b && !b.hidden) document.getElementById("ra-close").click(); });
+    const open = await page.evaluate(() => document.body.classList.contains("settings-open"));
+    const cardHidden = await setF.evaluate(() => document.getElementById("rsettings").hidden);
+    if (!open || cardHidden) { await page.evaluate(() => window.__rompOpenSettings("debug")); await page.waitForFunction(() => document.body.classList.contains("settings-open"), null, { timeout: 10000 }); }
+    await setF.waitForSelector("#rsettings:not([hidden])", { timeout: 10000 });
+    await setF.click('#rsettings .rs-tab[data-tab="debug"]'); await setF.waitForTimeout(200);
+  };
+  const raUp = async () => { await reset(); await setF.click("#ra-open"); await setF.waitForFunction(() => !document.getElementById("ranalytics-back").hidden, null, { timeout: 5000 }); await setF.waitForTimeout(150); };
+  // (a) the keyboard in the shell document: Escape reaches the panel through the shell's chain, one level (the layer down, the card back)
+  await raUp();
+  await page.evaluate(() => { const a = document.activeElement; if (a && a.blur) a.blur(); document.body.focus(); });
+  await page.keyboard.press("Escape"); await page.waitForTimeout(300);
+  const shellEsc = { frame: await frameRead(), shell: await shellRead() };
+  // (b) an open through the shell while the panel is up: the card, never under the layer
+  await raUp();
+  await page.evaluate(() => window.__rompOpenSettings("general")); await page.waitForTimeout(300);
+  const openUnder = { frame: await frameRead(), shell: await shellRead() };
+  // (c) the backdrop click, and the panel's own Escape with the keyboard in the frame, then the next Escape closing the settings
+  await raUp();
+  await setF.click("#ranalytics-back", { position: { x: 4, y: 4 } }); await setF.waitForTimeout(250);
+  const backdrop = { frame: await frameRead(), shell: await shellRead() };
+  await raUp();
+  await setF.focus("#ra-close"); await page.keyboard.press("Escape"); await page.waitForTimeout(300);
+  const frameEsc = { frame: await frameRead(), shell: await shellRead() };
+  await page.keyboard.press("Escape"); await page.waitForTimeout(300);
+  const secondEsc = await shellRead();
+  out.tokenUsageRoads = { shellEsc, openUnder, backdrop, frameEsc, secondEsc };
   await page.close(); await ctx.close();
 }
 fs.writeFileSync(cfg.out, JSON.stringify(out));
@@ -376,6 +412,19 @@ class ServedSettingsTabs(unittest.TestCase):
         self.assertEqual(r["click"]["activeAfter"], r["click"]["target"], "the next click landed: the tab it hit is the active one" + t)
         self.assertNotEqual(r["click"]["activeAfter"], r["click"]["activeBefore"], "and it was a change" + t)
 
+    def test_the_token_usage_panels_other_roads_the_shells_escape_an_open_while_it_is_up_the_backdrop_and_its_own_escape(self):
+        r = self._run()["tokenUsageRoads"]; t = "\n  " + json.dumps(r)
+        a = r["shellEsc"]
+        self.assertEqual((a["frame"]["backShown"], a["frame"]["cardHidden"], a["shell"]["settingsOpen"]), (False, False, True), "with the keyboard in the shell document, one Escape takes the panel down and returns to the card: the shell's chain asks the page, which answers for the layer" + t)
+        b = r["openUnder"]
+        self.assertEqual((b["frame"]["backShown"], b["frame"]["cardHidden"]), (False, False), "an open through the shell while the panel is up lands on the card, never under the layer" + t)
+        c = r["backdrop"]
+        self.assertEqual((c["frame"]["backShown"], c["frame"]["cardHidden"]), (False, False), "the backdrop click returns to the card" + t)
+        d = r["frameEsc"]
+        self.assertEqual((d["frame"]["backShown"], d["frame"]["cardHidden"], d["shell"]["settingsOpen"]), (False, False, True), "the panel's Escape with the keyboard in the frame returns to the card, one level" + t)
+        self.assertFalse(r["secondEsc"]["settingsOpen"], "the next Escape closes the settings" + t)
+        self.assertEqual(r["secondEsc"]["hit"], "IFRAME#f-chat", "and the chat frame is under the page's centre again" + t)
+
     def test_the_pills_read_general_chat_feed_sessions_automation_task_tracking_debug_in_that_order(self):
         # T404 (the user 2026-09-13): Automation is new, Appearance folded into General
         g = self._run()["general"]
@@ -387,7 +436,7 @@ class ServedSettingsTabs(unittest.TestCase):
         self.assertEqual(g["heads"]["general"], ["Account", "Panes", "Appearance", "Permissions", "This machine", "Keyboard shortcuts"], table)
         self.assertEqual(g["heads"]["chat"], ["Display", "Comments", "Thinking", "Tab widgets", "Status line"], "Transcript is Display; the text scheme and the strip row joined it; Thinking creates, so it is Chat's; the Status line section follows Tab widgets (T409)" + table)
         self.assertEqual(g["heads"]["debug"], ["Judging bands", "Diagnostics"], "Updates went to General" + table)
-        self.assertEqual(g["heads"]["tasks"], ["Judges"], "Task tracking keeps the judges alone" + table)
+        self.assertEqual(g["heads"]["tasks"], ["Task tracking", "Judges"], "the master switch, then the judges (T404 PR 2)" + table)
         self.assertEqual(g["heads"]["automation"], ["Nudges"], table)
         self.assertEqual(g["heads"]["feed"], ["Cards"], table)
         self.assertEqual(g["heads"]["sessions"], ["New sessions"], "the Sessions-pane rows left settings: the pane carries them" + table)
@@ -479,7 +528,7 @@ class ServedSettingsTabs(unittest.TestCase):
         gen = ["rs-billing", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-keys-web", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"]
         chat = ["rs-compact", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-thinksum", "rs-widgets"]
         expect = dict([(i, "general") for i in gen] + [(i, "chat") for i in chat] + [("rs-feedcollapsed", "feed"), ("rs-defaultdir", "sessions"), ("rs-backend", "sessions"),
-                       ("rs-autonudge", "automation"), ("rs-suggestcompact", "automation"), ("rs-judgemodel", "tasks"), ("rs-judgeconc", "tasks"),
+                       ("rs-autonudge", "automation"), ("rs-suggestcompact", "automation"), ("rs-tasktrack", "tasks"), ("rs-judgemodel", "tasks"), ("rs-judgeconc", "tasks"),
                        ("rs-judges-index", "debug"), ("rs-judges-triage", "debug"), ("ra-open", "debug"), ("rs-log-open", "debug"), ("rsver", "debug"),
                        ("rs-filelink", "missing"), ("rs-activeonly", "missing"), ("rs-collapsegaps", "missing")])   # the three rows that left settings (T404): no element
         self.assertEqual(g["homes"], expect, "every id in its new home, none missing, the three gone: " + json.dumps(g["homes"]))
