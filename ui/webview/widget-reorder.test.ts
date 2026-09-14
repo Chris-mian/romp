@@ -29,9 +29,9 @@ test("the drag: pointer events heard on the document (a capture on the grip woul
   assert.doesNotMatch(SECTION, /if \(e\.button !== 0\) return;\s*\n\s*e\.preventDefault\(\);/, "no preventDefault on the grip's pointerdown: the grip takes the focus, so the frame hears Escape and the arrow keys");
   assert.match(SECTION, /if \(y > b\.top \+ b\.height \/ 2\) after = r;/, "the midpoint rule");
   assert.match(SECTION, /if \(!keepsGroup\(tentative, before\)\) \{ blocked = true; return; \}[^\n]*\n\s*cfg\.host\.insertBefore\(row, wantBefore\);/, "the row moves live, never rebuilt, and never out of its group");
-  assert.match(SECTION, /var now = currentList\(\);\s*\n\s*if \(blocked && now\.join\(\) === before\.join\(\)\) nudge\(row\);\s*\n\s*if \(now\.join\(\) !== before\.join\(\)\) commit\(now, id\); else paint\(\);/, "the drop commits the visual order whole; a drop in place writes nothing; a refused move nudges");
+  assert.match(SECTION, /var now = currentList\(\);\s*\n\s*if \(blocked && now\.join\(\) === before\.join\(\)\) \{ nudge\(row\); refused\(id\); \}\s*\n\s*if \(now\.join\(\) !== before\.join\(\)\) commit\(now, id\); else paint\(\);/, "the drop commits the visual order whole; a drop in place writes nothing; a refused move nudges");
   // round two: only the drag's own pointer moves, ends or cancels it (a second finger's release must not commit the drag)
-  assert.match(SECTION, /var pid = e\.pointerId, before = currentList\(\), released = false, blocked = false;/);
+  assert.match(SECTION, /var pid = e\.pointerId, before = currentList\(\), blocked = false;/);
   assert.match(SECTION, /var move = function \(ev\) \{\s*\n\s*if \(ev\.pointerId !== pid\) return;/);
   assert.match(SECTION, /var end = function \(ev\) \{\s*\n\s*if \(ev && ev\.pointerId !== undefined && ev\.pointerId !== pid\) return;/);
   assert.match(SECTION, /var esc = function \(ev\) \{ if \(ev\.key === 'Escape'\) \{ ev\.preventDefault\(\); ev\.stopPropagation\(\); placeRows\(before\); end\(\); \} \};/, "Escape restores the order, ends the drag and goes no further (the panel stays open)");
@@ -52,12 +52,15 @@ test("the drag: pointer events heard on the document (a capture on the grip woul
   // that click, by the next press or key, or one frame on; an Escape-ended drag arms it at the release still to come
   assert.match(SECTION, /var swallow = function \(ce\) \{ if \(ce\.detail === 0 && !ce\.pointerType\) return; ce\.stopImmediatePropagation\(\); ce\.preventDefault\(\); disarm\(\); \};/, "immediate: the click targets the document, where the panel's click-outside listener sits beside the swallow; a keyboard click passes");
   assert.match(SECTION, /document\.addEventListener\('click', swallow, true\); document\.addEventListener\('pointerdown', disarm, true\); document\.addEventListener\('keydown', disarm, true\);\s*\n\s*requestAnimationFrame\(disarm\);/);
-  assert.match(SECTION, /if \(ev && ev\.type === 'pointerup'\) armSwallow\(\);\s*\n\s*else document\.addEventListener\('pointerup', function lateUp\(up\) \{ if \(up\.pointerId !== pid\) return; document\.removeEventListener\('pointerup', lateUp, true\); armSwallow\(\); \}, true\);/);
+  assert.match(SECTION, /if \(ev && ev\.type === 'pointerup'\) armSwallow\(\);\s*\n\s*else if \(!ev\) \{/, "only an Escape-ended drag waits for the release still to come; a cancel arms nothing (round three, the medium: the lab's ledger holds the cancel path at zero)");
+  assert.match(SECTION, /var lateUp = function \(up\) \{ if \(up\.pointerId !== pid\) return; document\.removeEventListener\('pointerup', lateUp, true\); document\.removeEventListener\('pointercancel', lateUp, true\); if \(up\.type === 'pointerup'\) armSwallow\(\); \};/);
+  assert.match(SECTION, /document\.addEventListener\('pointerup', lateUp, true\); document\.addEventListener\('pointercancel', lateUp, true\);/, "the late listener leaves with its pointer, released or cancelled");
+  assert.doesNotMatch(SECTION, /released/, "no dead variable (round three, low 5)");
 });
 
 test("the keyboard road: ArrowUp and ArrowDown on the focused grip move the row one place through the same moveId rule, and the grip keeps the focus", () => {
   assert.match(SECTION, /grip\.addEventListener\('keydown', function \(e\) \{\s*\n\s*if \(e\.key !== 'ArrowUp' && e\.key !== 'ArrowDown'\) return;\s*\n\s*e\.preventDefault\(\);/);
-  assert.match(SECTION, /var list = currentList\(\), i = list\.indexOf\(id\), to = e\.key === 'ArrowUp' \? i - 1 : i \+ 1;\s*\n\s*if \(i < 0 \|\| to < 0 \|\| to >= list\.length\) return;\s*\n\s*var next = WP\.moveId\(list, id, to\);\s*\n\s*if \(!keepsGroup\(next, list\)\) \{ nudge\(row\); return; \}\s*\n\s*commit\(next, id\);\s*\n\s*grip\.focus\(\);/, "a key that would leave the group nudges instead");
+  assert.match(SECTION, /var list = currentList\(\), i = list\.indexOf\(id\), to = e\.key === 'ArrowUp' \? i - 1 : i \+ 1;\s*\n\s*if \(i < 0 \|\| to < 0 \|\| to >= list\.length\) return;\s*\n\s*var next = WP\.moveId\(list, id, to\);\s*\n\s*if \(!keepsGroup\(next, list\)\) \{ nudge\(row\); refused\(id\); return; \}\s*\n\s*commit\(next, id\);\s*\n\s*grip\.focus\(\);/, "a key that would leave the group nudges instead");
   assert.match(GEAR, /var WP = require\('\.\/widget-prefs\.ts'\);/);
 });
 
@@ -74,7 +77,14 @@ test("the order is stored whole by one writer, the divider's id among the tab wi
   assert.match(GEAR, /order: SW\.statusListOrder, divider: null,\s*\n\s*group: function \(id\) \{ var w = SW\.statusWidget\(id\); return w \? w\.slot : null; \},/, "the status line has no divider: its rows stay in their slot's group");
   // round two: the polite live region every move speaks through, position and (tab widgets) the side of the name
   assert.match(SECTION, /live\.setAttribute\('aria-live', 'polite'\)/);
-  assert.match(SECTION, /live\.textContent = labelOf\(id\) \+ ' moved to position ' \+ n \+ ' of ' \+ ids\.length \+ side;/);
+  assert.match(SECTION, /liveRegion\(\)\.textContent = labelOf\(id\) \+ ' moved to position ' \+ n \+ ' of ' \+ ids\.length \+ side \+ where;/);
+  // round three: the position counted within the row's slot and the slot named (low 2); a refused move spoken (low 1)
+  assert.match(SECTION, /return !\(cfg\.divider && x === cfg\.divider\.id\) && \(!cfg\.group \|\| cfg\.group\(x\) === g\);/);
+  assert.match(SECTION, /var where = cfg\.group \? ' in the ' \+ cfg\.groupLabel\(g\) : '';/);
+  assert.match(SECTION, /function refused\(id\) \{ liveRegion\(\)\.textContent = labelOf\(id\) \+ ' stays in the ' \+ cfg\.groupLabel\(cfg\.group\(id\)\); \}/);
+  assert.match(SECTION, /\{ nudge\(row\); refused\(id\); return; \}/, "the key's refusal");
+  assert.match(SECTION, /\{ nudge\(row\); refused\(id\); \}/, "the drop's refusal");
+  assert.match(GEAR, /groupLabel: function \(g\) \{ return g \+ ' slot'; \},/);
   assert.match(GEAR_CSS, /#rsettings \.rs-live \{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect\(0 0 0 0\);/);
   assert.match(GEAR_CSS, /#rsettings \.rs-widget\.rs-nudge \{ animation: rs-nudge 0\.3s ease; \}/);
   // round two, low 7: the gear's own save normalizes both keys when the store carries them, never injecting either

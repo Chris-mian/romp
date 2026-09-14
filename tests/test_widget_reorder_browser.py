@@ -193,6 +193,31 @@ await setF.focus('#rs-widgets > .rs-widget[data-widget="dot"] .rs-switch');
 await page.keyboard.press("Space"); await setF.waitForTimeout(400);
 out.afterDragSpace = { before: storeBefore, after: await readStrip(chatF), panel: await readPanel(setF) };
 await setF.focus('#rs-widgets > .rs-widget[data-widget="dot"] .rs-switch'); await page.keyboard.press("Space"); await setF.waitForTimeout(300);   // the dot back on
+// 3d. round three, the medium: a pointercancel-ended drag leaves no document listener behind and eats no later click. A
+// cancel delivers no pointerup for its pointer, so a late-release listener armed on that path waits for the mouse's next
+// release, whose id in Chromium is always 1: the drag here is synthetic under id 1 (down on the grip, a move, a cancel on
+// the document), the ledger counts the document's pointerup listeners by identity, and a REAL click on a switch follows
+await setF.evaluate(() => { const S = new Set(); const a = document.addEventListener.bind(document), r = document.removeEventListener.bind(document);
+  window.__puOpen = () => S.size;
+  document.addEventListener = function (t, fn, o) { if (t === "pointerup") S.add(fn); return a(t, fn, o); };
+  document.removeEventListener = function (t, fn, o) { if (t === "pointerup") S.delete(fn); return r(t, fn, o); }; });
+const cancelBefore = await readPanel(setF);
+await setF.evaluate(() => { const grip = document.querySelector('#rs-widgets > .rs-widget[data-widget="ctx"] .rs-grip'); const b = grip.getBoundingClientRect();
+  const next = document.querySelector('#rs-widgets > .rs-widget[data-widget="hotkey"]').getBoundingClientRect();   // past the next row's midpoint: the row moves live
+  grip.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, pointerType: "mouse", button: 0, bubbles: true, clientX: b.left + 4, clientY: b.top + b.height / 2 }));
+  document.dispatchEvent(new PointerEvent("pointermove", { pointerId: 1, pointerType: "mouse", bubbles: true, clientX: b.left + 4, clientY: next.bottom - 2 })); });
+await setF.waitForTimeout(100);
+const midDrag = { open: await setF.evaluate(() => window.__puOpen()), rows: (await readPanel(setF)).tabRows.map((r) => r.id || r.divider) };
+await setF.evaluate(() => document.dispatchEvent(new PointerEvent("pointercancel", { pointerId: 1, pointerType: "mouse", bubbles: true })));
+await setF.waitForTimeout(150);
+const afterCancel = { open: await setF.evaluate(() => window.__puOpen()), rows: (await readPanel(setF)).tabRows.map((r) => r.id || r.divider) };
+const swb = await setF.evaluate(() => { const b = document.querySelector('#rs-widgets > .rs-widget[data-widget="ctx"] .rs-switch').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; });
+const frS = await page.evaluate(() => { const f = document.getElementById("f-settings").getBoundingClientRect(); return { x: f.left, y: f.top }; });
+await page.mouse.click(frS.x + swb.x, frS.y + swb.y); await setF.waitForTimeout(400);   // the next real release anywhere, and its click
+const afterClick = await readPanel(setF);
+out.cancelLeak = { midDrag, afterCancel, rowsBefore: cancelBefore.tabRows.map((r) => r.id || r.divider), openAfterClick: await setF.evaluate(() => window.__puOpen()),
+                   ctxChecked: afterClick.tabRows.filter((r) => r.id === "ctx").map((r) => r.checked)[0], strip: await readStrip(chatF) };
+await page.mouse.click(frS.x + swb.x, frS.y + swb.y); await setF.waitForTimeout(300);   // the bar back on
 // 4. the Status line section: the branch dragged above the folder
 await page.evaluate(() => window.__rompOpenSettings("chat", "statusline"));
 await setF.waitForSelector('#rsettings .rs-card[data-section-landed="statusline"]', { timeout: 10000 }).catch(() => {});
@@ -405,13 +430,27 @@ class ServedWidgetReorder(unittest.TestCase):
         self.assertEqual(self._ids(k["panel"]["statusRows"]), ["name", "branch", "folder", "host"], "ArrowDown at the slot's edge is refused")
         self.assertEqual(k["strip"]["store"]["statusOrder"], ["name", "branch", "folder", "host"])
 
+    def test_a_cancelled_drag_leaves_no_release_listener_behind_and_the_next_click_lands(self):
+        c = self.out["cancelLeak"]
+        self.assertEqual(c["midDrag"]["open"], 1, "during the drag the document holds the drag's own release listener: %r" % c["midDrag"])
+        self.assertEqual(c["afterCancel"]["open"], 0, "the cancel path arms nothing: a cancelled pointer fires no click, so no late-release listener waits for the mouse's next release (%r)" % c["afterCancel"])
+        self.assertEqual(c["ctxChecked"], "false", "the next real click landed on the switch: nothing swallowed it")
+        self.assertNotEqual(c["midDrag"]["rows"], c["rowsBefore"], "the synthetic move carried the row past a midpoint: %r" % (c["midDrag"]["rows"],))
+        self.assertEqual(c["afterCancel"]["rows"], c["rowsBefore"], "the cancel restored the rows")
+        self.assertFalse(any(cl.startswith("ctx") for cl in c["strip"]["tab"]), "and the strip followed: %r" % c["strip"]["tab"])
+        self.assertEqual(c["openAfterClick"], 0)
+
     def test_every_move_speaks_through_the_live_region_and_the_previews_are_inert(self):
         c = self.out["ctxBefore"]["panel"]
         self.assertEqual(c["live"], {"text": "Context bar moved to position 1 of 3, before the session name", "polite": "polite"}, "the drag's move announced: %r" % c["live"])
         k = self.out["keyUp"]["panel"]
         self.assertEqual(k["live"]["text"], "Hot key moved to position 3 of 3, before the session name", "the key's move announced: %r" % k["live"])
         b = self.out["branchFirst"]["panel"]
-        self.assertEqual(b["live"]["text"], "Git branch moved to position 2 of 4", "the status line's move, no side to name: %r" % b["live"])
+        self.assertEqual(b["live"]["text"], "Git branch moved to position 1 of 3 in the right slot", "the status line counts within the slot and names it (round three, low 2): %r" % b["live"])
+        h = self.out["nameHeld"]["panel"]
+        self.assertEqual(h["live"]["text"], "Session name stays in the left slot", "a refused drag is announced (round three, low 1): %r" % h["live"])
+        k2 = self.out["nameKeyHeld"]["panel"]
+        self.assertEqual(k2["live"]["text"], "Session name stays in the left slot", "a refused key too: %r" % k2["live"])
         pf = self.out["panel0"]["previewFolder"]
         self.assertEqual((pf["act"], pf["cls"]), (None, "status-dir"), "the preview's folder carries no click act and no link dress: %r" % pf)
         self.assertIn("notes-api", pf["title"])

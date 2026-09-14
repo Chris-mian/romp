@@ -9,13 +9,17 @@ import type { StatusRecord, StatusWidgetPrefs } from "./status-widgets";
 
 type El = { tag: string; className: string; textContent: string; title: string; innerHTML: string; attrs: Record<string, string>; dataset: Record<string, string>;
             children: El[]; style: Record<string, string>; classList: { add: (c: string) => void; remove: (c: string) => void; contains: (c: string) => boolean; toggle: (c: string, on?: boolean) => void };
-            appendChild: (c: El) => El; setAttribute: (k: string, v: string) => void; getAttribute: (k: string) => string | null; removeAttribute: (k: string) => void };
+            appendChild: (c: El) => El; setAttribute: (k: string, v: string) => void; getAttribute: (k: string) => string | null; removeAttribute: (k: string) => void;
+            querySelectorAll: (sel: string) => El[] };
 function mkEl(tag: string): El {
   const e: El = { tag, className: "", textContent: "", title: "", innerHTML: "", attrs: {}, dataset: {}, children: [], style: {},
     classList: { add: (c) => { if (!e.classList.contains(c)) e.className = (e.className + " " + c).trim(); }, remove: (c) => { e.className = e.className.split(/\s+/).filter((x) => x && x !== c).join(" "); }, contains: (c) => e.className.split(/\s+/).includes(c),
                  toggle: (c, on) => { const has = e.classList.contains(c); if (on === undefined ? has : !on) e.className = e.className.split(/\s+/).filter((x) => x !== c).join(" "); else e.classList.add(c); } },
     appendChild: (c) => { e.children.push(c); if (c.tag === "#text") e.textContent += c.textContent; return c; },
-    setAttribute: (k, v) => { e.attrs[k] = v; }, getAttribute: (k) => (k in e.attrs ? e.attrs[k] : null), removeAttribute: (k) => { delete e.attrs[k]; if (k.indexOf("data-") === 0) delete e.dataset[k.slice(5).replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase())]; } };   // the DOM's dataset mirrors data-* attributes
+    setAttribute: (k, v) => { e.attrs[k] = v; }, getAttribute: (k) => (k in e.attrs ? e.attrs[k] : null), removeAttribute: (k) => { delete e.attrs[k]; if (k.indexOf("data-") === 0) delete e.dataset[k.slice(5).replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase())]; },   // the DOM's dataset mirrors data-* attributes
+    // descendants by a [data-x] selector (the one shape the module uses), so the inert walk is exercised on this DOM too (round three, low 4)
+    querySelectorAll: (sel) => { const m = /^\[data-([a-z-]+)\]$/.exec(sel); if (!m) throw new Error("stub selector: " + sel); const key = m[1].replace(/-([a-z])/g, (_x, c: string) => c.toUpperCase());
+      const out: El[] = []; const walk = (n: El) => { for (const c of n.children) { if (c.tag !== "#text" && (key in c.dataset || ("data-" + m[1]) in c.attrs)) out.push(c); if (c.children) walk(c); } }; walk(e); return out; } };
   return e;
 }
 const store = new Map<string, string>();
@@ -164,11 +168,19 @@ test("statusListOrder: the left slot's rows, then the right slot's, each in comp
   assert.deepEqual(W.statusListOrder(P({ order: ["host", "name"] })).filter((x) => x !== "boom"), ["name", "host", "folder", "branch"], "the stored order reorders within each slot's group");
 });
 
-test("makeInert: a demo or preview node carries no folder act and no link dress; the title stays", () => {
+test("makeInert: a demo or preview node carries no folder act, no link dress and no click clause in its title; the path stays; the walk reaches a nested folder", () => {
   const d = W.renderStatusWidgetDemo(W.statusWidget("folder")!, P()) as unknown as El;
   assert.deepEqual(classes(d), ["status-dir"], "no folder-link class on the demo");
   assert.equal(d.dataset.act, undefined); assert.equal(d.dataset.cwd, undefined); assert.equal(d.dataset.id, undefined);
   assert.match(d.title, /notes-api/, "the path still reads on hover");
+  assert.doesNotMatch(d.title, /click to/, "an inert node promises no click (round three, low 3)");
   const live = compose("right", REC)[0];
   assert.equal(live.dataset.act, "openFolder", "the line's own folder keeps its act");
+  assert.match(live.title, /click to open this folder/, "and its title still offers the click");
+  // a composed preview: the folder sits INSIDE the line, so the walk over [data-act] must reach it
+  const line = mkEl("div"); W.composeStatusWidgets(line as unknown as HTMLElement, "right", REC, P()); W.makeInert(line as unknown as HTMLElement);
+  const nested = line.children.find((c) => c.className.indexOf("status-dir") === 0)!;
+  assert.equal(nested.dataset.act, undefined, "the nested folder's act stripped through the walk");
+  assert.deepEqual(classes(nested), ["status-dir"]);
+  assert.doesNotMatch(nested.title, /click to/); assert.match(nested.title, /notes-api/);
 });

@@ -116,11 +116,15 @@ export function statusListOrder(prefs: StatusWidgetPrefs): string[] {
 
 /** A rendering made INERT for a demo or a preview: the folder's click act and its link dress go (review round two: in the
  *  VS Code chat panel the gear mounts in the delegate's own document, and a demo's act posted a real openFolder for the
- *  demo path). The title stays, so the path still reads on hover. */
+ *  demo path), and so does the click clause of its title, which would promise what nothing delivers (round three, low 3);
+ *  the path stays, so it still reads on hover. The walk over [data-act] reaches a folder nested in a composed line. */
 export function makeInert<T extends HTMLElement>(node: T): T {
-  const strip = (n: HTMLElement) => { n.removeAttribute("data-act"); n.removeAttribute("data-cwd"); n.removeAttribute("data-id"); n.classList.remove("folder-link"); };
+  const strip = (n: HTMLElement) => {
+    n.removeAttribute("data-act"); n.removeAttribute("data-cwd"); n.removeAttribute("data-id"); n.classList.remove("folder-link");
+    if (n.title) n.title = n.title.replace(/\s+·\s+click to [^·]*$/, "");
+  };
   strip(node);
-  if (typeof node.querySelectorAll === "function") node.querySelectorAll<HTMLElement>("[data-act]").forEach(strip);
+  node.querySelectorAll<HTMLElement>("[data-act]").forEach(strip);
   return node;
 }
 
