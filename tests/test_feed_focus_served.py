@@ -22,7 +22,7 @@ path (a MessageEvent, exactly what the socket shim dispatches), then walks the w
   (d) an activeChat frame for `api`: the section rebuilds with api's one card, read one animation frame after the
       dispatch (no timer to wait out);
   (e) an activeChat frame with a null id: the one quiet line "No session is focused in the chat"; a frame for `tests`,
-      a session with no cards: "tests has no cards";
+      a session with no cards: the label and the blocks' heads stand, nothing is said (T410);
   (f) a reload keeps the switch on (romp:feedview carries `"focused":true`) — the section is back with the no-focus line
       (the sid is not persisted; a reloaded feed is told again) — and a fresh frame restores web's cards;
   (g) both themes: the divider (T410: 2px in --rule-strong, 0.22 alpha in each theme) and the quiet line take
@@ -386,8 +386,10 @@ class ServedFocusedSessionSection(unittest.TestCase):
         self.assertEqual(none["secCards"], [], "no copies without a focus")
         self.assertTrue(none["divider"], "the rule stays, so the section still reads as a section")
         bare = r["bare"]
-        self.assertEqual((bare["headShown"], bare["headName"], bare["emptyShown"], bare["emptyText"], bare["colsShown"], bare["secCards"]),
-                         (True, "tests", True, "tests has no cards", False, []), "a focused session with no cards keeps its head and says so: %r" % bare)
+        # T410 (the user 2026-09-14): a focused session with no cards shows its label and its blocks (their heads over
+        # empty lists), and nothing is said under a head: the quiet line is the no-focus state alone
+        self.assertEqual((bare["headShown"], bare["headName"], bare["emptyShown"], bare["colsShown"], bare["secCards"]),
+                         (True, "tests", False, True, []), "a focused session with no cards keeps its label and its blocks, and says nothing: %r" % bare)
         # (f) RELOAD: the switch survives (the stored blob), the sid does not — the fresh page shows the no-focus line
         # until the kernel tells it again; a fresh frame restores web's cards
         self.assertIn('"focused":true', r["storedBefore"] or "", "stored before the reload: %r" % (r["storedBefore"] or "")[:300])

@@ -4415,18 +4415,18 @@ function wireFocusGutter(gutter: HTMLElement, key: string): void {
   });
 }
 
-// The GRIP's KEYS (T410b; T409's grip promises them in its title): ArrowLeft / ArrowRight on a focused grip move
-// its block one slot within the section (ArrowUp / ArrowDown the same, the stacked layout's axis), persisted at
-// once — the keyboard's road to the drag. The order it moves from is the one on screen: the section's own, else
-// what the section follows (the board's, or the layout's default), exactly as the drag seeds itself.
-function wireGripKeys(grip: HTMLElement, key: string): void {
-  grip.addEventListener("keydown", (e) => {
+// The BLOCK's KEYS (T410b): ArrowLeft / ArrowRight on the section's focused chip move its block one slot within
+// the section (ArrowUp / ArrowDown the same, the stacked layout's axis), persisted at once — the keyboard's road to
+// the drag. The order it moves from is the one on screen: the section's own, else what the section follows (the
+// board's, or the layout's default), exactly as the drag seeds itself.
+function wireBlockKeys(chip: HTMLElement, key: string): void {
+  chip.addEventListener("keydown", (e) => {
     const delta = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : 0;
     if (!delta) return;
     const colsEl = FOCUS_SLOTS.container();
     if (!colsEl) return;
     e.preventDefault();
-    e.stopPropagation();   // the grip's key, not the card cursor's (kbMode listens on the document for the same arrows)
+    e.stopPropagation();   // the chip's key, not the card cursor's (kbMode listens on the document for the same arrows)
     const vertical = getComputedStyle(colsEl).flexDirection === "column";
     const cur = FOCUS_SLOTS.get();
     const fallback = FOCUS_SLOTS.fallback(vertical ? STACK_DEFAULT : ROW_DEFAULT);
@@ -4805,19 +4805,19 @@ function ensureFocusSection(list: HTMLElement): HTMLElement {
     const empty = el("div", "feed-focus-empty");
     const cols = el("div", "feed-cols feed-focus-cols"); cols.id = "feed-focus-cols";   // what the label's aria-controls names
     const lists: Partial<Record<Column, HTMLElement>> = {}, counts: Partial<Record<Column, HTMLElement>> = {};
-    // the board's own column chips and labels (ensureCols), with the section's OWN furniture (T410): a GRIP left of
-    // the chip drags the block within the section (the chip itself stays inert here — a chip drag is the board's,
-    // and a block never crosses the divider), a fold caret folds the block to its head in BOTH layouts, and a
-    // gutter on the block's right edge resizes it against its neighbour. Order, widths and folds are the
-    // section's own state (applyFocusLayout), never the board's. Build-once nodes, click-safe across renders.
+    // the board's own column chips and labels (ensureCols), with the section's OWN furniture (T410): the CHIP drags
+    // the block within the section exactly as the board's chips drag its columns (the user 2026-09-14, who wanted no
+    // grip: the heads above and below the divider read the same), and, focused, its arrow keys move the block a slot;
+    // a fold caret folds the block to its head in BOTH layouts; a gutter on the block's right edge resizes it
+    // against its neighbour. Order, widths and folds are the section's own state (applyFocusLayout), never the
+    // board's; a block never crosses the divider. Build-once nodes, click-safe across renders.
     for (const [key, label, chip] of [["asks", "Working", "working"], ["needsInput", "Blocked", "blocked"], ["completed", "Completed", "completed"]] as const) {
       const col = el("div", "feed-col col-" + key);
       const h = el("div", "feed-col-head");
-      // the grip is a BUTTON (T409's vocabulary, shared with the settings' widget rows): the six-dot glyph, named for
-      // assistive tech, and the keyboard's handle too — the arrow keys move the block a slot (wireGripKeys)
-      const grip = el("button", "drag-grip") as HTMLButtonElement; grip.type = "button"; grip.textContent = "⠿";   // the six-dot grip glyph
-      grip.setAttribute("aria-label", "Drag to reorder: " + label); grip.title = "Drag to reorder, or press the arrow keys";
+      // the chip: the drag handle (the board's own affordance, the grab cursor) and the keyboard's handle too, so it
+      // takes focus and its title promises the keys (wireBlockKeys)
       const name = el("span", "feed-col-name fcol-chip fcol-chip-" + chip); name.textContent = label;
+      name.tabIndex = 0; name.title = "Drag to reorder, or press the arrow keys"; name.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight");
       const fold = el("button", "fcol-fold"); fold.dataset.label = label;
       fold.setAttribute("aria-label", "Collapse " + label);
       fold.addEventListener("click", (ev) => {
@@ -4827,9 +4827,9 @@ function ensureFocusSection(list: HTMLElement): HTMLElement {
         persistViewState();
       });
       const count = el("span", "feed-col-count");
-      h.append(grip, name, fold, count);
-      wireColDrag(grip, col, key, FOCUS_SLOTS);   // the grip drags, within the section only
-      wireGripKeys(grip, key);                    // …and, focused, the arrow keys move the block a slot
+      h.append(name, fold, count);
+      wireColDrag(name, col, key, FOCUS_SLOTS);   // the chip drags, within the section only
+      wireBlockKeys(name, key);                   // …and, focused, the arrow keys move the block a slot
       const body = el("div", "feed-col-list");
       const gutter = el("div", "focus-gutter"); gutter.title = "drag to resize";
       wireFocusGutter(gutter, key);
@@ -4879,7 +4879,6 @@ function renderFocusSection(list: HTMLElement, buckets: Record<Column, Entry[]>,
     nm.classList.toggle("dead", !who.live);
     nm.onclick = (ev) => { ev.stopPropagation(); openOrReviveSession(sid, who.live, who.name); };   // the session headers' click: open, or offer to revive
     setWorkDot(nm, dotFor(who.name));   // the same working / awaiting dot the session headers wear
-    setText(empty, who.name + " has no cards");
   } else {
     setText(empty, "No session is focused in the chat");
   }
@@ -4895,6 +4894,9 @@ function renderFocusSection(list: HTMLElement, buckets: Record<Column, Entry[]>,
     const n = buckets[k].reduce((acc, e) => acc + entryCards(e), 0);   // the board's counting rule: CARDS, and a number only when there are some
     setText(counts[k], n ? String(n) : "");
     counts[k].style.display = n ? "" : "none";
+    // a block with no cards (T410, the user 2026-09-14): single column, it hides whole, head and all, until a card
+    // arrives (the CSS under the stacked query); side by side its head stands as the board's do
+    lists[k].parentElement?.classList.toggle("col-empty", n === 0);
   }
   // a copy whose card left the focused session's view — cleared, folded into another turn, or the focus
   // moved on — goes now; the board's copy below has its own cache and its own exit
@@ -4952,8 +4954,10 @@ function paintFocusFold(): void {
   const total: number = sec._total || 0;
   const folded = !!focusedSid && focusFolded;
   sec.classList.toggle("folded", folded);
-  (sec._empty as HTMLElement).style.display = focusedSid && (total || folded) ? "none" : "";
-  (sec._cols as HTMLElement).style.display = total && !folded ? "" : "none";
+  // the quiet line is the NO-FOCUS state alone (the user 2026-09-14: a focused session with no cards shows its label
+  // and its blocks, nothing said under a head); folded, the blocks go under the label
+  (sec._empty as HTMLElement).style.display = focusedSid ? "none" : "";
+  (sec._cols as HTMLElement).style.display = focusedSid && !folded ? "" : "none";
   (sec._caret as HTMLElement).textContent = folded ? "▸" : "▾";
   (sec._fold as HTMLElement).setAttribute("aria-expanded", String(!folded));
   const count = sec._count as HTMLElement;

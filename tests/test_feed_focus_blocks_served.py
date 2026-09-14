@@ -16,7 +16,8 @@ the page's own frame path, with page.mouse for every drag, and walks these roads
   (f) a store from BEFORE the change (the T347 fields only: focused true, order [], cols []) seeded before the page's
       script hydrates: the section renders in the board's order with equal widths, nothing folded, the label unfolded;
   (h) the label's computed font-size equals a board column head's (.feed-col-head) and its weight the section heads'
-      (600), in both themes; the name wears the session's identity colour; the grip is dim at rest and full on hover;
+      (600), in both themes; the name wears the session's identity colour at the session headers' size; the chip is the
+      drag handle (grab cursor, focusable, the arrow keys promised), as on the board: no grip (the user 2026-09-14);
   (e) the LABEL reads "Current session: web"; a click on its text folds the whole section (the blocks hidden, the quiet
       line hidden, the divider kept, the caret ▸, the total card count shown), the blob carries focusFolded true, a
       reload keeps it folded, a click on the caret unfolds it, Enter and Space on the focused label fold and unfold,
@@ -26,16 +27,22 @@ the page's own frame path, with page.mouse for every drag, and walks these roads
       it; the caret again unfolds it;
   (c) a gutter drag widens Working against Blocked: the blob's focusW carries both weights summing to the previous sum
       (within 0.001) and the pixels move with the weights; later, a drag far past the neighbour stops at the 0.35 floor;
-  (a) a grip drag of Blocked to the first slot reorders the section's blocks (visual order by getBoundingClientRect
+  (a) a chip drag of Blocked to the first slot reorders the section's blocks (visual order by getBoundingClientRect
       left) while the board's columns keep their order; the blob carries focusOrder;
   (b) a board chip drag (Completed to the first slot) moves the board and, the section now having its own order,
       leaves the section as it was; in a FRESH state (focusOrder empty) the same board drag moves the section too;
   (g) the freeze low: with the pointer on the section's copy of a card, a payload that moves another card queues; a
       synthetic mouseleave on the BOARD twin of the hovered card does not release the hold (the moved card is still in
-      its old column); the pointer leaving the copy applies it.
+      its old column); the pointer leaving the copy applies it;
+  (i) a focused session with NO cards (tests): the label stands, no quiet line, the three blocks with their heads and
+      empty lists (nothing said under a head, the user 2026-09-14);
+  (j) the single-column layout (a 520 px viewport stacks the columns): a focused block whose category has no cards hides
+      whole, chip and all (api has one Working card: Blocked and Completed vanish), and a card arriving for Blocked
+      brings the block back; the row layout keeps every head.
 Screenshots with FEED_FOCUS_BLOCKS_SHOTS=<path-prefix>: -1-label-dark/-light (unfolded, the label above the blocks),
 -2-folded-dark/-light, -3-completed-collapsed-dark/-light, -4-working-widened-dark/-light, -5-reordered-dark/-light,
--6-label-vs-colhead-dark (a clip with the label and a board column head together). Optional: never a skip.
+-6-label-vs-colhead-dark (a clip with the label and a board column head together), -7-empty-row-dark/-light (a focused
+session with no cards, side by side), -8-stacked-empty-dark/-light (single column, the empty blocks hidden). Optional: never a skip.
 Skips LOUDLY without the extension deps or a Playwright browser, and for nothing else (ROMP_SERVED_TESTS_REQUIRE=1 turns
 those two red where the browser is installed); a build or kernel failure is a failure. Source pins ride
 ui/webview/feed-focus-section.test.ts, the persisted fields ui/webview/feed-view-state.test.ts. All fixtures synthetic.
@@ -70,6 +77,7 @@ IDS = {
     "webDone1": "cccccccc-1111-2222-3333-000000000004",
     "webDone2": "cccccccc-1111-2222-3333-000000000005",
     "apiWork": "cccccccc-1111-2222-3333-000000000011",
+    "apiBlocked": "cccccccc-1111-2222-3333-000000000012",   # road (j): the card whose arrival brings a hidden block back
 }
 WEB_COLOR = "rgb(30, 161, 235)"   # #1EA1EB, the colour the payload gives web
 COLS = ["asks", "needsInput", "completed"]
@@ -188,8 +196,9 @@ const survey = () => page.evaluate(() => {
     counts: Object.fromEntries(cols.map((c) => [keyOf(c), c.querySelector(".feed-col-count").textContent])),
     blockFolds: Object.fromEntries(cols.map((c) => { const f = c.querySelector(".fcol-fold"); return [keyOf(c), f ? f.textContent + "|" + f.getAttribute("aria-expanded") : null]; })),
     gutters: Object.fromEntries(cols.map((c) => [keyOf(c), shown(c.querySelector(".focus-gutter"))])),
-    grips: Object.fromEntries(cols.map((c) => { const g = c.querySelector(".drag-grip"); return [keyOf(c), g ? { tag: g.tagName, type: g.getAttribute("type"), glyph: g.textContent,
-      aria: g.getAttribute("aria-label"), title: g.title, cursor: getComputedStyle(g).cursor, touch: getComputedStyle(g).touchAction, color: getComputedStyle(g).color } : null]; })),
+    grips: sec ? sec.querySelectorAll(".drag-grip").length : 0,   // none: the chip is the handle (the user 2026-09-14)
+    chips: Object.fromEntries(cols.map((c) => { const g = c.querySelector(".fcol-chip"); return [keyOf(c), g ? { tag: g.tagName, tabindex: g.getAttribute("tabindex"), text: g.textContent,
+      keys: g.getAttribute("aria-keyshortcuts"), title: g.title, cursor: getComputedStyle(g).cursor, touch: getComputedStyle(g).touchAction, shown: shown(c) } : null]; })),
     secCards: cards(sec), boardCards: cards(board),
     stored: JSON.parse(localStorage.getItem("romp:feedview") || "null"),
     posted: (window.__posted || []).filter((m) => m && m.type === "openSession"),
@@ -200,7 +209,8 @@ const metrics = () => page.evaluate(() => {
   const cs = (s) => { const e = document.querySelector(s); return e ? getComputedStyle(e) : null; };
   const lbl = cs("#feed-focus .feed-focus-head .feed-focus-fold"), head = cs("#feed-focus .feed-focus-head"), nm = cs("#feed-focus .feed-focus-head .fname");
   const col = cs("#feed-cols .feed-col-head"), sess = cs("#feed-cols .feed-sess-head"), hr = cs("#feed-focus .feed-focus-divider");
-  const caret = cs("#feed-focus .feed-focus-caret"), blockCaret = cs("#feed-focus .col-asks .fcol-fold"), grip = cs("#feed-focus .col-asks .drag-grip");
+  const caret = cs("#feed-focus .feed-focus-caret"), blockCaret = cs("#feed-focus .col-asks .fcol-fold"), chip = cs("#feed-focus .col-asks .fcol-chip");
+  const sessName = cs("#feed-cols .feed-sess-head .fname");
   const pick = (c, k) => (c ? c[k] : null);
   return { labelSize: pick(lbl, "fontSize"), labelWeight: pick(lbl, "fontWeight"), labelColor: pick(lbl, "color"),
            headSize: pick(head, "fontSize"), headWeight: pick(head, "fontWeight"),
@@ -208,7 +218,8 @@ const metrics = () => page.evaluate(() => {
            colHeadSize: pick(col, "fontSize"), sessHeadWeight: pick(sess, "fontWeight"),
            dividerWidth: pick(hr, "borderTopWidth"), dividerColor: pick(hr, "borderTopColor"),
            caretSize: pick(caret, "fontSize"), blockCaretSize: pick(blockCaret, "fontSize"),
-           gripColor: pick(grip, "color"), gripCursor: pick(grip, "cursor"), gripTouch: pick(grip, "touchAction") };
+           sessNameSize: pick(sessName, "fontSize"), sessNameWeight: pick(sessName, "fontWeight"),
+           chipCursor: pick(chip, "cursor"), chipTouch: pick(chip, "touchAction") };
 });
 const light = async (on) => {   // LIGHT theme: the classes the feed's theme switch sets
   await page.evaluate((on) => { document.body.classList[on ? "add" : "remove"]("chat-theme-yatharth", "theme-light"); }, on);
@@ -221,9 +232,9 @@ const shotBoth = async (name) => {
   await page.screenshot({ path: `${cfg.shots}-${name}-light.png` });
   await light(false);
 };
-// a block's grip: hold it, carry it along the row to x, release, let the 150 ms glide and the settle pass
-const dragGrip = async (key, x) => {
-  const g = await page.locator(`#feed-focus .col-${key} .drag-grip`).boundingBox();
+// a block's chip (the handle, as on the board): hold it, carry it along the row to x, release, let the 150 ms glide and the settle pass
+const dragBlockChip = async (key, x) => {
+  const g = await page.locator(`#feed-focus .col-${key} .feed-col-head .fcol-chip`).boundingBox();
   const y = g.y + g.height / 2;
   await page.mouse.move(g.x + g.width / 2, y);
   await page.mouse.down();
@@ -263,12 +274,8 @@ await ready();
 // (f) a store from BEFORE the change: the T347 fields only, the switch on
 await boot(T347_BLOB);
 out.fresh = await survey();
-// (h) the label against the board's column head and the section heads, both themes; the grip at rest and hovered
+// (h) the label against the board's column head and the section heads, both themes
 out.metricsDark = await metrics();
-await page.hover("#feed-focus .col-asks .drag-grip");
-await page.waitForTimeout(250);   // past the grip's 0.12 s colour transition: the computed colour mid-transition is the interpolation
-out.gripHover = await page.evaluate(() => getComputedStyle(document.querySelector("#feed-focus .col-asks .drag-grip")).color);
-await park();
 if (cfg.shots) await page.screenshot({ path: cfg.shots + "-1-label-dark.png" });
 await light(true);
 out.metricsLight = await metrics();
@@ -320,9 +327,9 @@ out.completedOpen = await survey();
 await dragGutter("asks", 180);
 out.widened = await survey();
 await shotBoth("4-working-widened");
-// (a) the Blocked grip to the first slot: past the Working block's midpoint, leftwards
+// (a) the Blocked chip to the first slot: past the Working block's midpoint, leftwards
 const work = await page.locator("#feed-focus .col-asks").boundingBox();
-await dragGrip("needsInput", work.x + 30);
+await dragBlockChip("needsInput", work.x + 30);
 out.reordered = await survey();
 await shotBoth("5-reordered");
 // (b) the board's Completed chip to the first slot: the board moves, the section (its own order now) stays
@@ -349,6 +356,28 @@ out.fresh2 = await survey();
 const boardWork2 = await page.locator("#feed-cols .col-asks").boundingBox();
 await dragChip("completed", boardWork2.x + 30);
 out.freshBoardDragged = await survey();
+// (i) a focused session with NO cards, side by side: the label stands, no quiet line, three heads over empty lists
+await deliver({ type: "activeChat", id: cfg.tests });
+await frame(); await park();
+out.emptyRow = await survey();
+await shotBoth("7-empty-row");
+// (j) SINGLE COLUMN (a narrow viewport stacks the columns): api has one Working card, so Blocked and Completed hide
+// whole, chip and all; a Blocked card arriving for api brings that block back; then the row layout again
+await page.setViewportSize({ width: 520, height: 760 });
+await deliver({ type: "activeChat", id: cfg.api });
+await frame(); await park();
+out.stackedEmpty = await survey();
+await shotBoth("8-stacked-empty");
+const withBlocked = payloadOf("working");
+withBlocked.asks.push(ask(cfg.ids.apiBlocked, cfg.api, "api", "needs_input", "notes-api: choose the tag limit", now - 30));
+await deliver(withBlocked);
+await frame(); await park();
+out.stackedArrived = await survey();
+await page.setViewportSize({ width: 1100, height: 760 });
+await deliver(payload);
+await deliver({ type: "activeChat", id: cfg.web });
+await frame(); await park();
+out.rowAgain = await survey();
 out.errors = errors;
 fs.writeSync(1, "RESULT:" + JSON.stringify(out) + "\n");
 await browser.close();
@@ -442,26 +471,30 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         self.assertEqual((fr["label"], fr["labelAria"], fr["name"], fr["nameColor"], fr["nameTitle"]),
                          ("Current session:", "Current session: web", "web", WEB_COLOR, "open this session"), "the label reads Current session: web: %r" % fr)
         self.assertEqual(fr["labelTag"], "BUTTON", "the label is an accessible control")
-        # the grip: a button with the six-dot glyph, named per block, the arrow keys promised, grab cursor, touch-action none
+        # no grip (the user 2026-09-14): the chip is the handle, as on the board — focusable, the arrow keys promised,
+        # grab cursor, touch-action none
+        self.assertEqual(fr["grips"], 0, "no grip on the section's heads")
         for k, label in (("asks", "Working"), ("needsInput", "Blocked"), ("completed", "Completed")):
-            g = fr["grips"][k]
-            self.assertEqual((g["tag"], g["type"], g["glyph"], g["aria"], g["title"], g["cursor"], g["touch"]),
-                             ("BUTTON", "button", "⠿", "Drag to reorder: " + label, "Drag to reorder, or press the arrow keys", "grab", "none"), "the %s grip: %r" % (label, g))
+            g = fr["chips"][k]
+            self.assertEqual((g["tag"], g["tabindex"], g["text"], g["keys"], g["title"], g["cursor"], g["touch"]),
+                             ("SPAN", "0", label, "ArrowLeft ArrowRight", "Drag to reorder, or press the arrow keys", "grab", "none"), "the %s chip: %r" % (label, g))
 
         # ── (h) the label's size is the board column head's and its weight the section heads'; both themes ──
         for theme, m in (("dark", r["metricsDark"]), ("light", r["metricsLight"])):
             self.assertEqual(m["labelSize"], m["colHeadSize"], "%s: the label at the column head's size: %r" % (theme, m))
-            self.assertEqual(m["nameSize"], m["colHeadSize"], "%s: the name at the same size: %r" % (theme, m))
+            # the name is styled as a session name below it (the user 2026-09-14): the session headers' size and weight
+            self.assertAlmostEqual(float(m["nameSize"][:-2]), float(m["sessNameSize"][:-2]), delta=0.01, msg="%s: the name at the session names' size below: %r" % (theme, m))
+            self.assertEqual(m["nameWeight"], m["sessNameWeight"], "%s: …and their weight: %r" % (theme, m))
+            self.assertNotEqual(m["nameSize"], m["colHeadSize"], "%s: the name is larger than the label text (the headers' size, not the chips'): %r" % (theme, m))
             self.assertEqual((m["labelWeight"], m["nameWeight"]), ("600", "600"), "%s: the section heads' weight (600) for label and name: %r" % (theme, m))
             if m["sessHeadWeight"] is not None:
                 self.assertEqual(m["sessHeadWeight"], "600", "the section heads' weight is 600: %r" % m)
             self.assertEqual(m["nameColor"], WEB_COLOR, "%s: the name in web's identity colour: %r" % (theme, m))
-            self.assertEqual(m["caretSize"], m["blockCaretSize"], "%s: the label's caret at the block carets' size: %r" % (theme, m))
+            self.assertAlmostEqual(float(m["caretSize"][:-2]), float(m["blockCaretSize"][:-2]), delta=0.01, msg="%s: the label's caret at the block carets' size: %r" % (theme, m))
             self.assertEqual(m["dividerWidth"], "2px")
-            self.assertEqual((m["gripCursor"], m["gripTouch"]), ("grab", "none"))
+            self.assertEqual((m["chipCursor"], m["chipTouch"]), ("grab", "none"), "%s: the chip drags (the board's affordance): %r" % (theme, m))
         self.assertEqual((r["metricsDark"]["dividerColor"], r["metricsLight"]["dividerColor"]), ("rgba(255, 255, 255, 0.22)", "rgba(0, 0, 0, 0.22)"), "--rule-strong in both themes")
         self.assertNotEqual(r["metricsDark"]["labelColor"], r["metricsLight"]["labelColor"], "the label text's colour follows the theme")
-        self.assertNotEqual(r["gripHover"], r["metricsDark"]["gripColor"], "the grip brightens on hover (dim at rest, full on hover): %r vs %r" % (r["gripHover"], r["metricsDark"]["gripColor"]))
 
         # ── (e) the label folds the whole section ──
         fo = r["folded"]
@@ -537,6 +570,23 @@ class ServedFocusedSectionBlocks(unittest.TestCase):
         self.assertAlmostEqual(fl["rects"]["completed"]["width"], pair * MIN_W / (wf["asks"] + wf["completed"]), delta=8, msg="the pixels follow the weights: %r" % fl["rects"])
 
         # ── (b, fresh) with no section order of its own, a board drag moves the section too ──
+        # ── (i) a focused session with NO cards, side by side: the label and the blocks' heads stand, nothing is said ──
+        er = r["emptyRow"]
+        self.assertEqual((er["headShown"], er["name"], er["emptyShown"], er["colsShown"], er["secCards"], er["grips"]), (True, "tests", False, True, [], 0),
+                         "tests focused, no cards: the label, no quiet line, the blocks shown, no grip: %r" % er)
+        self.assertEqual({k: v["shown"] for k, v in er["chips"].items()}, {"asks": True, "needsInput": True, "completed": True}, "side by side every head stands over its empty list: %r" % er["chips"])
+        self.assertEqual(er["counts"], {"asks": "", "needsInput": "", "completed": ""}, "no counts under empty heads")
+        # ── (j) single column: a block with no cards hides whole, chip and all, and returns with its first card ──
+        se = r["stackedEmpty"]
+        self.assertEqual((se["name"], se["headShown"], se["colsShown"]), ("api", True, True), "api focused in the single-column layout: %r" % se)
+        self.assertEqual({k: v["shown"] for k, v in se["chips"].items()}, {"asks": True, "needsInput": False, "completed": False},
+                         "api has one Working card: Blocked and Completed hide whole, head and all (the user 2026-09-14): %r" % se["chips"])
+        sa = r["stackedArrived"]
+        self.assertEqual({k: v["shown"] for k, v in sa["chips"].items()}, {"asks": True, "needsInput": True, "completed": False},
+                         "a Blocked card arrived for api: its block is back; Completed still hidden: %r" % sa["chips"])
+        self.assertEqual(self._col_of(sa["secCards"], "f:a:" + IDS["apiBlocked"]), "needsInput", "the arrived card sits in the returned block: %r" % sa["secCards"])
+        ra = r["rowAgain"]
+        self.assertEqual({k: v["shown"] for k, v in ra["chips"].items()}, {"asks": True, "needsInput": True, "completed": True}, "side by side again: every head stands: %r" % ra["chips"])
         f2, fb = r["fresh2"], r["freshBoardDragged"]
         self.assertEqual((f2["secOrder"], f2["stored"].get("focusOrder")), (ROW_DEFAULT, []), "the reseeded state follows the board: %r" % f2["stored"])
         self.assertEqual((fb["boardOrder"], fb["secOrder"]), (["completed", "asks", "needsInput"], ["completed", "asks", "needsInput"]), "the section followed the board's drag: %r" % {k: fb[k] for k in ("boardOrder", "secOrder")})

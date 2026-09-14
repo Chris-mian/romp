@@ -64,16 +64,20 @@ test("#feed-focus sits directly before #feed-cols: head, empty line, the three c
     assert.ok(FEED.includes(mint), "builds " + mint);
   }
   assert.doesNotMatch(FEED, /feed-focus-cap|textContent = "focused"/, "the small cap 'focused' is gone: the label says it (T410)");
-  // T410: the section's heads carry their OWN furniture — a grip left of the chip (the section's drag handle; the
-  // chip itself stays inert), a fold caret, the count — and each block a resize gutter; all section-bound
-  assert.match(FEED, /const grip = el\("button", "drag-grip"\) as HTMLButtonElement; grip\.type = "button"; grip\.textContent = "⠿";/,
-    "the six-dot grip is a BUTTON with the glyph (T409's vocabulary): a keyboard handle, not decoration");
-  assert.match(FEED, /grip\.setAttribute\("aria-label", "Drag to reorder: " \+ label\); grip\.title = "Drag to reorder, or press the arrow keys";/,
-    "named for assistive tech per block; the title promises the keys, which wireGripKeys keeps");
-  assert.match(FEED, /el\("span", "feed-col-name fcol-chip fcol-chip-" \+ chip\); name\.textContent = label;\s*\n\s*const fold = el\("button", "fcol-fold"\); fold\.dataset\.label = label;/,
-    "the board's chip, then the section's own fold caret");
-  assert.match(FEED, /h\.append\(grip, name, fold, count\);\s*\n\s*wireColDrag\(grip, col, key, FOCUS_SLOTS\);[^\n]*\n\s*wireGripKeys\(grip, key\);/,
-    "grip, chip, caret, count; the grip drags with the board's mechanics, bound to the section's container, and its keys move the block");
+  // T410 (the user 2026-09-14: no grip; the heads above and below the divider read the same): the section's heads
+  // carry the board's chip as the drag handle, a fold caret and the count — and each block a resize gutter; all
+  // section-bound. The chip also takes focus for the arrow keys.
+  assert.doesNotMatch(FEED, /drag-grip|wireGripKeys|"⠿"/, "no grip anywhere: the chip is the handle, as on the board (the user's word)");
+  assert.match(FEED, /el\("span", "feed-col-name fcol-chip fcol-chip-" \+ chip\); name\.textContent = label;\s*\n\s*name\.tabIndex = 0; name\.title = "Drag to reorder, or press the arrow keys"; name\.setAttribute\("aria-keyshortcuts", "ArrowLeft ArrowRight"\);\s*\n\s*const fold = el\("button", "fcol-fold"\); fold\.dataset\.label = label;/,
+    "the board's chip, focusable and promising the keys, then the section's own fold caret");
+  assert.match(FEED, /h\.append\(name, fold, count\);\s*\n\s*wireColDrag\(name, col, key, FOCUS_SLOTS\);[^\n]*\n\s*wireBlockKeys\(name, key\);/,
+    "chip, caret, count; the chip drags with the board's mechanics, bound to the section's container, and its keys move the block");
+  // a block with no cards wears col-empty (single column hides it whole; side by side its head stands), and the
+  // quiet line is the no-focus state alone: nothing is said under a head (the user 2026-09-14)
+  assert.match(FEED, /lists\[k\]\.parentElement\?\.classList\.toggle\("col-empty", n === 0\);/, "a block with no cards is marked, per render");
+  assert.doesNotMatch(FEED, /who\.name \+ " has no cards"/, "no 'has no cards' text: a focused session with no cards shows its label and its blocks");
+  assert.match(FEED, /\(sec\._empty as HTMLElement\)\.style\.display = focusedSid \? "none" : "";\s*\n\s*\(sec\._cols as HTMLElement\)\.style\.display = focusedSid && !folded \? "" : "none";/,
+    "the quiet line only without a focus; the blocks whenever a session is focused and the section is open, cards or none");
   assert.match(FEED, /const gutter = el\("div", "focus-gutter"\);[^\n]*\n\s*wireFocusGutter\(gutter, key\);\s*\n\s*col\.append\(h, body, gutter\);/,
     "the resize gutter rides the block, outside the card list the reconcile owns");
   assert.match(FEED, /if \(collapsedFocusCols\.has\(key\)\) collapsedFocusCols\.delete\(key\); else collapsedFocusCols\.add\(key\);\s*\n\s*applyFocusLayout\(\);\s*\n\s*persistViewState\(\);/,
@@ -112,7 +116,7 @@ test("the board's own column lookups are scoped to #feed-cols now that the secti
   assert.match(FEED, /const twin = document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ key\);/, "…the section's twin is applyFocusLayout's to paint (its own order, or the board's while it follows), never the board's write");
   assert.match(FEED, /else col\.style\.removeProperty\("--col-order"\);/, "the board's own statement stands as feed-col-fold.test.ts pins it");
   assert.match(FEED, /document\.querySelector<HTMLElement>\("#feed-cols \.feed-col\.col-" \+ k\)/, "the board drag's element lookup reads the board (BOARD_SLOTS.col)");
-  assert.match(FEED, /const oc = slots\.col\(other\);/, "the drag walks its OWN container's elements: the board's for a chip, the section's for a grip (T410)");
+  assert.match(FEED, /const oc = slots\.col\(other\);/, "the drag walks its OWN container's elements: the board's columns for its chips, the section's blocks for theirs (T410)");
   assert.match(FEED, /col: \(k\) => document\.querySelector<HTMLElement>\("#feed-focus \.feed-col\.col-" \+ k\),/, "FOCUS_SLOTS reads the section");
   assert.match(FEED, /put\(document\.querySelector\("#feed-cols \.feed-col\.col-" \+ key \+ " \.feed-col-head"\), d\.cols\[key\]\);/, "the freeze badges land on the board's heads");
   assert.doesNotMatch(FEED, /querySelector<HTMLElement>\("\.feed-col\.col-"/, "no bare column query survives to land on the section's copy first");
@@ -134,11 +138,12 @@ test("the head: the session's dot and name, its identity colour, opening the ses
 
 test("the two quiet states, only while the switch is on: no tab focused; a focused session with no cards", () => {
   assert.match(FEED, /setText\(empty, "No session is focused in the chat"\);/);
-  assert.match(FEED, /setText\(empty, who\.name \+ " has no cards"\);/);
+  assert.doesNotMatch(FEED, /who\.name \+ " has no cards"/, "the second quiet state is gone (the user 2026-09-14): a focused session with no cards shows its label and its blocks");
   assert.match(FEED, /head\.style\.display = sid \? "" : "none";\s*\n\s*sec\._total = total;\s*\n\s*paintFocusFold\(\);/,
     "no sid: the line stands in for the head; the blocks' and the line's displays are the fold's to paint (T410)");
-  assert.match(FEED, /const folded = !!focusedSid && focusFolded;\s*\n\s*sec\.classList\.toggle\("folded", folded\);\s*\n\s*\(sec\._empty as HTMLElement\)\.style\.display = focusedSid && \(total \|\| folded\) \? "none" : "";\s*\n\s*\(sec\._cols as HTMLElement\)\.style\.display = total && !folded \? "" : "none";/,
-    "no cards: head and line; folded: the head alone (line and blocks hidden); no sid: the line whatever the fold says");
+  assert.match(FEED, /const folded = !!focusedSid && focusFolded;\s*\n\s*sec\.classList\.toggle\("folded", folded\);/, "the fold is a focused session's alone");
+  assert.match(FEED, /\(sec\._empty as HTMLElement\)\.style\.display = focusedSid \? "none" : "";\s*\n\s*\(sec\._cols as HTMLElement\)\.style\.display = focusedSid && !folded \? "" : "none";/,
+    "no sid: the line, whatever the fold says; a focused session: the blocks (cards or none) unless folded to the label");
   assert.match(FEED, /removeFocusSection\(\);   \/\/ an empty board is the wordmark alone/, "an empty board shows the wordmark, not the section");
 });
 
@@ -181,13 +186,18 @@ test("feed.css: #feed-focus, the head, the caption, the rule and the empty line 
   assert.match(CSS, /#feed-focus \{ display: flex; flex-direction: column; gap: 8px; \}/);
   assert.match(CSS, /\.feed-focus-head \{[^}]*font-size: 0\.72em; font-weight: 600; cursor: pointer; \}/,
     "the label (T410): the board's column heads' size, the session headers' weight, no new size; the whole row folds on click");
-  assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: inherit; font-weight: 600;/, "the name at the label's size, bold (its identity colour is set inline)");
+  assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: calc\(1em \/ 0\.72\); font-weight: 600;/, "the name as a session name below: the headers' size, bold (its identity colour is set inline)");
   assert.match(CSS, /\.feed-focus-fold \{[^}]*font: inherit; color: var\(--dim\);[^}]*\}/, "the label text: a button in the head's font, dim like the column heads");
-  assert.match(CSS, /\.feed-focus-caret \{[^}]*font-size: 1\.389em; font-weight: 400; line-height: 1;/, "the caret at the block carets' compensated size");
+  assert.match(CSS, /\.feed-focus-caret \{[^}]*font-size: calc\(1em \/ 0\.72\); font-weight: 400; line-height: 1;/, "the caret at the block carets' compensated size");
   assert.doesNotMatch(CSS, /feed-focus-cap/, "the cap's rule went with the cap");
   assert.match(CSS, /\.feed-focus-head \.fname \{[^}]*flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;/,
     "the label's name clamps like a card's (.fask-id .fname), so a long name shrinks and the caret keeps the end of the line (T410 review)");
-  assert.match(CSS, /\.feed-focus-cols \.feed-col-head \.fcol-chip \{ cursor: default; \}/, "the chip stays inert in the section: the grip drags there, and a chip drag is the board's");
+  assert.doesNotMatch(CSS, /\.feed-focus-cols \.feed-col-head \.fcol-chip \{ cursor: default; \}|drag-grip/, "the section's chips drag as the board's do (the base grab cursor stands; no grip rule)");
+  assert.match(CSS, /\.feed-focus-cols \.fcol-chip:focus-visible \{ outline: 2px solid var\(--accent\); outline-offset: 2px; \}/, "a focused chip wears the accent ring: the keyboard's handle");
+  assert.match(CSS, /\.feed-focus-head \.fname \{ font-size: calc\(1em \/ 0\.72\); font-weight: 600;/, "the name at the session headers' size (the feed's base, back up from the label's 0.72em) and weight (the user 2026-09-14)");
+  assert.match(CSS, /\.focus-gutter \{ display: none; \}[\s\S]{0,400}\.feed-focus-cols \.feed-col\.col-empty \{ display: none; \}/,
+    "single column (the stacked query): a block with no cards hides whole, chip and all; the rule lives under the query alone");
+  assert.equal((CSS.match(/\.feed-focus-cols \.feed-col\.col-empty \{ display: none; \}/g) || []).length, 1, "…and nowhere else, so side by side the heads stand");
   assert.match(CSS, /\.feed-focus-divider \{ border: 0; border-top: 2px solid var\(--rule-strong\); margin: 8px 0 4px; \}/,
     "T410: a 2px rule in --rule-strong, a step up from the hairline");
   assert.ok(/--rule-strong:\s*rgba\(255, 255, 255, 0\.22\)/.test(CSS) && /--rule-strong:\s*rgba\(0, 0, 0, 0\.22\)/.test(CSS), "the token is defined in both themes");
@@ -199,7 +209,7 @@ test("feed.css: #feed-focus, the head, the caption, the rule and the empty line 
   assert.ok(/--menu-border\s*:/.test(CSS) && /--dim\s*:/.test(CSS), "the variables it reads are defined in this sheet (both themes)");
 });
 
-// ── T410 (the user 2026-09-13 / 2026-09-14): the LABEL, the grip button, the gutter floor, the freeze pair ──────
+// ── T410 (the user 2026-09-13 / 2026-09-14): the LABEL, the chip's keys, the gutter floor, the freeze pair ──────
 test("the label reads 'Current session: <name>' and folds the whole section; the name keeps its click and its title", () => {
   assert.match(FEED, /const fold = el\("button", "feed-focus-fold"\) as HTMLButtonElement; fold\.type = "button"; fold\.textContent = "Current session:";/,
     "the label text is a button: the section's fold control");
@@ -226,11 +236,11 @@ test("the gutter's floor is 0.35 of a share, the pair's sum preserved", () => {
     "clamped between the floor and the pair's sum less the floor; the neighbour takes the rest");
 });
 
-test("the grip's arrow keys move the block one slot within the section, from the order on screen", () => {
-  const fn = FEED.slice(FEED.indexOf("function wireGripKeys("), FEED.indexOf("// Drag a section by its CATEGORY CHIP"));
+test("the chip's arrow keys move the block one slot within the section, from the order on screen", () => {
+  const fn = FEED.slice(FEED.indexOf("function wireBlockKeys("), FEED.indexOf("// Drag a section by its CATEGORY CHIP"));
   assert.match(fn, /const delta = e\.key === "ArrowLeft" \|\| e\.key === "ArrowUp" \? -1 : e\.key === "ArrowRight" \|\| e\.key === "ArrowDown" \? 1 : 0;/);
   assert.match(fn, /const fallback = FOCUS_SLOTS\.fallback\(vertical \? STACK_DEFAULT : ROW_DEFAULT\);\s*\n\s*const hadCustom = cur\.length === 3;\s*\n\s*const order = \(hadCustom \? cur : fallback\)\.slice\(\);/, "the section's own order, else what it follows — as the drag seeds itself");
-  assert.match(fn, /e\.stopPropagation\(\);/, "the grip's key is the grip's alone: the card cursor's arrow keys must not also fire");
+  assert.match(fn, /e\.stopPropagation\(\);/, "the chip's key is the chip's alone: the card cursor's arrow keys must not also fire");
   assert.match(fn, /FOCUS_SLOTS\.set\(!hadCustom && order\.join\(\) === fallback\.join\(\) \? \[\] : order\);/, "the drag's no-trace rule holds for a keyboard move: back on what the section follows, it keeps following");
   assert.match(fn, /if \(from < 0 \|\| to < 0 \|\| to >= order\.length\) return;/, "bounded by the section's three slots");
   assert.match(fn, /FOCUS_SLOTS\.set\([^\n]*\);\s*\n\s*persistViewState\(\);/, "written to the section's order and persisted at once");
