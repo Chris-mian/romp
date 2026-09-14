@@ -312,7 +312,10 @@ class ServedAutoReload(unittest.TestCase):
         self.assertEqual(((r["shellWhileHeld"] or {}).get("owed") or {}).get("reason"), "build")
         # 2. the release fires it, and the chat tab lands where the reader was
         self.assertTrue(r["reloadedOnRelease"])
-        self.assertLessEqual(abs(a["scrollTop"] - b["scrollTop"]), 60, "the reader's position survives the reload: %r → %r" % (b, a))
+        # keyed on the anchor row, the repo's rule for scroll labs: the restore lands on the anchor turn (ui/webview/reload-restore.ts),
+        # so scrollTop differs whenever the rows above it measure differently after the reload (main CI read 96 px once on 2026-09-14)
+        self.assertEqual(a["anchor"]["uuid"], b["anchor"]["uuid"], "the reader's row survives the reload: %r → %r" % (b, a))
+        self.assertLessEqual(abs(a["anchor"]["top"] - b["anchor"]["top"]), 60, "at the same place in the viewport: %r → %r" % (b, a))
         self.assertGreater(a["scrollHeight"] - a["scrollTop"] - a["clientHeight"], 200, "…and is not the bottom: %r" % a)
         self.assertFalse(a["chipHidden"], "off the bottom, the go-to-bottom chip shows")
         self.assertEqual(len(r["noticesBefore"]), 0)
