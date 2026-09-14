@@ -943,7 +943,10 @@ in the vault, and everywhere within the TTL.
 
 `romp down` stops the kernel and keeps it stopped until `romp up`. The manager
 is supervised (`Restart=always` under systemd, `KeepAlive` under launchd), so a
-kernel or manager that merely exits is back within seconds, and Ctrl+C is not
+kernel or manager that merely exits is back within seconds (on macOS, within a
+minute when the manager had run for less than a minute before it exited: the
+throttle that bounds a crash loop delays a manager's own refresh exit in that
+window too), and Ctrl+C is not
 available to a manager the service runs. `romp down` instead stops the login
 service itself (`systemctl --user stop romp-manager.service`; on macOS
 `launchctl bootout` of the agent), which nothing respawns, and then probes the

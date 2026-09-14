@@ -216,7 +216,10 @@ EOF2
 # aborted at exec, KeepAlive respawned it every throttle interval, `status` said running and install.sh
 # trusted that. The job's record names its process (a `pid = N` line) only while one runs, and keeps the
 # previous run's exit code; both are read now.
-_crashloop_stub() {   # a launchctl whose job is loaded and keeps dying: print succeeds, no pid, last exit 134
+_dying_record() {   # the record of a loaded job that keeps dying: no pid, last exit 134
+    printf 'gui/501/com.romp.manager = {\n\tactive count = 0\n\tstate = not running\n\tlast exit code = 134\n\truns = 17\n}\n'
+}
+_crashloop_loaded_stub() {   # for status: a launchctl whose job is loaded from the start and keeps dying
     cat > "$1" <<'EOF'
 #!/bin/sh
 [ "$1" = bootout ] && exit 0
@@ -229,7 +232,30 @@ exit 0
 EOF
     chmod +x "$1"
 }
-_running_stub() {   # a launchctl whose job runs: print names the pid
+_crashloop_stub() {   # for install: print fails until bootstrap (the drain wait ends at once); the FIRST post-bootstrap print
+    # names a pid, the aborting manager alive for its first split second, and every later print says not running, exit 134.
+    # Round two of issue 1600: the base declared success on that first pid; the install must re-read a second later and
+    # see the SAME pid before it says installed.
+    local stub="$1" calls="$2"
+    cat > "$stub" <<EOF
+#!/bin/sh
+echo "\$1" >> "$calls"
+[ "\$1" = bootout ] && exit 0
+[ "\$1" = bootstrap ] && exit 0
+if [ "\$1" = print ]; then
+    grep -q bootstrap "$calls" || exit 5                                  # not loaded until bootstrapped
+    if [ "\$(sed -n '/bootstrap/,\$p' "$calls" | grep -c print)" -eq 1 ]; then      # the first print AFTER the bootstrap: alive
+        printf 'gui/501/com.romp.manager = {\n\tactive count = 1\n\tstate = running\n\tpid = 4242\n\tlast exit code = (never exited)\n}\n'
+        exit 0
+    fi
+    printf 'gui/501/com.romp.manager = {\n\tactive count = 0\n\tstate = not running\n\tlast exit code = 134\n\truns = 2\n}\n'
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$stub"
+}
+_running_stub() {   # a launchctl whose job runs: print names the pid, the same one every time
     cat > "$1" <<'EOF'
 #!/bin/sh
 [ "$1" = print ] && { printf 'gui/501/com.romp.manager = {\n\tactive count = 1\n\tstate = running\n\tpid = 4242\n\tlast exit code = (never exited)\n}\n'; exit 0; }
@@ -241,7 +267,7 @@ EOF
 @test "status (macOS): a loaded job that keeps dying is NOT running, and the last exit code is named" {
     unset ROMP_SERVICE_NO_LOAD
     ROMP_OS_OVERRIDE=Darwin ROMP_SERVICE_NO_LOAD=1 "$SVC" install >/dev/null   # the plist alone
-    local stub="$TEST_DIR/launchctl-stub"; _crashloop_stub "$stub"
+    local stub="$TEST_DIR/launchctl-stub"; _crashloop_loaded_stub "$stub"
     ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" status
     [ "$status" -eq 0 ]
     [[ "$output" == *"installed:"* ]]
@@ -252,7 +278,7 @@ EOF
     [ "$status" -ne 0 ]
 }
 
-@test "status (macOS): a job whose record names a live pid is running" {
+@test "status (macOS): a job whose record names a live pid is running (a CONTROL: green at the base too, where print's exit alone said running)" {
     unset ROMP_SERVICE_NO_LOAD
     ROMP_OS_OVERRIDE=Darwin ROMP_SERVICE_NO_LOAD=1 "$SVC" install >/dev/null
     local stub="$TEST_DIR/launchctl-stub"; _running_stub "$stub"
@@ -262,15 +288,54 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-@test "install (macOS): a job that loads and then keeps dying fails loudly, naming the last exit code" {
+@test "status (macOS): the record's readers survive a print of thousands of lines and capture the exit value whole" {
+    # round two, lows 1 and 2: `sed | head -1` under set -e plus pipefail died of SIGPIPE once sed's output passed the pipe
+    # buffer (exit 141, no status line), and the value stopped at its first space, so "(signal: 6)" read as "(signal:"
+    unset ROMP_SERVICE_NO_LOAD
+    ROMP_OS_OVERRIDE=Darwin ROMP_SERVICE_NO_LOAD=1 "$SVC" install >/dev/null
+    local stub="$TEST_DIR/launchctl-stub"
+    cat > "$stub" <<'EOF'
+#!/bin/sh
+if [ "$1" = print ]; then
+    printf 'gui/501/com.romp.manager = {\n\tstate = not running\n'
+    i=0; while [ "$i" -lt 3000 ]; do printf '\tlast exit code = (signal: 6)\n'; i=$((i+1)); done   # loop-ok: a fixed-count stub
+    printf '}\n'; exit 0
+fi
+exit 0
+EOF
+    chmod +x "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"last exit code: (signal: 6)"* ]]
+    # …and a record of thousands of pid lines reads as running, not as a broken pipe
+    cat > "$stub" <<'EOF'
+#!/bin/sh
+if [ "$1" = print ]; then
+    printf 'gui/501/com.romp.manager = {\n\tstate = running\n'
+    i=0; while [ "$i" -lt 3000 ]; do printf '\tpid = 4242\n'; i=$((i+1)); done   # loop-ok: a fixed-count stub
+    printf '}\n'; exit 0
+fi
+exit 0
+EOF
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" status
+    [ "$status" -eq 0 ]
+    run grep -qx running <<< "$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "install (macOS): a job that loads, lives for a moment and then keeps dying fails loudly, naming the last exit code" {
+    # round two, medium 1: the first post-bootstrap read saw the aborting manager alive; a second later the pid is gone.
+    # The stub's print fails until the bootstrap, so the drain wait before it ends at once (low 3).
     unset ROMP_SERVICE_NO_LOAD
     export XDG_STATE_HOME="$TEST_DIR/state"
-    local stub="$TEST_DIR/launchctl-stub"; _crashloop_stub "$stub"
+    local stub="$TEST_DIR/launchctl-stub" calls="$TEST_DIR/launchctl-calls"
+    _crashloop_stub "$stub" "$calls"
     ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
     [ "$status" -eq 1 ]
     [[ "$output" == *"NOT running"* ]]
     [[ "$output" == *"last exit code: 134"* ]]
     [[ "$output" != *"Installed launchd agent"* ]]
+    [ "$(grep -c print "$calls")" -ge 3 ]                     # the drain wait's print, the first live read, the re-read
 }
 
 @test "both units bake ROMP_SUPERVISED=1 — the manager's stale-self refresh needs a respawning supervisor" {

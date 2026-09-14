@@ -246,10 +246,15 @@ _linux_active() { "$SYSTEMCTL" --user is-active romp-manager.service 2>/dev/null
 # respawn it, and `last exit code = N` (or "(never exited)") from the previous run.
 _darwin_print() { "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" 2>/dev/null; }
 _darwin_loaded() { _darwin_print >/dev/null; }
-_darwin_running() { { _darwin_print || true; } | grep -qE '^[[:space:]]*pid = [0-9]+'; }
-# The print's own failure (the job not loaded at all) is not an error here: no record, no exit code, and the caller
-# says unknown; the pipeline must not carry that failure into the script (set -e and pipefail above).
-_darwin_last_exit() { { _darwin_print || true; } | sed -nE 's/^[[:space:]]*last exit code = ([^[:space:]]+).*$/\1/p' | head -1; }
+# The record's readers (round two of issue 1600): the print's own failure (the job not loaded at all) is not an error
+# here, no record and no exit code, so the head of each pipeline swallows it; and each reader lets sed quit itself
+# on its match (p;q) rather than piping into head -1, which under set -e plus pipefail left sed with SIGPIPE once its
+# output passed the pipe buffer and made the assignment, and the script, exit 141 with no status line (executed at
+# 3000 matching lines). The last exit code is captured whole, so "(signal: 6)" reads as itself and not as "(signal:".
+_darwin_record() { _darwin_print || true; }
+_darwin_pid() { _darwin_record | sed -nE '/^[[:space:]]*pid = [0-9]+/{s/^[[:space:]]*pid = ([0-9]+).*$/\1/p;q;}'; }
+_darwin_running() { [[ -n "$(_darwin_pid)" ]]; }
+_darwin_last_exit() { _darwin_record | sed -nE '/^[[:space:]]*last exit code = /{s/^[[:space:]]*last exit code = (.*[^[:space:]])[[:space:]]*$/\1/p;q;}'; }
 
 # The marker's one line for a status listing: when it was stopped and how to bring it back. Nothing
 # when there is no marker. python3 renders the time (a plain `date -d @` is GNU-only).
@@ -397,9 +402,16 @@ case "${1:-status}" in
             # the spawn (bad launcher path, env). Verify the service actually reports itself
             # before exiting 0 — an install that "succeeded" onto a dead agent is exactly the
             # silent outage this script keeps causing.
+            # A live pid alone is not enough (round two of issue 1600): a manager that aborts at start is alive for
+            # its first 50 to 200 ms, and a read milliseconds after bootstrap saw exactly that spawn, while the
+            # throttle kept the next one out of a six-second loop. The pid must be the SAME pid a second later.
             running=""
             for _ in $(seq 1 20); do
-                if _darwin_running; then running=1; break; fi
+                _pid="$(_darwin_pid)"
+                if [[ -n "$_pid" ]]; then
+                    sleep 1
+                    if [[ "$(_darwin_pid)" == "$_pid" ]]; then running=1; break; fi
+                fi
                 sleep 0.3
             done
             if [[ -z "$running" ]]; then
