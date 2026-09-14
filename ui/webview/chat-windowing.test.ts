@@ -274,3 +274,11 @@ test("round eleven fixes each carry a pin (T386 stage 2): a real second click re
 test("the spacer is invisible, non-interactive vertical space", () => {
   assert.match(CSS, /\.tx-spacer \{ width: 100%; pointer-events: none; \}/);
 });
+
+test("the landing notice's pulse is one-shot (the follow-up after PR 1584, low 1): the class leaves on animationend and a re-shown notice never carries a stale one", () => {
+  assert.match(RENDER, /function pulseLandingNotice\(\): void \{\s*\n\s*const n = landingNoticeEl; if \(!n \|\| n\.style\.display === "none"\) return;\s*\n\s*n\.classList\.remove\("pulse"\); void n\.offsetWidth; n\.classList\.add\("pulse"\);\s*\n\s*n\.addEventListener\("animationend", \(\) => n\.classList\.remove\("pulse"\), \{ once: true \}\);/,
+    "the pulse removes its own class on the animation's end, one listener per pulse, the composer note flash's way");
+  assert.match(RENDER, /landingNoticeEl\.classList\.remove\("pulse"\);[^\n]*\n\s*landingNoticeEl\.style\.display = "";/,
+    "the show path drops a pulse the hide cut short before the element is shown again");
+  assert.match(CSS, /\.tx-landing-notice\.pulse \{ animation: tx-notice-pulse 500ms ease-out; \}/, "the animation itself is unchanged: one short pulse");
+});

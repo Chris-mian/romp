@@ -705,6 +705,11 @@ class FloorDecision(Harness):
         self.assertFalse(f([{"proto": None, "ready": False, "t0": t - 5}], now=t), "a socket five seconds old waits for its ready")
         self.assertTrue(f([{"proto": None, "ready": False, "t0": t - km.READY_WAIT_S - 1}], now=t),
                         "no protocol and no ready past the wait: an index client (a page whose ready was never answered)")
+        # the follow-up after PR 1584, low 3: a socket the accept marked as not yet handshaken is served no chat frame, so it moves no
+        # floor either, stamped ready by its redial's pop (a reconnect=1 dial with no proto term) or old past the wait
+        self.assertFalse(f([{"handshake": False, "proto": None, "ready": True}]), "a never-handshaken socket stamped ready by its redial's pop moves no floor: it is served nothing")
+        self.assertFalse(f([{"handshake": False, "proto": None, "ready": False, "t0": t - km.READY_WAIT_S - 1}], now=t), "…nor past the wait")
+        self.assertTrue(f([{"handshake": False, "proto": None, "ready": True}, {"proto": 1, "ready": True}]), "an index client beside it still floors")
         src = open(os.path.join(BIN, "romp-kernel")).read()
         self.assertIn('_live_scope.chat_floor0 = _chat_floor0_of(_all_chat)', src)
         reg = src[src.index('            client["reconnect"] = True'):src.index('        _register_ws_client(client)')]
