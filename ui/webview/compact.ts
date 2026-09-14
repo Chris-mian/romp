@@ -143,7 +143,7 @@ function parseInput(t: ToolLike): Record<string, unknown> {
 }
 function clip(s: string, n = 80): string { s = s.replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 /** The host a fetched url names; a url with no host (file:, data:, about:) falls to the url itself, clipped like every other label part. */
-function hostOf(url: string): string { try { const h = new URL(url).hostname; return h || clip(url); } catch { return clip(url); } }
+function hostOf(url: string): string { try { const h = new URL(url).hostname; return h ? clip(h) : clip(url); } catch { return clip(url); } }   // the host clipped like every label part (round three, low c)
 /** The one search's own words: "for <pattern>" (Grep, Glob); the path, when the input carries one, is the event's file, which the
  *  renderer prints as the link after "in ". */
 function searchWords(t: ToolLike): string | null {
@@ -162,20 +162,20 @@ const totalsText = (add: number, del: number): string => (add || del ? `+${add} 
 export interface ActionPhrase { action: ToolAction; count: number; printed: number; text: string; add: number; del: number }
 export function actionPhrases(tools: readonly ToolLike[]): ActionPhrase[] {
   const order: ToolAction[] = [];
-  const by = new Map<ToolAction, { count: number; files: Set<string>; add: number; del: number; first: ToolLike }>();
+  const by = new Map<ToolAction, { count: number; files: Set<string>; nofile: number; add: number; del: number; first: ToolLike }>();
   for (const t of tools) {
     const a = toolAction(t.name);
     let e = by.get(a);
-    if (!e) { e = { count: 0, files: new Set(), add: 0, del: 0, first: t }; by.set(a, e); order.push(a); }
+    if (!e) { e = { count: 0, files: new Set(), nofile: 0, add: 0, del: 0, first: t }; by.set(a, e); order.push(a); }
     e.count++;
-    if (t.file) e.files.add(t.file);
+    if (t.file) e.files.add(t.file); else e.nofile++;
     if (a === "edit") { const d = diffTotals(t); e.add += d.add; e.del += d.del; }
   }
   const out: ActionPhrase[] = [];
   for (const a of order) {
     const e = by.get(a)!; const n = e.count;
     const byFile = a === "read" || a === "edit" || a === "create";
-    const files = e.files.size || n;   // a tool with no path counts its uses
+    const files = e.files.size + e.nofile;   // the distinct files, plus one per use that carried no file (a NotebookEdit's notebook_path is not a file for the kernel today): round three's medium, where "size or uses" let a sibling's path decide the count
     const printed = byFile ? files : n;
     let text: string;
     switch (a) {
@@ -217,8 +217,8 @@ export function toolInputText(t: ToolLike): string {
  *  label that is the command itself (a Bash with no description), for the code face. `link` marks a label that ends expecting the
  *  event's file, which the renderer prints as the link right after it ("Read ", "Edited ", "Created ", "Searched for x in "); an
  *  event with a file the label does not name still gets its link after the label, so no file is lost and none is printed twice.
- *  `totals` rides an edit ("+12 -3"); the renderer prints it only where no diff fold already carries the numbers. */
-export interface RowLabel { text: string; link?: boolean; totals?: string; code?: boolean; secondary?: string }
+ *  An edit's totals are the diff fold's toggle, the renderer's; a failed edit changed nothing and prints none (round three). */
+export interface RowLabel { text: string; link?: boolean; code?: boolean; secondary?: string }
 export function toolRowLabel(t: ToolLike): RowLabel {
   const desc = (t.desc || "").trim();
   if (desc) return { text: clip(desc, 160) };
@@ -232,7 +232,7 @@ export function toolRowLabel(t: ToolLike): RowLabel {
       return first ? { text: clip(first), code: true } : { text: "Ran a command" };
     }
     case "read": return t.file ? { text: "Read ", link: true } : { text: "Read a file" };
-    case "edit": { const d = diffTotals(t); const tot = totalsText(d.add, d.del) || undefined; return t.file ? { text: "Edited ", link: true, totals: tot } : { text: "Edited a file", totals: tot }; }
+    case "edit": return t.file ? { text: "Edited ", link: true } : { text: "Edited a file" };
     case "create": return t.file ? { text: "Created ", link: true } : { text: "Created a file" };
     case "search": { const w = searchWords(t); const base = w ? "Searched " + w : "Searched"; return t.file ? { text: base + " in ", link: true } : { text: base }; }
     case "fetch": { const u = typeof o.url === "string" ? o.url : ""; return { text: u ? "Fetched " + hostOf(u) : "Fetched a page" }; }

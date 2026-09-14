@@ -188,7 +188,7 @@ test("T418 row: the model's description wins; else the derived phrase per tool, 
   assert.deepEqual(toolRowLabel(T("Bash", { desc: "Verified the venv exists", input: JSON.stringify({ command: "ls" }) })), { text: "Verified the venv exists" });
   assert.deepEqual(toolRowLabel(T("Bash", { input: JSON.stringify({ command: "cd ~/x && make\necho done" }) })), { text: "cd ~/x && make", code: true });
   assert.deepEqual(toolRowLabel(T("Read", { file: "/home/u/repo/kernel/kernel.py" })), { text: "Read ", link: true });
-  assert.deepEqual(toolRowLabel(T("Edit", { file: "/r/ui/feed.ts", diffRows: rows(12, 3) })), { text: "Edited ", link: true, totals: "+12 -3" });
+  assert.deepEqual(toolRowLabel(T("Edit", { file: "/r/ui/feed.ts", diffRows: rows(12, 3) })), { text: "Edited ", link: true });   // the totals are the diff fold's toggle, not the label's
   assert.deepEqual(toolRowLabel(T("Write", { file: "/r/new.md" })), { text: "Created ", link: true });
   assert.deepEqual(toolRowLabel(T("Grep", { input: JSON.stringify({ pattern: "foo", path: "/r/src/lib" }), file: "/r/src/lib" })), { text: "Searched for foo in ", link: true });
   assert.deepEqual(toolRowLabel(T("Grep", { input: JSON.stringify({ pattern: "foo" }) })), { text: "Searched for foo" });

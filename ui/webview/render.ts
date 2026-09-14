@@ -5239,14 +5239,8 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   head.appendChild(name);
   if (lbl.secondary) { const c = el("span", "tool-name tool-secondary"); c.textContent = lbl.secondary; head.appendChild(c); }
   if (ev.file) head.appendChild(fileLink(ev.file));   // EVERY event with a file keeps its link (round two, medium 2); a label that names the path names it as this link, never twice
-  const hasDiffFold = !!(ev.diffRows?.length || ev.diff);   // the diff fold's toggle IS the totals for an edit (round two, medium 1): one printing per row
-  if (lbl.totals && !hasDiffFold) {
-    const tot = el("span", "tool-totals");
-    const mm = /^\+(\d+) -(\d+)$/.exec(lbl.totals);
-    if (mm) { const plus = el("span", "tool-plus"); plus.textContent = "+" + mm[1]; const minus = el("span", "tool-minus"); minus.textContent = "-" + mm[2]; tot.append(plus, " ", minus); }
-    else tot.textContent = lbl.totals;
-    head.appendChild(tot);
-  }
+  // An edit's totals are the diff fold's toggle below (+A -R), printed once per row (round two, medium 1); a FAILED edit's error fold
+  // replaces that fold and prints no totals: a failed edit changed nothing (round three, low d). The head carries no totals span.
 
   const ack = ACK_TOOLS.has(ev.name);
   turn.appendChild(head);
@@ -12453,7 +12447,7 @@ function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoc
   line.dataset.act = "noticetoggle"; line.dataset.gkey = key;
   setTip(line, open ? "click to collapse" : "click to expand");
   const caret = el("span", "toolgroup-caret"); caret.textContent = open ? "▾" : "▸"; line.appendChild(caret);
-  if (!open) {   // collapsed → the head by ACTION in the user's terms (T418, the user 2026-09-14: "Ran 11 commands, created 2 files, edited 3 files +37 -0, read 4 files"); expanded → just the open arrow (the rows say it)
+  if (!open) {   // collapsed → the head by ACTION in the user's terms (T418, the user 2026-09-14, who wanted the rows to read as the desktop app's do): the phrases ordered by the number each prints, the edits' totals once at the end; expanded → just the open arrow (the rows say it)
     const parts = actionParts(tools);
     line.appendChild(document.createTextNode(" "));
     const w = el("span", "toolgroup-head"); w.textContent = parts.text; line.appendChild(w);   // the phrases; the summed totals follow once, in the diff colours
