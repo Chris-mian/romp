@@ -2205,17 +2205,32 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   nothing to do", one row per session, persists across boots in
   `STATE/planner-seen.json` (version 1, the tick-seen shape: a row is never
   an answer on its own, the key is recomputed at the pass and compared, a
-  malformed row is refused, rows are dropped with the sessions, the write
+  malformed row is refused, rows are dropped with the sessions a non-empty
+  pass discovers (an empty discovery is unknown, not every session gone,
+  and leaves the rows for the next non-empty pass), the write
   is atomic under a per-writer temporary and re-armed on a failed replace).
   The key holds every file the plan tier's inventory names (the parse, the
-  store trio, the episode log, the leaf's task store, the reg file's stat,
-  the captions file, the death marker, `cleared.jsonl`, the stall slice,
-  and each running background launch's deadline bit under the pass clock);
-  the file carries a derivation pair (the planner's derivation version and
-  `PLACEMENTS_V`), and a file written under another pair is refused whole,
-  so the first pass after such a change plans every session once and
-  rewrites the rows. `restored` counts the rows a boot loaded, `refused`
-  the rows it would not trust (a torn, empty or other-shaped file counts
+  store trio, the episode log, the leaf's task store, the captions file,
+  the death marker and `cleared.jsonl` by stat; the reg by the values the
+  pass reads, its `spawnedAt` and the SDK-owned bit; the stall slice by
+  this session's records; and each running background launch's deadline
+  bit under the pass clock). The rule: a persisted key term must be stable
+  across the event it persists over, so a file rewritten at every boot (the
+  reg at attach, the stall slice by the jobs pass) is keyed by the values
+  the pass reads, never by its stat (derivation 1 keyed both by stat and no
+  row stood across a boot: the second deploy boot read restored 20, skipped
+  0). The file carries a derivation pair (the planner's derivation version,
+  2 since that fix, and `PLACEMENTS_V`), and a file written under another
+  pair is refused whole, so the first pass after such a change plans every
+  session once and rewrites the rows (the v1 rows are refused once and
+  rewritten under 2). `mismatchByTerm` counts, for every row that stood in
+  the table and compared unequal at a pass, the indexes of the key terms
+  that differed (reset with the process), so a read boot names a term that
+  moves at boot instead of leaving it to a guess. `restored` counts the rows a boot loaded, `refused`
+  the rows it would not trust (a file that cannot be read or decoded counts
+  once per fault spell and leaves the load unlatched, so the next pass
+  retries and the exit drain's forced write declines meanwhile; a torn,
+  empty or other-shaped file counts
   once; another derivation counts every row), `persisted` the rows on disk
   after the last write. Before it every boot re-planned every session
   (`planned` 20 and `skipped` 0 on the 2026-09-14 read boots); the first

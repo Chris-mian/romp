@@ -195,7 +195,7 @@ def _rebind_state(path):
     _CHAIN_MEMO.clear()     # the write-moment chain memo keys on paths under STATESDIR; a new root is a new world
     parse_cache_clear()      # the parses belong to the old root too
     _COURIER_SEEN.clear()   # the courier gate keys on the old root's files
-    _PLANNER_SEEN.clear(); _PLANNER_SEEN_LOADED[0] = False; _PLANNER_SEEN_DIRTY[0] = False   # ...and the planner gate, its load latch
+    _PLANNER_SEEN.clear(); _PLANNER_SEEN_LOADED[0] = False; _PLANNER_SEEN_DIRTY[0] = False; _PLANNER_SEEN_READ_FAULT[0] = False   # ...and the planner gate, its load latch
     #                                                                                          with it: the new root's rows load on
     #                                                                                          the next pass, and a forced persist
     #                                                                                          before that writes nothing (T401 (5c) round three)
@@ -3183,14 +3183,19 @@ _COURIER_SEEN = {}         # fsid -> the scan key of its last pass that found no
 # plus derived VALUES this key does not read (the reg's spawnedAt and backend, the stall slice's value, the
 # task-store fingerprint), so most skips happen there and this table sees the sessions it let through.
 _PLANNER_SEEN = {}         # fsid -> the plan key of its last pass that had nothing to do (JSON-normalized: lists, not tuples)
-_PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0, "restored": 0, "refused": 0, "persisted": 0}
+_PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0, "restored": 0, "refused": 0, "persisted": 0, "mismatchByTerm": {}}
+#                            mismatchByTerm: for every row that stood in the table (restored or recorded this boot) and compared
+#                            unequal at a pass, the INDEXES of the key terms that differed, counted (str(index) -> count, reset per
+#                            boot with the process): the instrument that names a term moving at boot instead of leaving it to a
+#                            guess (the 5c follow-up: the second deploy boot read restored 20 and skipped 0 because the reg's and the
+#                            stall slice's STATS moved at every boot; this histogram would have read {"5": 20, "10": 20})
 #                            restored: rows a boot loaded (served only when their key stands); refused: rows the load would not
 #                            trust; persisted: the rows on disk after the last write (T401 (5c): every boot re-planned every
 #                            session because this memo lived in memory alone: plannerSkip skipped 0, planned 20 on 2026-09-14)
 _PLANNER_SEEN_FILE = "planner-seen.json"   # STATE/planner-seen.json: {"v": 1, "derivation": [<_PLANNER_SEEN_DERIVATION_V>, <PLACEMENTS_V>],
 #                                                                  "rows": {fsid: <the normalized plan key>}}
 _PLANNER_SEEN_V = 1                        # the DOCUMENT's shape (a reader of another shape loads nothing)
-_PLANNER_SEEN_DERIVATION_V = 1             # the PLANNER's derivation under which a row means "nothing to do": a persisted row asserts
+_PLANNER_SEEN_DERIVATION_V = 2             # the PLANNER's derivation under which a row means "nothing to do": a persisted row asserts
 #                                            that under the code that wrote it, and before T401 (5c) every restart discarded the
 #                                            assertion; now a file whose derivation pair differs from the running code's is refused
 #                                            whole (every row counted refused), so the first pass after the change plans every
@@ -3199,11 +3204,18 @@ _PLANNER_SEEN_DERIVATION_V = 1             # the PLANNER's derivation under whic
 #                                            a seg-id migration must invalidate the rows or a standing row would keep a store at the
 #                                            old placementsV. BUMP THIS when a change to _plan_session's reads or writes would make
 #                                            a pass that had nothing to do under the old code have something under the new (a heal,
-#                                            a new unit shape, a retire rule): v1 = the memo's first persisted shape (2026-09-14).
+#                                            a new unit shape, a retire rule), or when the KEY's shape changes (the rows would compare
+#                                            unequal anyway; the bump refuses them once, explicitly, and rewrites them).
+#                                            v1 = the memo's first persisted shape (2026-09-14); v2 = the reg (index 5) and the stall
+#                                            slice (index 10) keyed by value instead of by stat, since both files are rewritten at
+#                                            every boot and no v1 row stood across one (2026-09-14, the second deploy boot's read).
 _PLANNER_SEEN_LOCK = threading.Lock()
 _PLANNER_SEEN_DIRTY = [False]
 _PLANNER_SEEN_LOADED = [False]
 _PLANNER_SEEN_SAID = [False]               # the persist's failure said once per fault episode (re-armed by a clean write)
+_PLANNER_SEEN_READ_FAULT = [False]         # the load's read or decode fault, counted ONCE per fault spell (re-armed by a successful load):
+#                                            the latch stays unset on a fault so the next pass retries the read, and a file that stays
+#                                            unreadable must not count a refusal per pass (the 5c follow-up, the manager's refinement)
 _PLANNER_FSID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
@@ -3220,22 +3232,34 @@ def _planner_key_norm(pkey):
 def _load_planner_seen():
     """The previous kernel's planner memo into _PLANNER_SEEN, once per boot (best-effort; a missing or torn file is an empty memo).
     Every row is checked: a uuid-shaped fsid and a list value, else refused (counted, never trusted); a row is an ANSWER only when
-    its key, recomputed at the next pass, equals the persisted one (the tick-seen rule: recompute and compare, never trust)."""
+    its key, recomputed at the next pass, equals the persisted one (the tick-seen rule: recompute and compare, never trust).
+    The load LATCHES only after a successful read and parse (a missing file is a successful empty load and latches too): a read or
+    decode fault leaves the latch unset, so the next pass retries the read and the exit drain's forced persist declines meanwhile
+    (the previous kernel's rows stand on disk); the fault counts one refusal per fault spell, said once until a load succeeds.
+    Before the 5c follow-up the latch was set before the read, so a present-but-unreadable file latched an empty table and a
+    kernel exiting before any pass emptied the file through the drain."""
     if _PLANNER_SEEN_LOADED[0]:
         return 0
-    _PLANNER_SEEN_LOADED[0] = True
     try:
         raw = (STATE / _PLANNER_SEEN_FILE).read_bytes()
     except FileNotFoundError:
-        return 0                                                       # a fresh root: nothing to refuse
+        _PLANNER_SEEN_LOADED[0] = True                                 # a fresh root: an empty memo, nothing to refuse, latched
+        _PLANNER_SEEN_READ_FAULT[0] = False
+        return 0
     except OSError:
-        _PLANNER_STATS["refused"] += 1                                 # a file that exists and cannot be read: one refusal
+        if not _PLANNER_SEEN_READ_FAULT[0]:                            # a file that exists and cannot be read: one refusal per fault
+            _PLANNER_SEEN_READ_FAULT[0] = True                         #  spell; the latch stays unset (the next pass retries)
+            _PLANNER_STATS["refused"] += 1
         return 0
     try:
         d = json.loads(raw.decode("utf-8"))                            # the decode under the parse try: a UnicodeDecodeError is a
     except ValueError:                                                 #  ValueError, and round two's read_text let it out of run_plan
-        _PLANNER_STATS["refused"] += 1                                 #  (round three, medium 2); torn or not UTF-8: one refusal
+        if not _PLANNER_SEEN_READ_FAULT[0]:                            #  (round three, medium 2); torn or not UTF-8: one refusal per
+            _PLANNER_SEEN_READ_FAULT[0] = True                         #  fault spell, the latch unset (a rewrite by the previous
+            _PLANNER_STATS["refused"] += 1                             #  kernel's tail cannot happen, but a torn write's retry can)
         return 0
+    _PLANNER_SEEN_LOADED[0] = True                                     # read and parsed: this boot's load, whatever the rows say
+    _PLANNER_SEEN_READ_FAULT[0] = False
     rows = d.get("rows") if isinstance(d, dict) and d.get("v") == _PLANNER_SEEN_V else None
     if not isinstance(rows, dict):
         _PLANNER_STATS["refused"] += 1                                 # empty, null, another shape or version: one refusal
@@ -3318,8 +3342,26 @@ def persist_planner_seen(force=False):
 
 
 def planner_skip_stats():
-    """A copy of the planner gate's counters for /perf (memos.plannerSkip)."""
-    return dict(_PLANNER_STATS)
+    """A copy of the planner gate's counters for /perf (memos.plannerSkip); the histogram copied too."""
+    d = dict(_PLANNER_STATS); d["mismatchByTerm"] = dict(_PLANNER_STATS["mismatchByTerm"]); return d
+
+
+def _planner_seen_stands(fsid, norm):
+    """Whether the row the table holds for fsid equals `norm`, the key recomputed this pass. A row that stands skips the pass; a
+    row that does not is counted by the indexes of the terms that differed (mismatchByTerm), so a read boot names the moving term."""
+    row = _PLANNER_SEEN.get(fsid)
+    if row is None:
+        return False
+    if row == norm:
+        return True
+    hist = _PLANNER_STATS["mismatchByTerm"]
+    if isinstance(row, list) and isinstance(norm, list):
+        for i in range(max(len(row), len(norm))):
+            if i >= len(row) or i >= len(norm) or row[i] != norm[i]:
+                hist[str(i)] = hist.get(str(i), 0) + 1
+    else:
+        hist["shape"] = hist.get("shape", 0) + 1
+    return False
 
 
 def _task_store_key(fsid):
@@ -3345,20 +3387,33 @@ def _plan_key(fsid, path, session, now):
     store (the directory the declared-plan sync reads, which differs from the sid's for every SDK session
     after a /clear), the captions file (the floor-title heal reads it), each running background launch with
     whether it has crossed its deadline under the pass clock `now` (_bg_expiry_key: the settle reads that
-    crossing and no file records it), and every file the plan tier's inventory names (_sig_inputs("plan"):
-    the death marker, cleared.jsonl, the stall slice) by stat. The reg is keyed by its file's stat here; its
-    spawnedAt and backend VALUES are the outer gate's terms (_stage_sig)."""
+    crossing and no file records it), and every file the plan tier's inventory names (_sig_inputs("plan")):
+    the death marker and cleared.jsonl by stat, the reg and the stall slice by the VALUES the pass reads
+    (spawnedAt and the SDK-owned bit; this session's stall records), as the outer gate keys them. THE RULE
+    (the 5c follow-up, from the second deploy boot's read: restored 20, skipped 0): a persisted key term
+    must be stable across the event it persists over, and a file rewritten at every boot (the reg at attach,
+    the stall slice by the jobs pass) is keyed by the values the pass reads, never by its stat."""
     pk = _parse_entry(fsid, session)
     if pk is None or pk[1] is not session:
         return None
     return (str(path), pk[0], _store_key(fsid), _file_key(str(EPIDIR / (fsid + ".jsonl"))),
-            _task_store_key(session.get("leafFsid") or fsid), _file_key(str(SDKDIR / (fsid + ".json"))),
+            _task_store_key(session.get("leafFsid") or fsid), [_reg_spawned_at(fsid), _sdk_owned(fsid)],
             _file_key(str(CAPDIR / (fsid + ".jsonl"))), _bg_expiry_key(path, now),
             # T401 (5c) round two: the three files of the plan tier's inventory (_sig_inputs) this key lacked: the death marker
             # (_cli_epoch), cleared.jsonl (plan_units through _live_anchor_gone) and the stall slice (rollup_status). The in-memory
             # memo forgot every row at each restart, so a move between boots was planned by that amnesty; a persisted row must
             # carry every input the pass reads (the completeness pin holds this tuple against _sig_inputs("plan")).
-            _file_key(str(GONEDIR / (fsid + ".json"))), _file_key(str(STATE / "cleared.jsonl")), _file_key(str(STATE / "auto-nudge.json")))
+            _file_key(str(GONEDIR / (fsid + ".json"))), _file_key(str(STATE / "cleared.jsonl")), _stall_slice_key(fsid))
+
+
+def _stall_slice_key(fsid):
+    """This session's stall records by value (_stall_slice, the outer gate's term), or a fresh sentinel when auto-nudge.json exists
+    and does not read (the strict raise): a sentinel key is never recorded and never compared, so a session whose slice cannot be
+    read is planned, as the outer gate runs its stage without a stamp."""
+    try:
+        return _stall_slice(fsid)
+    except Exception:
+        return object()
 
 
 def _store_key(fsid):
@@ -11515,7 +11570,7 @@ def _plan_session(fsid, path, now):
     session = parsed_session(fsid, [path], now)
     pkey = _plan_key(fsid, path, session, now)        # BEFORE the store read (the chain-memo rule)
     norm = _planner_key_norm(pkey) if pkey is not None else None
-    if norm is not None and _PLANNER_SEEN.get(fsid) == norm:   # the persisted or in-memory row stands: recomputed and compared,
+    if norm is not None and _planner_seen_stands(fsid, norm):   # the persisted or in-memory row stands: recomputed and compared,
         _PLANNER_STATS["skipped"] += 1               # never trusted (T401 (5c)); nothing moved since a pass that had nothing to do
         return 0
     _PLANNER_STATS["planned"] += 1
@@ -12096,7 +12151,12 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=None, verbose=Fal
             _log_judge_error("peer-wait-sweep", "-", "the store-side peer-wait pass raised: %r" % (e,))
     fleet = [s for s in discover(now) if not _hidden_from_feed(s[0])][:sessions_cap]   # muted sessions are out of task tracking
     _load_planner_seen()                              # T401 (5c): the previous kernel's rows, once per boot, before the first gate check
-    _planner_seen_drop({s[0] for s in fleet})         # the planner gate, bounded by the sessions this pass discovered
+    if fleet:
+        _planner_seen_drop({s[0] for s in fleet})     # the planner gate, bounded by the sessions this pass discovered. An EMPTY
+    #                                                   discovery is unknown, not every session gone (discover reads an unreadable
+    #                                                   names root as no sessions): the rows stay until the next non-empty pass,
+    #                                                   which costs nothing, since a stale row never serves without its key
+    #                                                   (the 5c follow-up; before it one such pass rewrote the file empty)
     placed = 0
     with ThreadPoolExecutor(max_workers=_conc(concurrency)) as ex:
         futs = {}

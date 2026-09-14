@@ -110,7 +110,7 @@ class _World(unittest.TestCase):
         if hasattr(jd, "_PLANNER_SEEN_LOADED"):
             jd._PLANNER_SEEN_LOADED[0] = False; jd._PLANNER_SEEN_DIRTY[0] = False
         for k in jd._PLANNER_STATS:
-            jd._PLANNER_STATS[k] = 0
+            jd._PLANNER_STATS[k] = {} if k == "mismatchByTerm" else 0
         jd._discover_cache["fp"] = None
         jd._discover_cache["result"] = None
 
@@ -290,7 +290,7 @@ class PlannerSkip(_World):
             other.cleanup()
 
     def test_the_counters(self):
-        self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted"})   # T401 (5c): the persisted memo's three
+        self.assertEqual(set(jd.planner_skip_stats()), {"skipped", "planned", "recorded", "restored", "refused", "persisted", "mismatchByTerm"})   # T401 (5c): the persisted memo's counters
         s = jd.planner_skip_stats(); s["skipped"] = 99
         self.assertNotEqual(jd.planner_skip_stats()["skipped"], 99)
 
@@ -299,6 +299,7 @@ class PlannerSkip(_World):
         (T401 (5c)). Before the persisted memo every restart was an amnesty that re-planned every session."""
         self.assertTrue(jd.persist_planner_seen(force=True))
         jd._PLANNER_SEEN.clear(); jd._PLANNER_SEEN_LOADED[0] = False
+        jd._PLANNER_STATS["mismatchByTerm"] = {}                                   # the histogram resets with the process
         jd._PARSE_CACHE.clear(); jd._CHAIN_MEMO.clear(); jd._discover_cache["fp"] = None; jd._discover_cache["result"] = None   # both memos share an identity
 
     def test_a_persisted_row_skips_through_the_pass_after_a_reboot_and_a_moved_transcript_does_not(self):
@@ -325,8 +326,12 @@ class PlannerSkip(_World):
             f.write(json.dumps({"id": C + ":g9", "t": NOW - 5, "op": "dismiss"}) + "\n")
         self.assertEqual(self.run_pass()[1], 0, "cleared.jsonl moved across the reboot: a shared file, no session skipped")
         self.settle(); self.reboot()
-        (jd.STATE / "auto-nudge.json").write_text(json.dumps({"v": 1, "sessions": {}}))
-        self.assertEqual(self.run_pass()[1], 0, "the stall slice moved across the reboot: no session skipped")
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps({"v": 1, "deferred": {}}))
+        self.assertEqual(self.run_pass()[1], 3, "the stall slice FILE rewritten with no record for any session: keyed by value since the "
+                                                "5c follow-up, every session skipped (by stat, every boot's rewrite re-planned all)")
+        self.reboot()
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps({"deferred": {C + ":g1": {"why": "waiting-on-peer", "at": NOW - 5}}}))
+        self.assertEqual(self.run_pass()[0:2], (1, 2), "a stall record for C: C alone planned")
 
     def test_the_inner_key_covers_every_file_the_plan_tiers_inventory_names(self):
         """The completeness pin (round two, medium 2): every file _sig_inputs("plan") names, moved alone, changes _plan_key;
@@ -340,6 +345,21 @@ class PlannerSkip(_World):
             p = Path(p)
             if p.is_dir() or p.name == A and p.parent.name == "tasks" or "tasks" in p.parts:
                 p.mkdir(parents=True, exist_ok=True); (p / "9.json").write_text(json.dumps({"id": "9", "subject": "x", "status": "pending"}))
+            elif p.name == A + ".json" and p.parent.name == "sdk":                 # the reg: by VALUE (the 5c follow-up), so a
+                p.parent.mkdir(parents=True, exist_ok=True)                        #  rewrite with equal values must NOT move the key
+                p.write_text(json.dumps({"sid": A, "name": "worker0", "cwd": "/tmp", "spawnedAt": 1700000000.0}))
+                before = jd._planner_key_norm(jd._plan_key(A, path, session, NOW))
+                p.write_text(json.dumps({"sid": A, "cwd": "/tmp", "name": "worker0", "spawnedAt": 1700000000.0}))   # rewritten, equal values
+                os.utime(p, (NOW + 9, NOW + 9))
+                self.assertEqual(jd._planner_key_norm(jd._plan_key(A, path, session, NOW)), before, "the reg rewritten with equal values: the key stands")
+                p.write_text(json.dumps({"sid": A, "name": "worker0", "cwd": "/tmp", "spawnedAt": 1700000001.0}))   # spawnedAt moved
+            elif p.name == "auto-nudge.json":                                       # the stall slice: by VALUE, this session's records
+                p.write_text(json.dumps({"deferred": {}}))
+                before = jd._planner_key_norm(jd._plan_key(A, path, session, NOW))
+                p.write_text(json.dumps({"deferred": {B + ":g1": {"why": "waiting-on-peer", "at": NOW - 5}}}))   # another sid's record
+                os.utime(p, (NOW + 9, NOW + 9))
+                self.assertEqual(jd._planner_key_norm(jd._plan_key(A, path, session, NOW)), before, "the slice file rewritten, A's slice unchanged: the key stands")
+                p.write_text(json.dumps({"deferred": {A + ":g1": {"why": "waiting-on-peer", "at": NOW - 5}}}))   # A's own record
             else:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 with p.open("a") as f:
@@ -348,6 +368,39 @@ class PlannerSkip(_World):
             key = jd._planner_key_norm(jd._plan_key(A, path, session, NOW))
             self.assertNotEqual(key, base, "%s moved alone and the key did not: the inventory names a file the key lacks" % p)
             base = key
+
+    def test_a_reg_rewritten_at_attach_with_equal_values_keeps_the_rows_across_a_reboot(self):
+        """The 5c follow-up, from the second deploy boot's read (restored 20, skipped 0): the backend rewrites every live session's
+        reg at attach and the jobs pass rewrites auto-nudge.json, so a key term by STAT on either file moved at every boot and no
+        persisted row stood; both are keyed by the values the pass reads now, and the histogram names any term that still moves."""
+        jd.SDKDIR.mkdir(parents=True, exist_ok=True)
+        for sid in self.SIDS:
+            (jd.SDKDIR / (sid + ".json")).write_text(json.dumps({"sid": sid, "name": "w", "cwd": "/tmp", "spawnedAt": 1700000000.0}))
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps({"deferred": {}}))
+        self.settle(); self.reboot()
+        for sid in self.SIDS:                                                      # the attach: every reg rewritten, values equal
+            p = jd.SDKDIR / (sid + ".json"); p.write_text(json.dumps({"cwd": "/tmp", "sid": sid, "name": "w", "spawnedAt": 1700000000.0})); os.utime(p, (NOW + 3, NOW + 3))
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps({"deferred": {}, "v": 2}))   # the jobs pass: rewritten, no record for any sid
+        os.utime(jd.STATE / "auto-nudge.json", (NOW + 3, NOW + 3))
+        self.assertEqual(self.run_pass(), (0, 3, 0), "restored rows stand across the reboot: every session skipped")
+        self.assertEqual(jd.planner_skip_stats()["restored"], 3); self.assertEqual(jd.planner_skip_stats()["mismatchByTerm"], {})
+        self.reboot()
+        (jd.SDKDIR / (A + ".json")).write_text(json.dumps({"sid": A, "name": "w", "cwd": "/tmp", "spawnedAt": 1700000001.0}))   # a moved spawnedAt
+        self.assertEqual(self.run_pass()[0:2], (1, 2), "A's spawnedAt moved: A alone planned")
+        self.assertEqual(jd.planner_skip_stats()["mismatchByTerm"], {"5": 1}, "the histogram names the reg term")
+        self.settle(); self.reboot()
+        (jd.STATE / "auto-nudge.json").write_text(json.dumps({"deferred": {B + ":g1": {"why": "waiting-on-peer", "at": NOW - 5}}}))
+        self.assertEqual(self.run_pass()[0:2], (1, 2), "a stall record for B: B alone planned")
+        self.assertEqual(jd.planner_skip_stats()["mismatchByTerm"], {"10": 1}, "the histogram names the slice term")
+
+    def test_the_mismatch_histogram_names_the_term_that_moved_across_a_reboot(self):
+        """Round GO's instrument: one term moved (the episode log, index 3) across a reboot reads {"3": 1} and nothing else."""
+        self.settle(); self.reboot()
+        jd.EPIDIR.mkdir(parents=True, exist_ok=True)
+        with (jd.EPIDIR / (C + ".jsonl")).open("a") as f:
+            f.write(json.dumps({"t": NOW, "ep": 1}) + "\n")
+        self.assertEqual(self.run_pass()[0:2], (1, 2))
+        self.assertEqual(jd.planner_skip_stats()["mismatchByTerm"], {"3": 1})
 
     def test_a_bumped_derivation_re_plans_everything_once_after_a_reboot(self):
         """Round two, medium 3: a row asserts nothing to do under the code that wrote it; a derivation or a placements-identity
@@ -361,6 +414,28 @@ class PlannerSkip(_World):
                     break
             self.reboot()
             self.assertEqual(self.run_pass(), (0, 3, 0), "rewritten under the new pair: the rows stand again")
+
+    def test_an_empty_discovery_leaves_the_rows_for_the_next_non_empty_pass(self):
+        """The 5c follow-up (b): discover reads an unreadable names root as no sessions, and one such pass dropped every row and
+        rewrote the file empty; an empty discovery is unknown, not every session gone, and a stale row never serves without its key."""
+        self.settle()
+        self.assertTrue(jd.persist_planner_seen(force=True)); p = jd.STATE / jd._PLANNER_SEEN_FILE
+        before = p.read_bytes(); rows = dict(jd._PLANNER_SEEN)
+        real = jd.discover
+        jd.discover = lambda now, window=None, forks=True: []
+        try:
+            self.assertEqual(self.run_pass(), (0, 0, 0), "nothing discovered: nothing planned, nothing skipped")
+        finally:
+            jd.discover = real
+        self.assertEqual(dict(jd._PLANNER_SEEN), rows, "the rows stand")
+        self.assertFalse(jd._PLANNER_SEEN_DIRTY[0], "nothing dirtied"); self.assertEqual(p.read_bytes(), before, "the file unchanged")
+        self.assertEqual(self.run_pass(), (0, 3, 0), "the next real pass skips all three on the rows that stood")
+        jd.discover = lambda now, window=None, forks=True, _r=real: [s for s in _r(now, window, forks) if s[0] != C]
+        try:
+            self.assertEqual(self.run_pass()[1], 2, "a non-empty discovery without C: the two it names skip")
+        finally:
+            jd.discover = real
+        self.assertNotIn(C, jd._PLANNER_SEEN, "and C's row is dropped: the drop is bounded by the sessions a non-empty pass discovers")
 
     def test_a_task_store_change_under_the_forked_leaf_un_skips(self):
         # A is an SDK session that /cleared: its reg names LEAF as the current transcript, so discover hands the
