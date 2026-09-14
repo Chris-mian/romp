@@ -6304,20 +6304,30 @@ class SdkSession:
         finally:
             self._cur_ask_fut = None
 
+    def _fresh_cli_stamp(self) -> bool:
+        """The FRESH-CLI stamp, when this connect will SPAWN a CLI and not when it ATTACHES to a live host: stamp spawnedAt
+        (the kernel's bg-tasks box drops unfinished tasks that predate the live CLI, they died with the old one and their
+        completion notifications can never arrive; the judge's _cli_epoch is the same gate), clear any stale awaiting overlay
+        the old CLI's death stranded (the Stop hook that clears it died too), and mark the dropped echoes (the SPAWN half;
+        boot half: _reseed_echoes): a fresh CLI means whatever held any earlier send is gone. Both heals previously ran only
+        at KERNEL boot, so a session restart inside a live kernel kept ghost '25 background tasks' / waiting displays that
+        read as a wedged session (the user 2026-07-10). Under session hosts a kernel restart RE-ATTACHES to the CLI still
+        running under its host: the CLI did not respawn, its epoch did not change, its background launches and awaiting did
+        not die, and its held sends are still held, so nothing here applies; the lease pre-read the connect loop already
+        uses to withhold the launch stamp on an attach (_connect_would_attach, T346) tells the two apart the same way at
+        both sites (2026-09-14: every kernel boot re-stamped every attached session, so the planner's persisted memo and
+        the evidence gate, both keyed on spawnedAt, re-armed every session at every boot, and the live CLIs' running
+        background tasks read as ghosts). Returns True when it stamped."""
+        if self.backend._connect_would_attach(self):
+            return False
+        self.backend._update_reg(self.sid, spawnedAt=int(time.time()))
+        self.backend._heal_stale_awaiting(self.sid)
+        self.backend._mark_dropped_echoes(self.sid, self.pending_meta() or self.pending())
+        return True
+
     def _run(self):
         try:
-            # A FRESH CLI is about to spawn for this sid: stamp when (the kernel's bg-tasks box drops
-            # unfinished tasks that predate the live CLI — they died with the old one, their completion
-            # notifications can never arrive) and clear any stale awaiting overlay the old CLI's death
-            # stranded (the Stop hook that clears it died too). Both previously healed only at KERNEL
-            # boot, so a session restart inside a live kernel kept ghost '25 background tasks' /
-            # waiting displays that read as a wedged session (nimbus, the user 2026-07-10).
-            self.backend._update_reg(self.sid, spawnedAt=int(time.time()))
-            self.backend._heal_stale_awaiting(self.sid)
-            # The SPAWN half of the dropped-echo marking (boot half: _reseed_echoes): a fresh CLI means
-            # whatever held any earlier send is gone. An echo neither in self._pending (delivered to the
-            # new CLI) nor landed has no holder left — flag it so the chat says "never delivered".
-            self.backend._mark_dropped_echoes(self.sid, self.pending_meta() or self.pending())
+            self._fresh_cli_stamp()                  # a spawn's stamp and heals; an attach to a live host keeps them all
             asyncio.run(self._amain())
         except Exception as e:                       # surfaced for debugging; never crash kernel
             # The TRACEBACK too, not just the type and message: a bare "KeyError: <uuid>" names no line,

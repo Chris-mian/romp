@@ -4985,6 +4985,64 @@ class UpdateRegDroppingUnreadable(unittest.TestCase):
         self.assertEqual(sb.read_reg_for_rmw(root, self.SID)["bgLedger"], [1, 2, 3])
 
 
+class SpawnedAtStampedOnSpawnOnly(unittest.TestCase):
+    """spawnedAt is the CLI's epoch (judge _cli_epoch, the bg-tasks ghost gate, the evidence gate, the planner's persisted
+    memo): a connect that ATTACHES to a live host keeps it, a connect that spawns moves it (2026-09-14: every kernel boot
+    under session hosts re-stamped every attached session). The pins drive the REAL connect thread body, `_run`, with the
+    event loop stubbed out, so the base's unconditional stamp is the red, not a missing name."""
+
+    SID = "11111111-2222-3333-4444-555555555588"
+
+    def _world(self, hosts):
+        root = tempfile.mkdtemp()
+        open(os.path.join(root, "session-hosts"), "w").write(hosts)
+        be = sb.SdkBackend(root, "/bin/true", lambda *a, **k: None)
+        sb.write_reg(root, self.SID, {"sid": self.SID, "name": "web", "cwd": "/tmp", "spawnedAt": 1700000000})
+        return root, be, sb.SdkSession(be, {"sid": self.SID, "name": "web", "cwd": "/tmp"})
+
+    def _live_host_lease(self, root):
+        """A lease that reads 'attach': its CLI pid and its holder are THIS process (alive, start time matching), the holder a
+        host, the beat now."""
+        pid = os.getpid(); start = sb.proc_start(pid); now = time.time()
+        sb.write_lease(root, {"sid": self.SID, "fsid": self.SID, "name": "web", "pid": pid, "start": start,
+                              "holder": {"kind": "host", "pid": pid, "start": start}, "version": "test", "spawnedAt": 1700000000, "t": now})
+
+    def _connect_thread_body(self, s):
+        """`_run` up to its event loop: the fresh-CLI block and the finally, with asyncio.run stubbed so no SDK client starts."""
+        real = sb.asyncio.run
+        sb.asyncio.run = lambda coro: coro.close()
+        try:
+            s._run()
+        finally:
+            sb.asyncio.run = real
+
+    def test_an_attach_to_a_live_host_keeps_the_regs_spawned_at_through_the_connect_thread(self):
+        root, be, s = self._world("on")
+        self._live_host_lease(root)
+        self.assertTrue(be._connect_would_attach(s), "the lease reads attach")
+        self._connect_thread_body(s)
+        self.assertEqual(sb.read_reg(root, self.SID).get("spawnedAt"), 1700000000, "the CLI's epoch stands across the kernel's restart")
+
+    def test_a_connect_with_no_lease_spawns_and_moves_the_stamp(self):
+        root, be, s = self._world("on")
+        self.assertFalse(be._connect_would_attach(s), "no lease: this connect spawns a host and its CLI")
+        self._connect_thread_body(s)
+        self.assertGreater(sb.read_reg(root, self.SID).get("spawnedAt"), 1700000000, "a real spawn moves the epoch")
+
+    def test_with_session_hosts_off_a_connect_spawns_and_the_stamp_moves(self):
+        root, be, s = self._world("off")
+        self.assertFalse(be._connect_would_attach(s), "hosts off and no lease: the kernel's restart respawns the CLI")
+        self._connect_thread_body(s)
+        self.assertGreater(sb.read_reg(root, self.SID).get("spawnedAt"), 1700000000)
+
+    def test_the_stamp_method_answers_whether_it_stamped(self):
+        root, be, s = self._world("on")
+        self._live_host_lease(root)
+        self.assertFalse(s._fresh_cli_stamp(), "an attach: nothing stamped")
+        os.unlink(sb.lease_path(root, self.SID))
+        self.assertTrue(s._fresh_cli_stamp(), "a spawn: stamped")
+
+
 class PushSessionCallback(unittest.TestCase):
     """_push_session — the connect handshake's targeted one-session push (2026-08-10). The handshake is
     the exact event the kernel's opening chip stands down on, and a plain pusher wake left that flip

@@ -352,12 +352,15 @@ class DroppedSendsAnnounceThemselves(unittest.TestCase):
         # practical) — pin it the way error-visibility's NoSilentSwallows pins handlers: read the source
         import ast
         import inspect
-        run = next(n for n in ast.walk(ast.parse(inspect.getsource(sb)))
-                   if isinstance(n, ast.FunctionDef) and n.name == "_run")
-        calls = [n.func.attr for n in ast.walk(run)
-                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
-        self.assertIn("_mark_dropped_echoes", calls,
-                      "_run no longer marks orphaned echoes when a fresh CLI spawns")
+        tree = ast.parse(inspect.getsource(sb))
+        def calls_of(name):
+            fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+            return [n.func.attr for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+        # the spawn half moved into _fresh_cli_stamp (2026-09-14: a connect that ATTACHES to a live host keeps the CLI's epoch,
+        # its awaiting and its held sends, so the whole fresh-CLI block runs on a spawn only); _run calls it, it calls the marking
+        self.assertIn("_fresh_cli_stamp", calls_of("_run"), "_run no longer runs the fresh-CLI block")
+        self.assertIn("_mark_dropped_echoes", calls_of("_fresh_cli_stamp"),
+                      "the fresh-CLI block no longer marks orphaned echoes when a fresh CLI spawns")
 
     def test_landing_still_prunes_a_dropped_echo(self):
         # the self-correcting guarantee: a premature mark can never stick to a delivered message
