@@ -405,7 +405,9 @@ body { display: flex; flex-direction: column; position: relative; }   /* column 
   /* stacked, the focused section's blocks are full width: nothing to trade width with, so no gutter (T410) */
   .focus-gutter { display: none; }
   /* stacked, a focused block whose category has no cards hides WHOLE, chip and all (the user 2026-09-14); it returns
-     with the first card. Side by side the heads stand as the board's do (this rule lives under the query alone). */
+     with the first card. Side by side the heads stand as the board's do (this rule lives under the query alone).
+     With the no-cards line gone as well (the same day's amendment), a focused session with NO cards shows, single
+     column, just its label and the divider: the two amendments combined, and what the user asked for. */
   .feed-focus-cols .feed-col.col-empty { display: none; }
 }
 
