@@ -81,12 +81,16 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
     assert.ok(src.includes(ep), `the network popover must drive ${ep} (the rail twin)`);
   // the popover's /tunnels read checks the status before the body (the fourth reader of that route to gain the rule: a
   // JSON-bodied 5xx read as "No remotes attached" with the autoUpdate box mirrored off and a clientDiag filed as ok)
-  assert.ok(src.includes('fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("/tunnels answered HTTP " + r.status); return r.json(); })'),
-    "a non-ok /tunnels answer throws into the popover's catch instead of reading as an empty host list");
+  assert.ok(src.includes('fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => { if (!r.ok) { const e: any = new Error("/tunnels answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
+    "a non-ok /tunnels answer throws, with its status on the error, instead of reading as an empty host list");
+  // the popover's refresh says which failure it had, as the host picker does: a status for a non-ok answer, unreachable for a rejected fetch, a console line for both
+  assert.ok(src.includes('console.error("romp: /tunnels could not be read", err)'), "the popover's refresh says its failure in the console");
+  assert.ok(src.includes("err && err.httpStatus ? `The kernel answered HTTP ${err.httpStatus} to /tunnels; retrying…`"), "a non-ok answer is named by its status, not called an unreachable kernel");
   // the host picker's /ssh-hosts read has the same rule and keeps the last list it read on a failure
   assert.ok(src.includes('fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => { if (!r.ok) { const e: any = new Error("/ssh-hosts answered HTTP " + r.status); e.httpStatus = r.status; throw e; } return r.json(); })'),
     "a non-ok /ssh-hosts answer throws, with its status on the error, instead of painting no hosts");
-  assert.ok(src.includes("if (err && err.httpStatus && lastHosts) fillHostSelect(sel, lastHosts,"), "a non-ok answer keeps the last good list");
+  assert.ok(src.includes("const keep = !!lastHosts && !(err && err.network);"), "a non-ok or unparseable answer keeps the last good list; a rejected fetch does not");
+  assert.ok(src.includes('.catch((e: any) => { e = e || new Error("fetch rejected"); e.network = true; throw e; })'), "a rejected fetch is marked before the status check");
   assert.ok(src.includes('else fillHostSelect(sel, [], "(kernel unreachable)")'), "a rejected fetch keeps the kernel-unreachable signal, whatever was read before");
   assert.ok(src.includes('console.error("romp: ssh hosts could not be read"'), "every failure shape says so in the console");
   assert.ok(src.includes('{ type: "openPane", pane: p.key }'), "quick-opens post openPane to the host");

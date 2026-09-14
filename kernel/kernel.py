@@ -54959,9 +54959,15 @@ function fillHosts(){if(!dl)return;var hs=[];
 dl.textContent='';var cut=hs.length>512?hs.length-512:0;hs.slice(0,512).forEach(function(h){var o=document.createElement('option');o.value=h;dl.appendChild(o);});
 if(cut){var mo=document.createElement('option');mo.value=mo.textContent='\\u2026 '+cut+' more not shown';mo.disabled=true;dl.appendChild(mo);}}   // a cut list says so (strip.ts fillHostSelect wears the same marker)
 // a non-ok answer is not the host list: a JSON-bodied 5xx used to write an EMPTY list (the delete-by-absence the other
-// readers lost); it throws, the last good list stands, and the console says so
-function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/ssh-hosts answered HTTP '+r.status);return r.json();}).then(function(d){
-_cfg=(d&&d.hosts)||[];fillHosts();}).catch(function(e){try{console.error('romp: ssh hosts could not be read; keeping the last list',e);}catch(_){}});}
+// readers lost); it throws with its status and the last good list stands (as it does for a body that will not parse);
+// a REJECTED fetch, the kernel gone, empties the suggestions instead, so a dead kernel is never hidden behind a stale
+// list once one was read; the console says which, and names the kept list only when there is one (the strip's rule)
+var _cfgRead=false;
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){e=e||new Error('fetch rejected');e.network=true;throw e;})
+.then(function(r){if(!r.ok){var e=new Error('/ssh-hosts answered HTTP '+r.status);e.httpStatus=r.status;throw e;}return r.json();}).then(function(d){
+_cfg=(d&&d.hosts)||[];_cfgRead=true;fillHosts();}).catch(function(e){var keep=_cfgRead&&!(e&&e.network);
+try{console.error('romp: ssh hosts could not be read'+(keep?'; keeping the last list':''),e);}catch(_){}
+if(!keep){_cfg=[];fillHosts();}});}
 // Every string a PEER chose is rendered as TEXT: esc() before it meets innerHTML. That is a host it named
 // (a checked-in peer names itself), its status word, its build, the rows it reports for its own connections
 // (/tunnels/of — whitelisted by the kernel too), and the bus gossip below (tiers, relay hosts, holds).

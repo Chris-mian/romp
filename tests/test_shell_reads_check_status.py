@@ -37,8 +37,11 @@ class ShellReadsCheckStatus(unittest.TestCase):
 
     def test_the_ssh_hosts_read_checks_the_status_and_keeps_the_last_list(self):
         js = km._LANDING_REMOTES_JS
-        self.assertIn("function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/ssh-hosts answered HTTP '+r.status);return r.json();})", js)
-        self.assertIn("catch(function(e){try{console.error('romp: ssh hosts could not be read; keeping the last list',e);}catch(_){}})", js)
+        self.assertIn("function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){e=e||new Error('fetch rejected');e.network=true;throw e;})", js, "a rejected fetch is marked first")
+        self.assertIn(".then(function(r){if(!r.ok){var e=new Error('/ssh-hosts answered HTTP '+r.status);e.httpStatus=r.status;throw e;}return r.json();})", js)
+        self.assertIn("var keep=_cfgRead&&!(e&&e.network);", js, "the last list is kept on a non-ok or unparseable answer once one was read, never on a rejected fetch")
+        self.assertIn("if(!keep){_cfg=[];fillHosts();}", js, "a dead kernel empties the suggestions instead of hiding behind a stale list")
+        self.assertIn("console.error('romp: ssh hosts could not be read'+(keep?'; keeping the last list':''),e)", js, "the console names the kept list only when there is one")
         self.assertNotIn("fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();})", js)
         self.assertNotIn("fetch('/notify-all').then(function(r){return r.json();})", js)
 
