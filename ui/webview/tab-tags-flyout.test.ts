@@ -54,6 +54,10 @@ test("the flyouts' placement (T380 review, one helper since T387): prefer right,
   assert.match(BILL, /placeFlyBeside\(setDef, d\);/, "…and so does its nested default submenu (T387)");
   assert.match(BILL, /if \(pickable\.length > 1 && avail\.default && avail\.defaultExplicit !== undefined\) \{/, "an older kernel that takes no auto and marks no default gets no Set default billing entry");
   assert.match(BILL, /if \(explicit\) \{[\s\S]*?auto\.textContent = "Automatic";/, "the way back to the helper rule, only while an explicit default stands");
+  // the Default flyout offers the machine's own login and the key only (T346 beside T380 and T387): the kernel takes no stored
+  // login as the machine default yet, and its scoped arm refuses that value by name
+  assert.match(BILL, /const defaultChoices = choices\.filter\(\(c\) => c\.value === "login" \|\| c\.value === "key"\);/, "a stored login is not a machine-default choice yet");
+  assert.match(BILL, /for \(const c of defaultChoices\) \{/, "the flyout lists the filtered choices");
   const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
   assert.match(CSS, /\.ctx-sub-billing, \.ctx-sub-default \{ max-width: 22em; \}/, "a menu's width for both levels");
   assert.doesNotMatch(CSS, /\.ctx-sub-head/, "the group head and its note are gone (T387)");
