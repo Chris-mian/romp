@@ -43,10 +43,12 @@ KERNEL="${ROMP_KERNEL_BIN:-$ROMP_DIR/bin/romp-kernel}"
 # either spelling, and if both are set and DISAGREE with no --port to settle it, refuse.
 port=""
 host=""
+print_python=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --port) port="${2:-}"; shift 2 ;;
         --host) host="${2:-}"; shift 2 ;;
+        --print-python) print_python=1; shift ;;   # install.sh's preflight: the interpreter the kernel would run, floor applied
         *) shift ;;
     esac
 done
@@ -191,6 +193,22 @@ pick_python() {
     command -v python3 || { echo "romp: no python3 on PATH" >&2; exit 1; }
 }
 PY="$(pick_python)"
+
+# THE FLOOR (issue 1600): the kernel and the Agent SDK need python 3.10 or newer. The only gate used to sit
+# in romp-sdk-setup, whose failure banners and lets the install finish, and this script then exec'd the
+# kernel on whatever python3 the pick fell through to, so a fresh install on a machine whose python3 is
+# 3.9 crash-looped the manager on a SyntaxError. The picked interpreter reports its version here and a
+# reading below the floor is refused with the install command, before the exec. An interpreter that
+# cannot report a version at all (the test suites' shell stand-ins) is left to the exec as before: the
+# pick already checked it is an executable file, and a version nobody can read is not a version below the
+# floor. `--print-python` (install.sh's preflight) prints the pick and stops here, floor applied.
+_pyver="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+if [[ "$_pyver" =~ ^([0-9]+)\.([0-9]+)$ ]] && (( BASH_REMATCH[1] < 3 || (BASH_REMATCH[1] == 3 && BASH_REMATCH[2] < 10) )); then
+    echo "romp: $PY is python $_pyver; the kernel and the Agent SDK need 3.10 or newer, so the kernel is not started on it." >&2
+    echo "  macOS:  brew install python@3.13    or:  uv python install 3.13    (or pin one: ROMP_PYTHON=/path/to/python3.13 in service.env)" >&2
+    exit 1
+fi
+if [[ -n "$print_python" ]]; then echo "$PY"; exit 0; fi
 
 # Map onto the kernel's env, then exec it (preserving the PID for the manager).
 # ROMP_MANAGER_PID (parent-death watchdog) and ROMP_SERVE_TOKEN (auto-loaded from the

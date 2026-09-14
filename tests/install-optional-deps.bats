@@ -563,14 +563,14 @@ EOF
     [ ! -x "$TEST_DIR/state/sdkvenv/bin/python" ]     # and never a husk for the next run to trip over
 }
 
-@test "install.sh: a missing SDK backend is a BANNER, not an optional-pieces footnote" {
-    export ROMP_STATE_DIR="$TEST_DIR/state"
-    mkdir -p "$ROMP_STATE_DIR"
-    echo "TESTTOKEN123" > "$ROMP_STATE_DIR/serve-token"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
-    # Let the real sdk step RUN (ROMP_NO_SDK cleared — that flag is what sets ROMP_SDK_MISSING) but
-    # make it fail at the VERSION gate, so this stays hermetic: no venv built, no network reached.
-    cat > "$STUB/oldpython" <<'EOF'
+# ── the Python floor (issue 1600) ──────────────────────────────────────────────────────────
+# This test used to assert the opposite: with a 3.9 python the install exited 0 behind the CANNOT START
+# SESSIONS banner, the 3.10 gate living only in romp-sdk-setup (skipped outright by ROMP_NO_SDK=1), and
+# the manager then crash-looped the kernel on that python. The floor is a preflight now: the interpreter
+# the kernel would run (romp-serve's pick, the ROMP_PYTHON pin here) must be 3.10 or newer, or the install
+# stops with the install command before it touches anything.
+_old_python() {   # a python that reports 3.9 to every version probe the scripts make
+    cat > "$1" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *"version_info >= (3, 10)"*) exit 1 ;;
@@ -578,13 +578,40 @@ case "$*" in
 esac
 exit 0
 EOF
-    chmod +x "$STUB/oldpython"
+    chmod +x "$1"
+}
+
+@test "install.sh: a python below 3.10 stops the preflight with the install command; nothing is installed and no banner is reached" {
+    export ROMP_STATE_DIR="$TEST_DIR/state"
+    mkdir -p "$ROMP_STATE_DIR"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    _old_python "$STUB/oldpython"
 
     PATH="$(bare_path)" ROMP_NO_SDK= ROMP_PYTHON="$STUB/oldpython" \
       run "$ROMP_DIR/install.sh"
 
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"python 3.9"* ]]                       # the interpreter found, and its version
+    [[ "$output" == *"need 3.10 or newer"* ]]
+    [[ "$output" == *"brew install python@3.13"* ]]
+    [[ "$output" == *"uv python install 3.13"* ]]
+    [[ "$output" != *"CANNOT START SESSIONS"* ]]             # the preflight stops before the SDK step
+    [ ! -e "$HOME/.claude/hooks/romp-wake.sh" ]              # nothing was wired
+}
+
+@test "install.sh: a python at the floor passes the preflight (ROMP_NO_SDK=1 still skips only the venv build)" {
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/node"; chmod +x "$STUB/node"
+    cat > "$STUB/newpython" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"version_info >= (3, 10)"*) exit 0 ;;
+  *'print("%d.%d"'*)           echo "3.10"; exit 0 ;;
+esac
+exit 0
+EOF
+    chmod +x "$STUB/newpython"
+    PATH="$(bare_path)" ROMP_PYTHON="$STUB/newpython" run "$ROMP_DIR/install.sh"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"CANNOT START SESSIONS"* ]]
-    # it must NOT be filed under the things you can happily live without
-    [[ "$output" != *"Some optional pieces aren't set up:"*"Agent SDK"* ]]
+    [[ "$output" != *"need 3.10 or newer"* ]]
+    [ -L "$HOME/.claude/hooks/romp-wake.sh" ]
 }

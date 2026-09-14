@@ -130,6 +130,46 @@ teardown() { rm -rf "$TEST_DIR"; }
     [ "$(printf '%s\n' "$output" | grep '^SERVEPORT=')" = "SERVEPORT=" ]
 }
 
+# ── the Python floor (issue 1600) ──────────────────────────────────────────────────────────
+@test "romp-serve: refuses to start the kernel on a python below 3.10, naming it and the install command" {
+    # a python that answers the version probe with 3.9 (and would happily exec the stub kernel otherwise)
+    cat > "$TEST_DIR/old-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in
+  *'print("%d.%d"'*) echo "3.9"; exit 0 ;;
+esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/old-python"
+    ROMP_PYTHON="$TEST_DIR/old-python" run "$ROMP_SERVE" --port 29999
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"python 3.9"* ]]
+    [[ "$output" == *"need 3.10 or newer"* ]]
+    [[ "$output" == *"brew install python@3.13"* ]]
+    [[ "$output" != *"PORT="* ]]                             # the stub kernel never ran
+}
+
+@test "romp-serve: --print-python prints the interpreter the kernel would run, floor applied, and starts nothing" {
+    run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 0 ]
+    [ "$output" = "$ROMP_PYTHON" ]                           # the pin, verbatim, as the pick returns it
+    cat > "$TEST_DIR/old-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *'print("%d.%d"'*) echo "3.8"; exit 0 ;; esac
+exit 0
+OLD
+    chmod +x "$TEST_DIR/old-python"
+    ROMP_PYTHON="$TEST_DIR/old-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"python 3.8"* ]]
+}
+
+@test "romp-serve: an interpreter that reports no version is left to the exec as before (the suites' shell stand-in)" {
+    run "$ROMP_SERVE" --port 29998
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PORT=29998"* ]]
+}
+
 @test "romp --serve: removed — rejected as unknown, writes no state" {
     run "$ROMP_SCRIPT" --serve on
     [ "$status" -ne 0 ]

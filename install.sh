@@ -38,6 +38,14 @@ if [[ -z "${ROMP_SKIP_PREFLIGHT:-}" ]]; then
         echo "install.sh: python3 not found — the kernel is a Python process." >&2
         echo "  macOS:  brew install python@3.13    or:  uv python install 3.13" >&2
         preflight_missing=1
+    # The floor (issue 1600): the kernel and the Agent SDK need 3.10 or newer. This used to sit only in
+    # romp-sdk-setup, whose failure is a banner (the install still exited 0), and ROMP_NO_SDK=1 skipped it,
+    # so a fresh install on a machine whose python3 is 3.9 finished, and the manager then crash-looped
+    # the kernel on it. The interpreter checked is the one the kernel will run (bin/romp-serve's pick:
+    # ROMP_PYTHON, then the SDK venv's, then the newest python3.X), and romp-serve says which and why.
+    elif ! "$ROMP_DIR/bin/romp-serve" --print-python >/dev/null; then
+        echo "install.sh: no python romp can run on — the kernel and the Agent SDK need 3.10 or newer (the line above names the one found)." >&2
+        preflight_missing=1
     fi
     [[ "$preflight_missing" -eq 0 ]] || exit 1
 fi
