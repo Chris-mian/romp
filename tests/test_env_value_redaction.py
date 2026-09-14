@@ -1118,9 +1118,12 @@ class HookEndToEnd(unittest.TestCase):
         for name in ("CI", "BUILD_NUMBER"):
             child.pop(name, None)
         child.update(env or {})
-        # The copied conftest mints its own private temp root under TMPDIR and removes it at run end;
-        # pointed at `d`, that root and the state dir inside it go with the scratch dir even when the
-        # child is killed before its unconfigure runs (the timeout below).
+        # The copied conftest imports the tests package (which mints the run's private temp root under
+        # TMPDIR and writes its owner marker; the conftest removes the root at run end) and fails loudly
+        # without it, so the checkout goes on the child's PYTHONPATH: `d` holds a copy of the conftest,
+        # not the package. Pointed at `d`, that root and the state dir inside it go with the scratch dir
+        # even when the child is killed before its unconfigure runs (the timeout below).
+        child["PYTHONPATH"] = os.pathsep.join(p for p in (os.path.dirname(HERE), child.get("PYTHONPATH")) if p)
         child["TMPDIR"] = d
         r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--rootdir", d] + list(args),
                            cwd=d, env=child, capture_output=True, text=True, timeout=180)

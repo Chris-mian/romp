@@ -10,8 +10,10 @@ exactly that happened: a unittest run of tests/test_kernel.py persisted its synt
 fixtures (TESTHOST, hubhost) into the real remotes.json / remotes-known.json — dropping a real
 attached host's row — and the live kernel re-read the file at its next restart and began
 ssh-dialing the fixtures. tests/__init__.py now gives unittest package runs the same floor
-conftest gives pytest, but neither covers `cd tests && python -m unittest test_x` or a direct
-script run, so the per-module preamble is the primary defence and this test is the ratchet.
+conftest gives pytest, and since 2026-09-14 a direct script run of a test module gets the package
+too, through its `from romp_load import load_source` (tests/romp_load.py's bootstrap), but only once
+that import runs, and `cd tests && python -m unittest test_x` gets nothing, so the per-module
+preamble is the primary defence and this test is the ratchet.
 
 The rule this file enforces, per tests/test_*.py module: if the module loads romp code (any
 load_source or SourceFileLoader call, or an import of the kernel/postal/cli packages), then BEFORE
@@ -33,7 +35,12 @@ spawned with a hand-built env= dict that carries the real HOME — env construct
 defeats static checking; the preamble covers the common case because a child spawned without
 env= inherits the mutated os.environ.
 
-Two more rules over the same directory live in this module, because they read the same file list.
+Three more rules over the same directory live in this module, because they read the same file list.
+Every module that imports romp_load at top level does so ABOVE its state preamble: the direct run's
+floor (the tests package: the mkdtemp hook, the private temp root, the TMPDIR redirect) lands at that
+import, so a directory the preamble mints before it is untracked and outside the root, one loose
+directory per direct run (nine modules had that order until 2026-09-14);
+test_every_module_imports_romp_load_before_its_state_preamble holds the order.
 Every module loads through load_source: `SourceFileLoader(...).load_module()` warns on Python 3.10
 and later with removal documented for 3.15, tools/loadsource-sweep.py rewrites a module still
 written that way, and test_no_test_module_uses_the_removed_loader refuses the idiom by file and
@@ -115,6 +122,18 @@ def removed_loader_sites(tree):
                   and node.func.attr == "load_module")
 
 
+def romp_load_import_line(tree):
+    """The line of the module's top-level `from romp_load import ...` (or `import romp_load`), else None:
+    an import inside a function runs when that function does, after every module-level statement, so
+    it is not the direct run's floor and is not read here."""
+    for stmt in tree.body:
+        if isinstance(stmt, ast.ImportFrom) and stmt.level == 0 and stmt.module == "romp_load":
+            return stmt.lineno
+        if isinstance(stmt, ast.Import) and any(a.name == "romp_load" for a in stmt.names):
+            return stmt.lineno
+    return None
+
+
 def scan(path):
     """Return (first_load, first_set, rsd_handled) linenos for one module (None where absent)."""
     tree = ast.parse(open(path).read(), filename=path)
@@ -173,6 +192,46 @@ class StateIsolationOrder(unittest.TestCase):
             "tests/test_kernel.py overwrote the real remotes.json on 2026-08-12). Put this at\n"
             "module top level, above the first load_source or SourceFileLoader line:\n\n%s\n\n%s"
             % (PREAMBLE, "\n".join(bad)))
+
+    def test_every_module_imports_romp_load_before_its_state_preamble(self):
+        """The direct run's floor (tests/romp_load.py, 2026-09-14) lands when the module imports romp_load:
+        imported under its bare name by a `test_*.py` run as a script, the loader imports the tests
+        package, whose mkdtemp hook, private temp root and TMPDIR redirect then cover every directory the
+        module mints. A preamble that runs BEFORE that import mints its state dir with no hook installed
+        and no redirect in place: untracked, outside the root, one loose directory per direct run (nine
+        modules had that order). So in a module with both at top level, the import precedes the
+        assignment. A module that imports romp_load inside a function, or not at all, is not read
+        (tests/test_tempdir_hygiene.py imports the package itself, at the top, ahead of its preamble)."""
+        bad = []
+        for fn in sorted(os.listdir(HERE)):
+            if not (fn.startswith("test_") and fn.endswith(".py")) or fn in EXEMPT:
+                continue
+            path = os.path.join(HERE, fn)
+            imp = romp_load_import_line(ast.parse(open(path).read(), filename=path))
+            _, first_set, _ = scan(path)
+            if imp is not None and first_set is not None and first_set < imp:
+                bad.append("%s: sets the state root at line %d, above `from romp_load import load_source` at line %d"
+                           % (fn, first_set, imp))
+        self.assertFalse(bad,
+            "These modules mint their state root BEFORE importing romp_load. Under a direct `python3\n"
+            "tests/test_x.py` that import is what brings in the tests package (the mkdtemp hook, the\n"
+            "private temp root, the TMPDIR redirect), so a directory minted above it is untracked and lands\n"
+            "loose in the system temp dir. Move the import above the preamble:\n\n%s" % "\n".join(bad))
+
+    def test_the_import_order_scan_reads_the_top_level_import_only(self):
+        # The order rule's two readers on synthetic modules: the import line is the top-level statement's,
+        # in either spelling, and an import inside a function is not one (that module is not read).
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "test_probe.py")
+            with open(path, "w") as f:
+                f.write('import os, tempfile\n'
+                        'os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()\n'
+                        'from romp_load import load_source\n')
+            tree = ast.parse(open(path).read())
+            self.assertEqual(romp_load_import_line(tree), 3)
+            self.assertEqual(scan(path)[1], 2, "the preamble at line 2 precedes the import at line 3: a hit")
+            self.assertEqual(romp_load_import_line(ast.parse('import romp_load\n')), 1)
+            self.assertIsNone(romp_load_import_line(ast.parse('def f():\n    from romp_load import load_source\n')))
 
     def test_scan_counts_a_load_source_call_as_a_load(self):
         # tests/romp_load.py's load_source is a load like the others: a module that calls it before
