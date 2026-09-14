@@ -34,10 +34,35 @@ if [[ -z "${ROMP_SKIP_PREFLIGHT:-}" ]]; then
         echo "  macOS:  brew install node    Linux: your distro's nodejs package" >&2
         preflight_missing=1
     fi
-    if ! command -v python3 >/dev/null 2>&1; then
+    # A ROMP_PYTHON pin IS the interpreter: with one set, python3's presence on PATH says nothing, and the pin goes
+    # straight to the floor check below (round three of issue 1600; a valid pin with no python3 on PATH was refused
+    # as python3 not found).
+    if [[ -z "${ROMP_PYTHON:-}" ]] && ! command -v python3 >/dev/null 2>&1; then
         echo "install.sh: python3 not found — the kernel is a Python process." >&2
         echo "  macOS:  brew install python@3.13    or:  uv python install 3.13" >&2
         preflight_missing=1
+    # The floor (issue 1600): the kernel and the Agent SDK need 3.10 or newer. This used to sit only in
+    # romp-sdk-setup, whose failure is a banner (the install still exited 0), and ROMP_NO_SDK=1 skipped it,
+    # so a fresh install on a machine whose python3 is 3.9 finished, and the manager then crash-looped
+    # the kernel on it. The interpreter checked is the one the kernel will run (bin/romp-serve's pick:
+    # ROMP_PYTHON, then the SDK venv's, then the newest python3.X), and romp-serve says which and why.
+    else
+        # romp-serve exits 2 for the floor alone; its other refusals (the two port spellings disagreeing, a kernel
+        # binary that is not there, an unrunnable ROMP_PYTHON pin) exit 1 with their own line, and are passed
+        # through as what they are: the kernel would not start on this machine as configured, but the python is
+        # not the reason (round two of issue 1600: every non-zero exit used to be blamed on the python).
+        _py_rc=0
+        # The pick is CAPTURED, not just checked (round four of issue 1600): every python this script runs after the
+        # preflight is this interpreter, so a pinned interpreter with no python3 on PATH carries the install through,
+        # where a bare python3 in the hook block failed under set -e with the hooks half wired.
+        ROMP_INSTALL_PY="$("$ROMP_DIR/bin/romp-serve" --print-python)" || _py_rc=$?
+        if [[ "$_py_rc" -eq 2 ]]; then
+            echo "install.sh: the python romp would run is below the floor (the line above names it, its version and the install command); the kernel and the Agent SDK need 3.10 or newer." >&2
+            preflight_missing=1
+        elif [[ "$_py_rc" -ne 0 ]]; then
+            echo "install.sh: bin/romp-serve --print-python stopped (the line above says why); the kernel would not start on this machine as configured, so nothing is installed." >&2
+            preflight_missing=1
+        fi
     fi
     [[ "$preflight_missing" -eq 0 ]] || exit 1
 fi
@@ -112,8 +137,10 @@ fi
 # them. Idempotent merge: adds only missing romp entries, never touches any
 # other hooks you have registered. Retired romp hooks (RETIRED below) are
 # de-registered on the way, so an upgrade never leaves Claude Code calling a
-# path this repo no longer ships.
-python3 - <<'PYEOF'
+# path this repo no longer ships. The interpreter is the preflight's capture; under ROMP_SKIP_PREFLIGHT there is
+# none, and the pin (ROMP_PYTHON) is carried instead of falling to a bare python3 that a pinned machine may not have
+# on PATH (round five of issue 1600).
+"${ROMP_INSTALL_PY:-${ROMP_PYTHON:-python3}}" - <<'PYEOF'
 import json, os
 
 SETTINGS = os.path.expanduser("~/.claude/settings.json")

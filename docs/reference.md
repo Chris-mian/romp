@@ -740,6 +740,32 @@ not change what the kernel runs at its next restart. On a machine that runs
 romp as a service, pin it anyway: `ROMP_PYTHON=/usr/bin/python3.12` in
 `service.env` makes the choice explicit and holds if the venv is deleted or
 rebuilt. Pin the versioned path, not `python3`, which an upgrade repoints.
+Whatever the pick, 3.10 is the floor for an interpreter that reports a version:
+`bin/romp-serve` runs the picked interpreter once for its version (its first
+execution), reads the sentinel line the probe prints (`romp-pyver X.Y`, carriage
+returns stripped, so a site customization's chatter or an `atexit` hook that
+prints cannot pass for the version or hide it), and refuses to start the kernel
+below 3.10, naming the interpreter, its version and the install commands, with an
+exit code of its own (2). The probe is bounded to five seconds where `timeout`
+exists, its whole process group signalled at the bound so a child the interpreter
+left behind dies with it; an interpreter that runs out that clock, or exits 124 or
+137 of its own accord (the codes the bound reads as), is refused as unresponsive
+with exit code 1. Where there is no `timeout` (a stock mac) the probe is
+unbounded, as the picker's own runs of a candidate are: the residual. The output
+goes to a file (`TMPDIR`, then `/tmp`, then the state directory; a `TMPDIR` that
+is stale or unwritable, or a `PATH` without `mktemp`, falls to a pipe read the
+same bound covers), read afterwards, so a helper the interpreter left holding its
+output cannot hold the read; the file goes with the shell, a stop mid-probe
+included. An interpreter that reports no readable version is started on purpose
+(the pick already checked it is an executable file, and a version nobody can read
+is not a version below the floor). `bin/romp-serve --print-python` prints the
+pick with that floor applied and starts nothing, which is what `install.sh`'s
+preflight runs, claiming a Python cause on that code alone and passing the
+script's other refusals (the two port spellings disagreeing, a kernel binary that
+is not there, an unrunnable pin, an unresponsive interpreter) through with their
+own line and a plain stop; every python the install runs afterwards is that same
+interpreter, and under `ROMP_SKIP_PREFLIGHT` the pin (`ROMP_PYTHON`) stands in
+for it.
 
 Moving romp to another Python, whether another version or the free-threaded
 build of the same one, takes four steps, and skipping any one of them leaves a
