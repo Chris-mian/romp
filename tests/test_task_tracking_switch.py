@@ -27,12 +27,12 @@ from pathlib import Path
 HERE = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
-os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
-os.environ.pop("ROMP_STATE_DIR", None)   # a live kernel's export outranks the XDG floor
-os.environ.setdefault("ROMP_KERNEL_PORT", "0")   # never the live kernel's port
 import sys
 sys.path.insert(0, HERE)
 from romp_load import load_source   # noqa: E402
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+os.environ.pop("ROMP_STATE_DIR", None)   # a live kernel's export outranks the XDG floor
+os.environ.setdefault("ROMP_KERNEL_PORT", "0")   # never the live kernel's port
 
 km = load_source("romp_kernel_tasktrack", os.path.join(BIN, "romp-kernel"))
 JUDGE_SRC = Path(ROOT, "kernel", "judge.py").read_text()

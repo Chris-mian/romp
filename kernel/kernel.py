@@ -358,6 +358,9 @@ class _PerfStats:
                            "cycle_ms_sum": 0.0, "cycle_ms_max": 0.0, "cycle_ms_last": 0.0,
                            "cycle_cpu_ms_sum": 0.0, "sends": 0,
                            "idle_cycles": 0, "idle_ms_sum": 0.0, "idle_cpu_ms_sum": 0.0, "splitFailed": 0, "cycleFailed": 0}
+            # a fresh client's full push on its handler thread (2026-09-14): the browser's own first draw after a reload or a
+            # restart, per app; the pusher's cycles never see it, so the restart's logo phase had no number before this
+            self.connect_push_stats = {"count": 0, "ms_sum": 0.0, "ms_max": 0.0, "ms_last": 0.0, "byApp": {}}
             self.ring = collections.deque(maxlen=self.RING)
             self.stages = {k: 0.0 for k in self.STAGES}
             # T397: the stage split PER CYCLE. `cycle_stages` fills as the cycle's stages close (wall ms, the reader's bytes
@@ -427,6 +430,19 @@ class _PerfStats:
     def wake_kind(self, by_event):
         with self.lock:
             self.pusher["wakes_event" if by_event else "wakes_backstop"] += 1
+
+    def connect_push(self, app, dt):
+        """One connect push (a fresh client's full state on its handler thread): its wall seconds, per app too."""
+        ms = dt * 1000.0
+        with self.lock:
+            c = self.connect_push_stats
+            c["count"] += 1; c["ms_sum"] += ms; c["ms_last"] = ms
+            if ms > c["ms_max"]:
+                c["ms_max"] = ms
+            a = c["byApp"].setdefault(str(app or "?"), {"count": 0, "ms_sum": 0.0, "ms_max": 0.0, "ms_last": 0.0})
+            a["count"] += 1; a["ms_sum"] += ms; a["ms_last"] = ms
+            if ms > a["ms_max"]:
+                a["ms_max"] = ms
 
     def cycle_failed(self):
         """A pusher cycle that raised out of the loop and was skipped (the loop's guard): counted under its lock like every
@@ -719,6 +735,8 @@ class _PerfStats:
         with self.lock:
             ring = sorted(self.ring)
             pusher = dict(self.pusher)
+            pusher["connectPush"] = {k: (dict(v) if k != "byApp" else {a: dict(row) for a, row in v.items()}) if isinstance(v, dict) else v
+                                     for k, v in self.connect_push_stats.items()}
             pusher["firstCycle"] = dict(self.first_cycle) if self.first_cycle is not None else None   # T397: the boot's
             sr = list(self.stage_ring) if self.stage_ring is not None else []                           #  first cycle's split
             pusher["stageRing"] = sr if ring_all else sr[-self.STAGE_RING_SERVED:]   # the newest few by default: the whole ring
@@ -30522,6 +30540,7 @@ def _chat_push_scopes_close():
     for k in getattr(_live_scope, "chat_push_owned", None) or ():
         setattr(_live_scope, k, None)
     _live_scope.chat_push_owned = None
+    _chat_inflight_release_all()                      # ...and the chat tab claims a raise left on this thread (single-flight)
 
 
 def _claudemd_key(cwd):
@@ -35882,6 +35901,11 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
     recent_tops = sorted(_live_roots + _archive_roots(sid), key=lambda r: r["t"] or 0, reverse=True)[:5]
     if _session_flag(sid, "hideFromFeed"):       # muted → out of task tracking: the ledger shows no goal tree / current task
         tree, current, recent_tops = [], None, []
+    # the FEED's per-session needs-you verdict, read ONCE for this build: the ledger (needsInput, the section
+    # rows' word) and the status (needsYou, the tab's ask ring) both carry it, and two reads could straddle a
+    # concurrent pusher's swap of the set (a connect-thread build races the cycle) — a row saying "needs you"
+    # beside a tab with no ring, in the same frame (review find, 2026-09-13)
+    needs_you = _feed_needs_input_of(sid)
     ledger = {"summary": arch.get("headline", ""), "tree": tree[:80],
               "current": current, "recent": recent_tops,
               # the postal working note (set_working: the session's claim to a branch and files, written for
@@ -35897,7 +35921,7 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
               # builds AFTER the chat sessions in a push, so this trails the feed by one push cycle (the chat
               # signature's `needs` component brings the change forward on the next one). A muted session has
               # no cards, so it reads False.
-              "needsInput": _feed_needs_input_of(sid)}
+              "needsInput": needs_you}
     # work-timer base, in MILLISECONDS (render's elapsedMs does Date.now()ms - sinceEpoch; a seconds
     # value showed ~494,000h — the user's "400,000 hours" bug): the current open turn's start while
     # working, else the last activity; None when unknown (render then shows no timer).
@@ -35990,6 +36014,21 @@ def build_session(sid, now, live_map=None, path_override=None, tail_cap_t=None, 
                   # retry re-sends the same prompt and manufactures the same refusal (12/12 in the
                   # audited storm) — rewrite the ask or drop the thread (the user 2026-08-15)
                   "apiRefusal": bool(aerr and aerr.get("refusal")),
+                  # the FEED's per-session needs-you verdict, on the STATUS so the tab strip's rule reads it
+                  # (tab-state.ts RING_TEST, the Waiting-on-you ring widget): True when the last feed build filed a card of this session
+                  # under needs_input — a judge-filed block (the session asked something, a decision is
+                  # pending), a stalled card, a held peer message, a live prompt — False when none, None
+                  # before the first feed build since start. The tab wears a dashed yellow ring for it in
+                  # every live state, working included (the ask ring, 2026-09-13: a session with something
+                  # waiting on you should grab attention without a click, even while it goes on working
+                  # in the background; the red ring stays the live prompt's and outranks it; since
+                  # 2026-09-14 each ring is a widget with its own switch in the settings). The same
+                  # set the ledger's needsInput reads, so the strip, the section rows and the feed agree;
+                  # on the status rather than the ledger so a SKELETON tab, which gets only status frames,
+                  # wears it too. The chat signature's `needs` component brings a flip forward, and the
+                  # feed build that moves the set wakes the pusher (_cached_feed), so the ring trails the
+                  # card by one build, not a backstop tick.
+                  "needsYou": needs_you,
                   # user interrupted this thread's retry/API-error storm → romp's auto-retry stays OFF for it
                   # until a successful turn re-arms (the user 2026-07-06); the card + retry loop read this
                   "retrySuppressed": _session_retry_suppressed(sid),
@@ -48691,13 +48730,18 @@ def _push(targets, connect=False, live_map=None):
     want_tl = any(c["app"] == "timeline" for c in targets)
     chat_clients = [c for c in targets if c["app"] == "chat"]
     # CARDS FIRST on a cold kernel (the user 2026-09-12: after a restart the sessions load fast now and the cards still
-    # wait): the first push after a boot builds every chat page (cold parses, ~25 s of a 37 s first cycle on the devbox)
-    # and the timeline before the feed frame leaves at the send stage. With no feed built since start and a feed pane
-    # among the targets, the feed is built and sent to those panes FIRST (_feed_first); the regular feed section below
-    # serves the same build from the cache with the ledgers attached, and the send stage's delta path carries only what
-    # that added. A warm kernel (a feed already built, or any cycle after the first) takes no extra step.
+    # wait): the first push with a feed pane after a boot builds every chat page (cold parses: 55 s of a 72 s refresh
+    # for 27 tabs on the devbox, 2026-09-13 3:58 PM PT) and the timeline before the feed frame leaves at the send stage.
+    # With no feed built since start and a feed pane among the targets, the feed is built and sent to those panes FIRST
+    # (_feed_first); the regular feed section below serves the same build from the cache with the ledgers attached, and
+    # the send stage's delta path carries only what that added. A warm kernel (a feed already built) takes no extra step.
+    # The boot's FIRST pusher cycle, and only it (reverted to this on 2026-09-14 after the first browser-attached boot on
+    # the "any cold refresh" guard, 12:06 PM PT: push.feedFirst 106 s and a 131 s first refresh, since the cold feed build
+    # at the front no longer rode the chat builds' parses and six connect pushes were building the same cold work at
+    # once on their handler threads). The first cycle runs before a browser reconnects, so this fires on no real boot;
+    # the shortcut comes back on any cold refresh once builds are single-flight across threads.
     if (want_feed and _built_feed[1] is None and "firstServe" in _BOOT_MARKS and _PERF_STATS.pusher.get("cycles", 0) == 0
-            and any(c["app"] == "feed" for c in targets)):      # the boot's FIRST pusher cycle, and only it
+            and any(c["app"] == "feed" for c in targets)):      # the boot's first pusher cycle, and only it
         try:
             _feed_first(now, live_map, targets, connect)
         except Exception:
@@ -48790,8 +48834,26 @@ def _push(targets, connect=False, live_map=None):
                     _chat_sig_fault(s, e)                # once per fault episode: stderr and a bell row
                     sig = None                           # an input that cannot be keyed: build, never cache
                 hit = _built_chat.get(s["sid"])
+                _claimed = False
+                if not (hit is not None and sig is not None and hit[0] == sig):
+                    _ev = _chat_inflight_claim(s["sid"])            # single-flight (2026-09-14): another thread building this tab?
+                    if _ev is not None:
+                        _ev.wait(CHAT_INFLIGHT_WAIT_S)              # wait for it, then re-read what it stored
+                        hit = _built_chat.get(s["sid"])
+                        if hit is not None and sig is not None and hit[0] == sig:
+                            _VIEW_STATS["chatWaited"] += 1
+                        else:
+                            _claimed = _chat_inflight_claim(s["sid"]) is None   # nothing usable stored: build, as before
+                    else:
+                        _claimed = True
+                    if _claimed:
+                        hit = _built_chat.get(s["sid"])             # re-read under the claim (round two, low c): a builder that
+                        #                                             stored between the first read and the claim is served, as
+                        #                                             _cached_feed re-checks under its lock
                 post, served, _rec = None, False, None
                 if hit is not None and sig is not None and hit[0] == sig:
+                    if _claimed:
+                        _chat_inflight_done(s["sid"])                # the re-read's road: claimed, then found stored
                     m, ms, served = hit[1], hit[2], True   # unchanged → reuse, no reshape/serialize
                     _VIEW_STATS["chatServeActive" if is_active else "chatServeBg"] += 1
                     _perf("chatbuild", sid=str(s["sid"])[:8], cached=1, ms=0, active=int(is_active))
@@ -48810,6 +48872,8 @@ def _push(targets, connect=False, live_map=None):
                         # that stopped updating is not a silent degrade (review find, 2026-09-08).
                         _chat_build_fault(s, e)
                         _chat_dep_scope.deps = None      # the failed build's record is nobody's
+                        if _claimed:
+                            _chat_inflight_done(s["sid"])   # the waiters build their own, as before this change
                         continue
                     _chat_build_ok(s["sid"])             # a build that succeeds ends its fault episode
                     # The full serialization is LAZY (the 2026-08-10 CPU fix, round two): steady state
@@ -48844,6 +48908,8 @@ def _push(targets, connect=False, live_map=None):
                               prefix=_chat_fold_last_info().get("prefix", 0),   # events reused from the sealed prefix
                               why=_chat_fold_last_info().get("why", ""))         # the demote reason on a full build
                 if not m:
+                    if _claimed:
+                        _chat_inflight_done(s["sid"])
                     continue
                 if _empty_build_regresses(m, _prev_chat_events.get(m["id"])):
                     # a failed read, not a conversation that emptied (see _empty_build_regresses): the last cached
@@ -48851,6 +48917,8 @@ def _push(targets, connect=False, live_map=None):
                     # cached, this cycle sends nothing for the sid; the file's return busts the stat key and rebuilds
                     _note_empty_build(s["sid"], s.get("path"), len(_prev_chat_events.get(m["id"]) or ()))
                     if hit is None:
+                        if _claimed:
+                            _chat_inflight_done(s["sid"])
                         continue
                     m, ms, _rec = hit[1], hit[2], hit[3]   # the stand-in payload keeps its own dependency record
                 else:
@@ -48898,6 +48966,8 @@ def _push(targets, connect=False, live_map=None):
                         if _PERF:
                             _perf("chatsig", sid=str(s["sid"])[:8],
                                   moved=",".join(l for l in _chat_sig_miss(sig, post) if l not in _CHAT_SIG_DEPS))
+                if _claimed:
+                    _chat_inflight_done(s["sid"])        # stored (or not cacheable): the waiters re-read the cache now
             shown_sids = {s["sid"] for s in chat_list}
             for sid in list(_built_chat):                # drop cache for tabs no longer shown (closed/×-hidden)
                 if sid not in shown_sids:
@@ -49034,6 +49104,10 @@ def _push(targets, connect=False, live_map=None):
             tl_clients = [c for c in targets if c["app"] == "timeline"]
             live_first = connect and _built_timeline[1] is None     # cold start, nothing warmed yet → live only
             if live_first:
+                # Outside any lock (round two, medium 2): this is the pane's FIRST frame, the cheap live-only partial, and
+                # holding the full build's lock across it serialised two cold connects and blocked the pusher's whole
+                # timeline stage (the cards for every pane behind it). The single-flight lock covers the FULL build alone
+                # (_cached_timeline); a connect racing it still gets its partial at once and the full on the next cycle.
                 skel = build_timeline(now, live_map, with_bars=False, live_only=True)
                 for c in tl_clients:
                     _send_client(c, ("timeline",), {"type": "data", "data": skel})
@@ -49443,12 +49517,69 @@ def _producer_sig(browser):
 # dashboard re-does it every tick. Cache each payload, keyed on a fleet fingerprint; an UNCHANGED fleet (a
 # reload, an idle tick) reuses the last build instead of rebuilding.
 _built_feed = [None, None, 0.0, 0.0]              # [fleet_sig, payload, built_at, build_started_at]
+# SINGLE-FLIGHT BUILDS (2026-09-14). The first browser-attached boot on the cards-first code (12:06 PM PT): every pane's
+# socket redialed after the outage and each connect push built its own copy of the same cold work on its handler thread
+# while the pusher built it too: five to seven cold builders of one feed, one timeline and the same 27 chat tabs on one
+# interpreter, each five to seven times slower for it (push.feedFirst 106 s; connect pushes 109 to 130 s each; cards at
+# 131 s against 72 s the day before). A build in flight is the build every later caller wants: the feed and the timeline
+# take one lock each around their build, and a caller that finds the lock held waits for the builder and serves its
+# result; a chat tab in flight on another thread is waited for the same way (_chat_inflight_*), and the waiter re-reads
+# the cache the builder stored. The review's item (review-push 7): three threads under one interpreter lock gain little
+# from concurrency; ordering and de-duplication do. Counted under _VIEW_STATS feedWaited / tlWaited / chatWaited.
+_FEED_BUILD_LOCK = threading.RLock()
+_TL_BUILD_LOCK = threading.RLock()
+_CHAT_INFLIGHT = {}                                # sid -> (Event set when that sid's build and its cache store ended, claimed at)
+_CHAT_INFLIGHT_LOCK = threading.Lock()
+CHAT_INFLIGHT_WAIT_S = 30.0                        # a waiter's bound, near the per-tab worst case (about 2.4 s a tab cold, 66 s for
+#                                                    27 on the measured day): the waiter is the pusher, and its fallback, building its
+#                                                    own copy, is the behaviour before this change (round two, medium 1)
+
+
+def _chat_inflight_claim(sid):
+    """Claim `sid`'s build for this thread. Returns None when claimed, else the Event of the thread already building it.
+    The claim is recorded on THIS thread's scope (_live_scope.chat_claims) so _chat_push_scopes_close, the push's and the
+    cycle's finally, releases whatever a raise left claimed: the same handler, for the same reason, as the chat scopes
+    (round two, medium 1: a raise between the claim and the store left the Event unset for the kernel's life, and every
+    later rebuild of that tab waited the whole bound). An entry older than the bound is stale by definition (its builder
+    would have released it); a new claim replaces it and releases anyone waiting on it."""
+    with _CHAT_INFLIGHT_LOCK:
+        ent = _CHAT_INFLIGHT.get(sid)
+        if ent is not None and time.monotonic() - ent[1] <= CHAT_INFLIGHT_WAIT_S:
+            return ent[0]
+        stale = ent
+        _CHAT_INFLIGHT[sid] = (threading.Event(), time.monotonic())
+    if stale is not None:
+        stale[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims is None:
+        claims = _live_scope.chat_claims = []
+    claims.append(sid)
+    return None
+
+
+def _chat_inflight_done(sid):
+    """The claimed build ended (stored, faulted or skipped): release the waiters and forget the claim on this thread."""
+    with _CHAT_INFLIGHT_LOCK:
+        ent = _CHAT_INFLIGHT.pop(sid, None)
+    if ent is not None:
+        ent[0].set()
+    claims = getattr(_live_scope, "chat_claims", None)
+    if claims and sid in claims:
+        claims.remove(sid)
+
+
+def _chat_inflight_release_all():
+    """Every claim this thread still holds, released: the push's and the cycle's finally (via _chat_push_scopes_close)."""
+    for sid in list(getattr(_live_scope, "chat_claims", None) or ()):
+        _chat_inflight_done(sid)
+    _live_scope.chat_claims = None
 # How often each view is REBUILT vs SERVED from its cache — the pusher's cost, as numbers (2026-09-03).
 # Exposed on the version route beside the parse counters, so "the kernel is pegged" can be read as
 # "the timeline rebuilt 900 times in 30 min with 12 sessions idle" instead of inferred from top. A
 # rebuild is justified only by a changed input; a rising build count on a quiet board is a bug signature.
 _VIEW_STATS = {"feedBuild": 0, "feedServe": 0, "tlBuild": 0, "tlServe": 0,
                "chatBuildActive": 0, "chatBuildBg": 0, "chatServeActive": 0, "chatServeBg": 0, "chatSkipCold": 0,
+               "feedWaited": 0, "tlWaited": 0, "chatWaited": 0,   # served a build another thread had in flight (single-flight)
                # GET /feed.json's reads (_pure_feed), apart: a poller's builds under the pusher's numbers
                # would forge the bug signature above, or bury a pusher regression (review find, 2026-09-08)
                "feedJsonBuild": 0, "feedJsonServe": 0}
@@ -49638,6 +49769,22 @@ def _cached_feed(now, live_map, sig, connect=False):
     # is instant; the pusher refreshes it within a tick. Else: reuse on an unchanged sig OR a recent rebuild —
     # UNLESS an optimistic kernel-side mutation postdates the build (_views_dirty): that state is invisible
     # to the sig AND must not wait out REBUILD_MIN_S, or the push meant to show it serves the stale payload.
+    if _feed_servable(sig, connect):
+        _VIEW_STATS["feedServe"] += 1
+        _PERF_STATS.build("feed", True)
+        return _built_feed[1]
+    with _FEED_BUILD_LOCK:                                # single-flight: a build in flight on another thread is the one we want
+        if _feed_servable(sig, connect):                  # ...and it landed while we waited for the lock
+            _VIEW_STATS["feedServe"] += 1
+            _VIEW_STATS["feedWaited"] += 1
+            _PERF_STATS.build("feed", True)
+            return _built_feed[1]
+        return _build_feed_locked(now, live_map, sig)
+
+
+def _feed_servable(sig, connect):
+    """Whether the built feed stands for this caller: a connect serves any warmed build (never rebuilds); the pusher
+    serves it while the view signature holds or within REBUILD_MIN_S, and never past a dirty mark newer than its start."""
     e = _built_feed
     # The dirty mark compares against build START, not finish (the user 2026-07-28): a build takes
     # ~1-1.6s and reads the stores one session at a time, so a mutation landing MID-build may or may
@@ -49647,11 +49794,13 @@ def _cached_feed(now, live_map, sig, connect=False):
     # until the next sig bust — the window a client fallback needs to bounce a just-replied card
     # back to Completed. REBUILD_MIN_S stays keyed on the FINISH (e[2]): it rate-limits build COST,
     # so back-to-back starts must not shrink its window.
-    dirty = not connect and _views_dirty[0] > e[3]        # connect still serves the warmed build (never rebuilds)
-    if e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S):
-        _VIEW_STATS["feedServe"] += 1
-        _PERF_STATS.build("feed", True)
-        return e[1]
+    dirty = not connect and _views_dirty[0] > e[3]
+    return e[1] is not None and not dirty and (connect or e[0] == sig or (time.time() - e[2]) < REBUILD_MIN_S)
+
+
+def _build_feed_locked(now, live_map, sig):
+    """The feed build proper, under _FEED_BUILD_LOCK (the caller holds it): the build, the cache store, the needs-you set,
+    the bells."""
     _VIEW_STATS["feedBuild"] += 1
     bid = _next_feed_build_id()          # claimed BEFORE the read, so an ack issued during this build outranks it
     started = time.time()                # …and the dirty floor for the NEXT check: mutations after this
@@ -49660,7 +49809,17 @@ def _cached_feed(now, live_map, sig, connect=False):
     _PERF_STATS.build("feed", False, time.monotonic() - _t0)
     feed["buildId"] = bid
     _built_feed[:] = [sig, feed, time.time(), started]
-    _feed_needs_input[0] = _needs_input_sids(feed)        # the per-session needs-you the session ledgers read
+    _needs_now = _needs_input_sids(feed)                  # the per-session needs-you the session ledgers read
+    if _needs_now != _feed_needs_input[0]:
+        # A push builds the chat sessions BEFORE the feed, so the ledger's needsInput and the status's needsYou
+        # (the tab's ask ring) shipped this cycle carry the PREVIOUS build's set; the change lands on the next
+        # cycle, whose chat signatures (`needs`) rebuild the sessions whose verdict moved. Make that cycle now —
+        # the _mark_views_dirty pattern — so the ring and the section row trail the card by one build, not by
+        # up to a backstop tick (review find, 2026-09-13: a ring a full tick late is a ring that can be stale
+        # when the user is faster than the tick). Only on a CHANGE: an unchanged set wakes nothing, so a
+        # rebuild that moves no verdict cannot chain cycles.
+        _pusher_wake.set()
+    _feed_needs_input[0] = _needs_now
     _badge = _needs_you_count(feed)
     _fired = _feed_notifications(feed) if not feed.get("off") else []   # armed bells: fresh builds are the transition event; a
     #                                                       stand-in frame (off, empty) never feeds a writer that prunes by absence: the
@@ -51542,13 +51701,20 @@ def _cached_timeline(now, live_map, sig, connect=False):
         _VIEW_STATS["tlServe"] += 1
         _PERF_STATS.build("timeline", True)
         return built
-    _VIEW_STATS["tlBuild"] += 1
-    started = time.time()
-    _t0 = time.monotonic()
-    tl = build_timeline(now, live_map)
-    _PERF_STATS.build("timeline", False, time.monotonic() - _t0)
-    _built_timeline[:] = [sig, tl, time.time(), started]
-    return tl
+    with _TL_BUILD_LOCK:                                  # single-flight: a build in flight on another thread is the one we want
+        built = _built_timeline[1]
+        if built is not None and (connect or _timeline_cache_fresh(sig)):   # ...and it landed while we waited for the lock
+            _VIEW_STATS["tlServe"] += 1
+            _VIEW_STATS["tlWaited"] += 1
+            _PERF_STATS.build("timeline", True)
+            return built
+        _VIEW_STATS["tlBuild"] += 1
+        started = time.time()
+        _t0 = time.monotonic()
+        tl = build_timeline(now, live_map)
+        _PERF_STATS.build("timeline", False, time.monotonic() - _t0)
+        _built_timeline[:] = [sig, tl, time.time(), started]
+        return tl
 
 
 def _timeline_cache_fresh(sig):
@@ -52596,6 +52762,10 @@ _CHAT_MOBILE_CSS = (
     "#mcur .wd{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--st-working-bg,#e0b020)}"
     "#mcur .wd.await{background:var(--st-awaitbg-bg,#54B204)}"   # green when idle-waiting-on-bg-work
     "#mcur .cv{flex:0 0 auto;opacity:.6;font-size:11px}"
+    # something of the current session's is waiting on you (the desktop tab's dashed yellow ring, the class ring-waiting-on-you):
+    # the chip's border takes the ring — dashed, in the ask yellow — over the identity color (declared after
+    # #mcur.colored so it wins at equal specificity)
+    "#mcur.ask{border-color:var(--st-ask-bg,#f5d33f);border-style:dashed}"
     "#mtag-slot{flex:0 0 auto;display:flex;align-items:center;gap:5px}"   # T161: the tag control's slot, sized by the shared button's own inline metrics
     "#madd{flex:0 0 auto;width:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;"
     "background:var(--btn-bg,#2a2a2a);color:#bbbbbb;border:1px solid var(--hairline,#3a3a3a);border-radius:6px;font-size:16px;line-height:1}"
@@ -52629,6 +52799,9 @@ _CHAT_MOBILE_CSS = (
     ".mrow .mclose{flex:0 0 auto;margin-left:8px;padding:0 6px;color:#8a8a8a;font-size:20px;line-height:1}"
     ".mrow .mclose:active{color:#e5484d}"
     ".mrow.active{background:#0d3a5c}"
+    # a row whose session has something waiting on you: a yellow bar at its left edge — the desktop tab's
+    # dashed ring (ring-waiting-on-you), in the one ask token, on a list row where a ring would fight the hairlines
+    ".mrow.ask{border-left:3px solid var(--st-ask-bg,#f5d33f);padding-left:9px}"
     # The page must never grow WIDER than the phone (the user 2026-07-11, who reported the whole chat screen taking up
     # more space than is available, about 20 percent too wide, with the controls not all fitting). Measured
     # at 390px: the STATUSLINE row (model/effort/mode/branch chips + the context bar) is flex/no-wrap with
@@ -52668,7 +52841,7 @@ function read(){return [].map.call(tabs.querySelectorAll('.tab[data-id]'),functi
 var lab=t.querySelector('.tab-label');
 return {id:t.getAttribute('data-id'),name:(lab?lab.textContent:t.getAttribute('data-id')),lab:lab,
 bg:t.style.getPropertyValue('--chip-bg').trim(),fg:t.style.getPropertyValue('--chip-fg').trim(),
-working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),active:t.classList.contains('active'),
+working:t.classList.contains('tab-working'),awaitbg:!!t.querySelector('.tab-dot.await'),ask:t.classList.contains('ring-waiting-on-you'),active:t.classList.contains('active'),
 ph:t.classList.contains('tab-placeholder')};});}
 // A name is filled from the desktop label's own CHILD NODES, cloned — not from its flattened text. A
 // federated session's name carries a <span class="host-prefix"> that renders the "host:" as quiet
@@ -52688,6 +52861,7 @@ function rowUpdate(row,s){row.classList.toggle('active',!!s.active);
 // who tapped a remote session on the phone and nothing happened)
 row.classList.toggle('ph',!!s.ph&&pendingId!==s.id);
 row.classList.toggle('pending',pendingId===s.id);
+row.classList.toggle('ask',!!s.ask);   // the desktop tab's yellow ring (ring-waiting-on-you, a widget with a switch in the settings; switched off it puts no class on the tab, so the phone follows): something of this session's is waiting on you
 var wd=row.querySelector('.workdot');
 if(s.working||s.awaitbg){if(!wd){wd=document.createElement('span');wd.className='workdot';row.insertBefore(wd,row.firstChild);}
 wd.classList.toggle('await',!s.working&&!!s.awaitbg);}
@@ -52710,6 +52884,7 @@ if(!act&&ts.length)act=ts[0];
 var nm=cur.querySelector('.nm');
 var wd=cur.querySelector('.wd');wd.style.display=(act&&(act.working||act.awaitbg))?'':'none';   // gold working / green awaiting dot, matching desktop
 wd.classList.toggle('await',!!(act&&act.awaitbg&&!act.working));
+cur.classList.toggle('ask',!!(act&&act.ask));   // the current chip wears the yellow ring too
 if(act){fillName(nm,act);
 if(act.bg){cur.classList.add('colored');cur.style.setProperty('--cbg',act.bg);cur.style.setProperty('--cfg',act.fg||'#ffffff');}
 else{cur.classList.remove('colored');cur.style.removeProperty('--cbg');cur.style.removeProperty('--cfg');}}
@@ -55133,11 +55308,14 @@ if(cut){var mo=document.createElement('option');mo.value=mo.textContent='\\u2026
 // a REJECTED fetch, the kernel gone, empties the suggestions instead, so a dead kernel is never hidden behind a stale
 // list once one was read; the console says which, and names the kept list only when there is one (the strip's rule)
 var _cfgRead=false;
-function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){e=e||new Error('fetch rejected');e.network=true;throw e;})
+// a rejection's reason as an Error: an Error as it is, an object by its message or its JSON (the old wrap flattened
+// it to [object Object]), null as fetch rejected, anything else by its string; the caller marks it as a network fault
+function asErr(e){if(e instanceof Error)return e;if(e&&typeof e==='object'){var m=(typeof e.message==='string'&&e.message)?e.message:'';if(!m){try{m=JSON.stringify(e);}catch(_){m=String(e);}}return new Error(m);}return new Error(e==null?'fetch rejected':String(e));}
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).catch(function(e){var x=asErr(e);x.network=true;throw x;})
 .then(function(r){if(!r.ok){var e=new Error('/ssh-hosts answered HTTP '+r.status);e.httpStatus=r.status;throw e;}return r.json();}).then(function(d){
 _cfg=(d&&d.hosts)||[];_cfgRead=true;fillHosts();}).catch(function(e){var keep=_cfgRead&&!(e&&e.network);
 try{console.error('romp: ssh hosts could not be read'+(keep?'; keeping the last list':''),e);}catch(_){}
-if(!keep){_cfg=[];fillHosts();}});}
+if(!keep){_cfg=[];_cfgRead=false;fillHosts();}});}   // the flag goes with the list: the next failure cannot claim to keep one
 // Every string a PEER chose is rendered as TEXT: esc() before it meets innerHTML. That is a host it named
 // (a checked-in peer names itself), its status word, its build, the rows it reports for its own connections
 // (/tunnels/of — whitelisted by the kernel too), and the bus gossip below (tiers, relay hosts, holds).
@@ -56463,7 +56641,7 @@ function refusal(f,sid){try{var w=f&&f.contentWindow&&f.contentWindow.__rompMove
 function busy(f){try{var b=f&&f.contentWindow&&f.contentWindow.__rompColumnBusy;return typeof b==='function'&&!!b();}catch(e){return false;}}
 function loaded(f){try{return !!(f&&f.contentWindow&&typeof f.contentWindow.__rompTakeSessionState==='function');}catch(e){return false;}}   // the page's bundle has evaluated, so a posted message is heard
 var BUSY='A session is still being created in this column.';
-var LOCKED='The tabs are locked: unlock them in the tab strip\\u2019s gear menu (Lock the tabs in place) to move this session.';
+var LOCKED='The tabs are locked: unlock them in the settings (Chat, Tab strip) to move this session.';
 function make(n,sid,state){var have=document.getElementById(frameId(n));if(have)return have;
 var g=document.createElement('div');g.className='gv gv-chat';g.id='gv-chat-'+n;
 var p=document.createElement('div');p.className='pane chat-col';p.id=paneId(n);p.setAttribute('data-col',String(n));
@@ -62464,8 +62642,13 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _push_one(self, client):
-        _push([client], connect=True)             # full state to a fresh client (its per-client dedup is empty);
-        #                                           serves the pusher-warmed feed/timeline (no rebuild) → instant
+        _t0 = time.monotonic()
+        try:
+            _push([client], connect=True)         # full state to a fresh client (its per-client dedup is empty);
+            #                                       serves the pusher-warmed feed/timeline (no rebuild) → instant
+        finally:                                  # the browser's own first draw, timed (2026-09-14): the ledger and the stage
+            _PERF_STATS.connect_push(client.get("app"), time.monotonic() - _t0)   # rings time the pusher's cycles alone, so
+            #                                       the logo phase after a restart had no number
 
 
 def _ensure_bundles():

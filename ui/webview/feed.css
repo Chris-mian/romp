@@ -90,6 +90,7 @@
                        white outline (background→transparent, border→currentColor, the user 2026-07-25).
                        feed-css-vars.test.ts now holds the whole file to "define it here or carry a fallback". */
   --st-retrying-bg: #e67e22; --st-retrying-fg: #2a1500;   /* the RETRYING amber — mirrors styles.css (tokenised 2026-09-08) */
+  --st-ask-bg: #f5d33f; --st-ask-fg: #332600;   /* the ASK yellow (the tab's Waiting-on-you ring, 2026-09-13): mirrors styles.css, so the settings' ring demo resolves it in every theme (the gear's hosts load this sheet, not styles.css) */
 
   /* Card background + border are set inline per card (the hawaii recency tint).
      These neutral tokens are for the chrome that frames them (header, detail box,
@@ -170,6 +171,7 @@ body.theme-light {
   --st-blocked-bg: #e5484d; --st-blocked-fg: #ffffff;
   --st-5xx-bg: #A21CAF; --st-5xx-fg: #ffffff;   /* the 5xx magenta (T316), mirrors styles.css */
   --st-retrying-bg: #9C4A0C; --st-retrying-fg: #ffffff;
+  --st-ask-bg: #504100; --st-ask-fg: #ffffff;   /* the ask yellow in the light palette (a dark olive: the one lightness apart from the gold and the amber under a red-green deficiency), mirrors styles.css */
   --radius-menu: 6px;
   --shadow-menu: 0 4px 12px rgba(31, 26, 20, 0.16);
   --menu-bg: #FBF6EF;

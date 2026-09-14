@@ -46,7 +46,7 @@ test("every existing control keeps its id and sits in exactly one pane, by the a
   const ps = panes();
   const where: Record<string, string[]> = {
     general: ["rs-billing", "rs-login-acct", "rs-login-btn", "rs-panes-sec", "rs-pane-timeline", "rs-pane-fleet", "rs-pane-feed", "rs-filesctl", "rs-theme", "rs-cmap", "rs-pal", "rs-fileedit", "rs-conserve", "rs-updates"],
-    chat: ["rs-compact", "rs-dense", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets", "rs-swidgets"],
+    chat: ["rs-compact", "rs-dense", "rs-chatscheme", "rs-striprows", "rs-cmtmodel", "rs-cmteffort", "rs-cmtfast", "rs-thinksum", "rs-widgets", "rs-rings", "rs-swidgets"],   // rs-rings: the ring widgets' rows (2026-09-14), under the title widgets' rows in the same section
     feed: ["rs-feedcollapsed"],
     sessions: ["rs-defaultdir", "rs-backend"],
     automation: ["rs-autonudge", "rs-suggestcompact"],
@@ -219,7 +219,7 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.match(GEAR, /sw\.className = 'rs-switch'; sw\.setAttribute\('role', 'switch'\);/, "the sliding toggle (the user's pick), a switch to the accessibility tree");
   assert.match(GEAR, /prefs\.on\[w\.id\] = !cfg\.on\(prefs, w\); cfg\.save\(prefs\);/, "the switch flips the widget's own flag");
   assert.match(GEAR, /var drop = housePick\(wrap, cfg\.pickPrefix \+ w\.id \+ '-' \+ o\.key, widgetOptRowHTML,/, "an option is the panel's house picker");
-  assert.match(GEAR, /host: document\.getElementById\('rs-widgets'\), list: TW\.tabWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',/, "the tab widgets' section keeps its picker ids");
+  assert.match(GEAR, /host: document\.getElementById\('rs-widgets'\), list: TW\.titleWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',/, "the tab widgets' section keeps its picker ids; its rows are the widgets that render INTO the title (the rings have rows of their own, 2026-09-14)");
   assert.match(GEAR, /var node = TW\.renderWidgetDemo\(w, prefs\);/, "the live demo is the widget's OWN render over the demo status");
   assert.match(GEAR, /if \(w\.slot === 'before'\) \{ if \(node\) tab\.appendChild\(node\); tab\.appendChild\(label\); \}\s*\n\s*else \{ tab\.appendChild\(label\); if \(node\) tab\.appendChild\(node\); \}/, "the demo places the node in the widget's slot: before the name or after it (no corner slot: pinning is gone, the user 2026-09-12)");
   assert.match(GEAR, /r\.sw\.classList\.toggle\('on', on\); r\.sw\.setAttribute\('aria-checked', on \? 'true' : 'false'\);/);
@@ -232,7 +232,21 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.match(GEAR, /host: document\.getElementById\('rs-swidgets'\), list: SW\.statusWidgets, prefs: statusPrefs, pickPrefix: 'swopt-',/);
   assert.match(GEAR, /save: function \(prefs\) \{ var s = load\(\); s\.statusWidgets = prefs; var m = SW\.legacyOfStatusPrefs\(prefs\); s\.showBranch = m\.showBranch; s\.showSessionBadge = m\.showSessionBadge; save\(s\); paintWidgets\(\); \},/);
   assert.match(GEAR, /demo: function \(w, prefs\) \{ return SW\.renderStatusWidgetDemo\(w, prefs\); \},/, "the status demo is the widget alone, as the line draws it");
-  assert.match(GEAR, /function paintWidgets\(\) \{ tabSection\.paint\(\); statusSection\.paint\(\); \}/, "one repaint covers both sections");
+  assert.match(GEAR, /function paintWidgets\(\) \{ tabSection\.paint\(\); ringSection\.paint\(\); statusSection\.paint\(\); \}/, "one repaint covers the three sections");
+  // THE RINGS (2026-09-14): a third section of the same builder over the registry's rings, under the title rows and their
+  // preview, sharing the tab section's store and save (settings.tabWidgets, the tabCtx mirror, the repaint); no divider,
+  // no grip and no drag (reorder: false — the order is the precedence, red over yellow over amber, the registry's); the
+  // demo is a miniature tab wearing the ring its predicate lights on its demo status, a plain tab once switched off
+  const chatPane = panes().chat;
+  assert.ok(chatPane.indexOf("id=rs-widgets") < chatPane.indexOf("Rings around the tab. One at a time: the first that applies wins, in this order.") && chatPane.indexOf("Rings around the tab.") < chatPane.indexOf("id=rs-rings") && chatPane.indexOf("id=rs-rings") < chatPane.indexOf("data-section=statusline"), "the hint and the rings' host follow the title rows, before the Status line section");
+  assert.match(GEAR, /host: document\.getElementById\('rs-rings'\), list: TW\.ringWidgets, prefs: widgetPrefs, pickPrefix: 'wopt-',/);
+  assert.match(GEAR, /order: function \(\) \{ return TW\.ringWidgets\(\)\.map\(function \(w\) \{ return w\.id; \}\); \}, divider: null, group: null, groupLabel: null, reorder: false,/, "the rows' order is the registry's; nothing to drag");
+  assert.match(GEAR, /var ringSection = widgetSection\(\{[\s\S]*?save: tabSection\.save,/, "the same store through the tab section's own save (no third writer of settings.tabWidgets)");
+  assert.match(GEAR, /return \{ paint: paint, save: cfg\.save \};/);
+  assert.match(GEAR, /var cls = TW\.ringDemoClass\(w, prefs\); if \(cls\) tab\.classList\.add\(cls\);/, "the demo wears the ring its predicate lights on its demo status, through the registry");
+  assert.match(GEAR, /if \(cfg\.reorder === false\) \{ grip = document\.createElement\('span'\); grip\.className = 'rs-grip-none'; \}/, "no grip: an empty cell keeps the grid's columns");
+  assert.match(GEAR, /if \(cfg\.reorder !== false\) wireGrip\(grip, row, w\.id\);/, "…and no drag or arrow keys");
+  assert.match(GEAR_CSS, /#rsettings \.rs-grip-none \{ width: 18px; height: 22px; \}/);
   assert.equal((GEAR.match(/s\.statusWidgets = /g) || []).length, 2, "the section's save, and save() normalizing a key the store already carries (round two; still no injection)");
   assert.doesNotMatch(GEAR.slice(GEAR.indexOf("function load() {"), GEAR.indexOf("function save(s) {")), /statusWidgets|showBranch|showSessionBadge/, "load() neither defaults nor touches the status key or its mirrors (the fresh-key rule)");
   // round one, HIGH: NO injected default for tabWidgets. An empty object in load()'s defaults won over a pre-widgets store's
@@ -256,10 +270,10 @@ test("the Tab widgets section's rows come from the strip's own module: built onc
   assert.match(GEAR_CSS, /#rsettings \.rs-widget-demo \.tab-dot, #rsettings \.rs-preview \.tab-dot \{ flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var\(--st-working-bg, #e0b020\); \}/, "the demo wears the strip's vocabulary in this sheet's fallbacks (the section's preview tab beside it, T409)");
 });
 
-test("the strip's gear glyph opens the Chat tab at its Tab widgets section through the shell (or this window's own gear), and the shell relays the tab and the section", () => {
+test("the strip's gear glyph opens the Chat tab at its Tab strip section through the shell (or this window's own gear), and the shell relays the tab and the section", () => {
   assert.match(RENDER, /function openSettingsOn\(tab: string, section\?: string\): void \{\s*\n\s*const m: \{ romp: string; tab: string; section\?: string \} = \{ romp: "openSettings", tab \};\s*\n\s*if \(section\) m\.section = section;\s*\n\s*if \(inRompShell\(\)\) \{ try \{ window\.parent\.postMessage\(m, "\*"\); \} catch \{[^}]*\} return; \}\s*\n\s*window\.postMessage\(m, "\*"\);/, "through the shell when in one, else to this window; the section only when given");
   assert.match(RENDER, /const settingsReachable = !!\(\(window as any\)\.__rompShowStrip \|\| inRompShell\(\)\);/, "the settings ask only where a gear can be reached: an honest absence elsewhere (T405: the strip's gear itself is everywhere, its Tab widgets row asks)");
-  assert.match(RENDER, /\.\.\.\(settingsReachable \? \[\{ label: "Tab widgets…", dim: true, press: \(\) => \{ openSettingsOn\("chat", "tabwidgets"\); \} \}\] : \[\]\),/, "the glyph's menu asks for Chat at its Tab widgets section (T405: a row of the gear's menu, beside the lock, where settings can be reached)");
+  assert.match(RENDER, /gear\.addEventListener\("click", \(e\) => \{ e\.stopPropagation\(\); openSettingsOn\("chat", "tabstrip"\); \}\);/, "the gear's click asks for Chat at its Tab strip section (T415: no menu on the way; the section holds the lock, Tab widgets follows it)");
   assert.ok(RENDER.indexOf('el("button", "tab-widgets-gear")') > RENDER.indexOf("  end.appendChild(tagBox);") && RENDER.indexOf("bar.appendChild(end);") > RENDER.indexOf('el("button", "tab-widgets-gear")'), "after the tag box in the strip's right-end wrapper, the wrapper the last thing on the bar (T405, T412)");
   assert.match(KERNEL, /window\.__rompOpenSettings=function\(tab,section\)\{var f=document\.getElementById\('f-settings'\);if\(!f\)return;/);
   assert.match(KERNEL, /var msg=\{romp:'openSettings'\};if\(typeof tab==='string'&&tab\)msg\.tab=tab;if\(typeof section==='string'&&section\)msg\.section=section;\s*\n\s*var open=function\(\)\{try\{f\.contentWindow&&f\.contentWindow\.postMessage\(msg,'\*'\);\}catch\(e\)\{\}\};/, "the shell forwards the tab and the section into the settings iframe; a bare ask stays bare");

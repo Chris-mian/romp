@@ -10,9 +10,9 @@ import os
 import tempfile
 import unittest
 
+from romp_load import load_source
 os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
 os.environ.pop("ROMP_STATE_DIR", None)  # a live kernel's export outranks the XDG floor
-from romp_load import load_source
 
 BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin")
 jd = load_source("romp_judge", os.path.join(BIN, "romp-judge"))

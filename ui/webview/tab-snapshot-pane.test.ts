@@ -190,6 +190,7 @@ function lift(): (H: Hooks) => Api {
     const writeTabGroups = (st) => { H.writes.push(st); };
     // the header's parts and gestures: the pure words and pip rules for real, the tag chip and the drag helpers stubs
     const headWords = H.headWords, sectionPip = H.sectionPip, sectionPipMembers = H.sectionPipMembers, sectionPipTitle = H.sectionPipTitle;
+    const ringSwitch = () => () => true;   // the ring switches the folded pip reads (widgets since 2026-09-14): every ring on here
     const tagChip = (label) => { const c = el("span", "tag-chip"); c.textContent = label; return c; };
     const dragImageBlank = () => el("div"); const hideTabTip = () => {};
     // the nav trail: the class a stub that keeps the deps render.ts hands it; the landing's helpers inert

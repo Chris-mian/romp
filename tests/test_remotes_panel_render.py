@@ -81,6 +81,7 @@ const TUNNELS = __TUNNELS__;
 const PAIRS = __PAIRS__;        // /tunnels/pairs answer; null = the read never lands (loader-state test)
 const SUB = __SUB__;            // /tunnels/of answer (a PEER's own rows); null = answer with TUNNELS as before
 const TQ = __TQ__;              // a QUEUE of /tunnels answers ({ok, status, body}), one per poll in order; empty = TUNNELS, ok, every time
+const HQ = __HQ__;              // a QUEUE of /ssh-hosts answers ({ok, status, body} or {reject}), one per load; empty = {hosts:['TESTHOST']}, ok
 const POSTS = [];               // every write the panel makes, so a test can assert what Attach sent
 function fetch(url, opts){
   if (opts && opts.method === 'POST') {
@@ -97,6 +98,11 @@ function fetch(url, opts){
   }
   if (url.indexOf('/tunnels/of') >= 0 && SUB !== null) {
     return Promise.resolve({ ok:true, json(){ return Promise.resolve(SUB); } });
+  }
+  if (url.indexOf('/ssh-hosts') >= 0 && HQ.length) {
+    const a = HQ.shift();
+    if ('reject' in a) return Promise.reject(a.reject);   // the reason as given: a string, an object, null (the wrap's shapes)
+    return Promise.resolve({ ok:!!a.ok, status:a.status, json(){ return Promise.resolve(a.body); } });
   }
   const body = url.indexOf('/ssh-hosts') >= 0 ? {hosts:['TESTHOST']} : TUNNELS;
   return Promise.resolve({ ok:true, json(){ return Promise.resolve(body); } });
@@ -131,7 +137,7 @@ setTimeout_(() => {
     // the stub's own contract, reported so a test pins it: classList and className share one set
     const _e = mkEl('stub-check'); _e.classList.add('a'); const viaName = _e.className; _e.className = 'b c';
     const stubSharedClasses = viaName === 'a' && _e.classList.contains('c') && !_e.classList.contains('a');
-    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err, drops:DROPS, tqLeft:TQ.length, stubSharedClasses:stubSharedClasses,
+    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err, drops:DROPS, tqLeft:TQ.length, hqLeft:HQ.length, stubSharedClasses:stubSharedClasses,
       addHidden:!!add.hidden, plusHidden:!!plus.hidden,
       hosts:dl.children.map(function(o){return o.value;}), hostsHtml:String(dl.innerHTML||''),
       hostsLastDisabled:!!(dl.children.length&&dl.children[dl.children.length-1].disabled),
@@ -149,12 +155,13 @@ class _PanelHarness:
     no tests of its own, so the classes below share the driver without inheriting each other's tests (a
     subclass of a TestCase re-runs every inherited test — three copies of 26 node spawns, review find)."""
 
-    def _run(self, drive="", tunnels=None, pairs=None, sub=None, tq=None):
+    def _run(self, drive="", tunnels=None, pairs=None, sub=None, tq=None, hq=None):
         js = (HARNESS.replace("__PANEL_JS__", km._LANDING_REMOTES_JS)
                      .replace("__TUNNELS__", json.dumps(tunnels if tunnels is not None else TUNNELS))
                      .replace("__PAIRS__", json.dumps(pairs))
                      .replace("__SUB__", json.dumps(sub))
                      .replace("__TQ__", json.dumps(tq or []))
+                     .replace("__HQ__", json.dumps(hq or []))
                      .replace("__DRIVE__", drive))
         p = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
         self.assertEqual(p.returncode, 0, "panel JS crashed:\n%s" % p.stderr[-2000:])
@@ -180,6 +187,33 @@ class RemotesPanelRender(_PanelHarness, unittest.TestCase):
         self.assertTrue(any("remotes refresh failed" in e and "HTTP 502" in e for e in out["errors"]), out["errors"])
         self.assertEqual(out["drops"], ["rail-net"], "one flash, on the real drop; the 502 neither flashed nor forgot")
         self.assertEqual(out["tqLeft"], 0, "every queued answer was read: the queue matches the reads")
+
+    def test_the_host_pickers_failure_rule_executed_a_status_keeps_the_list_a_rejection_forgets_it_and_an_object_reason_keeps_its_message(self):
+        # the fifth tidy: the rule stood on source pins alone. Four loads (the panel's open and three from the drive): a list
+        # with one host the tunnels never name; a 500 (the list kept, the console says so); a rejected fetch with a STRING
+        # reason (the list forgotten, the console does not claim to keep one); a rejected fetch with an OBJECT reason (its
+        # JSON in the console line, where the old wrap printed [object Object])
+        hq = [{"ok": True, "status": 200, "body": {"hosts": ["SSHONLY"]}},
+              {"ok": False, "status": 500, "body": {"error": "upstream"}},
+              {"reject": "socket closed"},
+              {"reject": {"code": 7}}]
+        drive = "window.__rompOpenNet(); setTimeout_(function(){ window.__rompOpenNet(); setTimeout_(function(){ window.__rompOpenNet(); }, 5); }, 5);"
+        out = self._run(drive=drive, hq=hq)
+        self.assertEqual(out["hqLeft"], 0, "every queued answer was read: four loads")
+        self.assertNotIn("SSHONLY", out["hosts"], "after the rejected fetches the ssh-config host is gone: a dead kernel does not hide behind the stale list")
+        errs = [e for e in out["errors"] if "ssh hosts could not be read" in e]
+        self.assertEqual(len(errs), 3, out["errors"])
+        self.assertIn("keeping the last list", errs[0], "the 500 kept the list and said so")
+        self.assertNotIn("keeping the last list", errs[1], "the rejection forgot the list and claimed no kept one")
+        self.assertIn("socket closed", errs[1])
+        self.assertNotIn("keeping the last list", errs[2], "after a rejection the flag is down: the next failure claims nothing")
+        self.assertIn('{"code":7}', errs[2], "an object reason reaches the console by its JSON, not as [object Object]")
+
+    def test_a_status_alone_keeps_the_ssh_config_host_in_the_picker(self):
+        hq = [{"ok": True, "status": 200, "body": {"hosts": ["SSHONLY"]}}, {"ok": False, "status": 500, "body": {"error": "upstream"}}]
+        out = self._run(drive="window.__rompOpenNet();", hq=hq)
+        self.assertEqual(out["hqLeft"], 0)
+        self.assertIn("SSHONLY", out["hosts"], "a non-ok answer keeps the last good list in the datalist")
 
     def test_the_stubs_classlist_and_classname_share_one_set(self):
         # a class added through classList reads back through className and a className write is what classList then

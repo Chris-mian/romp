@@ -816,8 +816,11 @@ line works for a manager launchd started. The value rule is the same in both
 readers: `0`, `false`, `no` and `off` (in any case) are off, any other non-empty
 value is on (`disabled` and `none` included: only those four words turn it off),
 and the last assignment in the file wins. The copy is probed under a ten-second
-bound (`ROMP_NODE_PROBE_BOUND`, never below one second nor above an hour: seven
-digits or more read as 3600), and a probe that hangs is
+bound (`ROMP_NODE_PROBE_BOUND`, in whole seconds, read the same way by both
+scripts: a value with no digits, or a digit among other characters, is the default
+ten; leading zeros are dropped; zero is one second; a value of seven digits or more
+after that folds to 3600; anything from 1 to 999999 is taken as given), and a probe
+that hangs is
 killed with everything under it, TERM then KILL, so a version manager's shim that
 runs `node` without replacing itself leaks nothing.
 
@@ -1726,6 +1729,11 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the kernel sample, the API health frame) against `_jobs_pass`.
 - `pusher`: `cycles`, `wakes` (every wake call; a burst of wakes runs one
   cycle), `wakes_event` and `wakes_backstop` (how the loop's wait ended),
+  `connectPush` (a fresh client's full push on its handler thread, the
+  browser's own first draw after a reload or a restart: `count`, `ms_sum`,
+  `ms_max`, `ms_last`, and the same per app under `byApp`; the pusher's
+  cycles never see this push, so before it the restart's logo phase had no
+  number),
   `cycle_ms_sum`, `cycle_ms_max` (since start), `cycle_ms_last`,
   `cycle_cpu_ms_sum` (the pusher thread's own CPU time), `cycle_ms_p50`,
   `cycle_ms_p90`, `cycle_ms_ring_max`, `ring_n` from the last 256 cycles,

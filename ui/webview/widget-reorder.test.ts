@@ -133,3 +133,15 @@ test("the previews are drawn by the surfaces' own composers over the demo record
   assert.match(GEAR, /ctl\.className = 'rs-sl-ctl'; ctl\.textContent = 'Auto · Opus 5 · high';/, "the fixed controls, drawn as words in the preview");
   assert.match(GEAR_CSS, /#rsettings \.rs-preview-label \{[^}]*text-transform: uppercase;/);
 });
+
+// THE RINGS (2026-09-14): a section built with reorder: false has no grip and wires no drag; its rows keep the grid's
+// columns through an empty cell in the grip's column. The rings' order is the precedence and the registry's, never dragged.
+test("reorder: false builds no grip and wires no drag; the empty cell keeps the columns", () => {
+  assert.match(SECTION, /if \(cfg\.reorder === false\) \{ grip = document\.createElement\('span'\); grip\.className = 'rs-grip-none'; \}/, "the grip's cell is an empty span");
+  assert.match(SECTION, /if \(cfg\.reorder !== false\) wireGrip\(grip, row, w\.id\);/, "wireGrip is skipped: no pointer drag, no arrow keys");
+  assert.ok(SECTION.indexOf("if (cfg.reorder === false) { grip = ") < SECTION.indexOf("row.appendChild(grip); row.appendChild(demo);"), "the swap happens before the row is assembled");
+  assert.match(GEAR_CSS, /#rsettings \.rs-grip-none \{ width: 18px; height: 22px; \}/, "the same width as the grip, so the demo column lines up with the title rows'");
+  assert.match(GEAR, /var ringSection = widgetSection\(\{[\s\S]*?reorder: false,/, "the rings are the section that does not reorder");
+  assert.doesNotMatch(GEAR.slice(GEAR.indexOf("var tabSection = widgetSection({"), GEAR.indexOf("var ringSection = widgetSection({")), /reorder: false/, "the title rows still drag");
+  assert.doesNotMatch(GEAR.slice(GEAR.indexOf("var statusSection = widgetSection({")), /reorder: false/, "…and so do the status line's");
+});
