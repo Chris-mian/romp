@@ -278,6 +278,39 @@ OLD
     [ "$status" -eq 2 ]
 }
 
+@test "romp-serve: a PATH without cat still reads the probe file, so the floor refuses a 3.9 (the shell reads the file, not cat)" {
+    # the tidy of the fresh-install set: the probe file's read was the script's only external cat, so a PATH with timeout and
+    # mktemp but no cat read no version and STARTED a 3.9 pin, fail-open and silent
+    cat > "$TEST_DIR/old-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) echo "romp-pyver 3.9"; exit 0 ;; esac
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/old-python"
+    local bare="$TEST_DIR/bare-nocat"; mkdir -p "$bare"
+    local t; for t in bash sh rm mktemp date dirname readlink; do ln -s "$(command -v "$t")" "$bare/$t"; done   # mktemp yes, cat no
+    local tmo; tmo="$(command -v timeout || true)"; [ -n "$tmo" ] && ln -s "$tmo" "$bare/timeout"
+    PATH="$bare" ROMP_PYTHON="$TEST_DIR/old-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"python 3.9"* ]]
+}
+
+@test "romp-serve: an interpreter that answers and then unlinks its own stdout (the probe file gone inside the window) is started, not refused in silence" {
+    # round two of the tidy: the $(<file) read runs in the current shell, and its failed redirection exited the script under
+    # set -e before the or-else, with the 2>/dev/null hiding why: --print-python exited 1 and printed nothing. The read is a
+    # plain read now, whose failed redirection is a command failure; the file gone is the no-version leg, the pick printed.
+    [ -r /proc/self/fd/1 ] || skip "the stand-in finds its stdout through /proc (Linux)"
+    cat > "$TEST_DIR/unlinking-python" << 'OLD'
+#!/usr/bin/env bash
+case "$*" in *romp-pyver*) echo "romp-pyver 3.12"; rm -f "$(readlink /proc/$$/fd/1)"; exit 0 ;; esac   # $$: the script's own stdout, the probe file (a substitution's fd 1 is its pipe)
+exec bash "$@"
+OLD
+    chmod +x "$TEST_DIR/unlinking-python"
+    ROMP_PYTHON="$TEST_DIR/unlinking-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 0 ]
+    [ "$output" = "$TEST_DIR/unlinking-python" ]
+}
+
 @test "romp-serve: a TERM mid-probe leaves no probe file behind" {
     # round five of issue 1600: the probe file was removed after the read alone, so a romp-serve stopped during the probe
     # (a manager restart mid-launch) left one romp-pyver.* per stop in TMPDIR

@@ -236,15 +236,18 @@ _kill_tree() {
 _node_runs() {   # $1 a node binary: exit 0 when it can run an empty program from where it sits, under a bound
     local bound="${ROMP_NODE_PROBE_BOUND:-10}"   # ten seconds; the tests shorten it to run the hang shapes in two
     [[ "$bound" =~ ^[0-9]+$ ]] || bound=10
+    [ "$bound" -ge 1 ] || bound=1   # 0 would be no bound for timeout and an instant kill for the watchdog's sleep; test's
+                                    # decimal compare, never (( )), which reads 08 as octal and errors on stderr
     if command -v timeout >/dev/null 2>&1; then
         ( timeout -k 1 "$bound" "$1" -e '' </dev/null >/dev/null 2>&1; exit $? ) 2>/dev/null
         return
     fi
     # the wrapper runs the node in its background, traps TERM to kill its tree, waits and exits with its status, so the
     # watchdog's kill of the wrapper takes a hung node down too (round three of issue 1600: it leaked before)
-    ( trap '_kill_tree "$n"; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & n=$!; wait "$n"; exit $? ) 2>/dev/null &
+    # both traps wait for what they killed before exiting, so nothing of the probe outlives the install (the launcher's rule)
+    ( trap '_kill_tree "$n"; wait "$n" 2>/dev/null; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & n=$!; wait "$n"; exit $? ) 2>/dev/null &
     local pp=$! wd rc=0
-    ( trap 'kill "$s" 2>/dev/null; exit 0' TERM; sleep "$bound" & s=$!; wait "$s"; kill "$pp" 2>/dev/null ) >/dev/null 2>&1 &
+    ( trap 'kill "$s" 2>/dev/null; wait "$s" 2>/dev/null; exit 0' TERM; sleep "$bound" & s=$!; wait "$s"; kill "$pp" 2>/dev/null ) >/dev/null 2>&1 &
     wd=$!
     wait "$pp" || rc=$?
     kill "$wd" 2>/dev/null || true

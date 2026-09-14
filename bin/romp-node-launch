@@ -109,6 +109,7 @@ case "$NO_COPY" in 0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) NO_COPY="" ;; e
 # shortens it for the tests, which run the hang shapes in two.
 _bound="${ROMP_NODE_PROBE_BOUND:-10}"
 case "$_bound" in ''|*[!0-9]*) _bound=10 ;; esac
+[ "$_bound" -ge 1 ] || _bound=1   # 0 would be NO bound for timeout and an instant kill for the watchdog's sleep
 # Everything under a pid, TERM then KILL. The node that hangs may be a version manager's shim that RUNS node
 # instead of exec'ing it, so the hung process is a CHILD of the pid the wrapper holds; the timeout path signals
 # the whole process group, and this keeps the watchdog path equivalent (round four of issue 1600: one hung
@@ -137,9 +138,12 @@ _probe_node() {
     # merely ran the node in the foreground survived the kill while the hung node did not die (round
     # three of issue 1600: one hung node leaked per launch on the no-timeout path, a stray child of the
     # manager). Ended with exit, a node's signal death is still an exit code, never a job-status line.
-    ( trap '_kill_tree "$_n"; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & _n=$!; wait "$_n"; exit $? ) 2>/dev/null &
+    # Both traps WAIT for what they killed before exiting: a kill is asynchronous, and a watchdog that exited right after
+    # signalling its sleep let the launcher exec the manager while the sleep was still dying, a leftover a check of the
+    # launcher's session could see for an instant (CI, 2026-09-14). Waited on, nothing of the probe outlives the launcher.
+    ( trap '_kill_tree "$_n"; wait "$_n" 2>/dev/null; exit 143' TERM; "$1" -e '' </dev/null >/dev/null 2>&1 & _n=$!; wait "$_n"; exit $? ) 2>/dev/null &
     _pp=$!
-    ( trap 'kill "$_s" 2>/dev/null; exit 0' TERM; sleep "$_bound" & _s=$!; wait "$_s"; kill "$_pp" 2>/dev/null ) >/dev/null 2>&1 &
+    ( trap 'kill "$_s" 2>/dev/null; wait "$_s" 2>/dev/null; exit 0' TERM; sleep "$_bound" & _s=$!; wait "$_s"; kill "$_pp" 2>/dev/null ) >/dev/null 2>&1 &
     _wd=$!
     _rc=0
     wait "$_pp" || _rc=$?

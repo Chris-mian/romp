@@ -159,6 +159,43 @@ EOF
     [ -z "$output" ]
 }
 
+@test "the watchdog path: the kill of the sleep is waited on, so a sleep that takes a moment to die never outlives the launcher" {
+    # CI 2026-09-14 (a tree that did not touch the launcher): the check above saw one leftover sleep pid once, a race the
+    # watchdog's trap left open by exiting right after its kill. The sleep here is a stand-in that lingers a second after
+    # its TERM (killing the real sleep it wraps), and the copy takes a moment to answer, so the watchdog's sleep is surely
+    # running when the kill lands (an instant probe can kill the watchdog before it has started its sleep, and then nothing
+    # lingers: the base passed one run in three that way). At the base the launcher exits with the stand-in still alive,
+    # every time; with the trap waiting for it, the session is empty when the launcher has exec'd the manager.
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the process-group check (Linux)"
+    cat > "$BIN/node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$RN") sleep 0.3; echo "NODE_V1 ran: \$*" ;;
+  *) echo "NODE_V1 ran: \$*" ;;
+esac
+EOF
+    chmod +x "$BIN/node"
+    local bare="$TEST_DIR/bare-linger"; mkdir -p "$bare"
+    local t
+    for t in sh cmp cp chmod mv mkdir rm ps pgrep setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    local real; real="$(command -v sleep)"
+    cat > "$bare/sleep" <<EOF
+#!/bin/sh
+trap 'kill "\$p" 2>/dev/null; "$real" 1; exit 143' TERM
+"$real" "\$@" & p=\$!
+wait "\$p"
+EOF
+    chmod +x "$bare/sleep"
+    ln -s "$BIN/node" "$bare/node"
+    PATH="$bare" run setsid -w sh -c 'printf "%s\n" "$$" > "$1"; exec "$2" "$3" up' _ "$TEST_DIR/pgid" "$LAUNCH" "$MANAGER"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    local pgid; pgid="$(cat "$TEST_DIR/pgid")"
+    [ -n "$pgid" ]
+    run bash -c 'ps -eo pgid=,args= | awk -v g="$1" "\$1==g"' _ "$pgid"
+    [ -z "$output" ]
+}
+
 @test "the watchdog path: a copy that HANGS is killed at the bound, the manager comes up on the system node, and no node is leaked" {
     # round three of issue 1600: the watchdog could only signal the probe's wrapper subshell, and a wrapper that ran the node
     # in its foreground survived the kill while the hung node did not die; one hung node leaked per launch (the launcher's
@@ -192,6 +229,9 @@ EOF
     [ -z "$output" ]
 }
 
+# These cases need setsid and coreutils timeout for their outer bound, so on a mac, the platform that takes the watchdog
+# path, they SKIP: the watchdog code is the same on both platforms and is exercised here through the bare PATH, but a mac
+# run of the suite proves nothing about it (the tidy of the fresh-install set names this; a mac-shaped bound is future work).
 # The hang shapes on both probe paths (round four of issue 1600). exec: the copy IS the hung process. fork: a version
 # manager's shim that RUNS node instead of exec'ing it, so the hung process is a child of the pid the wrapper holds, and
 # killing that pid alone leaked the child on the watchdog path. deaf: a node that ignores TERM, which only KILL ends; a
@@ -360,4 +400,35 @@ _hang_asserts() {   # the fallback happened at the bound, and nothing of the pro
         [ "$status" -eq 0 ]
         [[ "$output" == *"BEFORE=[one] AFTER=[two] ran: $MANAGER up"* ]]
     fi
+}
+
+@test "ROMP_NODE_PROBE_BOUND=0 is clamped to one second: a good copy runs the manager on the watchdog path, and a hung copy on the timeout path falls back at once" {
+    # the tidy of the fresh-install set: 0 was accepted, and timeout -k 1 0 means NO bound while the watchdog's sleep 0 failed a
+    # good copy at once
+    command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the run (Linux)"
+    local tmo; tmo="$(command -v timeout || true)"
+    [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    # the copy takes half a second to answer: the setup's instant stand-in beat the base's sleep-0 kill, this one does not
+    cat > "$BIN/node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$RN") sleep 0.5; echo "NODE_V1 ran: \$*" ;;
+  *) echo "NODE_V1 ran: \$*" ;;
+esac
+EOF
+    chmod +x "$BIN/node"
+    local bare="$TEST_DIR/bare"; rm -rf "$bare"; mkdir -p "$bare"
+    local t; for t in sh cmp cp chmod mv mkdir rm sleep ps pgrep setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
+    ln -s "$BIN/node" "$bare/node"
+    PATH="$bare" ROMP_NODE_PROBE_BOUND=0 run "$tmo" 20 setsid -w sh -c 'exec "$1" "$2" up' _ "$LAUNCH" "$MANAGER"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NODE_V1 ran: $MANAGER up"* ]]
+    [[ "$output" != *"cannot run here"* ]]                    # the good copy was not failed by an instant kill
+    _hang_node exec
+    ln -s "$tmo" "$bare/timeout"
+    rm -f "$TEST_DIR/node.pid"
+    PATH="$bare" ROMP_NODE_PROBE_BOUND=0 run "$tmo" 20 setsid -w sh -c 'exec "$1" "$2" up' _ "$LAUNCH" "$MANAGER"
+    [ "$status" -eq 0 ]                                        # not the outer bound: the clamp made timeout's bound one second
+    [[ "$output" == *"cannot run here"* ]]
+    _dead "$(cat "$TEST_DIR/node.pid")"
 }
