@@ -1405,10 +1405,10 @@ export class FederationManager {
       // the page's ready goes to the local kernel; its protocol is remembered for every remote socket (sent on each
       // open, above) and told now to the ones already open
       this.pageProto = m.proto === 2 ? 2 : 1;
-      if (this.pageProto === 2) {
-        for (const c of this.conns.values()) {
-          if (c.ws && c.ws.readyState === 1) { try { c.ws.send(JSON.stringify({ type: "ready", proto: 2 })); } catch (e) { /* the socket's own close says */ } }
-        }
+      // told whatever the page speaks, the index wire included: a kernel that serves no chat frame before the handshake
+      // (T386 stage 2) would otherwise serve an index page's remote socket nothing (the follow-up after PR 1584, low 2)
+      for (const c of this.conns.values()) {
+        if (c.ws && c.ws.readyState === 1) { try { c.ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); } catch (e) { /* the socket's own close says */ } }
       }
     }
     const routes = routeOutbound(m, new Set(this.hostSeq.filter((h) => h !== LOCAL)));
@@ -1675,7 +1675,7 @@ export class FederationManager {
       // the chat wire this page speaks, told to THIS host's kernel once the page has said it (T323 stage 4b): the
       // bundle's own ready reaches the local kernel alone, so a remote kernel would otherwise never learn the protocol
       // and serve index frames over a floor'd list; an older remote kernel ignores the field and answers as before
-      if (this.pageProto === 2) { try { ws.send(JSON.stringify({ type: "ready", proto: 2 })); } catch (e) { /* the next frame says */ } }
+      if (this.pageProto !== null) { try { ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); } catch (e) { /* the next frame says */ } }   // the proto the page speaks, 1 included (low 2)
       this.diag("hostconn", flushed.length ? { host: conn.host, ev: "open", flushed }
                                            : { host: conn.host, ev: "open" });
       conn.lastRecv = Date.now();   // the watchdog measures this socket's silence from ITS open

@@ -131,9 +131,16 @@ class WindowSpans(Harness):
         whole, m, frame, c = self._boot()
         fresh = {"send": (lambda s: sent.append(json.loads(s))), "echat": {}, "handshake": False}   # a real socket before its ready, as the accept marks it
         sent = []
-        km._send_chat_locked(fresh, m, None, 0, False)
+        rows = []
+        from unittest import mock
+        with mock.patch.object(km, "_client_diag_append", lambda fp, line: rows.append((fp.name, json.loads(line)))):
+            km._send_chat_locked(fresh, m, None, 0, False)
+            km._send_chat_locked(fresh, m, None, 0, False)                          # a second push while the handshake is still out
         self.assertEqual(sent, [], "a socket before its ready gets no chat frame: %r" % [f.get("type") for f in sent])
         self.assertNotIn(SID, fresh["echat"], "…and the kernel believes it holds nothing")
+        # the follow-up after PR 1584, low 2: what the kernel withholds is said ONCE per socket, in the client diagnostics file
+        self.assertEqual([(n, r["what"], r["surface"], r["data"]["sid"]) for n, r in rows], [("client-diag.jsonl", "chatWithheld", "kernel", SID)],
+                         "one row for the socket, not one per withheld frame: %r" % rows)
         fresh["proto"] = 2; fresh["handshake"] = True                               # the handshake declares the uuid wire
         km._send_chat_locked(fresh, m, None, 0, False)
         self.assertEqual([f.get("type") for f in sent], ["session"], "the first frame after the handshake is the session")

@@ -111,5 +111,6 @@ test("render.ts speaks proto 2 at ready and routes the proto-2 frames through th
 
 test("federation tells every remote kernel the chat protocol on its socket's open", () => {
   const FED = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "federation.ts"), "utf8");
-  assert.ok(FED.includes('ws.send(JSON.stringify({ type: "ready", proto: 2 }))'), "the remote socket's open sends the ready with the protocol");
+  assert.ok(FED.includes('if (this.pageProto !== null) { try { ws.send(JSON.stringify({ type: "ready", proto: this.pageProto })); }'), "the remote socket's open sends the ready with the protocol the page speaks, 1 included (the follow-up after PR 1584, low 2)");
+  assert.ok(FED.includes('c.ws.send(JSON.stringify({ type: "ready", proto: this.pageProto }))'), "…and the page's ready is told to every open remote socket the same way");
 });

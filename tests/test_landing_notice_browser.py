@@ -429,7 +429,42 @@ await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-
 await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
 await painted();
 const after14 = { asked: await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "loadAround").length, sentAt14), busy: await page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "locateDiag").flatMap((m) => m.trail || []).filter((w) => w === "pointer-fetch-busy").length, sentAt14), target: await onScreen(deep14) };
-process.stdout.write("RESULT:" + JSON.stringify({ settled7, askState7, inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
+// ROAD 15 (the follow-up after PR 1584, low 1; a fresh page): the notice's pulse is ONE-SHOT. A real second click on the anchor a landing is on
+// the wire for pulses the notice once (round eleven, low b); the class must leave on the animation's end, so a LATER landing that re-shows the
+// one reused notice element does not replay a pulse it did not earn (before the fix the class stayed and the display flip restarted the
+// animation: the verifier saw it running after the re-show). Pulses are counted from the element's own animationstart events.
+await reboot();
+await page.evaluate(() => { window.__pulses = 0; document.addEventListener("animationstart", (e) => { if (e.animationName === "tx-notice-pulse") window.__pulses++; }, true); window.__hold.add("loadAround"); });
+const deepA15 = "11111111-2222-3333-4444-" + pad(2 * 45); const deepB15 = "11111111-2222-3333-4444-" + pad(2 * 160);   // both in the head gap of a fresh page
+const focus15 = (u, turn) => page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: u, anchorT: cfg.base + 2 * turn });
+const noticeShown = () => page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && getComputedStyle(n).display !== "none"; }, null, { timeout: 5000 }).catch(() => {});
+const noticeHidden = () => page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !n || getComputedStyle(n).display === "none"; }, null, { timeout: 10000 }).catch(() => {});
+const pulseState = () => page.evaluate(() => { const n = document.querySelector(".tx-landing-notice"); return { pulses: window.__pulses, cls: !!n && n.classList.contains("pulse"), running: n ? n.getAnimations().length : -1, notice: !!n && getComputedStyle(n).display !== "none" }; });
+await focus15(deepA15, 45);
+await page.waitForFunction(() => (window.__heldRaw || []).length >= 1, null, { timeout: 8000 }).catch(() => {});
+await noticeShown();
+const first15 = await pulseState();                                                   // one click: the notice, no pulse
+await focus15(deepA15, 45);                                                           // a REAL second click on the same anchor while its ask is on the wire
+await page.waitForFunction(() => window.__pulses >= 1, null, { timeout: 3000 }).catch(() => {});
+const pulsed15 = await pulseState();
+await page.waitForFunction(() => { const n = document.querySelector(".tx-landing-notice"); return !!n && !n.classList.contains("pulse"); }, null, { timeout: 3000 }).catch(() => {});   // the class leaves on the animation's end (500 ms)
+const afterEnd15 = await pulseState();
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__release(); });
+await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deepA15, { timeout: 15000 }).catch(() => {});
+await noticeHidden(); await painted();
+const targetA15 = await onScreen(deepA15);
+// a later landing re-shows the same notice element: no pulse it did not earn
+await page.evaluate(() => { window.__hold.add("loadAround"); });
+await focus15(deepB15, 160);
+await page.waitForFunction(() => (window.__heldRaw || []).length >= 1, null, { timeout: 8000 }).catch(() => {});
+await noticeShown();
+await page.waitForTimeout(200);                                                       // a replayed animation would have started by now (a stale class restarts on the display flip)
+const reshow15 = await pulseState();
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__release(); });
+await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deepB15, { timeout: 15000 }).catch(() => {});
+await noticeHidden(); await painted();
+const targetB15 = await onScreen(deepB15);
+process.stdout.write("RESULT:" + JSON.stringify({ first15, pulsed15, afterEnd15, targetA15, reshow15, targetB15, settled7, askState7, inGap6, regions13, hadFrame13, heldIn13a, heldIn13, heldOlder13, askState13, trail13, toast13, target13, asks13, before14, down14, after14, askedA10, askedB10, asks10, before10, relA10, afterA10, relB10, afterB10, runN10a, runN10b, runN10c, writes10, originA11, askedA11, foundB11, askedB11, noticeB11, atAsk11, afterMissing11, writes11, askedA12, reask12, target12, trail12, askedA8, afterCancel8, askedB8, busy8, toast8, noticeB8, released8, targetB8, residentA8, runN8Before, runN8After, asked9, fault9, rows9, top9Before, writes9, pxPerTurn9, heldAsk6, point6Before, point6After, fillWrites6, after6, head4, filled4, afterDrop5: { notice: afterDrop5.notice }, askBefore5, heldRaw5, askState5, winBefore5, winAtDeath5, redialed5, recvAfter5, sentAfter5, flushAsk5, reask5, landed5, top7, turnAttr7, top7Held, top7After, point7Before, point7After, fillWrites7, held7, runNBefore7, runNAfter7, asked3, nospan3, boot: { gaps: boot.gaps, atBottom: boot.atBottom, notice: boot.notice, regions: await page.evaluate(() => (typeof window.__rompRegions === "function" ? window.__rompRegions() : null)) }, asked1: { notice: asked1.notice, noticeText: asked1.noticeText, top: asked1.top, gaps: asked1.gaps, loadAround: heldAsk1 }, trace1, released1, guess1, trace2,
   landed1: { notice: landed1.notice, gaps: landed1.gaps, turns: landed1.turns, top: landed1.top, strip: landed1.strip, regions: regionsLanded }, target1, rows1,
   asked2: { notice: asked2.notice, noticeText: asked2.noticeText, top: asked2.top }, clicked2: { notice: clicked2.notice, top: clicked2.top, gaps: clicked2.gaps }, rows2, released2,
   late2: { notice: late2.notice, top: late2.top, gaps: late2.gaps, turns: late2.turns, regions: regionsLate }, noticeHit, regionsClicked, rowClicked2, rowLate2, target2, deep2Turn: 190, bootTop: boot.top }) + "\n");
@@ -627,6 +662,25 @@ class ServedLandingNotice(WindowLab):
         self.assertNotEqual(r["toast13"], "still going to the earlier message", "no untrue busy toast: %r" % r["toast13"])
         self.assertEqual(r["asks13"]["busy"], 0, "no busy row filed: %r" % r["asks13"])
         self.assertIsNotNone(r["target13"]); self.assertTrue(r["target13"]["visible"], "the target landed on screen once the older page arrived (asks after the click %r): %r" % (r["asks13"], r["target13"]))
+
+    def test_the_notices_pulse_is_one_shot_and_a_later_landing_does_not_replay_it(self):
+        # the follow-up after PR 1584, low 1: a real second click pulses once; the class leaves on the animation's end; the notice re-shown
+        # for a later landing runs no animation and carries no pulse class
+        r = self._result()
+        f = r["first15"]
+        self.assertTrue(f["notice"], "the first click brought the notice up: %r" % f)
+        self.assertEqual(f["pulses"], 0, "one click, no pulse: %r" % f)
+        p = r["pulsed15"]
+        self.assertEqual(p["pulses"], 1, "a real second click on the anchor its landing is on the wire for pulses the notice once: %r" % p)
+        e = r["afterEnd15"]
+        self.assertFalse(e["cls"], "the pulse class leaves on the animation's end: %r" % e)
+        self.assertEqual(e["running"], 0, "…and nothing is animating: %r" % e)
+        self.assertIsNotNone(r["targetA15"]); self.assertTrue(r["targetA15"]["visible"], "the first landing landed: %r" % r["targetA15"])
+        s = r["reshow15"]
+        self.assertTrue(s["notice"], "the later landing re-showed the notice: %r" % s)
+        self.assertEqual(s["pulses"], 1, "the re-shown notice replays no pulse: %r" % s)
+        self.assertEqual((s["cls"], s["running"]), (False, 0), "…no stale class, nothing animating: %r" % s)
+        self.assertIsNotNone(r["targetB15"]); self.assertTrue(r["targetB15"]["visible"], "the later landing landed: %r" % r["targetB15"])
 
     def test_the_panes_pipe_down_edge_clears_the_landing_like_the_sockets_death(self):
         # round nine, medium 2: pipeState down with a landing in flight, then up; the next click asks

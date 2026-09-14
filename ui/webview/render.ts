@@ -13957,7 +13957,11 @@ function virtualizeToViewport(): void {
 let landingNoticeEl: HTMLElement | null = null;
 let pendingAnchorClick = false;   // the landing this pass attempts was armed by the reader's click (a focus frame), not by a pass's own re-attempt
 /** A real second click on the anchor a landing is already on the wire for: the notice pulses once (the page has no other feedback for it). */
-function pulseLandingNotice(): void { const n = landingNoticeEl; if (!n || n.style.display === "none") return; n.classList.remove("pulse"); void n.offsetWidth; n.classList.add("pulse"); }
+function pulseLandingNotice(): void {
+  const n = landingNoticeEl; if (!n || n.style.display === "none") return;
+  n.classList.remove("pulse"); void n.offsetWidth; n.classList.add("pulse");
+  n.addEventListener("animationend", () => n.classList.remove("pulse"), { once: true });   // one-shot: the class leaves on the animation's own end, so a later landing that re-shows this one element replays nothing (the follow-up after PR 1584, low 1)
+}
 let landingNoticeSid: string | null = null;
 // the landing's state lives in ONE RECORD PER ASK (WindowAsk, beside requestAround below; round eight): no per-session slot here
 /** The ONE notice (T386 stage 2, the user 2026-09-12): "Going to the message from 7:41 AM, click to stay here", at the pill's old
@@ -13981,6 +13985,7 @@ function showLandingNotice(sid: string, t: number | null | undefined): void {
     anchor.appendChild(landingNoticeEl);
     content.parentNode.insertBefore(anchor, content);
   }
+  landingNoticeEl.classList.remove("pulse");   // a pulse cut short by the hide (no animationend) must not replay on this re-show (low 1)
   landingNoticeEl.style.display = "";
 }
 function hideLandingNotice(): void { if (landingNoticeEl) landingNoticeEl.style.display = "none"; landingNoticeSid = null; }

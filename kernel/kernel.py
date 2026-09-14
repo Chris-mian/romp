@@ -45877,10 +45877,14 @@ def _chat_floor0_of(chat_clients, now=None):
     rebuilds); one stamped ready by its redial with no protocol (an older shim) is an index client, and so is a socket
     with no protocol and no ready after READY_WAIT_S (round 3, C: a page whose ready the kernel never answered dials
     fresh for its life with no ready of its own, and would otherwise be served index frames over a floor'd list; the
-    shim's re-sent ready on such a dial is the belt, this the braces)."""
+    shim's re-sent ready on such a dial is the belt, this the braces). A socket the accept marked as not yet handshaken
+    (`handshake` False: no ready, no proto term) is served no chat frame at all (_send_chat_locked) and so moves no floor
+    either, however it is stamped: _resolve_reconnect's pop stamps a reconnect=1 dial `ready` with no proto term, and the
+    wait above runs out on it, and each used to drag every client to floor 0 for a socket that saw nothing (the follow-up
+    after PR 1584, low 3)."""
     now = _ws_clock() if now is None else now
     return any(c.get("proto") == 1 or (c.get("proto") is None and (c.get("ready") or now - c.get("t0", now) > READY_WAIT_S))
-               for c in chat_clients)
+               for c in chat_clients if c.get("handshake") is not False)
 
 
 def _forget_chat_positions(live_sids):
@@ -46024,11 +46028,19 @@ def _send_chat_locked(c, m, ms, change_from, led_changed):
     st = c.setdefault("echat", {})
     pc = st.get(sid)                                  # (tail_head_uuid, headFrom) the client currently holds
     if c.get("handshake") is False:                  # a real socket before its `ready` (marked at accept) has declared no wire: it gets NO chat frame
+        if not c.get("withheld"):                     # …said ONCE per socket in client-diag.jsonl (the follow-up after PR 1584, low 2): a socket whose
+            c["withheld"] = True                      # handshake never comes (an older shim's redial with no proto term) is served nothing for its life,
+            try:                                      # and nothing else says so
+                _client_diag_append(jd.STATE / "client-diag.jsonl", json.dumps({"t": int(time.time()), "wid": str(c.get("wid") or ""), "surface": "kernel",
+                                                                                 "what": "chatWithheld", "data": {"sid": sid, "app": c.get("app")}}) + "\n")
+            except Exception:
+                pass
         return ms                                     # (T386 stage 2, round eleven). It used to get index frames, and a proto-2 page whose ready lost the
     #                                                    race to this push (the pusher fires from the socket's open; the bundle evaluates later) held an
     #                                                    index frame at its reload restore and took the older wire for a landing the window wire owns.
-    #                                                    The ready handler resets the base and pushes the wire the handshake declared. A client record
-    #                                                    without the mark (the kernel's own in-process clients, the tests' dicts) keeps the index wire.
+    #                                                    The ready handler resets the base and pushes the wire the handshake declared. Every real socket
+    #                                                    carries the mark (_new_ws_client is the one constructor, the /ws upgrade its one caller); a record
+    #                                                    without it is a test's dict modelling a socket past its handshake, and keeps the index wire.
     if c.get("proto") == 2:
         return _send_chat_proto2(c, m, ms, change_from, led_changed, st, pc)
     if isinstance(pc, dict):
