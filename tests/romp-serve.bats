@@ -336,7 +336,22 @@ OLD
     chmod +x "$TEST_DIR/nuls-python"
     ROMP_PYTHON="$TEST_DIR/nuls-python" run "$ROMP_SERVE" --print-python
     [ "$status" -eq 2 ]
-    grep -q 'while \[\[ \$_n -lt 64 \]\] && { IFS= read -r -d' "$ROMP_SERVE"   # the cap: sixty-four chunks
+    # the cap, executed (the fourth tidy: past it the read took the no-version leg and STARTED a 3.9 the old cat refused):
+    # 63 NULs before the sentinel are 64 chunks and the version, refused as 3.9; 64 NULs are a 65th chunk, the output
+    # unread, the interpreter refused as such with exit 1
+    local n
+    for n in 63 64; do
+        { head -c "$n" /dev/zero; printf 'romp-pyver 3.9\n'; } > "$TEST_DIR/nuls-$n.bin"
+        printf '#!/usr/bin/env bash\ncase "$*" in *romp-pyver*) cat "%s"; exit 0 ;; esac\nexec bash "$@"\n' "$TEST_DIR/nuls-$n.bin" > "$TEST_DIR/nuls-$n-python"
+        chmod +x "$TEST_DIR/nuls-$n-python"
+    done
+    ROMP_PYTHON="$TEST_DIR/nuls-63-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"python 3.9"* ]]
+    ROMP_PYTHON="$TEST_DIR/nuls-64-python" run "$ROMP_SERVE" --print-python
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"more than 64 NUL-separated chunks"* ]]     # the refusal names the interpreter in its line
+    [[ "${lines[${#lines[@]}-1]}" != "$TEST_DIR/nuls-64-python" ]]   # but the pick is not printed as the answer: the interpreter is refused
 }
 
 @test "romp-serve: a TERM mid-probe leaves no probe file behind" {
