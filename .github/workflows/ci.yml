@@ -209,9 +209,7 @@ jobs:
   vscode-extension:
     name: vscode-extension (typecheck + test + build)
     runs-on: ubuntu-latest
-    # 20, from 15 (2026-09-14): main's own job ran 14 m 50 s at 5c965353 (the served step alone about 12 m), so a branch adding a
-    # minute of served labs was cancelled mid-suite at 75 % with nothing red (PR 1584 at eabef309: 13 m 10 s into the served step)
-    timeout-minutes: 20
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: vscode-extension
