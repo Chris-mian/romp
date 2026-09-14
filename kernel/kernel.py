@@ -789,6 +789,7 @@ class _PerfStats:
             except Exception:
                 memos[key] = {}
         memos["nudgeGate"] = dict(_NUDGE_GATE_STATS)   # the nudge walk's placement gate: served vs re-derived (2026-09-09)
+        memos["ghostDropped"] = dict(_GHOST_DROPPED)   # the spawned-at ghost floor's drops: bgTasks and agents (2026-09-14)
         memos["nudgeWalk"] = dict(_NUDGE_WALK_STATS)   # the walk's parse gate: looks, skipped and paid parses, cold ones, the
         #                                                yield's deferrals, memos refused as unbounded or clock-due (T401 (2))
         memos["cleared"] = dict(_CLEARED_STATS)       # the clear set: parsed once per file state, served while it stands (2026-09-09)
@@ -27987,7 +27988,10 @@ def _bg_tasks(path, spawned_at=None, live=None):
         live_ids = {t.get("toolUseId") for t in live if t.get("toolUseId")}
         scan = [tk for tk in scan if tk["id"] in live_ids]
     elif spawned_at:
-        scan = [tk for tk in scan if not (tk.get("t") and tk["t"] < spawned_at)]
+        kept = [tk for tk in scan if not (tk.get("t") and tk["t"] < spawned_at)]
+        if len(kept) != len(scan):
+            _GHOST_DROPPED["bgTasks"] += len(scan) - len(kept)   # the ghost floor dropped launches older than the CLI epoch
+        scan = kept
     out = []
     meta = None                                   # the subagents sidecar map, read once and only if an agent row needs it
     for tk in scan[:30]:    # show up to 30 lines (the flat list scrolls); count below reports the true total
@@ -28343,7 +28347,15 @@ def _agent_alive(row, agent_id, tm, spawned_at):
         live_agents = {str(x.get("agentId")) for x in (tm.get("subagents") or []) if x.get("agentId")}
         live_tools = {str(x.get("toolUseId")) for x in (tm.get("bgTasks") or []) if x.get("toolUseId")}
         return (str(agent_id) in live_agents) or (str(row.get("id")) in live_tools)
-    return not (spawned_at and row.get("t") and row["t"] < spawned_at)
+    if spawned_at and row.get("t") and row["t"] < spawned_at:
+        _GHOST_DROPPED["agents"] += 1                # the ghost gate dropped an agent dot older than the CLI epoch
+        return False
+    return True
+
+
+_GHOST_DROPPED = {"bgTasks": 0, "agents": 0}      # memos.ghostDropped on /perf: what the spawned-at ghost floor dropped this boot
+#                                                    (T401: a surviving CLI's launches read as ghosts at every restart until the
+#                                                    spawnedAt fix; zero for survivors on the boot after it is the read)
 
 
 def _agent_running_for(parent_path, tool_use_id, agent_id, tm, spawned_at):
