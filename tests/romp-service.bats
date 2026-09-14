@@ -40,6 +40,10 @@ teardown() { rm -rf "$TEST_DIR"; }
     grep -q "<string>up</string>" "$plist"
     grep -q "RunAtLoad" "$plist"
     grep -q "KeepAlive" "$plist"
+    # issue 1600: KeepAlive with launchd's default ten-second throttle respawned a manager that died at once
+    # six times a minute forever; the interval bounds that loop to once a minute (a manager that ran longer
+    # than it before exiting is respawned at once, since the throttle counts from the job's last start)
+    grep -q "<key>ThrottleInterval</key><integer>60</integer>" "$plist"
 }
 
 @test "install (macOS): login agent runs the manager under the romp-node copy (FDA identity)" {
@@ -110,6 +114,8 @@ teardown() { rm -rf "$TEST_DIR"; }
 #!/bin/sh
 echo "\$1" >> "$calls"
 [ "\$1" = bootout ] && exit 0
+# once loaded, print names the live process (the post-install check reads the pid line, not print's exit)
+[ "\$1" = print ] && [ "\$(grep -c bootstrap "$calls")" -ge 3 ] && { echo "	pid = 4242"; exit 0; }
 [ "\$(grep -c bootstrap "$calls")" -ge 3 ] && exit 0
 echo "Bootstrap failed: 5: Input/output error" >&2
 exit 5
@@ -133,10 +139,10 @@ EOF
 #!/bin/sh
 echo "\$1" >> "$calls"
 if [ "\$1" = print ]; then
-    # After bootstrap the NEW job answers print (the post-install running check sees it).
-    grep -q bootstrap "$calls" && exit 0
+    # After bootstrap the NEW job answers print with its live pid (the post-install running check reads it).
+    grep -q bootstrap "$calls" && { echo "	pid = 4242"; exit 0; }
     [ "\$(grep -c print "$calls")" -ge 4 ] && exit 5   # the old job finally drains away
-    exit 0                                             # still tearing down
+    exit 0                                             # still tearing down (loaded, no process named)
 fi
 exit 0
 EOF
@@ -203,6 +209,68 @@ EOF2
     ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
     [ "$status" -eq 1 ]
     [[ "$output" == *"NOT running"* ]]
+}
+
+# ── loaded is not running (issue 1600) ─────────────────────────────────────────────────────
+# launchctl print succeeds for any LOADED job, a crash-looping one included: the manager's copied node
+# aborted at exec, KeepAlive respawned it every throttle interval, `status` said running and install.sh
+# trusted that. The job's record names its process (a `pid = N` line) only while one runs, and keeps the
+# previous run's exit code; both are read now.
+_crashloop_stub() {   # a launchctl whose job is loaded and keeps dying: print succeeds, no pid, last exit 134
+    cat > "$1" <<'EOF'
+#!/bin/sh
+[ "$1" = bootout ] && exit 0
+[ "$1" = bootstrap ] && exit 0
+if [ "$1" = print ]; then
+    printf 'gui/501/com.romp.manager = {\n\tactive count = 0\n\tstate = not running\n\tlast exit code = 134\n\truns = 17\n}\n'
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$1"
+}
+_running_stub() {   # a launchctl whose job runs: print names the pid
+    cat > "$1" <<'EOF'
+#!/bin/sh
+[ "$1" = print ] && { printf 'gui/501/com.romp.manager = {\n\tactive count = 1\n\tstate = running\n\tpid = 4242\n\tlast exit code = (never exited)\n}\n'; exit 0; }
+exit 0
+EOF
+    chmod +x "$1"
+}
+
+@test "status (macOS): a loaded job that keeps dying is NOT running, and the last exit code is named" {
+    unset ROMP_SERVICE_NO_LOAD
+    ROMP_OS_OVERRIDE=Darwin ROMP_SERVICE_NO_LOAD=1 "$SVC" install >/dev/null   # the plist alone
+    local stub="$TEST_DIR/launchctl-stub"; _crashloop_stub "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"installed:"* ]]
+    [[ "$output" == *"loaded but not running"* ]]
+    [[ "$output" == *"last exit code: 134"* ]]
+    # never the bare line install.sh keys its skip-the-reinstall shortcut on
+    run grep -qx running <<< "$output"
+    [ "$status" -ne 0 ]
+}
+
+@test "status (macOS): a job whose record names a live pid is running" {
+    unset ROMP_SERVICE_NO_LOAD
+    ROMP_OS_OVERRIDE=Darwin ROMP_SERVICE_NO_LOAD=1 "$SVC" install >/dev/null
+    local stub="$TEST_DIR/launchctl-stub"; _running_stub "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" status
+    [ "$status" -eq 0 ]
+    run grep -qx running <<< "$output"
+    [ "$status" -eq 0 ]
+}
+
+@test "install (macOS): a job that loads and then keeps dying fails loudly, naming the last exit code" {
+    unset ROMP_SERVICE_NO_LOAD
+    export XDG_STATE_HOME="$TEST_DIR/state"
+    local stub="$TEST_DIR/launchctl-stub"; _crashloop_stub "$stub"
+    ROMP_LAUNCHCTL="$stub" ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"NOT running"* ]]
+    [[ "$output" == *"last exit code: 134"* ]]
+    [[ "$output" != *"Installed launchd agent"* ]]
 }
 
 @test "both units bake ROMP_SUPERVISED=1 — the manager's stale-self refresh needs a respawning supervisor" {
