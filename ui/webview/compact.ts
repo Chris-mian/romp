@@ -96,38 +96,13 @@ export function itemAnchor(it: DisplayItem, epochAt: (i: number) => number | nul
 // One pluralized count of a tool kind, e.g. { label: "Edits", count: 3 }. The label keeps the tool's
 // own Capitalized name (so it reads AS a tool — the user 2026-06-14, matching the bold .tool-name in
 // the non-compact view); only the Edit variants merge under "Edit".
-export interface ToolCount { label: string; count: number; }
-
-const LABEL: Record<string, string> = { Edit: "Edit", MultiEdit: "Edit", NotebookEdit: "Edit" };
-function toolLabel(name: string): string { return LABEL[name] || name; }   // else the tool's own name
-function plural(word: string, n: number): string {
-  if (n === 1) return word;
-  return word + (/(s|sh|ch|x|z)$/i.test(word) ? "es" : "s");
-}
-
-// Counts per tool kind from a run of tool NAMES: merge to a display label, order by count (desc; ties
-// keep first-appearance via stable sort), pluralize by count.
-export function toolCounts(names: readonly string[]): ToolCount[] {
-  const counts = new Map<string, number>();
-  for (const nm of names) { const w = toolLabel(nm); counts.set(w, (counts.get(w) || 0) + 1); }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([w, n]) => ({ label: plural(w, n), count: n }));
-}
-
-// "3 Edits, 2 Reads, 1 Bash" — the plain-text form (used for titles / tests). The rendered line styles
-// each tool label in bold (see render.ts renderToolGroup), but the words are identical.
-export function summarizeTools(names: readonly string[]): string {
-  return toolCounts(names).map((c) => `${c.count} ${c.label}`).join(", ");
-}
-
 // ── The tool rows in the user's terms (T418, the user 2026-09-14: the chat's tool rows read the way the desktop app's do) ──
-// The group head speaks by ACTION, not by tool name: "Ran 11 commands, created 2 files, edited 3 files +37 -0, read 4 files".
-// A single tool use reads the same phrase in the singular. Inside a group each row's label is the model's own description
-// when it wrote one, else a phrase derived from the tool's input in the same voice. Nothing here reads desc for the head's
-// counts or totals: those come from the tool names and the edits' diff rows alone.
+// The group head speaks by ACTION, not by tool name: "Ran 11 commands, read 4 files, edited 3 files, created 2 files +37 -0". A single
+// tool use reads the same phrase in the singular. Inside a group each row's label is the model's own description when it wrote one,
+// else a phrase derived from the tool's input in the same voice. Nothing here reads desc for the head's counts or totals: those come
+// from the tool names and the edits' diff rows alone. Counts: commands, searches, fetches, agents and other tools count USES; reads,
+// edits and creations count DISTINCT files; the head orders its phrases by the number it prints.
 
-/** The fields of a tool event these phrases read (a structural subset of render.ts's ChatEvent tool variant). */
 export interface ToolLike {
   name: string;
   desc?: string;
@@ -167,29 +142,24 @@ function parseInput(t: ToolLike): Record<string, unknown> {
   try { const o = JSON.parse(t.input || ""); return o && typeof o === "object" ? o as Record<string, unknown> : {}; } catch { return {}; }
 }
 function clip(s: string, n = 80): string { s = s.replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
-function hostOf(url: string): string { try { return new URL(url).hostname || url; } catch { return clip(url); } }
-export function shortPathOf(p: string): string {
-  const parts = p.split("/").filter(Boolean);
-  return parts.length <= 2 ? p : ".../" + parts.slice(-2).join("/");
-}
-/** The one search's own words for a head or a row: "for <pattern>" (Grep, Glob), "the web for <query>" (WebSearch). */
+/** The host a fetched url names; a url with no host (file:, data:, about:) falls to the url itself, clipped like every other label part. */
+function hostOf(url: string): string { try { const h = new URL(url).hostname; return h || clip(url); } catch { return clip(url); } }
+/** The one search's own words: "for <pattern>" (Grep, Glob); the path, when the input carries one, is the event's file, which the
+ *  renderer prints as the link after "in ". */
 function searchWords(t: ToolLike): string | null {
   const o = parseInput(t);
-  if (t.name === "Grep" || t.name === "Glob") {
-    const pat = typeof o.pattern === "string" ? o.pattern : "";
-    const where = t.name === "Grep" && typeof o.path === "string" && o.path ? " in " + shortPathOf(o.path) : "";
-    return pat ? "for " + clip(pat) + where : null;
-  }
+  if (t.name === "Grep" || t.name === "Glob") { const pat = typeof o.pattern === "string" ? o.pattern : ""; return pat ? "for " + clip(pat) : null; }
   return null;
 }
-const totalsText = (add: number, del: number): string => (add || del ? ` +${add} -${del}` : "");
+const totalsText = (add: number, del: number): string => (add || del ? `+${add} -${del}` : "");
 
-/** One head phrase per action over a group of tool uses, ordered by count (the largest first; ties keep first appearance), the
- *  first letter of the whole line capitalised by the caller: "ran 11 commands", "created 2 files", "edited 3 files +37 -0",
- *  "read 4 files", "searched 3 times" (or "searched for <pattern>" for the group's sole search), "fetched 2 pages",
- *  "ran 2 agents", "updated the task list", "used 2 tools". Files edited or created count once each; the edit totals sum
- *  every edit's rows. */
-export interface ActionPhrase { action: ToolAction; count: number; text: string; add: number; del: number }
+/** One head phrase per action over a group of tool uses. Commands, searches, fetches, agents and other tools count uses; reads,
+ *  edits and creations count DISTINCT files (a file edited twice is one file, its rows summed). The phrases are ordered by the
+ *  number they print (the largest first; ties keep first appearance). The edits' totals are returned apart, summed over every
+ *  edit, for the caller to print ONCE: "ran 11 commands", "read 4 files", "edited 3 files", "created 2 files", "searched 3 times"
+ *  (or "searched for <pattern>" for the group's sole search), "fetched 2 pages", "ran 2 agents", "updated the task list",
+ *  "used 2 tools". A creation prints no totals: the kernel emits no diff for a Write. */
+export interface ActionPhrase { action: ToolAction; count: number; printed: number; text: string; add: number; del: number }
 export function actionPhrases(tools: readonly ToolLike[]): ActionPhrase[] {
   const order: ToolAction[] = [];
   const by = new Map<ToolAction, { count: number; files: Set<string>; add: number; del: number; first: ToolLike }>();
@@ -199,17 +169,19 @@ export function actionPhrases(tools: readonly ToolLike[]): ActionPhrase[] {
     if (!e) { e = { count: 0, files: new Set(), add: 0, del: 0, first: t }; by.set(a, e); order.push(a); }
     e.count++;
     if (t.file) e.files.add(t.file);
-    if (a === "edit" || a === "create") { const d = diffTotals(t); e.add += d.add; e.del += d.del; }
+    if (a === "edit") { const d = diffTotals(t); e.add += d.add; e.del += d.del; }
   }
   const out: ActionPhrase[] = [];
   for (const a of order) {
     const e = by.get(a)!; const n = e.count;
-    const files = e.files.size || n;   // edits of one file count one file; a tool with no path counts its uses
+    const byFile = a === "read" || a === "edit" || a === "create";
+    const files = e.files.size || n;   // a tool with no path counts its uses
+    const printed = byFile ? files : n;
     let text: string;
     switch (a) {
       case "command": text = n === 1 ? "ran a command" : `ran ${n} commands`; break;
-      case "create": text = (files === 1 ? "created a file" : `created ${files} files`) + totalsText(e.add, e.del); break;
-      case "edit": text = (files === 1 ? "edited a file" : `edited ${files} files`) + totalsText(e.add, e.del); break;
+      case "create": text = files === 1 ? "created a file" : `created ${files} files`; break;
+      case "edit": text = files === 1 ? "edited a file" : `edited ${files} files`; break;
       case "read": text = files === 1 ? "read a file" : `read ${files} files`; break;
       case "search": { const w = n === 1 ? searchWords(e.first) : null; text = n === 1 ? (w ? "searched " + w : "searched once") : `searched ${n} times`; break; }
       case "fetch": text = n === 1 ? "fetched a page" : `fetched ${n} pages`; break;
@@ -217,15 +189,21 @@ export function actionPhrases(tools: readonly ToolLike[]): ActionPhrase[] {
       case "tasklist": text = "updated the task list"; break;
       default: text = n === 1 ? "used a tool" : `used ${n} tools`;
     }
-    out.push({ action: a, count: n, text, add: e.add, del: e.del });
+    out.push({ action: a, count: n, printed, text, add: e.add, del: e.del });
   }
-  out.sort((x, y) => y.count - x.count);   // stable: ties keep first appearance
+  out.sort((x, y) => y.printed - x.printed);   // stable: ties keep first appearance
   return out;
 }
-/** The whole head line: the phrases joined by commas, the first letter capitalised. */
+/** The head's parts: the phrases joined by commas, the first letter capitalised, and the edits' totals summed for one printing. */
+export function actionParts(tools: readonly ToolLike[]): { text: string; add: number; del: number } {
+  const ph = actionPhrases(tools);
+  const s = ph.map((p) => p.text).join(", ");
+  return { text: s ? s[0].toUpperCase() + s.slice(1) : "", add: ph.reduce((a, p) => a + p.add, 0), del: ph.reduce((a, p) => a + p.del, 0) };
+}
+/** The whole head line as text: the phrases, then the totals once at the end when any edit carried rows. */
 export function actionHead(tools: readonly ToolLike[]): string {
-  const s = actionPhrases(tools).map((p) => p.text).join(", ");
-  return s ? s[0].toUpperCase() + s.slice(1) : "";
+  const p = actionParts(tools); const tot = totalsText(p.add, p.del);
+  return p.text + (tot ? " " + tot : "");
 }
 
 /** The raw text a tool row's expanded IN row shows (T418): a Bash command as the model typed it (the desktop app's "$ …" box);
@@ -235,10 +213,12 @@ export function toolInputText(t: ToolLike): string {
   return t.input || "";
 }
 
-/** A row's collapsed label: the model's description when it wrote one, else the derived phrase in the same voice. `code`
- *  marks a label that is the command itself (a Bash with no description), for the code face. The path, when the label names
- *  one, is returned apart so the renderer can make it a link. */
-export interface RowLabel { text: string; path?: string; totals?: string; code?: boolean; secondary?: string }
+/** A row's collapsed label: the model's description when it wrote one, else the derived phrase in the same voice. `code` marks a
+ *  label that is the command itself (a Bash with no description), for the code face. `link` marks a label that ends expecting the
+ *  event's file, which the renderer prints as the link right after it ("Read ", "Edited ", "Created ", "Searched for x in "); an
+ *  event with a file the label does not name still gets its link after the label, so no file is lost and none is printed twice.
+ *  `totals` rides an edit ("+12 -3"); the renderer prints it only where no diff fold already carries the numbers. */
+export interface RowLabel { text: string; link?: boolean; totals?: string; code?: boolean; secondary?: string }
 export function toolRowLabel(t: ToolLike): RowLabel {
   const desc = (t.desc || "").trim();
   if (desc) return { text: clip(desc, 160) };
@@ -246,11 +226,15 @@ export function toolRowLabel(t: ToolLike): RowLabel {
   if (t.name === "WebSearch") { const q = typeof o.query === "string" ? o.query : ""; return { text: q ? "Searched the web for " + clip(q) : "Searched the web" }; }   // its head counts as a fetch; its row says what it searched
   const a = toolAction(t.name);
   switch (a) {
-    case "command": { const cmd = typeof o.command === "string" ? o.command : ""; return cmd ? { text: clip(cmd.split("\n")[0]), code: true } : { text: "Ran a command" }; }
-    case "read": return t.file ? { text: "Read ", path: shortPathOf(t.file) } : { text: "Read a file" };
-    case "edit": { const d = diffTotals(t); return t.file ? { text: "Edited ", path: shortPathOf(t.file), totals: totalsText(d.add, d.del).trim() || undefined } : { text: "Edited a file", totals: totalsText(d.add, d.del).trim() || undefined }; }
-    case "create": { const d = diffTotals(t); const tot = d.add ? `+${d.add}` : undefined; return t.file ? { text: "Created ", path: shortPathOf(t.file), totals: tot } : { text: "Created a file", totals: tot }; }
-    case "search": { const w = searchWords(t); return { text: w ? "Searched " + w : "Searched" }; }
+    case "command": {
+      const cmd = typeof o.command === "string" ? o.command : "";
+      const first = cmd.split("\n").map((l) => l.trim()).find((l) => l.length > 0) || "";   // the first non-blank line: a command opening with a blank line is not an empty label
+      return first ? { text: clip(first), code: true } : { text: "Ran a command" };
+    }
+    case "read": return t.file ? { text: "Read ", link: true } : { text: "Read a file" };
+    case "edit": { const d = diffTotals(t); const tot = totalsText(d.add, d.del) || undefined; return t.file ? { text: "Edited ", link: true, totals: tot } : { text: "Edited a file", totals: tot }; }
+    case "create": return t.file ? { text: "Created ", link: true } : { text: "Created a file" };
+    case "search": { const w = searchWords(t); const base = w ? "Searched " + w : "Searched"; return t.file ? { text: base + " in ", link: true } : { text: base }; }
     case "fetch": { const u = typeof o.url === "string" ? o.url : ""; return { text: u ? "Fetched " + hostOf(u) : "Fetched a page" }; }
     case "agent": return { text: "Ran an agent" };
     case "tasklist": return { text: "Updated the task list" };

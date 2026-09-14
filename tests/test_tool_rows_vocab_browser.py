@@ -47,7 +47,8 @@ page.on("pageerror", (e) => pageEvents.push("pageerror:" + String(e).slice(0, 30
 const painted = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))));
 const shot = async (name) => { if (cfg.drops) { try { await page.screenshot({ path: cfg.drops + "/romp_chat-T418-" + name + "-1200.png" }); } catch (e) { pageEvents.push("shot:" + e); } } };
 const groupHead = () => page.evaluate(() => { const g = document.querySelector("#content .turn-toolgroup"); if (!g) return null; const line = g.querySelector(".toolgroup-line"); return { text: line ? line.textContent.replace(/\s+/g, " ").trim() : null, expanded: g.classList.contains("expanded"), head: (g.querySelector(".toolgroup-head") || {}).textContent || null, plus: (g.querySelector(".tool-plus") || {}).textContent || null, minus: (g.querySelector(".tool-minus") || {}).textContent || null }; });
-const rows = () => page.evaluate(() => Array.from(document.querySelectorAll("#content .turn-tool")).map((t) => ({ label: (t.querySelector(".tool-label") || t.querySelector(".tool-name") || {}).textContent || null, code: !!t.querySelector(".tool-label-code"), path: (t.querySelector(".tool-head .tool-file") || {}).textContent || null, totals: (t.querySelector(".tool-totals") || {}).textContent || null, err: t.classList.contains("tool-err"), toggle: (t.querySelector(".tool-fold-toggle") || {}).textContent || null })));
+const rows = () => page.evaluate(() => Array.from(document.querySelectorAll("#content .turn-tool")).map((t) => ({ label: (t.querySelector(".tool-label") || t.querySelector(".tool-name") || {}).textContent || null, code: !!t.querySelector(".tool-label-code"), path: (t.querySelector(".tool-head .tool-file") || {}).textContent || null, totals: (t.querySelector(".tool-totals") || {}).textContent || null, err: t.classList.contains("tool-err"), toggle: (t.querySelector(".tool-fold-toggle") || {}).textContent || null,
+  head: t.querySelector(".tool-head") ? t.querySelector(".tool-head").textContent.replace(/\s+/g, " ").trim() : null, name: (t.querySelector(".tool-name") || {}).textContent || null })));
 const run = async (theme) => {
   await page.addInitScript((th) => { try { localStorage.setItem("romp:settings", JSON.stringify({ theme: th })); } catch (e) {} }, theme);
   await page.goto(cfg.chat);
@@ -56,6 +57,7 @@ const run = async (theme) => {
   await painted();
   const light = await page.evaluate(() => document.body.classList.contains("theme-light"));
   const collapsed = await groupHead();
+  const loneRows = (await rows()).filter((r) => r.head && /^(Searched|Used a tool|Glob|LS|Grep)/.test(r.head));   // the three lone rows sit outside the group, rendered before it expands
   await page.evaluate(() => { const g = document.querySelector("#content .turn-toolgroup .toolgroup-line"); if (g) g.scrollIntoView({ block: "center" }); });
   await painted();
   await shot("head-collapsed-" + theme);
@@ -65,6 +67,10 @@ const run = async (theme) => {
   await painted();
   const expanded = await groupHead();
   const rowList = await rows();
+  // scroll the first Edit row into view for the expanded screenshot (round two, medium 1: the shot shows an Edit row)
+  await page.evaluate(() => { const ts = Array.from(document.querySelectorAll("#content .turn-tool")); const t = ts.find((x) => /^Edited /.test((x.querySelector(".tool-head") || {}).textContent || "")); if (t) t.scrollIntoView({ block: "center" }); });
+  await painted();
+  await shot("edit-row-" + theme);
   // expand the third Bash row's fold: the command and its output
   const opened = await page.evaluate(() => { const ts = Array.from(document.querySelectorAll("#content .turn-tool")); const t = ts[2]; if (!t) return null; const tg = t.querySelector(".tool-fold-toggle"); if (tg) tg.dispatchEvent(new MouseEvent("click", { bubbles: true })); return true; });
   await painted();
@@ -72,7 +78,7 @@ const run = async (theme) => {
   await page.evaluate(() => { const t = Array.from(document.querySelectorAll("#content .turn-tool"))[2]; if (t) t.scrollIntoView({ block: "center" }); });
   await painted();
   await shot("row-expanded-" + theme);
-  return { light, collapsed, expanded, rows: rowList, opened, io };
+  return { light, collapsed, expanded, rows: rowList, loneRows, opened, io };
 };
 const dark = await run("yatharth");
 const lightRun = await run("yatharth-light");
@@ -93,7 +99,7 @@ class ToolRowsVocab(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not os.path.isdir(os.path.join(EXT, "node_modules", "playwright")):
-            cls._skip("extension deps absent (npm ci not run here) — the served guard needs them")
+            cls._skip("extension deps absent (npm ci not run here), which the served guard needs")
         cls.lab = tempfile.mkdtemp(prefix="tool-rows-vocab-")
         b = subprocess.run(["node", "esbuild.js"], cwd=EXT, capture_output=True, text=True)
         if b.returncode != 0:
@@ -147,6 +153,21 @@ class ToolRowsVocab(unittest.TestCase):
         a = "22222222-3333-4444-5555-%012d" % 901
         recs.append({"type": "assistant", "uuid": a, "parentUuid": pa, "timestamp": stamp(base + 130), "sessionId": SID,
                      "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "end_turn", "content": [{"type": "text", "text": "The install completed; the dashboard bundle and the venv are in place."}]}})
+        prev = a
+        # three LONE tool uses, each its own turn (round two, medium 2): a Glob with a path, an LS with a path, a Grep with a path keep their file link
+        lone = [("Glob", {"pattern": "**/*.ts", "path": cwd + "/src"}, "src/a.ts\nsrc/b.ts"), ("LS", {"path": cwd + "/notes"}, "new-0.md\nnew-1.md"),
+                ("Grep", {"pattern": "handler", "path": cwd + "/src"}, "src/a.ts:3: handler")]
+        for j, (name, inp, out) in enumerate(lone):
+            u = "11111111-2222-3333-4444-%012d" % (910 + j); tu_id = "toolu_418_lone_%d" % j
+            tuu = "44444444-5555-6666-7777-%012d" % (200 + j); tru = "55555555-6666-7777-8888-%012d" % (200 + j); a = "22222222-3333-4444-5555-%012d" % (920 + j)
+            recs.append({"type": "user", "uuid": u, "parentUuid": prev, "timestamp": stamp(base + 140 + 10 * j), "sessionId": SID, "message": {"role": "user", "content": "one more look %d" % j}})
+            recs.append({"type": "assistant", "uuid": tuu, "parentUuid": u, "timestamp": stamp(base + 141 + 10 * j), "sessionId": SID,
+                         "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "tool_use", "content": [{"type": "tool_use", "id": tu_id, "name": name, "input": inp}]}})
+            recs.append({"type": "user", "uuid": tru, "parentUuid": tuu, "timestamp": stamp(base + 141 + 10 * j), "sessionId": SID,
+                         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tu_id, "content": out}]}, "toolUseResult": {"stdout": out, "stderr": "", "interrupted": False, "isImage": False}})
+            recs.append({"type": "assistant", "uuid": a, "parentUuid": tru, "timestamp": stamp(base + 142 + 10 * j), "sessionId": SID,
+                         "message": {"role": "assistant", "model": "claude-fable-5-1", "stop_reason": "end_turn", "content": [{"type": "text", "text": "noted %d." % j}]}})
+            prev = a
         Path(proj, SID + ".jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         cls.cwd = cwd
         cls.port = _free_port()
@@ -206,19 +227,40 @@ class ToolRowsVocab(unittest.TestCase):
         r = self._result()
         d = r["dark"]
         self.assertTrue(d["expanded"]["expanded"], "the click expanded the group: %r" % d["expanded"])
-        rows = d["rows"]
-        self.assertEqual(len(rows), 20, "twenty rows: %r" % [x["label"] for x in rows])
+        lone_heads = {x["head"] for x in d["loneRows"]}
+        rows = [x for x in d["rows"] if x["head"] not in lone_heads]
+        self.assertEqual(len(rows), 20, "twenty rows in the group: %r" % [x["label"] for x in rows])
         self.assertEqual([x["label"] for x in rows[:11]], DESCS, "the Bash rows read the model's descriptions")
         self.assertEqual(rows[11]["label"], "Created ", "a Write reads Created + the path: %r" % rows[11])
         self.assertTrue((rows[11]["path"] or "").endswith("notes/new-0.md"), "…the path as a link: %r" % rows[11])
         self.assertEqual(rows[13]["label"], "Edited ", "an Edit reads Edited + the path: %r" % rows[13])
-        self.assertEqual(rows[13]["totals"], "+12 -0", "…with its own totals, the removals said even when none (the head's shape): %r" % rows[13])
+        self.assertTrue((rows[13]["path"] or "").endswith("src/module-0.ts"), rows[13])
+        self.assertEqual(rows[13]["head"].count("+12 -0"), 1, "round two, medium 1: the Edit row's head carries its numbers ONCE, the fold toggle being the totals: %r" % rows[13]["head"])
+        self.assertIsNone(rows[13]["totals"], "…no second totals span beside the toggle: %r" % rows[13])
+        self.assertEqual(rows[13]["toggle"], "+12 -0", "…the toggle in the approved shape, a hyphen minus: %r" % rows[13])
         self.assertEqual(rows[16]["label"], "Read ", "a Read reads Read + the path: %r" % rows[16])
         self.assertTrue((rows[16]["path"] or "").endswith("src/read-0.py"), rows[16])
         self.assertTrue(all(not x["err"] for x in rows), "no row failed")
         self.assertTrue(d["io"] and d["io"]["visible"], "the third command's row expanded to its command and output: %r" % d["io"])
         self.assertIn("true # step 2", d["io"]["text"] or "", "…the command: %r" % d["io"])
         self.assertIn("ok 2", d["io"]["text"] or "", "…and its output: %r" % d["io"])
+
+    def test_a_lone_glob_ls_and_grep_with_a_path_each_keep_their_file_link(self):
+        # round two, medium 2: every event with a file keeps its link, as the base did; a label naming the path names it AS the link
+        r = self._result()
+        lone = r["dark"]["loneRows"]
+        self.assertEqual(len(lone), 3, "three lone tool rows outside the group: %r" % lone)
+        glob = next((x for x in lone if x["head"].startswith("Searched for **/*.ts in ")), None)
+        self.assertIsNotNone(glob, "the lone Glob reads Searched for <pattern> in + the link: %r" % lone)
+        self.assertTrue((glob["path"] or "").endswith("/src"), "…its path as the link: %r" % glob)
+        self.assertEqual(glob["head"].count("/src"), 1, "…printed once: %r" % glob["head"])
+        grep = next((x for x in lone if x["head"].startswith("Searched for handler in ")), None)
+        self.assertIsNotNone(grep, "the lone Grep reads Searched for <pattern> in + the link: %r" % lone)
+        self.assertTrue((grep["path"] or "").endswith("/src"), grep)
+        ls = next((x for x in lone if x["name"] == "LS"), None)
+        self.assertIsNotNone(ls, "the lone LS keeps its name as the secondary label: %r" % lone)
+        self.assertTrue((ls["path"] or "").endswith("/notes"), "…and its file as the link: %r" % ls)
+        self.assertTrue(ls["head"].startswith("Used a tool"), ls["head"])
 
 
 if __name__ == "__main__":

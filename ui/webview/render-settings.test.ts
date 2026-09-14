@@ -18,7 +18,7 @@ test("compact mode folds the stream via compactDisplay, rendered through the uni
 
 test("a collapsed tool run renders its head by action via actionHead (T418: the user's terms, the edits' totals apart) and is click-to-expand", () => {
   assert.match(RENDER, /el\("div", "toolgroup-line"\)/);
-  assert.match(RENDER, /const head = actionHead\(tools\);/, "the head speaks by action: Ran 11 commands, read 4 files, edited 3 files +37 -0");
+  assert.match(RENDER, /const parts = actionParts\(tools\);/, "the head speaks by action: Ran 11 commands, read 4 files, edited 3 files, created 2 files, the totals once at the end");
   assert.match(RENDER, /el\("span", "toolgroup-head"\)/, "the phrases in one span; the totals follow in the diff colours (appendTotals)");
   // the "N Edits" summary shows only when collapsed; expanded → just the arrow
   assert.match(RENDER, /if \(!open\) \{/);
@@ -30,7 +30,6 @@ test("a collapsed tool run renders its head by action via actionHead (T418: the 
   assert.match(RENDER, /function toggleToolGroup/);
   assert.match(RENDER, /if \(openFolds\.has\(key\)\) openFolds\.delete\(key\); else openFolds\.add\(key\);/);
   assert.match(RENDER, /classList\.add\("tg-child"\)/, "expanded children are tagged for indent");
-  assert.match(CSS, /\.toolgroup-tool \{[^}]*font-weight: 700/);
   assert.match(CSS, /\.tg-child \{[^}]*margin-left/);
 });
 

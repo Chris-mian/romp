@@ -68,7 +68,7 @@ import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional,
 import { colFromSearch, columnHolds, type ColSets } from "./chat-columns";   // the chat split's partition (2026-09-11): which column this page is, which sessions it holds
 import { onlyTag, matchesOnly, onlyWindow } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
-import { actionHead, toolRowLabel, toolInputText } from "./compact";
+import { actionParts, toolRowLabel, toolInputText } from "./compact";
 import { parseAgentNotif, notifHead, type AgentNotif } from "./agent-notif";
 import { injectedHead, type InjectedSource } from "./injected-source";
 import { subTabId, isSubId, subParts, subLabel, gistLines, stepLines, stepsNote, agentFoldLabel, subHeadParts, subWaitTail, openIconSvg, pinIconSvg, type SubMeta, type AgentGist, type AgentGistRow, type GistLine } from "./subagent-view";
@@ -5237,15 +5237,16 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   const lbl = toolRowLabel(ev);
   const name = el("span", "tool-label" + (lbl.code ? " tool-label-code" : "")); name.textContent = lbl.text;
   head.appendChild(name);
-  if (lbl.path && ev.file) head.appendChild(fileLink(ev.file));
-  if (lbl.totals) {
+  if (lbl.secondary) { const c = el("span", "tool-name tool-secondary"); c.textContent = lbl.secondary; head.appendChild(c); }
+  if (ev.file) head.appendChild(fileLink(ev.file));   // EVERY event with a file keeps its link (round two, medium 2); a label that names the path names it as this link, never twice
+  const hasDiffFold = !!(ev.diffRows?.length || ev.diff);   // the diff fold's toggle IS the totals for an edit (round two, medium 1): one printing per row
+  if (lbl.totals && !hasDiffFold) {
     const tot = el("span", "tool-totals");
-    const mm = /^\+(\d+)(?: -(\d+))?$/.exec(lbl.totals);
-    if (mm) { const plus = el("span", "tool-plus"); plus.textContent = "+" + mm[1]; tot.appendChild(plus); if (mm[2] !== undefined) { const minus = el("span", "tool-minus"); minus.textContent = "-" + mm[2]; tot.append(" ", minus); } }
+    const mm = /^\+(\d+) -(\d+)$/.exec(lbl.totals);
+    if (mm) { const plus = el("span", "tool-plus"); plus.textContent = "+" + mm[1]; const minus = el("span", "tool-minus"); minus.textContent = "-" + mm[2]; tot.append(plus, " ", minus); }
     else tot.textContent = lbl.totals;
     head.appendChild(tot);
   }
-  if (lbl.secondary) { const c = el("span", "tool-name tool-secondary"); c.textContent = lbl.secondary; head.appendChild(c); }
 
   const ack = ACK_TOOLS.has(ev.name);
   turn.appendChild(head);
@@ -5281,7 +5282,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       row.append(og, ng, sign, txt);
       pre.appendChild(row);
     }
-    inlineFold(head, turn, `+${add} −${del}`, pre, fkey);
+    inlineFold(head, turn, `+${add} -${del}`, pre, fkey);   // the row's one totals text, the approved shape (+A -R, a hyphen minus); the head prints none beside it (T418 round two)
   } else if (ev.name === "Read") {
     if (ev.output) { const n = countLines(ev.output); inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, preEl(ev.output, fkey && fkey + ":out"), fkey); }   // "1 line", not "1 lines" (T418, seen in the lab)
   } else if (ev.name === "Skill") {
@@ -12426,17 +12427,17 @@ function unitAtScroll(v: View, content: HTMLElement): number {
 // Stable identity for a collapsed tool run (survives rebuilds) = the first tool's uuid (else its epoch).
 function toolGroupKey(first: ChatEvent): string { return "tg:" + (first.uuid || String(eventEpoch(first) ?? "")); }
 
-// A collapsed run of consecutive tool uses → one rail line: a caret + "3 Edits, 2 Reads" with each
-// tool word bold (matching the non-compact .tool-name, so it reads AS tools). Clicking the line toggles
-// expand → the full non-compact cards (the user 2026-06-14). Carries the rail dot + time-marker + hover
-// wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any errored.
-/** The edits' totals of a head line ("+37 -0"), appended in the diff colours; the phrase itself is printed without them by the caller. */
-function appendTotals(line: HTMLElement, head: string): void {
-  const m = / \+(\d+) -(\d+)/.exec(head);
-  if (!m) return;
+// A collapsed run of consecutive tool uses → one rail line: a caret + the head in the user's terms (T418, the user 2026-09-14,
+// the desktop app's shape): "Ran 11 commands, read 4 files, edited 3 files, created 2 files" with the edits' totals ONCE at the
+// end in the diff colours (+37 -0). Clicking the line toggles expand → the full non-compact rows (the user 2026-06-14). Carries
+// the rail dot + time-marker + hover wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any
+// errored.
+/** The edits' totals of a head, summed over every edit in the group, appended once in the diff colours. */
+function appendTotals(line: HTMLElement, add: number, del: number): void {
+  if (!add && !del) return;
   const tot = el("span", "tool-totals");
-  const plus = el("span", "tool-plus"); plus.textContent = "+" + m[1];
-  const minus = el("span", "tool-minus"); minus.textContent = "-" + m[2];
+  const plus = el("span", "tool-plus"); plus.textContent = "+" + add;
+  const minus = el("span", "tool-minus"); minus.textContent = "-" + del;
   tot.append(" ", plus, " ", minus);
   line.appendChild(tot);
 }
@@ -12453,10 +12454,10 @@ function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoc
   setTip(line, open ? "click to collapse" : "click to expand");
   const caret = el("span", "toolgroup-caret"); caret.textContent = open ? "▾" : "▸"; line.appendChild(caret);
   if (!open) {   // collapsed → the head by ACTION in the user's terms (T418, the user 2026-09-14: "Ran 11 commands, created 2 files, edited 3 files +37 -0, read 4 files"); expanded → just the open arrow (the rows say it)
-    const head = actionHead(tools);
+    const parts = actionParts(tools);
     line.appendChild(document.createTextNode(" "));
-    const w = el("span", "toolgroup-head"); w.textContent = head.replace(/ \+\d+ -\d+/g, ""); line.appendChild(w);   // the phrases; the totals follow in the diff colours
-    appendTotals(line, head);
+    const w = el("span", "toolgroup-head"); w.textContent = parts.text; line.appendChild(w);   // the phrases; the summed totals follow once, in the diff colours
+    appendTotals(line, parts.add, parts.del);
   }
   turn.appendChild(line);
   const epoch = eventEpoch(tools[0]);

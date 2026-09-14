@@ -59,8 +59,11 @@ test("expand decision: exact toolgroup hit expands, nearest-unit fallback does n
 
 test("T418: the group head speaks by action (actionHead) with the edits' totals in the diff colours, and a tool row's label is the model's description or the derived phrase (toolRowLabel)", () => {
   const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
-  assert.match(RENDER, /const head = actionHead\(tools\);\s*\n\s*line\.appendChild\(document\.createTextNode\(" "\)\);\s*\n\s*const w = el\("span", "toolgroup-head"\); w\.textContent = head\.replace\(\/ \\\+\\d\+ -\\d\+\/g, ""\); line\.appendChild\(w\);[^\n]*\n\s*appendTotals\(line, head\);/,
-    "the collapsed group head is the action phrases, the totals appended apart");
+  assert.match(RENDER, /const parts = actionParts\(tools\);\s*\n\s*line\.appendChild\(document\.createTextNode\(" "\)\);\s*\n\s*const w = el\("span", "toolgroup-head"\); w\.textContent = parts\.text; line\.appendChild\(w\);[^\n]*\n\s*appendTotals\(line, parts\.add, parts\.del\);/,
+    "the collapsed group head is the action phrases, the summed totals appended once");
+  assert.match(RENDER, /if \(ev\.file\) head\.appendChild\(fileLink\(ev\.file\)\);/, "every event with a file keeps its link (round two, medium 2)");
+  assert.match(RENDER, /const hasDiffFold = !!\(ev\.diffRows\?\.length \|\| ev\.diff\);[^\n]*\n\s*if \(lbl\.totals && !hasDiffFold\) \{/, "an edit's totals print once: the diff fold's toggle carries them (round two, medium 1)");
+  assert.match(RENDER, /inlineFold\(head, turn, `\+\$\{add\} -\$\{del\}`, pre, fkey\);/, "the fold's toggle in the approved shape, a hyphen minus");
   assert.match(RENDER, /const lbl = toolRowLabel\(ev\);\s*\n\s*const name = el\("span", "tool-label" \+ \(lbl\.code \? " tool-label-code" : ""\)\); name\.textContent = lbl\.text;/,
     "the row's label is the description or the derived phrase; a bare command wears the code face");
   assert.match(RENDER, /if \(lbl\.secondary\) \{ const c = el\("span", "tool-name tool-secondary"\); c\.textContent = lbl\.secondary; head\.appendChild\(c\); \}/, "the tool's name is secondary, only where no phrase names the action");
