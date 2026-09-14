@@ -62230,6 +62230,10 @@ def _drain_and_exit(reason, signum=None, what="SIGTERM", audit=None):
     except Exception as _e:
         _exit_log("romp-kernel: the spend-tree memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
     try:
+        jd.persist_planner_seen(force=True)   # the planner's seen memo: the next kernel's first pass skips what stands (T401 (5c))
+    except Exception as _e:
+        _exit_log("romp-kernel: the planner-seen memo was not persisted at exit: %s: %s\n" % (type(_e).__name__, str(_e)[:120]))
+    try:
         _drain_sessions = [_s for _s in _sessions(time.time()) if _s.get("sid") and _s.get("path")]
     except Exception:
         _drain_sessions = []

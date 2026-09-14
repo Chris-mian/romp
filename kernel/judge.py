@@ -3140,8 +3140,105 @@ _COURIER_SEEN = {}         # fsid -> the scan key of its last pass that found no
 # (GATED_TIERS, _gate_check and _gated in run_plan) sits around it and keys on a superset of these inputs
 # (cleared.jsonl, the death marker, the reg's spawnedAt value and the stall slice as well), so most skips
 # happen there and this table sees the sessions it let through.
-_PLANNER_SEEN = {}         # fsid -> the plan key of its last pass that had nothing to do
-_PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0}
+_PLANNER_SEEN = {}         # fsid -> the plan key of its last pass that had nothing to do (JSON-normalized: lists, not tuples)
+_PLANNER_STATS = {"skipped": 0, "planned": 0, "recorded": 0, "restored": 0, "refused": 0, "persisted": 0}
+#                            restored: rows a boot loaded (served only when their key stands); refused: rows the load would not
+#                            trust; persisted: the rows on disk after the last write (T401 (5c): every boot re-planned every
+#                            session because this memo lived in memory alone: plannerSkip skipped 0, planned 20 on 2026-09-14)
+_PLANNER_SEEN_FILE = "planner-seen.json"   # STATE/planner-seen.json: {"v": 1, "rows": {fsid: <the normalized plan key>}}
+_PLANNER_SEEN_V = 1
+_PLANNER_SEEN_LOCK = threading.Lock()
+_PLANNER_SEEN_DIRTY = [False]
+_PLANNER_SEEN_LOADED = [False]
+_PLANNER_SEEN_SAID = [False]               # the persist's failure said once per fault episode (re-armed by a clean write)
+_PLANNER_FSID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _planner_key_norm(pkey):
+    """The plan key as JSON carries it (tuples to lists, ints and floats kept), or None for a key that cannot be persisted: a
+    _file_key sentinel (a fresh object() for a file that exists but cannot be read) is never equal to anything, so such a key is
+    neither recorded nor compared (the in-memory memo never matched it either). Both sides of every comparison go through here."""
+    try:
+        return json.loads(json.dumps(pkey))
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_planner_seen():
+    """The previous kernel's planner memo into _PLANNER_SEEN, once per boot (best-effort; a missing or torn file is an empty memo).
+    Every row is checked: a uuid-shaped fsid and a list value, else refused (counted, never trusted); a row is an ANSWER only when
+    its key, recomputed at the next pass, equals the persisted one (the tick-seen rule: recompute and compare, never trust)."""
+    if _PLANNER_SEEN_LOADED[0]:
+        return 0
+    _PLANNER_SEEN_LOADED[0] = True
+    try:
+        d = json.loads((STATE / _PLANNER_SEEN_FILE).read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    rows = d.get("rows") if isinstance(d, dict) and d.get("v") == _PLANNER_SEEN_V else None
+    if not isinstance(rows, dict):
+        _PLANNER_STATS["refused"] += 1 if d else 0
+        return 0
+    n = 0
+    with _PLANNER_SEEN_LOCK:
+        for fsid, v in rows.items():
+            if not (isinstance(fsid, str) and _PLANNER_FSID_RE.match(fsid) and isinstance(v, list)):
+                _PLANNER_STATS["refused"] += 1
+                continue
+            _PLANNER_SEEN[fsid] = v; n += 1
+    _PLANNER_STATS["restored"] = n
+    return n
+
+
+def _planner_seen_set(fsid, norm):
+    with _PLANNER_SEEN_LOCK:
+        if _PLANNER_SEEN.get(fsid) != norm:
+            _PLANNER_SEEN[fsid] = norm; _PLANNER_SEEN_DIRTY[0] = True       # dirty by CHANGE only
+
+
+def _planner_seen_pop(fsid):
+    with _PLANNER_SEEN_LOCK:
+        if _PLANNER_SEEN.pop(fsid, None) is not None:
+            _PLANNER_SEEN_DIRTY[0] = True
+
+
+def _planner_seen_drop(alive):
+    """Drop every row whose fsid is not in `alive` (the sessions this pass discovered): bounded by the fleet."""
+    with _PLANNER_SEEN_LOCK:
+        for gone in [f for f in _PLANNER_SEEN if f not in alive]:
+            _PLANNER_SEEN.pop(gone, None); _PLANNER_SEEN_DIRTY[0] = True
+
+
+def persist_planner_seen(force=False):
+    """Write the memo when a row changed since the last write (or `force`, the kernel's exit): serialized under the lock before the
+    flag clears, staged under a per-writer tmp (pid and thread id), the tmp unlinked and the flag re-armed on a failed replace,
+    the failure said once per episode; best-effort, never raises for a write fault."""
+    with _PLANNER_SEEN_LOCK:
+        if not (_PLANNER_SEEN_DIRTY[0] or force):
+            return False
+        snap = {"v": _PLANNER_SEEN_V, "rows": {k: v for k, v in _PLANNER_SEEN.items()}}
+        body = json.dumps(snap)                                            # every row went through _planner_key_norm: JSON-native
+        _PLANNER_SEEN_DIRTY[0] = False
+    p = STATE / _PLANNER_SEEN_FILE
+    tmp = p.with_name(p.name + ".tmp.%d.%x" % (os.getpid(), threading.get_ident()))
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, p)
+        _PLANNER_STATS["persisted"] = len(snap["rows"])
+        _PLANNER_SEEN_SAID[0] = False
+        return True
+    except Exception as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        with _PLANNER_SEEN_LOCK:
+            _PLANNER_SEEN_DIRTY[0] = True
+        if not _PLANNER_SEEN_SAID[0]:
+            _PLANNER_SEEN_SAID[0] = True
+            sys.stderr.write("planner-seen memo: not written: %s: %s (said once per episode; retried by the next persist)\n" % (type(e).__name__, str(e)[:120]))
+        return False
 
 
 def planner_skip_stats():
@@ -11334,8 +11431,9 @@ def _plan_session(fsid, path, now):
     _judge_ctx.fsid = fsid                            # usage logging: attribute this session's judge calls
     session = parsed_session(fsid, [path], now)
     pkey = _plan_key(fsid, path, session, now)        # BEFORE the store read (the chain-memo rule)
-    if pkey is not None and _PLANNER_SEEN.get(fsid) == pkey:
-        _PLANNER_STATS["skipped"] += 1               # nothing moved since a pass that had nothing to do
+    norm = _planner_key_norm(pkey) if pkey is not None else None
+    if norm is not None and _PLANNER_SEEN.get(fsid) == norm:   # the persisted or in-memory row stands: recomputed and compared,
+        _PLANNER_STATS["skipped"] += 1               # never trusted (T401 (5c)); nothing moved since a pass that had nothing to do
         return 0
     _PLANNER_STATS["planned"] += 1
     store = load_goals(fsid)
@@ -11857,11 +11955,11 @@ def _plan_session(fsid, path, now):
     save_goals(fsid, store)
     if pkey is not None:
         if placed == 0 and not units and not retired and _store_key(fsid) == pkey[2] \
-                and not getattr(_judge_ctx, "stage_incomplete", False):
-            _PLANNER_SEEN[fsid] = pkey               # nothing to do and nothing written: skipped until an input moves
+                and not getattr(_judge_ctx, "stage_incomplete", False) and norm is not None:
+            _planner_seen_set(fsid, norm)            # nothing to do and nothing written: skipped until an input moves (persisted)
             _PLANNER_STATS["recorded"] += 1
         else:
-            _PLANNER_SEEN.pop(fsid, None)            # work done, the store moved, or the pass was INCOMPLETE (the
+            _planner_seen_pop(fsid)                  # work done, the store moved, or the pass was INCOMPLETE (the
             #                                          completeness bit the evidence gate reads, _gated: a stand-down
             #                                          without a write, or a side file that exists and did not read):
             #                                          planned again next pass. A recorded incomplete pass would skip
@@ -11914,8 +12012,8 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=None, verbose=Fal
         except Exception as e:
             _log_judge_error("peer-wait-sweep", "-", "the store-side peer-wait pass raised: %r" % (e,))
     fleet = [s for s in discover(now) if not _hidden_from_feed(s[0])][:sessions_cap]   # muted sessions are out of task tracking
-    for _gone in [f for f in _PLANNER_SEEN if f not in {s[0] for s in fleet}]:
-        _PLANNER_SEEN.pop(_gone, None)                # the planner gate, bounded by the sessions this pass discovered
+    _load_planner_seen()                              # T401 (5c): the previous kernel's rows, once per boot, before the first gate check
+    _planner_seen_drop({s[0] for s in fleet})         # the planner gate, bounded by the sessions this pass discovered
     placed = 0
     with ThreadPoolExecutor(max_workers=_conc(concurrency)) as ex:
         futs = {}
@@ -11933,6 +12031,7 @@ def run_plan(now=None, sessions_cap=PLAN_SESSIONS, concurrency=None, verbose=Fal
     if verbose:
         sys.stderr.write("romp-judge: planner placed %d segments across %d sessions\n" % (placed, len(fleet)))
     _wrap_index_save()                                # T333: the negative memo grew this pass? persist it
+    persist_planner_seen()                            # T401 (5c): a row changed this pass? persist it
     return placed
 
 

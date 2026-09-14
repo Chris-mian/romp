@@ -2196,7 +2196,17 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   exists and cannot be read or parsed is answered empty, marks the running
   judge stage incomplete, and is not memoized, so the next call reads the file
   again. `plannerSkip` is the planner's inner change gate (`skipped`,
-  `planned`, `recorded`). The planner runs behind two gates. The outer gate is
+  `planned`, `recorded`, and since T401 (5c) `restored`, `refused`,
+  `persisted`: the gate's memo of "the key of the last pass that had
+  nothing to do", one row per session, persists across boots in
+  `STATE/planner-seen.json` (version 1, the tick-seen shape: a row is never
+  an answer on its own, the key is recomputed at the pass and compared, a
+  malformed row is refused, rows are dropped with the sessions, the write
+  is atomic under a per-writer temporary and re-armed on a failed replace);
+  `restored` counts the rows a boot loaded, `refused` the rows it would not
+  trust, `persisted` the rows on disk after the last write; before it every
+  boot re-planned every session, `planned` 20 and `skipped` 0 on the
+  2026-09-14 read boots). The planner runs behind two gates. The outer gate is
   the judge's evidence gate around `_plan_session` (`docs/judges.md`, "Ops and
   knobs"): a session whose signature equals the one the planner stamped after
   its last complete run is skipped before it is submitted. It keys on the
