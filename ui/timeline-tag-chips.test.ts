@@ -29,7 +29,8 @@ function makeNode(tag: string): any {
     addEventListener(t: string, fn: any) { n._listeners[t] = fn; }, removeEventListener() {},
     querySelector() { return null; }, querySelectorAll() { return []; },
     getBoundingClientRect() { return { width: 32, height: 18, left: 8, top: 400, right: 40, bottom: 418 }; },
-    closest() { return null; }, focus() {},
+    closest() { return null; },
+    focus() { n._focused = true; if (n._listeners.focus) n._listeners.focus({}); },   // the strip tidy: a row's focus listener roves the tab stop
     click() { if (n._listeners.click) n._listeners.click({ stopPropagation() {}, preventDefault() {} }); },
     createEl(t: string, o: any) { const e = makeNode(t); if (o && o.cls) e.classList.add(o.cls); if (o && o.text) e.textContent = o.text; this.appendChild(e); return e; },
     createDiv(o: any) { return this.createEl("div", o); }, createSpan(o: any) { return this.createEl("span", o); },
@@ -135,25 +136,27 @@ test("executed: clicking a chip's row toggles that tag, the menu stays open and 
 // ROUND TWO of T413 (the manager's read of 2026-09-14): the shared menu took the house rows menu's keyboard grammar, and so does
 // this copy: role menu; rows that take focus (tabindex 0) and keys (Enter and Space press, ArrowDown and ArrowUp walk, Home and
 // End jump), the first row focused on open; Escape closes and hands the focus back to the button.
-test("executed: the inlined menu takes the house rows menu's keyboard grammar: role menu, rows with focus and keys, Escape back to the button", () => {
+test("executed: the inlined menu takes the house rows menu's keyboard grammar: role menu, ONE tab stop that roves with the focus, rows with keys, a pointer open leaving the focus alone, Escape back to the button", () => {
   const panel = panelWith({ tags: ["infra"] });
   const anchor = makeNode("button"); let refocused = 0; anchor.focus = () => { refocused++; };
   let focusedRow: any = null;
-  panel._openViewsMenu(anchor); const menu = panel._viewsMenu;
+  panel._openViewsMenu(anchor); const menu = panel._viewsMenu;   // a POINTER open: the stub document's activeElement is not the anchor
   assert.equal(menu._attrs.role, "menu", "the menu's role");
   const r = rows(menu).filter((x: any) => x._attrs.role);
   assert.deepEqual(r.map(text).map((t: string) => t.replace("✓", "")), ["All", "(no tags)", "infra", "qa", "Group by tag", "Configure tags…"]);
   for (const x of r) {
-    assert.equal(x.tabIndex, 0, text(x) + ": the row takes focus");
+    assert.equal(x.tabIndex, x === r[0] ? 0 : -1, text(x) + ": one tab stop (the first row), the rest reached by the arrows, so Tab leaves the menu");
     assert.ok(x._listeners.keydown, text(x) + ": and the keys");
     assert.match(x._attrs.style, /outline:none;/, text(x) + ": the focus ring is the hover wash");
-    x.focus = () => { focusedRow = x; };
   }
+  assert.ok(!r[0]._focused, "a pointer open leaves the focus where it was: the first row is the stop but not focused");
+  for (const x of r) { const own = x.focus; x.focus = () => { own.call(x); focusedRow = x; }; }
   assert.ok(menu._listeners.keydown, "the menu's own handler: Escape and the walk");
   const key = (k: string) => ({ key: k, target: null as any, prevented: false, stopped: false, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } });
   // the walk: from the first row, ArrowDown lands on the second (the menu's handler reads the focused row from the event's target)
   const d = key("ArrowDown"); d.target = r[0]; menu._listeners.keydown(d);
   assert.equal(focusedRow, r[1], "ArrowDown moves to the next row"); assert.ok(d.prevented);
+  assert.deepEqual(r.map((x: any) => x.tabIndex), [-1, 0, -1, -1, -1, -1], "the tab stop moved with the focus");
   const e = key("End"); e.target = r[1]; menu._listeners.keydown(e); assert.equal(focusedRow, r[5], "End jumps to the last");
   const u = key("ArrowDown"); u.target = r[5]; menu._listeners.keydown(u); assert.equal(focusedRow, r[5], "the end holds");
   // Space on the qa row toggles it, the menu staying
@@ -163,6 +166,32 @@ test("executed: the inlined menu takes the house rows menu's keyboard grammar: r
   assert.equal(panel._viewsMenu, menu, "the menu stayed open");
   const esc = key("Escape"); esc.target = r[3]; menu._listeners.keydown(esc);
   assert.equal(panel._viewsMenu, null, "Escape closed it"); assert.equal(refocused, 1, "and handed the focus back to the button"); assert.ok(esc.stopped);
+});
+
+test("executed: a keyboard open (the button holds the focus) puts the focus on the first row; the Group by tag switch is a checkbox row", () => {
+  const panel = panelWith({ tags: ["infra"] });
+  const anchor = makeNode("button");
+  (g.document as any).activeElement = anchor;   // the button had the focus: a keyboard open
+  try {
+    panel._openViewsMenu(anchor); const menu = panel._viewsMenu;
+    const r = rows(menu).filter((x: any) => x._attrs.role);
+    assert.ok(r[0]._focused, "the first row took the focus"); assert.equal(r[0].tabIndex, 0);
+    assert.equal(r[4]._attrs.role, "menuitemcheckbox", "Group by tag: a switch row"); assert.equal(r[4]._attrs["aria-checked"], "false");
+    panel._closeViewsMenu();
+  } finally { delete (g.document as any).activeElement; }
+});
+
+test("drift pins: the two-state mark is one drawing in both copies: the shared checkMark's geometry byte for byte, the check from the check token or the palette's accent, the ring from the muted text token or the palette's muted text", () => {
+  const mark = MENU.slice(MENU.indexOf("function checkMark("), MENU.indexOf("\n}\n", MENU.indexOf("function checkMark(")));
+  const geo = "position:absolute;right:6px;top:50%;transform:translateY(-50%);width:13px;height:13px;border-radius:50%;box-sizing:border-box;";
+  assert.ok(mark.includes('"' + geo + '"'), "the shared mark's geometry is where the pin expects it");
+  assert.ok(mark.includes('"display:inline-flex;align-items:center;justify-content:center;line-height:1;font-size:9px;font-weight:900;"'), "the shared mark's glyph box");
+  assert.match(mark, /background:var\(--check-bg, #1EA1EB\);color:#fff;/, "on: the check token"); assert.match(mark, /border:1px solid var\(--text-muted, #9aa0a6\);background:transparent;/, "off: the muted text token");
+  const ring = /const menuRingStyleFor = \(p\) => '([^']+)'\s*\n\s*\+ 'border:1px solid ' \+ p\.modelFg \+ ';background:transparent;';/.exec(SRC);
+  assert.ok(ring, "the view's ring maker is where the pin expects it");
+  assert.equal(ring![1], geo, "the ring: the shared geometry byte for byte, the palette's muted text (modelFg) standing for --text-muted");
+  const check = /const menuCheckStyleFor = \(p\) => 'position:absolute;right:6px;top:50%;transform:translateY\(-50%\);'\s*\n\s*\+ 'background:' \+ p\.accentSolid \+ ';color:#fff;border-radius:50%;width:13px;height:13px;font-size:9px;'\s*\n\s*\+ 'font-weight:900;display:inline-flex;align-items:center;justify-content:center;line-height:1;';/.exec(SRC);
+  assert.ok(check, "the view's check maker: the same 13px round box, 9px at weight 900, centred, the palette's accent standing for --check-bg");
 });
 
 test("drift pins: the inlined chip is the shared tagChip's pill up to the colour, and the fade and row shape match the shared menu", () => {

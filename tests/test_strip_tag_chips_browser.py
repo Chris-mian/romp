@@ -125,6 +125,9 @@ const themed = async (name, fn) => { for (const theme of ["dark", "light"]) { aw
 // 1. boot: grouping is the default with tags present: the headings carry the tags, nothing beside the button
 out.boot = await readStrip();
 await openMenu(); out.menuBoot = await readMenu(); out.menuBox = await readMenuBox();
+// the pointer's open leaves the focus where it was (the strip tidy after round two: the first row is the one tab stop, unfocused)
+out.pointerFocus = await page.evaluate(() => { const m = document.querySelector('[data-tag-menu="1"]'); const a = document.activeElement;
+  return { inMenu: !!(m && a && m.contains(a)), tag: a ? a.tagName : null, stops: m ? Array.from(m.children).filter((r) => r.getAttribute("role")).map((r) => r.tabIndex) : null }; });
 await page.mouse.up(); await page.waitForTimeout(200); out.menuAfterRelease = !!(await page.$('[data-tag-menu="1"]'));
 await page.keyboard.press("Escape"); await page.waitForTimeout(200); out.escapeClosed = !(await page.$('[data-tag-menu="1"]'));   // an observation for the read
 await page.evaluate(() => document.body.click()); await page.waitForTimeout(200);
@@ -167,7 +170,7 @@ out.sweep = [];
 for (const w of [1400, 1200, 1060, 980, 920, 860, 800, 760, 720, 680, 640, 600, 560, 500, 440]) {
   await page.setViewportSize({ width: w, height: 700 }); await page.waitForTimeout(350);
   const s = await readStrip();
-  out.sweep.push({ w, rows: s.rows, rowsSansChips: s.rowsSansChips, chips: s.chips.map((c) => c.text), hostVisible: s.hostVisible, hostDisplay: s.hostDisplay, hostRect: s.hostRect, hostClip: s.hostClip, endRightGap: s.endRightGap, gearRightGap: s.gearRightGap });
+  out.sweep.push({ w, rows: s.rows, rowsSansChips: s.rowsSansChips, chips: s.chips.map((c) => c.text), hostVisible: s.hostVisible, hostDisplay: s.hostDisplay, hostRect: s.hostRect, hostClip: s.hostClip, endRightGap: s.endRightGap, gearRightGap: s.gearRightGap, btnToGear: s.btnToGear });
 }
 await page.setViewportSize({ width: 1400, height: 700 }); await page.waitForTimeout(500);
 // 7. grouping on again: the headings, no chips
@@ -350,7 +353,7 @@ class ServedStripTagChips(unittest.TestCase):
         self.assertGreaterEqual(s["chipsLeftOfBtn"], 0, "the chips sit LEFT of the button" + t)
         self.assertEqual(s["rows"], base["rows"], "the selection added no row" + t)
         self.assertEqual(s["rows"], s["rowsSansChips"], "the rows with the chips equal the rows without them" + t)
-        self.assertLessEqual(s["endRightGap"], 2.0, "the right end flush with the strip" + t); self._gear_at_end(s, "the gear at its 4px" + t)
+        self.assertLessEqual(s["endRightGap"], 2.0, "the right end flush with the strip" + t); self._solo_end(s, t)
         self.assertEqual(s["pressed"], "true", "the button wears the accent: narrowed" + t)
         self.assertEqual(base["chips"], [], "the baseline, All: no chip" + t)
 
@@ -360,7 +363,7 @@ class ServedStripTagChips(unittest.TestCase):
         self.assertEqual(s["chips"][3]["cls"], "tag-chip-more", "the more chip is the plain chip" + t)
         for name in ("docs", "sdk", "cli"): self.assertIn(name, s["chips"][3]["title"], "its title names the rest" + t)
         self.assertEqual(s["rows"], base["rows"], "thirty tags added no row" + t); self.assertEqual(s["rows"], s["rowsSansChips"], t)
-        self.assertLessEqual(s["endRightGap"], 2.0, t); self._gear_at_end(s, "the gear and the button stay on the strip's end" + t)
+        self.assertLessEqual(s["endRightGap"], 2.0, t); self._solo_end(s, t)
         self.assertTrue(r["moreOpens"], "the more chip opens the menu")
         a = r["afterRemove"]; ta = "\n  " + json.dumps(a)
         self.assertEqual([c["text"] for c in a["chips"]], ["web", "api", "docs", "+26 more"], "the first chip's cross dropped its tag: the run shifts, the count follows" + ta)
@@ -372,7 +375,7 @@ class ServedStripTagChips(unittest.TestCase):
         self.assertFalse(s["hostClip"], "no chip is clipped" + t)
         if not s["hostVisible"]:
             self.assertEqual((s["hostDisplay"], s["hostRect"]), ("none", [0, 0]), "hidden means out of the flow: computed display none and a zero rect, never the attribute alone" + t)
-        self.assertLessEqual(s["endRightGap"], 2.0, "the right end still flush" + t); self._gear_at_end(s, "the gear on the strip's end" + t)
+        self.assertLessEqual(s["endRightGap"], 2.0, "the right end still flush" + t); self._solo_end(s, t)
         self.assertEqual(s["pressed"], "true", "the accent still says narrowed, chips or not" + t)
 
     def test_in_group_mode_the_headings_carry_the_tags_and_nothing_sits_beside_the_button(self):
@@ -387,13 +390,11 @@ class ServedStripTagChips(unittest.TestCase):
             self.assertEqual(s["chips"], [], t)
         self.assertEqual(r["groupedMany"]["pressed"], "true", "narrowed to thirty tags, the button says so in group mode too")
 
-    def _gear_at_end(self, s, why, t=""):
-        """the gear at its 4px from the strip's end where it is drawn; since T415 part one the standalone chat page (this lab's) draws no gear,
-        so the tags button closes the right end itself (endRightGap, asserted beside every call)"""
-        if s["gearRightGap"] is not None:
-            self.assertLessEqual(abs(s["gearRightGap"] - 4), 0.6, why + t)
-        else:
-            self.assertLessEqual(s["endRightGap"], 2.0, "no gear on the solo page: the button itself closes the right end" + t)
+    def _solo_end(self, s, t=""):
+        """this lab drives the standalone chat page, which since T415 part one draws no gear: the absence is asserted outright, and the tags
+        button closes the strip's right end itself (the dashboard's strip, gear and all, is tests/test_tab_lock_browser.py's)"""
+        self.assertIsNone(s["gearRightGap"], "no gear on the standalone page" + t); self.assertIsNone(s["btnToGear"], t)
+        self.assertLessEqual(s["endRightGap"], 2.0, "the tags button closes the right end" + t)
 
     # ROUND TWO (the manager's read of 2026-09-14)
     def test_across_widths_the_run_gives_up_chips_one_by_one_before_it_hides_and_never_adds_a_row_or_clips(self):
@@ -410,7 +411,7 @@ class ServedStripTagChips(unittest.TestCase):
                 self.assertEqual(more, ["+%d more" % (30 - len(shown))], "the count names the rest of the thirty" + te)
             else:
                 self.assertEqual((e["hostDisplay"], e["hostRect"]), ("none", [0, 0]), "hidden means out of the flow" + te)
-            self.assertLessEqual(e["endRightGap"], 2.0, "the right end flush" + te); self._gear_at_end(e, "the gear at its 4px" + te)
+            self.assertLessEqual(e["endRightGap"], 2.0, "the right end flush" + te); self._solo_end(e, te)
         self.assertTrue(any(e["hostVisible"] and len([c for c in e["chips"] if not c.startswith("+")]) == 3 for e in sweep), "the wide end: the full run" + t)
         self.assertTrue(any(e["hostVisible"] and 1 <= len([c for c in e["chips"] if not c.startswith("+")]) <= 2 for e in sweep), "somewhere between, a shorter run: chip by chip before hiding" + t)
         self.assertTrue(any(not e["hostVisible"] for e in sweep), "and a width where even one chip and the count do not fit: hidden" + t)
@@ -429,7 +430,12 @@ class ServedStripTagChips(unittest.TestCase):
         self.assertEqual((es["active"]["cls"], es["active"]["tag"]), ("tab-tagfilter", "BUTTON"), "and hands the focus back to the (rebuilt) button" + t)
         rows = {x["label"]: x for x in r["menuBoot"]}
         for label in ("All", "(no tags)", "infra"):
-            self.assertEqual((rows[label]["menuRole"], rows[label]["tabIndex"]), ("menu", 0), label + ": on the pointer's open too, the menu's role and a row that takes focus\n  " + json.dumps(rows[label]))
+            self.assertEqual((rows[label]["menuRole"], rows[label]["tabIndex"]), ("menu", 0 if label == "All" else -1), label + ": on the pointer's open too, the menu's role and ONE tab stop, the first row (the rest reached by the arrows, so Tab leaves the menu)\n  " + json.dumps(rows[label]))
+        pf = r["pointerFocus"]; tp = "\n  " + json.dumps(pf)
+        self.assertFalse(pf["inMenu"], "a pointer open leaves the focus where it was, never in the menu (round one's rule)" + tp)
+        self.assertEqual(pf["stops"][0], 0, "the first row is the one tab stop" + tp); self.assertEqual(set(pf["stops"][1:]), {-1}, "and the rest are -1" + tp)
+        grp = rows["Group tabs by tag"]
+        self.assertEqual((grp["role"], grp["checked"], grp["mark"]["check"]), ("menuitemcheckbox", "true", "true"), "the group switch is a checkbox row with its state and the two-state mark (grouping on at boot)\n  " + json.dumps(grp))
 
     def test_the_unselected_ring_clears_three_to_one_against_the_menu_ground_in_both_themes(self):
         r = self._run()

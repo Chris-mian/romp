@@ -29,6 +29,7 @@ function mk(tag: string): any {
     get children(): any[] { return n.kids.filter((k: any) => k.tag !== "#text"); },
     get childElementCount(): number { return n.children.length; },
     get firstElementChild(): any { return n.children[0] || null; },
+    get parentElement(): any { return n.parentNode; },   // the roving tab stop reads the row's parent (the strip tidy)
     get lastElementChild(): any { const c = n.children; return c[c.length - 1] || null; },
     setAttribute(k: string, v: string) { n.attrs[k] = String(v); }, getAttribute(k: string) { return k in n.attrs ? n.attrs[k] : null; },
     appendChild(c: any) { c.parentNode = n; n.kids.push(c); return c; },
@@ -68,37 +69,71 @@ const mod = require("./tag-menu");
 const UNIONS = [{ name: "infra", color: "#DD42FF" }, { name: "qa", color: "#3355aa" }].map((u) => ({ ...u, members: [], ids: [], localId: null, locals: [], remotes: [] }));
 const label = (n: any): string => n.textContent.replace("✓", "").trim();
 /** the real openTagMenu on a button in the stub body; the rows are the menu's children that carry a role (the separator has none) */
-function open(lens: { all?: boolean; none?: boolean; tags?: string[] }) {
+function open(lens: { all?: boolean; none?: boolean; tags?: string[] }, via: "keyboard" | "pointer" = "keyboard") {
   mod.closeTagMenu(); active = null;
   for (const k of body.kids.slice()) k.remove();
   const applies: { lens: any; done: boolean }[] = []; let current: any = lens;
+  const composer = mk("textarea"); composer.className = "composer"; body.appendChild(composer);
   const btn = mk("button"); btn.className = "tab-tagfilter"; body.appendChild(btn);
+  // a keyboard open: the button had the focus (the user tabbed to it and pressed Enter); a pointer open: the press prevents the
+  // button's own focus, so the focus is wherever it was, here the composer's (the strip tidy after T413 round two)
+  if (via === "keyboard") btn.focus(); else composer.focus();
   mod.openTagMenu(btn, { lens: () => current, unions: () => UNIONS,
     onApply: (l: any, done: boolean) => { applies.push({ lens: l, done }); current = l; },
     groupToggle: { label: "Group tabs by tag", on: () => false, toggle() { /* a switch */ } }, onConfigure() { /* a route */ } });
   const menu = body.kids[body.kids.length - 1];
-  return { btn, menu, applies, rows: () => menu.children.filter((r: any) => r.getAttribute("role")) as any[] };
+  return { btn, composer, menu, applies, rows: () => menu.children.filter((r: any) => r.getAttribute("role")) as any[] };
 }
 const press = (node: any, key: string) => node.dispatch("keydown", ev(key));
 
-test("the menu is role menu, every row takes focus (tabindex 0), and the first row holds the focus once the menu is open", () => {
+test("the menu is role menu with ONE tab stop (the ARIA menu pattern): the first row is tabindex 0 and the rest -1, every row takes the keys, and a keyboard open puts the focus on the first row", () => {
   const m = open({ all: true });
   assert.equal(m.menu.getAttribute("role"), "menu", "the menu's role");
   const rows = m.rows();
   assert.deepEqual(rows.map(label), ["All", "(no tags)", "infra", "qa", "Group tabs by tag", "Configure tags…"], "every row, the tags between");
   for (const r of rows) {
-    assert.equal(r.tabIndex, 0, label(r) + ": the row takes focus");
+    assert.equal(r.tabIndex, r === rows[0] ? 0 : -1, label(r) + ": one tab stop, the rest reached by the arrows, so Tab leaves the menu (35 stops before, the strip tidy)");
     assert.ok((r.listeners.keydown || []).length >= 1, label(r) + ": and the keys");
     assert.match(r.attrs.style, /outline:none;/, label(r) + ": the focus ring is the hover wash, not the browser's outline");
   }
-  assert.equal(active, rows[0], "the first row holds the focus on open");
+  assert.equal(active, rows[0], "the keyboard open (the button had the focus) puts it on the first row");
   assert.match(rows[0].style.background || "", /--menu-hover/, "…and reads focused with the hover wash");
+  mod.closeTagMenu();
+});
+
+test("a pointer open leaves the focus where it was (the composer's, round one's rule) and still leaves one tab stop on the first row", () => {
+  const m = open({ all: true }, "pointer");
+  assert.equal(active, m.composer, "the composer keeps the focus: the press never moved it");
+  const rows = m.rows();
+  assert.deepEqual(rows.map((r: any) => r.tabIndex), [0, -1, -1, -1, -1, -1], "the first row is the one tab stop, unfocused");
+  assert.equal(m.menu.parentNode, body, "the menu is open");
+  mod.closeTagMenu();
+});
+
+test("the tab stop moves with the focus: an arrow or a click on a row makes that row the stop and the others -1", () => {
+  const m = open({ all: true });
+  const rows = m.rows();
+  press(active, "ArrowDown"); press(active, "ArrowDown");
+  assert.equal(label(active), "infra"); assert.deepEqual(rows.map((r: any) => r.tabIndex), [-1, -1, 0, -1, -1, -1], "the stop followed the arrows");
+  rows[4].focus();   // a pointer press on a row focuses it (tabindex -1 elements take a click's focus)
+  assert.deepEqual(rows.map((r: any) => r.tabIndex), [-1, -1, -1, -1, 0, -1], "…and a click's focus too");
+  mod.closeTagMenu();
+});
+
+test("the Group tabs by tag switch is a checkbox row like the house rows menu's switches: role menuitemcheckbox, aria-checked, the two-state mark", () => {
+  const m = open({ all: true });
+  const sw = m.rows()[4];
+  assert.equal(label(sw), "Group tabs by tag");
+  assert.equal(sw.getAttribute("role"), "menuitemcheckbox", "a switch, not a plain item (round two named it menuitem with no state)");
+  assert.equal(sw.getAttribute("aria-checked"), "false", "off in this fixture, said so");
+  const mark = sw.children.find((c: any) => c.getAttribute("data-check") !== null);
+  assert.ok(mark && mark.getAttribute("data-check") === "false", "the two-state mark, the empty ring when off");
   mod.closeTagMenu();
 });
 
 test("ArrowDown and ArrowUp walk the rows, Home and End jump to the ends, and neither end wraps", () => {
   const m = open({ all: true });
-  assert.ok(active, "a focused row to start from (the first row on open)");
+  assert.ok(active, "a focused row to start from (the first row on a keyboard open)");
   const rows = m.rows();
   press(active, "ArrowDown"); assert.equal(label(active), "(no tags)");
   press(active, "ArrowDown"); assert.equal(label(active), "infra");

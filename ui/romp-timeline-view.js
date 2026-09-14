@@ -4392,7 +4392,7 @@ class TimelinePanel {
     menu.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') { e.stopPropagation(); this._closeViewsMenu(); try { anchorEl.focus(); } catch (err) { /* a detached anchor: nothing to hand it to */ } return; }
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
-      const rows = Array.prototype.filter.call(menu.children, (c) => c.tabIndex >= 0);
+      const rows = menuRowsOf(menu);
       if (!rows.length) return;
       e.preventDefault(); e.stopPropagation();
       let at = rows.indexOf(e.target);
@@ -4400,11 +4400,15 @@ class TimelinePanel {
       const to = e.key === 'Home' ? 0 : e.key === 'End' ? rows.length - 1 : e.key === 'ArrowDown' ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1);
       rows[to].focus();
     });
-    // a row that takes the focus and the keys: tabindex 0, the hover wash while focused, Enter and Space pressing it as a click would
+    // the menu's rows: its children that carry a role (the separators and the notices carry none)
+    const menuRowsOf = (m) => Array.prototype.filter.call(m.children, (c) => !!c.getAttribute('role'));
+    // a row that takes the focus and the keys: the hover wash while focused, Enter and Space pressing it as a click would; ONE TAB STOP
+    // (the ARIA menu pattern, the strip tidy): every row starts at tabindex -1 and the focused row alone holds 0, roving with the focus,
+    // so Tab leaves the menu and the arrows walk it (the shared menu's rule, ui/webview/tag-menu.ts focusableRow)
     const focusable = (row) => {
-      row.tabIndex = 0;
+      row.tabIndex = -1;
       row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); row.click(); } });
-      row.addEventListener('focus', () => { row.style.background = HOVER_BG; });
+      row.addEventListener('focus', () => { row.style.background = HOVER_BG; menuRowsOf(menu).forEach((x) => { x.tabIndex = x === row ? 0 : -1; }); });
       row.addEventListener('blur', () => { row.style.background = 'transparent'; });
     };
     // a plain row (All, (no tags), Configure tags…): the label, the ✓ when current. The tags are not rows any
@@ -4413,9 +4417,14 @@ class TimelinePanel {
       const row = menu.createDiv();
       row.setAttribute('style', 'padding:4px 22px 4px 8px;border-radius:4px;cursor:pointer;position:relative;white-space:nowrap;outline:none;'
         + (opts && opts.dim ? 'opacity:0.85;' : ''));
-      row.setAttribute('role', 'menuitem');
+      row.setAttribute('role', opts && opts.checkbox ? 'menuitemcheckbox' : 'menuitem');
+      if (opts && opts.checkbox) row.setAttribute('aria-checked', opts.current ? 'true' : 'false');
       row.appendChild(document.createTextNode(label));
-      if (opts && opts.current) {
+      if (opts && opts.checkbox) {   // the two-state mark (the ✓ when on, the ring when off), as the tag rows carry it
+        const mark = row.createSpan({ text: opts.current ? '\u2713' : '' });
+        mark.setAttribute('data-check', opts.current ? 'true' : 'false');
+        mark.setAttribute('style', opts.current ? MENU_CHECK_STYLE : MENU_RING_STYLE);
+      } else if (opts && opts.current) {
         const c = row.createSpan({ text: '✓' });
         c.setAttribute('style', MENU_CHECK_STYLE);
       }
@@ -4482,7 +4491,7 @@ class TimelinePanel {
       sep();
       // GROUP BY TAG (T399): the pane's sections, the chat's "Group tabs by tag" in this menu's ✓-row vocabulary; the menu
       // stays open across the toggle (a settings panel, the gear's rule). Per browser, in the strip's own blob.
-      item('Group by tag', { current: tlGroupByTag() }).addEventListener('click', () => { setTlGroupByTag(!tlGroupByTag()); this.draw(); build(); });
+      item('Group by tag', { current: tlGroupByTag(), checkbox: true }).addEventListener('click', () => { setTlGroupByTag(!tlGroupByTag()); this.draw(); build(); });   // a switch: the checkbox row with its state (the strip tidy)
       sep();
       item('Configure tags…', { dim: true }).addEventListener('click', () => {
         this._closeViewsMenu();
@@ -4511,7 +4520,8 @@ class TimelinePanel {
         nr.createSpan({ text: '⚠ this filter is not saved — ' + this._localLens.reason });
       }
       const back = menu.children[focusAt];   // the same place after the repaint: the rows rebuild in one order
-      if (back && back.tabIndex >= 0) back.focus();
+      if (back && back.getAttribute('role')) back.focus();
+      else { const first = menuRowsOf(menu)[0]; if (first) first.tabIndex = 0; }   // no focus in the menu: the first row is the one tab stop
     };
     build();
     menu._build = build;   // viewsAck / setCaps / _kernelViewsAnswer repaint the open menu with a refusal or the not-saved note
@@ -4519,7 +4529,9 @@ class TimelinePanel {
     h.doc.body.appendChild(menu);
     menu.style.left = Math.max(6, Math.min(Math.round(h.rect.left), (h.win.innerWidth || 9999) - 220)) + 'px';
     menu.style.top = Math.round(menuTop(h.rect, menu.offsetHeight || 0, h.win.innerHeight || 9999)) + 'px';
-    if (menu.children[0] && menu.children[0].focus) menu.children[0].focus();   // the first row takes the focus on open (the house rows menu's rule)
+    // the focus moves to the first row on a KEYBOARD open only, when the button held it; a pointer open leaves the focus where it was
+    // (the strip tidy, the shared menu's rule); either way the first row is the one tab stop
+    if ((menu.ownerDocument || document).activeElement === anchorEl && menu.children[0] && menu.children[0].focus) menu.children[0].focus();
     this._viewsMenu = menu;
   }
 
