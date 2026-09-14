@@ -5,6 +5,8 @@
 // the demo's tints are the kernel's rank rule on the given stops. Synthetic values only.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import * as path from "node:path";
 
 type N = any;
 function walk(root: N, f: (x: N) => void) { f(root); for (const k of root.kids || []) if (k.tag !== "#text") walk(k, f); }
@@ -48,6 +50,32 @@ test("rampOn is the kernel's ramp byte for byte: the ends, an interior sample, t
   // viridis at 0.62: x = 5.58, between stop 5 (31,158,137) and stop 6 (53,183,121) at 0.58: g = 158 + 25 * 0.58 = 172.5 exactly, which Python rounds to the even 172
   assert.deepEqual(SC.rampOn(0.62, VIRIDIS), [44, 172, 128], "the kernel's rgb(44,172,128) (round three, low a: Math.round gave 173)");
   assert.equal(SC.roundHalfEven(2.5), 2); assert.equal(SC.roundHalfEven(3.5), 4); assert.equal(SC.roundHalfEven(2.4999), 2); assert.equal(SC.roundHalfEven(2.5001), 3); assert.equal(SC.roundHalfEven(0.49999999999999994), 0, "no floor(x + 0.5) quirk");
+});
+
+// THE CROSS-LANGUAGE SWEEP (round four): the module claims the kernel's functions byte for byte, so the kernel's own module answers for a grid
+// of inputs and every sample must agree: the HSL conversion over 72 hues by 11 saturations by 11 lightnesses plus the two triples the read
+// cited (hslToRgb(5, 0.9, 0.4) gave 194,25,10 against the kernel's 194,26,10: the old normalisation roundtripped t through +1 and lost low
+// bits), the three tone families at 101 ranks, the context ramp at every percent, and every colormap's ramp at 1001 positions.
+test("the kernel's module answers for a grid: hslToRgb, toneRgb, contextRgb and rampOn agree with bin/romp_colormap.py sample for sample", () => {
+  const script = [
+    "import json, sys; sys.path.insert(0, 'bin'); import romp_colormap as cm",
+    "hsl = [[h, s / 10, l / 10] for h in range(0, 360, 5) for s in range(0, 11) for l in range(0, 11)] + [[5, 0.9, 0.4], [359.5, 0.55, 0.45], [720, 0.3, 0.7], [-30, 0.8, 0.5], [180, 1.0, 0.0], [90, 0.0, 1.0]]",
+    "out = {'hsl': [[h, s, l] + list(cm._hsl_to_rgb(h, s, l)) for h, s, l in hsl],",
+    "       'tones': [[fam, v / 100] + list(cm.tone_rgb(fam, v / 100)) for fam in ('model', 'effort', 'context') for v in range(0, 101)],",
+    "       'ctx': [[p] + list(cm.context_rgb(p)) for p in range(0, 101)],",
+    "       'ramps': {name: [[v / 1000] + list(cm.ramp(v / 1000, stops)) for v in range(0, 1001)] for name, stops in cm.COLORMAPS.items()},",
+    "       'stops': {name: [list(s) for s in stops] for name, stops in cm.COLORMAPS.items()}}",
+    "print(json.dumps(out))",
+  ].join("\n");
+  const py = JSON.parse(execFileSync("python3", ["-c", script], { cwd: path.resolve(process.cwd(), ".."), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+  const badHsl: string[] = [], badRest: string[] = [];   // two lists: an assertion on the first would narrow one shared list to the empty tuple for the compiler
+  for (const [h, s, l, r, g, b] of py.hsl) { const got = SC.hslToRgb(h, s, l); if (got[0] !== r || got[1] !== g || got[2] !== b) badHsl.push(`hsl(${h}, ${s}, ${l}): ${got} vs ${[r, g, b]}`); }
+  for (const [fam, v, r, g, b] of py.tones) { const got = SC.toneRgb(fam, v); if (got[0] !== r || got[1] !== g || got[2] !== b) badRest.push(`tone(${fam}, ${v}): ${got} vs ${[r, g, b]}`); }
+  for (const [p, r, g, b] of py.ctx) { const got = SC.contextRgb(p); if (got[0] !== r || got[1] !== g || got[2] !== b) badRest.push(`context(${p}): ${got} vs ${[r, g, b]}`); }
+  for (const name of Object.keys(py.ramps)) for (const [v, r, g, b] of py.ramps[name]) { const got = SC.rampOn(v, py.stops[name]); if (got[0] !== r || got[1] !== g || got[2] !== b) badRest.push(`ramp(${name}, ${v}): ${got} vs ${[r, g, b]}`); }
+  assert.deepEqual(badHsl, [], "hslToRgb differs from the kernel's _hsl_to_rgb on " + badHsl.length + " of " + py.hsl.length + " triples");
+  assert.deepEqual(badRest, [], "the tones, the context ramp or a colormap's ramp differ from the kernel's");
+  assert.ok(py.hsl.length > 8700 && Object.keys(py.ramps).length >= 7, "the grid is the size it claims: " + py.hsl.length + " triples, " + Object.keys(py.ramps).length + " maps");
 });
 
 test("the tones are the kernel's tone ramps (bin/romp_colormap.py tone_rgb, context_rgb): the family hues, the saturation and lightness by rank, the amber and red status overrides", () => {

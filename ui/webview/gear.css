@@ -357,10 +357,11 @@ body.rs-lifted.rs-pane-gone::before { display: none; }
 #rsettings .rs-sl .ctx-scan { display: none; }
 /* the preview's departures, after the copies: nothing here opens or compacts; the badges never wrap between themselves (the line's own
    rule at a narrow width), because the card is narrower than the chat and a badge dropped to a second row would read as the renderer's
-   fault rather than the room's; the cluster drops the line's 12px lead-in (the card's right cluster carries its own gap); when the card
-   is too narrow for the whole line, the right cluster drops below the widgets as ONE row (the line wraps); and narrower still (under
-   about 440px, a phone's card) the cluster wraps its battery under the badges rather than leave the card (round three, low e: at 430px
-   the battery sat 101px outside). */
+   fault rather than the room's; the cluster drops the line's 12px lead-in (the card's right cluster carries its own gap); and the line
+   wraps rather than clip when the card is narrow (round three low e, round four low b: the geometry as measured in the previews lab).
+   The right cluster holds the widgets, the badges and the battery, so at 500px it drops below the state chip as one block and wraps its
+   battery under the widgets and the badges; from 470px down to 380px the widgets take a row of their own and the badges and the battery
+   share the row below them; the battery never leaves the card. */
 #rsettings .rs-sl .meta-btn, #rsettings .rs-sl .ctx-bar { cursor: default; }
 #rsettings .rs-sl .spinner-meta { flex-wrap: nowrap; margin-left: 0; }
 #rsettings .rs-sl-right { flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; max-width: 100%; row-gap: 6px; }

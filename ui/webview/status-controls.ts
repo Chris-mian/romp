@@ -280,13 +280,16 @@ export function rampOn(v: number, stops: ReadonlyArray<readonly [number, number,
 export type ToneFamily = "model" | "effort" | "context";
 const TONE_HUES: Record<ToneFamily, number> = { model: 28, effort: 258, context: 200 };
 const TONE_L: Record<ToneFamily, [number, number]> = { model: [0.52, 0.16], effort: [0.66, 0.12], context: [0.52, 0.16] };
-/** the kernel's _hsl_to_rgb: hue in degrees, saturation and lightness in [0,1], each channel rounded half to even */
+/** the kernel's _hsl_to_rgb: hue in degrees, saturation and lightness in [0,1], each channel rounded half to even. The two modulos are
+ *  Python's (a negative remainder shifted up once, never a roundtrip through +1 that drops low bits: round four found 48 triples off by
+ *  one unit under the old ((t % 1) + 1) % 1); the cross-language sweep in status-controls.test.ts holds the parity. */
 export function hslToRgb(h: number, s: number, l: number): [number, number, number] {
-  h = ((h % 360) + 360) % 360 / 360;
+  const hm = h % 360;
+  h = (hm < 0 ? hm + 360 : hm) / 360;
   if (s <= 0) { const v = roundHalfEven(l * 255); return [v, v, v]; }
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
   const ch = (t: number): number => {
-    t = ((t % 1) + 1) % 1;
+    t = t < 0 ? t % 1 + 1 : t % 1;
     if (t < 1 / 6) return p + (q - p) * 6 * t;
     if (t < 1 / 2) return q;
     if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;

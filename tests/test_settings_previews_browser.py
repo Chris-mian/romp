@@ -190,7 +190,28 @@ const auroraFill = (await readLine(chatF)).bar.fillBg;
 await setColormap(setF, "viridis", auroraFill);
 out.viridis = { preview: await readPreviews(setF), line: await readLine(chatF) };
 await setColormap(setF, "aurora", out.viridis.line.bar.fillBg);
-// a narrow card (round three, low e): at 430 px the right cluster wraps its battery under the badges rather than leave the card
+// the storage-only repaint (round four, low a): another frame's store write reaches the card as a StorageEvent with no body class change;
+// the preview's fill must follow the store's colormap on that signal alone (the store is written and read back here, the kernel untouched)
+out.storageProbe = await setF.evaluate(async () => {
+  const fill = () => { const f = document.querySelector("#rs-swidgets ~ .rs-preview .ctx-fill"); return f ? getComputedStyle(f).backgroundColor : null; };
+  const write = (name) => { const s = JSON.parse(localStorage.getItem("romp:settings") || "{}"); const was = s.colormap; s.colormap = name; localStorage.setItem("romp:settings", JSON.stringify(s)); return was; };
+  const before = fill(), cls = document.body.className;
+  const was = write("viridis"); window.dispatchEvent(new StorageEvent("storage", { key: "romp:settings" }));
+  await new Promise((r) => setTimeout(r, 200));
+  const after = fill(), clsAfter = document.body.className;
+  write(was || "aurora"); window.dispatchEvent(new StorageEvent("storage", { key: "romp:settings" }));
+  await new Promise((r) => setTimeout(r, 200));
+  return { before, after, restored: fill(), bodyClassUnchanged: cls === clsAfter };
+});
+// a narrow card (round three, low e; round four, low b: the geometry as measured): the line wraps twice on the way down, at about 500 px
+// the battery under the badges (the cluster's own wrap), from 470 down the whole cluster below the widgets with the battery beside the badges
+const rowsOf = () => setF.evaluate(() => {
+  const line = document.querySelector("#rs-swidgets ~ .rs-preview .rs-sl"); if (!line) return null; const top = (el) => el ? Math.round(el.getBoundingClientRect().top) : null;
+  return { chip: top(line.querySelector(".rs-sl-chip")), dir: top(line.querySelector(".status-dir")), badge: top(line.querySelector(".meta-btn")), bar: top(line.querySelector(".ctx-bar")),
+           barRight: Math.round(line.querySelector(".ctx-bar").getBoundingClientRect().right), boxRight: Math.round(line.parentNode.parentNode.getBoundingClientRect().right), room: line.clientWidth };
+});
+out.narrowRows = {};
+for (const w of [500, 430, 380]) { await page.setViewportSize({ width: w, height: 900 }); await page.waitForTimeout(700); out.narrowRows[w] = await rowsOf(); }
 await page.setViewportSize({ width: 430, height: 900 }); await page.waitForTimeout(700);
 out.narrow = await readPreviews(setF);
 await page.setViewportSize({ width: 1440, height: 900 }); await page.waitForTimeout(500);
@@ -381,10 +402,28 @@ class ServedSettingsPreviews(unittest.TestCase):
         for b in v["preview"]["status"]["btns"]:
             self.assertEqual(b["color"], {x["kind"]: x for x in v["line"]["btns"]}[b["kind"]]["color"], b["kind"] + " on viridis" + t)
 
-    def test_a_narrow_card_wraps_the_battery_under_the_badges_rather_than_leave_the_card(self):
-        n = self.out["narrow"]["status"]; t = "\n  " + json.dumps({k: n[k] for k in ("bar", "boxRight", "lineRoom", "lineDemand", "rightParts")})
-        self.assertLessEqual(n["bar"]["right"], n["boxRight"] - 8, "at 430 px the battery ends inside the box (round three, low e: it sat 101 px outside the card)" + t)
-        self.assertEqual(len({b["top"] for b in n["btns"]}), 1, "the badges still share one row" + t)
+    def test_a_narrow_card_wraps_the_cluster_below_the_chip_the_battery_under_the_badges_at_500_and_beside_them_from_470_down(self):
+        rows = self.out["narrowRows"]; t = "\n  " + json.dumps(rows)
+        for w in ("500", "430", "380"):
+            r = rows[w]
+            self.assertLessEqual(r["barRight"], r["boxRight"] - 8, w + " px: the battery ends inside the box (round three low e: at 430 px it sat 101 px outside the card)" + t)
+            self.assertGreater(r["dir"], r["chip"] + 10, w + " px: the right cluster (the widgets, the badges, the battery) drops below the state chip as one block" + t)
+        r = rows["500"]
+        self.assertLessEqual(abs(r["badge"] - r["dir"]), 8, "500 px: the badges beside the widgets" + t)
+        self.assertGreater(r["bar"], r["badge"] + 10, "500 px: the battery alone on the row under the badges (the cluster's own wrap)" + t)
+        for w in ("430", "380"):
+            r = rows[w]
+            self.assertGreater(r["badge"], r["dir"] + 10, w + " px: the widgets take a row of their own" + t)
+            self.assertLessEqual(abs(r["bar"] - r["badge"]), 8, w + " px: the badges and the battery share the row below them" + t)
+        n = self.out["narrow"]["status"]
+        self.assertEqual(len({b["top"] for b in n["btns"]}), 1, "the badges still share one row at 430 px\n  " + json.dumps(n["btns"]))
+
+    def test_a_store_write_from_another_frame_repaints_the_preview_on_the_storage_event_alone(self):
+        p = self.out["storageProbe"]; t = "\n  " + json.dumps(p)
+        self.assertTrue(p["bodyClassUnchanged"], "no body class change along the probe: the storage signal alone is under test" + t)
+        self.assertEqual(p["before"], "rgb(14, 164, 226)", "aurora's 62 percent before" + t)
+        self.assertEqual(p["after"], "rgb(44, 172, 128)", "viridis's 62 percent after the StorageEvent: the card repainted its previews on the storage signal (round four, low a)" + t)
+        self.assertEqual(p["restored"], p["before"], "and back on the restoring signal" + t)
         self.assertEqual([u for u in self.out["notFound"] if "/dist/" in u], [], "every file of ours the pages ask for is served: " + json.dumps(self.out["notFound"]))
 
 
