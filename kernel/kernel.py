@@ -3609,9 +3609,11 @@ def _bus_restore_mail(sid, mids):
     """POST /restore to the local bus for a postal banner the SDK backend fed and a connection rebuild stranded
     (SdkSession._return_stranded_mail, 2026-09-12): the bus puts each named message back into the session's new/
     under its ORIGINAL id (its `restore`) and wakes the session, so the mail re-delivers as itself. Returns the set
-    of ids the bus put back — authoritative about the bus's files (an id missing from it is gone from cur/) — and
-    RAISES when the bus could not be asked or refused, so the caller re-heads the banner rather than drop it: a
-    quiet False here would be the loss this exists to end."""
+    of ids the bus HOLDS: the ones it put back, and (2026-09-14) the ones it answered `unknown` for (its cur/ could
+    not be read, the claim stands and its own retry puts them back), which are neither gone nor to be re-fed on
+    this side's say-so. Authoritative about the bus's files (an id missing from the set is gone from cur/); RAISES
+    when the bus could not be asked or refused, so the caller re-heads the banner rather than drop it: a quiet False
+    here would be the loss this exists to end."""
     conn = http.client.HTTPConnection("127.0.0.1", BUS_PORT, timeout=5)
     try:
         conn.request("POST", "/restore", json.dumps({"id": sid, "mids": list(mids)}),
@@ -3623,7 +3625,11 @@ def _bus_restore_mail(sid, mids):
     body = json.loads(data.decode("utf-8", "replace") or "{}") if resp.status == 200 else None
     if not isinstance(body, dict) or not body.get("ok"):
         raise RuntimeError("bus /restore answered %d: %s" % (resp.status, data[:200].decode("utf-8", "replace")))
-    return set(m for m in (body.get("restored") or []) if isinstance(m, str))
+    held = set(m for m in (body.get("unknown") or []) if isinstance(m, str))
+    if held:
+        sys.stderr.write("romp-kernel: the bus holds %d stranded message(s) it could not put back yet (its cur/ cannot be read); "
+                         "neither re-fed nor dropped, the bus's retry puts them back: %s\n" % (len(held), ", ".join(sorted(held))))
+    return set(m for m in (body.get("restored") or []) if isinstance(m, str)) | held
 
 
 ROMP_VOICE_WORDS = ("romp", "card", "board", "goal", "cleared", "dismissal", "status check", "nudge")
@@ -7054,12 +7060,36 @@ def _session_flags_proved():
     return raw if isinstance(raw, dict) else {}
 
 
+_FLAGS_UNKNOWN_TEXT = ("torn or wrong-shaped bytes were moved aside, so the flags are unknown: %s until the file is "
+                       "written again")   # ...the last cleanly read flags stand / mail is held for every session
+
+
+def _flags_quarantined(p):
+    """A quarantine sidecar stands beside the (missing) flags file: _read_state_json moved torn or wrong-shaped bytes
+    aside, so a missing file here is not a user who set no flags but a store whose contents are UNKNOWN (the isolation
+    boundaries included); an unlistable parent reads as quarantined too (closed, never a quiet empty)."""
+    try:
+        return any(True for _ in p.parent.glob(p.name + ".corrupt-*"))
+    except OSError:
+        return True
+
+
 def _session_flags():
+    """The per-session flags for DISPLAY readers, never raising. A missing file with no quarantine sidecar is a genuine
+    state ({}); a stat fault, a read fault, or bytes _read_state_json quarantined (and a missing file with a sidecar
+    beside it) are UNKNOWN: the last cleanly read flags stand, uncached and unproved, with one notice per episode,
+    and with none known the readers that depend on them close their doors (_flags_unknown_cold: mail held). Until
+    2026-09-14 the quarantine read as a clean EMPTY store, which lifted every isolation boundary at once and let a
+    peer's mail land in a session the user had isolated."""
     p = jd.STATE / "session-flags.json"
     hit = _flags_cache.get(str(p))
     try:
         st = p.stat(); key = (st.st_mtime_ns, st.st_size)   # ns + size → no stale hit on rapid toggles
     except FileNotFoundError:
+        if _flags_quarantined(p):
+            _note_state_fault(_StateUnreadable(p, _FLAGS_UNKNOWN_TEXT % ("the last cleanly read flags stand" if hit is not None
+                                                                          else "mail is held for every session")))
+            return hit[1] if hit is not None else {}
         _clear_state_fault(p)
         return {}
     except OSError as e:
@@ -7075,6 +7105,13 @@ def _session_flags():
         raw = _read_state_json(p, st, expect=dict)
     except _StateUnreadable as e:
         _note_state_fault(e)
+        return hit[1] if hit is not None else {}
+    if raw is None:
+        # the file existed at the stat and its bytes were torn or of the wrong shape: _read_state_json moved them aside
+        # (or a peer's publish replaced the file under every read). UNKNOWN, not empty: the last cleanly read flags
+        # stand, the fault stays noted so _flags_unknown_cold closes the mail door when nothing is known
+        _note_state_fault(_StateUnreadable(p, _FLAGS_UNKNOWN_TEXT % ("the last cleanly read flags stand" if hit is not None
+                                                                      else "mail is held for every session")))
         return hit[1] if hit is not None else {}
     _clear_state_fault(p)
     d = raw if isinstance(raw, dict) else {}
@@ -26059,15 +26096,18 @@ def _mail_off_why_k(sid):
         return "thread"
     iso = _session_flag(sid, "postalServiceOff") or _session_flag(sid, "postalOff")   # reads the flags (noting a fault)
     if _flags_unknown_cold():
-        return "unreadable"                # the flags cannot be read and none are known: closed, as the bus answers
+        return "flags"                     # the flags cannot be read and none are known: closed under the door's own word
     return "isolation" if iso else ""
 
 
 def _flags_unknown_cold():
-    """The session-flags file cannot be read and this process has no last-known copy: the flags' state is UNKNOWN
-    (_session_flags said so once per episode and answered {}), so a mail door that depends on them is closed until a
+    """The session-flags file cannot be read (a stat or read fault, or bytes quarantined) and this process has no
+    last-known copy: the flags' state is UNKNOWN (_session_flags said so once per episode and answered {}), so a mail
+    door that depends on them is closed under "flags" (the UI: mail held, the settings file cannot be read) until a
     clean read; with a last-known copy the door keeps that answer. The bus's _mail_off_why applies the same rule over
-    the same file (its _session_flags_read), so the two sides agree on every shape (2026-09-14)."""
+    the same file (its _session_flags_read), so the two sides agree on every shape WITHIN a process's knowledge; across
+    processes a warm kernel holding a cached clean read paints mail on while a cold bus holds everything under "flags"
+    until the bus reads the file once cleanly (2026-09-14)."""
     p = str(jd.STATE / "session-flags.json")
     return p in _state_fault_seen and _flags_cache.get(p) is None
 

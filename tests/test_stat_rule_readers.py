@@ -222,22 +222,29 @@ class TheQueuedLows(unittest.TestCase):
         def both():
             return (pm._mail_off_why(sid), km._mail_off_why_k(sid))
         cold()
-        self.assertEqual(both(), ("", ""), "no flags file: a genuine state, mail on")
+        self.assertEqual(both(), ("", ""), "no flags file and no sidecar: a genuine state, mail on")
         cold(); p.write_text("{not valid json")
-        self.assertEqual(pm._mail_off_why(sid), "unreadable", "torn bytes and nothing known: the bus closes the door")
-        self.assertEqual(km._mail_off_why_k(sid), "", "the kernel QUARANTINES torn bytes (its reader moves the file aside, the "
-                         "evidence kept) and reads the store as empty, a known state")
+        self.assertEqual(pm._mail_off_why(sid), "flags", "torn bytes and nothing known: the bus closes the door under the settings word")
+        self.assertEqual(km._mail_off_why_k(sid), "flags", "the kernel QUARANTINES the torn bytes (its reader moves the file aside, the "
+                         "evidence kept) and holds: unknown, never a clean empty store (round two: the quarantine lifted every isolation)")
         self.assertFalse(p.exists(), "the file was moved aside by the kernel's read")
-        self.assertEqual(both(), ("", ""), "...after which both sides read a missing file: agreement, known, mail on")
+        self.assertTrue(km._flags_quarantined(p), "the sidecar stands beside the missing file")
+        self.assertEqual(both(), ("flags", "flags"), "...and a missing file with a sidecar beside it is unknown on both sides, not a user who set no flags")
+        self.assertIn(str(p), km._state_fault_seen, "the fault stays noted while the store is unknown")
         cold(); p.write_text('{"%s": {"postalServiceOff": true}}' % sid)
-        self.assertEqual(both(), ("isolation", "isolation"))
+        self.assertEqual(both(), ("isolation", "isolation"), "a clean write: known again on both sides, the sidecar notwithstanding")
         os.chmod(p, 0)
         try:
             self.assertEqual(both(), ("isolation", "isolation"), "unreadable with a known answer: the last known stands")
         finally:
             os.chmod(p, 0o644)
+        p.write_text("{not valid json")
+        self.assertEqual(both(), ("isolation", "isolation"), "torn again WITH a known answer: the kernel quarantines and keeps the last cleanly read "
+                         "flags (the isolation holds), the bus keeps its last known flags")
+        self.assertIn(str(p), km._state_fault_seen)
         p.write_text("{}")
         self.assertEqual(both(), ("", ""), "a clean read: the door opens on both sides")
+        self.assertNotIn(str(p), km._state_fault_seen, "the clean read ends the episode")
         os.chmod(p, 0)
         try:
             self.assertEqual(both(), ("", ""), "...and that answer is the one that stands under the next fault")
@@ -255,6 +262,9 @@ class TheQueuedLows(unittest.TestCase):
         (pm.MAILROOT / sid / "cur").mkdir(exist_ok=True); (pm.MAILROOT / sid / "tmp").mkdir(exist_ok=True)
         logs = []; saved = pm._log; pm._log = logs.append
         self.addCleanup(setattr, pm, "_log", saved)
+        saved_agents = pm.local_agents                                # the sweep returns early on an empty live listing, and
+        pm.local_agents = lambda threads=False: [{"id": sid, "name": "web", "state": "idle"}]   # the seam's listing is another
+        self.addCleanup(setattr, pm, "local_agents", saved_agents)  # module's business: this test owns its live agent
         pm._INBOX_UNREADABLE_SAID.clear()
         os.chmod(newd, 0)
         try:
@@ -266,8 +276,67 @@ class TheQueuedLows(unittest.TestCase):
             self.assertEqual(sum("cannot be listed" in m for m in logs), 1, logs)
         finally:
             os.chmod(newd, 0o755)
+        pm._warn_stuck_mail()                                        # a clean listing by the sweep alone re-arms the line
+        self.assertNotIn(sid, pm._INBOX_UNREADABLE_SAID, "re-armed by any clean listing, not only a poll")
         self.assertEqual([m["id"] for m in pm.read_box(sid, consume=False)], ["m1"], "readable again: the mail is there")
         self.assertNotIn("unreadable", pm._drain(sid), "a clean drain carries no fault")
+
+    def test_a_claim_restore_could_not_answer_for_is_held_retracted_and_put_back_by_the_retry_loop(self):
+        """Round two's second medium: RESTORE_UNKNOWN inside the deferred push stranded the claim in cur/ forever with the exec
+        stamp standing (no road revisited cur/). _hold_claim records the id and retracts the exec row; _retry_held_claims,
+        first thing in every retry pass, puts it back once cur/ reads and drops the record; the pending marker follows."""
+        if ROOT_ONLY:
+            self.skipTest("root reads through chmod 000")
+        sid = "99999999-2222-4333-8444-0000000000e9"; mid = "m-held"
+        cur = pm.MAILROOT / sid / "cur"; cur.mkdir(parents=True, exist_ok=True); (pm.MAILROOT / sid / "new").mkdir(exist_ok=True)
+        (cur / mid).write_text("From: alice\nFrom-Id: a1\nDate: now\n\nhi\n")
+        td = Path(tempfile.mkdtemp()); saved_tl = pm.TLDIR; pm.TLDIR = td
+        self.addCleanup(setattr, pm, "TLDIR", saved_tl)
+        pm._tl_append("messages.jsonl", {"t": 1, "ev": "sent", "id": mid, "from_id": "a1", "to_id": sid})
+        pm._tl_append("messages.jsonl", {"t": 2, "ev": "exec", "id": mid})
+        self.assertIsNotNone(pm._sent_receipts("a1")[0]["exec"], "the claim stamped it read")
+        os.chmod(cur, 0)
+        try:
+            self.assertEqual(pm.restore(sid, mid), pm.RESTORE_UNKNOWN)
+            pm._hold_claim(sid, mid); pm._hold_claim(sid, mid)
+            self.assertEqual((pm.MAILHELD / sid).read_text().split(), [mid], "recorded once")
+            self.assertIsNone(pm._sent_receipts("a1")[0]["exec"], "the exec row retracted: the receipt reads pending, not read")
+            pm._retry_held_claims()
+            self.assertEqual((pm.MAILHELD / sid).read_text().split(), [mid], "cur/ still unreadable: the record stands")
+        finally:
+            os.chmod(cur, 0o755)
+        pm._retry_held_claims()
+        self.assertTrue((pm.MAILROOT / sid / "new" / mid).is_file(), "put back under its own id once cur/ reads")
+        self.assertFalse((pm.MAILHELD / sid).exists(), "the record is dropped")
+        self.assertTrue((pm.MAILPENDING / sid).exists(), "the put-back mail is pending mail for the retry")
+        import inspect
+        src = inspect.getsource(pm._push) + inspect.getsource(pm._bounce_oversize)
+        self.assertEqual(src.count("_hold_claim("), 3, "every RESTORE_UNKNOWN site in the push records the claim")
+        self.assertIn("_retry_held_claims()", inspect.getsource(pm._retry_pending), "the retry pass puts held claims back first")
+
+    def test_the_two_clients_say_an_inbox_fault_as_what_it_is(self):
+        """Lows 2 and 3: the Stop hook's drain (stdout is what the hook wraps; its stderr and exit code are dropped) and the MCP
+        check_inbox tool say the 503's reason, never a swallowed nothing or an internal error."""
+        saved = pm._http
+        def boom(method, path, payload=None):
+            raise pm.BusError("inbox of x cannot be listed (PermissionError: denied)")
+        pm._http = boom
+        self.addCleanup(setattr, pm, "_http", saved)
+        saved_ident, saved_local = pm._self_identity, pm._LOCAL_CONFIRMED[0]
+        pm._self_identity = lambda: ("11111111-2222-4333-8444-0000000000e1", "web"); pm._LOCAL_CONFIRMED[0] = True
+        self.addCleanup(setattr, pm, "_self_identity", saved_ident)
+        self.addCleanup(lambda: pm._LOCAL_CONFIRMED.__setitem__(0, saved_local))
+        text, is_err = pm._mcp_call("check_inbox", {})
+        self.assertTrue(is_err); self.assertIn("cannot be read right now", text); self.assertIn("cannot be listed", text)
+        import io, contextlib
+        saved_ensure, saved_my = pm.ensure, pm.my_id
+        pm.ensure = lambda: True; pm.my_id = lambda: "11111111-2222-4333-8444-0000000000e1"
+        self.addCleanup(setattr, pm, "ensure", saved_ensure); self.addCleanup(setattr, pm, "my_id", saved_my)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = pm.cli_drain([])
+        self.assertEqual(rc, 0, "the hook's command exits clean")
+        self.assertIn("could not be checked this turn", out.getvalue()); self.assertIn("cannot be listed", out.getvalue())
 
 
 class TaskPlanLoudOnUnreadable(unittest.TestCase):

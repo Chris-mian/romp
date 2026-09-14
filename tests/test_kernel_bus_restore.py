@@ -80,6 +80,20 @@ class BusRestoreMail(unittest.TestCase):
         self.assertEqual(body, {"id": SID, "mids": [MID1, MID2]})
         self.assertEqual(headers.get("X-Romp-Token"), km.TOKEN, "the bus's serve-token gate is honoured")
 
+    def test_an_unknown_id_is_held_not_classed_gone(self):
+        # the lows PR's round two: restore() answers `unknown` for a claim under an unreadable cur/; the bus holds it and its
+        # retry puts it back, so the id is in the returned set (never re-fed, never re-headed as gone), said on stderr
+        bus = _FakeBus(200, {"ok": True, "restored": [MID1], "missing": [], "unknown": [MID2]})
+        try:
+            km.BUS_PORT = bus.port
+            import io, contextlib
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(km._bus_restore_mail(SID, [MID1, MID2]), {MID1, MID2}, "the held id is the bus's, not gone")
+            self.assertIn("could not put back yet", err.getvalue())
+        finally:
+            bus.close()
+
     def test_a_refusal_raises_rather_than_reading_as_nothing_restored(self):
         for status, body in ((403, {"error": "token required"}), (400, {"ok": False, "error": "bad ask"}),
                              (200, {"ok": False}), (200, "not an object")):

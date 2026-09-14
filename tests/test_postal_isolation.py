@@ -66,7 +66,7 @@ class PostalOff(unittest.TestCase):
         pm._FLAGS_LAST[0] = None; pm._FLAGS_FAULT_SAID[0] = False
         pm.SESSION_FLAGS.write_text("{not valid json")
         self.assertTrue(pm._postal_off(SID), "a corrupt flags file with nothing known: mail held, never a quiet on")
-        self.assertEqual(pm._mail_off_why(SID), "unreadable")
+        self.assertEqual(pm._mail_off_why(SID), "flags", "the settings file's own word (the UI: mail held, the settings file cannot be read)")
         pm.SESSION_FLAGS.write_text(json.dumps({SID: {"hideFromFeed": True}}))
         self.assertFalse(pm._postal_off(SID), "a clean read: on")
         pm.SESSION_FLAGS.write_text("{not valid json")
