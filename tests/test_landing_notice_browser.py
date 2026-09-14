@@ -385,7 +385,7 @@ const asks13 = await page.evaluate((n) => ({ loadOlder: window.__sent.slice(n).f
 // ROAD 14 (round nine, medium 2; a fresh page): the VS Code pane's down edge is the pipeState frame; a landing in flight (its ask held) then
 // pipeState down must clear the ask's record, the notice and the busy meaning, and pipeState up must leave the next card click free to ask.
 await reboot();
-await page.evaluate(() => { window.__hold.add("loadAround"); });
+await page.evaluate(() => { window.__hold.add("loadAround"); window.__hold.add("loadTurns"); });   // the gap's own page asks are parked too: a page ask the road produces is read at the socket, never answered under the read
 const deep14 = "11111111-2222-3333-4444-" + pad(2 * 60);
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep14, anchorT: cfg.base + 2 * 60 });
 await page.waitForFunction(() => (window.__heldRaw || []).length >= 1, null, { timeout: 8000 }).catch(() => {});
@@ -393,10 +393,17 @@ await page.waitForFunction(() => { const n = document.querySelector(".tx-landing
 const before14 = { notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid) };
 await page.evaluate(() => { window.__heldRaw = []; window.postMessage({ type: "pipeState", up: false, queued: 0 }, "*"); });   // the pipe goes down with the ask lost
 await painted();
-const down14 = { notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid), toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }) };
-await page.evaluate(() => { window.postMessage({ type: "pipeState", up: true, queued: 0 }, "*"); });
+// CI's order (main red at e7729438): a kernel frame's rebuild lands between the clear and the read. The rebuild re-creates the gap element
+// under the reader and the observer's first delivery finds the gap with NO ask on it (the landing's record, which had stood in for the gap's
+// own ask, went with the clear), so the gap asks for the page at the edge the reader stands on, its first (turns 0 to 16). The boot frame
+// re-posted is that rebuild; the page ask is parked at the socket (loadTurns held), so what stands after is read, not raced.
+await page.evaluate(() => { if (window.__bootFrame) window.postMessage(window.__bootFrame, "*"); });
 await painted();
-await page.evaluate(() => { window.__hold.delete("loadAround"); });
+const heldDown14 = await page.evaluate(() => (window.__heldRaw || []).map((d) => { const m = JSON.parse(d); return m.type + ":" + (m.lo ?? "") + "-" + (m.hi ?? ""); }));
+const down14 = { held: heldDown14, notice: (await state()).notice, ask: await page.evaluate((sid) => (typeof window.__rompAskState === "function" ? window.__rompAskState(sid) : null), cfg.sid), toast: await page.evaluate(() => { const tt = document.querySelector(".locate-toast"); return tt ? tt.textContent : null; }) };
+await page.evaluate(() => { window.__heldRaw = []; window.postMessage({ type: "pipeState", up: true, queued: 0 }, "*"); });   // the parked page ask dropped with the down pipe; the pipe comes back
+await painted();
+await page.evaluate(() => { window.__hold.delete("loadAround"); window.__hold.delete("loadTurns"); });
 const sentAt14 = await page.evaluate(() => window.__sent.length);
 await page.evaluate((frame) => window.postMessage(frame, "*"), { type: "focus", id: cfg.sid, anchor: deep14, anchorT: cfg.base + 2 * 60 });
 await page.waitForFunction((u) => !!document.querySelector(`#content .turn[data-uuid="${u}"]`), deep14, { timeout: 15000 }).catch(() => {});
@@ -420,7 +427,10 @@ class ServedLandingNotice(WindowLab):
     def _result(self):
         if self._r is None:
             type(self)._r = self._drive(DRIVER, "notice")
-            print("NOTICE:", json.dumps(self._r), file=sys.stderr)
+        # printed on EVERY test's call, not the first alone: pytest shows a test's captured stderr only when THAT test fails, so a
+        # payload printed once under the first (passing) road never reached CI's log for a later road's red (main at e7729438, road 14:
+        # the log carried the assertion's dict and nothing else). One line per test is the price of an explainable CI-only red.
+        print("NOTICE:", json.dumps(self._r), file=sys.stderr)
         return self._r
 
     def test_a_deep_link_shows_the_one_notice_with_the_targets_time_jumps_into_the_gap_and_lands(self):
@@ -606,7 +616,14 @@ class ServedLandingNotice(WindowLab):
         d = r["down14"]
         self.assertFalse(d["notice"], "pipeState down brought the notice down: %r" % d)
         self.assertEqual(d["ask"]["asks"], [], "…and cleared the ask's record: %r" % d["ask"])
-        self.assertEqual((d["ask"]["landingGaps"], d["ask"]["gapLoading"], d["ask"]["loadingOlder"]), (0, 0, False), "the three-set cleared: %r" % d["ask"])
+        self.assertEqual((d["ask"]["landingGaps"], d["ask"]["loadingOlder"]), (0, False), "the landing's gap and the older ask cleared: %r" % d["ask"])
+        # main red at e7729438 (CI, this road): the three-set read gapLoading 1 with the key of the head gap's FIRST page after the down edge.
+        # The clear owes the asks that were in flight, and every one of those is gone (none of the keys from before the down edge stands);
+        # a key standing after it is the gap under the reader asking anew once a rebuild re-observed it with the landing's record gone,
+        # which the road now forces (the boot frame re-posted) and reads at the socket: one fresh page ask, the gap's first page, parked.
+        self.assertTrue(set(d["ask"]["gapKeys"]).isdisjoint(b["ask"]["gapKeys"]), "no page ask from before the down edge stands: %r vs %r" % (d["ask"]["gapKeys"], b["ask"]["gapKeys"]))
+        self.assertEqual([k.split(":", 1)[1] for k in d["ask"]["gapKeys"]], ["0:16"], "the gap under the reader (at the head gap's top after the pre-jump) asked anew for its first page: %r" % d["ask"])
+        self.assertEqual([h for h in d["held"] if h.startswith("loadTurns")], ["loadTurns:0-16"], "…parked at the socket, one ask: %r" % d["held"])
         self.assertIsNotNone(d["toast"]); self.assertIn("connection dropped", d["toast"], "the reader was told the jump was lost: %r" % d["toast"])
         a = r["after14"]
         self.assertEqual(a["asked"], 1, "after pipeState up the next card click asked: %r" % a)
