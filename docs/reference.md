@@ -1818,8 +1818,12 @@ The snapshot's fields, all plain numbers (`ms` is milliseconds of wall time):
   the key lock, re-read after the write), and while that stat stands every
   road goes straight to the whole or cold parse with no proof and no rewrite
   (`restore:refusedStanding`, `seeded:refusedStanding`); the mark clears when
-  the leaf moves or a write the writer accepts replaces the sidecar; a whole parse whose resolved graph is cyclic writes no
-  document (`skipped.cycle`); a record without a uuid is not a node of the
+  the leaf moves or a write the writer accepts replaces the sidecar; a cyclic resolved
+  graph (a reused uuid closing a ring) no longer refuses the document: the
+  writer's spine walk ends at the first revisit as the parse's own walk does,
+  so the document's spine is the one the chat shows (until 2026-09-14 a
+  hop-bounded walk refused the whole document under `skipped.cycle`, retried
+  at every settle); a record without a uuid is not a node of the
   chain walk; the restore falls to the whole parse, at boot
   and after a demotion alike, and `seeded:chainRefused` counts the same
   refusal by the chain-membership and file-rewound readers, which then walk
