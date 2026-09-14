@@ -213,14 +213,22 @@ _install_hang_asserts() {   # the copy is removed with the reason said, and noth
 @test "install (macOS), the timeout path: a node that IGNORES TERM is killed by -k a second after the bound instead of holding the install for good" { _run_install_hang deaf timeout; _install_hang_asserts; }
 
 @test "install (macOS): ROMP_NODE_PROBE_BOUND=0 is clamped to one second, so a good copy is kept instead of failed at once" {
-    # on the watchdog path (a bare PATH without timeout, a stock mac's): the base's sleep 0 killed the probe before the copy answered
+    # on the watchdog path (a bare PATH without timeout, a stock mac's): the base's sleep 0 killed the probe before a copy that
+    # takes half a second answered (the setup's instant stand-in beat that kill, so the copy here sleeps first)
+    printf '#!/bin/sh\nsleep 0.5\necho fake-node "$@"\n' > "$TEST_DIR/slow-node"; chmod +x "$TEST_DIR/slow-node"
     local bare="$TEST_DIR/bare"; rm -rf "$bare"; mkdir -p "$bare"
     local t p
     for t in bash sh cmp cp chmod mv mkdir rm sleep ps pgrep id date cut head tr printf sed cat grep dirname readlink; do p="$(command -v "$t" 2>/dev/null || true)"; [ -n "$p" ] && ln -s "$p" "$bare/$t"; done
-    PATH="$bare" ROMP_NODE_PROBE_BOUND=0 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    PATH="$bare" ROMP_NODE_SRC="$TEST_DIR/slow-node" ROMP_NODE_PROBE_BOUND=0 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
     [ "$status" -eq 0 ]
     [ -x "$XDG_STATE_HOME/romp/romp-node" ]
     [[ "$output" != *"cannot run from"* ]]
+    # and a value with a leading zero is a decimal bound, not an octal error on stderr (round two of the tidy)
+    ROMP_NODE_PROBE_BOUND=08 ROMP_OS_OVERRIDE=Darwin run "$SVC" install
+    [ "$status" -eq 0 ]
+    [ -x "$XDG_STATE_HOME/romp/romp-node" ]
+    [[ "$output" != *"value too great"* ]]
+    [[ "$output" != *"octal"* ]]
 }
 
 @test "install (macOS): the hatch reads 0, false, no and off as off, and the file's last assignment wins" {

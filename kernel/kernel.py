@@ -54978,8 +54978,10 @@ function fillHosts(){if(!dl)return;var hs=[];
 // innerHTML like any element, so a crafted alias used to run there (2026-09-08)
 dl.textContent='';var cut=hs.length>512?hs.length-512:0;hs.slice(0,512).forEach(function(h){var o=document.createElement('option');o.value=h;dl.appendChild(o);});
 if(cut){var mo=document.createElement('option');mo.value=mo.textContent='\\u2026 '+cut+' more not shown';mo.disabled=true;dl.appendChild(mo);}}   // a cut list says so (strip.ts fillHostSelect wears the same marker)
-function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
-_cfg=(d&&d.hosts)||[];fillHosts();}).catch(function(){});}
+// a non-ok answer is not the host list: a JSON-bodied 5xx used to write an EMPTY list (the delete-by-absence the other
+// readers lost); it throws, the last good list stands, and the console says so
+function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/ssh-hosts answered HTTP '+r.status);return r.json();}).then(function(d){
+_cfg=(d&&d.hosts)||[];fillHosts();}).catch(function(e){try{console.error('romp: ssh hosts could not be read; keeping the last list',e);}catch(_){}});}
 // Every string a PEER chose is rendered as TEXT: esc() before it meets innerHTML. That is a host it named
 // (a checked-in peer names itself), its status word, its build, the rows it reports for its own connections
 // (/tunnels/of — whitelisted by the kernel too), and the bus gossip below (tiers, relay hosts, holds).
@@ -55750,7 +55752,8 @@ window.__rompNotifyTurnsPaint=function(on){turnsOn=!!on;paint();};
 // to paint the bell OFF for the page's life. A non-ok answer throws, nothing is painted from it, and the read is retried
 // a few times (5 s apart) before the page gives up; a later toggle still repaints through the shell's WS.
 function readSwitch(url,apply,tries){fetch(url).then(function(r){if(!r.ok)throw new Error(url+' answered HTTP '+r.status);return r.json();})
-.then(function(d){apply(!!(d&&d.on));paint();}).catch(function(e){if(tries>0)setTimeout(function(){readSwitch(url,apply,tries-1);},5000);});}
+.then(function(d){apply(!!(d&&d.on));paint();}).catch(function(e){if(tries>0)setTimeout(function(){readSwitch(url,apply,tries-1);},5000);
+else{try{console.error('romp: '+url+' could not be read after four tries; the bell shows its default, not the kernel\'s state',e);}catch(_){}}});}
 readSwitch('/notify-all',function(on){isOn=on;},3);
 readSwitch('/notify-turns',function(on){turnsOn=on;},3);
 function sub(){if(!canPush)return Promise.resolve(null);

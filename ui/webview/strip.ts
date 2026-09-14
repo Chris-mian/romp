@@ -460,10 +460,13 @@ function initNetPopover(button: HTMLButtonElement, post?: (m: Record<string, unk
   const schedule = (ms: number) => { clearTimeout(timer); if (!pop.hidden) timer = setTimeout(refresh, ms); };
   const busy = (s: string) => s !== "up" && s !== "down" && s !== "error" && s !== "no-kernel";
 
+  let lastHosts: string[] | null = null;   // the last list read: a failed refresh keeps it instead of painting none
   function loadHosts() {
-    fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => r.json())
-      .then((d) => { fillHostSelect(sel, d && d.hosts, "(no ~/.ssh/config hosts)"); })
-      .catch(() => { fillHostSelect(sel, [], "(kernel unreachable)"); });   // loud, never silently empty
+    // a non-ok answer is not the host list (a JSON-bodied 5xx painted "no ~/.ssh/config hosts"): it throws, and the
+    // catch keeps the last good list, or says the kernel is unreachable when there is none yet
+    fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("/ssh-hosts answered HTTP " + r.status); return r.json(); })
+      .then((d) => { lastHosts = (d && d.hosts) || []; fillHostSelect(sel, lastHosts, "(no ~/.ssh/config hosts)"); })
+      .catch(() => { if (lastHosts) fillHostSelect(sel, lastHosts, "(no ~/.ssh/config hosts)"); else fillHostSelect(sel, [], "(kernel unreachable)"); });   // loud, never silently empty
   }
 
   function act(path: string, host: string, b: HTMLButtonElement, busyText: string, via?: string) {

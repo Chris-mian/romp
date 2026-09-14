@@ -33,6 +33,13 @@ class ShellReadsCheckStatus(unittest.TestCase):
         self.assertIn("readSwitch('/notify-all',function(on){isOn=on;},3);", js)
         self.assertIn("readSwitch('/notify-turns',function(on){turnsOn=on;},3);", js)
         self.assertIn("if(tries>0)setTimeout(function(){readSwitch(url,apply,tries-1);},5000);", js, "a bounded retry, never a default painted from the failure")
+        self.assertIn("could not be read after four tries; the bell shows its default", js, "the last failure is said once in the console, not swallowed")
+
+    def test_the_ssh_hosts_read_checks_the_status_and_keeps_the_last_list(self):
+        js = km._LANDING_REMOTES_JS
+        self.assertIn("function loadHosts(){fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('/ssh-hosts answered HTTP '+r.status);return r.json();})", js)
+        self.assertIn("catch(function(e){try{console.error('romp: ssh hosts could not be read; keeping the last list',e);}catch(_){}})", js)
+        self.assertNotIn("fetch('/ssh-hosts',{cache:'no-store'}).then(function(r){return r.json();})", js)
         self.assertNotIn("fetch('/notify-all').then(function(r){return r.json();})", js)
 
     def test_the_reload_cores_version_read_checks_the_status(self):

@@ -40,7 +40,7 @@ dollar-quote unicode escape (bash 4.2)	\$'"'"'[^'"'"']*\\[uU][0-9A-Fa-f]'
 
 _shell_files() {   # the surfaces: every shell script the repo ships, found by an sh or bash shebang on its first line
     local f
-    for f in "$REPO"/bin/* "$REPO"/scripts/*.sh "$REPO"/install.sh "$REPO"/bootstrap.sh "$REPO"/hooks/*.sh "$REPO"/.githooks/pre-push "$REPO"/tools/* "$REPO"/vscode-extension/install.sh; do
+    for f in "$REPO"/bin/* "$REPO"/scripts/*.sh "$REPO"/install.sh "$REPO"/bootstrap.sh "$REPO"/hooks/*.sh "$REPO"/.githooks/* "$REPO"/tools/* "$REPO"/tools/*/*.sh "$REPO"/vscode-extension/install.sh; do
         [ -f "$f" ] || continue
         head -1 "$f" | grep -qE '^#!.*(/|env )(ba)?sh([[:space:]]|$)' && echo "$f"
     done
@@ -70,6 +70,8 @@ _scan() {   # $@ files: every non-comment line holding a construct, as "family: 
     [[ "$output" == *"/hooks/romp-wake.sh"* ]]
     [[ "$output" == *"/.githooks/pre-push"* ]]
     [[ "$output" == *"/vscode-extension/install.sh"* ]]
+    [[ "$output" == *"/tools/romp-lab/lab.sh"* ]]      # the tools live one directory down: tools/*/*.sh
+    [[ "$output" == *"/tools/ui-verify/shot.sh"* ]]
     [[ "$output" != *".py"* ]]                        # a python file under bin/ is not read
     [[ "$output" != *".mjs"* ]]                       # nor a node tool under tools/
 }

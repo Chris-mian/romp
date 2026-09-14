@@ -128,7 +128,10 @@ setTimeout_(() => {
     const rows = list.children.length;
     const html = list.children.map(collect).join(' | ');
     const add = ELS['rnet-add'], plus = ELS['rnet-plus'], dl = ELS['rnet-hosts'], fs = ELS['rnet-from'];
-    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err, drops:DROPS, tqLeft:TQ.length,
+    // the stub's own contract, reported so a test pins it: classList and className share one set
+    const _e = mkEl('stub-check'); _e.classList.add('a'); const viaName = _e.className; _e.className = 'b c';
+    const stubSharedClasses = viaName === 'a' && _e.classList.contains('c') && !_e.classList.contains('a');
+    process.stdout.write(JSON.stringify({rows:rows, html:html, errors:console_err, drops:DROPS, tqLeft:TQ.length, stubSharedClasses:stubSharedClasses,
       addHidden:!!add.hidden, plusHidden:!!plus.hidden,
       hosts:dl.children.map(function(o){return o.value;}), hostsHtml:String(dl.innerHTML||''),
       hostsLastDisabled:!!(dl.children.length&&dl.children[dl.children.length-1].disabled),
@@ -177,6 +180,12 @@ class RemotesPanelRender(_PanelHarness, unittest.TestCase):
         self.assertTrue(any("remotes refresh failed" in e and "HTTP 502" in e for e in out["errors"]), out["errors"])
         self.assertEqual(out["drops"], ["rail-net"], "one flash, on the real drop; the 502 neither flashed nor forgot")
         self.assertEqual(out["tqLeft"], 0, "every queued answer was read: the queue matches the reads")
+
+    def test_the_stubs_classlist_and_classname_share_one_set(self):
+        # a class added through classList reads back through className and a className write is what classList then
+        # contains; the base's split stub (a no-op classList beside a plain className string) answers false here
+        out = self._run()
+        self.assertTrue(out["stubSharedClasses"], "classList and className must be two views of one set")
 
     def test_both_shell_side_tunnels_reads_check_the_status_before_the_body(self):
         pin = "then(function(r){if(!r.ok)throw new Error('/tunnels answered HTTP '+r.status);return r.json();})"

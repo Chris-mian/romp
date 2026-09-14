@@ -371,6 +371,15 @@ _hang_asserts() {   # the fallback happened at the bound, and nothing of the pro
     command -v setsid >/dev/null 2>&1 || skip "needs setsid to scope the run (Linux)"
     local tmo; tmo="$(command -v timeout || true)"
     [ -n "$tmo" ] || skip "needs coreutils timeout to bound the run"
+    # the copy takes half a second to answer: the setup's instant stand-in beat the base's sleep-0 kill, this one does not
+    cat > "$BIN/node" <<EOF
+#!/bin/sh
+case "\$0" in
+  "$RN") sleep 0.5; echo "NODE_V1 ran: \$*" ;;
+  *) echo "NODE_V1 ran: \$*" ;;
+esac
+EOF
+    chmod +x "$BIN/node"
     local bare="$TEST_DIR/bare"; rm -rf "$bare"; mkdir -p "$bare"
     local t; for t in sh cmp cp chmod mv mkdir rm sleep ps pgrep setsid; do ln -s "$(command -v "$t")" "$bare/$t"; done
     ln -s "$BIN/node" "$bare/node"

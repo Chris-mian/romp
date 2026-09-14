@@ -83,6 +83,10 @@ test("the strip carries the rail's controls: refresh, network popover, pane quic
   // JSON-bodied 5xx read as "No remotes attached" with the autoUpdate box mirrored off and a clientDiag filed as ok)
   assert.ok(src.includes('fetch(kernelUrl("/tunnels"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("/tunnels answered HTTP " + r.status); return r.json(); })'),
     "a non-ok /tunnels answer throws into the popover's catch instead of reading as an empty host list");
+  // the host picker's /ssh-hosts read has the same rule and keeps the last list it read on a failure
+  assert.ok(src.includes('fetch(kernelUrl("/ssh-hosts"), { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error("/ssh-hosts answered HTTP " + r.status); return r.json(); })'),
+    "a non-ok /ssh-hosts answer throws instead of painting no hosts");
+  assert.ok(src.includes("if (lastHosts) fillHostSelect(sel, lastHosts,"), "a failed refresh keeps the last good list");
   assert.ok(src.includes('{ type: "openPane", pane: p.key }'), "quick-opens post openPane to the host");
 });
 
