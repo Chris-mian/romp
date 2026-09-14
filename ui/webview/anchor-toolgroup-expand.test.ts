@@ -55,3 +55,16 @@ test("expand decision: exact toolgroup hit expands, nearest-unit fallback does n
   assert.deepEqual(decide(items, 0), { u: 0, expand: false }, "a plain turn never expands anything");
   assert.deepEqual(decide(items, 4), { u: 2, expand: false }, "a gap index resolves by nearest unit and must NOT pop a stranger's fold");
 });
+
+
+test("T418: the group head speaks by action (actionHead) with the edits' totals in the diff colours, and a tool row's label is the model's description or the derived phrase (toolRowLabel)", () => {
+  const RENDER = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "render.ts"), "utf8");
+  assert.match(RENDER, /const head = actionHead\(tools\);\s*\n\s*line\.appendChild\(document\.createTextNode\(" "\)\);\s*\n\s*const w = el\("span", "toolgroup-head"\); w\.textContent = head\.replace\(\/ \\\+\\d\+ -\\d\+\/g, ""\); line\.appendChild\(w\);[^\n]*\n\s*appendTotals\(line, head\);/,
+    "the collapsed group head is the action phrases, the totals appended apart");
+  assert.match(RENDER, /const lbl = toolRowLabel\(ev\);\s*\n\s*const name = el\("span", "tool-label" \+ \(lbl\.code \? " tool-label-code" : ""\)\); name\.textContent = lbl\.text;/,
+    "the row's label is the description or the derived phrase; a bare command wears the code face");
+  assert.match(RENDER, /if \(lbl\.secondary\) \{ const c = el\("span", "tool-name tool-secondary"\); c\.textContent = lbl\.secondary; head\.appendChild\(c\); \}/, "the tool's name is secondary, only where no phrase names the action");
+  const CSS = fs.readFileSync(path.resolve(process.cwd(), "..", "ui", "webview", "styles.css"), "utf8");
+  assert.match(CSS, /\.tool-plus \{ color: var\(--green\); \}\s*\n\.tool-minus \{ color: var\(--err\); \}/, "the totals wear the diff colours");
+  assert.match(CSS, /\.tool-err \.tool-name, \.tool-err \.tool-label \{ color: var\(--err\); \}/, "a failed row's label stays red");
+});

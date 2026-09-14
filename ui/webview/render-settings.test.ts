@@ -16,10 +16,10 @@ test("compact mode folds the stream via compactDisplay, rendered through the uni
   assert.match(RENDER, /if \(!settings\.compact\) \{[\s\S]*?\} else \{\s*\n\s*out = compactDisplay\(s\.events\.map\(/);
 });
 
-test("a collapsed tool run renders bold tool labels via toolCounts and is click-to-expand", () => {
+test("a collapsed tool run renders its head by action via actionHead (T418: the user's terms, the edits' totals apart) and is click-to-expand", () => {
   assert.match(RENDER, /el\("div", "toolgroup-line"\)/);
-  assert.match(RENDER, /toolCounts\(tools\.map\(/);
-  assert.match(RENDER, /el\("span", "toolgroup-tool"\)/, "each tool word is its own bold span");
+  assert.match(RENDER, /const head = actionHead\(tools\);/, "the head speaks by action: Ran 11 commands, read 4 files, edited 3 files +37 -0");
+  assert.match(RENDER, /el\("span", "toolgroup-head"\)/, "the phrases in one span; the totals follow in the diff colours (appendTotals)");
   // the "N Edits" summary shows only when collapsed; expanded → just the arrow
   assert.match(RENDER, /if \(!open\) \{/);
   // clicking the line toggles expand → the full non-compact cards for that span, indented

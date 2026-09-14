@@ -32,7 +32,7 @@ import { syncSessionsFromTabMeta, applyMetaToSession, notePendingMeta, PendingTa
 import { markerLabel, dayContext, DayWalk, relativeLabel, relativeLines } from "./time-marker";
 import { composeStatusWidgets, folderIconNode, folderLink, type StatusRecord } from "./status-widgets";
 import { REVEAL_LABEL, revealFraction, revealShownFraction, residentSpan, revealCountWords, revealPercentWords, messageCount } from "./reveal-progress";
-import { compactDisplay, isFoldableNoticeShape, toolCounts, itemAnchor, type DisplayItem } from "./compact";
+import { compactDisplay, isFoldableNoticeShape, itemAnchor, type DisplayItem } from "./compact";
 import { insertRun, regionsFromRuns, gapHeight, pagesToAsk, gapAt, gapFraction, landingNotice, runsOf, turnsBeforeTail, type Region, type Run, type Gap } from "./chat-regions";
 import { senderKind, SenderKind } from "./sender-identity";
 import { loadSettings, saveSettings, onExternalSettingsChange, installSettingsSync, type RompSettings } from "./settings";
@@ -68,6 +68,7 @@ import { mintProvisionalId, isProvisionalId, provisionalName, adoptsProvisional,
 import { colFromSearch, columnHolds, type ColSets } from "./chat-columns";   // the chat split's partition (2026-09-11): which column this page is, which sessions it holds
 import { onlyTag, matchesOnly, onlyWindow } from "./only-filter";
 import { numberDiff, type DiffRow } from "./diff-lines";
+import { actionHead, toolRowLabel, toolInputText } from "./compact";
 import { parseAgentNotif, notifHead, type AgentNotif } from "./agent-notif";
 import { injectedHead, type InjectedSource } from "./injected-source";
 import { subTabId, isSubId, subParts, subLabel, gistLines, stepLines, stepsNote, agentFoldLabel, subHeadParts, subWaitTail, openIconSvg, pinIconSvg, type SubMeta, type AgentGist, type AgentGistRow, type GistLine } from "./subagent-view";
@@ -5230,10 +5231,21 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
   turn.appendChild(d);
 
   const head = el("div", "tool-head");
-  const name = el("span", "tool-name"); name.textContent = ev.name;
+  // the row's label in the user's terms (T418): the model's description when it wrote one, else a phrase derived from the tool's
+  // input ("Read .../kernel/kernel.py", "Edited .../ui/feed.ts +12 -3", "Searched for foo"); a bare Bash shows its command in the
+  // code face; the tool's name is secondary, kept only where no phrase names the action ("Used a tool · Skill")
+  const lbl = toolRowLabel(ev);
+  const name = el("span", "tool-label" + (lbl.code ? " tool-label-code" : "")); name.textContent = lbl.text;
   head.appendChild(name);
-  if (ev.file) head.appendChild(fileLink(ev.file));
-  else if (ev.desc) { const c = el("span", "tool-desc"); c.textContent = ev.desc; head.appendChild(c); }
+  if (lbl.path && ev.file) head.appendChild(fileLink(ev.file));
+  if (lbl.totals) {
+    const tot = el("span", "tool-totals");
+    const mm = /^\+(\d+)(?: -(\d+))?$/.exec(lbl.totals);
+    if (mm) { const plus = el("span", "tool-plus"); plus.textContent = "+" + mm[1]; tot.appendChild(plus); if (mm[2] !== undefined) { const minus = el("span", "tool-minus"); minus.textContent = "-" + mm[2]; tot.append(" ", minus); } }
+    else tot.textContent = lbl.totals;
+    head.appendChild(tot);
+  }
+  if (lbl.secondary) { const c = el("span", "tool-name tool-secondary"); c.textContent = lbl.secondary; head.appendChild(c); }
 
   const ack = ACK_TOOLS.has(ev.name);
   turn.appendChild(head);
@@ -5245,7 +5257,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
     // "error" toggle, the IN/OUT hanging below. The red ✗ rail dot + red tool name (.tool-err) keep it loud.
     if (ev.input || ev.output) {
       const io = el("div", "tool-io tool-io-fold");
-      if (ev.input) io.appendChild(ioRow("IN", ev.input, true));
+      if (ev.input) io.appendChild(ioRow("IN", toolInputText(ev), true));
       if (ev.output) io.appendChild(ioRow("OUT", ev.output, true));
       const n = ev.output ? countLines(ev.output) : 0;
       inlineFold(head, turn, n ? `error · ${n} line${n === 1 ? "" : "s"}` : "error", io, fkey);
@@ -5271,7 +5283,7 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
     }
     inlineFold(head, turn, `+${add} −${del}`, pre, fkey);
   } else if (ev.name === "Read") {
-    if (ev.output) inlineFold(head, turn, `${countLines(ev.output)} lines`, preEl(ev.output, fkey && fkey + ":out"), fkey);
+    if (ev.output) { const n = countLines(ev.output); inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, preEl(ev.output, fkey && fkey + ":out"), fkey); }   // "1 line", not "1 lines" (T418, seen in the lab)
   } else if (ev.name === "Skill") {
     // A Skill invocation (the user 2026-07-08): the head names the skill, and the skill's INSTRUCTIONS
     // (ev.skillMd, kernel-joined) are the fold body — DEFAULT COLLAPSED like every tool body. They used
@@ -5332,14 +5344,14 @@ function renderTool(ev: Extract<ChatEvent, { kind: "tool" }>): HTMLElement {
       // user expand survives the running→done re-render.
       if (ev.input) {
         const io = el("div", "tool-io tool-io-fold");
-        io.appendChild(ioRow("IN", ev.input, false));
+        io.appendChild(ioRow("IN", toolInputText(ev), false));
         inlineFold(head, turn, ev.resultUuid ? "no output" : "running…", io, fkey);
       }
     } else {
       // Bash/Grep/Glob/…: output line-count on the head line (right of the command);
       // the command + full output hang below, hidden until clicked.
       const io = el("div", "tool-io tool-io-fold");
-      if (ev.input) io.appendChild(ioRow("IN", ev.input, false));
+      if (ev.input) io.appendChild(ioRow("IN", toolInputText(ev), false));
       io.appendChild(ioRow("OUT", ev.output, false));
       const n = countLines(ev.output);
       inlineFold(head, turn, `${n} line${n === 1 ? "" : "s"}`, io, fkey);
@@ -12418,6 +12430,16 @@ function toolGroupKey(first: ChatEvent): string { return "tg:" + (first.uuid || 
 // tool word bold (matching the non-compact .tool-name, so it reads AS tools). Clicking the line toggles
 // expand → the full non-compact cards (the user 2026-06-14). Carries the rail dot + time-marker + hover
 // wiring like any event so it anchors on the timeline; the dot is a green ✓ disc, red ✗ if any errored.
+/** The edits' totals of a head line ("+37 -0"), appended in the diff colours; the phrase itself is printed without them by the caller. */
+function appendTotals(line: HTMLElement, head: string): void {
+  const m = / \+(\d+) -(\d+)/.exec(head);
+  if (!m) return;
+  const tot = el("span", "tool-totals");
+  const plus = el("span", "tool-plus"); plus.textContent = "+" + m[1];
+  const minus = el("span", "tool-minus"); minus.textContent = "-" + m[2];
+  tot.append(" ", plus, " ", minus);
+  line.appendChild(tot);
+}
 function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoch: number | null, key: string, open: boolean): HTMLElement {
   const turn = el("div", "turn turn-toolgroup" + (open ? " expanded" : ""));
   const anyErr = tools.some((t) => t.isError);
@@ -12430,11 +12452,11 @@ function renderToolGroup(tools: Extract<ChatEvent, { kind: "tool" }>[], prevEpoc
   line.dataset.act = "noticetoggle"; line.dataset.gkey = key;
   setTip(line, open ? "click to collapse" : "click to expand");
   const caret = el("span", "toolgroup-caret"); caret.textContent = open ? "▾" : "▸"; line.appendChild(caret);
-  if (!open) {   // collapsed → the "3 Edits, 2 Reads" summary; expanded → just the open arrow (the cards say it)
-    toolCounts(tools.map((t) => t.name)).forEach((c, i) => {
-      line.appendChild(document.createTextNode((i ? ", " : " ") + c.count + " "));
-      const w = el("span", "toolgroup-tool"); w.textContent = c.label; line.appendChild(w);   // bold, like .tool-name
-    });
+  if (!open) {   // collapsed → the head by ACTION in the user's terms (T418, the user 2026-09-14: "Ran 11 commands, created 2 files, edited 3 files +37 -0, read 4 files"); expanded → just the open arrow (the rows say it)
+    const head = actionHead(tools);
+    line.appendChild(document.createTextNode(" "));
+    const w = el("span", "toolgroup-head"); w.textContent = head.replace(/ \+\d+ -\d+/g, ""); line.appendChild(w);   // the phrases; the totals follow in the diff colours
+    appendTotals(line, head);
   }
   turn.appendChild(line);
   const epoch = eventEpoch(tools[0]);
