@@ -415,8 +415,11 @@ function initGear(post, opts) {
   // what a pick does.
   var openHousePick = null;   // at most one of the card's dropdowns is open (a click that opens one closes the other)
   var widgetDrag = false;   // a widget row in flight (the reorder, T409): the drag takes the Escape itself, so the shell's Escape-to-close stands down while it is on
-  var dragAbort = null;     // the drag in flight's teardown, set at the press and cleared at the end: closeSettings ends the drag first (rows restored, listeners gone, nothing armed), because a
-                            // release under a hidden card never reaches this document, and the listeners would survive the reopen (part two's third read)
+  var dragAborts = [];      // the teardown of EVERY drag in flight, one per pointer (a second finger on a second grip is its own drag), added at the press and removed at the end:
+                            // whatever hides the card (closeSettings, the Token usage opener) ends them all first (rows restored, listeners gone, nothing armed), because a release
+                            // under a hidden card never reaches this document and the listeners would survive the reopen (part two's third read; the migration read widened the
+                            // single slot, which tore down only the last drag pressed)
+  function endDrags() { dragAborts.slice().forEach(function (f) { f(); }); }
   function housePick(wrap, attr, rowHTML, pick) {
     if (!wrap) return null;
     var btn = document.createElement('button');
@@ -681,7 +684,7 @@ function initGear(post, opts) {
                                   //      demo(w, prefs) -> node or null, preview(prefs) -> node, pickPrefix
     var rows = {}, dividerRow = null, previewBody = null;
     // REORDER (the user's addition to T409): the rows drag by their grip (pointer events on the document for the drag's life,
-    // one pointer at a time; Escape cancels) and move by the arrow keys on the focused grip; the order is the render order on
+    // one drag per pointer, each ended when the card hides; Escape cancels) and move by the arrow keys on the focused grip; the order is the render order on
     // the surface and is stored WHOLE (the divider's id included, so every tab widget's side of the name is explicit from
     // the first drag on). The same moveId rule serves the drag's drop and the key. A section whose rows have GROUPS (the
     // status line: its two slots) holds a row inside its group, with a nudge for a move that would leave it.
@@ -769,7 +772,7 @@ function initGear(post, opts) {
         var end = function (ev) {
           if (ev && ev.pointerId !== undefined && ev.pointerId !== pid) return;
           document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', cancel); document.removeEventListener('keydown', esc, true);
-          row.classList.remove('rs-dragging'); widgetDrag = false; dragAbort = null;
+          row.classList.remove('rs-dragging'); dragAborts = dragAborts.filter(function (f) { return f !== abort; }); widgetDrag = dragAborts.length > 0;
           if (ev && ev.type === 'pointerup') armSwallow();
           else if (!ev) {
             // Escape ended the drag under a held pointer: its release is still to come, and the click that release synthesizes
@@ -784,8 +787,9 @@ function initGear(post, opts) {
           if (now.join() !== before.join()) commit(now, id); else paint();
         };
         var cancel = function (ev) { if (ev.pointerId !== pid) return; placeRows(before); end(ev); };
-        // the panel closing under the held pointer: the same teardown as a cancel (rows back, listeners off, nothing armed)
-        dragAbort = function () { placeRows(before); end({ type: 'abort', pointerId: pid }); };
+        // the card hidden under the held pointer: the same teardown as a cancel (rows back, listeners off, nothing armed)
+        var abort = function () { placeRows(before); end({ type: 'abort', pointerId: pid }); };
+        dragAborts.push(abort);
         // Escape is the drag's own while a drag is on (heard first, in the capture phase, and stopped there: the panel's
         // Escape-to-close must not fire under a cancelled drag)
         var esc = function (ev) { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); placeRows(before); end(); } };
@@ -1794,7 +1798,7 @@ function initGear(post, opts) {
     pcard.addEventListener('mouseover', function (e) { var host = hostOf(e.target); if (host) placeSub(host); });
     pcard.addEventListener('mouseout', function (e) { var host = hostOf(e.target); if (host && !(e.relatedTarget && host.contains(e.relatedTarget))) host.classList.remove('rs-up'); });
   }
-  function closeSettings() { if (dragAbort) dragAbort(); clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
+  function closeSettings() { endDrags(); clearSectionScroll(); p.hidden = true; setModalCls(false); feedFull(false); }   // the reset FIRST, while the card still has a layout: a hidden card ignores a scroll write and keeps its old offset for the next open (measured); a pending section ask dies with the panel (round two, LOW 2 and 7)
   function openSettings(tab, section) {
     if (tab === 'appearance' && !section) section = 'appearance';   // the former Appearance tab is General's section (T404)
     if (!p.hidden) { if (knownTab(tab)) { selectTab(tab); if (section) showSection(section); else clearSectionScroll(); return; } closeSettings(); return; }   // the opener toggles the modal; a named tab on an open panel switches to it, and to its section (T379)
@@ -1889,7 +1893,7 @@ function initGear(post, opts) {
     raNote.textContent = 'last ' + raState.periodLabel + ' · judges = ' + (sessTot ? ratio.toFixed(1) : '0') + '% of session ' + (raCost() ? 'cost' : 'tokens') + ' · combined ' + raFmt(sessTot + judgeTot); }
   function raFetch() { raState.loading = true; raRender();
     fetch(ku('/analytics?window=' + raState.window), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { raState.loading = false; raState.data = d; raRender(); }).catch(function () { raState.loading = false; raChart.innerHTML = '<div class=ra-empty>analytics unavailable</div>'; raLegend.innerHTML = ''; raNote.textContent = ''; }); }
-  if (raOpen) raOpen.onclick = function (e) { e.stopPropagation(); raBack.hidden = false; p.hidden = true; raFetch(); };
+  if (raOpen) raOpen.onclick = function (e) { e.stopPropagation(); endDrags(); raBack.hidden = false; p.hidden = true; raFetch(); };   // the card hides here too: a drag in flight ends first (the migration read's low 2)
   if (raClose) raClose.onclick = function () { raBack.hidden = true; };
   if (raBack) raBack.addEventListener('click', function (e) { if (e.target === raBack) raBack.hidden = true; });
   Array.prototype.forEach.call(document.querySelectorAll('.ra-periods button'), function (btn) { btn.onclick = function () { raState.window = +btn.getAttribute('data-w'); raState.periodLabel = btn.textContent;
