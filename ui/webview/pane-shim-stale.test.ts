@@ -391,3 +391,31 @@ test("a page served with the stale opt-out never arms the prompt after a reconne
   g.ws.msg({ type: "ka", dv: 0 }); g.ws.msg({ type: "ka", dv: 0 });
   assert.equal(g.stale(), 1, "the opt-out is the difference, not the app name");
 });
+
+// Invisible restarts (the user 2026-09-14): the reload core holds a changed build's reload on 'fresh' while the chat
+// pane's redial awaits its first frame, so the reload lands on a kernel whose builds are warm. The round-two review
+// found the hold armed in EVERY pane's shim: the Files page (the stale opt-out above, a page no resync frame ever
+// reaches) armed it at its reconnect and never cleared it, so a deploy's reload was held forever behind a promise.
+// The shim now arms it in the chat pane alone, stamped for the core's bound, and its resync frame clears it.
+test("only the chat pane's reconnect arms the reload core's fresh hold, stamped, and its resync frame clears it", () => {
+  const h = new Harness(shimJs("chat"));
+  h.ws.open(); h.bundleReady();
+  assert.equal(h.win.__rompFreshPending, undefined, "the first dial is not a reconnect: nothing to hold");
+  h.ws.close();
+  assert.equal(h.win.__rompFreshPending, true, "the drop arms the hold: the shell's own socket may reopen and ask /version before this pane redials");
+  const since = h.win.__rompFreshPendingSince;
+  assert.ok(since > 0, "stamped, so the core can bound it");
+  h.runTimers(); h.ws.open();
+  assert.equal(h.win.__rompFreshPending, true, "the reconnect keeps it");
+  assert.ok(h.win.__rompFreshPendingSince >= since, "and restamps it");
+  h.ws.msg({ type: "ka", dv: 0 });
+  assert.equal(h.win.__rompFreshPending, true, "a keepalive is not the frame");
+  h.ws.msg({ type: "resync", ops: [] });
+  assert.equal(h.win.__rompFreshPending, false, "the first real frame clears it");
+  for (const [app, noStale] of [["files", true], ["settings", true], ["feed", false]] as [string, boolean][]) {
+    const g = new Harness(shimJs(app, noStale));
+    g.ws.open(); g.bundleReady(); g.ws.close(); g.runTimers(); g.ws.open();
+    g.ws.msg({ type: "ka", dv: 0 });
+    assert.equal(g.win.__rompFreshPending, undefined, app + ": a pane that is not the chat pane never arms the hold");
+  }
+});

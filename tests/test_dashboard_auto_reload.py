@@ -41,6 +41,9 @@ var document = {
   body: { classList: { remove: function () { REMOVED.push(Array.prototype.slice.call(arguments)); } } },
   querySelectorAll: function () { return IFRAMES; }
 };
+var TIMERS = [], _setTimeout = globalThis.setTimeout;
+function setTimeout(f, ms) { if (ms > 0) { TIMERS.push({ f: f, ms: ms }); return TIMERS.length; } return _setTimeout(f, ms); }   // a bound's backstop is recorded, never waited for; the zero-delay ticks run
+function pane(busy) { return { contentWindow: { __rompReload: { busyHere: function () { return busy(); } } } }; }   // an iframe the shell's walk visits
 var window = { addEventListener: function (t, f) { (WLISTENERS[t] = WLISTENERS[t] || []).push(f); } };
 window.parent = window;
 window.__rompPersistForReload = function () { PERSISTED++; };
@@ -63,14 +66,14 @@ function out(o) { process.stdout.write("RESULT:" + JSON.stringify(o) + "\n"); }
 """
 
 
-def run_core(scenario, v=7, boot="1.1", sha="abc1234"):
+def run_core(scenario, v=7, boot="1.1", code="abc1234"):
     node = shutil.which("node")
     if not node:
         raise unittest.SkipTest("node not installed")
     d = tempfile.mkdtemp(prefix="reload-core-")
     path = os.path.join(d, "core.js")
     with open(path, "w") as f:
-        f.write(HARNESS + km._reload_core_js(v, boot, sha) + "\n(async function(){\n" + scenario + "\n})();\n")
+        f.write(HARNESS + km._reload_core_js(v, boot, code) + "\n(async function(){\n" + scenario + "\n})();\n")
     r = subprocess.run([node, path], capture_output=True, text=True, timeout=60)
     shutil.rmtree(d, ignore_errors=True)
     if r.returncode != 0:
@@ -113,12 +116,12 @@ out({ blip: blip, after: state() });""")
         self.assertEqual(s["after"]["stored"]["detail"], "2.2")
 
     def test_a_restart_with_an_unchanged_build_never_reloads(self):
-        """Invisible restarts (the user 2026-09-14): a new boot id with the SAME kernel code sha is a restart of the build this
+        """Invisible restarts (the user 2026-09-14): a new boot id with the SAME code identity is a restart of the code this
         page already runs; the board stays on screen and the shim's redial carries the diet; no reload is owed."""
         s = run_core("""
 var R = window.__rompReload;
-VERSION = { boot: "2.2", dist_ver: 7, kernel_sha: "abc1234" }; R.checkBoot(); await tick(); await tick();
-out({ after: state(), restarted: R.restarted() });""", sha="abc1234")
+VERSION = { boot: "2.2", dist_ver: 7, code_ident: "abc1234" }; R.checkBoot(); await tick(); await tick();
+out({ after: state(), restarted: R.restarted() });""", code="abc1234")
         self.assertEqual(s["after"]["reloads"], 0, "the same build restarted: nothing to reload onto")
         self.assertIsNone(s["after"]["owed"])
         self.assertEqual(s["restarted"], 1, "the restart was seen and counted")
@@ -127,9 +130,10 @@ out({ after: state(), restarted: R.restarted() });""", sha="abc1234")
         s = run_core("""
 var R = window.__rompReload;
 window.__rompFreshPending = true;                       // the shim's redial is awaiting its resync frame
-VERSION = { boot: "2.2", dist_ver: 7, kernel_sha: "def5678" }; R.checkBoot(); await tick(); await tick(); var held = state();
+window.__rompFreshPendingSince = Date.now();
+VERSION = { boot: "2.2", dist_ver: 7, code_ident: "def5678" }; R.checkBoot(); await tick(); await tick(); var held = state();
 window.__rompFreshPending = false; R.ended(); await tick(); await tick();
-out({ held: held, after: state() });""", sha="abc1234")
+out({ held: held, after: state() });""", code="abc1234")
         self.assertEqual(s["held"]["reloads"], 0, "owed but held: the reload must land on a warm kernel")
         self.assertEqual(s["held"]["owed"]["reason"], "restart")
         self.assertEqual(s["held"]["waiting"], "fresh")
@@ -137,27 +141,148 @@ out({ held: held, after: state() });""", sha="abc1234")
         self.assertEqual(s["after"]["stored"]["reason"], "restart")
         self.assertEqual(s["after"]["stored"]["detail"], "2.2")
 
-    def test_a_version_without_a_code_sha_still_reloads_on_a_restart(self):
+    def test_a_version_without_a_code_identity_still_reloads_on_a_restart(self):
         # an older kernel's /version (or a fetch that lost the field): the fail-safe is today's reload, never a silent stale page
         s = run_core("""
 var R = window.__rompReload;
 VERSION = { boot: "2.2", dist_ver: 7 }; R.checkBoot(); await tick(); await tick();
-out({ after: state() });""", sha="abc1234")
+out({ after: state() });""", code="abc1234")
         self.assertEqual(s["after"]["reloads"], 1)
         self.assertEqual(s["after"]["stored"]["reason"], "restart")
 
+    def test_the_fresh_hold_is_read_from_the_panes_the_shell_holds_and_a_pane_that_never_arms_it_holds_nothing(self):
+        """The round-two review's medium: busy() walks every pane the shell holds. A Files or Settings pane gets no resync frame,
+        so a hold armed there would never end; the shim arms the flag in the chat pane alone (its own test), and here the walk
+        is executed over two panes: the chat pane holds while its flag stands, the other pane never does, and the chat pane's
+        ending event fires the reload."""
+        s = run_core("""
+var R = window.__rompReload;
+var chat = { pending: true, since: Date.now() };
+IFRAMES = [pane(function () { return ''; }),                                                            // a Files pane: nothing to wait for
+           pane(function () { return chat.pending && Date.now() - chat.since < 60000 ? 'fresh' : ''; })];  // the chat pane's busyHere, the core's own rule
+VERSION = { boot: "2.2", dist_ver: 7, code_ident: "def5678" }; R.checkBoot(); await tick(); await tick(); var held = state();
+chat.pending = false; R.ended(); await tick(); await tick();
+out({ held: held, after: state() });""", code="abc1234")
+        self.assertEqual(s["held"]["reloads"], 0)
+        self.assertEqual(s["held"]["waiting"], "fresh", "the walk found the chat pane's hold")
+        self.assertEqual(s["after"]["reloads"], 1, "the chat pane's frame ended it")
+        self.assertEqual(s["after"]["stored"]["detail"], "2.2")
+
+    def test_a_fresh_hold_older_than_the_bound_no_longer_holds_and_the_backstop_runs_the_walk_once_more(self):
+        """A frame that never comes must not hold a deploy's reload forever (the round-two review): the hold is read with its
+        stamp, one older than the bound no longer counts, and the shell arms one backstop timer for the bound when it first
+        holds on 'fresh', so the reload fires without any event once the bound has passed."""
+        s = run_core("""
+var R = window.__rompReload;
+window.__rompFreshPending = true; window.__rompFreshPendingSince = Date.now();
+VERSION = { boot: "2.2", dist_ver: 7, code_ident: "def5678" }; R.checkBoot(); await tick(); await tick(); var held = state();
+var armed = TIMERS.map(function (t) { return t.ms; });
+R.tryFire(); var armedAgain = TIMERS.length;                                     // a second walk while held arms no second timer
+window.__rompFreshPendingSince = Date.now() - 60001;                              // the bound passes with the flag still up
+TIMERS[0].f(); await tick(); await tick();
+var expiredAtOnce = null;
+out({ held: held, armed: armed, armedAgain: armedAgain, after: state() });""", code="abc1234")
+        self.assertEqual(s["held"]["waiting"], "fresh")
+        self.assertEqual(s["armed"], [60000], "one backstop for the bound, armed when the hold was first seen")
+        self.assertEqual(s["armedAgain"], 1)
+        self.assertEqual(s["after"]["reloads"], 1, "the backstop's walk fired the reload once the hold was older than the bound")
+        self.assertEqual(s["after"]["stored"]["reason"], "restart")
+        t = run_core("""
+var R = window.__rompReload;
+window.__rompFreshPending = true; window.__rompFreshPendingSince = Date.now() - 60001;   // a stale flag: some earlier redial's, never cleared
+VERSION = { boot: "2.2", dist_ver: 7, code_ident: "def5678" }; R.checkBoot(); await tick(); await tick();
+out({ after: state(), timers: TIMERS.length });""", code="abc1234")
+        self.assertEqual(t["after"]["reloads"], 1, "a flag older than the bound holds nothing")
+        self.assertEqual(t["timers"], 0)
+
+    def test_build_drift_after_a_reconnect_reloads_once_the_chat_pane_has_its_frame(self):
+        # the pre-existing build-drift reload after any reconnect (the round-two review found it held forever behind a Files pane
+        # whose flag stood unstamped and uncleared): an unstamped flag holds nothing, a stamped one holds until the frame
+        s = run_core("""
+var R = window.__rompReload;
+window.__rompFreshPending = true;                                                  // a flag with no stamp: never a hold
+R.noteDv(8); var unstamped = state();
+out({ unstamped: unstamped });""")
+        self.assertEqual(s["unstamped"]["reloads"], 1, "a flag without a stamp holds nothing")
+        t = run_core("""
+var R = window.__rompReload;
+IFRAMES = [pane(function () { return ''; })];
+window.__rompFreshPending = true; window.__rompFreshPendingSince = Date.now();
+R.noteDv(8); var held = state();
+window.__rompFreshPending = false; R.ended(); await tick(); await tick();
+out({ held: held, after: state() });""")
+        self.assertEqual(t["held"]["waiting"], "fresh")
+        self.assertEqual(t["held"]["owed"]["reason"], "build")
+        self.assertEqual(t["after"]["reloads"], 1)
+
+    def test_restarted_counts_restarts_and_a_second_restart_inside_one_hold_files_the_latest_boot(self):
+        # lows b and c of the round-two review: BOOT re-latches so the polls after a restart do not count again; the record
+        # names the boot the page lands on
+        s = run_core("""
+var R = window.__rompReload;
+R.noteVersion({ boot: "2.2", dist_ver: 7, code_ident: "abc1234" }); R.noteVersion({ boot: "2.2", dist_ver: 7, code_ident: "abc1234" });
+var one = R.restarted();
+R.noteVersion({ boot: "3.3", dist_ver: 7, code_ident: "abc1234" }); var two = R.restarted();
+window.__rompFreshPending = true; window.__rompFreshPendingSince = Date.now();
+R.noteVersion({ boot: "4.4", dist_ver: 7, code_ident: "def5678" }); R.noteVersion({ boot: "5.5", dist_ver: 7, code_ident: "def5678" });
+var owed = state().owed;
+window.__rompFreshPending = false; R.ended(); await tick(); await tick();
+out({ one: one, two: two, owed: owed, after: state() });""", code="abc1234")
+        self.assertEqual(s["one"], 1, "two polls of one restarted kernel count one restart")
+        self.assertEqual(s["two"], 2, "a further boot id counts again")
+        self.assertEqual(s["owed"]["detail"], "5.5", "the held request names the latest boot")
+        self.assertEqual(s["after"]["stored"]["detail"], "5.5")
+
+    def test_the_code_identity_changes_with_the_bytes_of_the_kernel_code(self):
+        """Low d of the round-two review: a dirty tree reads the same git sha before and after an edit, so the identity the core
+        compares is over the code's bytes. Over a private tree: stable across calls, changed by one byte, the environment
+        stand-in wins, and /version carries it."""
+        import importlib
+        d = tempfile.mkdtemp(prefix="code-ident-")
+        os.makedirs(os.path.join(d, "kernel"))
+        with open(os.path.join(d, "kernel", "a.py"), "w") as f:
+            f.write("x = 1\n")
+        old_root = km.ROOT
+        try:
+            km.ROOT = type(old_root)(d)
+            km._CODE_IDENT[0] = None
+            first = km._code_ident()
+            km._CODE_IDENT[0] = None
+            self.assertEqual(km._code_ident(), first, "the same bytes read the same identity")
+            self.assertRegex(first, r"^[0-9a-f]{12}$")
+            with open(os.path.join(d, "kernel", "a.py"), "w") as f:
+                f.write("x = 2\n")
+            km._CODE_IDENT[0] = None
+            self.assertNotEqual(km._code_ident(), first, "one changed byte is a changed build")
+            km._CODE_IDENT[0] = None
+            os.environ["ROMP_CODE_IDENT"] = "lab-build"
+            try:
+                self.assertEqual(km._code_ident(), "lab-build")
+            finally:
+                del os.environ["ROMP_CODE_IDENT"]
+                km._CODE_IDENT[0] = None
+            self.assertEqual(km._version_info()["code_ident"], km._code_ident(), "/version carries the identity the core compares")
+        finally:
+            km.ROOT = old_root
+            km._CODE_IDENT[0] = None
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_the_shim_arms_the_fresh_hold_on_a_reconnect_and_the_resync_frame_ends_it(self):
         js = km._shim("chat", 5)
-        self.assertIn('pendingWhy="";freshPending=true;window.__rompFreshPending=true;', js, "the reopen arms the hold the core reads")
-        self.assertIn('pendingWhy="foreground";freshPending=true;window.__rompFreshPending=true;', js, "and the foreground redial")
+        self.assertIn('if(openSock===this){armFresh();', js, "the drop arms the hold the core reads: the shell's socket may reopen and ask /version before this pane redials")
+        self.assertIn('pendingWhy="";freshPending=true;armFresh();', js, "the reopen restamps it")
+        self.assertIn('pendingWhy="foreground";freshPending=true;armFresh();', js, "and the foreground redial")
+        self.assertIn('function armFresh(){if(APP==="chat"){window.__rompFreshPending=true;window.__rompFreshPendingSince=Date.now();}}', js,
+                      "the chat pane alone, stamped for the bound (ui/webview/pane-shim-stale.test.ts runs it)")
         self.assertIn('if(freshPending){freshPending=false;window.__rompFreshPending=false;clearStale();try{if(window.__rompReload)window.__rompReload.ended();}catch(e){}}', js,
                       "the first real frame clears it and is the ending event")
         core = km._reload_core_js(5, "1.1", "abc")
-        self.assertIn("try{if(window.__rompFreshPending)return 'fresh';}catch(e){}", core)
-        self.assertIn('var LOADED=5,BOOT="1.1",SHA="abc",', core, "the page's own code sha is baked beside its build and boot")
-        self.assertIn("The dashboard will reload onto the new build once the reconnected pane has its first frame.", js, "the held wording, the pane's bar")
-        self.assertIn("The dashboard will reload onto the new build once the reconnected pane has its first frame.", km._STALE_JS, "and the shell's")
-        self.assertIn("SHA=%s," % json.dumps(str(km._kernel_sha() or "")), km._reload_core(), "the served core bakes this kernel's sha")
+        self.assertIn("try{if(window.__rompFreshPending&&Date.now()-(window.__rompFreshPendingSince||0)<FRESH_HOLD_MS)return 'fresh';}catch(e){}", core)
+        self.assertIn('var LOADED=5,BOOT="1.1",CODE="abc",FRESH_HOLD_MS=60000,', core, "the page's own code identity is baked beside its build and boot")
+        wording = "The dashboard will reload onto the new build once the reconnected chat pane has its first frame, a minute at most."
+        self.assertIn(wording, js, "the held wording, the pane's bar")
+        self.assertIn(wording, km._STALE_JS, "and the shell's")
+        self.assertIn("CODE=%s," % json.dumps(km._code_ident() or ""), km._reload_core(), "the served core bakes this kernel's code identity")
 
     def test_version_readings_feed_both_signals(self):
         s = run_core("""

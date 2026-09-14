@@ -161,7 +161,7 @@ process.stdout.write(JSON.stringify({
         # indistinguishable. (A socket the shim ABANDONS leaves none — abandon() disowns its onclose; the
         # watchdog-close row above went down the quiet socket before the abandon, and an armed socket's
         # "-quiet" raise rides the redial.)
-        self.assertIn('if(openSock===this){try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,'
+        self.assertIn('if(openSock===this){armFresh();try{send({type:"clientDiag",surface:"pane-shim",what:"wsclose",data:{app:APP,code:ev?ev.code:-1,'
                       'reason:(ev&&ev.reason)||"",wasClean:!!(ev&&ev.wasClean),'
                       'sinceOpenMs:openT?Date.now()-openT:-1,quietMs:lastRecv?Date.now()-lastRecv:-1,everConnected:everConnected}', js)
         # …for a socket that OPENED. A handshake that never opened fires onclose too — every redial of an
