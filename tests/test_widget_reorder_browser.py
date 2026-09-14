@@ -243,6 +243,41 @@ await setF.evaluate(() => { const next = document.querySelector('#rs-widgets > .
   document.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1, pointerType: "mouse", bubbles: true, clientX: next.left + 4, clientY: next.bottom - 2 })); });
 await setF.waitForTimeout(300);
 out.closeMidDrag = { before: closeBefore, mid: closeMid, closedOpen, reopened, clickLanded, after: { rows: (await readPanel(setF)).tabRows.map((r) => r.id || r.divider), store: await readStrip(chatF), open: await setF.evaluate(() => window.__puOpen()) } };
+// 3f. the Token usage opener hides the card too, so it must end a drag in flight the same way (the migration read's low 2)
+const rowsNow = async () => (await readPanel(setF)).tabRows.map((r) => r.id || r.divider);
+const puOpen = () => setF.evaluate(() => window.__puOpen());
+const synthDrag = (gripId, pastId, pid) => setF.evaluate(([gripId, pastId, pid]) => { const grip = document.querySelector('#rs-widgets > .rs-widget[data-widget="' + gripId + '"] .rs-grip'); const b = grip.getBoundingClientRect();
+  const past = document.querySelector('#rs-widgets > .rs-widget[data-widget="' + pastId + '"], #rs-widgets > .rs-widget[data-divider="' + pastId + '"]').getBoundingClientRect();
+  grip.dispatchEvent(new PointerEvent("pointerdown", { pointerId: pid, pointerType: "mouse", button: 0, bubbles: true, clientX: b.left + 4, clientY: b.top + b.height / 2 }));
+  document.dispatchEvent(new PointerEvent("pointermove", { pointerId: pid, pointerType: "mouse", bubbles: true, clientX: b.left + 4, clientY: past.bottom - 2 })); }, [gripId, pastId, pid]);
+const strayMoveUp = (pid, overId) => setF.evaluate(([pid, overId]) => { const over = document.querySelector('#rs-widgets > .rs-widget[data-widget="' + overId + '"]').getBoundingClientRect();
+  document.dispatchEvent(new PointerEvent("pointermove", { pointerId: pid, pointerType: "mouse", bubbles: true, clientX: over.left + 4, clientY: over.bottom - 2 }));
+  document.dispatchEvent(new PointerEvent("pointerup", { pointerId: pid, pointerType: "mouse", bubbles: true, clientX: over.left + 4, clientY: over.bottom - 2 })); }, [pid, overId]);
+const raBefore = { rows: await rowsNow(), store: await readStrip(chatF) };
+await synthDrag("ctx", "hotkey", 1); await setF.waitForTimeout(100);
+const raMid = { open: await puOpen(), rows: await rowsNow() };
+await setF.evaluate(() => document.getElementById("ra-open").click()); await setF.waitForTimeout(250);   // the button lives on another tab: a scripted click, as the reviewer reached it
+const raOpened = { open: await puOpen(), cardHidden: await setF.evaluate(() => document.getElementById("rsettings").hidden), backShown: await setF.evaluate(() => !document.getElementById("ranalytics-back").hidden) };
+await setF.evaluate(() => { document.getElementById("ranalytics-back").hidden = true; });   // the panel's own close leaves the card hidden: the gear reopens below
+await page.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets"));
+await setF.waitForSelector("#rs-widgets .rs-widget", { timeout: 15000 }); await setF.waitForTimeout(300);
+const raReopened = { rows: await rowsNow(), store: await readStrip(chatF) };
+await strayMoveUp(1, "dot"); await setF.waitForTimeout(300);
+out.tokenUsageMidDrag = { before: raBefore, mid: raMid, opened: raOpened, reopened: raReopened, after: { rows: await rowsNow(), store: await readStrip(chatF), open: await puOpen() } };
+// 3g. two drags in flight, two pointers on two grips: one close ends them both (the abort hook was a single slot)
+const twoBefore = { rows: await rowsNow(), store: await readStrip(chatF) };
+await synthDrag("ctx", "hotkey", 7); await setF.waitForTimeout(80);
+await synthDrag("dot", "name", 8); await setF.waitForTimeout(100);
+const twoMid = { open: await puOpen(), rows: await rowsNow() };
+await page.evaluate(() => window.__rompOpenSettings());
+await page.waitForFunction(() => !document.body.classList.contains("settings-open"), null, { timeout: 5000 }).catch(() => {});
+await setF.waitForTimeout(150);
+const twoClosed = await puOpen();
+await page.evaluate(() => window.__rompOpenSettings("chat", "tabwidgets"));
+await setF.waitForSelector("#rs-widgets .rs-widget", { timeout: 15000 }); await setF.waitForTimeout(300);
+const twoReopened = { rows: await rowsNow(), store: await readStrip(chatF) };
+await strayMoveUp(7, "dot"); await strayMoveUp(8, "hotkey"); await setF.waitForTimeout(300);
+out.twoDragsClose = { before: twoBefore, mid: twoMid, closedOpen: twoClosed, reopened: twoReopened, after: { rows: await rowsNow(), store: await readStrip(chatF), open: await puOpen() } };
 // 4. the Status line section: the branch dragged above the folder
 await page.evaluate(() => window.__rompOpenSettings("chat", "statusline"));
 await setF.waitForSelector('#rsettings .rs-card[data-section-landed="statusline"]', { timeout: 10000 }).catch(() => {});
@@ -476,6 +511,25 @@ class ServedWidgetReorder(unittest.TestCase):
         self.assertEqual(c["after"]["rows"], c["before"]["rows"], "a later move and release under the same pointer id moved nothing: the drag is over")
         self.assertEqual(c["after"]["store"]["store"], c["before"]["store"]["store"], "and stored nothing")
         self.assertEqual(c["after"]["open"], 0)
+
+    def test_the_token_usage_opener_ends_a_drag_in_flight_too(self):
+        c = self.out["tokenUsageMidDrag"]
+        self.assertEqual(c["mid"]["open"], 1, "the drag was on: %r" % c["mid"]); self.assertNotEqual(c["mid"]["rows"], c["before"]["rows"], "and its row had moved live")
+        self.assertEqual((c["opened"]["cardHidden"], c["opened"]["backShown"]), (True, True), "the Token usage panel replaced the card: %r" % c["opened"])
+        self.assertEqual(c["opened"]["open"], 0, "the opener ended the drag: no release listener survives the card's hide (the migration read's low 2)")
+        self.assertEqual(c["reopened"]["rows"], c["before"]["rows"], "the rows came back in the stored order")
+        self.assertEqual(c["reopened"]["store"]["store"], c["before"]["store"]["store"], "nothing stored")
+        self.assertEqual(c["after"]["rows"], c["before"]["rows"], "a later move and release under the drag's pointer id moved nothing")
+        self.assertEqual(c["after"]["store"]["store"], c["before"]["store"]["store"]); self.assertEqual(c["after"]["open"], 0)
+
+    def test_two_drags_in_flight_end_together_on_a_close(self):
+        c = self.out["twoDragsClose"]
+        self.assertEqual(c["mid"]["open"], 2, "two pointers, two drags, two release listeners: %r" % c["mid"]); self.assertNotEqual(c["mid"]["rows"], c["before"]["rows"])
+        self.assertEqual(c["closedOpen"], 0, "one close ends every drag in flight, not the last one pressed")
+        self.assertEqual(c["reopened"]["rows"], c["before"]["rows"], "both rows back in the stored order")
+        self.assertEqual(c["reopened"]["store"]["store"], c["before"]["store"]["store"])
+        self.assertEqual(c["after"]["rows"], c["before"]["rows"], "later moves and releases under either pointer id moved nothing: %r" % (c["after"]["rows"],))
+        self.assertEqual(c["after"]["store"]["store"], c["before"]["store"]["store"]); self.assertEqual(c["after"]["open"], 0)
 
     def test_every_move_speaks_through_the_live_region_and_the_previews_are_inert(self):
         c = self.out["ctxBefore"]["panel"]

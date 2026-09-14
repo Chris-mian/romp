@@ -45,7 +45,7 @@ test("the drag: pointer events heard on the document (a capture on the grip woul
   // flight answers no there, one Escape level at a time (the lab caught the panel closing under Escape mid-drag)
   assert.match(GEAR, /var widgetDrag = false;/);
   assert.match(SECTION, /row\.classList\.add\('rs-dragging'\); widgetDrag = true;/);
-  assert.match(SECTION, /row\.classList\.remove\('rs-dragging'\); widgetDrag = false;/);
+  assert.match(SECTION, /row\.classList\.remove\('rs-dragging'\); dragAborts = dragAborts\.filter/);
   assert.match(GEAR, /window\.__rompSettingsClose = function \(\) \{ if \(p\.hidden \|\| \(lgM && !lgM\.hidden\) \|\| openHousePick \|\| widgetDrag\) return false; closeSettings\(\); return true; \};/);
   // the click the release synthesizes is the drag's: swallowed once in the capture phase, for the release's own POINTER click
   // alone (a keyboard's click has detail 0 and no pointer type, round two: the next Space on a switch lands), disarmed by
@@ -55,13 +55,24 @@ test("the drag: pointer events heard on the document (a capture on the grip woul
   assert.match(SECTION, /if \(ev && ev\.type === 'pointerup'\) armSwallow\(\);\s*\n\s*else if \(!ev\) \{/, "only an Escape-ended drag waits for the release still to come; a cancel arms nothing (round three, the medium: the lab's ledger holds the cancel path at zero)");
   assert.match(SECTION, /var lateUp = function \(up\) \{ if \(up\.pointerId !== pid\) return; document\.removeEventListener\('pointerup', lateUp, true\); document\.removeEventListener\('pointercancel', lateUp, true\); if \(up\.type === 'pointerup'\) armSwallow\(\); \};/);
   assert.match(SECTION, /document\.addEventListener\('pointerup', lateUp, true\); document\.addEventListener\('pointercancel', lateUp, true\);/, "the late listener leaves with its pointer, released or cancelled");
-  assert.doesNotMatch(SECTION, /var pid = e\.pointerId[^\n]*released/, "no dead variable among the drag's declarations (round three, low 5; anchored to the declaration, so a comment cannot trip it)");
+  // the WHOLE pointerdown handler, comments stripped: a flag re-declared anywhere in it (the reviewer's executed counterexample,
+  // on its own line, passed the one-line anchor) is caught, and a comment carrying the word is not (round three, low 5; the
+  // migration read's low 1)
+  const HANDLER = SECTION.slice(SECTION.indexOf("grip.addEventListener('pointerdown', function (e) {"), SECTION.indexOf("    function build() {")).replace(/\/\/[^\n]*/g, "");
+  assert.ok(HANDLER.length > 2000 && HANDLER.length < 12000, "the handler slice located (a sanity bound)");
+  assert.doesNotMatch(HANDLER, /\breleased\b/, "no dead variable anywhere in the drag handler");
   // the panel closing under a held pointer ends the drag (part two's third read): one hook, set at the press, cleared at the
   // end, called first by closeSettings; the lab's ledger reads zero after a scripted close
-  assert.match(GEAR, /var dragAbort = null;/);
-  assert.match(SECTION, /dragAbort = function \(\) \{ placeRows\(before\); end\(\{ type: 'abort', pointerId: pid \}\); \};/, "the teardown is a cancel's: rows back, listeners off, and the abort type arms nothing");
-  assert.match(SECTION, /widgetDrag = false; dragAbort = null;/, "cleared at every ending");
-  assert.match(GEAR, /function closeSettings\(\) \{ if \(dragAbort\) dragAbort\(\);/);
+  // every drag in flight has its teardown in one list; whatever hides the card ends them all (the migration read's low 2: the
+  // single slot tore down only the last drag pressed, and the Token usage opener hid the card with a bare write)
+  assert.match(GEAR, /var dragAborts = \[\];/);
+  assert.match(GEAR, /function endDrags\(\) \{ dragAborts\.slice\(\)\.forEach\(function \(f\) \{ f\(\); \}\); \}/, "a copy walked: each teardown removes itself from the list");
+  assert.match(SECTION, /var abort = function \(\) \{ placeRows\(before\); end\(\{ type: 'abort', pointerId: pid \}\); \};\s*\n\s*dragAborts\.push\(abort\);/, "the teardown is a cancel's: rows back, listeners off, and the abort type arms nothing");
+  assert.match(SECTION, /dragAborts = dragAborts\.filter\(function \(f\) \{ return f !== abort; \}\); widgetDrag = dragAborts\.length > 0;/, "removed at every ending; the flag the shell's Escape asks follows the list");
+  assert.match(GEAR, /function closeSettings\(\) \{ endDrags\(\);/);
+  assert.match(GEAR, /raOpen\.onclick = function \(e\) \{ e\.stopPropagation\(\); endDrags\(\); raBack\.hidden = false; p\.hidden = true;/, "the Token usage opener ends the drags before it hides the card");
+  const HIDES = (GEAR.match(/p\.hidden = true/g) || []).length;
+  assert.equal(HIDES, 2, "two places hide the card (closeSettings and the Token usage opener), and both end the drags first");
 });
 
 test("the keyboard road: ArrowUp and ArrowDown on the focused grip move the row one place through the same moveId rule, and the grip keeps the focus", () => {
