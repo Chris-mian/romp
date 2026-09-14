@@ -827,8 +827,15 @@ class RestartDiet(unittest.TestCase):
         fire = src[src.index("function fire(){"):src.index("var heldFor=null;")]
         self.assertIn("sessionStorage.setItem('romp:reloadReason',JSON.stringify({reason:owed.reason,t:Date.now()}))", fire,
                       "the reload core keeps the reason durably when it fires (the announce record is consumed before the panes dial)")
-        self.assertIn("""var RESTART_DIET=false;try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||"null");RESTART_DIET=!!(rr&&rr.reason==='restart'&&typeof rr.t==='number'&&Date.now()-rr.t<120000&&!COL&&!SKEL);}catch(e){}""", src,
-                      "the shim reads the durable reason: a restart within two minutes, a main pane, not a column, not already a skeleton view")
+        chat, feed = km._shim("chat"), km._shim("feed")
+        self.assertIn("""var RESTART_DIET=false;if(!COL&&!SKEL){try{var rr=JSON.parse(sessionStorage.getItem('romp:reloadReason')||"null");if(rr){sessionStorage.removeItem('romp:reloadReason');RESTART_DIET=(rr.reason==='restart');}}catch(e){}}""", chat,
+                      "the chat shim reads the durable reason ONCE and consumes it on that read (round two, medium 1): a main pane, not a column, not a skeleton view; no age window")
+        read = "sessionStorage.getItem('romp:reloadReason')"   # the READ; the reload core's write of the record rides every page's shim
+        self.assertNotIn(read, feed, "a non-chat pane's shim never reads the record (round two, medium 2)")
+        self.assertIn("var RESTART_DIET=false;", feed, "…it carries the false alone, so the shared dial line still compiles")
+        for other in ("fleet", "files", "timeline", "settings"):
+            self.assertNotIn(read, km._shim(other), other)
+        self.assertIn('skeleton = (q.get("skeleton") or [""])[0] == "1" and app == "chat"', src, "the kernel arms the skeleton diet for a chat socket alone (round two, medium 2)")
         self.assertIn("""((SKEL||(RESTART_DIET&&!everConnected))?"&skeleton=1":"")""", src,
                       "the dial carries skeleton=1 for a column, or for the main pane's FIRST socket after a restart reload (a redial dials as before)")
         # the kernel side the dial lands on is unchanged and already pinned above: skeleton=1 without reconnect arms skeletonOnReady at the

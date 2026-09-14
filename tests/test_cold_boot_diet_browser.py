@@ -5,8 +5,11 @@ reason is a kernel RESTART the chat pane's first socket dials skeleton=1 beside 
 refresh: one full session frame, the selected tab's, ahead of the strip's paint, the other tabs as statuses with the strip listing the
 skeleton set; (3) the spread: the visible skeletons fill on later idle callbacks one at a time, and tabs the #only= filter hides stay
 skeletons until the filter shows them; (4) the measurement: time to the selected tab's first row, to the strip's 27 tabs, to every visible
-tab built, for the restart reload and for a fresh open with no record (the fresh open is the kernel half's case: this lab reports it).
-Synthetic only (placeholder ids, invented text)."""
+tab built, for the restart reload and for a fresh open with no record; (5) a plain reload right after a restart reload dials no diet: the
+record is consumed by the read that acted on it; (6) after a restart record every pane of the served dashboard dials, and only the chat
+pane's dial carries the term; (7) lifting the #only= filter re-arms the idle prefetch: the revealed skeletons are asked for with no kernel
+push in between. The fresh open after a boot (no record, no diet) is covered by NEITHER half today: this lab measures it and the design
+decision on it is the manager's. Synthetic only (placeholder ids, invented text)."""
 import json
 import os
 import re
@@ -62,7 +65,10 @@ await page.addInitScript(() => {
   window.__dials = []; const W = window.WebSocket;
   window.WebSocket = function (url, protos) { window.__dials.push(String(url)); return protos === undefined ? new W(url) : new W(url, protos); };
   window.WebSocket.prototype = W.prototype; window.WebSocket.CONNECTING = 0; window.WebSocket.OPEN = 1; window.WebSocket.CLOSING = 2; window.WebSocket.CLOSED = 3;
-  window.__frames = []; window.__t0 = performance.now();
+  window.__frames = []; window.__t0 = performance.now(); window.__idles = 0;
+  window.__sent = []; const send = WebSocket.prototype.send;   // every frame the page sends its kernel (the prefetch's needFull asks among them)
+  WebSocket.prototype.send = function (d) { try { const m = JSON.parse(d); if (m && m.type) window.__sent.push(m); } catch (e) { /* not a frame */ } return send.call(this, d); };
+  const ric = window.requestIdleCallback; if (typeof ric === "function") window.requestIdleCallback = function (cb, o) { window.__idles++; return ric.call(window, cb, o); };
   try { window.__loads = Number(sessionStorage.getItem("romp-lab:loads") || "0") + 1; sessionStorage.setItem("romp-lab:loads", String(window.__loads)); } catch (e) { window.__loads = -1; }
   window.addEventListener("message", (e) => { const m = e.data; if (!m || !m.type) return;
     window.__frames.push({ t: Math.round(performance.now() - window.__t0), type: m.type, id: m.id || null, n: Array.isArray(m.events) ? m.events.length : null, skel: Array.isArray(m.skeleton) ? m.skeleton.length : null }); });
@@ -127,12 +133,48 @@ await page.waitForFunction(() => document.querySelectorAll("#tabs .tab, #tabs [d
 const skelAfterReveal = await skelCount();   // the tabs the filter hid come back: skeletons at the head (never built while hidden), loaded tabs at the base
 await page.waitForFunction(() => document.querySelectorAll("#tabs .tab-skeleton").length === 0, null, { timeout: 60000 }).catch(() => {});
 const revealed = { skelAfterReveal, skelFinal: await skelCount(), tabs: await tabCount() };
+// ROAD 5 (round two, medium 1): a PLAIN reload right after a restart reload dials no diet: the record was consumed by the read that acted on it
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "restart", t: Date.now() })); });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+const restart2 = { dial: (await page.evaluate(() => window.__dials[0] || null)), recordLeft: await page.evaluate(() => sessionStorage.getItem("romp:reloadReason")) };
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+const plain = { dial: (await page.evaluate(() => window.__dials[0] || null)) };
+// ROAD 7 (round two, medium 3): the #only= filter lifted with the wire quiet: the revealed skeletons are asked for by the idle prefetch itself
+await page.evaluate(() => { location.hash = "#only=web"; });
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "restart", t: Date.now() })); });
+await page.reload();
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
+await page.waitForFunction(() => document.querySelectorAll("#tabs .tab-skeleton").length === 0, null, { timeout: 40000 }).catch(() => {});   // the shown skeletons filled
+await page.waitForFunction(() => { const f = window.__frames; const last = f.length ? f[f.length - 1].t : 0; return performance.now() - window.__t0 - last > 1500; }, null, { timeout: 30000 }).catch(() => {});   // the wire quiet: no frame for 1.5 s
+const beforeReveal = await page.evaluate(() => ({ idles: window.__idles, frames: window.__frames.length, needFull: window.__sent.filter((m) => m.type === "needFull").length, skel: document.querySelectorAll("#tabs .tab-skeleton").length }));
+await page.evaluate(() => { location.hash = ""; });
+await painted();
+const skelAtReveal = await page.evaluate(() => document.querySelectorAll("#tabs .tab-skeleton").length);   // the revealed tabs appear as skeletons: never built while hidden (a hidden tab has no strip element to count before the reveal)
+const skelSidsAtReveal = await page.evaluate(() => Array.from(document.querySelectorAll("#tabs .tab-skeleton")).map((e) => e.getAttribute("data-id")).filter(Boolean));   // a tab carries its session as data-id
+await page.waitForFunction((n) => window.__sent.filter((m) => m.type === "needFull").length > n, beforeReveal.needFull, { timeout: 10000 }).catch(() => {});
+const afterReveal = await page.evaluate(([b, skelSids]) => { const asks = window.__sent.filter((m) => m.type === "needFull"); const firstAsk = asks.length > b.needFull ? asks[b.needFull] : null;
+  // kernel frames that FILL a revealed skeleton, landing between the reveal and the first ask (a re-send for the already loaded active tab is not a fill)
+  const fills = window.__frames.slice(b.frames).filter((f) => f.type === "session" && f.n && skelSids.includes(f.id)).length;
+  return { idles: window.__idles, needFull: asks.length, firstAskWhy: firstAsk ? firstAsk.why : null, pushesBeforeFirstAsk: fills, skel: document.querySelectorAll("#tabs .tab-skeleton").length, skelSids: skelSids.length }; }, [beforeReveal, skelSidsAtReveal]);
+afterReveal.skelAtReveal = skelAtReveal;
+await page.waitForFunction(() => document.querySelectorAll("#tabs .tab-skeleton").length === 0, null, { timeout: 60000 }).catch(() => {});
+const revealFilled = { skel: await page.evaluate(() => document.querySelectorAll("#tabs .tab-skeleton").length), needFull: await page.evaluate(() => window.__sent.filter((m) => m.type === "needFull" && m.why === "prefetch").length) };
+// ROAD 6 (round two, medium 2): the served dashboard's shell after a restart record: every pane dials, the chat pane's dial alone carries the term
+await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "restart", t: Date.now() })); });
+await page.goto(cfg.chat.replace("/chat?", "/?"));
+await page.waitForTimeout(4000);
+const paneDials = [];
+for (const fr of page.frames()) { try { const ds = await fr.evaluate(() => (window.__dials || []).slice()); for (const d of ds) paneDials.push(d.replace(/token=[^&]*/, "token=X")); } catch (e) { /* a frame without the hook */ } }
+await page.goto(cfg.chat);
+await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
 // ROAD 1b: a BUILD reload dials as before
 await page.evaluate(() => { sessionStorage.setItem("romp:reloadReason", JSON.stringify({ reason: "newer build", t: Date.now() })); });
 await page.reload();
 await page.waitForSelector("#tabs .tab, #tabs [data-sid]", { timeout: 20000 });
 const build = { dial: (await page.evaluate(() => window.__dials[0] || null)) };
-process.stdout.write("RESULT:" + JSON.stringify({ fresh, restart, spread, hidden, revealed, build, webIds }) + "\n");
+process.stdout.write("RESULT:" + JSON.stringify({ fresh, restart, spread, hidden, revealed, build, webIds, restart2, plain, beforeReveal, afterReveal, revealFilled, paneDials }) + "\n");
 await browser.close();
 """
 
@@ -212,6 +254,8 @@ class ColdBootDiet(unittest.TestCase):
         shutil.rmtree(getattr(cls, "lab", ""), ignore_errors=True)
 
     def _result(self):
+        if getattr(type(self), "_fail", None):   # the driver failed once: every test reports that failure instead of re-driving the browser (seven runs of a minute each)
+            self.fail(type(self)._fail)
         if self._r is None:
             cfg = os.path.join(self.lab, "diet.json")
             with open(cfg, "w") as f:
@@ -224,7 +268,9 @@ class ColdBootDiet(unittest.TestCase):
             if "browser-launch-failed" in p.stderr:
                 self._skip("no playwright browser on this box")
             line = next((ln for ln in p.stdout.splitlines() if ln.startswith("RESULT:")), None)
-            self.assertIsNotNone(line, "the driver produced no RESULT (stderr: %s)" % p.stderr[-2000:])
+            if line is None:
+                type(self)._fail = "the driver produced no RESULT (stderr: %s)" % p.stderr[-2000:]
+                self.fail(type(self)._fail)
             type(self)._r = json.loads(line[len("RESULT:"):])
         print("DIET:", json.dumps(self._r), file=sys.stderr)   # every test's call: pytest shows the failing test's captured stderr alone
         return self._r
@@ -258,6 +304,35 @@ class ColdBootDiet(unittest.TestCase):
         self.assertGreaterEqual(rv["tabs"], N_SESSIONS, "lifting the filter shows every tab: %r" % rv)
         self.assertEqual(rv["skelAfterReveal"], hidden_n, "the tabs the filter hid come back as SKELETONS: none was built while hidden (at the base they came back loaded): %r" % rv)
         self.assertEqual(rv["skelFinal"], 0, "…and load once shown: %r" % rv)
+
+    def test_a_plain_reload_after_a_restart_reload_dials_no_diet_the_record_consumed_on_the_read(self):
+        # round two, medium 1
+        r = self._result()
+        self.assertIn("&skeleton=1", r["restart2"]["dial"] or "", "the restart reload dialed the diet: %r" % r["restart2"])
+        self.assertIsNone(r["restart2"]["recordLeft"], "the read that acted on the record consumed it: %r" % r["restart2"])
+        self.assertNotIn("skeleton=1", r["plain"]["dial"] or "", "the plain reload right after dials as before: %r" % r["plain"])
+
+    def test_only_the_chat_panes_dial_carries_the_term_after_a_restart_record(self):
+        # round two, medium 2: the served dashboard's shell opens every pane; the term is the chat pane's alone
+        r = self._result()
+        dials = r["paneDials"]
+        apps = sorted(set(re.search(r"app=([a-z]+)", d).group(1) for d in dials if re.search(r"app=([a-z]+)", d)))
+        self.assertGreaterEqual(len(apps), 2, "the shell dialed more than one pane: %r" % dials)
+        with_term = sorted(set(re.search(r"app=([a-z]+)", d).group(1) for d in dials if "skeleton=1" in d))
+        self.assertEqual(with_term, ["chat"] if "chat" in apps else [], "the term rides the chat pane's dial alone: %r" % dials)
+
+    def test_lifting_the_filter_re_arms_the_idle_prefetch_with_no_push_in_between(self):
+        # round two, medium 3
+        r = self._result()
+        b, a = r["beforeReveal"], r["afterReveal"]
+        self.assertEqual(b["skel"], 0, "the shown skeletons had filled before the reveal (a hidden tab has no strip element): %r" % b)
+        self.assertGreaterEqual(a["skelAtReveal"], 1, "the revealed tabs appeared as skeletons, never built while hidden: %r" % a)
+        self.assertGreater(a["idles"], b["idles"], "the reveal scheduled an idle pass: %r -> %r" % (b, a))
+        self.assertGreater(a["needFull"], b["needFull"], "…and the prefetch asked for a revealed skeleton: %r -> %r" % (b, a))
+        self.assertEqual(a["firstAskWhy"], "prefetch", "…the ask is the prefetch's own: %r" % a)
+        self.assertGreaterEqual(a["skelSids"], 1, "the revealed skeletons carry their sids in the strip: %r" % a)
+        self.assertEqual(a["pushesBeforeFirstAsk"], 0, "…with no kernel push filling a revealed skeleton between the reveal and the prefetch's first ask: %r" % a)
+        self.assertEqual(r["revealFilled"]["skel"], 0, "every revealed skeleton filled: %r" % r["revealFilled"])
 
     def test_the_measurement_is_reported(self):
         r = self._result()
