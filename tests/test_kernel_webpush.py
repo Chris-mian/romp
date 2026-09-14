@@ -2236,7 +2236,7 @@ class LandingRevealExecutes(unittest.TestCase):
         b = self.out["boot"]
         self.assertEqual(b["postedBeforeReady"], 0, "no listener yet, nothing to scroll to")
         self.assertEqual(b["postedAfterTimelineReady"], 0, "another pane's ready is not the feed's")
-        self.assertEqual(b["postedAfterFeedReady"], [{"romp": "revealCard", "itemId": "S1:g1", "sid": "S1"}])
+        self.assertEqual(b["postedAfterFeedReady"], [{"romp": "revealCard", "itemId": "S1:g1", "sid": "S1", "gesture": True}])
 
     def test_the_message_for_a_tap_the_link_landed_is_a_dup_by_pid(self):
         # the cold start's two roads (the link, and the message handed to the opened window) carry one pid: ONE /reveal
@@ -2247,7 +2247,7 @@ class LandingRevealExecutes(unittest.TestCase):
     def test_a_live_tap_routes_the_same_way_and_settles_its_row(self):
         live = self.out["live"]
         self.assertEqual(live["fetches"], [["/reveal", {"sid": "S2", "wid": "W-test", "via": "sw"}], ["/push/landed", {"pid": "PID-live-0000000001"}]])
-        self.assertEqual(live["posted"], [{"romp": "revealCard", "itemId": "S2:g4", "sid": "S2"}])
+        self.assertEqual(live["posted"], [{"romp": "revealCard", "itemId": "S2:g4", "sid": "S2", "gesture": True}])
         self.assertEqual(live["diag"], [["sw-message", {"shape": "notificationClick", "hasSid": True, "kind": "card", "dup": False, "sw": {"clients": 3, "tops": 1, "road": "focus", "vis": "hidden"}}],
                                         ["reveal-post", {"status": 200, "via": "sw", "boot": False}]])
         d = self.out["dup"]
@@ -2310,7 +2310,7 @@ class LandingRevealWithTheFeedPaneOffHere(unittest.TestCase):
     def test_the_pane_back_on_the_card_scroll_returns(self):
         # the feed reported ready earlier in this page's life (the driver's ready), so the scroll posts at once
         back = self.out["backOn"]
-        self.assertEqual(back["posted"], [{"romp": "revealCard", "itemId": "S3:g1", "sid": "S3"}])
+        self.assertEqual(back["posted"], [{"romp": "revealCard", "itemId": "S3:g1", "sid": "S3", "gesture": True}])
         self.assertIn("function revealCard(itemId,sid){if(window.__rompPaneEnabled&&!window.__rompPaneEnabled('feed'))return;", km._LANDING_REVEAL_JS)
 
 
@@ -2334,7 +2334,7 @@ class LandingRevealReadsTheLinkLater(unittest.TestCase):
         s = self.out["pageshow"]
         self.assertEqual(s["fetches"], [["/reveal", {"sid": "S40", "wid": "W-test", "via": "link"}], ["/push/landed", {"pid": "PID-show-0000000040"}]],
                          "landed by the link road on a LIVE page: no boot flag; the row is settled")
-        self.assertEqual(s["posted"], [{"romp": "revealCard", "itemId": "S40:g2", "sid": "S40"}], "a card kind scrolls the feed too")
+        self.assertEqual(s["posted"], [{"romp": "revealCard", "itemId": "S40:g2", "sid": "S40", "gesture": True}], "a card kind scrolls the feed too")
         self.assertEqual(_rows(s, "deeplink"), [{"via": "pageshow", "hasSid": True, "hasCard": True, "hasPid": True, "dup": False, "controlled": True}])
         self.assertEqual(s["replaced"], ["/?t=1"], "our params stripped, the rest kept")
         a = self.out["pageshowAgain"]
@@ -2400,7 +2400,7 @@ class LandingRevealAsksTheLedger(unittest.TestCase):
         c = self.out["clicked"]
         self.assertEqual(c["fetches"], [["/reveal", {"sid": "S50", "wid": "W-test", "via": "ack"}], ["/push/landed", {"pid": "PID-clicked-000001"}]],
                          "the user tapped: a jump by the same land() path, the road named; then the kernel's row is landed")
-        self.assertEqual(c["posted"], [{"romp": "revealCard", "itemId": "S50:g1", "sid": "S50"}], "a card kind scrolls the feed too")
+        self.assertEqual(c["posted"], [{"romp": "revealCard", "itemId": "S50:g1", "sid": "S50", "gesture": True}], "a card kind scrolls the feed too")
         self.assertEqual(_rows(c, "tap-pending"), [{"via": "visible", "sub": True, "rows": 1, "getNotifications": True, "displayed": 0, "vanished": 0}])
         self.assertEqual(_rows(c, "tap-pending-land"), [{"sid8": "S50", "ageS": 4, "dup": False}])
         self.assertIn(["reveal-post", {"status": 200, "via": "ack", "boot": False}], c["diag"])
@@ -2418,7 +2418,7 @@ class LandingRevealAsksTheLedger(unittest.TestCase):
         self.assertEqual(v["getn"], 1, "the screen is read once per check")
         self.assertEqual(v["fetches"], [["/reveal", {"sid": "S41", "wid": "W-test", "via": "vanish"}], ["/push/landed", {"pid": "PID-shown-00000001"}]],
                          "the one gone lands by the same land() path, the road named; the displayed one is untouched")
-        self.assertEqual(v["posted"], [{"romp": "revealCard", "itemId": "S41:g3", "sid": "S41"}], "a card kind scrolls the feed too")
+        self.assertEqual(v["posted"], [{"romp": "revealCard", "itemId": "S41:g3", "sid": "S41", "gesture": True}], "a card kind scrolls the feed too")
         self.assertEqual(_rows(v, "tap-pending"), [{"via": "visible", "sub": True, "rows": 2, "getNotifications": True, "displayed": 1, "vanished": 1}])
         self.assertEqual(_rows(v, "tap-vanish-land"), [{"sid8": "S41", "ageS": 45}])
         self.assertIn(["reveal-post", {"status": 200, "via": "vanish", "boot": False}], v["diag"])
